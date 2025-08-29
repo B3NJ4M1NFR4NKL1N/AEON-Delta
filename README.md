@@ -101,10 +101,9 @@ Pull requests and collaborations welcome.
 
 > No bits left behind. — AEON-Δ
 
-## 📄 License
 
-- 🧠 Code: [Apache License 2.0](LICENSE)
-- 📘 Documentation & Concepts: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+[![License: Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
+
 
 
 
