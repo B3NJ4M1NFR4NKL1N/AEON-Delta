@@ -32,8 +32,7 @@ Key Innovations:
 5. Transparent self-reporting with honesty metrics
 
 Authors: AEON Research Team
-Contact: research@aeon-ai.org
-Documentation: https://docs.aeon-ai.org
+
 
 ════════════════════════════════════════════════════════════════════════════
 """
