@@ -1,425 +1,1644 @@
+"""
+================================================================================
+AEON TRAINING PIPELINE v4.0 - CONNECTED THOUGHTS EDITION
+================================================================================
+
+Ключевые улучшения v4.0:
+- ✅ Поддержка связанных мыслей (последовательности внутри документов)
+- ✅ Улучшенный RSSM с контекстным окном
+- ✅ Стабилизация градиентов (grad_clip снижен до 0.5)
+- ✅ Entropy regularization для кодбука
+- ✅ Документ-ориентированное построение z_pairs
+- ✅ Улучшенный warmup и scheduling
+
+Автор: AEON Research Team
+Версия: 4.0.0
+"""
+
 import json
 import torch
-import logging
-import re
-import os
-from typing import Optional
-from tqdm import tqdm
-from torch.utils.data import DataLoader, TensorDataset
+import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
+import numpy as np
+from typing import List, Tuple, Dict, Optional, Union, Any
+from dataclasses import dataclass, field, asdict
+import math
+from tqdm import tqdm
+import logging
+import os
+import time
+from datetime import datetime, timedelta
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 import argparse
+import copy
+import warnings
 
-# Импорт токенизатора
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# --- Токенизатор ---
 try:
     from transformers import AutoTokenizer
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
+    print("⚠️ transformers не установлен. Будет использован fallback-токенизатор.")
 
-# Logging: JSON + Sanitization + Dedup
-class JSONLogFormatter(logging.Formatter):
-    def format(self, record):
-        payload = {
-            "ts": self.formatTime(record, "%Y-%m-%d %H:%M:%S,%f"),
-            "name": record.name,
-            "level": record.levelname,
-            "msg": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exc_info"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False)
+# --- Mixed Precision ---
+try:
+    from torch.cuda.amp import GradScaler, autocast
+    AMP_AVAILABLE = torch.cuda.is_available()
+except ImportError:
+    AMP_AVAILABLE = False
 
-class SanitizeTextFilter(logging.Filter):
-    _allowed = tuple([chr(i) for i in range(32,127)]) + tuple([chr(i) for i in range(1024,1104)])
-    def _sanitize(self, s: str) -> str:
-        s = "".join(ch for ch in s if ch in self._allowed)
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            if isinstance(record.msg, str) and ("Generated thought:" in record.msg or "Generated response:" in record.msg):
-                head, sep, tail = record.msg.partition(":")
-                if sep:
-                    tail = self._sanitize(tail)
-                    record.msg = f"{head}:{sep}{tail}"
-                else:
-                    record.msg = self._sanitize(record.msg)
-        except Exception:
-            pass
-        return True
 
-class DedupFilter(logging.Filter):
-    def __init__(self, window: int = 50):
-        super().__init__()
-        self.window = window
-        self.recent = []
-    def filter(self, record: logging.LogRecord) -> bool:
-        sig = (record.levelno, record.name, record.msg)
-        if sig in self.recent:
-            return False
-        self.recent.append(sig)
-        if len(self.recent) > self.window:
-            self.recent.pop(0)
-        return True
+# ==============================================================================
+# ЛОГИРОВАНИЕ
+# ==============================================================================
 
-def configure_logger(logfile: Optional[str] = None):
-    logger = logging.getLogger("AEON-Delta")
-    logger.setLevel(logging.INFO)
+def configure_logger(logfile: Optional[str] = None, level=logging.INFO) -> logging.Logger:
+    """Настройка логгера с поддержкой файла и консоли"""
+    logger = logging.getLogger("AEON-Training-v4")
+    logger.setLevel(level)
     logger.handlers.clear()
-    fmt = JSONLogFormatter()
-    filters = [SanitizeTextFilter(), DedupFilter(window=200)]
+    
+    detailed_format = '%(asctime)s | %(levelname)-8s | %(message)s'
+    
     sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    for flt in filters: sh.addFilter(flt)
+    sh.setFormatter(logging.Formatter(detailed_format))
     logger.addHandler(sh)
+    
     if logfile:
-        dirn = os.path.dirname(logfile) or "."
-        os.makedirs(dirn, exist_ok=True)
+        log_dir = os.path.dirname(logfile) or "."
+        os.makedirs(log_dir, exist_ok=True)
         fh = logging.FileHandler(logfile, encoding="utf-8")
-        fh.setFormatter(fmt)
-        for flt in filters: fh.addFilter(flt)
+        fh.setFormatter(logging.Formatter(detailed_format))
         logger.addHandler(fh)
+    
     return logger
 
-# Imports from core
-from core import (
-    ThoughtEncoder, ThoughtDecoder, AEONConfig, AEONTrainer,
-    ThoughtAETrainer, AEONDelta, device
-)
-
-# Tokenization
-def tokenize_text(text: str, tokenizer=None, max_len=64, device=None):
-    if not isinstance(text, str):
-        return None
-    device = device or torch.device("cpu")
-    if tokenizer:
-        return tokenizer(
-            text,
-            max_length=max_len,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )['input_ids'].squeeze(0).to(device)
-    else:
-        vocab_size = 50000
-        tokens = [ord(c) % vocab_size for c in text[:max_len]]
-        if len(tokens) < max_len:
-            tokens = tokens + [0] * (max_len - len(tokens))
-        return torch.tensor(tokens, dtype=torch.long, device=device)
-
-# Improved KL & Entanglement Surrogate
-def kl_diag_gaussians(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    mu_p = pred.mean(dim=-1)
-    var_p = pred.var(dim=-1, unbiased=False) + eps
-    mu_q = target.mean(dim=-1)
-    var_q = target.var(dim=-1, unbiased=False) + eps
-    kl = 0.5 * ((var_p / var_q) + ((mu_q - mu_p)**2) / var_q - 1.0 + torch.log(var_q / var_p))
-    return kl.mean()
-
-def cosine_spread_surrogate(z: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    if z.size(0) < 2:
-        return torch.zeros((), device=z.device, dtype=z.dtype)
-    z_centered = z - z.mean(dim=1, keepdim=True)
-    z_norm = F.normalize(z_centered, dim=1, eps=eps)
-    sim = z_norm @ z_norm.T
-    B = sim.size(0)
-    offdiag_sum = sim.sum() - torch.diag(sim).sum()
-    offdiag_count = B * (B - 1)
-    return -offdiag_sum / (offdiag_count + 1e-9)
-
-# KL warmup
-def _kl_coeff(step: int, warmup: int = 500, max_w: float = 0.1) -> float:
-    return min(1.0, step / float(max(1, warmup))) * max_w
-
-# Customized Trainers
-class SafeThoughtAETrainer(ThoughtAETrainer):
-    def _to_float(self, v):
-        return float(v.detach().cpu().item()) if hasattr(v, 'detach') else float(v)
-
-    def _estimate_total(self, fm: dict) -> float:
-        return sum(fm.values()) if 'total_loss' not in fm else fm['total_loss']
-
-    def train_step(self, tokens, aug_tokens=None):
-        if aug_tokens is None:
-            aug_tokens = tokens.roll(1, dims=1)
-        try:
-            metrics = super().train_step(tokens, aug_tokens)
-        except TypeError:
-            metrics = super().train_step(tokens)
-        fm = {k: self._to_float(v) for k, v in (metrics or {}).items()}
-        total = self._estimate_total(fm)
-        log = logging.getLogger("AEON-Delta")
-        log.info(f"Phase A step: recon={fm.get('recon_loss', 0.0):.6f}, nce={fm.get('info_nce', 0.0):.6f}, kl={fm.get('kl', 0.0):.6f}")
-        return fm
-
-    def _info_nce(self, z, z_pos, temperature: float = 0.07):
-        # z, z_pos: [B, D]
-        sim = F.cosine_similarity(z.unsqueeze(1), z_pos.unsqueeze(0), dim=-1)  # [B, B]
-        labels = torch.arange(z.size(0), device=z.device)                      # [B]
-        return F.cross_entropy(sim / temperature, labels)
-
-    def _kl_diag(self, z: torch.Tensor, eps: float = 1e-6):
-        # KL( N(mu, var) || N(0, I) ) агрегировано по признакам
-        mu  = z.mean(dim=0)
-        var = z.var(dim=0, unbiased=False).clamp_min(eps)
-        return -0.5 * torch.sum(1 + var.log() - mu.pow(2) - var)
+logger = configure_logger()
 
 
-# Patch for warmup
-try:
-    _orig_train_step = SafeThoughtAETrainer.train_step
-    def _patched_train_step(self, tokens, aug_tokens=None):
-        if not hasattr(self, "global_step"):
-            self.global_step = 0
-        if aug_tokens is None:
-            aug_tokens = tokens.roll(1, dims=1)
-        self.model.train()
-        tokens = tokens.to(self.device, non_blocking=False)
-        aug_tokens = aug_tokens.to(self.device, non_blocking=False)
-        z = self.model.encoder(tokens)
-        z_pos = self.model.encoder(aug_tokens)
-        logits = self.model.decoder(z, tokens)
-        recon = F.cross_entropy(logits.reshape(-1, self.config.vocab_size), tokens.reshape(-1))
-        nce = self._info_nce(z, z_pos)
-        kl = self._kl_diag(z)  # ✅ корректный вызов
-        kl_w = _kl_coeff(self.global_step, warmup=getattr(self.config, "kl_warmup", 500), max_w=0.1)
-        loss = recon + 0.3 * nce + kl_w * kl
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
-        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=getattr(self.config, "grad_clip_norm", 1.0))
-        self.optimizer.step()
-        self.global_step += 1
-        log = logging.getLogger("AEON-Delta")
-        log.info(f"Patched Phase A: kl_w={kl_w:.4f}, step={self.global_step}")
-        return {
-            "total_loss": float(loss.detach().cpu()),
-            "recon_loss": float(recon.detach().cpu()),
-            "info_nce": float(nce.detach().cpu()),
-            "kl": float(kl.detach().cpu()),
-            "kl_w": float(kl_w),
-            "step": int(self.global_step),
-        }
-    SafeThoughtAETrainer.train_step = _patched_train_step
-except Exception as e:
-    logging.getLogger("AEON-Delta").error(f"[TrainHotfix] patch failed: {e}")
+# ==============================================================================
+# УСТРОЙСТВО
+# ==============================================================================
 
-class FixedZDynamicsTrainer(AEONTrainer):
-    def __init__(self, model, config, device=None):
-        super().__init__(model, config, device)
-        self.optimizer = torch.optim.AdamW(self.model.rssm.parameters(), lr=config.learning_rate)
-        self.config.use_amp = False
-        self.logger = logging.getLogger("AEON-Delta")
-        if not self.logger.handlers:
-            self.logger.setLevel(logging.INFO)
-            sh = logging.StreamHandler()
-            sh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-            self.logger.addHandler(sh)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger.info(f"🖥️  Device: {device}")
+if torch.cuda.is_available():
+    logger.info(f"   GPU: {torch.cuda.get_device_name(0)}")
+    logger.info(f"   VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
 
-    def train_step(self, batch):
-        self.model.rssm.train()
-        z_t = batch[:, 0, :].to(self.device).float().contiguous()
-        z_t1 = batch[:, 1, :].to(self.device).float().contiguous()
-        z_t.requires_grad_(True)
-        self.logger.debug(f"[FixedZDynamicsTrainer] z_t requires_grad: {z_t.requires_grad}, grad_fn: {z_t.grad_fn}")
-        self.logger.debug(f"[FixedZDynamicsTrainer] z_t1 requires_grad: {z_t1.requires_grad}, grad_fn: {z_t1.grad_fn}")
-        pred_z = self.model.rssm(z_t).contiguous()
-        self.logger.debug(f"[FixedZDynamicsTrainer] pred_z requires_grad: {pred_z.requires_grad}, grad_fn: {pred_z.grad_fn}")
-        mse = F.mse_loss(pred_z, z_t1)
-        mask = torch.rand(z_t.shape, device=self.device) < 0.2
-        if mask.any():
-            idx = mask.nonzero(as_tuple=True)
-            mask_loss = F.mse_loss(pred_z[idx], z_t1[idx])
+
+# ==============================================================================
+# КОНФИГУРАЦИЯ v4.0 — ОПТИМИЗИРОВАННАЯ ДЛЯ СВЯЗАННЫХ МЫСЛЕЙ
+# ==============================================================================
+
+@dataclass
+class AEONConfigV4:
+    """
+    Конфигурация v4.0 с оптимизацией для связанных мыслей
+    
+    Ключевые изменения:
+    - grad_clip_norm: 0.5 (было 1.0) — стабилизация
+    - context_window: 3 — RSSM учитывает 3 предыдущих состояния
+    - entropy_weight: 0.1 — регуляризация кодбука
+    - document_aware: True — построение пар по документам
+    """
+    
+    # Архитектура
+    z_dim: int = 256
+    hidden_dim: int = 256
+    vocab_size: int = 30522
+    num_pillars: int = 5
+    seq_length: int = 64
+    
+    # VQ-VAE (оптимизировано)
+    vq_num_embeddings: int = 2048
+    vq_embedding_dim: int = 256
+    vq_commitment_cost: float = 0.25
+    vq_loss_weight: float = 0.5
+    vq_ema_decay: float = 0.99
+    vq_temperature: float = 1.0
+    vq_reset_threshold: int = 30  # Было 50, теперь агрессивнее
+    
+    # ✅ НОВОЕ: Entropy regularization
+    entropy_weight: float = 0.1  # Поощряет равномерное использование кодов
+    
+    # Обучение (стабилизировано)
+    learning_rate: float = 3e-5
+    min_learning_rate: float = 1e-6
+    weight_decay: float = 0.01
+    grad_clip_norm: float = 0.5  # ✅ Было 1.0, теперь стабильнее
+    batch_size: int = 16
+    gradient_accumulation_steps: int = 2
+    
+    # Warmup и Scheduling
+    warmup_steps: int = 1000  # Было 500, теперь плавнее
+    warmup_ratio: float = 0.1
+    
+    # Регуляризация
+    dropout_rate: float = 0.1
+    label_smoothing: float = 0.1
+    
+    # ✅ НОВОЕ: RSSM с контекстом
+    context_window: int = 3  # RSSM видит 3 предыдущих z
+    rssm_hidden_dim: int = 512  # Увеличен для контекста
+    
+    # ✅ НОВОЕ: Документ-ориентированное обучение
+    document_aware: bool = True  # Строить пары только внутри документов
+    min_doc_chunks: int = 2  # Минимум чанков в документе
+    
+    # Early Stopping
+    early_stopping_patience: int = 5
+    min_delta: float = 1e-4
+    
+    # Checkpointing
+    save_every_n_epochs: int = 5
+    keep_n_checkpoints: int = 3
+    
+    # Прочее
+    seed: int = 42
+    use_amp: bool = True
+
+
+# ==============================================================================
+# МОНИТОР ОБУЧЕНИЯ (улучшенный)
+# ==============================================================================
+
+class TrainingMonitor:
+    """Расширенный монитор для отслеживания метрик обучения"""
+    
+    def __init__(self, logger: logging.Logger, save_dir: str = "checkpoints"):
+        self.logger = logger
+        self.metrics_history = {"phase_A": [], "phase_B": []}
+        self.batch_metrics = {"phase_A": [], "phase_B": []}
+        self.start_time = None
+        self.epoch_start_time = None
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
+        
+        self.best_loss = float('inf')
+        self.patience_counter = 0
+        
+    def start_training(self, phase: str, total_epochs: int, total_samples: int):
+        self.start_time = time.time()
+        self.batch_metrics[phase] = []
+        self.logger.info("=" * 75)
+        self.logger.info(f"🚀 НАЧАЛО ОБУЧЕНИЯ - {phase}")
+        self.logger.info(f"   Всего эпох: {total_epochs}")
+        self.logger.info(f"   Всего сэмплов: {total_samples:,}")
+        self.logger.info(f"   Время старта: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.logger.info("=" * 75)
+        
+    def start_epoch(self, epoch: int, total_epochs: int):
+        self.epoch_start_time = time.time()
+        self.logger.info(f"\n{'─' * 60}")
+        self.logger.info(f"📍 Эпоха {epoch + 1}/{total_epochs}")
+        self.logger.info(f"{'─' * 60}")
+        
+    def log_batch(self, batch_idx: int, total_batches: int, metrics: dict, 
+                  phase: str = "phase_A", log_every: int = 10):
+        self.batch_metrics[phase].append(metrics.copy())
+        
+        if batch_idx % log_every == 0 or batch_idx == total_batches - 1:
+            metrics_str = " | ".join([f"{k}: {v:.6f}" for k, v in metrics.items()])
+            progress = (batch_idx + 1) / total_batches * 100
+            self.logger.info(f"   Batch [{batch_idx + 1:5d}/{total_batches}] ({progress:5.1f}%) | {metrics_str}")
+            
+    def end_epoch(self, epoch: int, total_epochs: int, epoch_metrics: dict, 
+                  phase: str = "phase_A") -> bool:
+        epoch_time = time.time() - self.epoch_start_time
+        self.metrics_history[phase].append(epoch_metrics.copy())
+        
+        self.logger.info(f"\n   📊 Итоги эпохи {epoch + 1}:")
+        for key, value in epoch_metrics.items():
+            if isinstance(value, float):
+                self.logger.info(f"      • {key}: {value:.6f}")
+            else:
+                self.logger.info(f"      • {key}: {value}")
+        self.logger.info(f"   ⏱️  Время эпохи: {timedelta(seconds=int(epoch_time))}")
+        
+        elapsed = time.time() - self.start_time
+        avg_epoch_time = elapsed / (epoch + 1)
+        remaining = avg_epoch_time * (total_epochs - epoch - 1)
+        self.logger.info(f"   ⏳ Осталось примерно: {timedelta(seconds=int(remaining))}")
+        
+        if len(self.metrics_history[phase]) >= 2:
+            prev = self.metrics_history[phase][-2]
+            curr = self.metrics_history[phase][-1]
+            
+            loss_key = "total" if "total" in curr else "mse_loss"
+            if loss_key in prev and loss_key in curr:
+                delta = curr[loss_key] - prev[loss_key]
+                pct_change = (delta / prev[loss_key]) * 100 if prev[loss_key] != 0 else 0
+                direction = "📉" if delta < 0 else "📈" if delta > 0 else "➡️"
+                self.logger.info(f"   {direction} Δ{loss_key}: {delta:+.6f} ({pct_change:+.2f}%)")
+        
+        current_loss = epoch_metrics.get("total", epoch_metrics.get("mse_loss", float('inf')))
+        if current_loss < self.best_loss:
+            self.best_loss = current_loss
+            self.patience_counter = 0
         else:
-            mask_loss = torch.zeros((), device=self.device, dtype=pred_z.dtype)
-        kl = kl_diag_gaussians(pred_z, z_t1)
-        ent_surrogate = cosine_spread_surrogate(pred_z)
-        loss = mse + 0.2 * mask_loss + self.config.kl_weight * kl - 0.05 * ent_surrogate
-        if not loss.requires_grad:
-            self.logger.error(f"[FixedZDynamicsTrainer] CRITICAL ERROR: Loss tensor does not require grad.")
-            self.logger.error(f"[FixedZDynamicsTrainer] loss.requires_grad: {loss.requires_grad}, loss.grad_fn: {loss.grad_fn}")
-            self.logger.error(f"[FixedZDynamicsTrainer] pred_z.requires_grad: {pred_z.requires_grad}, pred_z.grad_fn: {pred_z.grad_fn}")
-            self.logger.error(f"[FixedZDynamicsTrainer] z_t.requires_grad: {z_t.requires_grad}, z_t.grad_fn: {z_t.grad_fn}")
-            raise RuntimeError("Loss tensor is not part of the computation graph.")
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.rssm.parameters(), 1.0)
-        self.optimizer.step()
-        self.logger.info(f"Phase B step: mse={mse.item():.6f}, kl={kl.item():.6e}, ent={ent_surrogate.item():.6f}")
-        if not torch.isfinite(loss):
-            raise ValueError("Non-finite loss detected")
-        return {'total_loss': float(loss.detach().item()), 'mse': float(mse.detach().item()), 'kl': float(kl.detach().item()), 'ent': float(ent_surrogate.detach().item())}
+            self.patience_counter += 1
+            
+        return False
+        
+    def end_training(self, phase: str):
+        total_time = time.time() - self.start_time
+        self.logger.info("\n" + "=" * 75)
+        self.logger.info(f"✅ {phase} ЗАВЕРШЕНА")
+        self.logger.info(f"   Общее время: {timedelta(seconds=int(total_time))}")
+        
+        if phase in self.metrics_history and self.metrics_history[phase]:
+            first = self.metrics_history[phase][0]
+            last = self.metrics_history[phase][-1]
+            
+            loss_key = "total" if "total" in first else "mse_loss"
+            first_loss = first.get(loss_key, 0)
+            last_loss = last.get(loss_key, 0)
+            
+            if first_loss > 0:
+                improvement = (first_loss - last_loss) / first_loss * 100
+                self.logger.info(f"   📈 Улучшение loss: {improvement:.2f}%")
+            self.logger.info(f"   📊 Начальный loss: {first_loss:.6f}")
+            self.logger.info(f"   📊 Финальный loss: {last_loss:.6f}")
+        
+        self.logger.info("=" * 75 + "\n")
+        
+    def log_model_stats(self, model: nn.Module, component_name: str = "Модель"):
+        self.logger.info(f"📦 Параметры {component_name}:")
+        
+        total_params = 0
+        trainable_params = 0
+        
+        for name, module in model.named_children():
+            params = sum(p.numel() for p in module.parameters())
+            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            total_params += params
+            trainable_params += trainable
+            self.logger.info(f"   • {name}: {params:,} (trainable: {trainable:,})")
+        
+        self.logger.info(f"   ─────────────────────────────────")
+        self.logger.info(f"   ВСЕГО: {total_params:,} (trainable: {trainable_params:,})")
+        self.logger.info(f"   Память модели: ~{total_params * 4 / 1024**2:.1f} MB (FP32)")
+        
+    def log_tensor_stats(self, tensor: torch.Tensor, name: str):
+        with torch.no_grad():
+            t = tensor.float()
+            self.logger.info(f"   📐 {name}:")
+            self.logger.info(f"      shape: {list(tensor.shape)}")
+            self.logger.info(f"      mean: {t.mean():.6f}, std: {t.std():.6f}")
+            self.logger.info(f"      min: {t.min():.6f}, max: {t.max():.6f}")
+            
+    def save_metrics(self, filepath: str):
+        data = {
+            "metrics_history": self.metrics_history,
+            "best_loss": self.best_loss,
+            "timestamp": datetime.now().isoformat()
+        }
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
 
-    def fit(self, z_pairs_path: str, epochs: int = 6, batch_size: int = 256):
-        self.logger.info(f"[FixedZDynamicsTrainer] Loading z_pairs from {z_pairs_path}")
-        z_pairs = torch.load(z_pairs_path, map_location=self.device)
-        if not isinstance(z_pairs, torch.Tensor) or z_pairs.dim() != 3 or z_pairs.shape[1] != 2:
-            raise ValueError(f"Expected z_pairs tensor of shape [N,2,D], got {type(z_pairs)} shape={getattr(z_pairs, 'shape', None)}")
-        loader = DataLoader(TensorDataset(z_pairs), batch_size=batch_size, shuffle=True)
-        for epoch in range(epochs):
-            progress_bar = tqdm(loader, desc=f"Phase B (Z-dyn) Epoch {epoch+1}/{epochs}")
-            for (batch,) in progress_bar:
-                try:
-                    loss_dict = self.train_step(batch)
-                    postfix = {
-                        'loss': f"{loss_dict.get('total_loss', 0.0):.4f}",
-                        'mse': f"{loss_dict.get('mse', 0.0):.4f}",
-                        'kl': f"{loss_dict.get('kl', 0.0):.2e}",
-                        'ent': f"{loss_dict.get('ent', 0.0):.4f}",
-                    }
-                    progress_bar.set_postfix(postfix)
-                except Exception as e:
-                    self.logger.error(f"Batch error: {e}")
-                    continue
 
-# Main Pipeline
-def main(
-    json_path: str = "/Users/vasapupkin/AEON/AEONSTART/combined.json",
-    output_dir: str = "/Users/vasapupkin/AEON/AEONSTART/data/processed/",
-    epochs_A: int = 30,
-    epochs_B: int = 6,
-    log_path: Optional[str] = "./aeon_training.log",
-):
-    logger = configure_logger(log_path)
-    if not TRANSFORMERS_AVAILABLE:
-        logger.warning("transformers unavailable; fallback to ord tokenize")
-        tokenizer = None
-    else:
-        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-    config = AEONConfig(seq_length=64, z_dim=256, hidden_dim=256)
-    config.kl_weight = 0.1
+# ==============================================================================
+# КОМПОНЕНТЫ МОДЕЛИ
+# ==============================================================================
+
+class ThoughtEncoder(nn.Module):
+    """Энкодер: tokens → z с Bidirectional LSTM"""
+    
+    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256, 
+                 dropout: float = 0.1):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, emb_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        self.lstm = nn.LSTM(
+            emb_dim, 
+            z_dim // 2,
+            batch_first=True, 
+            bidirectional=True,
+            num_layers=1
+        )
+        
+        self.norm = nn.LayerNorm(z_dim)
+        self.z_dim = z_dim
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        x = self.embed(tokens)
+        x = self.dropout(x)
+        _, (h, _) = self.lstm(x)
+        h = torch.cat([h[0], h[1]], dim=-1)
+        z = self.norm(h)
+        return z
+
+
+class VectorQuantizerHybridV4(nn.Module):
+    """
+    VQ-VAE v4 с entropy regularization
+    
+    Улучшения:
+    - Entropy loss для равномерного использования кодов
+    - Более агрессивный reset неиспользуемых кодов
+    - Улучшенная инициализация
+    """
+    
+    def __init__(
+        self, 
+        num_embeddings: int, 
+        embedding_dim: int, 
+        commitment_cost: float = 0.25,
+        decay: float = 0.99,
+        epsilon: float = 1e-5,
+        temperature: float = 1.0,
+        reset_threshold: int = 30,
+        entropy_weight: float = 0.1
+    ):
+        super().__init__()
+        
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+        self.decay = decay
+        self.epsilon = epsilon
+        self.temperature = temperature
+        self.reset_threshold = reset_threshold
+        self.entropy_weight = entropy_weight
+        
+        # Кодбук с улучшенной инициализацией
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        # Инициализация ближе к нормальному распределению z
+        self.embedding.weight.data.normal_(0, 0.1)
+        
+        # EMA буферы
+        self.register_buffer('ema_cluster_size', torch.zeros(num_embeddings))
+        self.register_buffer('ema_w', self.embedding.weight.data.clone())
+        
+        # Мониторинг использования
+        self.register_buffer('code_usage', torch.zeros(num_embeddings))
+        self.register_buffer('code_age', torch.zeros(num_embeddings))
+        self.register_buffer('total_count', torch.tensor(0.0))
+        self.register_buffer('global_step', torch.tensor(0))
+
+    def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        B, D = z.shape
+        
+        # Расчёт расстояний
+        distances = (
+            torch.sum(z**2, dim=1, keepdim=True) + 
+            torch.sum(self.embedding.weight**2, dim=1) - 
+            2 * torch.matmul(z, self.embedding.weight.t())
+        ) / self.temperature
+        
+        # Выбор ближайших кодов
+        indices = torch.argmin(distances, dim=1)
+        
+        # Квантизованные векторы
+        quantized = self.embedding(indices)
+        
+        # ========== LOSS COMPUTATION ==========
+        
+        # 1. Commitment loss
+        commitment_loss = F.mse_loss(z, quantized.detach())
+        
+        # 2. Codebook loss
+        codebook_loss = F.mse_loss(quantized, z.detach())
+        
+        # 3. ✅ НОВОЕ: Entropy regularization
+        # Поощряет равномерное использование кодов
+        entropy_loss = self._compute_entropy_loss(indices)
+        
+        # Общий loss
+        loss = codebook_loss + self.commitment_cost * commitment_loss + self.entropy_weight * entropy_loss
+        
+        # Straight-through estimator
+        quantized_st = z + (quantized - z).detach()
+        
+        # EMA update
+        if self.training:
+            self._update_ema(z, indices)
+        
+        # Статистика
+        stats = self._compute_stats(indices)
+        stats['entropy_loss'] = entropy_loss.item()
+        
+        return quantized_st, loss, indices, stats
+    
+    def _compute_entropy_loss(self, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Вычисляет entropy loss для поощрения равномерного использования кодов
+        
+        Максимальная энтропия = log(num_embeddings) при равномерном распределении
+        Минимизируем (max_entropy - actual_entropy) / max_entropy
+        """
+        # Считаем частоту использования каждого кода в батче
+        counts = torch.bincount(indices, minlength=self.num_embeddings).float()
+        probs = counts / counts.sum().clamp(min=1)
+        
+        # Entropy: -sum(p * log(p))
+        # Добавляем epsilon для численной стабильности
+        log_probs = torch.log(probs + 1e-10)
+        entropy = -(probs * log_probs).sum()
+        
+        # Нормализуем относительно максимальной энтропии
+        max_entropy = math.log(self.num_embeddings)
+        
+        # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
+        entropy_loss = 1.0 - (entropy / max_entropy)
+        
+        return entropy_loss
+    
+    def _update_ema(self, z: torch.Tensor, indices: torch.Tensor):
+        """EMA обновление для стабильности"""
+        with torch.no_grad():
+            self.global_step += 1
+            self.total_count += z.size(0)
+            
+            encodings = F.one_hot(indices, self.num_embeddings).float()
+            encodings_sum = encodings.sum(0)
+            
+            self.ema_cluster_size.mul_(self.decay).add_(encodings_sum, alpha=1 - self.decay)
+            
+            dw = torch.matmul(encodings.t(), z)
+            self.ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+            
+            used_codes = indices.unique()
+            self.code_usage[used_codes] += 1
+            self.code_age += 1
+            self.code_age[used_codes] = 0
+            
+            # Периодический сброс (чаще чем в v3)
+            if self.global_step % 50 == 0:
+                self._reset_unused_codes(z)
+    
+    def _reset_unused_codes(self, z: torch.Tensor):
+        """Более агрессивный сброс неиспользуемых кодов"""
+        unused_mask = self.code_age > self.reset_threshold
+        num_unused = unused_mask.sum().item()
+        
+        if num_unused > 0 and z.size(0) > 0:
+            num_to_reset = min(num_unused, z.size(0))
+            random_indices = torch.randint(0, z.size(0), (num_to_reset,), device=z.device)
+            new_codes = z[random_indices].detach()
+            
+            # Больше шума для разнообразия
+            noise = torch.randn_like(new_codes) * 0.05
+            new_codes = new_codes + noise
+            
+            unused_indices = torch.where(unused_mask)[0][:num_to_reset]
+            
+            self.embedding.weight.data[unused_indices] = new_codes
+            self.ema_w[unused_indices] = new_codes
+            self.ema_cluster_size[unused_indices] = 1.0
+            self.code_age[unused_indices] = 0
+            self.code_usage[unused_indices] = 1
+    
+    def _compute_stats(self, indices: torch.Tensor) -> dict:
+        with torch.no_grad():
+            unique_in_batch = len(indices.unique())
+            total_used = (self.code_usage > 0).sum().item()
+            usage_pct = total_used / self.num_embeddings * 100
+            
+            if self.total_count > 0:
+                probs = self.code_usage / (self.total_count + 1e-10)
+                probs = probs[probs > 0]
+                entropy = -(probs * torch.log(probs + 1e-10)).sum().item()
+                max_entropy = math.log(self.num_embeddings)
+                normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+            else:
+                normalized_entropy = 0
+            
+            return {
+                "codebook_usage_%": usage_pct,
+                "unique_codes_batch": unique_in_batch,
+                "total_used_codes": total_used,
+                "codebook_entropy": normalized_entropy,
+            }
+    
+    def get_codebook_usage(self) -> float:
+        if self.total_count > 0:
+            used = (self.code_usage > 0).sum().item()
+            return used / self.num_embeddings * 100
+        return 0.0
+
+
+class ThoughtDecoder(nn.Module):
+    """Декодер: z + tokens → logits"""
+    
+    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.emb_dim = emb_dim
+        self.z_dim = z_dim
+        
+        self.embed = nn.Embedding(vocab_size, emb_dim)
+        self.z_proj = nn.Linear(z_dim, emb_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.lstm = nn.LSTM(emb_dim * 2, emb_dim, batch_first=True)
+        self.head = nn.Linear(emb_dim, vocab_size)
+        self.head.weight = self.embed.weight  # Weight tying
+
+    def forward(self, z: torch.Tensor, teacher_tokens: torch.Tensor) -> torch.Tensor:
+        B, L = teacher_tokens.shape
+        
+        z_proj = self.z_proj(z)
+        z_expanded = z_proj.unsqueeze(1).expand(-1, L, -1)
+        
+        emb = self.embed(teacher_tokens)
+        emb = self.dropout(emb)
+        
+        lstm_input = torch.cat([emb, z_expanded], dim=-1)
+        
+        h0 = z_proj.unsqueeze(0)
+        c0 = torch.zeros_like(h0)
+        
+        out, _ = self.lstm(lstm_input, (h0, c0))
+        out = self.dropout(out)
+        
+        logits = self.head(out)
+        
+        return logits
+
+
+class ContextualRSSM(nn.Module):
+    """
+    ✅ НОВЫЙ: RSSM с контекстным окном
+    
+    Вместо предсказания z_{t+1} только из z_t,
+    использует последние K состояний: [z_{t-K+1}, ..., z_t] → z_{t+1}
+    
+    Это позволяет модели учиться связным переходам между мыслями.
+    """
+    
+    def __init__(self, hidden_dim: int, context_window: int = 3, 
+                 rssm_hidden: int = 512, dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.context_window = context_window
+        self.rssm_hidden = rssm_hidden
+        
+        # Проекция контекста
+        self.context_proj = nn.Sequential(
+            nn.Linear(hidden_dim * context_window, rssm_hidden),
+            nn.LayerNorm(rssm_hidden),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Attention over context (опционально, для взвешивания)
+        self.context_attention = nn.Sequential(
+            nn.Linear(hidden_dim, 1),
+            nn.Softmax(dim=1)
+        )
+        
+        # GRU для рекуррентной обработки
+        self.gru = nn.GRUCell(rssm_hidden, rssm_hidden)
+        
+        # Выходная проекция
+        self.out_proj = nn.Sequential(
+            nn.Linear(rssm_hidden, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+        
+        # Residual connection weight
+        self.residual_weight = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, z_context: torch.Tensor, 
+                hx: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            z_context: [B, K, D] — контекст из K последних z
+            hx: [B, rssm_hidden] — скрытое состояние GRU
+            
+        Returns:
+            z_pred: [B, D] — предсказание следующего z
+        """
+        B, K, D = z_context.shape
+        
+        if hx is None:
+            hx = torch.zeros(B, self.rssm_hidden, device=z_context.device)
+        
+        # Attention-взвешенный контекст
+        attn_weights = self.context_attention(z_context)  # [B, K, 1]
+        weighted_context = (z_context * attn_weights).sum(dim=1)  # [B, D]
+        
+        # Конкатенация всего контекста
+        flat_context = z_context.view(B, -1)  # [B, K*D]
+        
+        # Проекция
+        proj = self.context_proj(flat_context)  # [B, rssm_hidden]
+        
+        # GRU step
+        hx_new = self.gru(proj, hx)
+        
+        # Выходная проекция с residual
+        z_pred = self.out_proj(hx_new)
+        
+        # Residual connection к последнему z
+        z_last = z_context[:, -1, :]
+        z_pred = z_pred + self.residual_weight * z_last
+        
+        return z_pred
+    
+    def forward_single(self, z_t: torch.Tensor, 
+                       hx: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Для совместимости: предсказание из одного z
+        """
+        # Создаём искусственный контекст из одного z
+        z_context = z_t.unsqueeze(1).expand(-1, self.context_window, -1)
+        return self.forward(z_context, hx)
+
+
+class AEONDeltaV4(nn.Module):
+    """Полная модель AEON-Delta v4 с контекстным RSSM"""
+    
+    def __init__(self, config: AEONConfigV4):
+        super().__init__()
+        self.config = config
+        
+        self.tokenizer = None
+        if TRANSFORMERS_AVAILABLE:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+            except Exception as e:
+                logger.warning(f"Не удалось загрузить токенизатор: {e}")
+        
+        self.encoder = ThoughtEncoder(
+            config.vocab_size, 
+            z_dim=config.z_dim,
+            dropout=config.dropout_rate
+        )
+        
+        self.vq = VectorQuantizerHybridV4(
+            config.vq_num_embeddings, 
+            config.vq_embedding_dim,
+            commitment_cost=config.vq_commitment_cost,
+            decay=config.vq_ema_decay,
+            temperature=config.vq_temperature,
+            reset_threshold=config.vq_reset_threshold,
+            entropy_weight=config.entropy_weight
+        )
+        
+        self.decoder = ThoughtDecoder(
+            config.vocab_size, 
+            z_dim=config.z_dim,
+            dropout=config.dropout_rate
+        )
+        
+        # ✅ Новый контекстный RSSM
+        self.rssm = ContextualRSSM(
+            config.hidden_dim, 
+            context_window=config.context_window,
+            rssm_hidden=config.rssm_hidden_dim,
+            dropout=config.dropout_rate
+        )
+        
+        self._init_weights()
+        
+    def _init_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, std=0.02)
+            elif isinstance(module, (nn.LSTM, nn.GRU, nn.GRUCell)):
+                for name, param in module.named_parameters():
+                    if 'weight' in name:
+                        nn.init.orthogonal_(param)
+                    elif 'bias' in name:
+                        nn.init.zeros_(param)
+
+    def encode(self, tokens: torch.Tensor) -> torch.Tensor:
+        return self.encoder(tokens)
+
+    def quantize(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        return self.vq(z)
+
+    def decode(self, quantized_z: torch.Tensor, teacher_tokens: torch.Tensor) -> torch.Tensor:
+        return self.decoder(quantized_z, teacher_tokens)
+    
+    def forward(self, tokens: torch.Tensor) -> Dict[str, Any]:
+        z = self.encode(tokens)
+        quantized, vq_loss, indices, vq_stats = self.quantize(z)
+        logits = self.decode(quantized, tokens)
+        
+        return {
+            "z": z,
+            "quantized": quantized,
+            "vq_loss": vq_loss,
+            "indices": indices,
+            "logits": logits,
+            "vq_stats": vq_stats
+        }
+
+
+# ==============================================================================
+# ДОКУМЕНТ-ОРИЕНТИРОВАННЫЙ DATASET
+# ==============================================================================
+
+class DocumentAwareDataset(Dataset):
+    """
+    ✅ НОВОЕ: Dataset, который строит z_pairs ТОЛЬКО внутри документов
+    
+    Это гарантирует, что RSSM учится на связанных переходах мыслей,
+    а не на случайных соседствах из разных документов.
+    """
+    
+    def __init__(self, documents: List[List[torch.Tensor]], context_window: int = 3):
+        """
+        Args:
+            documents: List of documents, each is a list of token tensors (chunks)
+            context_window: Number of previous z to use as context
+        """
+        self.context_window = context_window
+        self.samples = []  # List of (doc_idx, chunk_indices)
+        
+        # Создаём список валидных семплов
+        for doc_idx, doc_chunks in enumerate(documents):
+            num_chunks = len(doc_chunks)
+            # Нужно минимум context_window + 1 чанков для создания пары
+            if num_chunks >= context_window + 1:
+                for i in range(context_window, num_chunks):
+                    # context: [i-context_window, ..., i-1]
+                    # target: i
+                    self.samples.append((doc_idx, i))
+        
+        self.documents = documents
+        
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        doc_idx, target_idx = self.samples[idx]
+        doc = self.documents[doc_idx]
+        
+        # Собираем контекст
+        context_indices = list(range(target_idx - self.context_window, target_idx))
+        context_chunks = [doc[i] for i in context_indices]
+        target_chunk = doc[target_idx]
+        
+        return {
+            'context': torch.stack(context_chunks),  # [K, seq_len]
+            'target': target_chunk  # [seq_len]
+        }
+
+
+# ==============================================================================
+# ТОКЕНИЗАЦИЯ
+# ==============================================================================
+
+def tokenize_batch(texts: List[str], tokenizer, max_len: int, 
+                   device: torch.device) -> torch.Tensor:
     if tokenizer:
-        config.vocab_size = tokenizer.vocab_size
-    else:
-        config.vocab_size = 50000
-    if not hasattr(config, "kl_warmup"):
-        config.kl_warmup = 500
-    if not hasattr(config, "grad_clip_norm"):
-        config.grad_clip_norm = 1.0
-    logger.info(f"Configuration: vocab_size={config.vocab_size}, kl_warmup={config.kl_warmup}")
+        encoded = tokenizer(
+            texts, 
+            padding='max_length', 
+            truncation=True, 
+            max_length=max_len, 
+            return_tensors='pt'
+        )
+        return encoded['input_ids'].to(device)
+    
+    vocab_size = 50000
+    tokenized = []
+    for text in texts:
+        tokens = [ord(c) % vocab_size for c in text[:max_len]]
+        tokens += [0] * (max_len - len(tokens))
+        tokenized.append(tokens)
+    return torch.tensor(tokenized, dtype=torch.long, device=device)
 
-    # Step 1: Load JSON
-    logger.info("Loading JSON dataset...")
-    texts = []
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(f"JSON not found: {json_path}")
+
+def load_documents_from_json(json_path: str, tokenizer, max_len: int, 
+                             min_chunks: int = 2, logger=None) -> List[List[torch.Tensor]]:
+    """
+    ✅ НОВОЕ: Загружает документы с сохранением структуры
+    
+    Ожидаемый формат JSON (одна строка = один документ):
+    {"doc_id": "...", "chunks": ["chunk1 text", "chunk2 text", ...]}
+    или
+    {"text": "full document text"}  — будет разбит на чанки
+    """
+    documents = []
+    errors = 0
+    
+    if logger:
+        logger.info(f"📥 Загрузка документов из {json_path}...")
+    
     with open(json_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             try:
-                item = json.loads(line)
-                if isinstance(item, dict) and "text" in item:
-                    texts.append(item["text"])
-                elif isinstance(item, str):
-                    texts.append(item)
-                elif isinstance(item, list):
-                    for sub in item:
-                        if isinstance(sub, dict) and "text" in sub:
-                            texts.append(sub["text"])
-                        elif isinstance(sub, str):
-                            texts.append(sub)
-                logger.info(f"Parsed line {line_num} successfully")
-            except json.JSONDecodeError as e:
-                logger.warning(f"Error in line {line_num}: {str(e)}. Attempt split...")
-                parts = re.split(r'(?<=})\s*(?={)', line)
-                for part in parts:
-                    part = part.strip()
-                    if not part:
-                        continue
-                    try:
-                        item = json.loads(part)
-                        if isinstance(item, dict) and "text" in item:
-                            texts.append(item["text"])
-                        elif isinstance(item, str):
-                            texts.append(item)
-                        logger.info(f"Parsed part in line {line_num}")
-                    except json.JSONDecodeError:
-                        logger.error(f"Failed part in line {line_num}: {part[:80]}...")
-    if not texts:
-        raise ValueError("No texts in JSON")
-    logger.info(f"Loaded {len(texts)} texts. Example: {texts[0][:50]}...")
+                data = json.loads(line)
+                
+                if "chunks" in data:
+                    # Документ уже разбит на чанки
+                    chunks = data["chunks"]
+                elif "text" in data:
+                    # Разбиваем текст на чанки
+                    text = data["text"]
+                    # Простое разбиение по предложениям/абзацам
+                    chunks = split_text_into_chunks(text, max_len * 4)  # ~4 символа на токен
+                else:
+                    chunks = [str(data)]
+                
+                if len(chunks) >= min_chunks:
+                    # Токенизируем каждый чанк
+                    tokenized_chunks = []
+                    for chunk in chunks:
+                        if len(chunk.strip()) > 10:
+                            tokens = tokenize_batch([chunk], tokenizer, max_len, 
+                                                   torch.device('cpu'))[0]
+                            tokenized_chunks.append(tokens)
+                    
+                    if len(tokenized_chunks) >= min_chunks:
+                        documents.append(tokenized_chunks)
+                        
+            except Exception as e:
+                errors += 1
+                if errors <= 3 and logger:
+                    logger.warning(f"   Ошибка строки {line_num}: {e}")
+    
+    if logger:
+        logger.info(f"✅ Загружено {len(documents):,} документов")
+        total_chunks = sum(len(d) for d in documents)
+        logger.info(f"   Всего чанков: {total_chunks:,}")
+        logger.info(f"   Среднее чанков/документ: {total_chunks/len(documents):.1f}")
+        logger.info(f"   Пропущено с ошибками: {errors}")
+    
+    return documents
 
-    # Step 2: Tokenize
-    logger.info("Tokenizing...")
-    tokenized = []
-    for text in tqdm(texts, desc="Tokenizing"):
-        t = tokenize_text(text, tokenizer=tokenizer, max_len=config.seq_length, device=device)
-        if t is not None:
-            tokenized.append(t)
-    if not tokenized:
-        raise ValueError("No valid tokens")
-    full_tensor = torch.stack(tokenized)
-    if torch.isnan(full_tensor).any() or torch.isinf(full_tensor).any():
-        raise ValueError("NaN/Inf in full_tensor")
 
-    # Step 3: Short vs full
-    logger.info("Creating short/full datasets...")
-    short_tokens = []
-    pad_id = tokenizer.pad_token_id if tokenizer else 0
-    half_len = config.seq_length // 2
-    for t in full_tensor:
-        non_pad_len = (t != pad_id).sum().item()
-        if non_pad_len <= half_len:
-            short_tokens.append(t)
+def split_text_into_chunks(text: str, max_chars: int = 256) -> List[str]:
+    """Разбивает текст на чанки по границам предложений"""
+    # Простое разбиение по точкам
+    sentences = text.replace('\n', ' ').split('. ')
+    
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        if len(current_chunk) + len(sentence) + 2 <= max_chars:
+            current_chunk += (". " if current_chunk else "") + sentence
         else:
-            short_t = t[:half_len]
-            short_tokens.append(torch.cat([short_t, torch.full((half_len,), pad_id, dtype=t.dtype, device=t.device)]))
-    short_tensor = torch.stack(short_tokens)
+            if current_chunk:
+                chunks.append(current_chunk + ".")
+            current_chunk = sentence
+    
+    if current_chunk:
+        chunks.append(current_chunk + ".")
+    
+    return chunks
+
+
+# ==============================================================================
+# LEARNING RATE SCHEDULER
+# ==============================================================================
+
+class WarmupCosineScheduler:
+    def __init__(self, optimizer, warmup_steps: int, total_steps: int,
+                 min_lr: float = 1e-7):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.min_lr = min_lr
+        self.base_lr = optimizer.param_groups[0]['lr']
+        self.current_step = 0
+        
+    def step(self):
+        self.current_step += 1
+        lr = self._get_lr()
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+            
+    def _get_lr(self):
+        if self.current_step < self.warmup_steps:
+            return self.base_lr * self.current_step / max(1, self.warmup_steps)
+        else:
+            progress = (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            return self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (1 + math.cos(math.pi * progress))
+    
+    def get_lr(self):
+        return self.optimizer.param_groups[0]['lr']
+
+
+# ==============================================================================
+# ТРЕЙНЕРЫ
+# ==============================================================================
+
+class SafeThoughtAETrainerV4:
+    """Трейнер Phase A: AutoEncoder + VQ v4"""
+    
+    def __init__(self, model: AEONDeltaV4, config: AEONConfigV4, 
+                 monitor: TrainingMonitor, output_dir: str):
+        self.model = model
+        self.config = config
+        self.device = device
+        self.monitor = monitor
+        self.output_dir = output_dir
+        
+        self.trainable_params = (
+            list(model.encoder.parameters()) + 
+            list(model.decoder.parameters()) + 
+            list(model.vq.parameters())
+        )
+        
+        self.optimizer = optim.AdamW(
+            self.trainable_params, 
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
+        )
+        
+        self.criterion = nn.CrossEntropyLoss(
+            ignore_index=0,
+            label_smoothing=config.label_smoothing
+        )
+        
+        self.use_amp = config.use_amp and AMP_AVAILABLE
+        self.scaler = GradScaler() if self.use_amp else None
+        
+        self.global_step = 0
+        self.best_loss = float('inf')
+        self.best_model_state = None
+        
+    def train_step(self, tokens: torch.Tensor) -> Dict[str, float]:
+        self.model.train()
+        tokens = tokens.to(self.device)
+        
+        if self.use_amp:
+            with autocast():
+                outputs = self._forward_pass(tokens)
+        else:
+            outputs = self._forward_pass(tokens)
+        
+        total_loss = outputs['total_loss']
+        
+        if self.use_amp:
+            self.scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
+        
+        return outputs
+    
+    def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, float]:
+        z = self.model.encode(tokens)
+        quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
+        logits = self.model.decode(quantized, tokens)
+        
+        recon_loss = self.criterion(
+            logits[:, :-1].contiguous().view(-1, self.config.vocab_size), 
+            tokens[:, 1:].contiguous().view(-1)
+        )
+        
+        total_loss = recon_loss + self.config.vq_loss_weight * vq_loss
+        
+        with torch.no_grad():
+            perplexity = torch.exp(recon_loss).item()
+            pred_tokens = logits[:, :-1].argmax(dim=-1)
+            accuracy = (pred_tokens == tokens[:, 1:]).float().mean().item() * 100
+        
+        return {
+            'total_loss': total_loss,
+            'recon_loss': recon_loss.item(),
+            'vq_loss': vq_loss.item(),
+            'perplexity': perplexity,
+            'accuracy': accuracy,
+            **vq_stats
+        }
+    
+    def _optimizer_step(self):
+        if self.use_amp:
+            self.scaler.unscale_(self.optimizer)
+        
+        # ✅ Используем сниженный grad_clip для стабильности
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.trainable_params, 
+            self.config.grad_clip_norm  # 0.5 в v4
+        )
+        
+        if self.use_amp:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+        
+        self.optimizer.zero_grad()
+        self.global_step += 1
+        
+        return grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+
+    def fit(self, tokenized_tensor: torch.Tensor, epochs: int = 30, 
+            log_every_batch: int = 10):
+        
+        loader = DataLoader(
+            TensorDataset(tokenized_tensor), 
+            batch_size=self.config.batch_size, 
+            shuffle=True,
+            drop_last=True,
+            num_workers=0,
+            pin_memory=True if torch.cuda.is_available() else False
+        )
+        
+        total_batches = len(loader)
+        total_steps = epochs * total_batches // self.config.gradient_accumulation_steps
+        
+        warmup_steps = min(self.config.warmup_steps, total_steps // 10)
+        self.scheduler = WarmupCosineScheduler(
+            self.optimizer, 
+            warmup_steps=warmup_steps,
+            total_steps=total_steps,
+            min_lr=self.config.min_learning_rate
+        )
+        
+        self.monitor.start_training("Phase A (AutoEncoder + VQ v4)", epochs, len(tokenized_tensor))
+        self.monitor.log_model_stats(self.model, "AEON-Delta-v4")
+        
+        logger.info(f"   ✅ Warmup steps: {warmup_steps}")
+        logger.info(f"   ✅ Total steps: {total_steps}")
+        logger.info(f"   ✅ Gradient clip: {self.config.grad_clip_norm}")
+        logger.info(f"   ✅ Entropy weight: {self.config.entropy_weight}")
+        
+        self.optimizer.zero_grad()
+        
+        for epoch in range(epochs):
+            self.monitor.start_epoch(epoch, epochs)
+            
+            epoch_metrics = {
+                "recon": 0.0, "vq": 0.0, "total": 0.0, 
+                "perplexity": 0.0, "accuracy_%": 0.0, 
+                "codebook_%": 0.0, "grad_norm": 0.0
+            }
+            
+            accumulated_loss = 0.0
+            num_accumulated = 0
+            
+            for batch_idx, (batch,) in enumerate(loader):
+                outputs = self.train_step(batch)
+                accumulated_loss += outputs['total_loss'].item()
+                num_accumulated += 1
+                
+                if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
+                    grad_norm = self._optimizer_step()
+                    self.scheduler.step()
+                    
+                    avg_loss = accumulated_loss / num_accumulated
+                    accumulated_loss = 0.0
+                    num_accumulated = 0
+                    
+                    epoch_metrics["recon"] += outputs['recon_loss']
+                    epoch_metrics["vq"] += outputs['vq_loss']
+                    epoch_metrics["total"] += avg_loss
+                    epoch_metrics["perplexity"] += outputs['perplexity']
+                    epoch_metrics["accuracy_%"] += outputs['accuracy']
+                    epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
+                    epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
+                
+                if batch_idx % log_every_batch == 0:
+                    self.monitor.log_batch(batch_idx, total_batches, {
+                        "loss": outputs['recon_loss'] + self.config.vq_loss_weight * outputs['vq_loss'],
+                        "recon": outputs['recon_loss'],
+                        "ppl": outputs['perplexity'],
+                        "acc": outputs['accuracy'],
+                        "cb%": outputs.get('codebook_usage_%', 0)
+                    }, log_every=log_every_batch)
+            
+            if num_accumulated > 0:
+                grad_norm = self._optimizer_step()
+                self.scheduler.step()
+            
+            num_steps = max(total_batches // self.config.gradient_accumulation_steps, 1)
+            for key in epoch_metrics:
+                epoch_metrics[key] /= num_steps
+            
+            epoch_metrics["lr"] = self.scheduler.get_lr()
+            
+            if epoch_metrics["total"] < self.best_loss:
+                self.best_loss = epoch_metrics["total"]
+                self.best_model_state = copy.deepcopy(self.model.state_dict())
+                logger.info(f"   🏆 Новый лучший loss: {self.best_loss:.6f}")
+            
+            self.monitor.end_epoch(epoch, epochs, epoch_metrics, "phase_A")
+            
+            if (epoch + 1) % self.config.save_every_n_epochs == 0:
+                self._save_checkpoint(epoch, epoch_metrics)
+        
+        if self.best_model_state is not None:
+            self.model.load_state_dict(self.best_model_state)
+            logger.info(f"   ✅ Восстановлена лучшая модель с loss={self.best_loss:.6f}")
+        
+        self.monitor.end_training("Phase A")
+    
+    def _save_checkpoint(self, epoch: int, metrics: dict):
+        os.makedirs(self.output_dir, exist_ok=True)
+        checkpoint_path = os.path.join(
+            self.output_dir, 
+            f"checkpoint_epoch_{epoch+1}.pt"
+        )
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'metrics': metrics,
+            'config': asdict(self.config)
+        }, checkpoint_path)
+        
+        logger.info(f"   💾 Checkpoint сохранён: {checkpoint_path}")
+
+
+class ContextualRSSMTrainer:
+    """
+    ✅ НОВЫЙ: Трейнер Phase B для контекстного RSSM
+    
+    Обучает RSSM предсказывать z_{t+1} из контекста [z_{t-K+1}, ..., z_t]
+    """
+    
+    def __init__(self, model: AEONDeltaV4, config: AEONConfigV4, 
+                 monitor: TrainingMonitor):
+        self.model = model
+        self.config = config
+        self.monitor = monitor
+        
+        # Замораживаем encoder, decoder, vq
+        for param in model.encoder.parameters():
+            param.requires_grad = False
+        for param in model.decoder.parameters():
+            param.requires_grad = False
+        for param in model.vq.parameters():
+            param.requires_grad = False
+            
+        self.trainable_params = list(model.rssm.parameters())
+        
+        self.optimizer = optim.AdamW(
+            self.trainable_params, 
+            lr=config.learning_rate * 0.5,
+            weight_decay=config.weight_decay
+        )
+        
+        self.best_loss = float('inf')
+        self.global_step = 0
+
+    def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
+        """
+        Args:
+            z_context: [B, K, D] — контекст из K предыдущих z
+            z_target: [B, D] — целевой z_{t+1}
+        """
+        self.model.rssm.train()
+        
+        # Предсказание
+        pred = self.model.rssm(z_context)
+        
+        # Losses
+        mse_loss = F.mse_loss(pred, z_target)
+        smooth_l1 = F.smooth_l1_loss(pred, z_target)
+        loss = 0.5 * mse_loss + 0.5 * smooth_l1
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.trainable_params, 
+            self.config.grad_clip_norm
+        )
+        
+        self.optimizer.step()
+        self.global_step += 1
+        
+        with torch.no_grad():
+            cosine_sim = F.cosine_similarity(pred, z_target, dim=1).mean().item()
+            l1_loss = F.l1_loss(pred, z_target).item()
+            rel_error = (torch.norm(pred - z_target, dim=1) / (torch.norm(z_target, dim=1) + 1e-8)).mean().item()
+        
+        return {
+            "mse_loss": mse_loss.item(), 
+            "smooth_l1": smooth_l1.item(),
+            "total_loss": loss.item(),
+            "cosine_sim": cosine_sim, 
+            "l1_loss": l1_loss,
+            "rel_error": rel_error,
+            "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+        }
+
+    def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
+            batch_size: int = 128, log_every_batch: int = 5):
+        """
+        Args:
+            z_sequences: List of [num_chunks, D] tensors, one per document
+        """
+        # Создаём dataset из контекстных окон
+        K = self.config.context_window
+        
+        all_contexts = []
+        all_targets = []
+        
+        for z_seq in z_sequences:
+            num_z = z_seq.size(0)
+            if num_z >= K + 1:
+                for i in range(K, num_z):
+                    context = z_seq[i-K:i]  # [K, D]
+                    target = z_seq[i]  # [D]
+                    all_contexts.append(context)
+                    all_targets.append(target)
+        
+        if len(all_contexts) == 0:
+            logger.warning("⚠️ Недостаточно данных для обучения RSSM")
+            return
+        
+        contexts_tensor = torch.stack(all_contexts)  # [N, K, D]
+        targets_tensor = torch.stack(all_targets)  # [N, D]
+        
+        dataset = TensorDataset(contexts_tensor, targets_tensor)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        total_batches = len(loader)
+        
+        self.monitor.start_training(f"Phase B (Contextual RSSM, K={K})", epochs, len(dataset))
+        
+        rssm_params = sum(p.numel() for p in self.model.rssm.parameters())
+        logger.info(f"📦 Параметры RSSM: {rssm_params:,}")
+        logger.info(f"   Context window: {K}")
+        logger.info(f"   Training samples: {len(dataset):,}")
+        
+        for epoch in range(epochs):
+            self.monitor.start_epoch(epoch, epochs)
+            
+            epoch_metrics = {
+                "mse_loss": 0.0, "cosine_sim": 0.0, 
+                "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0
+            }
+            
+            for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
+                ctx_batch = ctx_batch.to(device)
+                tgt_batch = tgt_batch.to(device)
+                
+                metrics = self.train_step(ctx_batch, tgt_batch)
+                
+                for key in epoch_metrics:
+                    if key in metrics:
+                        epoch_metrics[key] += metrics[key]
+                
+                if batch_idx % log_every_batch == 0:
+                    self.monitor.log_batch(batch_idx, total_batches, {
+                        "mse": metrics["mse_loss"],
+                        "cos": metrics["cosine_sim"],
+                        "rel_err": metrics["rel_error"]
+                    }, phase="phase_B", log_every=log_every_batch)
+            
+            for key in epoch_metrics:
+                epoch_metrics[key] /= total_batches
+            
+            if epoch_metrics["mse_loss"] < self.best_loss:
+                self.best_loss = epoch_metrics["mse_loss"]
+                logger.info(f"   🏆 Новый лучший MSE: {self.best_loss:.6f}")
+            
+            self.monitor.end_epoch(epoch, epochs, epoch_metrics, "phase_B")
+        
+        self.monitor.end_training("Phase B")
+
+
+# ==============================================================================
+# ВАЛИДАЦИЯ
+# ==============================================================================
+
+def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4, 
+                                  logger: logging.Logger) -> bool:
+    logger.info("\n🔍 Валидация компонентов обучения v4...")
+    
+    issues = []
+    test_batch = torch.randint(0, config.vocab_size, (2, config.seq_length), device=device)
+    
+    # Проверка Encoder
+    try:
+        z = model.encode(test_batch)
+        assert z.shape == (2, config.z_dim)
+        logger.info(f"   ✅ Encoder: {test_batch.shape} → {z.shape}")
+    except Exception as e:
+        issues.append(f"Encoder: {e}")
+        logger.error(f"   ❌ Encoder: {e}")
+    
+    # Проверка VQ
+    try:
+        quantized, vq_loss, indices, stats = model.quantize(z)
+        assert quantized.shape == z.shape
+        logger.info(f"   ✅ VectorQuantizer: {z.shape} → {quantized.shape}")
+        logger.info(f"      entropy_loss: {stats.get('entropy_loss', 'N/A')}")
+    except Exception as e:
+        issues.append(f"VQ: {e}")
+        logger.error(f"   ❌ VQ: {e}")
+    
+    # Проверка Decoder
+    try:
+        logits = model.decode(quantized, test_batch)
+        assert logits.shape == (2, config.seq_length, config.vocab_size)
+        logger.info(f"   ✅ Decoder: {quantized.shape} → {logits.shape}")
+    except Exception as e:
+        issues.append(f"Decoder: {e}")
+        logger.error(f"   ❌ Decoder: {e}")
+    
+    # Проверка Contextual RSSM
+    try:
+        K = config.context_window
+        z_context = z.unsqueeze(1).expand(-1, K, -1)  # [2, K, D]
+        z_pred = model.rssm(z_context)
+        assert z_pred.shape == z.shape
+        logger.info(f"   ✅ ContextualRSSM: {z_context.shape} → {z_pred.shape}")
+    except Exception as e:
+        issues.append(f"RSSM: {e}")
+        logger.error(f"   ❌ RSSM: {e}")
+    
+    # Проверка градиентов
+    model.train()
+    model.zero_grad()
+    
+    z = model.encode(test_batch)
+    quantized, vq_loss, _, _ = model.quantize(z)
+    logits = model.decode(quantized, test_batch)
+    
+    recon_loss = F.cross_entropy(logits.view(-1, config.vocab_size), test_batch.view(-1))
+    total_loss = recon_loss + vq_loss
+    total_loss.backward()
+    
+    for name, component in [("encoder", model.encoder), ("decoder", model.decoder), ("vq", model.vq)]:
+        has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 
+                      for p in component.parameters())
+        if has_grad:
+            logger.info(f"   ✅ {name}: градиенты проходят")
+        else:
+            if name == "vq" and hasattr(component, 'embedding'):
+                if component.embedding.weight.grad is not None:
+                    logger.info(f"   ✅ {name}: градиенты через embedding")
+                    continue
+            issues.append(f"{name}: нет градиентов")
+            logger.error(f"   ❌ {name}: нет градиентов")
+    
+    model.zero_grad()
+    
+    if issues:
+        logger.error(f"\n⚠️ Обнаружено {len(issues)} проблем!")
+        return False
+    
+    logger.info("\n✅ Все компоненты v4 настроены корректно!")
+    return True
+
+
+# ==============================================================================
+# ОСНОВНОЙ ПАЙПЛАЙН v4
+# ==============================================================================
+
+def main(
+    json_path: str = "combined.json",
+    output_dir: str = "processed_v4/",
+    epochs_A: int = 30,
+    epochs_B: int = 10,
+    log_path: str = "training_v4.log",
+    resume_from: Optional[str] = None,
+    document_aware: bool = True
+):
+    """Основной пайплайн обучения v4"""
+    global logger
+    
+    logger = configure_logger(log_path)
+    monitor = TrainingMonitor(logger, save_dir=os.path.join(output_dir, "checkpoints"))
+    
+    # Заголовок
+    logger.info("🔷" * 38)
+    logger.info("       AEON TRAINING PIPELINE v4.0 - CONNECTED THOUGHTS")
+    logger.info("🔷" * 38)
+    logger.info(f"📁 Входной JSON: {json_path}")
+    logger.info(f"📂 Выходная директория: {output_dir}")
+    logger.info(f"🔗 Document-aware mode: {document_aware}")
+
+    # Токенизатор
+    tokenizer = None
+    if TRANSFORMERS_AVAILABLE:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки токенизатора: {e}")
+    
+    # Конфигурация v4
+    config = AEONConfigV4()
+    config.document_aware = document_aware
+    
+    if tokenizer:
+        config.vocab_size = tokenizer.vocab_size
+        logger.info(f"📖 Токенизатор: bert-base-uncased (vocab_size={config.vocab_size})")
+
+    logger.info(f"\n📋 Конфигурация v4 (ключевые изменения):")
+    logger.info(f"   • grad_clip_norm: {config.grad_clip_norm} (стабилизировано)")
+    logger.info(f"   • entropy_weight: {config.entropy_weight} (регуляризация кодбука)")
+    logger.info(f"   • context_window: {config.context_window} (RSSM контекст)")
+    logger.info(f"   • vq_reset_threshold: {config.vq_reset_threshold} (агрессивнее)")
+    logger.info(f"   • warmup_steps: {config.warmup_steps} (плавнее)")
+
+    # Seed
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
+
     os.makedirs(output_dir, exist_ok=True)
-    torch.save(short_tensor, os.path.join(output_dir, "short.pt"))
-    torch.save(full_tensor, os.path.join(output_dir, "full.pt"))
-    logger.info("Saved short.pt and full.pt")
 
-    # Step 4: Phase A
-    logger.info("Phase A training starting...")
-    model_A = AEONDelta(config).to(device)
-    trainer_A = SafeThoughtAETrainer(model_A, config)
-    trainer_A.fit(output_dir, epochs=epochs_A, curriculum=True)
-    logger.info("Phase A done.")
-
-    # Step 5: Build z_pairs
-    logger.info("Building z_pairs...")
-    model_A.eval()
-    z_list = []
-    with torch.no_grad():
-        loader = DataLoader(full_tensor, batch_size=256, shuffle=False)
-        for batch in tqdm(loader, desc="Encoding z"):
-            z = model_A.encoder(batch.to(device))
-            z = torch.nan_to_num(z, nan=0.0, posinf=1.0, neginf=-1.0)
-            z_list.append(z.cpu())
-    z_tensor = torch.cat(z_list)
-    if z_tensor.size(0) < 2:
-        raise ValueError("Need at least 2 texts to make z_pairs")
-    z_pairs = torch.stack([z_tensor[:-1], z_tensor[1:]], dim=1)
-    z_pairs_path = os.path.join(output_dir, "z_pairs.pt")
-    torch.save(z_pairs, z_pairs_path)
-    logger.info(f"Saved z_pairs at {z_pairs_path}")
-
-    # Step 6: Phase B
-    logger.info("Phase B training starting...")
-    trainer_B = FixedZDynamicsTrainer(model_A, config)
-    trainer_B.fit(z_pairs_path, epochs=epochs_B)
-    logger.info("Phase B done.")
-
-    # Verification and save
-    dec_state = {k: v for k, v in model_A.state_dict().items() if k.startswith('decoder.')}
-    if 'decoder.embed.weight' not in dec_state:
-        logger.error("CRITICAL: 'decoder.embed.weight' is MISSING from the final model state_dict!")
-        raise RuntimeError("Model state is corrupted. 'embed.weight' was not saved.")
+    # ===== Загрузка данных =====
+    if document_aware:
+        # Загружаем с сохранением структуры документов
+        documents = load_documents_from_json(
+            json_path, tokenizer, config.seq_length,
+            min_chunks=config.min_doc_chunks, logger=logger
+        )
+        
+        # Создаём плоский тензор для Phase A
+        all_tokens = []
+        for doc in documents:
+            all_tokens.extend(doc)
+        tokens = torch.stack(all_tokens).to(device)
+        
     else:
-        logger.info(f"VERIFICATION PASSED: 'decoder.embed.weight' found. Shape: {dec_state['decoder.embed.weight'].shape}")
-    final_model_path = os.path.join(output_dir, "final_aeon_model.pt")
-    torch.save(model_A.state_dict(), final_model_path)
-    logger.info(f"Final model saved to {final_model_path}.")
+        # Стандартная загрузка (как в v3)
+        logger.info(f"\n📥 Загрузка данных из {json_path}...")
+        texts = []
+        with open(json_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    text = data.get("text", "") if isinstance(data, dict) else str(data)
+                    if text and len(text.strip()) > 10:
+                        texts.append(text)
+                except:
+                    pass
+        
+        tokens = tokenize_batch(texts, tokenizer, config.seq_length, device)
+        documents = None
+    
+    logger.info(f"   Токенов для Phase A: {tokens.shape}")
+    
+    # Сохраняем токены
+    torch.save(tokens.cpu(), os.path.join(output_dir, "tokens.pt"))
+
+    # Создание модели v4
+    model = AEONDeltaV4(config).to(device)
+    
+    # Загрузка checkpoint
+    if resume_from and os.path.exists(resume_from):
+        logger.info(f"📂 Загрузка checkpoint: {resume_from}")
+        checkpoint = torch.load(resume_from, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Валидация
+    if not validate_training_components(model, config, logger):
+        logger.error("❌ Валидация не пройдена!")
+        return
+    
+    # ===== Phase A =====
+    logger.info("\n" + "▶" * 38)
+    logger.info("     PHASE A: AutoEncoder + VQ v4")
+    logger.info("▶" * 38)
+    
+    trainer_A = SafeThoughtAETrainerV4(model, config, monitor, output_dir)
+    trainer_A.fit(tokens, epochs=epochs_A)
+
+    # ===== Построение z_sequences =====
+    logger.info("\n🔧 Построение z_sequences для Phase B...")
+    model.eval()
+    
+    with torch.no_grad():
+        if document_aware and documents:
+            # ✅ Строим z_sequences по документам
+            z_sequences = []
+            
+            for doc_idx, doc_chunks in enumerate(tqdm(documents, desc="Encoding documents")):
+                doc_z_list = []
+                for chunk in doc_chunks:
+                    chunk = chunk.unsqueeze(0).to(device)
+                    z = model.encode(chunk)
+                    quantized, _, _, _ = model.quantize(z)
+                    doc_z_list.append(quantized.squeeze(0).cpu())
+                
+                if len(doc_z_list) >= config.context_window + 1:
+                    z_seq = torch.stack(doc_z_list)  # [num_chunks, D]
+                    z_sequences.append(z_seq)
+            
+            logger.info(f"✅ Создано {len(z_sequences)} z_sequences")
+            total_pairs = sum(max(0, seq.size(0) - config.context_window) for seq in z_sequences)
+            logger.info(f"   Всего пар для обучения: {total_pairs:,}")
+            
+            # Сохраняем
+            torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+            
+        else:
+            # Fallback: старый метод (все z подряд)
+            z_list = []
+            for batch in tqdm(DataLoader(TensorDataset(tokens), batch_size=256), desc="Encoding"):
+                z = model.encode(batch[0].to(device))
+                quantized, _, _, _ = model.quantize(z)
+                z_list.append(quantized.cpu())
+            
+            z_all = torch.cat(z_list)
+            # Создаём один большой sequence
+            z_sequences = [z_all]
+            
+            torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+
+    # ===== Phase B =====
+    logger.info("\n" + "▶" * 38)
+    logger.info("     PHASE B: Contextual RSSM")
+    logger.info("▶" * 38)
+    
+    # Переносим sequences на device
+    z_sequences_gpu = [seq.to(device) for seq in z_sequences]
+    
+    trainer_B = ContextualRSSMTrainer(model, config, monitor)
+    trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
+
+    # ===== Сохранение =====
+    final_path = os.path.join(output_dir, "aeon_v4_final.pt")
+    
+    for param in model.parameters():
+        param.requires_grad = True
+    
+    save_dict = {
+        'model_state_dict': model.state_dict(),
+        'config': asdict(config),
+        'metrics_history': monitor.metrics_history,
+        'training_info': {
+            'epochs_A': epochs_A,
+            'epochs_B': epochs_B,
+            'final_loss_A': trainer_A.best_loss,
+            'final_loss_B': trainer_B.best_loss,
+            'document_aware': document_aware,
+            'timestamp': datetime.now().isoformat(),
+            'version': '4.0.0'
+        }
+    }
+    
+    torch.save(save_dict, final_path)
+    monitor.save_metrics(os.path.join(output_dir, "training_metrics_v4.json"))
+    
+    # Финальный отчёт
+    logger.info("\n" + "🎉" * 25)
+    logger.info("     ОБУЧЕНИЕ v4 УСПЕШНО ЗАВЕРШЕНО!")
+    logger.info("🎉" * 25)
+    logger.info(f"💾 Финальная модель: {final_path}")
+    
+    logger.info("\n📊 ИТОГОВАЯ СВОДКА v4:")
+    logger.info(f"   Phase A лучший loss: {trainer_A.best_loss:.6f}")
+    logger.info(f"   Phase B лучший MSE: {trainer_B.best_loss:.6f}")
+    logger.info(f"   Codebook utilization: {model.vq.get_codebook_usage():.2f}%")
+    logger.info(f"   Context window: {config.context_window}")
+    logger.info(f"   Document-aware: {document_aware}")
+    
+    logger.info("\n🚀 Модель v4 готова к использованию!")
+
+
+# ==============================================================================
+# ENTRY POINT
+# ==============================================================================
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="AEON-Delta Training Pipeline")
-    p.add_argument("--json_path", type=str, default="/Users/vasapupkin/AEON/AEONSTART/combined.json")
-    p.add_argument("--output_dir", type=str, default="/Users/vasapupkin/AEON/AEONSTART/data/processed/")
-    p.add_argument("--epochsA", type=int, default=30)
-    p.add_argument("--epochsB", type=int, default=6)
-    p.add_argument("--log", type=str, default="./aeon_training.log")
-    args = p.parse_args()
-    main(args.json_path, args.output_dir, args.epochsA, args.epochsB, args.log)
+    parser = argparse.ArgumentParser(
+        description="AEON Training Pipeline v4.0 - Connected Thoughts Edition",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Примеры использования:
+  python train_aeon_v4.py --json_path data.json --epochsA 30 --epochsB 10
+  python train_aeon_v4.py --document_aware --json_path structured_data.json
+  python train_aeon_v4.py --resume checkpoints/checkpoint_epoch_10.pt
+        """
+    )
+    
+    parser.add_argument("--json_path", type=str, default="combined.json")
+    parser.add_argument("--output_dir", type=str, default="processed_v4/")
+    parser.add_argument("--epochsA", type=int, default=30)
+    parser.add_argument("--epochsB", type=int, default=10)
+    parser.add_argument("--log", type=str, default="training_v4.log")
+    parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--document_aware", action="store_true", 
+                        help="Использовать документ-ориентированное обучение")
+    
+    args = parser.parse_args()
+    
+    main(
+        json_path=args.json_path,
+        output_dir=args.output_dir,
+        epochs_A=args.epochsA,
+        epochs_B=args.epochsB,
+        log_path=args.log,
+        resume_from=args.resume,
+        document_aware=args.document_aware
+    )
