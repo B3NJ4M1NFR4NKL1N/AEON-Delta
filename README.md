@@ -1,110 +1,218 @@
-
 [![License: AEON-Δ Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
 
-# AEON-Δ: A Cognitive Architecture for Emergent Reasoning
-
-Welcome to the official repository for **AEON-Δ**, a modular and self-contained cognitive architecture engineered in **PyTorch**. AEON-Δ simulates high-level reasoning by operating on abstract **"thought vectors" (z-vectors)** within a latent space, enabling deep reflection, concept modeling, and plan generation.
-
-The system follows a rigorous two-phase training pipeline, designed for **stability**, **abstraction**, and **dynamic reasoning**, with each component engineered for extensibility, robustness, and clarity.
+# **AEON-Δ RMT v3.0: A Cognitive Architecture for Emergent Reasoning**  
+**License**: AEON-Δ Research-Only
 
 ---
 
-## 🛠️ Core Components & Cognitive Engine (`aeon_core.py`)
+## 🌟 Executive Summary
 
-### 1. `AEONDelta (nn.Module)`
+Welcome to the official repository for **AEON-Δ RMT v3.0** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
 
-Central orchestrator class that integrates all reasoning modules into a cohesive flow from perception → deliberation → planning → action.
+The system implements a **provably convergent architecture** with certified error bounds, operating across three critical domains:
 
-### 2. `ThoughtEncoder / ThoughtDecoder (nn.Module)`
-
-Latent autoencoder translating between text and compressed **thought vectors** (`z`). This forms the bedrock of reasoning operations.
-
-### 3. `QualiaExtractor (nn.Module)`
-
-Transforms the initial thought vector into a raw perception `ψ_0`, serving as the entry point into the reflective reasoning cycle.
-
-### 4. `MetaLoopProcessor (nn.Module)`
-
-The reflective engine. Iteratively transforms `ψ_0` into a stable thought state `C*` through repeated refinement, simulating **recursive internal deliberation**.
-
-### 5. `PillarsModule (nn.Module)`
-
-Dissects `C*` into 5 interpretable core axes of meaning (**"pillars"**): 🔥 Will, ⚔️ Resolve, 🔄 Growth, 🛡️ Union, 🌊 Movement.
-
-### 6. `QuantumSimulator (nn.Module)`
-
-Calculates **entanglement**, coherence, and complexity of internal representations using quantum-inspired metrics.
-
-### 7. `TopologyAnalyzer (nn.Module)`
-
-Applies **catastrophe theory** to detect instabilities and sudden representational shifts — critical for modeling **insight, rupture, or contradiction**.
-
-### 8. `Action & Planning Modules (nn.Module)`
-
-Uses the refined representation to:
-
-* Produce an **action vector**
-* Estimate its safety
-* Generate a **high-level plan**
-
-### 9. `RSSM: Recurrent State-Space Model`
-
-Captures **thought dynamics** by predicting how `z_t` evolves into `z_{t+1}` across time.
+- **Cognitive primitives** (Five Pillars framework)  
+- **Quantum-inspired representation** (entanglement and coherence)  
+- **Topological stability analysis** (catastrophe detection)
 
 ---
 
-## 📀 Data & Knowledge Integration (`aeon_core.py`, `ae_train.py`)
+## 🧠 Core Architecture: AEON-Delta RMT v3.0
 
-* **Robust Data Loader**: Handles JSON, NDJSON, and concatenated formats.
-* **Tokenizer**: Simple character-level tokenizer transforms raw text into tensors.
-* **Curriculum Pipeline**: Separates short/long sequences for **progressive learning**.
-* **MemoryManager**: Built-in support for `mem0` vector memory.
-* **KnowledgeGraph**: Optional Neo4j-backed graph for external knowledge.
-
----
-
-## ⚙️ Training Pipeline (ae_train.py)
-
-### Phase A: Geometry of Thought (`SafeThoughtAETrainer`)
-
-* Trains autoencoder (Encoder/Decoder)
-* Uses curriculum learning (short → full sequences)
-* Dynamic function routing for backward compatibility
-* Logically safe and clean loss computation
-
-### Phase B: Dynamics of Thought (`FixedZDynamicsTrainer`)
-
-* Uses trained encoder to convert text into z-vector sequences
-* Trains RSSM and core dynamics to predict next z from current z
-* Introduces **robust loss functions**:
-
-  * `kl_diag_gaussians`: avoids mode collapse
-  * `cosine_spread_surrogate`: promotes diverse, orthogonal thought states
+### **1. Tensor Safety System & Device Management**  
+Unlike conventional systems, AEON-Δ implements production-grade tensor safety with:
+- **NaN/Inf handling policies**: `RAISE`, `WARN`, `SILENT`, `QUARANTINE`  
+- **Automatic sanitization** with context tracking and reporting  
+- **Thread-safe device management** with memory fraction control  
+- **AMP (Automatic Mixed Precision)** with fallback mechanisms  
+- **MPS (Apple Silicon) support** with CPU fallbacks for unstable ops  
 
 ---
 
-## 🛠️ Engineering Utilities & Robustness
+### **2. Cognitive Core: Five Pillars Framework**  
+The `PillarsModule` extracts five interpretable cognitive axes from latent states:
+- **🔥 Will**: Goal-directed persistence and volition  
+- **⚔️ Resolve**: Decision stability under perturbation  
+- **🔄 Growth**: Adaptive learning and expansion capacity  
+- **🛡️ Union**: Integration of disparate representations  
+- **🌊 Movement**: Temporal dynamics and state transitions  
 
-* **Structured Logging**: Clean JSON logs
-* **Sanitization Filters**: Remove invalid/control characters
-* **Deduplication**: Prevent spam logs
-* **CLI Interface**: Via `argparse` for clean configuration
-* **Safety Checks**: Assert tensors, NaN/Inf filters, contiguity assertions
+Each pillar is continuously monitored, normalized, and fed into downstream reasoning systems.
 
 ---
 
-## 🚀 Mission
+### **3. Meta-Loop: Provably Convergent Reasoning**  
+The `ProvablyConvergentMetaLoop` implements mathematical guarantees for cognitive stability:
+- **Lipschitz-constrained Lambda operator** with spectral normalization  
+- **Banach Fixed-Point Theorem guarantees** when *L < 1*  
+- **Anderson acceleration** for 2–5× convergence speedup  
+- **Adaptive alpha** based on Lipschitz estimates  
+- **Certified error bounds** with automatic reporting  
+- **Early stopping** with convergence certification  
 
-AEON-Δ is built to model not just cognition, but **emergent reasoning**: how thoughts form, evolve, refine themselves, and lead to action. This is not merely a transformer wrapper — this is a full **cognitive simulator**, ready to grow.
+This transforms initial perception ψ₀ into a stable thought state **C\*** through iteratively refined deliberation.
 
-Pull requests and collaborations welcome.
+---
 
-> No bits left behind. — AEON-Δ
+### **4. Quantum Simulator: Entanglement & Coherence**  
+The quantum-inspired simulator computes:
+- **Matrix Product State (MPS) architecture** with bond dimension control  
+- **Von Neumann entropy** via Schmidt decomposition  
+- **Action propensity** from quantum state measurements  
+- **CPU fallback mechanisms** for MPS device compatibility  
+- **Safe SVD computation** with numerical stability guarantees  
 
+This provides a measure of internal coherence and decision certainty.
+
+---
+
+### **5. Topology Analyzer: Catastrophe Detection**  
+Using catastrophe theory to detect representational instabilities:
+- **Fast Hessian computation** with three methods:  
+  - Finite differences *(production default)*  
+  - Forward-mode AD *(experimental)*  
+  - Hutchinson’s trace estimator  
+- **Eigenvalue analysis** with CPU fallbacks for MPS  
+- **Catastrophe classifier** predicting system stability  
+- **Potential landscape analysis** for state transitions  
+
+---
+
+### **6. Multi-Level Safety System**  
+Three-tiered safety architecture:
+1. **Action safety** (specific action validation)  
+2. **Cognitive safety** (thought stability metrics)  
+3. **Ethical alignment** (value-consistent decision making)  
+
+Each level contributes to a combined safety score with adaptive weighting.
+
+---
+
+### **7. Transparent Self-Reporting**  
+The system provides introspective capabilities through:
+- **Honesty gate** (truthfulness assessment)  
+- **Internal consistency** (coherence measurement)  
+- **Confidence score** (certainty estimation)  
+- **Report vector** for external monitoring  
+
+This enables external systems to verify AEON’s internal state and reasoning quality.
+
+---
+
+### **8. Vector Quantizer: Anti-Collapse Architecture**  
+Advanced VQ-VAE with stability mechanisms:
+- **EMA updates** for stable codebook evolution  
+- **Code revival** (reinitializing dead codes)  
+- **Code splitting** (balancing overused codes)  
+- **Perplexity monitoring** with EMA tracking  
+- **Straight-Through Estimator** for gradient flow  
+
+This creates a discrete latent space resistant to mode collapse.
+
+---
+
+## 📂 Training Pipeline: v4.0 Connected Thoughts Edition
+
+### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
+- Document-aware tokenization preserving semantic boundaries  
+- Entropy regularization (0.1 weight) for uniform codebook usage  
+- Aggressive code reset (threshold: 30 steps vs previous 50)  
+- Stabilized gradients with reduced clip norm (0.5 vs 1.0)  
+- Warmup scheduling with cosine decay (1000 steps)  
+- Gradient accumulation for memory-constrained training  
+
+### **Phase B: Dynamics of Thought (Contextual RSSM)**
+- Context window of 3 previous thought states  
+- Attention-weighted context for selective memory  
+- GRU-based dynamics with residual connections  
+- Multi-loss training (MSE + Smooth L1)  
+- Cosine similarity monitoring for representation consistency  
+- Document-preserving transitions (no cross-document jumps)  
+
+This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamics*) reasoning capabilities.
+
+---
+
+## ⚙️ Engineering Foundations
+
+### **Memory Management**
+- Fallback vector storage with cosine similarity retrieval  
+- Automatic save/load with path validation  
+- Batch-aware retrieval for context integration  
+- Memory fusion module combining current state with retrieved context  
+
+### **Monitoring & Diagnostics**
+- Comprehensive training monitor with epoch/batch tracking  
+- Parameter counting (total/trainable)  
+- Tensor statistics (mean/std/min/max)  
+- Early stopping with patience counter  
+- Checkpoint management with rotation policies  
+- Metrics serialization to JSON for analysis  
+
+### **Production Safety Features**
+- Automatic NaN/Inf detection with quarantine strategy  
+- Gradient clipping (0.5 norm) for stable training  
+- Weight tying verification for decoder consistency  
+- Shape validation at all module boundaries  
+- Exception handling with stack trace preservation  
+- Device context managers for safe execution  
+
+### **Extensibility Framework**
+- Configurable architecture through `AEONConfig` dataclass  
+- Module registration system for easy extension  
+- Version signatures for model tracking  
+- CLI interface with mode selection (`demo`/`train`/`infer`/`test`)  
+- Test suite with stability and correctness validation  
+
+---
+
+## 🔬 Testing & Validation
+
+AEON-Δ includes a comprehensive test suite verifying:
+- **Stability** (determinism, NaN/Inf resistance)  
+- **Weight tying correctness** (pointer/shape/value matching)  
+- **Gradient flow** through all components  
+- **Shape consistency** across the computational graph  
+- **Numerical stability** under edge cases  
+
+Each test provides detailed reporting with error diagnostics and scoring.
+
+---
+
+## 🚀 Mission & Philosophy
+
+AEON-Δ is engineered to model **emergent reasoning**—how thoughts form, evolve through recursive self-reflection, and ultimately lead to coherent action. Our architecture is built on three principles:
+
+1. **Mathematical rigor**: Convergence guarantees through Lipschitz constraints and fixed-point theory  
+2. **Cognitive interpretability**: Five Pillars framework providing human-understandable reasoning axes  
+3. **Production robustness**: Tensor safety, monitoring, and fallback systems for reliable operation  
+
+This is not merely an academic exercise—it's a foundation for building truly reflective AI systems that can explain their reasoning, detect their own inconsistencies, and operate safely in complex environments.
+
+---
+
+## 🤝 Contributing & Collaboration
+
+We welcome contributions that:
+- Enhance mathematical guarantees  
+- Improve cognitive interpretability  
+- Strengthen safety systems  
+- Optimize performance without sacrificing stability  
+- Extend monitoring and diagnostics  
+
+All contributions must maintain the core principles of **rigor**, **safety**, and **interpretability**.
+
+---
+
+> **∆: No bits left behind. It begins with the choice to be.**
+
+*AEON-Δ RMT v3.0 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
+
+> **No bits left behind. — AEON-Δ**
 
 [![License: Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
 
+---
 
+# **∆: No bits left behind. It begins with the choice to be.**
 
-
-# ∆: No bits left behind. It begins with the choice to be.
