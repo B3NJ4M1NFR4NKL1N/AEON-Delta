@@ -9,11 +9,15 @@
 
 Welcome to the official repository for **AEON-Δ RMT v3.0** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
 
-The system implements a **provably convergent architecture** with certified error bounds, operating across three critical domains:
+The system implements a **provably convergent architecture** with certified error bounds, operating across multiple critical domains:
 
 - **Cognitive primitives** (Five Pillars framework)  
 - **Quantum-inspired representation** (entanglement and coherence)  
-- **Topological stability analysis** (catastrophe detection)
+- **Topological stability analysis** (catastrophe detection)  
+- **Physics-grounded world modeling** (multi-backend dynamics and counterfactual reasoning)  
+- **Hierarchical memory** (working, episodic, and semantic memory levels)  
+- **Multi-modal grounding** (vision, audio, language fusion)  
+- **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)
 
 ---
 
@@ -122,7 +126,7 @@ This enables external systems to verify AEON’s internal state and reasoning qu
 
 ---
 
-### **8. Vector Quantizer: Anti-Collapse Architecture**  
+### **8. Vector Quantizer: Anti-Collapse Architecture**
 Advanced VQ-VAE with stability mechanisms:
 - **EMA updates** for stable codebook evolution  
 - **Code revival** (reinitializing dead codes)  
@@ -134,7 +138,56 @@ This creates a discrete latent space resistant to mode collapse.
 
 ---
 
-## 📂 Training Pipeline: v4.0 Connected Thoughts Edition
+### **9. Physics-Grounded World Model**  
+A routed physics engine for physical reasoning and planning:
+- **Newtonian Dynamics**: F=ma impulse-based state transitions  
+- **Fluid Dynamics**: Navier-Stokes approximation for continuous flow  
+- **Rigid Body Physics**: Friction and elasticity modeling  
+- **Learnable SSM**: GRU-based fallback for unknown physics  
+- **Softmax Router**: Dynamically selects the physics model based on latent state  
+- **Counterfactual Tree**: MCTS-style "what if" scenario exploration (depth × branch)  
+
+Enables physical reasoning and multi-step planning.
+
+---
+
+### **10. Hierarchical Memory System**  
+Three-level memory architecture inspired by cognitive science:
+- **Working Memory**: Fixed-capacity buffer (7 elements), FIFO eviction  
+- **Episodic Memory**: Event-based storage with importance-based routing (threshold > 0.7)  
+- **Semantic Memory**: Concept graph with nodes, edges, and relational structure  
+- **Consolidation**: Replay buffer → episodic → semantic promotion pipeline  
+- **Retrieval Router**: Learnable softmax over memory levels for query-driven access  
+
+Provides structured long-term and short-term context retention.
+
+---
+
+### **11. Multi-Modal Grounding Module**  
+Cross-modal understanding and generation:
+- **Modality Encoders**: Vision (ViT-style), Audio (Wav2Vec2-style), Language projections  
+- **Unified Latent Space**: All modalities projected into shared representation  
+- **Cross-Modal Attention**: Vision↔Language, Audio↔Language, Vision↔Audio  
+- **Fusion Layer**: Three-stream fusion into a single grounded representation  
+- **Modality Decoders**: Per-modality output generation from fused state  
+
+Supports cross-modal retrieval, compositional generation, and visual grounding.
+
+---
+
+### **12. Meta-Learning: MAML + EWC**  
+Few-shot adaptation and continual learning:
+- **MAML Inner Loop**: Task-specific adaptation via gradient steps  
+- **MAML Outer Loop**: Meta-update for cross-task generalization  
+- **EWC Penalty**: Elastic Weight Consolidation — Σ Fᵢ(θᵢ − θ*ᵢ)² prevents catastrophic forgetting  
+- **Fisher Information**: Diagonal Fisher computed after each task  
+- **Task Buffer**: Stores last 100 tasks for lifelong learning  
+
+Enables few-shot learning and knowledge transfer across domains.
+
+---
+
+## 📂 Training Pipeline: v4.0 Connected Thoughts Edition (`ae_train.py`)
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
 - Document-aware tokenization preserving semantic boundaries  
@@ -174,7 +227,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ### **Production Safety Features**
 - Automatic NaN/Inf detection with quarantine strategy  
-- Gradient clipping (0.5 norm) for stable training  
+- Gradient clipping (1.0 norm in core, 0.5 in training pipeline) for stable training  
 - Weight tying verification for decoder consistency  
 - Shape validation at all module boundaries  
 - Exception handling with stack trace preservation  
@@ -191,12 +244,16 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite verifying:
-- **Stability** (determinism, NaN/Inf resistance)  
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 67 tests) verifying:
+- **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
-- **Gradient flow** through all components  
+- **Gradient flow** through all components (SSM, world model, meta-learner)  
 - **Shape consistency** across the computational graph  
 - **Numerical stability** under edge cases  
+- **Backend validation** (SSM, LSTM, Linear Attention encoder/decoder factories)  
+- **AGI components** (world model physics, hierarchical memory, multi-modal grounding, meta-learning EWC)  
+- **Thread safety** (quarantine batch handling, policy mutation prevention)  
+- **Inference cache** (ring buffer, INT8 quantization, state caching)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -211,6 +268,55 @@ AEON-Δ is engineered to model **emergent reasoning**—how thoughts form, evolv
 3. **Production robustness**: Tensor safety, monitoring, and fallback systems for reliable operation  
 
 This is not merely an academic exercise—it's a foundation for building truly reflective AI systems that can explain their reasoning, detect their own inconsistencies, and operate safely in complex environments.
+
+---
+
+## 📁 Repository Structure
+
+```
+AEON-Delta/
+├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
+├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
+├── test_fixes.py     # Comprehensive test suite (67 tests) — stability, gradients, AGI components
+├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
+├── README.md
+└── .gitignore
+```
+
+---
+
+## 🚀 Quick Start
+
+### Requirements
+- Python 3.8+  
+- PyTorch 1.13+ (PyTorch 2.0+ recommended for full feature support)  
+- Optional: `transformers`, `tqdm`, `matplotlib`, `tensorboard`, `wandb`
+
+### CLI Modes (`aeon_core.py`)
+```bash
+# Demo — generate sample output, compute cognitive metrics
+python aeon_core.py --mode demo
+
+# Train — full training loop with checkpoint saving
+python aeon_core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5
+
+# Infer — autoregressive generation from prompt
+python aeon_core.py --mode infer --prompt "Hello world" --temperature 0.8 --top-k 50
+
+# Test — run comprehensive test suite
+python aeon_core.py --mode test
+```
+
+Additional flags: `--device {auto|cpu|cuda|mps}`, `--config PATH`, `--checkpoint DIR`, `--seed INT`, `--verbose`
+
+### Training Pipeline (`ae_train.py`)
+```bash
+# Full two-phase training
+python ae_train.py --json_path data.json --epochsA 30 --epochsB 10
+
+# Document-aware training mode
+python ae_train.py --document_aware --json_path structured_data.json
+```
 
 ---
 
