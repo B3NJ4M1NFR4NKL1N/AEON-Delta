@@ -878,8 +878,8 @@ class AEONConfig:
     save_interval: int = 500
     
     # ===== SEQUENCE BACKEND =====
-    encoder_backend: str = "ssm"         # "lstm", "ssm", "mamba2", "linear_attention"
-    decoder_backend: str = "ssm"         # "lstm", "ssm", "mamba2"
+    encoder_backend: str = "mamba2"         # "lstm", "mamba2", "linear_attention"
+    decoder_backend: str = "mamba2"         # "lstm", "mamba2"
     ssm_state_dim: int = 64             # SSM internal state dimension
     ssm_num_layers: int = 2             # Number of SSM layers
     ssm_expand_factor: int = 2          # SSM channel expansion factor
@@ -949,10 +949,10 @@ class AEONConfig:
             f"sep_token_id ({self.sep_token_id}) must be in [0, vocab_size)"
         
         # Sequence backend validation
-        assert self.encoder_backend in ("lstm", "ssm", "mamba2", "linear_attention"), \
-            f"encoder_backend must be lstm, ssm, mamba2, or linear_attention, got {self.encoder_backend}"
-        assert self.decoder_backend in ("lstm", "ssm", "mamba2"), \
-            f"decoder_backend must be lstm, ssm, or mamba2, got {self.decoder_backend}"
+        assert self.encoder_backend in ("lstm", "mamba2", "linear_attention"), \
+            f"encoder_backend must be lstm, mamba2, or linear_attention, got {self.encoder_backend}"
+        assert self.decoder_backend in ("lstm", "mamba2"), \
+            f"decoder_backend must be lstm or mamba2, got {self.decoder_backend}"
         assert self.ssm_state_dim > 0, "ssm_state_dim must be positive"
         assert self.ssm_num_layers >= 1, "ssm_num_layers must be >= 1"
         assert self.chunk_size > 0, "chunk_size must be positive"
@@ -1414,244 +1414,8 @@ class ThoughtDecoder(nn.Module):
 
 
 # ============================================================================
-# SECTION 5b: ADVANCED SEQUENCE PROCESSING — SSM, LINEAR ATTENTION, CACHING
+# SECTION 5b: ADVANCED SEQUENCE PROCESSING — MAMBA-2, LINEAR ATTENTION, CACHING
 # ============================================================================
-
-class SelectiveSSM(nn.Module):
-    """
-    Selective State Space Model inspired by Mamba (Gu & Dao, 2023).
-
-    Achieves **O(n)** training and inference complexity via input-dependent
-    state transitions implemented as a hardware-friendly parallel scan.
-
-    Advantages over quadratic Transformer attention:
-    - Linear time and memory in sequence length
-    - Constant-time per-step inference with cached state
-    - Natural handling of arbitrarily long sequences
-    - Compatible with Lipschitz-constrained meta-loop
-
-    Architecture per layer:
-        x → Linear(expand) → DepthwiseConv1d → SSM(A, B, C, Δ) → Linear(project) → residual + norm
-
-    The selectivity mechanism makes matrices B, C, and Δ (discretization step)
-    input-dependent, allowing the model to selectively attend to or forget
-    information—a property absent from classical LTI state-space models.
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        d_state: int = 64,
-        num_layers: int = 2,
-        expand_factor: int = 2,
-        dt_rank: int = 0,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
-        self.num_layers = num_layers
-        self.d_inner = d_model * expand_factor
-        self.dt_rank = dt_rank if dt_rank > 0 else max(1, d_model // 16)
-
-        self.layers = nn.ModuleList()
-        for _ in range(num_layers):
-            self.layers.append(
-                _SSMBlock(
-                    d_model=d_model,
-                    d_state=d_state,
-                    d_inner=self.d_inner,
-                    dt_rank=self.dt_rank,
-                    dropout=dropout,
-                )
-            )
-        self.final_norm = nn.LayerNorm(d_model)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: Optional[List[torch.Tensor]] = None,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        """
-        Args:
-            x: [B, L, D] input sequence
-            state: optional list of [B, d_inner, d_state] per layer (for cached inference)
-        Returns:
-            y: [B, L, D] output sequence
-            new_state: list of [B, d_inner, d_state] per layer
-        """
-        new_states: List[torch.Tensor] = []
-        for i, layer in enumerate(self.layers):
-            layer_state = state[i] if state is not None else None
-            x, s = layer(x, layer_state)
-            new_states.append(s)
-        x = self.final_norm(x)
-        return x, new_states
-
-
-class _SSMBlock(nn.Module):
-    """Single SSM block with selective scan and residual connection."""
-
-    def __init__(
-        self,
-        d_model: int,
-        d_state: int,
-        d_inner: int,
-        dt_rank: int,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
-        self.d_inner = d_inner
-        self.dt_rank = dt_rank
-
-        # Pre-norm
-        self.norm = nn.LayerNorm(d_model)
-
-        # Expand
-        self.in_proj = nn.Linear(d_model, d_inner * 2, bias=False)
-
-        # Depthwise conv for local context
-        self.conv1d = nn.Conv1d(
-            in_channels=d_inner,
-            out_channels=d_inner,
-            kernel_size=3,
-            padding=1,
-            groups=d_inner,
-            bias=True,
-        )
-
-        # SSM parameters (input-dependent → selectivity)
-        self.x_proj = nn.Linear(d_inner, dt_rank + d_state * 2, bias=False)
-        self.dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
-
-        # Learnable log(A): A_log stores log of positive values (1..d_state).
-        # During the scan, A is recovered as -exp(A_log), yielding negative
-        # eigenvalues for stable recurrence (decaying memory).
-        A = torch.arange(1, d_state + 1, dtype=torch.float32).unsqueeze(0).expand(d_inner, -1)
-        self.A_log = nn.Parameter(torch.log(A))
-
-        # D skip connection
-        self.D = nn.Parameter(torch.ones(d_inner))
-
-        # Project back
-        self.out_proj = nn.Linear(d_inner, d_model, bias=False)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            x: [B, L, D]
-            state: optional [B, d_inner, d_state]
-        Returns:
-            y: [B, L, D]
-            new_state: [B, d_inner, d_state]
-        """
-        B, L, _ = x.shape
-        residual = x
-        x = self.norm(x)
-
-        # Expand to 2 × d_inner (one branch for SSM, one for gate)
-        xz = self.in_proj(x)                         # [B, L, 2*d_inner]
-        x_branch, z = xz.chunk(2, dim=-1)            # each [B, L, d_inner]
-
-        # Depthwise conv (causal padding already handled via padding=1 + truncation)
-        x_branch = x_branch.transpose(1, 2)          # [B, d_inner, L]
-        x_branch = self.conv1d(x_branch)[:, :, :L]   # causal: keep first L
-        x_branch = x_branch.transpose(1, 2)          # [B, L, d_inner]
-        x_branch = F.silu(x_branch)
-
-        # Selective SSM
-        y, new_state = self._selective_scan(x_branch, state)
-
-        # Gate and project
-        y = y * F.silu(z)
-        y = self.out_proj(y)
-        y = self.dropout(y)
-
-        return y + residual, new_state
-
-    def _selective_scan(
-        self,
-        x: torch.Tensor,
-        state: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute selective scan via parallel associative scan (Blelloch-style).
-
-        Has O(log L) parallel depth (vs O(L) for sequential), at the cost of
-        O(L log L) total work.  Net win on wide-SIMD hardware (GPUs).
-        Parameters A, B, C, Δ are derived from input → selectivity.
-        """
-        B_batch, L, d_inner = x.shape
-        d_state = self.d_state
-
-        # Derive Δ, B_ssm, C from input
-        x_dbl = self.x_proj(x)                                 # [B, L, dt_rank + 2*d_state]
-        dt, B_ssm, C = x_dbl.split(
-            [self.dt_rank, d_state, d_state], dim=-1
-        )
-        dt = F.softplus(self.dt_proj(dt))                      # [B, L, d_inner]
-
-        # Continuous → discrete: A_bar = exp(Δ * A)
-        A = -torch.exp(self.A_log.float())                     # [d_inner, d_state]
-
-        # Compute A_bar and input terms for all timesteps at once
-        dt_exp = dt.unsqueeze(-1)                               # [B, L, d_inner, 1]
-        A_bar_all = torch.exp(dt_exp * A.unsqueeze(0).unsqueeze(0))  # [B, L, d_inner, d_state]
-
-        x_exp = x.unsqueeze(-1)                                 # [B, L, d_inner, 1]
-        B_exp = B_ssm.unsqueeze(2)                              # [B, L, 1, d_state]
-        input_all = dt_exp * (x_exp * B_exp)                    # [B, L, d_inner, d_state]
-
-        # Incorporate initial state into position 0.
-        # For the associative scan recurrence h[t] = A_bar[t]*h[t-1] + input[t],
-        # when an external state is provided, the base case h[0] must be
-        # A_bar[0]*state + input[0].  Folding this into input_all[0] before
-        # the scan is the standard prefix-scan initial-value technique.
-        if state is not None:
-            input_all[:, 0] = A_bar_all[:, 0] * state + input_all[:, 0]
-
-        # Parallel associative scan (Blelloch up-sweep)
-        # Recurrence: h[t] = A_bar[t] * h[t-1] + input[t]
-        # Associative operator on (A, b): (A2, b2) ∘ (A1, b1) = (A2*A1, A2*b1 + b2)
-        A_bar_terms = A_bar_all
-        input_terms = input_all
-        stride = 1
-        while stride < L:
-            mask = torch.arange(L, device=x.device) >= stride   # [L]
-            # Gather values from positions t - stride
-            src_idx = torch.arange(L, device=x.device) - stride  # [L]
-            src_idx = src_idx.clamp(min=0)
-            # Index into [B, L, d_inner, d_state]
-            A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
-            inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
-            # Broadcast mask to match tensor shape
-            mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
-            # Apply associative operator where mask is True
-            new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
-            new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
-            input_terms = new_input
-            A_bar_terms = new_A_bar
-            stride *= 2
-
-        # input_terms now holds h for each timestep: [B, L, d_inner, d_state]
-        h_all = input_terms
-
-        # Compute y = (h * C).sum(d_state) + D * x
-        C_exp = C.unsqueeze(2)                                  # [B, L, 1, d_state]
-        y = (h_all * C_exp).sum(dim=-1)                         # [B, L, d_inner]
-        y = y + self.D.unsqueeze(0).unsqueeze(0) * x            # [B, L, d_inner]
-
-        # Final state for caching
-        h_final = h_all[:, -1, :, :]                            # [B, d_inner, d_state]
-        return y, h_final
-
 
 # ---------------------------------------------------------------------------
 # Mamba-2 / SSD  (Structured State Space Duality, Dao & Gu 2024)
@@ -1675,7 +1439,7 @@ class _SSDBlock(nn.Module):
     """
     Single Mamba-2 block implementing the Structured State Space Duality.
 
-    Key differences from Mamba-1 (_SSMBlock):
+    Key differences from Mamba-1 (removed):
     - **Multi-head SSM**: d_inner is split into ``nheads`` independent heads,
       each with its own scalar decay parameter *A*.  This mirrors the
       multi-head design of Transformers while keeping linear complexity.
@@ -1923,7 +1687,7 @@ class SelectiveSSMv2(nn.Module):
     """
     Mamba-2 (SSD) — Structured State Space Duality (Dao & Gu, 2024).
 
-    Drop-in replacement for :class:`SelectiveSSM` with several improvements:
+    Improvements over Mamba-1 (removed):
 
     1. **Multi-head SSM** with per-head scalar decay, mirroring multi-head
        attention while retaining O(n) complexity.
@@ -1933,7 +1697,7 @@ class SelectiveSSMv2(nn.Module):
     3. **RMSNorm** inside each block for improved training stability.
     4. **Reduced parameter count** due to scalar-A and per-head Δ.
 
-    Interface is identical to :class:`SelectiveSSM`::
+    Interface::
 
         y, new_states = model(x, state=prev_states)
     """
@@ -2474,88 +2238,6 @@ class PretrainedBackboneAdapter(nn.Module):
         return features
 
 
-class SSMThoughtEncoder(nn.Module):
-    """
-    SSM-based thought encoder using SelectiveSSM for O(n) sequence processing.
-
-    Replaces LSTM with a Mamba-like architecture for:
-    - Linear-time encoding of arbitrarily long sequences
-    - Better long-range dependency modelling
-    - Faster inference via cached state
-
-    Architecture:
-        tokens → Embedding → SelectiveSSM → global pooling → LayerNorm → z
-    """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        emb_dim: int = 256,
-        z_dim: int = 256,
-        d_state: int = 64,
-        num_layers: int = 2,
-        expand_factor: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, emb_dim)
-        self.input_proj = nn.Linear(emb_dim, z_dim) if emb_dim != z_dim else nn.Identity()
-        self.ssm = SelectiveSSM(
-            d_model=z_dim,
-            d_state=d_state,
-            num_layers=num_layers,
-            expand_factor=expand_factor,
-            dropout=dropout,
-        )
-        self.z_dim = z_dim
-        self.norm = nn.LayerNorm(z_dim)
-
-    def forward(
-        self,
-        tokens: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Args:
-            tokens: [B, L] token IDs (dtype must be torch.long)
-            attention_mask: [B, L] mask (1=valid, 0=pad)
-        Returns:
-            z: [B, z_dim] encoded representation
-        """
-        if tokens.dim() != 2:
-            raise ValueError(f"tokens must be 2D [B, L], got shape {tokens.shape}")
-        if tokens.dtype != torch.long:
-            raise TypeError(f"tokens.dtype must be torch.long, got {tokens.dtype}")
-
-        vocab_size = self.embed.num_embeddings
-        if tokens.numel() > 0 and (tokens.min() < 0 or tokens.max() >= vocab_size):
-            raise ValueError(
-                f"tokens contain out-of-range indices: "
-                f"min={tokens.min().item()}, max={tokens.max().item()}, "
-                f"vocab_size={vocab_size}"
-            )
-        if attention_mask is not None:
-            if attention_mask.shape != tokens.shape:
-                raise ValueError(
-                    f"attention_mask shape {attention_mask.shape} must match "
-                    f"tokens shape {tokens.shape}"
-                )
-
-        x = self.embed(tokens)                        # [B, L, emb_dim]
-        x = self.input_proj(x)                         # [B, L, z_dim]
-        x, _ = self.ssm(x)                            # [B, L, z_dim]
-
-        # Masked mean pooling for sequence representation
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(-1).float()  # [B, L, 1]
-            x = (x * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
-        else:
-            x = x.mean(dim=1)                          # [B, z_dim]
-
-        z = self.norm(x)
-        return z
-
-
 class LinearAttentionEncoder(nn.Module):
     """
     Multi-layer linear attention encoder for O(n) sequence processing.
@@ -2641,189 +2323,13 @@ class LinearAttentionEncoder(nn.Module):
         return z
 
 
-class SSMThoughtDecoder(nn.Module):
-    """
-    SSM-based decoder for thought-to-token generation.
-
-    Uses SelectiveSSM backbone with cached state for O(1)-per-step
-    autoregressive inference, compared to O(n) for LSTM and O(n²) for
-    Transformer.
-
-    Features:
-    - Weight tying (head.weight = embed.weight)
-    - Cached state for fast autoregressive generation
-    - z conditioning via additive bias at each step
-    - Per-sequence [SEP] stopping
-    """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        emb_dim: int = 256,
-        z_dim: int = 256,
-        d_state: int = 64,
-        num_layers: int = 2,
-        expand_factor: int = 2,
-        dropout: float = 0.1,
-        cls_token_id: int = 101,
-        sep_token_id: int = 102,
-    ):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.emb_dim = emb_dim
-        self.z_dim = z_dim
-        self.cls_token_id = cls_token_id
-        self.sep_token_id = sep_token_id
-
-        self.embed = nn.Embedding(vocab_size, emb_dim)
-        self.z_proj = nn.Linear(z_dim, emb_dim, bias=False)
-        self.input_proj = nn.Linear(emb_dim, emb_dim)  # combine embedding + z
-
-        self.ssm = SelectiveSSM(
-            d_model=emb_dim,
-            d_state=d_state,
-            num_layers=num_layers,
-            expand_factor=expand_factor,
-            dropout=dropout,
-        )
-
-        self.head = nn.Linear(emb_dim, vocab_size)
-
-        # Weight tying
-        self.head.weight = self.embed.weight
-        if self.head.weight.data_ptr() != self.embed.weight.data_ptr():
-            raise RuntimeError("Weight tying failed")
-        logger.info("✅ Weight tying verified")
-
-        self.register_buffer(
-            "_invalid_token_mask",
-            torch.zeros(vocab_size, dtype=torch.bool),
-            persistent=False,
-        )
-
-    def set_invalid_token_ids(self, token_ids: Optional[List[int]]):
-        """Set invalid token IDs for filtering."""
-        if token_ids is None:
-            self._invalid_token_mask.zero_()
-            return
-        try:
-            idx = torch.tensor(list(token_ids), dtype=torch.long)
-        except (TypeError, ValueError, RuntimeError):
-            idx = torch.empty((0,), dtype=torch.long)
-        if idx.numel() > 0:
-            idx = idx[(idx >= 0) & (idx < self.vocab_size)]
-        mask = torch.zeros(self.vocab_size, dtype=torch.bool)
-        if idx.numel() > 0:
-            mask[idx] = True
-        self._invalid_token_mask.data.copy_(mask.to(self._invalid_token_mask.device))
-
-    def forward(
-        self,
-        z: torch.Tensor,
-        teacher_tokens: Optional[torch.Tensor] = None,
-        mode: str = 'train',
-        max_length: int = 64,
-        temperature: float = 0.8,
-        top_k: int = 50,
-        sample: bool = True,
-        prefix_tokens: Optional[torch.Tensor] = None,
-    ):
-        if mode == 'train':
-            if teacher_tokens is None:
-                raise ValueError("train mode requires teacher_tokens")
-            return self._forward_train(z, teacher_tokens)
-        elif mode == 'inference':
-            return self._forward_inference(
-                z, max_length, temperature, top_k, sample, prefix_tokens
-            )
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
-
-    def _forward_train(self, z: torch.Tensor, teacher_tokens: torch.Tensor) -> torch.Tensor:
-        """Teacher-forcing mode with SSM."""
-        B, L = teacher_tokens.shape
-        embeddings = self.embed(teacher_tokens)           # [B, L, emb_dim]
-        z_bias = self.z_proj(z).unsqueeze(1).expand_as(embeddings)
-        x = self.input_proj(embeddings + z_bias)          # [B, L, emb_dim]
-        x, _ = self.ssm(x)                                # [B, L, emb_dim]
-        logits = self.head(x)                              # [B, L, V]
-        return logits
-
-    def _forward_inference(
-        self, z, max_length, temperature, top_k, sample, prefix_tokens
-    ):
-        """Autoregressive generation with cached SSM state."""
-        B = z.shape[0]
-        device = z.device
-        z_bias = self.z_proj(z)                            # [B, emb_dim]
-
-        generated_ids = []
-        all_logits = []
-        ssm_state = None
-
-        # Prefix conditioning
-        if prefix_tokens is not None:
-            prefix_tokens = prefix_tokens.to(device)
-            emb_pref = self.embed(prefix_tokens) + z_bias.unsqueeze(1)
-            x_pref = self.input_proj(emb_pref)
-            _, ssm_state = self.ssm(x_pref, ssm_state)
-            generated_ids.append(prefix_tokens)
-            current_token = prefix_tokens[:, -1:]
-        else:
-            current_token = torch.full((B, 1), self.cls_token_id, dtype=torch.long, device=device)
-            generated_ids.append(current_token)
-
-        finished = torch.zeros(B, dtype=torch.bool, device=device)
-
-        for _ in range(max_length):
-            emb = self.embed(current_token) + z_bias.unsqueeze(1)
-            x_step = self.input_proj(emb)                  # [B, 1, emb_dim]
-            out, ssm_state = self.ssm(x_step, ssm_state)
-            logits = self.head(out.squeeze(1))             # [B, V]
-            all_logits.append(logits)
-
-            scaled = logits / max(temperature, 1e-6)
-            if top_k > 0:
-                top_k_clamped = min(top_k, scaled.size(-1))
-                vals, idx = torch.topk(scaled, top_k_clamped, dim=-1)
-                mask = torch.full_like(scaled, -float('inf'))
-                mask.scatter_(1, idx, vals)
-                scaled = mask
-            if hasattr(self, "_invalid_token_mask") and self._invalid_token_mask.any():
-                scaled[:, self._invalid_token_mask.to(device)] = -float('inf')
-            scaled = torch.nan_to_num(scaled, neginf=-float('inf'), posinf=float('inf'))
-
-            if sample:
-                probs = F.softmax(scaled, dim=-1)
-                next_token = torch.multinomial(probs, 1)
-            else:
-                next_token = torch.argmax(scaled, dim=-1, keepdim=True)
-
-            newly_finished = (next_token.squeeze(-1) == self.sep_token_id)
-            finished = finished | newly_finished
-            next_token = next_token.masked_fill(finished.unsqueeze(-1), 0)
-
-            generated_ids.append(next_token)
-            current_token = next_token
-            if finished.all():
-                break
-
-        gen = torch.cat(generated_ids, dim=1)
-        logits_stacked = (
-            torch.stack(all_logits, dim=1)
-            if all_logits
-            else torch.zeros((B, 0, self.vocab_size), device=device)
-        )
-        return gen, logits_stacked
-
-
 class Mamba2ThoughtEncoder(nn.Module):
     """
     Mamba-2 (SSD) thought encoder for O(n) sequence processing.
 
     Uses :class:`SelectiveSSMv2` with multi-head SSD, chunk-wise scan,
     and RMSNorm for improved training stability and hardware utilisation
-    compared to :class:`SSMThoughtEncoder`.
+    compared to standard LSTM encoders.
 
     Architecture::
 
@@ -3087,7 +2593,6 @@ def build_encoder(config: 'AEONConfig') -> nn.Module:
 
     Supported backends:
     - "lstm": Original LSTM-based encoder (backward compatible)
-    - "ssm": Mamba-like SelectiveSSM encoder (O(n) complexity)
     - "mamba2": Mamba-2 SSD encoder with multi-head SSM (O(n) complexity)
     - "linear_attention": Linear attention encoder (O(n) complexity)
     """
@@ -3097,16 +2602,6 @@ def build_encoder(config: 'AEONConfig') -> nn.Module:
             vocab_size=config.vocab_size,
             emb_dim=config.z_dim,
             z_dim=config.z_dim,
-        )
-    elif backend == 'ssm':
-        return SSMThoughtEncoder(
-            vocab_size=config.vocab_size,
-            emb_dim=config.z_dim,
-            z_dim=config.z_dim,
-            d_state=config.ssm_state_dim,
-            num_layers=config.ssm_num_layers,
-            expand_factor=config.ssm_expand_factor,
-            dropout=config.dropout_rate,
         )
     elif backend == 'mamba2':
         return Mamba2ThoughtEncoder(
@@ -3140,7 +2635,6 @@ def build_decoder(config: 'AEONConfig') -> nn.Module:
 
     Supported backends:
     - "lstm": Original LSTM-based decoder (backward compatible)
-    - "ssm": SSM-based decoder with cached state for O(1) inference steps
     - "mamba2": Mamba-2 SSD decoder with multi-head SSM
     """
     backend = getattr(config, 'decoder_backend', 'lstm')
@@ -3149,18 +2643,6 @@ def build_decoder(config: 'AEONConfig') -> nn.Module:
             vocab_size=config.vocab_size,
             emb_dim=config.z_dim,
             z_dim=config.z_dim,
-            cls_token_id=config.cls_token_id,
-            sep_token_id=config.sep_token_id,
-        )
-    elif backend == 'ssm':
-        return SSMThoughtDecoder(
-            vocab_size=config.vocab_size,
-            emb_dim=config.z_dim,
-            z_dim=config.z_dim,
-            d_state=config.ssm_state_dim,
-            num_layers=config.ssm_num_layers,
-            expand_factor=config.ssm_expand_factor,
-            dropout=config.dropout_rate,
             cls_token_id=config.cls_token_id,
             sep_token_id=config.sep_token_id,
         )
