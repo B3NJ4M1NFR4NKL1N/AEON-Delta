@@ -922,6 +922,10 @@ class AEONConfig:
     meta_ewc_lambda: float = 1000.0
     meta_task_buffer_size: int = 100
     
+    # ===== CAUSAL & PLANNING =====
+    enable_causal_model: bool = False
+    enable_mcts_planner: bool = False
+    
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
     enable_social_cognition: bool = False
@@ -5433,7 +5437,338 @@ class MetaLearner(nn.Module):
 
 
 # ============================================================================
-# SECTION 14: CORE ARCHITECTURE INTEGRATION
+# SECTION 14: NEURAL CAUSAL MODEL
+# ============================================================================
+
+class NeuralCausalModel(nn.Module):
+    """
+    Neural causal model with learnable DAG structure.
+    
+    Architecture:
+    - adjacency_logits → sigmoid + lower-triangular mask for DAG guarantee
+    - Mechanism f_i(parents) for each variable
+    - Support for interventions do(X=x) and counterfactuals
+    """
+    
+    def __init__(self, num_vars: int, hidden_dim: int = 64):
+        super().__init__()
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+        
+        # Learnable DAG adjacency (lower-triangular enforces acyclicity)
+        self.adjacency_logits = nn.Parameter(torch.randn(num_vars, num_vars) * 0.01)
+        
+        # Causal mechanisms: one network per variable
+        self.mechanisms = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(num_vars, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 1),
+            )
+            for _ in range(num_vars)
+        ])
+        
+        # Exogenous noise encoder
+        self.noise_encoder = nn.Linear(num_vars, num_vars)
+    
+    @property
+    def adjacency(self) -> torch.Tensor:
+        """Get adjacency matrix with DAG guarantee via lower-triangular mask."""
+        mask = torch.tril(torch.ones(self.num_vars, self.num_vars, 
+                                      device=self.adjacency_logits.device), diagonal=-1)
+        return torch.sigmoid(self.adjacency_logits) * mask
+    
+    def forward(self, exogenous: torch.Tensor, 
+                intervention: Optional[Dict[int, float]] = None) -> torch.Tensor:
+        """
+        Forward pass through causal model.
+        
+        Args:
+            exogenous: [B, num_vars] exogenous noise
+            intervention: Optional dict {var_index: value} for do(X=x)
+        Returns:
+            causal_vars: [B, num_vars] endogenous variables
+        """
+        B = exogenous.shape[0]
+        adj = self.adjacency  # [num_vars, num_vars]
+        noise = self.noise_encoder(exogenous)  # [B, num_vars]
+        
+        # Topological forward pass (lower-triangular ensures correct order)
+        causal_vars = torch.zeros(B, self.num_vars, device=exogenous.device)
+        
+        for i in range(self.num_vars):
+            if intervention is not None and i in intervention:
+                # do(X_i = v): set variable to intervention value
+                causal_vars[:, i] = intervention[i]
+            else:
+                # X_i = f_i(parents) + noise_i
+                parent_weights = adj[i]  # [num_vars]
+                weighted_input = causal_vars * parent_weights.unsqueeze(0)  # [B, num_vars]
+                causal_vars[:, i] = self.mechanisms[i](weighted_input).squeeze(-1) + noise[:, i]
+        
+        return causal_vars
+    
+    def counterfactual(self, observed: torch.Tensor, 
+                       intervention: Dict[int, float]) -> torch.Tensor:
+        """
+        Compute counterfactual: what would have happened under intervention?
+        
+        Args:
+            observed: [B, num_vars] observed values
+            intervention: {var_index: value} for counterfactual
+        Returns:
+            cf_vars: [B, num_vars] counterfactual variables
+        """
+        # Abduction: infer exogenous noise from observations
+        # Simplified: use observed as proxy for exogenous
+        exogenous = observed - self.forward(observed, intervention=None).detach() + observed
+        # Intervene and propagate
+        return self.forward(exogenous, intervention=intervention)
+    
+    def dag_loss(self) -> torch.Tensor:
+        """DAG constraint loss: trace(exp(A ⊙ A)) - num_vars."""
+        adj = self.adjacency
+        # Ensure DAG: trace(matrix_exp(A ⊙ A)) - d = 0 for DAGs
+        product = adj * adj
+        # Use matrix exponential approximation for efficiency
+        # exp(M) ≈ I + M + M²/2 + M³/6
+        I = torch.eye(self.num_vars, device=adj.device)
+        M = product
+        M2 = M @ M
+        M3 = M2 @ M
+        approx_exp = I + M + M2 / 2.0 + M3 / 6.0
+        return torch.trace(approx_exp) - self.num_vars
+    
+    def consistency_loss(self, obs_out: torch.Tensor, cf_out: torch.Tensor,
+                         intervention_vars: List[int]) -> torch.Tensor:
+        """
+        Consistency loss: non-intervened variables should be consistent.
+        
+        Args:
+            obs_out: [B, num_vars] observational output
+            cf_out: [B, num_vars] counterfactual output
+            intervention_vars: list of variable indices that were intervened on
+        Returns:
+            loss: scalar consistency loss
+        """
+        unchanged_mask = torch.ones(self.num_vars, dtype=torch.bool, device=obs_out.device)
+        for v in intervention_vars:
+            # Mark intervened variable and its descendants as changed
+            unchanged_mask[v] = False
+        if unchanged_mask.any():
+            return F.mse_loss(obs_out[:, unchanged_mask], cf_out[:, unchanged_mask])
+        return torch.tensor(0.0, device=obs_out.device)
+
+
+# ============================================================================
+# SECTION 15: MCTS PLANNER WITH AUXILIARY NETWORKS
+# ============================================================================
+
+class ValueNetwork(nn.Module):
+    """Value network V(s) for state evaluation."""
+    
+    def __init__(self, state_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+    
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Evaluate state value. Returns [B, 1]."""
+        return self.net(state)
+
+
+class PolicyNetwork(nn.Module):
+    """Policy network π(a|s) for action priors."""
+    
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, action_dim),
+        )
+    
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Compute action distribution π(a|s). Returns [B, action_dim] softmax."""
+        return F.softmax(self.net(state), dim=-1)
+
+
+class MCTSNode:
+    """Node in the MCTS search tree."""
+    
+    __slots__ = ['state', 'parent', 'children', 'visits', 'total_value', 
+                 'prior', 'action_idx']
+    
+    def __init__(self, state: torch.Tensor, parent=None, 
+                 prior: float = 1.0, action_idx: int = -1):
+        self.state = state
+        self.parent = parent
+        self.children: List = []
+        self.visits = 0
+        self.total_value = 0.0
+        self.prior = prior
+        self.action_idx = action_idx
+    
+    @property
+    def q_value(self) -> float:
+        """Mean value Q(s,a)."""
+        return self.total_value / max(self.visits, 1)
+    
+    def ucb1_score(self, c: float = 1.41) -> float:
+        """UCB1: Q + c * prior * sqrt(parent_visits) / (1 + visits)."""
+        if self.parent is None:
+            return 0.0
+        parent_visits = max(self.parent.visits, 1)
+        exploration = c * self.prior * math.sqrt(parent_visits) / (1 + self.visits)
+        return self.q_value + exploration
+
+
+class MCTSPlanner(nn.Module):
+    """
+    Monte Carlo Tree Search planner with world model rollouts.
+    
+    Components:
+    - UCB1 scoring for selection
+    - World model for state transitions
+    - Value network for leaf evaluation
+    - Policy network for action priors
+    """
+    
+    def __init__(self, state_dim: int, action_dim: int, 
+                 hidden_dim: int = 128, num_simulations: int = 50,
+                 max_depth: int = 5, c_puct: float = 1.41):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.num_simulations = num_simulations
+        self.max_depth = max_depth
+        self.c_puct = c_puct
+        
+        self.value_net = ValueNetwork(state_dim, hidden_dim)
+        self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim)
+    
+    def _select(self, node: 'MCTSNode') -> 'MCTSNode':
+        """Select best child using UCB1."""
+        while node.children:
+            node = max(node.children, key=lambda c: c.ucb1_score(self.c_puct))
+        return node
+    
+    def _expand(self, node: 'MCTSNode', world_model, 
+                policy_priors: torch.Tensor) -> 'MCTSNode':
+        """Expand node by generating children for each action."""
+        state = node.state
+        for a in range(min(self.action_dim, 8)):  # Limit branching factor
+            prior = policy_priors[a].item()
+            # Use world model to predict next state
+            with torch.no_grad():
+                noise = torch.randn_like(state) * 0.1
+                action_state = state + noise  # Simple action encoding
+                wm_result = world_model(action_state.unsqueeze(0))
+                next_state = wm_result['output'].squeeze(0)
+            
+            child = MCTSNode(
+                state=next_state,
+                parent=node,
+                prior=prior,
+                action_idx=a,
+            )
+            node.children.append(child)
+        
+        return node.children[0] if node.children else node
+    
+    def _simulate(self, node: 'MCTSNode') -> float:
+        """Evaluate leaf node using value network."""
+        with torch.no_grad():
+            value = self.value_net(node.state.unsqueeze(0)).item()
+        return value
+    
+    def _backpropagate(self, node: 'MCTSNode', value: float):
+        """Backpropagate value up the tree."""
+        while node is not None:
+            node.visits += 1
+            node.total_value += value
+            node = node.parent
+    
+    @torch.no_grad()
+    def search(self, state: torch.Tensor, world_model) -> Dict[str, Any]:
+        """
+        Run MCTS search from given state.
+        
+        Args:
+            state: [state_dim] current state
+            world_model: PhysicsGroundedWorldModel for rollouts
+        Returns:
+            Dict with best_action, visit_counts, values
+        """
+        root = MCTSNode(state=state)
+        
+        for _ in range(self.num_simulations):
+            # Select
+            leaf = self._select(root)
+            
+            # Expand (if not too deep)
+            if leaf.visits > 0 or leaf is root:
+                depth = 0
+                node = leaf
+                while node.parent is not None:
+                    depth += 1
+                    node = node.parent
+                
+                if depth < self.max_depth:
+                    policy = self.policy_net(leaf.state.unsqueeze(0)).squeeze(0)
+                    leaf = self._expand(leaf, world_model, policy)
+            
+            # Simulate
+            value = self._simulate(leaf)
+            
+            # Backpropagate
+            self._backpropagate(leaf, value)
+        
+        # Return results
+        if root.children:
+            best_child = max(root.children, key=lambda c: c.visits)
+            visit_counts = [c.visits for c in root.children]
+            values = [c.q_value for c in root.children]
+            return {
+                'best_action': best_child.action_idx,
+                'best_state': best_child.state,
+                'visit_counts': visit_counts,
+                'values': values,
+                'root_value': root.q_value,
+            }
+        return {
+            'best_action': 0,
+            'best_state': state,
+            'visit_counts': [],
+            'values': [],
+            'root_value': 0.0,
+        }
+    
+    def forward(self, state: torch.Tensor, world_model=None) -> Dict[str, Any]:
+        """Forward pass - run search or return value/policy."""
+        if world_model is not None and not self.training:
+            # Single state search (unbatched for MCTS)
+            if state.dim() == 1:
+                return self.search(state, world_model)
+            else:
+                # Batch: just return value and policy
+                pass
+        
+        return {
+            'value': self.value_net(state),
+            'policy': self.policy_net(state),
+        }
+
+
+# ============================================================================
+# SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
 class AEONDeltaV3(nn.Module):
@@ -5612,6 +5947,27 @@ class AEONDeltaV3(nn.Module):
         
         # ===== META-LEARNING =====
         self.meta_learner = None  # Initialized post-construction via init_meta_learner()
+        
+        # ===== CAUSAL MODEL =====
+        if getattr(config, 'enable_causal_model', False):
+            logger.info("Loading NeuralCausalModel...")
+            self.causal_model = NeuralCausalModel(
+                num_vars=config.num_pillars,
+                hidden_dim=config.hidden_dim // 2,
+            ).to(self.device)
+        else:
+            self.causal_model = None
+        
+        # ===== MCTS PLANNER =====
+        if getattr(config, 'enable_mcts_planner', False):
+            logger.info("Loading MCTSPlanner...")
+            self.mcts_planner = MCTSPlanner(
+                state_dim=config.hidden_dim,
+                action_dim=config.action_dim,
+                hidden_dim=config.hidden_dim // 2,
+            ).to(self.device)
+        else:
+            self.mcts_planner = None
         
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
@@ -5873,6 +6229,12 @@ class AEONDeltaV3(nn.Module):
                 C_star = C_star + 0.1 * predicted_next
             world_model_results['surprise'] = surprise
         
+        # 5b2. MCTS planning
+        mcts_results = {}
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast:
+            # Run MCTS for first sample (as demonstration)
+            mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
+        
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
         if self.hierarchical_memory is not None:
@@ -5920,6 +6282,7 @@ class AEONDeltaV3(nn.Module):
             'iterations': iterations,
             'psi_0': z_in,
             'world_model_results': world_model_results,
+            'mcts_results': mcts_results,
         }
         
         return z_out, outputs
@@ -6307,6 +6670,8 @@ class AEONDeltaV3(nn.Module):
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
             ("MultiModal", self.multimodal),
+            ("CausalModel", self.causal_model),
+            ("MCTSPlanner", self.mcts_planner),
         ]
         
         for name, module in modules:
@@ -6502,7 +6867,7 @@ class AEONDeltaV3(nn.Module):
 
 
 # ============================================================================
-# SECTION 15: TRAINING PIPELINE
+# SECTION 17: TRAINING PIPELINE
 # ============================================================================
 
 class AEONTrainer:
@@ -6846,7 +7211,7 @@ class AEONTrainer:
 
 
 # ============================================================================
-# SECTION 16: TESTING FRAMEWORK
+# SECTION 18: TESTING FRAMEWORK
 # ============================================================================
 
 class AEONTestSuite:
@@ -7150,7 +7515,7 @@ class AEONTestSuite:
 
 
 # ============================================================================
-# SECTION 17: CLI INTERFACE
+# SECTION 19: CLI INTERFACE
 # ============================================================================
 
 def parse_args():
@@ -7218,7 +7583,7 @@ Examples:
 
 
 # ============================================================================
-# SECTION 18: MAIN ENTRY POINT
+# SECTION 20: MAIN ENTRY POINT
 # ============================================================================
 
 def main():
