@@ -928,6 +928,7 @@ class AEONConfig:
     
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
+    enable_hierarchical_vae: bool = False
     enable_social_cognition: bool = False
     enable_deception_suppressor: bool = True
     enable_code_execution: bool = False
@@ -1633,26 +1634,28 @@ class _SSMBlock(nn.Module):
         # Associative operator on (A, b): (A2, b2) ∘ (A1, b1) = (A2*A1, A2*b1 + b2)
         A_bar_terms = A_bar_all
         input_terms = input_all
-        stride = 1
-        while stride < L:
-            mask = torch.arange(L, device=x.device) >= stride   # [L]
-            # Gather values from positions t - stride
-            src_idx = torch.arange(L, device=x.device) - stride  # [L]
-            src_idx = src_idx.clamp(min=0)
-            # Index into [B, L, d_inner, d_state]
-            A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
-            inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
-            # Broadcast mask to match tensor shape
-            mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
-            # Apply associative operator where mask is True
-            new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
-            new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
-            input_terms = new_input
-            A_bar_terms = new_A_bar
-            stride *= 2
-
-        # input_terms now holds h for each timestep: [B, L, d_inner, d_state]
-        h_all = input_terms
+        try:
+            stride = 1
+            while stride < L:
+                mask = torch.arange(L, device=x.device) >= stride   # [L]
+                # Gather values from positions t - stride
+                src_idx = torch.arange(L, device=x.device) - stride  # [L]
+                src_idx = src_idx.clamp(min=0)
+                # Index into [B, L, d_inner, d_state]
+                A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
+                inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
+                # Broadcast mask to match tensor shape
+                mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
+                # Apply associative operator where mask is True
+                new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
+                new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
+                input_terms = new_input
+                A_bar_terms = new_A_bar
+                stride *= 2
+            h_all = input_terms
+        except RuntimeError:
+            # Efficient scan via cumsum (works on all devices including MPS)
+            h_all = self._cumsum_scan(A_bar_all, input_all)
 
         # Compute y = (h * C).sum(d_state) + D * x
         C_exp = C.unsqueeze(2)                                  # [B, L, 1, d_state]
@@ -1662,6 +1665,27 @@ class _SSMBlock(nn.Module):
         # Final state for caching
         h_final = h_all[:, -1, :, :]                            # [B, d_inner, d_state]
         return y, h_final
+
+    def _cumsum_scan(self, log_coeffs: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        """
+        Parallel scan via cumsum — works on all devices including MPS.
+        
+        For linear recurrence h[t] = A_bar[t] * h[t-1] + input[t]:
+        - log_coeffs: [B, L, D, N] discretized A_bar (multiplicative coefficients)
+        - values: [B, L, D, N] input values
+        Returns:
+            h: [B, L, D, N] scan output
+        """
+        # Convert to log-space cumsum for numerical stability
+        log_a = torch.log(log_coeffs.clamp(min=1e-8))
+        log_cumsum = torch.cumsum(log_a, dim=1)  # [B, L, D, N]
+        # Scale values by cumulative coefficients
+        # Remove self contribution: exp(log_cumsum - log_a) = exp(cumsum up to t-1)
+        scaled = values * torch.exp(log_cumsum - log_a)
+        # Accumulate in normalized space
+        cumulated = torch.cumsum(scaled * torch.exp(-log_cumsum), dim=1)
+        h = cumulated * torch.exp(log_cumsum)
+        return h
 
 
 # ---------------------------------------------------------------------------
@@ -2197,12 +2221,15 @@ class ChunkedSequenceProcessor:
     - Compatible with any sequence model that accepts (x, state) → (y, state)
     """
 
-    def __init__(self, chunk_size: int = 512, overlap: int = 64):
+    def __init__(self, chunk_size: int = 512, overlap: int = 64,
+                 adaptive: bool = False, min_chunk_size: int = 64):
         assert chunk_size > overlap >= 0, \
             f"chunk_size ({chunk_size}) must be > overlap ({overlap})"
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.stride = chunk_size - overlap
+        self.adaptive = adaptive
+        self.min_chunk_size = min_chunk_size
 
     def process(
         self,
@@ -2231,13 +2258,26 @@ class ChunkedSequenceProcessor:
         if L <= self.chunk_size:
             return model_fn(x, initial_state)
 
+        if self.adaptive:
+            # Adaptive chunk size based on content entropy
+            content_var = x.var(dim=-1).mean(dim=0)  # [L] variance per position
+            max_var = content_var.max().item() + 1e-8
+            # Higher variance → smaller chunks (more detail needed)
+            adaptive_factor = 1.0 - (content_var.mean().item() / max_var)
+            chunk_size = max(self.min_chunk_size, 
+                             int(self.chunk_size * adaptive_factor))
+        else:
+            chunk_size = self.chunk_size
+
+        stride = chunk_size - self.overlap
+
         y = torch.zeros(B, L, D, device=x.device, dtype=x.dtype)
         state = initial_state
         pos = 0
         prev_overlap_output = None  # [B, overlap, D] from tail of previous chunk
 
         while pos < L:
-            end = min(pos + self.chunk_size, L)
+            end = min(pos + chunk_size, L)
             chunk = x[:, pos:end, :]
             y_chunk, state = model_fn(chunk, state)
 
@@ -2266,7 +2306,7 @@ class ChunkedSequenceProcessor:
             else:
                 prev_overlap_output = None
 
-            pos += self.stride
+            pos += stride
 
         return y, state
 
@@ -5766,6 +5806,134 @@ class MCTSPlanner(nn.Module):
 
 
 # ============================================================================
+# SECTION 15b: HIERARCHICAL VAE
+# ============================================================================
+
+class HierarchicalVAE(nn.Module):
+    """
+    Hierarchical Variational Autoencoder with ladder architecture.
+    
+    Levels: tokens → phrases → sentences → concepts → goals
+    Architecture: bottom-up deterministic + top-down stochastic passes.
+    """
+    
+    def __init__(self, input_dim: int, level_dims: Optional[List[int]] = None,
+                 num_levels: int = 5):
+        super().__init__()
+        self.num_levels = num_levels
+        
+        if level_dims is None:
+            # Default: progressively compress
+            level_dims = [input_dim // (2 ** i) for i in range(num_levels)]
+            level_dims = [max(d, 16) for d in level_dims]
+        
+        self.level_dims = level_dims
+        
+        # Bottom-up deterministic encoders
+        self.bu_encoders = nn.ModuleList()
+        for i in range(num_levels - 1):
+            self.bu_encoders.append(nn.Sequential(
+                nn.Linear(level_dims[i], level_dims[i + 1]),
+                nn.LayerNorm(level_dims[i + 1]),
+                nn.GELU(),
+            ))
+        
+        # Top-down stochastic decoders (mean and logvar)
+        self.td_mean = nn.ModuleList()
+        self.td_logvar = nn.ModuleList()
+        self.td_decoders = nn.ModuleList()
+        
+        for i in range(num_levels - 1):
+            higher_dim = level_dims[i + 1]
+            lower_dim = level_dims[i]
+            self.td_mean.append(nn.Linear(higher_dim, lower_dim))
+            self.td_logvar.append(nn.Linear(higher_dim, lower_dim))
+            self.td_decoders.append(nn.Sequential(
+                nn.Linear(lower_dim, lower_dim),
+                nn.LayerNorm(lower_dim),
+                nn.GELU(),
+            ))
+        
+        # Abstraction level selector
+        self.level_selector = nn.Linear(input_dim, num_levels)
+    
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """Reparameterization trick."""
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return mu + eps * std
+        return mu
+    
+    def encode(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """Bottom-up encoding through all levels."""
+        levels = [x]
+        h = x
+        for encoder in self.bu_encoders:
+            h = encoder(h)
+            levels.append(h)
+        return levels
+    
+    def decode(self, levels: List[torch.Tensor]) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Top-down decoding with stochastic sampling."""
+        kl_total = torch.tensor(0.0, device=levels[-1].device)
+        reconstructions = [levels[-1]]
+        
+        h = levels[-1]
+        for i in range(self.num_levels - 2, -1, -1):
+            mu = self.td_mean[i](h)
+            logvar = self.td_logvar[i](h)
+            z = self.reparameterize(mu, logvar)
+            
+            # KL divergence for this level
+            kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
+            kl_total = kl_total + kl.mean()
+            
+            h = self.td_decoders[i](z)
+            reconstructions.insert(0, h)
+        
+        return reconstructions, kl_total
+    
+    def forward(self, x: torch.Tensor, 
+                abstraction_level: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Forward pass with optional abstraction level selection.
+        
+        Args:
+            x: [B, input_dim] input
+            abstraction_level: If provided, return representation at this level (0-4)
+        Returns:
+            Dict with levels, reconstructions, kl_loss, selected_level
+        """
+        levels = self.encode(x)
+        reconstructions, kl_loss = self.decode(levels)
+        
+        # Auto-select abstraction level if not specified
+        if abstraction_level is None:
+            level_logits = self.level_selector(x)
+            level_probs = F.softmax(level_logits, dim=-1)
+            abstraction_level = level_probs.argmax(dim=-1)  # [B]
+        
+        # Get representation at selected level
+        if isinstance(abstraction_level, int):
+            selected = levels[min(abstraction_level, len(levels) - 1)]
+        else:
+            # Batch selection
+            selected = levels[0].clone()  # Fallback to lowest
+            for b in range(x.shape[0]):
+                lvl = min(abstraction_level[b].item(), len(levels) - 1)
+                selected[b] = levels[int(lvl)][b]
+        
+        return {
+            'levels': levels,
+            'reconstructions': reconstructions,
+            'kl_loss': kl_loss,
+            'selected_level': selected,
+            'abstraction_level': abstraction_level,
+        }
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -5966,6 +6134,16 @@ class AEONDeltaV3(nn.Module):
             ).to(self.device)
         else:
             self.mcts_planner = None
+        
+        # ===== HIERARCHICAL VAE =====
+        if getattr(config, 'enable_hierarchical_vae', False):
+            logger.info("Loading HierarchicalVAE...")
+            self.hierarchical_vae = HierarchicalVAE(
+                input_dim=config.hidden_dim,
+                num_levels=5,
+            ).to(self.device)
+        else:
+            self.hierarchical_vae = None
         
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
@@ -6262,6 +6440,12 @@ class AEONDeltaV3(nn.Module):
         
         # 7. RSSM dynamics
         z_rssm = self.rssm(C_fused)
+        
+        # 7b. Multimodal grounding (if available)
+        if self.multimodal is not None and not fast:
+            # Use z_rssm as language representation
+            mm_result = self.multimodal(language=z_rssm.unsqueeze(1))
+            z_rssm = z_rssm + mm_result['fused']
         
         # 8. Integration
         z_out = self.integration_module(
@@ -6670,6 +6854,7 @@ class AEONDeltaV3(nn.Module):
             ("MultiModal", self.multimodal),
             ("CausalModel", self.causal_model),
             ("MCTSPlanner", self.mcts_planner),
+            ("HierarchicalVAE", self.hierarchical_vae),
         ]
         
         for name, module in modules:
