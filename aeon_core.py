@@ -143,6 +143,31 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 
+def set_seed(seed: int) -> torch.Generator:
+    """Set global random seed for reproducibility.
+    
+    Fixes seeds for Python, NumPy, and PyTorch (CPU and CUDA).
+    Returns a torch.Generator seeded with the given value, which can
+    be passed to non-deterministic operations for bitwise reproducibility.
+    
+    Args:
+        seed: Integer seed value.
+    
+    Returns:
+        A seeded torch.Generator for use in nn.init and torch.randn.
+    """
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    logger.info(f"Random seed set to {seed}")
+    return generator
+
+
 # ============================================================================
 # SECTION 2: DEVICE MANAGEMENT SYSTEM
 # ============================================================================
@@ -1014,13 +1039,41 @@ class ThoughtEncoder(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            tokens: [B, L] token IDs
+            tokens: [B, L] token IDs (dtype must be torch.long)
             attention_mask: [B, L] mask (1=valid, 0=pad)
         
         Returns:
             z: [B, z_dim] encoded representation
+        
+        Raises:
+            TypeError: If tokens dtype is not torch.long or attention_mask dtype is invalid
+            ValueError: If tokens contain out-of-range indices or shapes are mismatched
         """
-        assert tokens.dim() == 2, f"Expected [B, L], got {tokens.shape}"
+        if tokens.dim() != 2:
+            raise ValueError(f"tokens must be 2D [B, L], got shape {tokens.shape}")
+        if tokens.dtype != torch.long:
+            raise TypeError(
+                f"tokens.dtype must be torch.long, got {tokens.dtype}"
+            )
+        
+        vocab_size = self.embed.num_embeddings
+        if tokens.numel() > 0 and (tokens.min() < 0 or tokens.max() >= vocab_size):
+            raise ValueError(
+                f"tokens contain out-of-range indices: "
+                f"min={tokens.min().item()}, max={tokens.max().item()}, "
+                f"vocab_size={vocab_size}"
+            )
+        
+        if attention_mask is not None:
+            if attention_mask.shape != tokens.shape:
+                raise ValueError(
+                    f"attention_mask shape {attention_mask.shape} must match "
+                    f"tokens shape {tokens.shape}"
+                )
+            if attention_mask.dtype not in (torch.long, torch.int, torch.bool, torch.float):
+                raise TypeError(
+                    f"attention_mask.dtype must be numeric, got {attention_mask.dtype}"
+                )
         
         x = self.embed(tokens)  # [B, L, emb_dim]
         
@@ -1223,7 +1276,9 @@ class ThoughtDecoder(nn.Module):
             )
             generated_ids.append(current_token_id)
         
-        # Main generation loop
+        # Main generation loop — per-sequence stopping
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        
         for _ in range(max_length):
             emb = self.embed(current_token_id)  # [B, 1, emb_dim]
             z_expanded = z.unsqueeze(1)  # [B, 1, z_dim]
@@ -1243,12 +1298,21 @@ class ThoughtDecoder(nn.Module):
             else:
                 next_token_id = torch.argmax(logits_filtered, dim=-1, keepdim=True)
             
-            # Stop on [SEP]
-            if (next_token_id == self.sep_token_id).all():
-                break
+            # Per-sequence [SEP] stopping: mask finished sequences
+            newly_finished = (next_token_id.squeeze(-1) == self.sep_token_id)
+            finished = finished | newly_finished
+            
+            # Replace token for finished sequences with PAD (0)
+            next_token_id = next_token_id.masked_fill(
+                finished.unsqueeze(-1), 0
+            )
             
             generated_ids.append(next_token_id)
             current_token_id = next_token_id
+            
+            # Stop when ALL sequences are finished
+            if finished.all():
+                break
         
         generated_ids = (
             torch.cat(generated_ids, dim=1) 
@@ -1681,17 +1745,24 @@ class LipschitzConstrainedLambda(nn.Module):
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
-    Meta-loop with mathematical convergence guarantees.
+    Meta-loop with convergence mechanisms inspired by fixed-point theory.
     
-    Theoretical guarantees:
-    1. Existence of fixed-point (Brouwer)
-    2. Uniqueness (Banach, when L < 1)
-    3. Convergence rate: O(L^k) where k = iteration
+    Theoretical motivation (not formal guarantees):
+    - Spectral normalization encourages ||W|| ≤ 1 per layer, but the
+      *global* Lipschitz constant of the composed operator also depends
+      on activations, LayerNorm, and dropout. The EMA-tracked
+      ``lipschitz_estimate`` is a *statistical* estimate, not a certified
+      upper bound.
+    - When the estimate satisfies L < 1, the Banach Fixed-Point Theorem
+      *suggests* convergence, but completeness of the latent metric space
+      is assumed, not proven.
+    - Use ``verify_convergence()`` to obtain an explicit diagnostic that
+      clearly separates measured quantities from theoretical conditions.
     
     Practical improvements:
-    4. Anderson acceleration for 2-5x speedup
-    5. Adaptive alpha based on Lipschitz estimate
-    6. Early stopping with certified tolerance
+    1. Anderson acceleration for 2-5x speedup
+    2. Adaptive alpha based on Lipschitz estimate
+    3. Early stopping with certified tolerance
     """
     
     def __init__(
@@ -1930,12 +2001,80 @@ class ProvablyConvergentMetaLoop(nn.Module):
         
         if return_certificate:
             metadata['certificate'] = {
-                'method': 'Banach Fixed-Point Theorem',
-                'conditions': f'Lipschitz constant L={lip_const:.4f} < 1',
-                'guarantee': f'Error ≤ {certified_error:.2e}' if certified_error else 'N/A'
+                'method': 'Banach Fixed-Point Theorem (estimated, not formally proven)',
+                'conditions': f'EMA Lipschitz estimate L={lip_const:.4f} (target < 1)',
+                'guarantee': (
+                    f'Estimated error ≤ {certified_error:.2e}'
+                    if certified_error
+                    else 'N/A (L >= 1, contraction not verified)'
+                ),
+                'note': (
+                    'This is a statistical estimate. '
+                    'Use verify_convergence() for explicit diagnostics.'
+                )
             }
         
         return C, iterations, metadata
+    
+    def verify_convergence(
+        self,
+        psi_0: torch.Tensor,
+        num_samples: int = 100
+    ) -> Dict[str, Any]:
+        """Verify Banach fixed-point conditions separately from computation.
+        
+        This method explicitly checks the theoretical conditions required
+        by the Banach Fixed-Point Theorem and reports which are satisfied
+        and which are only *estimated*.
+        
+        Args:
+            psi_0: [B, H] input latent.
+            num_samples: Number of random pairs for empirical Lipschitz check.
+        
+        Returns:
+            Dict with explicit diagnostic fields:
+              - empirical_lipschitz: max ratio from random sampling
+              - ema_lipschitz: current EMA estimate
+              - contraction_satisfied: whether empirical L < 1
+              - target_satisfied: whether empirical L < lipschitz_target
+              - residual_norm: final residual after compute_fixed_point
+              - warnings: list of unverified assumptions
+        """
+        with torch.no_grad():
+            empirical_L = self.lambda_op.compute_lipschitz_constant(
+                num_samples=num_samples
+            )
+            ema_L = self.lambda_op.lipschitz_estimate.item()
+            target = self.lambda_op.lipschitz_target
+            
+            C, iterations, meta = self.compute_fixed_point(psi_0)
+            residual = meta.get('residual_norm', float('inf'))
+        
+        warnings_list = []
+        if empirical_L >= 1.0:
+            warnings_list.append(
+                f'Empirical Lipschitz constant {empirical_L:.4f} >= 1; '
+                'contraction mapping condition NOT satisfied.'
+            )
+        if abs(empirical_L - ema_L) > 0.1:
+            warnings_list.append(
+                f'EMA estimate ({ema_L:.4f}) differs significantly from '
+                f'empirical estimate ({empirical_L:.4f}).'
+            )
+        warnings_list.append(
+            'Completeness of the latent metric space is assumed, not proven.'
+        )
+        
+        return {
+            'empirical_lipschitz': empirical_L,
+            'ema_lipschitz': ema_L,
+            'lipschitz_target': target,
+            'contraction_satisfied': empirical_L < 1.0,
+            'target_satisfied': empirical_L < target,
+            'residual_norm': residual,
+            'converged': meta.get('converged', False),
+            'warnings': warnings_list,
+        }
     
     def forward(self, psi_0: torch.Tensor, use_fixed_point: bool = True):
         """Wrapper for compatibility."""
@@ -1948,19 +2087,41 @@ class ProvablyConvergentMetaLoop(nn.Module):
             return C, torch.ones(psi_0.shape[0], device=psi_0.device), {}
     
     def get_lipschitz_loss(self, psi_0: torch.Tensor) -> torch.Tensor:
-        """Lipschitz regularization term for training."""
-        B, H = psi_0.shape
-        device = psi_0.device
+        """Lipschitz regularization term for training.
         
-        # Sample pairs
-        eps = torch.randn(B, H * 2, device=device) * 0.1
-        x = torch.cat([psi_0, torch.zeros(B, H, device=device)], dim=-1) + eps
-        y = torch.cat([psi_0, torch.zeros(B, H, device=device)], dim=-1) + torch.randn_like(eps) * 0.1
-        
-        # Lipschitz penalty
-        lip_penalty = self.lambda_op.get_lipschitz_penalty(x, y)
-        
-        return lip_penalty
+        Delegates to standalone compute_lipschitz_loss() to avoid coupling.
+        """
+        return compute_lipschitz_loss(self.lambda_op, psi_0)
+
+
+def compute_lipschitz_loss(
+    lambda_op: 'LipschitzConstrainedLambda',
+    psi_0: torch.Tensor
+) -> torch.Tensor:
+    """Standalone Lipschitz regularization loss.
+    
+    Decoupled from ProvablyConvergentMetaLoop so that any module holding
+    a LipschitzConstrainedLambda can reuse this without a circular reference.
+    
+    Args:
+        lambda_op: A LipschitzConstrainedLambda module.
+        psi_0: [B, H] latent state tensor.
+    
+    Returns:
+        Lipschitz penalty scalar tensor.
+    """
+    B, H = psi_0.shape
+    device = psi_0.device
+    
+    # Sample pairs
+    eps = torch.randn(B, H * 2, device=device) * 0.1
+    x = torch.cat([psi_0, torch.zeros(B, H, device=device)], dim=-1) + eps
+    y = torch.cat([psi_0, torch.zeros(B, H, device=device)], dim=-1) + torch.randn_like(eps) * 0.1
+    
+    # Lipschitz penalty
+    lip_penalty = lambda_op.get_lipschitz_penalty(x, y)
+    
+    return lip_penalty
 
 
 # ============================================================================
@@ -1993,7 +2154,7 @@ class FastHessianComputer:
         # Check torch.func availability
         self.functorch_available = False
         try:
-            import torch.func
+            import torch.func  # noqa: F811
             self.functorch_available = True
         except ImportError:
             if method == 'forward_ad':
@@ -2002,6 +2163,12 @@ class FastHessianComputer:
                     "falling back to finite differences"
                 )
                 self.method = 'finite_differences'
+        
+        # Check torch.autograd.functional.hessian availability
+        import torch as _torch
+        self.autograd_hessian_available = hasattr(
+            _torch.autograd.functional, 'hessian'
+        )
     
     def _safe_eigvalsh(self, H_sym: torch.Tensor) -> torch.Tensor:
         """
@@ -2058,10 +2225,19 @@ class FastHessianComputer:
         
         if self.method == 'finite_differences':
             H = self._hessian_finite_differences(func, x)
+        elif self.method == 'autograd' and self.autograd_hessian_available:
+            H = self._hessian_autograd(func, x)
         elif self.method == 'forward_ad':
             H = self._hessian_forward_ad(func, x)
         else:
-            H = self._hessian_finite_differences(func, x)
+            # Auto-select: prefer autograd vectorized path, fallback to finite diff
+            if self.autograd_hessian_available:
+                try:
+                    H = self._hessian_autograd(func, x)
+                except Exception:
+                    H = self._hessian_finite_differences(func, x)
+            else:
+                H = self._hessian_finite_differences(func, x)
         
         eigvals = None
         if return_eigenvalues:
@@ -2147,6 +2323,35 @@ class FastHessianComputer:
                     H[:, j, i] = H[:, i, j]
         
         return H
+    
+    def _hessian_autograd(
+        self,
+        func: callable,
+        x: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Vectorized Hessian via torch.autograd.functional.hessian.
+        
+        Complexity: O(P) via reverse-mode AD instead of O(P²) loops.
+        Requires PyTorch >= 1.11.
+        """
+        B, n = x.shape
+        device = x.device
+        
+        H_batch = torch.zeros(B, n, n, device=device, dtype=x.dtype)
+        
+        for b in range(B):
+            def scalar_func(xi):
+                # func expects [1, n], returns scalar
+                out = func(xi.unsqueeze(0))
+                if out.dim() > 0:
+                    out = out.squeeze()
+                return out
+            
+            H_b = torch.autograd.functional.hessian(scalar_func, x[b])
+            H_batch[b] = H_b
+        
+        return H_batch
     
     def _hash_tensor(self, t: torch.Tensor) -> int:
         """Hash tensor for caching using multiple statistics to reduce collisions."""
@@ -2820,22 +3025,47 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"Failed to save memory: {e}")
     
+    @staticmethod
+    def _validate_memory_structure(data: dict) -> bool:
+        """Validate that loaded memory data has expected structure."""
+        if not isinstance(data, dict):
+            return False
+        allowed_keys = {'vectors', 'metas', 'size'}
+        if not set(data.keys()).issubset(allowed_keys):
+            logger.warning(
+                f"Memory file contains unexpected keys: "
+                f"{set(data.keys()) - allowed_keys}"
+            )
+            return False
+        return True
+
     def load_memory(self):
         """Load memory from disk.
         
-        Warning:
-            Uses weights_only=False for loading as memory contains numpy arrays
-            and metadata dicts. Only load memory files from trusted sources.
+        Security:
+            Attempts weights_only=True first. Falls back to weights_only=False
+            only if needed, with structure verification to reject unexpected data.
         """
         path = os.path.join(self.config.memory_path, "fallback_memory.pt")
         if os.path.exists(path):
             try:
-                logger.warning(
-                    f"Loading memory with weights_only=False from '{path}'. "
-                    "Only load memory files from trusted sources."
-                )
-                # weights_only=False required: memory contains numpy arrays and metadata dicts
-                data = torch.load(path, map_location='cpu', weights_only=False)
+                # Try safe loading first
+                try:
+                    data = torch.load(path, map_location='cpu', weights_only=True)
+                except Exception:
+                    logger.warning(
+                        f"Loading memory with weights_only=False from '{path}'. "
+                        "Only load memory files from trusted sources."
+                    )
+                    data = torch.load(path, map_location='cpu', weights_only=False)
+                
+                # Validate structure before using
+                if not self._validate_memory_structure(data):
+                    logger.error(
+                        f"Memory file '{path}' failed structure validation, skipping."
+                    )
+                    return
+                
                 self.fallback_vectors = data.get('vectors', [])
                 self.fallback_metas = data.get('metas', [])
                 self._size = data.get('size', len(self.fallback_vectors))
@@ -3448,9 +3678,9 @@ class AEONDeltaV3(nn.Module):
         temperature: float = 0.8,
         top_k: int = 50,
         sample: bool = True
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        High-level generation API.
+        High-level generation API with graceful degradation.
         
         Args:
             prompt: Input text
@@ -3460,11 +3690,18 @@ class AEONDeltaV3(nn.Module):
             sample: Use sampling vs greedy
         
         Returns:
-            Generated text
+            Dict with keys:
+                text: Generated text (or echo of prompt in degraded mode)
+                status: 'ok', 'degraded', or 'error'
+                reason: Description if status != 'ok'
         """
         if self.tokenizer is None:
-            logger.error("Tokenizer not available")
-            return "[Generation failed: No tokenizer]"
+            logger.warning("Tokenizer not available — returning degraded response")
+            return {
+                'text': prompt,
+                'status': 'degraded',
+                'reason': 'Tokenizer not available'
+            }
         
         self.eval()
         
@@ -3498,7 +3735,11 @@ class AEONDeltaV3(nn.Module):
             generated_ids = outputs.get('generated_ids')
             
             if generated_ids is None or generated_ids.numel() == 0:
-                return "[Generation failed: No output]"
+                return {
+                    'text': '',
+                    'status': 'error',
+                    'reason': 'No output produced'
+                }
             
             # Decode
             generated_text = self.tokenizer.decode(
@@ -3509,12 +3750,20 @@ class AEONDeltaV3(nn.Module):
             # Cleanup
             generated_text = ' '.join(generated_text.split())
             
-            return generated_text
+            return {
+                'text': generated_text,
+                'status': 'ok',
+                'reason': None
+            }
         
         except Exception as e:
             logger.error(f"Generation error: {e}")
             logger.error(traceback.format_exc())
-            return f"[Generation failed: {str(e)}]"
+            return {
+                'text': '',
+                'status': 'error',
+                'reason': str(e)
+            }
     
     def count_parameters(self) -> int:
         """Total parameters."""
