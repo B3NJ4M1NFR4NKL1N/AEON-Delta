@@ -435,6 +435,7 @@ class TensorGuard:
         min_value: float = -1e6,
         enable_tracking: bool = True,
         alert_threshold: int = 10,
+        max_history_size: int = 1000,
     ):
         self.policy = policy
         self.default_value = default_value
@@ -442,12 +443,13 @@ class TensorGuard:
         self.min_value = min_value
         self.enable_tracking = enable_tracking
         self.alert_threshold = alert_threshold
+        self._max_history_size = max_history_size
         
         # Tracking statistics
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
-        self._context_history = []
+        self._context_history = deque(maxlen=max_history_size)
         
         logger.info(f"TensorGuard initialized: policy={policy.name}")
     
@@ -566,19 +568,13 @@ class TensorGuard:
         if tensor.dim() < 1:
             return self.sanitize(tensor, context)
         
-        # Check per batch dimension
+        # Vectorized check per batch dimension (avoid Python loop)
         batch_size = tensor.shape[0]
-        batch_has_issue = torch.zeros(
-            batch_size, 
-            dtype=torch.bool, 
-            device=tensor.device
+        flat_per_batch = tensor.view(batch_size, -1)
+        batch_has_issue = (
+            torch.isnan(flat_per_batch).any(dim=1) | 
+            torch.isinf(flat_per_batch).any(dim=1)
         )
-        
-        for b in range(batch_size):
-            batch_has_issue[b] = (
-                torch.isnan(tensor[b]).any() or 
-                torch.isinf(tensor[b]).any()
-            )
         
         num_bad_batches = batch_has_issue.sum().item()
         
@@ -638,7 +634,7 @@ class TensorGuard:
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
-        self._context_history = []
+        self._context_history = deque(maxlen=self._max_history_size)
 
 
 def tensor_safe(
@@ -1961,12 +1957,14 @@ class FastHessianComputer:
         self,
         method: str = 'finite_differences',
         epsilon: float = 1e-4,
-        use_cache: bool = True
+        use_cache: bool = True,
+        max_cache_size: int = 128
     ):
         self.method = method
         self.epsilon = epsilon
         self.use_cache = use_cache
-        self._cache = {} if use_cache else None
+        self._cache = OrderedDict() if use_cache else None
+        self._max_cache_size = max_cache_size
         
         # Check torch.func availability
         self.functorch_available = False
@@ -2051,6 +2049,9 @@ class FastHessianComputer:
         
         if self.use_cache:
             self._cache[cache_key] = result
+            # Evict oldest entries if cache exceeds max size
+            while len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)
         
         return result
     
@@ -2781,10 +2782,19 @@ class MemoryManager:
             logger.error(f"Failed to save memory: {e}")
     
     def load_memory(self):
-        """Load memory from disk."""
+        """Load memory from disk.
+        
+        Warning:
+            Uses weights_only=False for loading as memory contains numpy arrays
+            and metadata dicts. Only load memory files from trusted sources.
+        """
         path = os.path.join(self.config.memory_path, "fallback_memory.pt")
         if os.path.exists(path):
             try:
+                logger.warning(
+                    f"Loading memory with weights_only=False from '{path}'. "
+                    "Only load memory files from trusted sources."
+                )
                 # weights_only=False required: memory contains numpy arrays and metadata dicts
                 data = torch.load(path, map_location='cpu', weights_only=False)
                 self.fallback_vectors = data.get('vectors', [])
@@ -2792,7 +2802,7 @@ class MemoryManager:
                 self._size = data.get('size', len(self.fallback_vectors))
                 logger.info(f"Memory loaded from {path}")
             except Exception as e:
-                logger.error(f"Failed to load memory: {e}")
+                logger.error(f"Failed to load memory from '{path}': {e}")
     
     @property
     def size(self) -> int:

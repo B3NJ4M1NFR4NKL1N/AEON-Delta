@@ -165,6 +165,36 @@ class AEONConfigV4:
     # Прочее
     seed: int = 42
     use_amp: bool = True
+    
+    # Noise scale for VQ code reset
+    code_reset_noise_scale: float = 0.05
+
+    def __post_init__(self):
+        """Validate configuration parameters."""
+        if self.z_dim <= 0:
+            raise ValueError(f"z_dim must be positive, got {self.z_dim}")
+        if self.hidden_dim <= 0:
+            raise ValueError(f"hidden_dim must be positive, got {self.hidden_dim}")
+        if self.vocab_size <= 0:
+            raise ValueError(f"vocab_size must be positive, got {self.vocab_size}")
+        if self.seq_length <= 0:
+            raise ValueError(f"seq_length must be positive, got {self.seq_length}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+        if self.gradient_accumulation_steps <= 0:
+            raise ValueError(f"gradient_accumulation_steps must be positive, got {self.gradient_accumulation_steps}")
+        if self.learning_rate <= 0:
+            raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.vq_commitment_cost < 0:
+            raise ValueError(f"vq_commitment_cost must be non-negative, got {self.vq_commitment_cost}")
+        if self.context_window < 1:
+            raise ValueError(f"context_window must be >= 1, got {self.context_window}")
+        if self.vq_num_embeddings <= 0:
+            raise ValueError(f"vq_num_embeddings must be positive, got {self.vq_num_embeddings}")
+        if not (0 < self.vq_ema_decay < 1):
+            raise ValueError(f"vq_ema_decay must be in (0, 1), got {self.vq_ema_decay}")
+        if self.code_reset_noise_scale < 0:
+            raise ValueError(f"code_reset_noise_scale must be non-negative, got {self.code_reset_noise_scale}")
 
 
 # ==============================================================================
@@ -358,7 +388,8 @@ class VectorQuantizerHybridV4(nn.Module):
         epsilon: float = 1e-5,
         temperature: float = 1.0,
         reset_threshold: int = 30,
-        entropy_weight: float = 0.1
+        entropy_weight: float = 0.1,
+        code_reset_noise_scale: float = 0.05
     ):
         super().__init__()
         
@@ -370,6 +401,7 @@ class VectorQuantizerHybridV4(nn.Module):
         self.temperature = temperature
         self.reset_threshold = reset_threshold
         self.entropy_weight = entropy_weight
+        self.code_reset_noise_scale = code_reset_noise_scale
         
         # Кодбук с улучшенной инициализацией
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
@@ -488,7 +520,7 @@ class VectorQuantizerHybridV4(nn.Module):
             new_codes = z[random_indices].detach()
             
             # Больше шума для разнообразия
-            noise = torch.randn_like(new_codes) * 0.05
+            noise = torch.randn_like(new_codes) * self.code_reset_noise_scale
             new_codes = new_codes + noise
             
             unused_indices = torch.where(unused_mask)[0][:num_to_reset]
@@ -684,7 +716,8 @@ class AEONDeltaV4(nn.Module):
             decay=config.vq_ema_decay,
             temperature=config.vq_temperature,
             reset_threshold=config.vq_reset_threshold,
-            entropy_weight=config.entropy_weight
+            entropy_weight=config.entropy_weight,
+            code_reset_noise_scale=config.code_reset_noise_scale
         )
         
         self.decoder = ThoughtDecoder(
@@ -719,12 +752,37 @@ class AEONDeltaV4(nn.Module):
                         nn.init.zeros_(param)
 
     def encode(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Encode token IDs into latent thought vectors.
+        
+        Args:
+            tokens: Input token IDs of shape [B, seq_length].
+            
+        Returns:
+            Latent vectors of shape [B, z_dim].
+        """
         return self.encoder(tokens)
 
     def quantize(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """Quantize continuous latent vectors via VQ-VAE.
+        
+        Args:
+            z: Continuous latent vectors of shape [B, z_dim].
+            
+        Returns:
+            Tuple of (quantized, vq_loss, indices, stats).
+        """
         return self.vq(z)
 
     def decode(self, quantized_z: torch.Tensor, teacher_tokens: torch.Tensor) -> torch.Tensor:
+        """Decode quantized latent vectors back to token logits.
+        
+        Args:
+            quantized_z: Quantized vectors of shape [B, z_dim].
+            teacher_tokens: Teacher-forced token IDs of shape [B, seq_length].
+            
+        Returns:
+            Logits tensor of shape [B, seq_length, vocab_size].
+        """
         return self.decoder(quantized_z, teacher_tokens)
     
     def forward(self, tokens: torch.Tensor) -> Dict[str, Any]:
@@ -757,9 +815,17 @@ class DocumentAwareDataset(Dataset):
     def __init__(self, documents: List[List[torch.Tensor]], context_window: int = 3):
         """
         Args:
-            documents: List of documents, each is a list of token tensors (chunks)
-            context_window: Number of previous z to use as context
+            documents: List of documents, each is a list of token tensors (chunks).
+            context_window: Number of previous z to use as context (must be >= 1).
+            
+        Raises:
+            ValueError: If documents is empty or context_window < 1.
         """
+        if not documents:
+            raise ValueError("documents list must not be empty")
+        if context_window < 1:
+            raise ValueError(f"context_window must be >= 1, got {context_window}")
+        
         self.context_window = context_window
         self.samples = []  # List of (doc_idx, chunk_indices)
         
@@ -799,6 +865,18 @@ class DocumentAwareDataset(Dataset):
 
 def tokenize_batch(texts: List[str], tokenizer, max_len: int, 
                    device: torch.device) -> torch.Tensor:
+    """
+    Tokenize a batch of text strings into padded token ID tensors.
+    
+    Args:
+        texts: List of text strings to tokenize.
+        tokenizer: HuggingFace tokenizer instance, or None for ASCII fallback.
+        max_len: Maximum sequence length (texts are truncated/padded to this).
+        device: Target device for the output tensor.
+        
+    Returns:
+        Tensor of shape [len(texts), max_len] with token IDs (dtype=torch.long).
+    """
     if tokenizer:
         encoded = tokenizer(
             texts, 
@@ -821,13 +899,28 @@ def tokenize_batch(texts: List[str], tokenizer, max_len: int,
 def load_documents_from_json(json_path: str, tokenizer, max_len: int, 
                              min_chunks: int = 2, logger=None) -> List[List[torch.Tensor]]:
     """
-    ✅ НОВОЕ: Загружает документы с сохранением структуры
+    Load documents from a JSON-lines file, preserving document structure.
     
-    Ожидаемый формат JSON (одна строка = один документ):
-    {"doc_id": "...", "chunks": ["chunk1 text", "chunk2 text", ...]}
-    или
-    {"text": "full document text"}  — будет разбит на чанки
+    Each line should be a JSON object with one of:
+    - {"doc_id": "...", "chunks": ["chunk1 text", "chunk2 text", ...]}
+    - {"text": "full document text"} — will be split into chunks automatically
+    
+    Args:
+        json_path: Path to the JSON-lines file.
+        tokenizer: HuggingFace tokenizer or None (falls back to ASCII tokenization).
+        max_len: Maximum token sequence length per chunk.
+        min_chunks: Minimum number of chunks per document to include it.
+        logger: Optional logger instance.
+        
+    Returns:
+        List of documents, where each document is a list of token tensors.
+        
+    Raises:
+        FileNotFoundError: If json_path does not exist.
     """
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"JSON file not found: {json_path}")
+    
     documents = []
     errors = 0
     
@@ -980,6 +1073,19 @@ class SafeThoughtAETrainerV4:
         self.best_model_state = None
         
     def train_step(self, tokens: torch.Tensor) -> Dict[str, float]:
+        """Execute a single training step for the autoencoder.
+        
+        Args:
+            tokens: Input token IDs of shape [B, seq_length].
+            
+        Returns:
+            Dictionary with loss values and metrics:
+                - total_loss: Combined reconstruction + VQ loss (Tensor).
+                - recon_loss: Reconstruction loss (float).
+                - vq_loss: Vector quantization loss (float).
+                - perplexity: exp(recon_loss) (float).
+                - accuracy: Token prediction accuracy percentage (float).
+        """
         self.model.train()
         tokens = tokens.to(self.device)
         
@@ -990,6 +1096,14 @@ class SafeThoughtAETrainerV4:
             outputs = self._forward_pass(tokens)
         
         total_loss = outputs['total_loss']
+        
+        # Detect NaN/Inf loss to prevent corrupted gradient updates
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.warning(
+                f"⚠️ NaN/Inf loss detected at step {self.global_step}, skipping backward pass"
+            )
+            self.optimizer.zero_grad()
+            return outputs
         
         if self.use_amp:
             self.scaler.scale(total_loss).backward()
@@ -1318,8 +1432,34 @@ class ContextualRSSMTrainer:
 # ВАЛИДАЦИЯ
 # ==============================================================================
 
+def _validate_component(model_fn, test_input, expected_shape, name, logger):
+    """Validate a single model component with shape checking.
+    
+    Args:
+        model_fn: Callable that takes test_input and returns output tensor.
+        test_input: Input tensor(s) for the component.
+        expected_shape: Expected output shape tuple.
+        name: Component name for logging.
+        logger: Logger instance.
+        
+    Returns:
+        Tuple of (output_tensor, error_message_or_None).
+    """
+    try:
+        output = model_fn(test_input) if not isinstance(test_input, tuple) else model_fn(*test_input)
+        assert output.shape == expected_shape, (
+            f"Shape mismatch: expected {expected_shape}, got {output.shape}"
+        )
+        logger.info(f"   ✅ {name}: {test_input.shape if not isinstance(test_input, tuple) else [t.shape for t in test_input]} → {output.shape}")
+        return output, None
+    except Exception as e:
+        logger.error(f"   ❌ {name}: {e}")
+        return None, f"{name}: {e}"
+
+
 def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4, 
                                   logger: logging.Logger) -> bool:
+    """Validate all training components with shape and gradient checks."""
     logger.info("\n🔍 Валидация компонентов обучения v4...")
     
     issues = []
@@ -1412,10 +1552,34 @@ def main(
     resume_from: Optional[str] = None,
     document_aware: bool = True
 ):
-    """Основной пайплайн обучения v4"""
+    """Main training pipeline v4.
+    
+    Args:
+        json_path: Path to the input JSON-lines file with documents.
+        output_dir: Directory for saving checkpoints, logs, and artifacts.
+        epochs_A: Number of epochs for Phase A (AutoEncoder + VQ).
+        epochs_B: Number of epochs for Phase B (Contextual RSSM).
+        log_path: Path for the training log file.
+        resume_from: Optional path to a checkpoint to resume training from.
+        document_aware: If True, builds training pairs within document boundaries.
+        
+    Raises:
+        FileNotFoundError: If json_path does not exist.
+        ValueError: If epochs_A or epochs_B are non-positive.
+    """
     global logger
     
     logger = configure_logger(log_path)
+    
+    # Validate parameters
+    if not os.path.exists(json_path):
+        logger.error(f"❌ JSON file not found: {json_path}")
+        raise FileNotFoundError(f"JSON file not found: {json_path}")
+    if epochs_A <= 0:
+        raise ValueError(f"epochs_A must be positive, got {epochs_A}")
+    if epochs_B <= 0:
+        raise ValueError(f"epochs_B must be positive, got {epochs_B}")
+    
     monitor = TrainingMonitor(logger, save_dir=os.path.join(output_dir, "checkpoints"))
     
     # Заголовок
@@ -1502,9 +1666,18 @@ def main(
     # Загрузка checkpoint
     if resume_from and os.path.exists(resume_from):
         logger.info(f"📂 Загрузка checkpoint: {resume_from}")
-        # weights_only=False required: checkpoint contains optimizer state with non-tensor types
-        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.warning(
+            "⚠️ Loading checkpoint with weights_only=False. "
+            "Only load checkpoints from trusted sources."
+        )
+        try:
+            # weights_only=False required: checkpoint contains optimizer state with non-tensor types
+            checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            logger.info(f"   ✅ Checkpoint loaded successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to load checkpoint '{resume_from}': {e}")
+            return
     
     # Валидация
     if not validate_training_components(model, config, logger):
