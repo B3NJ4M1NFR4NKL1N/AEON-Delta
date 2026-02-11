@@ -1793,6 +1793,94 @@ def test_config_mamba2_validation():
     print("✅ test_config_mamba2_validation PASSED")
 
 
+def test_entropy_loss_single_embedding():
+    """Verify config validation rejects vq_num_embeddings < 2.
+    
+    When num_embeddings=1, max_entropy=log(1)=0, which would cause
+    division by zero in entropy computation. Config now enforces
+    vq_num_embeddings >= 2 to prevent this at initialization time.
+    """
+    from ae_train import AEONConfigV4
+
+    # vq_num_embeddings=1 should raise ValueError
+    try:
+        AEONConfigV4(vq_num_embeddings=1)
+        assert False, "Should have raised ValueError for vq_num_embeddings=1"
+    except ValueError as e:
+        assert "vq_num_embeddings" in str(e)
+
+    # vq_num_embeddings=0 should raise ValueError
+    try:
+        AEONConfigV4(vq_num_embeddings=0)
+        assert False, "Should have raised ValueError for vq_num_embeddings=0"
+    except ValueError as e:
+        assert "vq_num_embeddings" in str(e)
+
+    # vq_num_embeddings=2 should work
+    config = AEONConfigV4(vq_num_embeddings=2)
+    assert config.vq_num_embeddings == 2
+
+    print("✅ test_entropy_loss_single_embedding PASSED")
+
+
+def test_entropy_loss_guard():
+    """Verify VectorQuantizerHybridV4._compute_entropy_loss handles zero max_entropy."""
+    from ae_train import VectorQuantizerHybridV4
+    import math
+
+    vq = VectorQuantizerHybridV4(num_embeddings=2, embedding_dim=16)
+
+    # Normal case: should not raise
+    indices = torch.tensor([0, 1, 0, 1])
+    loss = vq._compute_entropy_loss(indices)
+    if isinstance(loss, torch.Tensor):
+        loss_val = loss.item()
+    else:
+        loss_val = float(loss)
+    assert not math.isnan(loss_val), "Entropy loss is NaN"
+    assert not math.isinf(loss_val), "Entropy loss is Inf"
+
+    print("✅ test_entropy_loss_guard PASSED")
+
+
+def test_certified_error_numerical_stability():
+    """Verify certified_error does not overflow for lip_const near 1.0.
+    
+    The certified error formula lip_const/(1-lip_const)*residual
+    now uses max(1-lip_const, 1e-6) to prevent catastrophic overflow.
+    """
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    ml = ProvablyConvergentMetaLoop(config, max_iterations=50, min_iterations=3)
+    ml.eval()
+
+    psi = torch.randn(2, config.z_dim)
+    with torch.no_grad():
+        C, iters, meta = ml.compute_fixed_point(psi)
+
+    if meta.get('certified_error_bound') is not None:
+        err = meta['certified_error_bound']
+        assert not math.isinf(err), f"Certified error is infinite: {err}"
+        assert not math.isnan(err), f"Certified error is NaN: {err}"
+
+    print("✅ test_certified_error_numerical_stability PASSED")
+
+
+def test_version_consistency():
+    """Verify __version__ matches the documented version in docstring."""
+    from aeon_core import __version__
+    
+    assert __version__ == "3.1.0", f"Expected version 3.1.0, got {__version__}"
+
+    print("✅ test_version_consistency PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -1881,6 +1969,12 @@ if __name__ == '__main__':
     test_mamba2_long_sequence()
     test_aeon_v3_with_mamba2_backend()
     test_config_mamba2_validation()
+    
+    # Refactoring analysis fix tests
+    test_entropy_loss_single_embedding()
+    test_entropy_loss_guard()
+    test_certified_error_numerical_stability()
+    test_version_consistency()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

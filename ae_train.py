@@ -189,8 +189,8 @@ class AEONConfigV4:
             raise ValueError(f"vq_commitment_cost must be non-negative, got {self.vq_commitment_cost}")
         if self.context_window < 1:
             raise ValueError(f"context_window must be >= 1, got {self.context_window}")
-        if self.vq_num_embeddings <= 0:
-            raise ValueError(f"vq_num_embeddings must be positive, got {self.vq_num_embeddings}")
+        if self.vq_num_embeddings < 2:
+            raise ValueError(f"vq_num_embeddings must be >= 2, got {self.vq_num_embeddings}")
         if not (0 < self.vq_ema_decay < 1):
             raise ValueError(f"vq_ema_decay must be in (0, 1), got {self.vq_ema_decay}")
         if self.code_reset_noise_scale < 0:
@@ -488,7 +488,7 @@ class VectorQuantizerHybridV4(nn.Module):
         max_entropy = math.log(self.num_embeddings)
         
         # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
-        entropy_loss = 1.0 - (entropy / max_entropy)
+        entropy_loss = 1.0 - (entropy / max_entropy) if max_entropy > 0 else 0.0
         
         return entropy_loss
     
