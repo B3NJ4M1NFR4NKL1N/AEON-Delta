@@ -1452,10 +1452,11 @@ def test_config_immutability():
     
     config = AEONConfig()
     
-    # 'device' should not be a direct attribute — use device_manager.device instead
-    assert not hasattr(config, 'device') or isinstance(
-        type(config).__dict__.get('device'), property
-    ), "AEONConfig should not have a mutable 'device' attribute"
+    # 'device' should not be a direct instance attribute — use device_manager.device
+    assert not hasattr(config, 'device'), (
+        "AEONConfig should not have a mutable 'device' attribute; "
+        "use config.device_manager.device instead"
+    )
     
     # device_manager should be available
     assert config.device_manager is not None, "device_manager should be initialized"
