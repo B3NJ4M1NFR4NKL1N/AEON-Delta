@@ -1725,6 +1725,9 @@ def main(
     trainer_A = SafeThoughtAETrainerV4(model, config, monitor, output_dir)
     trainer_A.fit(tokens, epochs=epochs_A)
 
+    # Save best loss before releasing Phase A resources
+    best_loss_A = trainer_A.best_loss
+
     # Release Phase A training resources before Phase B
     del trainer_A
     if torch.cuda.is_available():
@@ -1803,7 +1806,7 @@ def main(
         'training_info': {
             'epochs_A': epochs_A,
             'epochs_B': epochs_B,
-            'final_loss_A': trainer_A.best_loss,
+            'final_loss_A': best_loss_A,
             'final_loss_B': trainer_B.best_loss,
             'document_aware': document_aware,
             'timestamp': datetime.now().isoformat(),
@@ -1821,7 +1824,7 @@ def main(
     logger.info(f"💾 Финальная модель: {final_path}")
     
     logger.info("\n📊 ИТОГОВАЯ СВОДКА v4:")
-    logger.info(f"   Phase A лучший loss: {trainer_A.best_loss:.6f}")
+    logger.info(f"   Phase A лучший loss: {best_loss_A:.6f}")
     logger.info(f"   Phase B лучший MSE: {trainer_B.best_loss:.6f}")
     logger.info(f"   Codebook utilization: {model.vq.get_codebook_usage():.2f}%")
     logger.info(f"   Context window: {config.context_window}")
