@@ -19,6 +19,29 @@ The system implements a **provably convergent architecture** with certified erro
 
 ## 🧠 Core Architecture: AEON-Delta RMT v3.0
 
+### **0. Advanced Sequence Processing — SSM & Linear Attention**
+AEON-Δ v3.0 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
+
+| Dimension | Transformer | AEON-Δ (SSM) | AEON-Δ (Linear Attn) |
+|---|---|---|---|
+| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
+| **Training Complexity** | O(n²) | **O(n)** | **O(n)** |
+| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
+| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** |
+| **Pretrained Models** | Fixed architecture | **Adapter-based integration** | **Adapter-based integration** |
+
+**Available backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
+- **`ssm`** (default): Selective State Space Model inspired by Mamba — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
+- **`linear_attention`**: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
+- **`lstm`**: Original LSTM backend for backward compatibility
+
+**Additional scalability features:**
+- **`ChunkedSequenceProcessor`**: Process sequences of arbitrary length in overlapping chunks with state propagation — O(chunk_size) memory regardless of total length
+- **`InferenceCache`**: Persistent state caching for O(1) per-step autoregressive generation
+- **`PretrainedBackboneAdapter`**: Bottleneck adapter for integrating any HuggingFace pretrained model as a frozen backbone with minimal trainable parameters
+
+---
+
 ### **1. Tensor Safety System & Device Management**  
 Unlike conventional systems, AEON-Δ implements production-grade tensor safety with:
 - **NaN/Inf handling policies**: `RAISE`, `WARN`, `SILENT`, `QUARANTINE`  

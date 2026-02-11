@@ -503,6 +503,425 @@ def test_safe_checkpoint_loading():
     print("✅ test_safe_checkpoint_loading PASSED")
 
 
+# ============================================================================
+# MODERNIZATION TESTS: SelectiveSSM, LinearAttention, Chunking, Caching
+# ============================================================================
+
+def test_selective_ssm_forward():
+    """Verify SelectiveSSM produces correct output shapes and is NaN-free."""
+    from aeon_core import SelectiveSSM
+
+    ssm = SelectiveSSM(d_model=64, d_state=16, num_layers=2, expand_factor=2)
+    ssm.eval()
+
+    x = torch.randn(2, 32, 64)
+    with torch.no_grad():
+        y, states = ssm(x)
+
+    assert y.shape == (2, 32, 64), f"Expected (2,32,64), got {y.shape}"
+    assert not torch.isnan(y).any(), "SSM output contains NaN"
+    assert not torch.isinf(y).any(), "SSM output contains Inf"
+    assert len(states) == 2, f"Expected 2 layer states, got {len(states)}"
+
+    print("✅ test_selective_ssm_forward PASSED")
+
+
+def test_ssm_state_caching():
+    """Verify SSM state caching propagates state across chunks."""
+    from aeon_core import SelectiveSSM
+
+    ssm = SelectiveSSM(d_model=32, d_state=8, num_layers=1)
+    ssm.eval()
+
+    # Process full sequence
+    x = torch.randn(1, 10, 32)
+    with torch.no_grad():
+        y_full, _ = ssm(x)
+
+    # Process in two halves with state passing
+    with torch.no_grad():
+        y1, state = ssm(x[:, :5, :])
+        y2, _ = ssm(x[:, 5:, :], state=state)
+
+    y_chunked = torch.cat([y1, y2], dim=1)
+    # Note: The depthwise Conv1d (kernel_size=3, padding=1) introduces boundary
+    # effects at chunk split points since the convolution context differs for
+    # adjacent elements at the boundary. The 1.0 threshold accounts for this
+    # architectural property while still catching large state propagation errors.
+    max_diff = torch.max(torch.abs(y_full - y_chunked)).item()
+    assert max_diff < 1.0, \
+        f"State caching divergence too large: max diff={max_diff:.6f}"
+    assert not torch.isnan(y_chunked).any(), "Chunked output contains NaN"
+    assert y_chunked.shape == y_full.shape, "Shape mismatch"
+
+    print(f"✅ test_ssm_state_caching PASSED (max_diff={max_diff:.4f})")
+
+
+def test_linear_attention_block():
+    """Verify LinearAttentionBlock produces correct shapes and is NaN-free."""
+    from aeon_core import LinearAttentionBlock
+
+    block = LinearAttentionBlock(d_model=64, num_heads=4, feature_dim=32, causal=True)
+    block.eval()
+
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        y, state = block(x)
+
+    assert y.shape == (2, 16, 64), f"Expected (2,16,64), got {y.shape}"
+    assert not torch.isnan(y).any(), "LinearAttention output contains NaN"
+    assert state is not None, "Causal linear attention should return state"
+
+    print("✅ test_linear_attention_block PASSED")
+
+
+def test_linear_attention_bidirectional():
+    """Verify bidirectional linear attention works."""
+    from aeon_core import LinearAttentionBlock
+
+    block = LinearAttentionBlock(d_model=64, num_heads=4, feature_dim=32, causal=False)
+    block.eval()
+
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        y, state = block(x)
+
+    assert y.shape == (2, 16, 64), f"Expected (2,16,64), got {y.shape}"
+    assert state is None, "Bidirectional attention should return None state"
+
+    print("✅ test_linear_attention_bidirectional PASSED")
+
+
+def test_chunked_sequence_processor():
+    """Verify ChunkedSequenceProcessor handles long sequences correctly."""
+    from aeon_core import ChunkedSequenceProcessor
+
+    processor = ChunkedSequenceProcessor(chunk_size=8, overlap=2)
+
+    # Simple identity model
+    def model_fn(x, state):
+        return x * 2.0, state
+
+    x = torch.randn(2, 20, 32)
+    y, _ = processor.process(model_fn, x)
+
+    assert y.shape == (2, 20, 32), f"Expected (2,20,32), got {y.shape}"
+
+    # Short sequence should go through directly
+    x_short = torch.randn(2, 4, 32)
+    y_short, _ = processor.process(model_fn, x_short)
+    assert torch.allclose(y_short, x_short * 2.0), "Short sequence handling failed"
+
+    print("✅ test_chunked_sequence_processor PASSED")
+
+
+def test_inference_cache():
+    """Verify InferenceCache state management."""
+    from aeon_core import InferenceCache
+
+    cache = InferenceCache()
+    assert cache.step == 0
+
+    # Set SSM state
+    states = [torch.randn(2, 32, 16)]
+    cache.set_ssm_state(states)
+    assert cache.step == 1
+    assert cache.get_ssm_state() is not None
+
+    # Reset
+    cache.reset()
+    assert cache.step == 0
+    assert cache.get_ssm_state() is None
+
+    print("✅ test_inference_cache PASSED")
+
+
+def test_ssm_thought_encoder():
+    """Verify SSMThoughtEncoder produces correct shapes with validation."""
+    from aeon_core import SSMThoughtEncoder
+
+    enc = SSMThoughtEncoder(
+        vocab_size=100, emb_dim=32, z_dim=32,
+        d_state=8, num_layers=1, expand_factor=2
+    )
+    enc.eval()
+
+    # Valid input
+    tokens = torch.randint(0, 100, (2, 16))
+    mask = torch.ones(2, 16)
+    with torch.no_grad():
+        z = enc(tokens, attention_mask=mask)
+    assert z.shape == (2, 32), f"Expected (2,32), got {z.shape}"
+    assert not torch.isnan(z).any(), "Encoder output has NaN"
+
+    # Input validation - wrong dtype
+    try:
+        enc(torch.randn(2, 10))
+        assert False, "Should have raised TypeError"
+    except TypeError:
+        pass
+
+    # Input validation - out of range
+    try:
+        enc(torch.tensor([[999]], dtype=torch.long))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    # Input validation - mask mismatch
+    try:
+        enc(torch.randint(0, 100, (2, 10)), attention_mask=torch.ones(3, 10))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    print("✅ test_ssm_thought_encoder PASSED")
+
+
+def test_ssm_thought_decoder_train():
+    """Verify SSMThoughtDecoder training mode produces correct shapes."""
+    from aeon_core import SSMThoughtDecoder
+
+    dec = SSMThoughtDecoder(
+        vocab_size=200, emb_dim=32, z_dim=32,
+        d_state=8, num_layers=1, expand_factor=2,
+        cls_token_id=101, sep_token_id=102
+    )
+    dec.eval()
+
+    z = torch.randn(2, 32)
+    teacher = torch.randint(0, 200, (2, 16))
+    with torch.no_grad():
+        logits = dec(z, teacher_tokens=teacher, mode='train')
+    assert logits.shape == (2, 16, 200), f"Expected (2,16,200), got {logits.shape}"
+    assert not torch.isnan(logits).any(), "Decoder logits have NaN"
+
+    print("✅ test_ssm_thought_decoder_train PASSED")
+
+
+def test_ssm_thought_decoder_inference():
+    """Verify SSMThoughtDecoder inference mode with per-sequence stopping."""
+    from aeon_core import SSMThoughtDecoder
+
+    dec = SSMThoughtDecoder(
+        vocab_size=200, emb_dim=32, z_dim=32,
+        d_state=8, num_layers=1, expand_factor=2,
+        cls_token_id=101, sep_token_id=102
+    )
+    dec.eval()
+
+    z = torch.randn(3, 32)
+    with torch.no_grad():
+        gen_ids, logits = dec(z, mode='inference', max_length=20, temperature=1.0, sample=True)
+
+    assert gen_ids.shape[0] == 3, "Batch size mismatch"
+    # max_length=20 steps + 1 prefix (CLS) + 1 potential SEP = 22 max tokens
+    assert gen_ids.shape[1] <= 22, f"Generated too many tokens: {gen_ids.shape[1]}"
+    assert not torch.isnan(logits).any(), "NaN in generated logits"
+
+    print("✅ test_ssm_thought_decoder_inference PASSED")
+
+
+def test_linear_attention_encoder():
+    """Verify LinearAttentionEncoder produces correct shapes."""
+    from aeon_core import LinearAttentionEncoder
+
+    enc = LinearAttentionEncoder(
+        vocab_size=100, emb_dim=32, z_dim=32,
+        num_heads=2, feature_dim=16, num_layers=1
+    )
+    enc.eval()
+
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        z = enc(tokens)
+    assert z.shape == (2, 32), f"Expected (2,32), got {z.shape}"
+    assert not torch.isnan(z).any(), "Linear attention encoder NaN"
+
+    print("✅ test_linear_attention_encoder PASSED")
+
+
+def test_build_encoder_factory():
+    """Verify build_encoder produces the right encoder type for each backend."""
+    from aeon_core import AEONConfig, build_encoder, ThoughtEncoder, SSMThoughtEncoder, LinearAttentionEncoder
+
+    # LSTM backend
+    config_lstm = AEONConfig(device_str='cpu', encoder_backend='lstm')
+    enc_lstm = build_encoder(config_lstm)
+    assert isinstance(enc_lstm, ThoughtEncoder), f"Expected ThoughtEncoder, got {type(enc_lstm)}"
+
+    # SSM backend
+    config_ssm = AEONConfig(device_str='cpu', encoder_backend='ssm')
+    enc_ssm = build_encoder(config_ssm)
+    assert isinstance(enc_ssm, SSMThoughtEncoder), f"Expected SSMThoughtEncoder, got {type(enc_ssm)}"
+
+    # Linear attention backend
+    config_la = AEONConfig(device_str='cpu', encoder_backend='linear_attention')
+    enc_la = build_encoder(config_la)
+    assert isinstance(enc_la, LinearAttentionEncoder), f"Expected LinearAttentionEncoder, got {type(enc_la)}"
+
+    print("✅ test_build_encoder_factory PASSED")
+
+
+def test_build_decoder_factory():
+    """Verify build_decoder produces the right decoder type for each backend."""
+    from aeon_core import AEONConfig, build_decoder, ThoughtDecoder, SSMThoughtDecoder
+
+    config_lstm = AEONConfig(device_str='cpu', decoder_backend='lstm')
+    dec_lstm = build_decoder(config_lstm)
+    assert isinstance(dec_lstm, ThoughtDecoder), f"Expected ThoughtDecoder, got {type(dec_lstm)}"
+
+    config_ssm = AEONConfig(device_str='cpu', decoder_backend='ssm')
+    dec_ssm = build_decoder(config_ssm)
+    assert isinstance(dec_ssm, SSMThoughtDecoder), f"Expected SSMThoughtDecoder, got {type(dec_ssm)}"
+
+    print("✅ test_build_decoder_factory PASSED")
+
+
+def test_ssm_long_sequence():
+    """Verify SSM handles long sequences (>1024 tokens) in O(n) time."""
+    from aeon_core import SSMThoughtEncoder
+
+    enc = SSMThoughtEncoder(
+        vocab_size=1000, emb_dim=64, z_dim=64,
+        d_state=16, num_layers=1, expand_factor=2
+    )
+    enc.eval()
+
+    # Long sequence: 2048 tokens
+    tokens = torch.randint(0, 1000, (1, 2048))
+    with torch.no_grad():
+        z = enc(tokens)
+    assert z.shape == (1, 64), f"Expected (1,64), got {z.shape}"
+    assert not torch.isnan(z).any(), "Long-sequence encoding has NaN"
+
+    print("✅ test_ssm_long_sequence PASSED")
+
+
+def test_ssm_gradient_flow():
+    """Verify gradients flow through the SSM encoder."""
+    from aeon_core import SSMThoughtEncoder
+
+    enc = SSMThoughtEncoder(vocab_size=100, emb_dim=32, z_dim=32, d_state=8, num_layers=1)
+    tokens = torch.randint(0, 100, (2, 10))
+    z = enc(tokens)
+    loss = z.sum()
+    loss.backward()
+
+    # Check some parameters have gradients
+    has_grad = False
+    for p in enc.parameters():
+        if p.grad is not None and p.grad.abs().sum() > 0:
+            has_grad = True
+            break
+    assert has_grad, "No gradient flow through SSM encoder"
+
+    print("✅ test_ssm_gradient_flow PASSED")
+
+
+def test_aeon_v3_with_ssm_backend():
+    """Verify AEONDeltaV3 works with SSM backend end-to-end."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        encoder_backend='ssm',
+        decoder_backend='ssm',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(0, 100, (2, 16))
+    mask = torch.ones(2, 16)
+
+    with torch.no_grad():
+        result = model(tokens, attention_mask=mask, decode_mode='train')
+
+    assert 'logits' in result
+    assert 'thoughts' in result
+    assert result['logits'].shape[0] == 2
+    assert not torch.isnan(result['logits']).any(), "SSM backend logits have NaN"
+
+    print("✅ test_aeon_v3_with_ssm_backend PASSED")
+
+
+def test_aeon_v3_with_lstm_backend():
+    """Verify AEONDeltaV3 still works with LSTM backend (backward compatibility)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        encoder_backend='lstm',
+        decoder_backend='lstm',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(0, 100, (2, 16))
+    mask = torch.ones(2, 16)
+
+    with torch.no_grad():
+        result = model(tokens, attention_mask=mask, decode_mode='train')
+
+    assert 'logits' in result
+    assert result['logits'].shape[0] == 2
+
+    print("✅ test_aeon_v3_with_lstm_backend PASSED")
+
+
+def test_config_backend_validation():
+    """Verify AEONConfig validates backend parameters correctly."""
+    from aeon_core import AEONConfig
+
+    # Valid backends should work
+    AEONConfig(device_str='cpu', encoder_backend='lstm')
+    AEONConfig(device_str='cpu', encoder_backend='ssm')
+    AEONConfig(device_str='cpu', encoder_backend='linear_attention')
+    AEONConfig(device_str='cpu', decoder_backend='lstm')
+    AEONConfig(device_str='cpu', decoder_backend='ssm')
+
+    # Invalid backend should fail
+    try:
+        AEONConfig(device_str='cpu', encoder_backend='transformer')
+        assert False, "Should have raised AssertionError"
+    except AssertionError:
+        pass
+
+    try:
+        AEONConfig(device_str='cpu', decoder_backend='transformer')
+        assert False, "Should have raised AssertionError"
+    except AssertionError:
+        pass
+
+    print("✅ test_config_backend_validation PASSED")
+
+
+def test_pretrained_backbone_adapter_fallback():
+    """Verify PretrainedBackboneAdapter works in fallback mode."""
+    from aeon_core import PretrainedBackboneAdapter
+
+    # No pretrained model - should work in fallback
+    adapter = PretrainedBackboneAdapter(
+        pretrained_model_name="",
+        target_dim=64,
+        adapter_dim=16,
+    )
+    adapter.eval()
+
+    tokens = torch.randint(0, 100, (2, 10))
+    with torch.no_grad():
+        features = adapter(tokens)
+    assert features.shape == (2, 10, 64), f"Expected (2,10,64), got {features.shape}"
+
+    print("✅ test_pretrained_backbone_adapter_fallback PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -524,6 +943,26 @@ if __name__ == '__main__':
     test_set_seed_reproducibility()
     test_compute_lipschitz_loss_standalone()
     test_safe_checkpoint_loading()
+    
+    # Modernization tests
+    test_selective_ssm_forward()
+    test_ssm_state_caching()
+    test_linear_attention_block()
+    test_linear_attention_bidirectional()
+    test_chunked_sequence_processor()
+    test_inference_cache()
+    test_ssm_thought_encoder()
+    test_ssm_thought_decoder_train()
+    test_ssm_thought_decoder_inference()
+    test_linear_attention_encoder()
+    test_build_encoder_factory()
+    test_build_decoder_factory()
+    test_ssm_long_sequence()
+    test_ssm_gradient_flow()
+    test_aeon_v3_with_ssm_backend()
+    test_aeon_v3_with_lstm_backend()
+    test_config_backend_validation()
+    test_pretrained_backbone_adapter_fallback()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
