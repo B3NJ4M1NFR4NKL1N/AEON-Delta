@@ -1373,8 +1373,8 @@ def test_aeon_v3_with_hierarchical_memory():
 # Tests for refactoring fixes (analysis-driven)
 # ============================================================================
 
-def test_hessian_forward_ad_method_exists():
-    """Verify _hessian_forward_ad is defined and callable."""
+def test_hessian_forward_ad_computation():
+    """Verify _hessian_forward_ad is defined and produces correct output."""
     from aeon_core import FastHessianComputer
 
     hc = FastHessianComputer(method='finite_differences')
@@ -1390,7 +1390,7 @@ def test_hessian_forward_ad_method_exists():
     H = hc._hessian_forward_ad(quadratic, x)
     assert H.shape == (2, 4, 4), f"Expected (2,4,4), got {H.shape}"
 
-    print("✅ test_hessian_forward_ad_method_exists PASSED")
+    print("✅ test_hessian_forward_ad_computation PASSED")
 
 
 def test_usage_stats_zero_count_safety():
@@ -1403,6 +1403,11 @@ def test_usage_stats_zero_count_safety():
     # Normal usage should work
     indices = torch.tensor([0, 1, 2, 3])
     vq._update_usage_stats(indices)  # Should not raise
+
+    # Edge case: empty indices produce zero-sum usage_count
+    # torch.bincount(empty, minlength=16) -> all zeros, sum = 0
+    empty_indices = torch.tensor([], dtype=torch.long)
+    vq._update_usage_stats(empty_indices)  # Should not raise (division by zero guarded)
 
     print("✅ test_usage_stats_zero_count_safety PASSED")
 
@@ -1500,7 +1505,7 @@ if __name__ == '__main__':
     test_aeon_v3_with_hierarchical_memory()
     
     # Analysis-driven fix tests
-    test_hessian_forward_ad_method_exists()
+    test_hessian_forward_ad_computation()
     test_usage_stats_zero_count_safety()
     test_ema_update_zero_cluster_safety()
     
