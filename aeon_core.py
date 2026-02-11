@@ -2713,7 +2713,7 @@ class RobustVectorQuantizer(nn.Module):
         self._steps_since_used[unique_codes] = 0
         
         # Perplexity
-        probs = usage_count.float() / usage_count.sum()
+        probs = usage_count.float() / usage_count.sum().clamp(min=1)
         probs = probs[probs > 0]
         perplexity = torch.exp(-torch.sum(probs * torch.log(probs + 1e-10)))
         self._perplexity_ema = 0.99 * self._perplexity_ema + 0.01 * perplexity
@@ -2740,7 +2740,7 @@ class RobustVectorQuantizer(nn.Module):
         
         # Update embedding
         self.embedding.weight.data.copy_(
-            self._ema_w / self._ema_cluster_size.unsqueeze(1)
+            self._ema_w / self._ema_cluster_size.clamp(min=self.epsilon).unsqueeze(1)
         )
     
     def _maintain_codebook(self, recent_inputs: torch.Tensor):
@@ -3537,6 +3537,42 @@ class FastHessianComputer:
         
         return H_batch
     
+    def _hessian_forward_ad(
+        self,
+        func: callable,
+        x: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Hessian via forward-mode AD (torch.func).
+
+        Falls back to finite differences if torch.func is unavailable.
+        """
+        if not self.functorch_available:
+            return self._hessian_finite_differences(func, x)
+
+        import torch.func as tf
+
+        B, n = x.shape
+        device = x.device
+        H_batch = torch.zeros(B, n, n, device=device, dtype=x.dtype)
+
+        for b in range(B):
+            xi = x[b]  # [n]
+
+            def scalar_fn(v):
+                out = func(v.unsqueeze(0))
+                if out.dim() > 0:
+                    out = out.squeeze()
+                return out
+
+            # grad_fn: R^n -> R^n  (gradient of scalar_fn)
+            grad_fn = tf.grad(scalar_fn)
+            # jacobian of gradient = Hessian
+            H_b = tf.jacrev(grad_fn)(xi)
+            H_batch[b] = H_b
+
+        return H_batch
+
     def _hash_tensor(self, t: torch.Tensor) -> int:
         """Hash tensor for caching using multiple statistics to reduce collisions."""
         t_flat = t.detach().float().flatten()
