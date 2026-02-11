@@ -46,10 +46,14 @@ except ImportError:
 
 # --- Mixed Precision ---
 try:
-    from torch.cuda.amp import GradScaler, autocast
+    from torch.amp import GradScaler, autocast
     AMP_AVAILABLE = torch.cuda.is_available()
 except ImportError:
-    AMP_AVAILABLE = False
+    try:
+        from torch.cuda.amp import GradScaler, autocast
+        AMP_AVAILABLE = torch.cuda.is_available()
+    except ImportError:
+        AMP_AVAILABLE = False
 
 
 # ==============================================================================
@@ -626,7 +630,7 @@ class ContextualRSSM(nn.Module):
         weighted_context = (z_context * attn_weights).sum(dim=1)  # [B, D]
         
         # Конкатенация всего контекста
-        flat_context = z_context.view(B, -1)  # [B, K*D]
+        flat_context = z_context.reshape(B, -1)  # [B, K*D]
         
         # Проекция
         proj = self.context_proj(flat_context)  # [B, rssm_hidden]
@@ -870,7 +874,8 @@ def load_documents_from_json(json_path: str, tokenizer, max_len: int,
         logger.info(f"✅ Загружено {len(documents):,} документов")
         total_chunks = sum(len(d) for d in documents)
         logger.info(f"   Всего чанков: {total_chunks:,}")
-        logger.info(f"   Среднее чанков/документ: {total_chunks/len(documents):.1f}")
+        avg_chunks = total_chunks / len(documents) if documents else 0
+        logger.info(f"   Среднее чанков/документ: {avg_chunks:.1f}")
         logger.info(f"   Пропущено с ошибками: {errors}")
     
     return documents
@@ -979,7 +984,7 @@ class SafeThoughtAETrainerV4:
         tokens = tokens.to(self.device)
         
         if self.use_amp:
-            with autocast():
+            with autocast(device_type=self.device.type):
                 outputs = self._forward_pass(tokens)
         else:
             outputs = self._forward_pass(tokens)
@@ -1480,7 +1485,7 @@ def main(
                     text = data.get("text", "") if isinstance(data, dict) else str(data)
                     if text and len(text.strip()) > 10:
                         texts.append(text)
-                except:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
         
         tokens = tokenize_batch(texts, tokenizer, config.seq_length, device)
@@ -1497,7 +1502,8 @@ def main(
     # Загрузка checkpoint
     if resume_from and os.path.exists(resume_from):
         logger.info(f"📂 Загрузка checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
+        # weights_only=False required: checkpoint contains optimizer state with non-tensor types
+        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
     
     # Валидация

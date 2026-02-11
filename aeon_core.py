@@ -126,13 +126,16 @@ __version__ = "3.0.0"
 __author__ = "AEON Research Team"
 
 # Logging setup
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.append(logging.FileHandler('aeon_delta.log'))
+except OSError:
+    pass  # Skip file handler if path is not writable
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('aeon_delta.log')
-    ]
+    handlers=_log_handlers
 )
 logger = logging.getLogger("AEON-Delta")
 
@@ -2782,7 +2785,8 @@ class MemoryManager:
         path = os.path.join(self.config.memory_path, "fallback_memory.pt")
         if os.path.exists(path):
             try:
-                data = torch.load(path, map_location='cpu')
+                # weights_only=False required: memory contains numpy arrays and metadata dicts
+                data = torch.load(path, map_location='cpu', weights_only=False)
                 self.fallback_vectors = data.get('vectors', [])
                 self.fallback_metas = data.get('metas', [])
                 self._size = data.get('size', len(self.fallback_vectors))
@@ -3408,7 +3412,6 @@ class AEONDeltaV3(nn.Module):
         
         except Exception as e:
             logger.error(f"Generation error: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return f"[Generation failed: {str(e)}]"
     
@@ -3514,7 +3517,6 @@ class AEONDeltaV3(nn.Module):
         
         except Exception as e:
             logger.error(f"❌ Failed to save state: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
     
@@ -3539,7 +3541,7 @@ class AEONDeltaV3(nn.Module):
             model_path = save_dir / "model.pt"
             if model_path.exists():
                 logger.info("Loading model weights...")
-                state_dict = torch.load(model_path, map_location=self.device)
+                state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
                 
                 # Handle incompatibilities
                 model_state = self.state_dict()
@@ -3631,7 +3633,6 @@ class AEONDeltaV3(nn.Module):
         
         except Exception as e:
             logger.error(f"❌ Failed to load state: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
 
