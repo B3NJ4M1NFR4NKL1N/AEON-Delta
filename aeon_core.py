@@ -61,7 +61,6 @@ from collections import OrderedDict, defaultdict, Counter, deque
 from contextlib import contextmanager
 from functools import wraps
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 # Core scientific computing
 import numpy as np
@@ -435,6 +434,7 @@ class TensorGuard:
         min_value: float = -1e6,
         enable_tracking: bool = True,
         alert_threshold: int = 10,
+        max_history_size: int = 1000,
     ):
         self.policy = policy
         self.default_value = default_value
@@ -442,12 +442,13 @@ class TensorGuard:
         self.min_value = min_value
         self.enable_tracking = enable_tracking
         self.alert_threshold = alert_threshold
+        self._max_history_size = max_history_size
         
         # Tracking statistics
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
-        self._context_history = []
+        self._context_history = deque(maxlen=max_history_size)
         
         logger.info(f"TensorGuard initialized: policy={policy.name}")
     
@@ -566,19 +567,13 @@ class TensorGuard:
         if tensor.dim() < 1:
             return self.sanitize(tensor, context)
         
-        # Check per batch dimension
+        # Vectorized check per batch dimension (avoid Python loop)
         batch_size = tensor.shape[0]
-        batch_has_issue = torch.zeros(
-            batch_size, 
-            dtype=torch.bool, 
-            device=tensor.device
+        flat_per_batch = tensor.view(batch_size, -1)
+        batch_has_issue = (
+            torch.isnan(flat_per_batch).any(dim=1) | 
+            torch.isinf(flat_per_batch).any(dim=1)
         )
-        
-        for b in range(batch_size):
-            batch_has_issue[b] = (
-                torch.isnan(tensor[b]).any() or 
-                torch.isinf(tensor[b]).any()
-            )
         
         num_bad_batches = batch_has_issue.sum().item()
         
@@ -638,7 +633,7 @@ class TensorGuard:
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
-        self._context_history = []
+        self._context_history = deque(maxlen=self._max_history_size)
 
 
 def tensor_safe(
@@ -762,6 +757,8 @@ class AEONConfig:
     num_pillars: int = 5
     seq_length: int = 64
     action_dim: int = 64
+    cls_token_id: int = 101   # [CLS] token ID (BERT default)
+    sep_token_id: int = 102   # [SEP] token ID (BERT default)
     knowledge_dim: int = 128
     
     # ===== META-LOOP =====
@@ -798,6 +795,8 @@ class AEONConfig:
     learning_rate: float = 3e-5
     weight_decay: float = 0.01
     warmup_steps: int = 1000
+    cosine_decay_steps: int = 10000
+    min_lr_ratio: float = 0.1
     batch_size: int = 32
     gradient_clip_norm: float = 1.0
     dropout_rate: float = 0.1
@@ -862,13 +861,21 @@ class AEONConfig:
         # Critical validations
         assert self.z_dim > 0, "z_dim must be positive"
         assert self.hidden_dim > 0, "hidden_dim must be positive"
+        assert self.vocab_size > 0, "vocab_size must be positive"
+        assert self.seq_length > 0, "seq_length must be positive"
         assert self.num_pillars >= 3, "num_pillars must be >= 3"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
         assert 0 <= self.alpha <= 1, "alpha must be in [0, 1]"
         assert 0 < self.lipschitz_target < 1, "lipschitz_target must be in (0, 1)"
         assert self.topo_method in ("finite_differences", "forward_ad", "hutchinson")
-        assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE")
+        assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE", "RETURN_NONE")
+        assert self.cosine_decay_steps > 0, "cosine_decay_steps must be positive"
+        assert 0 < self.min_lr_ratio <= 1, "min_lr_ratio must be in (0, 1]"
+        assert 0 <= self.cls_token_id < self.vocab_size, \
+            f"cls_token_id ({self.cls_token_id}) must be in [0, vocab_size)"
+        assert 0 <= self.sep_token_id < self.vocab_size, \
+            f"sep_token_id ({self.sep_token_id}) must be in [0, vocab_size)"
         
         # Device initialization
         if self.device_str == "auto":
@@ -895,7 +902,8 @@ class AEONConfig:
             "RAISE": NaNPolicy.RAISE,
             "WARN": NaNPolicy.WARN,
             "SILENT": NaNPolicy.SILENT,
-            "QUARANTINE": NaNPolicy.QUARANTINE
+            "QUARANTINE": NaNPolicy.QUARANTINE,
+            "RETURN_NONE": NaNPolicy.RETURN_NONE
         }
         self.tensor_guard = TensorGuard(
             policy=policy_map[self.nan_policy],
@@ -1041,11 +1049,14 @@ class ThoughtDecoder(nn.Module):
     - Invalid token filtering ([unused###])
     """
     
-    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256):
+    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256,
+                 cls_token_id: int = 101, sep_token_id: int = 102):
         super().__init__()
         self.vocab_size = vocab_size
         self.emb_dim = emb_dim
         self.z_dim = z_dim
+        self.cls_token_id = cls_token_id
+        self.sep_token_id = sep_token_id
         
         self.embed = nn.Embedding(vocab_size, emb_dim)
         self.fc = nn.Linear(z_dim, emb_dim)
@@ -1198,9 +1209,9 @@ class ThoughtDecoder(nn.Module):
             generated_ids.append(prefix_tokens)
             current_token_id = prefix_tokens[:, -1:].contiguous()
         else:
-            # Start with [CLS] token (BERT convention)
+            # Start with [CLS] token
             current_token_id = torch.full(
-                (batch_size, 1), 101, dtype=torch.long, device=device
+                (batch_size, 1), self.cls_token_id, dtype=torch.long, device=device
             )
             generated_ids.append(current_token_id)
         
@@ -1224,8 +1235,8 @@ class ThoughtDecoder(nn.Module):
             else:
                 next_token_id = torch.argmax(logits_filtered, dim=-1, keepdim=True)
             
-            # Stop on [SEP] (BERT)
-            if (next_token_id == 102).all():
+            # Stop on [SEP]
+            if (next_token_id == self.sep_token_id).all():
                 break
             
             generated_ids.append(next_token_id)
@@ -1255,8 +1266,9 @@ class ThoughtDecoder(nn.Module):
         # Temperature
         scaled_logits = logits / max(temperature, 1e-6)
         
-        # Top-K
+        # Top-K (clamp to vocab size to prevent IndexError)
         if top_k > 0:
+            top_k = min(top_k, scaled_logits.size(-1))
             top_k_logits, top_k_indices = torch.topk(scaled_logits, top_k, dim=-1)
             mask = torch.full_like(scaled_logits, -float('inf'))
             mask.scatter_(1, top_k_indices, top_k_logits)
@@ -1961,12 +1973,14 @@ class FastHessianComputer:
         self,
         method: str = 'finite_differences',
         epsilon: float = 1e-4,
-        use_cache: bool = True
+        use_cache: bool = True,
+        max_cache_size: int = 128
     ):
         self.method = method
         self.epsilon = epsilon
         self.use_cache = use_cache
-        self._cache = {} if use_cache else None
+        self._cache = OrderedDict() if use_cache else None
+        self._max_cache_size = max_cache_size
         
         # Check torch.func availability
         self.functorch_available = False
@@ -2051,6 +2065,9 @@ class FastHessianComputer:
         
         if self.use_cache:
             self._cache[cache_key] = result
+            # Evict oldest entries if cache exceeds max size
+            while len(self._cache) > self._max_cache_size:
+                self._cache.popitem(last=False)
         
         return result
     
@@ -2735,7 +2752,14 @@ class MemoryManager:
         logger.info("MemoryManager initialized (fallback mode)")
     
     def add_embedding(self, vec: torch.Tensor, meta: Optional[Dict] = None):
-        """Add embedding to memory."""
+        """Add embedding to memory.
+        
+        Skips embeddings containing NaN or Inf values to prevent
+        corrupted memory entries.
+        """
+        if torch.isnan(vec).any() or torch.isinf(vec).any():
+            logger.warning("Skipping NaN/Inf embedding in MemoryManager.add_embedding")
+            return
         meta = meta or {}
         vec_np = vec.detach().cpu().numpy()
         self.fallback_vectors.append(vec_np)
@@ -2781,10 +2805,19 @@ class MemoryManager:
             logger.error(f"Failed to save memory: {e}")
     
     def load_memory(self):
-        """Load memory from disk."""
+        """Load memory from disk.
+        
+        Warning:
+            Uses weights_only=False for loading as memory contains numpy arrays
+            and metadata dicts. Only load memory files from trusted sources.
+        """
         path = os.path.join(self.config.memory_path, "fallback_memory.pt")
         if os.path.exists(path):
             try:
+                logger.warning(
+                    f"Loading memory with weights_only=False from '{path}'. "
+                    "Only load memory files from trusted sources."
+                )
                 # weights_only=False required: memory contains numpy arrays and metadata dicts
                 data = torch.load(path, map_location='cpu', weights_only=False)
                 self.fallback_vectors = data.get('vectors', [])
@@ -2792,7 +2825,7 @@ class MemoryManager:
                 self._size = data.get('size', len(self.fallback_vectors))
                 logger.info(f"Memory loaded from {path}")
             except Exception as e:
-                logger.error(f"Failed to load memory: {e}")
+                logger.error(f"Failed to load memory from '{path}': {e}")
     
     @property
     def size(self) -> int:
@@ -2843,7 +2876,9 @@ class AEONDeltaV3(nn.Module):
         self.decoder = ThoughtDecoder(
             vocab_size=config.vocab_size,
             emb_dim=config.z_dim,
-            z_dim=config.z_dim
+            z_dim=config.z_dim,
+            cls_token_id=config.cls_token_id,
+            sep_token_id=config.sep_token_id
         ).to(self.device)
         
         # Setup tokenizer if available
@@ -2980,6 +3015,122 @@ class AEONDeltaV3(nn.Module):
         except Exception as e:
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
+    def _compute_quantum(
+        self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
+    ) -> Dict[str, Any]:
+        """Compute quantum simulation results or return defaults.
+        
+        Args:
+            pillars: [B, num_pillars] pillar activations.
+            B: Batch size.
+            device: Target device.
+            fast: If True, skip quantum sim and return defaults.
+        """
+        if self.quantum_sim is not None and not fast:
+            quantum_results = self.quantum_sim(pillars)
+            logger.debug(
+                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
+            )
+            return quantum_results
+        return {
+            'entanglement': torch.zeros(B, device=device),
+            'action_propensity': torch.full(
+                (B, self.config.num_pillars),
+                1.0 / self.config.num_pillars,
+                device=device
+            )
+        }
+    
+    def _compute_topology(
+        self, pillars: torch.Tensor, iterations: torch.Tensor,
+        B: int, device: torch.device, fast: bool
+    ) -> Dict[str, Any]:
+        """Compute topology analysis results or return defaults.
+        
+        Args:
+            pillars: [B, num_pillars] pillar activations.
+            iterations: [B] convergence iterations from meta-loop.
+            B: Batch size.
+            device: Target device.
+            fast: If True, skip topology analysis and return defaults.
+        """
+        if self.topology_analyzer is not None and not fast:
+            topo_results = self.topology_analyzer(pillars, iterations)
+            logger.debug(
+                f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
+            )
+            return topo_results
+        return {
+            'potential': torch.zeros(B, device=device),
+            'gradient': torch.zeros(B, self.config.num_pillars, device=device),
+            'catastrophe_probs': torch.full((B,), 0.5, device=device),
+            'catastrophes': torch.zeros(B, dtype=torch.bool, device=device)
+        }
+    
+    def _compute_safety(
+        self, C_star: torch.Tensor, pillars: torch.Tensor,
+        quantum_results: Dict, topo_results: Dict,
+        B: int, device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Compute safety scores and self-report.
+        
+        Args:
+            C_star: [B, hidden_dim] converged thought state.
+            pillars: [B, num_pillars] pillar activations.
+            quantum_results: Dict from quantum simulation.
+            topo_results: Dict from topology analysis.
+            B: Batch size.
+            device: Target device.
+        """
+        if self.safety_system is not None:
+            action_embedding = torch.zeros(B, self.config.action_dim, device=device)
+            safety_score = self.safety_system(
+                action_embedding, C_star, pillars,
+                quantum_results, topo_results, mode='combined'
+            )
+            logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
+        else:
+            safety_score = torch.ones(B, 1, device=device)
+        
+        if self.self_reporter is not None:
+            self_report = self.self_reporter(
+                C_star, pillars, quantum_results, topo_results, mode='combined'
+            )
+            logger.debug(
+                f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
+            )
+        else:
+            self_report = {}
+        
+        return safety_score, self_report
+    
+    def _fuse_memory(
+        self, C_star: torch.Tensor, device: torch.device,
+        memory_retrieval: bool
+    ) -> torch.Tensor:
+        """Apply memory fusion if available.
+        
+        Args:
+            C_star: [B, hidden_dim] converged thought state.
+            device: Target device.
+            memory_retrieval: Whether to retrieve and fuse memory.
+        """
+        if memory_retrieval and self.memory_manager.size > 0:
+            memory_contexts = []
+            for q in C_star:
+                found = self.memory_manager.retrieve_relevant(q, k=3)
+                if found:
+                    vecs = [torch.from_numpy(f['vec']).to(device) for f in found]
+                    memory_contexts.append(torch.stack(vecs).mean(dim=0))
+                else:
+                    memory_contexts.append(torch.zeros_like(q))
+            
+            memory_context = torch.stack(memory_contexts)
+            C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
+            logger.debug("Memory fusion applied")
+            return C_fused
+        return C_star
+    
     @tensor_safe(policy=NaNPolicy.WARN, sanitize_outputs=True)
     def reasoning_core(
         self,
@@ -3008,98 +3159,32 @@ class AEONDeltaV3(nn.Module):
         
         logger.debug(f"reasoning_core: B={B}, fast={fast}")
         
-        # ===== 1. META-LOOP =====
+        # 1. Meta-loop convergence
         C_star, iterations, meta_results = self.meta_loop(
-            z_in, 
-            use_fixed_point=not fast
+            z_in, use_fixed_point=not fast
         )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
-        # ===== 2. PILLARS =====
+        # 2. Extract pillars
         pillars, embedded_pillars = self.pillars_module(C_star)
         logger.debug(f"Pillars: {pillars.shape}")
         
-        # ===== 3. QUANTUM SIMULATION =====
-        if self.quantum_sim is not None and not fast:
-            quantum_results = self.quantum_sim(pillars)
-            logger.debug(
-                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
-            )
-        else:
-            quantum_results = {
-                'entanglement': torch.zeros(B, device=device),
-                'action_propensity': torch.full(
-                    (B, self.config.num_pillars), 
-                    1.0 / self.config.num_pillars, 
-                    device=device
-                )
-            }
+        # 3-4. Quantum and topology (delegated to helpers)
+        quantum_results = self._compute_quantum(pillars, B, device, fast)
+        topo_results = self._compute_topology(pillars, iterations, B, device, fast)
         
-        # ===== 4. TOPOLOGY ANALYSIS =====
-        if self.topology_analyzer is not None and not fast:
-            topo_results = self.topology_analyzer(pillars, iterations)
-            logger.debug(
-                f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
-            )
-        else:
-            topo_results = {
-                'potential': torch.zeros(B, device=device),
-                'gradient': torch.zeros(B, self.config.num_pillars, device=device),
-                'catastrophe_probs': torch.full((B,), 0.5, device=device),
-                'catastrophes': torch.zeros(B, dtype=torch.bool, device=device)
-            }
+        # 5. Safety and self-reporting (delegated to helper)
+        safety_score, self_report = self._compute_safety(
+            C_star, pillars, quantum_results, topo_results, B, device
+        )
         
-        # ===== 5. SAFETY & SELF-REPORTING =====
-        if self.safety_system is not None:
-            action_embedding = torch.zeros(B, self.config.action_dim, device=device)
-            
-            safety_score = self.safety_system(
-                action_embedding,
-                C_star,
-                pillars,
-                quantum_results,
-                topo_results,
-                mode='combined'
-            )
-            logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
-        else:
-            safety_score = torch.ones(B, 1, device=device)
+        # 6. Memory fusion (delegated to helper)
+        C_fused = self._fuse_memory(C_star, device, memory_retrieval)
         
-        if self.self_reporter is not None:
-            self_report = self.self_reporter(
-                C_star,
-                pillars,
-                quantum_results,
-                topo_results,
-                mode='combined'
-            )
-            logger.debug(
-                f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
-            )
-        else:
-            self_report = {}
-        
-        # ===== 6. MEMORY FUSION =====
-        if memory_retrieval and self.memory_manager.size > 0:
-            memory_contexts = []
-            for q in C_star:
-                found = self.memory_manager.retrieve_relevant(q, k=3)
-                if (found):
-                    vecs = [torch.from_numpy(f['vec']).to(device) for f in found]
-                    memory_contexts.append(torch.stack(vecs).mean(dim=0))
-                else:
-                    memory_contexts.append(torch.zeros_like(q))
-            
-            memory_context = torch.stack(memory_contexts)
-            C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
-            logger.debug("Memory fusion applied")
-        else:
-            C_fused = C_star
-        
-        # ===== 7. RSSM DYNAMICS =====
+        # 7. RSSM dynamics
         z_rssm = self.rssm(C_fused)
         
-        # ===== 8. INTEGRATION =====
+        # 8. Integration
         z_out = self.integration_module(
             torch.cat([z_rssm, embedded_pillars], dim=-1)
         )
@@ -3723,15 +3808,19 @@ class AEONTrainer:
     
     def _create_scheduler(self) -> Any:
         """Create learning rate scheduler."""
+        cosine_decay_steps = self.config.cosine_decay_steps
+        warmup_steps = self.config.warmup_steps
+        min_lr_ratio = self.config.min_lr_ratio
+        
         def lr_lambda(step):
             # Warmup
-            if step < self.config.warmup_steps:
-                return float(step) / float(max(1, self.config.warmup_steps))
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
             # Cosine decay
-            progress = float(step - self.config.warmup_steps) / float(
-                max(1, 10000 - self.config.warmup_steps)
+            progress = float(step - warmup_steps) / float(
+                max(1, cosine_decay_steps - warmup_steps)
             )
-            return max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
+            return max(min_lr_ratio, 0.5 * (1.0 + math.cos(math.pi * progress)))
         
         scheduler = LambdaLR(self.optimizer, lr_lambda)
         logger.info("Scheduler: Warmup + Cosine")
@@ -3924,6 +4013,11 @@ class AEONTrainer:
         logger.info("Training complete")
         logger.info("="*70)
         
+        # Cleanup monitoring resources
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+        
         if self.use_wandb:
             wandb.finish()
     
@@ -4110,6 +4204,116 @@ class AEONTestSuite:
             self.errors.append(f"Weight tying test failed: {e}")
             return {'weight_tying': 0.0, 'error': str(e)}
     
+    def test_gradient_flow(self) -> Dict[str, float]:
+        """Test gradient flow through the full forward-backward pass."""
+        metrics = {}
+        
+        try:
+            self.model.train()
+            self.model.zero_grad()
+            
+            x = torch.randint(
+                0, self.config.vocab_size,
+                (2, self.config.seq_length),
+                device=self.model.device
+            )
+            
+            outputs = self.model(x, decode_mode='train', fast=True)
+            
+            if 'logits' not in outputs:
+                self.errors.append("Missing logits for gradient flow test")
+                return {'gradient_flow': 0.0, 'error': 'Missing logits'}
+            
+            # Use cross_entropy loss to build a proper computation graph
+            logits = outputs['logits']
+            loss = F.cross_entropy(
+                logits.view(-1, self.config.vocab_size),
+                x.view(-1),
+                ignore_index=0
+            )
+            loss.backward()
+            
+            # Check gradient presence in key modules
+            modules_to_check = {
+                'encoder': self.model.encoder,
+                'decoder': self.model.decoder,
+            }
+            
+            total_checked = 0
+            total_with_grad = 0
+            details = {}
+            
+            for name, module in modules_to_check.items():
+                has_grad = any(
+                    p.grad is not None and p.grad.abs().sum() > 0
+                    for p in module.parameters()
+                    if p.requires_grad
+                )
+                details[name] = has_grad
+                total_checked += 1
+                if has_grad:
+                    total_with_grad += 1
+            
+            self.model.zero_grad()
+            self.model.eval()
+            
+            overall = total_with_grad / max(1, total_checked)
+            metrics = {'gradient_flow': overall, 'details': details}
+            return metrics
+        
+        except Exception as e:
+            self.errors.append(f"Gradient flow test failed: {e}")
+            return {'gradient_flow': 0.0, 'error': str(e)}
+    
+    @torch.no_grad()
+    def test_vq_codebook(self) -> Dict[str, float]:
+        """Test VQ codebook health and correctness."""
+        metrics = {}
+        
+        try:
+            self.model.eval()
+            vq = self.model.vector_quantizer
+            
+            if vq is None:
+                return {'vq_codebook': 1.0, 'details': {'skipped': 'VQ disabled'}}
+            
+            # Test encoding produces valid indices
+            z = torch.randn(4, self.config.z_dim, device=self.model.device)
+            quantized, vq_loss, indices = vq(z)
+            
+            # Check: quantized shape matches input
+            shape_ok = quantized.shape == z.shape
+            metrics['shape_match'] = shape_ok
+            
+            # Check: indices are in valid range
+            indices_valid = (indices >= 0).all() and (indices < vq.num_embeddings).all()
+            metrics['indices_valid'] = indices_valid.item() if isinstance(indices_valid, torch.Tensor) else indices_valid
+            
+            # Check: VQ loss is finite
+            loss_finite = torch.isfinite(vq_loss).item()
+            metrics['loss_finite'] = loss_finite
+            
+            # Check: quantized values are finite
+            quant_finite = torch.isfinite(quantized).all().item()
+            metrics['quantized_finite'] = quant_finite
+            
+            # Check: straight-through estimator preserves gradients
+            z_grad = torch.randn(2, self.config.z_dim, device=self.model.device, requires_grad=True)
+            with torch.enable_grad():
+                q, _, _ = vq(z_grad)
+                grad_test = torch.autograd.grad(q.sum(), z_grad, allow_unused=True)[0]
+            ste_works = grad_test is not None and grad_test.abs().sum() > 0
+            metrics['ste_gradient'] = ste_works
+            
+            scores = [1.0 if v else 0.0 for v in metrics.values() if isinstance(v, bool)]
+            overall = sum(scores) / max(1, len(scores))
+            
+            return {'vq_codebook': overall, 'details': metrics}
+        
+        except Exception as e:
+            self.errors.append(f"VQ codebook test failed: {e}")
+            return {'vq_codebook': 0.0, 'error': str(e)}
+    
     def run_all_tests(self) -> Dict[str, Any]:
         """Run all tests."""
         self.errors = []
@@ -4121,6 +4325,8 @@ class AEONTestSuite:
         
         results['stability'] = self.test_stability()
         results['weight_tying'] = self.test_weight_tying()
+        results['gradient_flow'] = self.test_gradient_flow()
+        results['vq_codebook'] = self.test_vq_codebook()
         
         # Summary
         logger.info("\n" + "="*60)
@@ -4438,12 +4644,26 @@ def main():
         
         # Save results
         results_path = Path(args.checkpoint) / "test_results.json"
+        results_path.parent.mkdir(parents=True, exist_ok=True)
         with open(results_path, 'w') as f:
-            # Remove non-serializable
-            safe_results = {
-                k: v for k, v in results.items()
-                if not isinstance(v, torch.Tensor)
-            }
+            # Recursively convert non-serializable objects
+            def make_serializable(obj):
+                if isinstance(obj, torch.Tensor):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {str(k): make_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [make_serializable(v) for v in obj]
+                elif isinstance(obj, (np.floating, np.integer)):
+                    return obj.item()
+                elif isinstance(obj, set):
+                    return list(obj)
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                else:
+                    return str(obj)
+            
+            safe_results = make_serializable(results)
             json.dump(safe_results, f, indent=2)
         
         logger.info(f"\n✅ Results saved to {results_path}")
