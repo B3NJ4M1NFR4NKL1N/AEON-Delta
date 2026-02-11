@@ -1056,6 +1056,8 @@ class ThoughtEncoder(nn.Module):
                 f"tokens.dtype must be torch.long, got {tokens.dtype}"
             )
         
+        # Range check: O(N) scan trades a small overhead for preventing
+        # index_out_of_bounds crashes deep in the embedding layer.
         vocab_size = self.embed.num_embeddings
         if tokens.numel() > 0 and (tokens.min() < 0 or tokens.max() >= vocab_size):
             raise ValueError(
@@ -2151,10 +2153,10 @@ class FastHessianComputer:
         self._cache = OrderedDict() if use_cache else None
         self._max_cache_size = max_cache_size
         
-        # Check torch.func availability
+        # Check torch.func availability (import shadows module-level torch)
         self.functorch_available = False
         try:
-            import torch.func  # noqa: F811
+            import torch.func
             self.functorch_available = True
         except ImportError:
             if method == 'forward_ad':
@@ -2165,9 +2167,10 @@ class FastHessianComputer:
                 self.method = 'finite_differences'
         
         # Check torch.autograd.functional.hessian availability
-        import torch as _torch
+        # Use re-import to avoid scoping issues from the torch.func import above
+        import torch as _torch_ref
         self.autograd_hessian_available = hasattr(
-            _torch.autograd.functional, 'hessian'
+            _torch_ref.autograd.functional, 'hessian'
         )
     
     def _safe_eigvalsh(self, H_sym: torch.Tensor) -> torch.Tensor:

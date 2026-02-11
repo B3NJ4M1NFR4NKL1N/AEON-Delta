@@ -474,7 +474,7 @@ def test_safe_checkpoint_loading():
 
     # Create a valid memory file
     valid_data = {'vectors': [], 'metas': [], 'size': 0}
-    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False, dir='/tmp') as f:
+    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False, dir=tempfile.gettempdir()) as f:
         torch.save(valid_data, f.name)
         tmp_path = f.name
 
