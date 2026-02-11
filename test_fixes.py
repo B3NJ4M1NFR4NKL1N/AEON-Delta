@@ -2240,6 +2240,24 @@ def test_neural_causal_model_consistency_loss():
     print("✅ test_neural_causal_model_consistency_loss PASSED")
 
 
+def test_neural_causal_model_gradient_flow():
+    """Task 6: Verify gradients flow through NeuralCausalModel."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=6, hidden_dim=16)
+    model.train()
+    
+    x = torch.randn(2, 6, requires_grad=True)
+    out = model(x)
+    loss = out.sum()
+    loss.backward()
+    
+    assert x.grad is not None, "No gradient flow through causal model"
+    assert not torch.isnan(x.grad).any(), "NaN in gradients"
+    
+    print("✅ test_neural_causal_model_gradient_flow PASSED")
+
+
 def test_value_network_forward():
     """Task 9: Verify ValueNetwork produces correct output."""
     from aeon_core import ValueNetwork
@@ -2609,6 +2627,7 @@ if __name__ == '__main__':
     test_neural_causal_model_intervention()
     test_neural_causal_model_dag_loss()
     test_neural_causal_model_consistency_loss()
+    test_neural_causal_model_gradient_flow()
     test_value_network_forward()
     test_policy_network_forward()
     test_mcts_node_ucb1()

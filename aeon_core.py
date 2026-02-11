@@ -5534,19 +5534,24 @@ class NeuralCausalModel(nn.Module):
         noise = self.noise_encoder(exogenous)  # [B, num_vars]
         
         # Topological forward pass (lower-triangular ensures correct order)
-        causal_vars = torch.zeros(B, self.num_vars, device=exogenous.device)
+        # Use list to avoid in-place assignment that breaks autograd
+        var_list: List[torch.Tensor] = []
         
         for i in range(self.num_vars):
             if intervention is not None and i in intervention:
-                # do(X_i = v): set variable to intervention value
-                causal_vars[:, i] = intervention[i]
+                var_list.append(torch.full((B,), intervention[i], device=exogenous.device))
             else:
-                # X_i = f_i(parents) + noise_i
+                # Build parent input from already-computed variables
+                if var_list:
+                    prev = torch.stack(var_list, dim=-1)  # [B, i]
+                    padded = F.pad(prev, (0, self.num_vars - i))  # [B, num_vars]
+                else:
+                    padded = torch.zeros(B, self.num_vars, device=exogenous.device)
                 parent_weights = adj[i]  # [num_vars]
-                weighted_input = causal_vars * parent_weights.unsqueeze(0)  # [B, num_vars]
-                causal_vars[:, i] = self.mechanisms[i](weighted_input).squeeze(-1) + noise[:, i]
+                weighted_input = padded * parent_weights.unsqueeze(0)  # [B, num_vars]
+                var_list.append(self.mechanisms[i](weighted_input).squeeze(-1) + noise[:, i])
         
-        return causal_vars
+        return torch.stack(var_list, dim=-1)
     
     def counterfactual(self, observed: torch.Tensor, 
                        intervention: Dict[int, float]) -> torch.Tensor:
