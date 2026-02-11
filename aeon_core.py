@@ -3018,7 +3018,14 @@ class AEONDeltaV3(nn.Module):
     def _compute_quantum(
         self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
-        """Compute quantum simulation results or return defaults."""
+        """Compute quantum simulation results or return defaults.
+        
+        Args:
+            pillars: [B, num_pillars] pillar activations.
+            B: Batch size.
+            device: Target device.
+            fast: If True, skip quantum sim and return defaults.
+        """
         if self.quantum_sim is not None and not fast:
             quantum_results = self.quantum_sim(pillars)
             logger.debug(
@@ -3038,7 +3045,15 @@ class AEONDeltaV3(nn.Module):
         self, pillars: torch.Tensor, iterations: torch.Tensor,
         B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
-        """Compute topology analysis results or return defaults."""
+        """Compute topology analysis results or return defaults.
+        
+        Args:
+            pillars: [B, num_pillars] pillar activations.
+            iterations: [B] convergence iterations from meta-loop.
+            B: Batch size.
+            device: Target device.
+            fast: If True, skip topology analysis and return defaults.
+        """
         if self.topology_analyzer is not None and not fast:
             topo_results = self.topology_analyzer(pillars, iterations)
             logger.debug(
@@ -3057,7 +3072,16 @@ class AEONDeltaV3(nn.Module):
         quantum_results: Dict, topo_results: Dict,
         B: int, device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Compute safety scores and self-report."""
+        """Compute safety scores and self-report.
+        
+        Args:
+            C_star: [B, hidden_dim] converged thought state.
+            pillars: [B, num_pillars] pillar activations.
+            quantum_results: Dict from quantum simulation.
+            topo_results: Dict from topology analysis.
+            B: Batch size.
+            device: Target device.
+        """
         if self.safety_system is not None:
             action_embedding = torch.zeros(B, self.config.action_dim, device=device)
             safety_score = self.safety_system(
@@ -3084,7 +3108,13 @@ class AEONDeltaV3(nn.Module):
         self, C_star: torch.Tensor, device: torch.device,
         memory_retrieval: bool
     ) -> torch.Tensor:
-        """Apply memory fusion if available."""
+        """Apply memory fusion if available.
+        
+        Args:
+            C_star: [B, hidden_dim] converged thought state.
+            device: Target device.
+            memory_retrieval: Whether to retrieve and fuse memory.
+        """
         if memory_retrieval and self.memory_manager.size > 0:
             memory_contexts = []
             for q in C_star:

@@ -1738,9 +1738,11 @@ def main(
         if document_aware and documents:
             # ✅ Строим z_sequences по документам (batch encoding for performance)
             z_sequences = []
+            skipped = 0
             
             for doc_idx, doc_chunks in enumerate(tqdm(documents, desc="Encoding documents")):
                 if len(doc_chunks) < config.context_window + 1:
+                    skipped += 1
                     continue
                 
                 # Batch encode all chunks in the document at once
@@ -1750,7 +1752,7 @@ def main(
                 z_seq = quantized_batch.cpu()  # [num_chunks, D]
                 z_sequences.append(z_seq)
             
-            logger.info(f"✅ Создано {len(z_sequences)} z_sequences")
+            logger.info(f"✅ Создано {len(z_sequences)} z_sequences (skipped {skipped} docs with < {config.context_window + 1} chunks)")
             total_pairs = sum(max(0, seq.size(0) - config.context_window) for seq in z_sequences)
             logger.info(f"   Всего пар для обучения: {total_pairs:,}")
             
