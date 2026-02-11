@@ -1633,12 +1633,14 @@ class _SSMBlock(nn.Module):
 
 class LinearAttentionBlock(nn.Module):
     """
-    Linear Attention with ELU-based feature maps (Katharopoulos et al., 2020).
+    Linear Attention with polynomial feature maps and low-rank factorization.
 
     Achieves **O(n)** complexity by decomposing softmax(QK^T)V into
     φ(Q)(φ(K)^T V) via the associativity of matrix multiplication.
 
     Supports:
+    - Polynomial softmax approximation (Taylor: 1 + x + x²/2 + x³/6)
+    - Low-rank projection to reduce memory for large feature dimensions
     - Causal masking via cumulative-sum kernel trick
     - Multi-head attention with configurable feature dimension
     - Residual connection and pre-norm
@@ -1654,6 +1656,7 @@ class LinearAttentionBlock(nn.Module):
         d_model: int,
         num_heads: int = 4,
         feature_dim: int = 64,
+        feature_rank: int = 16,
         dropout: float = 0.1,
         causal: bool = True,
     ):
@@ -1661,6 +1664,7 @@ class LinearAttentionBlock(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.feature_dim = feature_dim
+        self.feature_rank = min(feature_rank, feature_dim)
         self.causal = causal
         self.head_dim = d_model // num_heads
         self._eps = 1e-6  # Numerical stability constant
@@ -1676,6 +1680,10 @@ class LinearAttentionBlock(nn.Module):
         # Feature map projection for kernel approximation
         self.feature_map = nn.Linear(self.head_dim, feature_dim, bias=False)
 
+        # Low-rank factorization for memory efficiency
+        self.feature_down_proj = nn.Linear(feature_dim, self.feature_rank, bias=False)
+        self.feature_up_proj = nn.Linear(self.feature_rank, feature_dim, bias=False)
+
         self.dropout = nn.Dropout(dropout)
 
         # Feed-forward sub-layer
@@ -1689,9 +1697,9 @@ class LinearAttentionBlock(nn.Module):
         )
 
     @staticmethod
-    def _elu_feature_map(x: torch.Tensor) -> torch.Tensor:
-        """φ(x) = elu(x) + 1 — non-negative feature map (min value is 0)."""
-        return F.elu(x) + 1.0
+    def _poly_feature_map(x: torch.Tensor) -> torch.Tensor:
+        """φ(x) = 1 + x + x²/2 + x³/6 — polynomial softmax approximation."""
+        return (1.0 + x + x.pow(2) * 0.5 + x.pow(3) / 6.0).clamp(min=0.0)
 
     def forward(
         self,
@@ -1719,8 +1727,12 @@ class LinearAttentionBlock(nn.Module):
         # Q, K, V: [B, H, L, head_dim]
 
         # Apply feature map
-        Q = self._elu_feature_map(self.feature_map(Q))  # [B, H, L, feature_dim]
-        K = self._elu_feature_map(self.feature_map(K))  # [B, H, L, feature_dim]
+        Q = self._poly_feature_map(self.feature_map(Q))  # [B, H, L, feature_dim]
+        K = self._poly_feature_map(self.feature_map(K))  # [B, H, L, feature_dim]
+
+        # Low-rank projection
+        Q = self.feature_up_proj(self.feature_down_proj(Q))
+        K = self.feature_up_proj(self.feature_down_proj(K))
 
         if self.causal:
             y, new_state = self._causal_linear_attention(Q, K, V, kv_state)
