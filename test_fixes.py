@@ -1548,6 +1548,249 @@ def test_forward_ad_version_check():
     print("✅ test_forward_ad_version_check PASSED")
 
 
+# ============================================================================
+# MAMBA-2 (SSD) TESTS
+# ============================================================================
+
+def test_selective_ssmv2_forward():
+    """Verify SelectiveSSMv2 produces correct output shapes and is NaN-free."""
+    from aeon_core import SelectiveSSMv2
+
+    ssm = SelectiveSSMv2(d_model=64, d_state=16, num_layers=2, expand_factor=2)
+    ssm.eval()
+
+    x = torch.randn(2, 32, 64)
+    with torch.no_grad():
+        y, states = ssm(x)
+
+    assert y.shape == (2, 32, 64), f"Expected (2,32,64), got {y.shape}"
+    assert not torch.isnan(y).any(), "SSMv2 output contains NaN"
+    assert not torch.isinf(y).any(), "SSMv2 output contains Inf"
+    assert len(states) == 2, f"Expected 2 layer states, got {len(states)}"
+    # Each state should be [B, nheads, head_dim, d_state]
+    assert states[0].dim() == 4, f"State should be 4D, got {states[0].dim()}D"
+
+    print("✅ test_selective_ssmv2_forward PASSED")
+
+
+def test_ssmv2_state_caching():
+    """Verify SSMv2 state caching propagates state across chunks."""
+    from aeon_core import SelectiveSSMv2
+
+    ssm = SelectiveSSMv2(d_model=32, d_state=8, num_layers=1)
+    ssm.eval()
+
+    x = torch.randn(1, 10, 32)
+    with torch.no_grad():
+        y_full, _ = ssm(x)
+
+    with torch.no_grad():
+        y1, state = ssm(x[:, :5, :])
+        y2, _ = ssm(x[:, 5:, :], state=state)
+
+    y_chunked = torch.cat([y1, y2], dim=1)
+    max_diff = torch.max(torch.abs(y_full - y_chunked)).item()
+    assert max_diff < 2.0, \
+        f"State caching divergence too large: max diff={max_diff:.6f}"
+    assert not torch.isnan(y_chunked).any(), "Chunked output contains NaN"
+    assert y_chunked.shape == y_full.shape, "Shape mismatch"
+
+    print(f"✅ test_ssmv2_state_caching PASSED (max_diff={max_diff:.4f})")
+
+
+def test_mamba2_thought_encoder():
+    """Verify Mamba2ThoughtEncoder basic functionality."""
+    from aeon_core import Mamba2ThoughtEncoder
+
+    enc = Mamba2ThoughtEncoder(
+        vocab_size=1000, emb_dim=64, z_dim=64,
+        d_state=16, num_layers=1, expand_factor=2,
+    )
+    enc.eval()
+
+    tokens = torch.randint(0, 1000, (2, 16))
+    mask = torch.ones(2, 16)
+    with torch.no_grad():
+        z = enc(tokens, attention_mask=mask)
+    assert z.shape == (2, 64), f"Expected (2,64), got {z.shape}"
+    assert not torch.isnan(z).any(), "Encoder output has NaN"
+
+    # Without mask
+    with torch.no_grad():
+        z2 = enc(tokens)
+    assert z2.shape == (2, 64)
+
+    print("✅ test_mamba2_thought_encoder PASSED")
+
+
+def test_mamba2_thought_decoder_train():
+    """Verify Mamba2ThoughtDecoder in teacher-forcing mode."""
+    from aeon_core import Mamba2ThoughtDecoder
+
+    dec = Mamba2ThoughtDecoder(
+        vocab_size=500, emb_dim=64, z_dim=64,
+        d_state=16, num_layers=1,
+    )
+    dec.eval()
+
+    z = torch.randn(2, 64)
+    teacher = torch.randint(0, 500, (2, 12))
+    with torch.no_grad():
+        logits = dec(z, teacher_tokens=teacher, mode='train')
+    assert logits.shape == (2, 12, 500), f"Expected (2,12,500), got {logits.shape}"
+    assert not torch.isnan(logits).any(), "Decoder logits have NaN"
+
+    # Weight tying verification
+    assert dec.head.weight.data_ptr() == dec.embed.weight.data_ptr(), \
+        "Weight tying broken"
+
+    print("✅ test_mamba2_thought_decoder_train PASSED")
+
+
+def test_mamba2_thought_decoder_inference():
+    """Verify Mamba2ThoughtDecoder autoregressive generation."""
+    from aeon_core import Mamba2ThoughtDecoder
+
+    dec = Mamba2ThoughtDecoder(
+        vocab_size=500, emb_dim=64, z_dim=64,
+        d_state=8, num_layers=1, sep_token_id=102,
+    )
+    dec.eval()
+
+    z = torch.randn(2, 64)
+    with torch.no_grad():
+        gen_ids, logits = dec(z, mode='inference', max_length=20, sample=False)
+
+    assert gen_ids.dim() == 2, f"Expected 2D output, got {gen_ids.dim()}D"
+    assert gen_ids.shape[0] == 2, "Batch size mismatch"
+    assert not torch.isnan(logits).any(), "Inference logits have NaN"
+
+    print("✅ test_mamba2_thought_decoder_inference PASSED")
+
+
+def test_build_encoder_factory_mamba2():
+    """Verify build_encoder produces Mamba2ThoughtEncoder for 'mamba2' backend."""
+    from aeon_core import AEONConfig, build_encoder, Mamba2ThoughtEncoder
+
+    config = AEONConfig(device_str='cpu', encoder_backend='mamba2')
+    enc = build_encoder(config)
+    assert isinstance(enc, Mamba2ThoughtEncoder), \
+        f"Expected Mamba2ThoughtEncoder, got {type(enc)}"
+
+    print("✅ test_build_encoder_factory_mamba2 PASSED")
+
+
+def test_build_decoder_factory_mamba2():
+    """Verify build_decoder produces Mamba2ThoughtDecoder for 'mamba2' backend."""
+    from aeon_core import AEONConfig, build_decoder, Mamba2ThoughtDecoder
+
+    config = AEONConfig(device_str='cpu', decoder_backend='mamba2')
+    dec = build_decoder(config)
+    assert isinstance(dec, Mamba2ThoughtDecoder), \
+        f"Expected Mamba2ThoughtDecoder, got {type(dec)}"
+
+    print("✅ test_build_decoder_factory_mamba2 PASSED")
+
+
+def test_mamba2_gradient_flow():
+    """Verify gradients flow through the Mamba2 encoder."""
+    from aeon_core import Mamba2ThoughtEncoder
+
+    enc = Mamba2ThoughtEncoder(
+        vocab_size=100, emb_dim=32, z_dim=32, d_state=8, num_layers=1,
+    )
+    tokens = torch.randint(0, 100, (2, 10))
+    z = enc(tokens)
+    loss = z.sum()
+    loss.backward()
+
+    has_grad = False
+    for p in enc.parameters():
+        if p.grad is not None and p.grad.abs().sum() > 0:
+            has_grad = True
+            break
+    assert has_grad, "No gradient flow through Mamba2 encoder"
+
+    print("✅ test_mamba2_gradient_flow PASSED")
+
+
+def test_mamba2_long_sequence():
+    """Verify Mamba2 handles long sequences (>1024 tokens)."""
+    from aeon_core import Mamba2ThoughtEncoder
+
+    enc = Mamba2ThoughtEncoder(
+        vocab_size=1000, emb_dim=64, z_dim=64,
+        d_state=16, num_layers=1, expand_factor=2,
+    )
+    enc.eval()
+
+    tokens = torch.randint(0, 1000, (1, 2048))
+    with torch.no_grad():
+        z = enc(tokens)
+    assert z.shape == (1, 64), f"Expected (1,64), got {z.shape}"
+    assert not torch.isnan(z).any(), "Long-sequence Mamba2 encoding has NaN"
+
+    print("✅ test_mamba2_long_sequence PASSED")
+
+
+def test_aeon_v3_with_mamba2_backend():
+    """Verify AEONDeltaV3 works with Mamba2 backend end-to-end."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        encoder_backend='mamba2',
+        decoder_backend='mamba2',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(0, 100, (2, 16))
+    mask = torch.ones(2, 16)
+
+    with torch.no_grad():
+        result = model(tokens, attention_mask=mask, decode_mode='train')
+
+    assert 'logits' in result
+    assert 'thoughts' in result
+    assert result['logits'].shape[0] == 2
+    assert not torch.isnan(result['logits']).any(), "Mamba2 backend logits have NaN"
+
+    print("✅ test_aeon_v3_with_mamba2_backend PASSED")
+
+
+def test_config_mamba2_validation():
+    """Verify AEONConfig validates mamba2 backend parameters."""
+    from aeon_core import AEONConfig
+
+    # Valid mamba2 backends should work
+    AEONConfig(device_str='cpu', encoder_backend='mamba2')
+    AEONConfig(device_str='cpu', decoder_backend='mamba2')
+    AEONConfig(device_str='cpu', encoder_backend='mamba2', decoder_backend='mamba2')
+
+    # Old backends should still work
+    AEONConfig(device_str='cpu', encoder_backend='ssm', decoder_backend='ssm')
+    AEONConfig(device_str='cpu', encoder_backend='lstm', decoder_backend='lstm')
+
+    # Invalid backend should still fail
+    try:
+        AEONConfig(device_str='cpu', encoder_backend='mamba3')
+        assert False, "Should have raised AssertionError"
+    except AssertionError:
+        pass
+
+    try:
+        AEONConfig(device_str='cpu', decoder_backend='mamba3')
+        assert False, "Should have raised AssertionError"
+    except AssertionError:
+        pass
+
+    print("✅ test_config_mamba2_validation PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -1623,6 +1866,19 @@ if __name__ == '__main__':
     test_config_immutability()
     test_forward_input_ids_validation()
     test_forward_ad_version_check()
+    
+    # Mamba-2 (SSD) tests
+    test_selective_ssmv2_forward()
+    test_ssmv2_state_caching()
+    test_mamba2_thought_encoder()
+    test_mamba2_thought_decoder_train()
+    test_mamba2_thought_decoder_inference()
+    test_build_encoder_factory_mamba2()
+    test_build_decoder_factory_mamba2()
+    test_mamba2_gradient_flow()
+    test_mamba2_long_sequence()
+    test_aeon_v3_with_mamba2_backend()
+    test_config_mamba2_validation()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
