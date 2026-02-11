@@ -824,9 +824,9 @@ class AEONConfig:
     topo_use_cache: bool = True
     enable_catastrophe_detection: bool = True
     
-    # ===== QUANTUM =====
-    quantum_bond_dim: int = 16
-    quantum_method: str = "mps"
+    # ===== DIVERSITY METRIC =====
+    quantum_bond_dim: int = 16  # deprecated, kept for compatibility
+    quantum_method: str = "mps"  # deprecated, kept for compatibility
     enable_quantum_sim: bool = True
     
     # ===== TRAINING =====
@@ -4339,188 +4339,33 @@ class OptimizedTopologyAnalyzer(nn.Module):
 # SECTION 10: QUANTUM SIMULATOR WITH IMPROVED ENTROPY
 # ============================================================================
 
-class MatrixProductStateLayer(nn.Module):
-    """MPS layer for quantum simulation."""
-    
-    def __init__(self, bond_dim: int = 8):
-        super().__init__()
-        self.bond_dim = bond_dim
-        self.inp = nn.Linear(bond_dim + 1, bond_dim)
-        self.mix = nn.GRUCell(bond_dim, bond_dim)
-    
-    def forward(self, state: torch.Tensor, pillar_scalar: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            state: [B, bond_dim]
-            pillar_scalar: [B, 1]
-        
-        Returns:
-            [B, bond_dim]
-        """
-        x = torch.cat([state, pillar_scalar], dim=-1)
-        y = torch.tanh(self.inp(x))
-        result = self.mix(y, state)
-        return result
-
-
-class QuantumSimulator(nn.Module):
+class DiversityMetric(nn.Module):
     """
-    Quantum-inspired simulator with Von Neumann entropy.
-    
-    Features:
-    - Matrix Product State architecture
-    - Proper Schmidt decomposition for entropy
-    - Action propensity from quantum state
+    Simple diversity metric via state variance.
+    Replaces QuantumSimulator — no pseudoscientific quantum entanglement.
     """
     
     def __init__(self, config):
         super().__init__()
-        self.bond_dim = config.quantum_bond_dim
-        self.num_pillars = config.num_pillars
-        
-        self.layers = nn.ModuleList([
-            MatrixProductStateLayer(self.bond_dim)
-            for _ in range(config.num_pillars)
-        ])
-        
-        self.ent_head = nn.Sequential(
-            nn.Linear(self.bond_dim, self.bond_dim // 2),
-            nn.GELU(),
-            nn.Linear(self.bond_dim // 2, 1)
-        )
-        
+        self.num_factors = config.num_pillars
         self.prop_head = nn.Sequential(
-            nn.Linear(self.bond_dim, config.num_pillars)
+            nn.Linear(config.num_pillars, config.num_pillars)
         )
     
-    @staticmethod
-    def _near_square_factors(n: int) -> Tuple[int, int]:
-        """Find near-square factorization n = a*b."""
-        a = int(math.isqrt(n))
-        while a > 1 and (n % a) != 0:
-            a -= 1
-        b = n // a
-        return a, b
-    
-    @staticmethod
-    def _safe_svdvals(x: torch.Tensor) -> torch.Tensor:
+    def forward(self, factors: torch.Tensor) -> Dict[str, Any]:
         """
-        Compute singular values with CPU fallback for MPS.
-        MPS doesn't support svdvals, so we move to CPU if needed.
-        """
-        original_device = x.device
-        
-        try:
-            # Try on original device first
-            return torch.linalg.svdvals(x)
-        except (NotImplementedError, RuntimeError):
-            pass
-        
-        # Fallback to CPU
-        try:
-            x_cpu = x.cpu()
-            svdvals_cpu = torch.linalg.svdvals(x_cpu)
-            return svdvals_cpu.to(original_device)
-        except Exception as e:
-            logger.warning(f"SVD computation failed: {e}, returning uniform distribution")
-            # Return uniform singular values as fallback
-            if x.dim() == 2:
-                n = min(x.shape)
-                return torch.ones(n, device=original_device, dtype=x.dtype) / n
-            elif x.dim() == 3:
-                B = x.shape[0]
-                n = min(x.shape[1], x.shape[2])
-                return torch.ones(B, n, device=original_device, dtype=x.dtype) / n
-            else:
-                return torch.tensor([1.0], device=original_device, dtype=x.dtype)
-    
-    def _compute_von_neumann_entropy(self, state_matrix: torch.Tensor) -> torch.Tensor:
-        """
-        Von Neumann entropy via Schmidt spectrum.
-        S = -Σ pᵢ log pᵢ where pᵢ = sᵢ²/Σsⱼ²
-        """
-        device = state_matrix.device
-        eps = 1e-12
-        
-        try:
-            x = state_matrix
-            
-            # Handle different input shapes
-            if x.dim() == 1:
-                n = x.numel()
-                a, b = self._near_square_factors(n)
-                M = x.reshape(a, b)
-                s = self._safe_svdvals(M)
-                s2 = s * s
-                Z = s2.sum().clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum()
-                rank = p.numel()
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            elif x.dim() == 2:
-                s = self._safe_svdvals(x)
-                s2 = s * s
-                Z = s2.sum().clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum()
-                rank = p.numel()
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            elif x.dim() == 3:
-                # Batch of matrices
-                s = self._safe_svdvals(x)
-                s2 = s * s
-                Z = s2.sum(dim=-1, keepdim=True).clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum(dim=-1)
-                rank = p.shape[-1]
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            else:
-                logger.warning(f"Entropy: unsupported dims={x.dim()}, fallback 0.5")
-                return torch.tensor(0.5, device=device)
-        
-        except Exception as e:
-            logger.warning(f"Entropy computation failed: {e}, fallback 0.5")
-            return torch.tensor(0.5, device=device)
-    
-    def forward(self, pillars: torch.Tensor):
-        """
-        Quantum simulation forward pass.
+        Compute diversity as variance of factor activations.
         
         Args:
-            pillars: [B, num_pillars]
-        
+            factors: [B, num_factors]
         Returns:
-            Dict with entanglement and action_propensity
+            Dict with 'diversity' and 'action_propensity'
         """
-        B = pillars.size(0)
-        device = pillars.device
-        
-        # Initialize state
-        state = torch.zeros(B, self.bond_dim, device=device)
-        
-        # Process through MPS layers
-        for i, layer in enumerate(self.layers):
-            scalar = pillars[:, i:i+1]
-            state = layer(state, scalar)
-        
-        # Reshape to batch of matrices for entropy
-        a, b = self._near_square_factors(self.bond_dim)
-        state_m = state.reshape(B, a, b)
-        
-        # Compute entanglement
-        entanglement = self._compute_von_neumann_entropy(state_m)
-        
-        # Action propensity
-        action_propensity = F.softmax(self.prop_head(state), dim=-1)
-        
+        # Diversity = variance across factor dimensions
+        diversity = factors.var(dim=-1)  # [B]
+        action_propensity = F.softmax(self.prop_head(factors), dim=-1)
         return {
-            'entanglement': entanglement,
+            'diversity': diversity,
             'action_propensity': action_propensity
         }
 
@@ -4640,7 +4485,7 @@ class MultiLevelSafetySystem(nn.Module):
         action_embedding: torch.Tensor,
         core_state: torch.Tensor,
         pillars: torch.Tensor,
-        quantum: Dict,
+        diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
     ) -> torch.Tensor:
@@ -4654,7 +4499,7 @@ class MultiLevelSafetySystem(nn.Module):
         device = core_state.device
         
         # Extract metrics
-        ent = quantum.get("entanglement", torch.zeros(B, device=device))
+        ent = diversity.get("diversity", torch.zeros(B, device=device))
         if ent.dim() == 1:
             ent = ent.view(B, 1)
         
@@ -4743,7 +4588,7 @@ class TransparentSelfReporting(nn.Module):
         self,
         core_state: torch.Tensor,
         pillars: torch.Tensor,
-        quantum: Dict,
+        diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
     ) -> Dict:
@@ -4757,7 +4602,7 @@ class TransparentSelfReporting(nn.Module):
         device = core_state.device
         
         # Extract metrics with proper shape handling
-        ent = quantum.get('entanglement', torch.zeros(B, device=device)).float()
+        ent = diversity.get('diversity', torch.zeros(B, device=device)).float()
         ent = torch.nan_to_num(ent, nan=0.0).clamp(0.0, 1.0)
         # Ensure ent is [B] shape
         if ent.dim() == 0:
@@ -5711,13 +5556,13 @@ class AEONDeltaV3(nn.Module):
         logger.info("Loading Five Pillars...")
         self.pillars_module = PillarsModule(config).to(self.device)
         
-        # ===== QUANTUM SIMULATOR =====
+        # ===== DIVERSITY METRIC =====
         if config.enable_quantum_sim:
-            logger.info("Loading QuantumSimulator...")
-            self.quantum_sim = QuantumSimulator(config).to(self.device)
+            logger.info("Loading DiversityMetric...")
+            self.diversity_metric = DiversityMetric(config).to(self.device)
         else:
-            self.quantum_sim = None
-            logger.info("QuantumSimulator disabled")
+            self.diversity_metric = None
+            logger.info("DiversityMetric disabled")
         
         # ===== TOPOLOGY ANALYZER =====
         if config.enable_catastrophe_detection:
@@ -5803,7 +5648,7 @@ class AEONDeltaV3(nn.Module):
         self.metrics_log = {
             'iterations': [],
             'consistency': [],
-            'entanglement': [],
+            'diversity': [],
             'catastrophes': [],
             'safety_scores': []
         }
@@ -5840,25 +5685,18 @@ class AEONDeltaV3(nn.Module):
         except Exception as e:
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
-    def _compute_quantum(
+    def _compute_diversity(
         self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
-        """Compute quantum simulation results or return defaults.
-        
-        Args:
-            pillars: [B, num_pillars] pillar activations.
-            B: Batch size.
-            device: Target device.
-            fast: If True, skip quantum sim and return defaults.
-        """
-        if self.quantum_sim is not None and not fast:
-            quantum_results = self.quantum_sim(pillars)
+        """Compute diversity metric or return defaults."""
+        if self.diversity_metric is not None and not fast:
+            diversity_results = self.diversity_metric(pillars)
             logger.debug(
-                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
+                f"Diversity: score={diversity_results['diversity'].mean().item():.4f}"
             )
-            return quantum_results
+            return diversity_results
         return {
-            'entanglement': torch.zeros(B, device=device),
+            'diversity': torch.zeros(B, device=device),
             'action_propensity': torch.full(
                 (B, self.config.num_pillars),
                 1.0 / self.config.num_pillars,
@@ -5894,7 +5732,7 @@ class AEONDeltaV3(nn.Module):
     
     def _compute_safety(
         self, C_star: torch.Tensor, pillars: torch.Tensor,
-        quantum_results: Dict, topo_results: Dict,
+        diversity_results: Dict, topo_results: Dict,
         B: int, device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Compute safety scores and self-report.
@@ -5902,7 +5740,7 @@ class AEONDeltaV3(nn.Module):
         Args:
             C_star: [B, hidden_dim] converged thought state.
             pillars: [B, num_pillars] pillar activations.
-            quantum_results: Dict from quantum simulation.
+            diversity_results: Dict from diversity metric.
             topo_results: Dict from topology analysis.
             B: Batch size.
             device: Target device.
@@ -5911,7 +5749,7 @@ class AEONDeltaV3(nn.Module):
             action_embedding = torch.zeros(B, self.config.action_dim, device=device)
             safety_score = self.safety_system(
                 action_embedding, C_star, pillars,
-                quantum_results, topo_results, mode='combined'
+                diversity_results, topo_results, mode='combined'
             )
             logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
         else:
@@ -5919,7 +5757,7 @@ class AEONDeltaV3(nn.Module):
         
         if self.self_reporter is not None:
             self_report = self.self_reporter(
-                C_star, pillars, quantum_results, topo_results, mode='combined'
+                C_star, pillars, diversity_results, topo_results, mode='combined'
             )
             logger.debug(
                 f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
@@ -5994,13 +5832,13 @@ class AEONDeltaV3(nn.Module):
         pillars, embedded_pillars = self.pillars_module(C_star)
         logger.debug(f"Pillars: {pillars.shape}")
         
-        # 3-4. Quantum and topology (delegated to helpers)
-        quantum_results = self._compute_quantum(pillars, B, device, fast)
+        # 3-4. Diversity and topology (delegated to helpers)
+        diversity_results = self._compute_diversity(pillars, B, device, fast)
         topo_results = self._compute_topology(pillars, iterations, B, device, fast)
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
-            C_star, pillars, quantum_results, topo_results, B, device
+            C_star, pillars, diversity_results, topo_results, B, device
         )
         
         # 5b. World model (physics reasoning)
@@ -6032,7 +5870,7 @@ class AEONDeltaV3(nn.Module):
             'core_state': C_star,
             'pillars': pillars,
             'pillar_dict': get_pillar_dict(pillars),
-            'quantum_results': quantum_results,
+            'diversity_results': diversity_results,
             'topo_results': topo_results,
             'safety_score': safety_score,
             'self_report': self_report,
@@ -6261,8 +6099,8 @@ class AEONDeltaV3(nn.Module):
             self.metrics_log['consistency'].append(
                 float(consistency.item()) if isinstance(consistency, torch.Tensor) else float(consistency)
             )
-            self.metrics_log['entanglement'].append(
-                float(outputs['quantum_results']['entanglement'].mean().item())
+            self.metrics_log['diversity'].append(
+                float(outputs['diversity_results']['diversity'].mean().item())
             )
             self.metrics_log['catastrophes'].append(
                 float(outputs['topo_results']['catastrophes'].float().mean().item())
@@ -6412,7 +6250,7 @@ class AEONDeltaV3(nn.Module):
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
             ("PillarsModule", self.pillars_module),
-            ("QuantumSimulator", self.quantum_sim),
+            ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
             ("SafetySystem", self.safety_system),
             ("SelfReporter", self.self_reporter),
@@ -7428,7 +7266,7 @@ def main():
             
             logger.info("✅ Metrics:")
             logger.info(f"  - Consistency: {consistency:.4f}")
-            logger.info(f"  - Entanglement: {outputs['quantum_results']['entanglement'].mean().item():.4f}")
+            logger.info(f"  - Diversity: {outputs['diversity_results']['diversity'].mean().item():.4f}")
             logger.info(f"  - Catastrophes: {outputs['topo_results']['catastrophes'].float().mean().item():.4f}")
             logger.info(f"  - Safety: {outputs['safety_score'].mean().item():.4f}")
             logger.info(f"  - Iterations: {outputs['iterations'].mean().item():.2f}")
