@@ -1701,13 +1701,25 @@ def main(
     # Загрузка checkpoint
     if resume_from and os.path.exists(resume_from):
         logger.info(f"📂 Загрузка checkpoint: {resume_from}")
-        logger.warning(
-            "⚠️ Loading checkpoint with weights_only=False. "
-            "Only load checkpoints from trusted sources."
-        )
         try:
-            # weights_only=False required: checkpoint contains optimizer state with non-tensor types
-            checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
+            # Try safe loading first
+            try:
+                checkpoint = torch.load(resume_from, map_location=device, weights_only=True)
+            except Exception:
+                logger.warning(
+                    "⚠️ Loading checkpoint with weights_only=False. "
+                    "Only load checkpoints from trusted sources."
+                )
+                checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
+            
+            # Validate checkpoint structure
+            if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint:
+                logger.error(
+                    f"❌ Checkpoint '{resume_from}' has invalid structure "
+                    f"(missing 'model_state_dict' key)."
+                )
+                return
+            
             model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"   ✅ Checkpoint loaded successfully")
         except Exception as e:
