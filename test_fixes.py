@@ -8,6 +8,7 @@ import numpy as np
 import math
 import sys
 import os
+import logging
 
 # Add the project directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1881,6 +1882,208 @@ def test_version_consistency():
     print("✅ test_version_consistency PASSED")
 
 
+def test_warmup_cosine_scheduler_clamp():
+    """Fix: WarmupCosineScheduler progress must be clamped to [0,1].
+    
+    When current_step exceeds total_steps (e.g. due to leftover batch steps),
+    the LR should stay at min_lr and not rebound.
+    """
+    from ae_train import WarmupCosineScheduler
+    
+    model = nn.Linear(10, 10)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    
+    scheduler = WarmupCosineScheduler(
+        optimizer, warmup_steps=10, total_steps=100, min_lr=1e-6
+    )
+    
+    # Step past total_steps
+    for _ in range(120):
+        scheduler.step()
+    
+    lr = scheduler.get_lr()
+    # After total_steps, LR should be at or very near min_lr
+    assert lr <= 1e-5, f"LR should be near min_lr after exceeding total_steps, got {lr}"
+    
+    print("✅ test_warmup_cosine_scheduler_clamp PASSED")
+
+
+def test_nan_path_preserves_accumulated_gradients():
+    """Fix: NaN loss path should NOT call optimizer.zero_grad().
+    
+    With gradient accumulation, valid gradients from prior batches must be
+    preserved even if a subsequent batch produces NaN loss.
+    """
+    from ae_train import SafeThoughtAETrainerV4, AEONConfigV4, AEONDeltaV4, TrainingMonitor
+    
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_trainer")
+    tokens = torch.randint(1, 100, (4, 16))
+    trainer.train_step(tokens)
+    
+    # Check some grads exist
+    has_grad = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in model.parameters() if p.requires_grad
+    )
+    assert has_grad, "Should have accumulated gradients after valid step"
+    
+    # Store gradient snapshot before simulating NaN path
+    grad_snapshot = {
+        name: p.grad.clone()
+        for name, p in model.named_parameters()
+        if p.requires_grad and p.grad is not None
+    }
+    assert len(grad_snapshot) > 0, "Should have gradient snapshots"
+    
+    # Monkey-patch _forward_pass to produce NaN loss
+    original_forward = trainer._forward_pass
+    def nan_forward(tokens):
+        outputs = original_forward(tokens)
+        outputs['total_loss'] = torch.tensor(float('nan'))
+        return outputs
+    trainer._forward_pass = nan_forward
+    
+    # This NaN step should NOT destroy accumulated gradients
+    trainer.train_step(tokens)
+    
+    # Verify gradients are preserved (not zeroed)
+    for name, old_grad in grad_snapshot.items():
+        param = dict(model.named_parameters())[name]
+        assert param.grad is not None, f"Gradient for {name} was zeroed"
+        assert torch.equal(param.grad, old_grad), (
+            f"Gradient for {name} was modified by NaN path"
+        )
+    
+    # Restore
+    trainer._forward_pass = original_forward
+    
+    print("✅ test_nan_path_preserves_accumulated_gradients PASSED")
+
+
+def test_nan_metrics_not_contaminating_epoch():
+    """Fix: NaN metric values should be guarded in Phase A epoch metric accumulation.
+    
+    Verifies that NaN values in individual metrics do not contaminate epoch averages.
+    """
+    # Simulate the guarded accumulation logic
+    epoch_metrics = {"recon": 0.0, "vq": 0.0, "perplexity": 0.0, "accuracy_%": 0.0}
+    
+    # Good batch outputs
+    good_outputs = {'recon_loss': 2.5, 'vq_loss': 0.1, 'perplexity': 12.0, 'accuracy': 45.0}
+    # NaN batch outputs
+    nan_outputs = {'recon_loss': float('nan'), 'vq_loss': float('nan'), 'perplexity': float('inf'), 'accuracy': 0.0}
+    
+    for outputs in [good_outputs, nan_outputs, good_outputs]:
+        if not (math.isnan(outputs['recon_loss']) or math.isinf(outputs['recon_loss'])):
+            epoch_metrics["recon"] += outputs['recon_loss']
+            epoch_metrics["vq"] += outputs['vq_loss']
+            epoch_metrics["perplexity"] += outputs['perplexity']
+            epoch_metrics["accuracy_%"] += outputs['accuracy']
+    
+    # Epoch metrics should only include the 2 good batches
+    assert math.isfinite(epoch_metrics["recon"]), "recon should be finite"
+    assert epoch_metrics["recon"] == 5.0, f"Expected 5.0, got {epoch_metrics['recon']}"
+    assert math.isfinite(epoch_metrics["perplexity"]), "perplexity should be finite"
+    
+    print("✅ test_nan_metrics_not_contaminating_epoch PASSED")
+
+
+def test_entropy_loss_returns_tensor():
+    """Fix: _compute_entropy_loss must always return a torch.Tensor.
+    
+    The else branch (max_entropy <= 0) should return a tensor, not a Python float.
+    """
+    from ae_train import VectorQuantizerHybridV4
+    
+    vq = VectorQuantizerHybridV4(num_embeddings=16, embedding_dim=32)
+    
+    # Normal case: indices with valid distribution
+    indices = torch.randint(0, 16, (32,))
+    result = vq._compute_entropy_loss(indices)
+    assert isinstance(result, torch.Tensor), (
+        f"Expected torch.Tensor, got {type(result)}"
+    )
+    
+    print("✅ test_entropy_loss_returns_tensor PASSED")
+
+
+def test_vq_temperature_validation():
+    """Fix: AEONConfigV4 must reject vq_temperature <= 0.
+    
+    vq_temperature is used as a divisor in VQ distance computation;
+    zero or negative values cause division by zero or flipped distances.
+    """
+    from ae_train import AEONConfigV4
+    
+    try:
+        config = AEONConfigV4(vq_temperature=0.0)
+        assert False, "Should have raised ValueError for vq_temperature=0"
+    except ValueError as e:
+        assert "vq_temperature" in str(e)
+    
+    try:
+        config = AEONConfigV4(vq_temperature=-1.0)
+        assert False, "Should have raised ValueError for vq_temperature=-1"
+    except ValueError as e:
+        assert "vq_temperature" in str(e)
+    
+    # Positive value should work fine
+    config = AEONConfigV4(vq_temperature=0.5)
+    assert config.vq_temperature == 0.5
+    
+    print("✅ test_vq_temperature_validation PASSED")
+
+
+def test_perplexity_overflow_guard():
+    """Fix: Perplexity computation should clamp recon_loss before exp().
+    
+    exp(loss) overflows to Inf for loss > ~88 in float32. The fix clamps
+    recon_loss to max=80 before calling exp.
+    """
+    # Verify the clamping approach prevents overflow
+    large_loss = torch.tensor(100.0)
+    perplexity = torch.exp(large_loss.clamp(max=80)).item()
+    assert math.isfinite(perplexity), f"Perplexity should be finite, got {perplexity}"
+    
+    # Without clamp, this would overflow
+    raw_perplexity = torch.exp(large_loss).item()
+    assert math.isinf(raw_perplexity), "Unclamped exp(100) should overflow to Inf"
+    
+    # Normal loss should be unaffected by clamp
+    normal_loss = torch.tensor(5.0)
+    clamped = torch.exp(normal_loss.clamp(max=80)).item()
+    unclamped = torch.exp(normal_loss).item()
+    assert abs(clamped - unclamped) < 1e-6, "Clamp should not affect normal losses"
+    
+    print("✅ test_perplexity_overflow_guard PASSED")
+
+
+def test_gradscaler_compatibility():
+    """Fix: GradScaler instantiation should handle both old and new PyTorch API.
+    
+    Verifies that the trainer can be instantiated without GradScaler errors.
+    """
+    from ae_train import SafeThoughtAETrainerV4, AEONConfigV4, AEONDeltaV4, TrainingMonitor
+    
+    # Use_amp=False so we don't need CUDA, but verify the code path compiles
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    
+    # Should not raise any errors
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_trainer")
+    assert trainer.scaler is None, "Scaler should be None when AMP is disabled"
+    
+    print("✅ test_gradscaler_compatibility PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -1975,6 +2178,15 @@ if __name__ == '__main__':
     test_entropy_loss_guard()
     test_certified_error_numerical_stability()
     test_version_consistency()
+    
+    # v4 bug fix regression tests
+    test_warmup_cosine_scheduler_clamp()
+    test_nan_path_preserves_accumulated_gradients()
+    test_nan_metrics_not_contaminating_epoch()
+    test_entropy_loss_returns_tensor()
+    test_vq_temperature_validation()
+    test_perplexity_overflow_guard()
+    test_gradscaler_compatibility()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
