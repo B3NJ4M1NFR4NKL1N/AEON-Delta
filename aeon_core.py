@@ -100,9 +100,9 @@ except ImportError:
 
 # Visualization
 try:
-    import matplotlib.pyplot as plt
     import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
+    matplotlib.use('Agg')  # Non-interactive backend — must precede pyplot import
+    import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
@@ -544,7 +544,7 @@ class TensorGuard:
             raise ValueError(error_msg)
         
         elif self.policy == NaNPolicy.WARN:
-            if self._sanitize_count % self.alert_threshold == 0:
+            if self._sanitize_count > 0 and self._sanitize_count % self.alert_threshold == 0:
                 logger.warning(
                     f"⚠️  NaN/Inf sanitization #{self._sanitize_count} in {context}: "
                     f"shape={tensor.shape}, nan={torch.isnan(tensor).sum().item()}, "
@@ -590,7 +590,21 @@ class TensorGuard:
         - If problems everywhere: fallback to standard sanitization
         """
         if tensor.dim() < 1:
-            return self.sanitize(tensor, context)
+            # Direct sanitization to avoid infinite recursion with QUARANTINE policy
+            cleaned = tensor.clone()
+            if torch.isnan(cleaned).any():
+                cleaned = torch.where(
+                    torch.isnan(cleaned),
+                    torch.full_like(cleaned, self.default_value),
+                    cleaned
+                )
+            if torch.isinf(cleaned).any():
+                cleaned = torch.where(
+                    torch.isinf(cleaned),
+                    torch.sign(cleaned) * self.max_value,
+                    cleaned
+                )
+            return cleaned
         
         # Vectorized check per batch dimension (avoid Python loop)
         batch_size = tensor.shape[0]
@@ -1244,7 +1258,6 @@ class ThoughtDecoder(nn.Module):
         device: torch.device
     ) -> torch.Tensor:
         """Teacher-forcing mode."""
-        batch_size = z.shape[0]
         seq_length = teacher_tokens.shape[1]
         
         # Project z to initial hidden state
@@ -2646,6 +2659,7 @@ class RobustVectorQuantizer(nn.Module):
         
         return {
             'total_codes': self.num_embeddings,
+            'total_usage': total_usage,
             'used_codes': used_codes,
             'unused_codes': self.num_embeddings - used_codes,
             'usage_rate': used_codes / self.num_embeddings,
@@ -2848,7 +2862,6 @@ class ProvablyConvergentMetaLoop(nn.Module):
             return C_history[-1]
         
         B = C_history[-1].shape[0]
-        H = C_history[-1].shape[1]
         
         # Stack residuals
         F = torch.stack(residual_history, dim=0)  # [m, B, H]
@@ -3256,7 +3269,9 @@ class FastHessianComputer:
         elif self.method == 'autograd' and self.autograd_hessian_available:
             H = self._hessian_autograd(func, x)
         elif self.method == 'forward_ad':
-            H = self._hessian_forward_ad(func, x)
+            # forward_ad not implemented; fall back to finite differences
+            logger.warning("forward_ad Hessian not implemented, using finite_differences")
+            H = self._hessian_finite_differences(func, x)
         else:
             # Auto-select: prefer autograd vectorized path, fallback to finite diff
             if self.autograd_hessian_available:
@@ -3449,7 +3464,6 @@ class OptimizedTopologyAnalyzer(nn.Module):
             Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics
         """
         B, P = pillars.shape
-        device = pillars.device
         
         # Potential
         with torch.enable_grad():
@@ -4608,7 +4622,9 @@ class AEONDeltaV3(nn.Module):
         )
         
         # ===== 2. VQ LOSS =====
-        vq_loss = outputs.get('vq_loss', torch.tensor(0.0, device=self.device))
+        vq_loss = outputs.get('vq_loss', None)
+        if vq_loss is None:
+            vq_loss = torch.tensor(0.0, device=self.device)
         
         # ===== 3. SELF-CONSISTENCY =====
         if 'core_state' in outputs and 'psi_0' in outputs:
@@ -5201,7 +5217,7 @@ class AEONTrainer:
         self.global_step += 1
         
         # Convert to float
-        metrics = {k: float(v.item()) for k, v in loss_dict.items()}
+        metrics = {k: float(v.item()) if isinstance(v, torch.Tensor) else float(v) for k, v in loss_dict.items()}
         metrics['lr'] = float(self.scheduler.get_last_lr()[0])
         
         return metrics
@@ -5233,7 +5249,7 @@ class AEONTrainer:
             attention_mask
         )
         
-        metrics = {k: float(v.item()) for k, v in loss_dict.items()}
+        metrics = {k: float(v.item()) if isinstance(v, torch.Tensor) else float(v) for k, v in loss_dict.items()}
         return metrics
     
     def train(

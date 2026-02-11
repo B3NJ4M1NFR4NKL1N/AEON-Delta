@@ -45,9 +45,11 @@ except ImportError:
     print("⚠️ transformers не установлен. Будет использован fallback-токенизатор.")
 
 # --- Mixed Precision ---
+AMP_NEW_API = False
 try:
     from torch.amp import GradScaler, autocast
     AMP_AVAILABLE = torch.cuda.is_available()
+    AMP_NEW_API = True
 except ImportError:
     try:
         from torch.cuda.amp import GradScaler, autocast
@@ -320,7 +322,7 @@ class TrainingMonitor:
             trainable_params += trainable
             self.logger.info(f"   • {name}: {params:,} (trainable: {trainable:,})")
         
-        self.logger.info(f"   ─────────────────────────────────")
+        self.logger.info("   ─────────────────────────────────")
         self.logger.info(f"   ВСЕГО: {total_params:,} (trainable: {trainable_params:,})")
         self.logger.info(f"   Память модели: ~{total_params * 4 / 1024**2:.1f} MB (FP32)")
         
@@ -335,7 +337,7 @@ class TrainingMonitor:
     def save_metrics(self, filepath: str):
         data = {
             "metrics_history": self.metrics_history,
-            "best_loss": self.best_loss,
+            "best_loss": self.best_loss if math.isfinite(self.best_loss) else None,
             "timestamp": datetime.now().isoformat()
         }
         with open(filepath, 'w') as f:
@@ -630,12 +632,6 @@ class ContextualRSSM(nn.Module):
             nn.Dropout(dropout)
         )
         
-        # Attention over context (опционально, для взвешивания)
-        self.context_attention = nn.Sequential(
-            nn.Linear(hidden_dim, 1),
-            nn.Softmax(dim=1)
-        )
-        
         # GRU для рекуррентной обработки
         self.gru = nn.GRUCell(rssm_hidden, rssm_hidden)
         
@@ -662,10 +658,6 @@ class ContextualRSSM(nn.Module):
         
         if hx is None:
             hx = torch.zeros(B, self.rssm_hidden, device=z_context.device)
-        
-        # Attention-взвешенный контекст
-        attn_weights = self.context_attention(z_context)  # [B, K, 1]
-        weighted_context = (z_context * attn_weights).sum(dim=1)  # [B, D]
         
         # Конкатенация всего контекста
         flat_context = z_context.reshape(B, -1)  # [B, K*D]
@@ -741,6 +733,8 @@ class AEONDeltaV4(nn.Module):
         )
         
         self._init_weights()
+        # Re-sync VQ EMA buffer after weight init overwrites embedding
+        self.vq.ema_w.copy_(self.vq.embedding.weight.data)
         
     def _init_weights(self):
         for module in self.modules():
@@ -1030,7 +1024,7 @@ class WarmupCosineScheduler:
         if self.current_step < self.warmup_steps:
             return self.base_lr * self.current_step / max(1, self.warmup_steps)
         else:
-            progress = (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            progress = min(1.0, (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps))
             return self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (1 + math.cos(math.pi * progress))
     
     def get_lr(self):
@@ -1072,13 +1066,16 @@ class SafeThoughtAETrainerV4:
         )
         
         self.use_amp = config.use_amp and AMP_AVAILABLE
-        self.scaler = GradScaler(device=self.device.type) if self.use_amp else None
+        if self.use_amp:
+            self.scaler = GradScaler(device=self.device.type) if AMP_NEW_API else GradScaler()
+        else:
+            self.scaler = None
         
         self.global_step = 0
         self.best_loss = float('inf')
         self.best_model_state = None
         
-    def train_step(self, tokens: torch.Tensor) -> Dict[str, float]:
+    def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
         
         Args:
@@ -1096,7 +1093,8 @@ class SafeThoughtAETrainerV4:
         tokens = tokens.to(self.device)
         
         if self.use_amp:
-            with autocast(device_type=self.device.type):
+            ctx = autocast(device_type=self.device.type) if AMP_NEW_API else autocast()
+            with ctx:
                 outputs = self._forward_pass(tokens)
         else:
             outputs = self._forward_pass(tokens)
@@ -1118,7 +1116,7 @@ class SafeThoughtAETrainerV4:
         
         return outputs
     
-    def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, float]:
+    def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, Any]:
         z = self.model.encode(tokens)
         quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
         logits = self.model.decode(quantized, tokens)
@@ -1209,6 +1207,11 @@ class SafeThoughtAETrainerV4:
             
             accumulated_loss = 0.0
             num_accumulated = 0
+            accum_recon = 0.0
+            accum_vq = 0.0
+            accum_ppl = 0.0
+            accum_acc = 0.0
+            accum_cb = 0.0
             
             for batch_idx, (batch,) in enumerate(loader):
                 outputs = self.train_step(batch)
@@ -1216,22 +1219,31 @@ class SafeThoughtAETrainerV4:
                 if not (math.isnan(step_loss) or math.isinf(step_loss)):
                     accumulated_loss += step_loss
                     num_accumulated += 1
+                    accum_recon += outputs['recon_loss']
+                    accum_vq += outputs['vq_loss']
+                    accum_ppl += outputs['perplexity']
+                    accum_acc += outputs['accuracy']
+                    accum_cb += outputs.get('codebook_usage_%', 0)
                 
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     grad_norm = self._optimizer_step()
                     self.scheduler.step()
                     
-                    avg_loss = accumulated_loss / max(num_accumulated, 1)
+                    n = max(num_accumulated, 1)
+                    epoch_metrics["recon"] += accum_recon / n
+                    epoch_metrics["vq"] += accum_vq / n
+                    epoch_metrics["total"] += accumulated_loss / n
+                    epoch_metrics["perplexity"] += accum_ppl / n
+                    epoch_metrics["accuracy_%"] += accum_acc / n
+                    epoch_metrics["codebook_%"] += accum_cb / n
+                    epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
                     accumulated_loss = 0.0
                     num_accumulated = 0
-                    
-                    epoch_metrics["recon"] += outputs['recon_loss']
-                    epoch_metrics["vq"] += outputs['vq_loss']
-                    epoch_metrics["total"] += avg_loss
-                    epoch_metrics["perplexity"] += outputs['perplexity']
-                    epoch_metrics["accuracy_%"] += outputs['accuracy']
-                    epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
-                    epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
+                    accum_recon = 0.0
+                    accum_vq = 0.0
+                    accum_ppl = 0.0
+                    accum_acc = 0.0
+                    accum_cb = 0.0
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -1419,6 +1431,8 @@ class ContextualRSSMTrainer:
         logger.info(f"   Context window: {K}")
         logger.info(f"   Training samples: {len(dataset):,}")
         
+        model_device = next(self.model.parameters()).device
+        
         for epoch in range(epochs):
             self.monitor.start_epoch(epoch, epochs)
             
@@ -1428,8 +1442,8 @@ class ContextualRSSMTrainer:
             }
             
             for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
-                ctx_batch = ctx_batch.to(device)
-                tgt_batch = tgt_batch.to(device)
+                ctx_batch = ctx_batch.to(model_device)
+                tgt_batch = tgt_batch.to(model_device)
                 
                 metrics = self.train_step(ctx_batch, tgt_batch)
                 
@@ -1466,31 +1480,6 @@ class ContextualRSSMTrainer:
 # ВАЛИДАЦИЯ
 # ==============================================================================
 
-def _validate_component(model_fn, test_input, expected_shape, name, logger):
-    """Validate a single model component with shape checking.
-    
-    Args:
-        model_fn: Callable that takes test_input and returns output tensor.
-        test_input: Input tensor(s) for the component.
-        expected_shape: Expected output shape tuple.
-        name: Component name for logging.
-        logger: Logger instance.
-        
-    Returns:
-        Tuple of (output_tensor, error_message_or_None).
-    """
-    try:
-        output = model_fn(test_input) if not isinstance(test_input, tuple) else model_fn(*test_input)
-        assert output.shape == expected_shape, (
-            f"Shape mismatch: expected {expected_shape}, got {output.shape}"
-        )
-        input_shape = test_input.shape if not isinstance(test_input, tuple) else [t.shape for t in test_input]
-        logger.info(f"   ✅ {name}: {input_shape} → {output.shape}")
-        return output, None
-    except Exception as e:
-        logger.error(f"   ❌ {name}: {e}")
-        return None, f"{name}: {e}"
-
 
 def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4, 
                                   logger: logging.Logger) -> bool:
@@ -1498,7 +1487,8 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     logger.info("\n🔍 Валидация компонентов обучения v4...")
     
     issues = []
-    test_batch = torch.randint(0, config.vocab_size, (2, config.seq_length), device=device)
+    model_device = next(model.parameters()).device
+    test_batch = torch.randint(0, config.vocab_size, (2, config.seq_length), device=model_device)
     
     # Проверка Encoder
     try:
@@ -1641,7 +1631,7 @@ def main(
         config.vocab_size = tokenizer.vocab_size
         logger.info(f"📖 Токенизатор: bert-base-uncased (vocab_size={config.vocab_size})")
 
-    logger.info(f"\n📋 Конфигурация v4 (ключевые изменения):")
+    logger.info("\n📋 Конфигурация v4 (ключевые изменения):")
     logger.info(f"   • grad_clip_norm: {config.grad_clip_norm} (стабилизировано)")
     logger.info(f"   • entropy_weight: {config.entropy_weight} (регуляризация кодбука)")
     logger.info(f"   • context_window: {config.context_window} (RSSM контекст)")
@@ -1721,7 +1711,7 @@ def main(
                 return
             
             model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info(f"   ✅ Checkpoint loaded successfully")
+            logger.info("   ✅ Checkpoint loaded successfully")
         except Exception as e:
             logger.error(f"❌ Failed to load checkpoint '{resume_from}': {e}")
             return
