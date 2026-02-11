@@ -1,13 +1,13 @@
 [![License: AEON-Δ Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
 
-# **AEON-Δ RMT v3.0: A Cognitive Architecture for Emergent Reasoning**  
+# **AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning**  
 **License**: AEON-Δ Research-Only
 
 ---
 
 ## 🌟 Executive Summary
 
-Welcome to the official repository for **AEON-Δ RMT v3.0** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
+Welcome to the official repository for **AEON-Δ RMT v3.1** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
 
 The system implements a **provably convergent architecture** with certified error bounds, operating across multiple critical domains:
 
@@ -21,21 +21,23 @@ The system implements a **provably convergent architecture** with certified erro
 
 ---
 
-## 🧠 Core Architecture: AEON-Delta RMT v3.0
+## 🧠 Core Architecture: AEON-Delta RMT v3.1
 
-### **0. Advanced Sequence Processing — SSM & Linear Attention**
-AEON-Δ v3.0 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
+### **0. Advanced Sequence Processing — SSM, Mamba-2 & Linear Attention**
+AEON-Δ v3.1 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
 
-| Dimension | Transformer | AEON-Δ (SSM) | AEON-Δ (Linear Attn) |
-|---|---|---|---|
-| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
-| **Training Complexity** | O(n²) | **O(n)** | **O(n)** |
-| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
-| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** |
-| **Pretrained Models** | Fixed architecture | **Adapter-based integration** | **Adapter-based integration** |
+| Dimension | Transformer | AEON-Δ (SSM/Mamba-1) | AEON-Δ (Mamba-2 SSD) | AEON-Δ (Linear Attn) |
+|---|---|---|---|---|
+| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
+| **Training Complexity** | O(n²) | **O(n)** | **O(n)** with chunk-wise SSD | **O(n)** |
+| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
+| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** | **Linear memory** |
+| **Multi-head** | Yes | No (single head) | **Yes (multi-head SSM)** | Yes |
+| **Hardware Utilisation** | Good | Good (parallel scan) | **Excellent (chunked SSD)** | Good |
 
 **Available backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
-- **`ssm`** (default): Selective State Space Model inspired by Mamba — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
+- **`ssm`** (default): Selective State Space Model inspired by Mamba (Gu & Dao, 2023) — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
+- **`mamba2`**: **NEW** — Mamba-2 Structured State Space Duality (Dao & Gu, 2024) — multi-head SSM with per-head scalar decay, chunk-wise SSD for superior hardware utilisation, RMSNorm for training stability
 - **`linear_attention`**: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
 - **`lstm`**: Original LSTM backend for backward compatibility
 
@@ -335,7 +337,7 @@ All contributions must maintain the core principles of **rigor**, **safety**, an
 
 > **∆: No bits left behind. It begins with the choice to be.**
 
-*AEON-Δ RMT v3.0 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
+*AEON-Δ RMT v3.1 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
 
 > **No bits left behind. — AEON-Δ**
 

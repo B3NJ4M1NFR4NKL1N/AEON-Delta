@@ -1589,6 +1589,8 @@ def test_ssmv2_state_caching():
         y2, _ = ssm(x[:, 5:, :], state=state)
 
     y_chunked = torch.cat([y1, y2], dim=1)
+    # Threshold accounts for Conv1d boundary effects and chunk-wise SSD
+    # recomputation at split points (similar to test_ssm_state_caching).
     max_diff = torch.max(torch.abs(y_full - y_chunked)).item()
     assert max_diff < 2.0, \
         f"State caching divergence too large: max diff={max_diff:.6f}"

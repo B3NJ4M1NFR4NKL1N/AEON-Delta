@@ -1666,8 +1666,9 @@ class _RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        orig_dtype = x.dtype
         rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
-        return (x.float() * rms).to(x.dtype) * self.weight
+        return (x.float() * rms).to(orig_dtype) * self.weight
 
 
 class _SSDBlock(nn.Module):
@@ -1714,7 +1715,8 @@ class _SSDBlock(nn.Module):
         self.dt_rank = dt_rank
         self.chunk_len = chunk_len
         assert d_inner % nheads == 0, \
-            f"d_inner ({d_inner}) must be divisible by nheads ({nheads})"
+            f"d_inner ({d_inner}) must be divisible by nheads ({nheads}). " \
+            f"Choose nheads as a divisor of d_inner, or adjust expand_factor."
 
         # Pre-norm
         self.norm = nn.LayerNorm(d_model)
@@ -1817,7 +1819,7 @@ class _SSDBlock(nn.Module):
         # Reshape x into multi-head layout: [B, L, H, P]
         x_heads = x.view(B, L, H, P)
 
-        # Pad sequence to multiple of chunk_len
+        # Pad sequence length to next multiple of chunk_len
         C_len = self.chunk_len
         pad = (C_len - L % C_len) % C_len
         if pad > 0:
