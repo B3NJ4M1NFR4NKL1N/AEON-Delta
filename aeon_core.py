@@ -1508,7 +1508,9 @@ class _SSMBlock(nn.Module):
         self.x_proj = nn.Linear(d_inner, dt_rank + d_state * 2, bias=False)
         self.dt_proj = nn.Linear(dt_rank, d_inner, bias=True)
 
-        # Learnable log(A) initialised on [-1, -0.001] (negative real for stability)
+        # Learnable log(A): A_log stores log of positive values (1..d_state).
+        # During the scan, A is recovered as -exp(A_log), yielding negative
+        # eigenvalues for stable recurrence (decaying memory).
         A = torch.arange(1, d_state + 1, dtype=torch.float32).unsqueeze(0).expand(d_inner, -1)
         self.A_log = nn.Parameter(torch.log(A))
 
@@ -1639,6 +1641,7 @@ class LinearAttentionBlock(nn.Module):
         self.feature_dim = feature_dim
         self.causal = causal
         self.head_dim = d_model // num_heads
+        self._eps = 1e-6  # Numerical stability constant
         assert d_model % num_heads == 0, \
             f"d_model ({d_model}) must be divisible by num_heads ({num_heads})"
 
@@ -1665,7 +1668,7 @@ class LinearAttentionBlock(nn.Module):
 
     @staticmethod
     def _elu_feature_map(x: torch.Tensor) -> torch.Tensor:
-        """φ(x) = elu(x) + 1 — positive-valued feature map."""
+        """φ(x) = elu(x) + 1 — non-negative feature map (min value is 0)."""
         return F.elu(x) + 1.0
 
     def forward(
@@ -1740,7 +1743,7 @@ class LinearAttentionBlock(nn.Module):
 
             # y_t = (q_t^T S) / (q_t^T z + eps)
             num = torch.einsum('bhf,bhfd->bhd', q_t, S)
-            den = torch.einsum('bhf,bhf->bh', q_t, z).unsqueeze(-1).clamp(min=1e-6)
+            den = torch.einsum('bhf,bhf->bh', q_t, z).unsqueeze(-1).clamp(min=self._eps)
             ys.append(num / den)
 
         y = torch.stack(ys, dim=2)                   # [B, H, L, head_dim]
@@ -1758,7 +1761,7 @@ class LinearAttentionBlock(nn.Module):
         z = K.sum(dim=2)                             # [B, H, F]
 
         num = torch.einsum('bhlf,bhfd->bhld', Q, KV)
-        den = torch.einsum('bhlf,bhf->bhl', Q, z).unsqueeze(-1).clamp(min=1e-6)
+        den = torch.einsum('bhlf,bhf->bhl', Q, z).unsqueeze(-1).clamp(min=self._eps)
         y = num / den
         return y, None
 
@@ -2206,7 +2209,7 @@ class SSMThoughtDecoder(nn.Module):
             return
         try:
             idx = torch.tensor(list(token_ids), dtype=torch.long)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError):
             idx = torch.empty((0,), dtype=torch.long)
         if idx.numel() > 0:
             idx = idx[(idx >= 0) & (idx < self.vocab_size)]

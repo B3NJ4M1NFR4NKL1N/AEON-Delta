@@ -24,7 +24,7 @@ AEON-Δ v3.0 includes state-of-the-art sequence processing backends that **surpa
 
 | Dimension | Transformer | AEON-Δ (SSM) | AEON-Δ (Linear Attn) |
 |---|---|---|---|
-| **Inference Speed** | O(n²) per step | **O(1) per step** (cached) | **O(1) per step** (cached) |
+| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
 | **Training Complexity** | O(n²) | **O(n)** | **O(n)** |
 | **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
 | **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** |

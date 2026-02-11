@@ -544,9 +544,10 @@ def test_ssm_state_caching():
         y2, _ = ssm(x[:, 5:, :], state=state)
 
     y_chunked = torch.cat([y1, y2], dim=1)
-    # Note: Conv1d boundary effects cause small differences at split points;
-    # the key property is that state propagation keeps outputs structurally
-    # consistent and bounded.
+    # Note: The depthwise Conv1d (kernel_size=3, padding=1) introduces boundary
+    # effects at chunk split points since the convolution context differs for
+    # adjacent elements at the boundary. The 1.0 threshold accounts for this
+    # architectural property while still catching large state propagation errors.
     max_diff = torch.max(torch.abs(y_full - y_chunked)).item()
     assert max_diff < 1.0, \
         f"State caching divergence too large: max diff={max_diff:.6f}"
@@ -714,6 +715,7 @@ def test_ssm_thought_decoder_inference():
         gen_ids, logits = dec(z, mode='inference', max_length=20, temperature=1.0, sample=True)
 
     assert gen_ids.shape[0] == 3, "Batch size mismatch"
+    # max_length=20 steps + 1 prefix (CLS) + 1 potential SEP = 22 max tokens
     assert gen_ids.shape[1] <= 22, f"Generated too many tokens: {gen_ids.shape[1]}"
     assert not torch.isnan(logits).any(), "NaN in generated logits"
 
