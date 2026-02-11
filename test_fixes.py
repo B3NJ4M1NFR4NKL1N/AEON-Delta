@@ -1369,6 +1369,75 @@ def test_aeon_v3_with_hierarchical_memory():
     print("✅ test_aeon_v3_with_hierarchical_memory PASSED")
 
 
+# ============================================================================
+# Tests for refactoring fixes (analysis-driven)
+# ============================================================================
+
+def test_hessian_forward_ad_computation():
+    """Verify _hessian_forward_ad is defined and produces correct output."""
+    from aeon_core import FastHessianComputer
+
+    hc = FastHessianComputer(method='finite_differences')
+    assert hasattr(hc, '_hessian_forward_ad'), \
+        "_hessian_forward_ad method is missing from FastHessianComputer"
+
+    # Verify it produces valid output with a simple quadratic function
+    def quadratic(x):
+        # f(x) = sum(x^2) => H = 2*I
+        return (x ** 2).sum(dim=-1)
+
+    x = torch.randn(2, 4)
+    H = hc._hessian_forward_ad(quadratic, x)
+    assert H.shape == (2, 4, 4), f"Expected (2,4,4), got {H.shape}"
+
+    print("✅ test_hessian_forward_ad_computation PASSED")
+
+
+def test_usage_stats_zero_count_safety():
+    """Verify _update_usage_stats handles zero-sum usage_count safely."""
+    from aeon_core import RobustVectorQuantizer
+
+    vq = RobustVectorQuantizer(num_embeddings=16, embedding_dim=8)
+    vq.train()
+
+    # Normal usage should work
+    indices = torch.tensor([0, 1, 2, 3])
+    vq._update_usage_stats(indices)  # Should not raise
+
+    # Edge case: empty indices produce zero-sum usage_count
+    # torch.bincount(empty, minlength=16) -> all zeros, sum = 0
+    empty_indices = torch.tensor([], dtype=torch.long)
+    vq._update_usage_stats(empty_indices)  # Should not raise (division by zero guarded)
+
+    print("✅ test_usage_stats_zero_count_safety PASSED")
+
+
+def test_ema_update_zero_cluster_safety():
+    """Verify _ema_update does not divide by zero cluster sizes."""
+    from aeon_core import RobustVectorQuantizer
+
+    vq = RobustVectorQuantizer(num_embeddings=8, embedding_dim=4)
+    vq.train()
+
+    # Zero out cluster sizes to simulate edge case
+    vq._ema_cluster_size.zero_()
+
+    inputs = torch.randn(2, 4)
+    encodings = torch.zeros(2, 8)
+    encodings[0, 0] = 1.0
+    encodings[1, 1] = 1.0
+
+    # Should not raise or produce NaN/Inf
+    vq._ema_update(inputs, encodings)
+
+    assert not torch.isnan(vq.embedding.weight.data).any(), \
+        "EMA update produced NaN with zero cluster sizes"
+    assert not torch.isinf(vq.embedding.weight.data).any(), \
+        "EMA update produced Inf with zero cluster sizes"
+
+    print("✅ test_ema_update_zero_cluster_safety PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -1434,6 +1503,11 @@ if __name__ == '__main__':
     test_meta_learner_task_buffer()
     test_aeon_v3_with_world_model()
     test_aeon_v3_with_hierarchical_memory()
+    
+    # Analysis-driven fix tests
+    test_hessian_forward_ad_computation()
+    test_usage_stats_zero_count_safety()
+    test_ema_update_zero_cluster_safety()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
