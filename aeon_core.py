@@ -794,6 +794,8 @@ class AEONConfig:
     learning_rate: float = 3e-5
     weight_decay: float = 0.01
     warmup_steps: int = 1000
+    cosine_decay_steps: int = 10000
+    min_lr_ratio: float = 0.1
     batch_size: int = 32
     gradient_clip_norm: float = 1.0
     dropout_rate: float = 0.1
@@ -864,7 +866,7 @@ class AEONConfig:
         assert 0 <= self.alpha <= 1, "alpha must be in [0, 1]"
         assert 0 < self.lipschitz_target < 1, "lipschitz_target must be in (0, 1)"
         assert self.topo_method in ("finite_differences", "forward_ad", "hutchinson")
-        assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE")
+        assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE", "RETURN_NONE")
         
         # Device initialization
         if self.device_str == "auto":
@@ -891,7 +893,8 @@ class AEONConfig:
             "RAISE": NaNPolicy.RAISE,
             "WARN": NaNPolicy.WARN,
             "SILENT": NaNPolicy.SILENT,
-            "QUARANTINE": NaNPolicy.QUARANTINE
+            "QUARANTINE": NaNPolicy.QUARANTINE,
+            "RETURN_NONE": NaNPolicy.RETURN_NONE
         }
         self.tensor_guard = TensorGuard(
             policy=policy_map[self.nan_policy],
@@ -3733,15 +3736,19 @@ class AEONTrainer:
     
     def _create_scheduler(self) -> Any:
         """Create learning rate scheduler."""
+        cosine_decay_steps = self.config.cosine_decay_steps
+        warmup_steps = self.config.warmup_steps
+        min_lr_ratio = self.config.min_lr_ratio
+        
         def lr_lambda(step):
             # Warmup
-            if step < self.config.warmup_steps:
-                return float(step) / float(max(1, self.config.warmup_steps))
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
             # Cosine decay
-            progress = float(step - self.config.warmup_steps) / float(
-                max(1, 10000 - self.config.warmup_steps)
+            progress = float(step - warmup_steps) / float(
+                max(1, cosine_decay_steps - warmup_steps)
             )
-            return max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
+            return max(min_lr_ratio, 0.5 * (1.0 + math.cos(math.pi * progress)))
         
         scheduler = LambdaLR(self.optimizer, lr_lambda)
         logger.info("Scheduler: Warmup + Cosine")
@@ -3934,6 +3941,11 @@ class AEONTrainer:
         logger.info("Training complete")
         logger.info("="*70)
         
+        # Cleanup monitoring resources
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+        
         if self.use_wandb:
             wandb.finish()
     
@@ -4120,6 +4132,116 @@ class AEONTestSuite:
             self.errors.append(f"Weight tying test failed: {e}")
             return {'weight_tying': 0.0, 'error': str(e)}
     
+    def test_gradient_flow(self) -> Dict[str, float]:
+        """Test gradient flow through the full forward-backward pass."""
+        metrics = {}
+        
+        try:
+            self.model.train()
+            self.model.zero_grad()
+            
+            x = torch.randint(
+                0, self.config.vocab_size,
+                (2, self.config.seq_length),
+                device=self.model.device
+            )
+            
+            outputs = self.model(x, decode_mode='train', fast=True)
+            
+            if 'logits' not in outputs:
+                self.errors.append("Missing logits for gradient flow test")
+                return {'gradient_flow': 0.0, 'error': 'Missing logits'}
+            
+            # Use cross_entropy loss to build a proper computation graph
+            logits = outputs['logits']
+            loss = F.cross_entropy(
+                logits.view(-1, self.config.vocab_size),
+                x.view(-1),
+                ignore_index=0
+            )
+            loss.backward()
+            
+            # Check gradient presence in key modules
+            modules_to_check = {
+                'encoder': self.model.encoder,
+                'decoder': self.model.decoder,
+            }
+            
+            total_checked = 0
+            total_with_grad = 0
+            details = {}
+            
+            for name, module in modules_to_check.items():
+                has_grad = any(
+                    p.grad is not None and p.grad.abs().sum() > 0
+                    for p in module.parameters()
+                    if p.requires_grad
+                )
+                details[name] = has_grad
+                total_checked += 1
+                if has_grad:
+                    total_with_grad += 1
+            
+            self.model.zero_grad()
+            self.model.eval()
+            
+            overall = total_with_grad / max(1, total_checked)
+            metrics = {'gradient_flow': overall, 'details': details}
+            return metrics
+        
+        except Exception as e:
+            self.errors.append(f"Gradient flow test failed: {e}")
+            return {'gradient_flow': 0.0, 'error': str(e)}
+    
+    @torch.no_grad()
+    def test_vq_codebook(self) -> Dict[str, float]:
+        """Test VQ codebook health and correctness."""
+        metrics = {}
+        
+        try:
+            self.model.eval()
+            vq = self.model.vector_quantizer
+            
+            if vq is None:
+                return {'vq_codebook': 1.0, 'details': {'skipped': 'VQ disabled'}}
+            
+            # Test encoding produces valid indices
+            z = torch.randn(4, self.config.z_dim, device=self.model.device)
+            quantized, vq_loss, indices = vq(z)
+            
+            # Check: quantized shape matches input
+            shape_ok = quantized.shape == z.shape
+            metrics['shape_match'] = shape_ok
+            
+            # Check: indices are in valid range
+            indices_valid = (indices >= 0).all() and (indices < vq.num_embeddings).all()
+            metrics['indices_valid'] = indices_valid.item() if isinstance(indices_valid, torch.Tensor) else indices_valid
+            
+            # Check: VQ loss is finite
+            loss_finite = torch.isfinite(vq_loss).item()
+            metrics['loss_finite'] = loss_finite
+            
+            # Check: quantized values are finite
+            quant_finite = torch.isfinite(quantized).all().item()
+            metrics['quantized_finite'] = quant_finite
+            
+            # Check: straight-through estimator preserves gradients
+            z_grad = torch.randn(2, self.config.z_dim, device=self.model.device, requires_grad=True)
+            with torch.enable_grad():
+                q, _, _ = vq(z_grad)
+                grad_test = torch.autograd.grad(q.sum(), z_grad, allow_unused=True)[0]
+            ste_works = grad_test is not None and grad_test.abs().sum() > 0
+            metrics['ste_gradient'] = ste_works
+            
+            scores = [1.0 if v else 0.0 for v in metrics.values() if isinstance(v, bool)]
+            overall = sum(scores) / max(1, len(scores))
+            
+            return {'vq_codebook': overall, 'details': metrics}
+        
+        except Exception as e:
+            self.errors.append(f"VQ codebook test failed: {e}")
+            return {'vq_codebook': 0.0, 'error': str(e)}
+    
     def run_all_tests(self) -> Dict[str, Any]:
         """Run all tests."""
         self.errors = []
@@ -4131,6 +4253,8 @@ class AEONTestSuite:
         
         results['stability'] = self.test_stability()
         results['weight_tying'] = self.test_weight_tying()
+        results['gradient_flow'] = self.test_gradient_flow()
+        results['vq_codebook'] = self.test_vq_codebook()
         
         # Summary
         logger.info("\n" + "="*60)
@@ -4448,12 +4572,21 @@ def main():
         
         # Save results
         results_path = Path(args.checkpoint) / "test_results.json"
+        results_path.parent.mkdir(parents=True, exist_ok=True)
         with open(results_path, 'w') as f:
-            # Remove non-serializable
-            safe_results = {
-                k: v for k, v in results.items()
-                if not isinstance(v, torch.Tensor)
-            }
+            # Recursively convert non-serializable objects
+            def make_serializable(obj):
+                if isinstance(obj, torch.Tensor):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: make_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [make_serializable(v) for v in obj]
+                elif isinstance(obj, (np.floating, np.integer)):
+                    return obj.item()
+                return obj
+            
+            safe_results = make_serializable(results)
             json.dump(safe_results, f, indent=2)
         
         logger.info(f"\n✅ Results saved to {results_path}")

@@ -195,6 +195,12 @@ class AEONConfigV4:
             raise ValueError(f"vq_ema_decay must be in (0, 1), got {self.vq_ema_decay}")
         if self.code_reset_noise_scale < 0:
             raise ValueError(f"code_reset_noise_scale must be non-negative, got {self.code_reset_noise_scale}")
+        if not (0 <= self.warmup_ratio <= 1):
+            raise ValueError(f"warmup_ratio must be in [0, 1], got {self.warmup_ratio}")
+        if not (0 <= self.dropout_rate < 1):
+            raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
+        if not (0 <= self.label_smoothing < 1):
+            raise ValueError(f"label_smoothing must be in [0, 1), got {self.label_smoothing}")
 
 
 # ==============================================================================
@@ -1308,13 +1314,19 @@ class ContextualRSSMTrainer:
         )
         
         self.best_loss = float('inf')
+        self.best_model_state = None
         self.global_step = 0
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
+        Single training step for contextual RSSM.
+        
         Args:
-            z_context: [B, K, D] — контекст из K предыдущих z
-            z_target: [B, D] — целевой z_{t+1}
+            z_context: [B, K, D] — context from K previous z states
+            z_target: [B, D] — target z_{t+1}
+            
+        Returns:
+            Dictionary with loss and metric values.
         """
         self.model.rssm.train()
         
@@ -1325,6 +1337,19 @@ class ContextualRSSMTrainer:
         mse_loss = F.mse_loss(pred, z_target)
         smooth_l1 = F.smooth_l1_loss(pred, z_target)
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
+        
+        # Detect NaN/Inf loss to prevent corrupted gradient updates
+        if torch.isnan(loss) or torch.isinf(loss):
+            logger.warning(
+                f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}, skipping backward pass"
+            )
+            self.optimizer.zero_grad()
+            return {
+                "mse_loss": float('nan'), "smooth_l1": float('nan'),
+                "total_loss": float('nan'), "cosine_sim": 0.0,
+                "l1_loss": float('nan'), "rel_error": float('nan'),
+                "grad_norm": 0.0
+            }
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -1421,9 +1446,15 @@ class ContextualRSSMTrainer:
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
+                self.best_model_state = copy.deepcopy(self.model.rssm.state_dict())
                 logger.info(f"   🏆 Новый лучший MSE: {self.best_loss:.6f}")
             
             self.monitor.end_epoch(epoch, epochs, epoch_metrics, "phase_B")
+        
+        # Restore best model
+        if self.best_model_state is not None:
+            self.model.rssm.load_state_dict(self.best_model_state)
+            logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
         self.monitor.end_training("Phase B")
 
