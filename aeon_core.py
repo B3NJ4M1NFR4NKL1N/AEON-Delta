@@ -867,6 +867,8 @@ class AEONConfig:
         assert 0 < self.lipschitz_target < 1, "lipschitz_target must be in (0, 1)"
         assert self.topo_method in ("finite_differences", "forward_ad", "hutchinson")
         assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE", "RETURN_NONE")
+        assert self.cosine_decay_steps > 0, "cosine_decay_steps must be positive"
+        assert 0 < self.min_lr_ratio <= 1, "min_lr_ratio must be in (0, 1]"
         
         # Device initialization
         if self.device_str == "auto":
@@ -4579,12 +4581,17 @@ def main():
                 if isinstance(obj, torch.Tensor):
                     return obj.tolist()
                 elif isinstance(obj, dict):
-                    return {k: make_serializable(v) for k, v in obj.items()}
+                    return {str(k): make_serializable(v) for k, v in obj.items()}
                 elif isinstance(obj, (list, tuple)):
                     return [make_serializable(v) for v in obj]
                 elif isinstance(obj, (np.floating, np.integer)):
                     return obj.item()
-                return obj
+                elif isinstance(obj, set):
+                    return list(obj)
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                else:
+                    return str(obj)
             
             safe_results = make_serializable(results)
             json.dump(safe_results, f, indent=2)

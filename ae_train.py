@@ -1323,6 +1323,7 @@ class ContextualRSSMTrainer:
         
         Args:
             z_context: [B, K, D] — context from K previous z states
+                (B=batch size, K=context window length, D=latent dimension)
             z_target: [B, D] — target z_{t+1}
             
         Returns:
