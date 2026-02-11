@@ -4389,7 +4389,6 @@ class SparseFactorization(nn.Module):
         self.config = config
         dim = config.hidden_dim
         num_factors = config.num_pillars  # now 64 by default
-        self.sparsity_target = getattr(config, 'sparsity_target', 0.95)
         
         self.encode = nn.Sequential(
             nn.Linear(dim, num_factors),
