@@ -792,7 +792,7 @@ class AEONConfig:
     hidden_dim: int = 256
     meta_dim: int = 256
     vocab_size: int = 30522
-    num_pillars: int = 5
+    num_pillars: int = 64
     seq_length: int = 64
     action_dim: int = 64
     cls_token_id: int = 101   # [CLS] token ID (BERT default)
@@ -845,6 +845,7 @@ class AEONConfig:
     lambda_safety: float = 0.1
     lambda_lipschitz: float = 0.05
     kl_weight: float = 0.1
+    sparsity_target: float = 0.95
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -939,7 +940,7 @@ class AEONConfig:
         assert self.hidden_dim > 0, "hidden_dim must be positive"
         assert self.vocab_size > 0, "vocab_size must be positive"
         assert self.seq_length > 0, "seq_length must be positive"
-        assert self.num_pillars >= 3, "num_pillars must be >= 3"
+        assert self.num_pillars >= 2, "num_pillars must be >= 2"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
         assert 0 <= self.alpha <= 1, "alpha must be in [0, 1]"
@@ -1006,7 +1007,7 @@ class AEONConfig:
         
         logger.info(f"✅ AEONConfig v{self.version} initialized")
         logger.info(f"   Device: {self.device_manager.device}")
-        logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}P")
+        logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}F")
     
     def __setattr__(self, name, value):
         """Enforce immutability."""
@@ -4272,29 +4273,29 @@ class OptimizedTopologyAnalyzer(nn.Module):
             nn.Sigmoid()
         )
     
-    def compute_potential(self, pillars: torch.Tensor) -> torch.Tensor:
-        """V(pillars) → [B]."""
-        return self.potential_net(pillars).squeeze(-1)
+    def compute_potential(self, factors: torch.Tensor) -> torch.Tensor:
+        """V(factors) → [B]."""
+        return self.potential_net(factors).squeeze(-1)
     
-    def forward(self, pillars: torch.Tensor, iterations=None):
+    def forward(self, factors: torch.Tensor, iterations=None):
         """
         Topological analysis with efficient Hessian.
         
         Returns:
             Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics
         """
-        B, P = pillars.shape
-        device = pillars.device
+        B, P = factors.shape
+        device = factors.device
         
         # Potential
         with torch.enable_grad():
-            pillars_grad = pillars.clone().requires_grad_(True)
-            potential = self.compute_potential(pillars_grad)
+            factors_grad = factors.clone().requires_grad_(True)
+            potential = self.compute_potential(factors_grad)
             
             # Gradient
             gradient = torch.autograd.grad(
                 potential.sum(),
-                pillars_grad,
+                factors_grad,
                 create_graph=False
             )[0]
         
@@ -4304,7 +4305,7 @@ class OptimizedTopologyAnalyzer(nn.Module):
         
         hessian, eigenvalues = self.hessian_computer.compute_hessian(
             potential_fn,
-            pillars,
+            factors,
             return_eigenvalues=True
         )
         
@@ -4314,7 +4315,7 @@ class OptimizedTopologyAnalyzer(nn.Module):
         
         # Features
         features = torch.cat([
-            pillars,
+            factors,
             gradient,
             potential.unsqueeze(-1),
             grad_norm.unsqueeze(-1)
@@ -4371,74 +4372,55 @@ class DiversityMetric(nn.Module):
 
 
 # ============================================================================
-# SECTION 11: PILLARS MODULE
+# SECTION 11: SPARSE FACTORIZATION (replaces hardcoded Five Pillars)
 # ============================================================================
 
-PILLAR_NAMES = ["Will", "Resolve", "Growth", "Union", "Movement"]
-PILLAR_DESCRIPTIONS = {
-    "Will": "Goal-directed persistence and volition",
-    "Resolve": "Decision stability under perturbation",
-    "Growth": "Adaptive learning and expansion capacity",
-    "Union": "Integration of disparate representations",
-    "Movement": "Temporal dynamics and state transitions",
-}
 
-
-class PillarsModule(nn.Module):
+class SparseFactorization(nn.Module):
     """
-    Five Pillars cognitive primitives.
+    Learnable sparse factorization replacing hardcoded Five Pillars.
     
-    Pillars:
-    - Will: Goal-directed behavior
-    - Resolve: Stability
-    - Growth: Learning capacity
-    - Union: Integration
-    - Movement: Dynamics
+    Uses L1-sparsity to learn a compact, interpretable representation
+    without imposing arbitrary philosophical categories.
     """
     
     def __init__(self, config):
         super().__init__()
         self.config = config
+        dim = config.hidden_dim
+        num_factors = config.num_pillars  # now 64 by default
+        self.sparsity_target = getattr(config, 'sparsity_target', 0.95)
         
-        self.hidden_to_pillars = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim // 2, config.num_pillars)
+        self.encode = nn.Sequential(
+            nn.Linear(dim, num_factors),
+            nn.LayerNorm(num_factors),
         )
         
-        self.pillars_to_hidden = nn.Sequential(
-            nn.Linear(config.num_pillars, config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim // 2, config.hidden_dim)
+        self.decode = nn.Sequential(
+            nn.Linear(num_factors, dim),
+            nn.LayerNorm(dim),
         )
-        
-        self.pillar_norm = nn.LayerNorm(config.num_pillars)
-        self.hidden_norm = nn.LayerNorm(config.hidden_dim)
     
-    def extract_pillars(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        """Extract pillars from hidden state."""
-        raw_pillars = self.hidden_to_pillars(hidden_state)
-        pillars = torch.sigmoid(raw_pillars)
-        return self.pillar_norm(pillars)
+    def extract_factors(self, hidden_state: torch.Tensor) -> torch.Tensor:
+        """Extract sparse factors from hidden state."""
+        raw = self.encode(hidden_state)
+        # Soft sparsity via sigmoid (values close to 0 or 1)
+        factors = torch.sigmoid(raw)
+        return factors
     
-    def embed_pillars(self, pillars: torch.Tensor) -> torch.Tensor:
-        """Embed pillars back to hidden dimension."""
-        hidden = self.pillars_to_hidden(pillars)
-        return self.hidden_norm(hidden)
+    def embed_factors(self, factors: torch.Tensor) -> torch.Tensor:
+        """Embed factors back to hidden dimension."""
+        return self.decode(factors)
+    
+    def sparsity_loss(self, factors: torch.Tensor) -> torch.Tensor:
+        """L1 sparsity loss encouraging sparse activations."""
+        return factors.abs().mean()
     
     def forward(self, hidden_state: torch.Tensor):
-        """Forward pass."""
-        pillars = self.extract_pillars(hidden_state)
-        embedded = self.embed_pillars(pillars)
-        return pillars, embedded
-
-
-def get_pillar_dict(tensor: torch.Tensor) -> List[Dict[str, float]]:
-    """Convert pillar tensor to interpretable dict."""
-    out = []
-    for row in tensor.detach().cpu().tolist():
-        out.append({n: float(v) for n, v in zip(PILLAR_NAMES, row)})
-    return out
+        """Forward pass: extract factors and decode back."""
+        factors = self.extract_factors(hidden_state)
+        decoded = self.embed_factors(factors)
+        return factors, decoded
 
 
 # ============================================================================
@@ -4484,7 +4466,7 @@ class MultiLevelSafetySystem(nn.Module):
         self,
         action_embedding: torch.Tensor,
         core_state: torch.Tensor,
-        pillars: torch.Tensor,
+        factors: torch.Tensor,
         diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
@@ -4518,7 +4500,7 @@ class MultiLevelSafetySystem(nn.Module):
         cognitive_safe = self.cognitive_safety(core_state)
         
         # Level 3: Ethical alignment
-        ethical_input = torch.cat([core_state, pillars], dim=-1)
+        ethical_input = torch.cat([core_state, factors], dim=-1)
         ethical_safe = self.ethical_aligner(ethical_input)
         
         # Combined with adaptive weights
@@ -4587,7 +4569,7 @@ class TransparentSelfReporting(nn.Module):
     def forward(
         self,
         core_state: torch.Tensor,
-        pillars: torch.Tensor,
+        factors: torch.Tensor,
         diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
@@ -4618,10 +4600,10 @@ class TransparentSelfReporting(nn.Module):
         elif pot.dim() == 1:
             pot = pot.unsqueeze(-1)  # [B] -> [B, 1]
         
-        # Normalize pillars
-        pillars_norm = F.normalize(pillars, p=2, dim=-1)
+        # Normalize factors
+        factors_norm = F.normalize(factors, p=2, dim=-1)
         
-        # Expand entanglement to match pillars dimension
+        # Expand entanglement to match factors dimension
         # Input size = hidden_dim + num_pillars + num_pillars + 1
         ent_expanded = ent.unsqueeze(-1).expand(-1, self.config.num_pillars)  # [B, num_pillars]
         
@@ -4629,7 +4611,7 @@ class TransparentSelfReporting(nn.Module):
         # Expected: [B, hidden_dim + num_pillars + num_pillars + 1]
         feature_vector = torch.cat([
             core_state,       # [B, hidden_dim]
-            pillars_norm,     # [B, num_pillars]
+            factors_norm,     # [B, num_pillars]
             ent_expanded,     # [B, num_pillars]
             pot               # [B, 1]
         ], dim=-1)
@@ -5552,9 +5534,9 @@ class AEONDeltaV3(nn.Module):
             enable_certification=True
         ).to(self.device)
         
-        # ===== PILLARS =====
-        logger.info("Loading Five Pillars...")
-        self.pillars_module = PillarsModule(config).to(self.device)
+        # ===== SPARSE FACTORIZATION =====
+        logger.info("Loading SparseFactorization...")
+        self.sparse_factors = SparseFactorization(config).to(self.device)
         
         # ===== DIVERSITY METRIC =====
         if config.enable_quantum_sim:
@@ -5686,11 +5668,11 @@ class AEONDeltaV3(nn.Module):
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
     def _compute_diversity(
-        self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
+        self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
         """Compute diversity metric or return defaults."""
         if self.diversity_metric is not None and not fast:
-            diversity_results = self.diversity_metric(pillars)
+            diversity_results = self.diversity_metric(factors)
             logger.debug(
                 f"Diversity: score={diversity_results['diversity'].mean().item():.4f}"
             )
@@ -5705,20 +5687,20 @@ class AEONDeltaV3(nn.Module):
         }
     
     def _compute_topology(
-        self, pillars: torch.Tensor, iterations: torch.Tensor,
+        self, factors: torch.Tensor, iterations: torch.Tensor,
         B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
         """Compute topology analysis results or return defaults.
         
         Args:
-            pillars: [B, num_pillars] pillar activations.
+            factors: [B, num_pillars] factor activations.
             iterations: [B] convergence iterations from meta-loop.
             B: Batch size.
             device: Target device.
             fast: If True, skip topology analysis and return defaults.
         """
         if self.topology_analyzer is not None and not fast:
-            topo_results = self.topology_analyzer(pillars, iterations)
+            topo_results = self.topology_analyzer(factors, iterations)
             logger.debug(
                 f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
             )
@@ -5731,7 +5713,7 @@ class AEONDeltaV3(nn.Module):
         }
     
     def _compute_safety(
-        self, C_star: torch.Tensor, pillars: torch.Tensor,
+        self, C_star: torch.Tensor, factors: torch.Tensor,
         diversity_results: Dict, topo_results: Dict,
         B: int, device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
@@ -5739,7 +5721,7 @@ class AEONDeltaV3(nn.Module):
         
         Args:
             C_star: [B, hidden_dim] converged thought state.
-            pillars: [B, num_pillars] pillar activations.
+            factors: [B, num_pillars] factor activations.
             diversity_results: Dict from diversity metric.
             topo_results: Dict from topology analysis.
             B: Batch size.
@@ -5748,7 +5730,7 @@ class AEONDeltaV3(nn.Module):
         if self.safety_system is not None:
             action_embedding = torch.zeros(B, self.config.action_dim, device=device)
             safety_score = self.safety_system(
-                action_embedding, C_star, pillars,
+                action_embedding, C_star, factors,
                 diversity_results, topo_results, mode='combined'
             )
             logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
@@ -5757,7 +5739,7 @@ class AEONDeltaV3(nn.Module):
         
         if self.self_reporter is not None:
             self_report = self.self_reporter(
-                C_star, pillars, diversity_results, topo_results, mode='combined'
+                C_star, factors, diversity_results, topo_results, mode='combined'
             )
             logger.debug(
                 f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
@@ -5828,17 +5810,17 @@ class AEONDeltaV3(nn.Module):
         )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
-        # 2. Extract pillars
-        pillars, embedded_pillars = self.pillars_module(C_star)
-        logger.debug(f"Pillars: {pillars.shape}")
+        # 2. Extract factors
+        factors, embedded_factors = self.sparse_factors(C_star)
+        logger.debug(f"Factors: {factors.shape}")
         
         # 3-4. Diversity and topology (delegated to helpers)
-        diversity_results = self._compute_diversity(pillars, B, device, fast)
-        topo_results = self._compute_topology(pillars, iterations, B, device, fast)
+        diversity_results = self._compute_diversity(factors, B, device, fast)
+        topo_results = self._compute_topology(factors, iterations, B, device, fast)
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
-            C_star, pillars, diversity_results, topo_results, B, device
+            C_star, factors, diversity_results, topo_results, B, device
         )
         
         # 5b. World model (physics reasoning)
@@ -5862,14 +5844,13 @@ class AEONDeltaV3(nn.Module):
         
         # 8. Integration
         z_out = self.integration_module(
-            torch.cat([z_rssm, embedded_pillars], dim=-1)
+            torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         
         # Package outputs
         outputs = {
             'core_state': C_star,
-            'pillars': pillars,
-            'pillar_dict': get_pillar_dict(pillars),
+            'factors': factors,
             'diversity_results': diversity_results,
             'topo_results': topo_results,
             'safety_score': safety_score,
@@ -6059,6 +6040,12 @@ class AEONDeltaV3(nn.Module):
         )
         reg_loss = self.config.lambda_reg * l2_reg
         
+        # ===== 7. SPARSITY LOSS =====
+        if 'factors' in outputs and hasattr(self, 'sparse_factors'):
+            sparsity_loss = self.sparse_factors.sparsity_loss(outputs['factors'])
+        else:
+            sparsity_loss = torch.tensor(0.0, device=self.device)
+        
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
@@ -6068,6 +6055,7 @@ class AEONDeltaV3(nn.Module):
             vq_loss +
             self.config.lambda_lipschitz * lipschitz_loss +
             self.config.lambda_safety * safety_loss +
+            self.config.sparsity_target * sparsity_loss +
             reg_loss
         )
         
@@ -6086,6 +6074,7 @@ class AEONDeltaV3(nn.Module):
             'consistency_loss': consistency_loss,
             'lipschitz_loss': lipschitz_loss,
             'safety_loss': safety_loss,
+            'sparsity_loss': sparsity_loss,
             'reg_loss': reg_loss,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
         }
@@ -6249,7 +6238,7 @@ class AEONDeltaV3(nn.Module):
             ("BackboneAdapter", self.backbone_adapter),
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
-            ("PillarsModule", self.pillars_module),
+            ("SparseFactorization", self.sparse_factors),
             ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
             ("SafetySystem", self.safety_system),
@@ -7271,10 +7260,12 @@ def main():
             logger.info(f"  - Safety: {outputs['safety_score'].mean().item():.4f}")
             logger.info(f"  - Iterations: {outputs['iterations'].mean().item():.2f}")
             
-            if 'pillar_dict' in outputs:
-                logger.info("  - Pillars:")
-                for p in outputs['pillar_dict'][0].items():
-                    logger.info(f"      {p[0]}: {p[1]:.4f}")
+            if 'factors' in outputs:
+                logger.info("  - Factors (top 5):")
+                factor_vals = outputs['factors'][0].detach().cpu().tolist()
+                top_indices = sorted(range(len(factor_vals)), key=lambda i: factor_vals[i], reverse=True)[:5]
+                for idx in top_indices:
+                    logger.info(f"      factor_{idx}: {factor_vals[idx]:.4f}")
     
     # ===== MODE: TRAIN =====
     elif args.mode == 'train':
