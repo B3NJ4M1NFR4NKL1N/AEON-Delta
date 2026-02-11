@@ -95,7 +95,7 @@ def test_tensor_hash_collision_resistance():
 
 
 def test_rssm_trainer_zero_batches():
-    """Fix 5: ae_train.py - Guard against zero total_batches in RSSM trainer.
+    """Fix 4: ae_train.py - Guard against zero total_batches in RSSM trainer.
     
     Verifies that max(total_batches, 1) prevents ZeroDivisionError.
     """
@@ -114,7 +114,7 @@ def test_rssm_trainer_zero_batches():
 
 
 def test_memory_manager_flatten():
-    """Fix 6: aeon_core.py - MemoryManager.retrieve_relevant input validation.
+    """Fix 5: aeon_core.py - MemoryManager.retrieve_relevant input validation.
     
     Verifies that vectors are properly flattened for dot product computation.
     """
@@ -236,7 +236,7 @@ def test_document_aware_dataset():
     
     # Doc 0: indices 2,3,4 are valid targets → 3 samples
     # Doc 1: index 2 is valid target → 1 sample
-    # Doc 2: no valid targets (only 2 chunks, need >= 3)
+    # Doc 2: no valid targets (only 2 chunks, need >= context_window + 1 = 3)
     assert len(dataset) == 4, f"Expected 4 samples, got {len(dataset)}"
     
     # Get a sample
