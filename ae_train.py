@@ -1450,7 +1450,8 @@ def _validate_component(model_fn, test_input, expected_shape, name, logger):
         assert output.shape == expected_shape, (
             f"Shape mismatch: expected {expected_shape}, got {output.shape}"
         )
-        logger.info(f"   ✅ {name}: {test_input.shape if not isinstance(test_input, tuple) else [t.shape for t in test_input]} → {output.shape}")
+        input_shape = test_input.shape if not isinstance(test_input, tuple) else [t.shape for t in test_input]
+        logger.info(f"   ✅ {name}: {input_shape} → {output.shape}")
         return output, None
     except Exception as e:
         logger.error(f"   ❌ {name}: {e}")
