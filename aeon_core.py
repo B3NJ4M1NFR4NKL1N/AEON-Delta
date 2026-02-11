@@ -5520,7 +5520,7 @@ class NeuralCausalModel(nn.Module):
             cf_vars: [B, num_vars] counterfactual variables
         """
         # Abduction: infer exogenous noise from observations
-        # Simplified: use observed as proxy for exogenous
+        # Note: simplified abduction — proper implementation would invert causal mechanisms
         exogenous = observed - self.forward(observed, intervention=None).detach() + observed
         # Intervene and propagate
         return self.forward(exogenous, intervention=intervention)
@@ -5757,9 +5757,7 @@ class MCTSPlanner(nn.Module):
             # Single state search (unbatched for MCTS)
             if state.dim() == 1:
                 return self.search(state, world_model)
-            else:
-                # Batch: just return value and policy
-                pass
+            # Batch: return value and policy (MCTS is single-state only)
         
         return {
             'value': self.value_net(state),
