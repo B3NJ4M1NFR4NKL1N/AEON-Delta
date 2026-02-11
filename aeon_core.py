@@ -907,6 +907,7 @@ class AEONConfig:
     world_model_state_dim: int = 128
     world_model_tree_depth: int = 3
     world_model_tree_branch: int = 3
+    surprise_threshold: float = 0.5
     
     # ===== HIERARCHICAL MEMORY =====
     enable_hierarchical_memory: bool = False
@@ -5572,6 +5573,12 @@ class AEONDeltaV3(nn.Module):
                 tree_depth=config.world_model_tree_depth,
                 tree_branch=config.world_model_tree_branch,
             ).to(self.device)
+            # Value network for state selection
+            self.value_net = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim // 2, 1),
+            ).to(self.device)
         else:
             self.world_model = None
         
@@ -5583,6 +5590,13 @@ class AEONDeltaV3(nn.Module):
                 working_capacity=config.hierarchical_working_capacity,
                 episodic_capacity=config.hierarchical_episodic_capacity,
                 semantic_capacity=config.hierarchical_semantic_capacity,
+            ).to(self.device)
+            self.memory_projection = nn.Linear(config.hidden_dim, config.hidden_dim).to(self.device)
+            self.importance_scorer = nn.Sequential(
+                nn.Linear(config.hidden_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+                nn.Sigmoid(),
             ).to(self.device)
         else:
             self.hierarchical_memory = None
@@ -5822,18 +5836,66 @@ class AEONDeltaV3(nn.Module):
             C_star, factors, diversity_results, topo_results, B, device
         )
         
-        # 5b. World model (physics reasoning)
+        # 5a. Safety enforcement — rollback unsafe states
+        if self.safety_system is not None:
+            safety_threshold = self.config.safety_threshold
+            unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
+            if unsafe_mask.any():
+                logger.warning(
+                    f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
+                    f"below threshold {safety_threshold}, applying rollback"
+                )
+                # Rollback: replace unsafe C_star with input z_in (safe fallback)
+                C_star = torch.where(unsafe_mask.unsqueeze(-1), z_in, C_star)
+        
+        # 5b. World model — surprise-driven integration
         world_model_results = {}
+        surprise = torch.tensor(0.0, device=device)
         if self.world_model is not None and not fast:
             world_model_results = self.world_model(
                 C_star, explore_counterfactuals=planning
             )
-            C_star = C_star + world_model_results['output']
+            predicted_next = world_model_results['output']
+            # Surprise = prediction error
+            surprise = F.mse_loss(C_star, predicted_next, reduction='none').mean(dim=-1)  # [B]
+            # High surprise → use value_net to select state
+            surprise_threshold = self.config.surprise_threshold
+            high_surprise = surprise > surprise_threshold  # [B] bool
+            if high_surprise.any() and self.config.enable_world_model:
+                # Score original vs predicted
+                v_original = self.value_net(C_star)  # [B, 1]
+                v_predicted = self.value_net(predicted_next)  # [B, 1]
+                # Select better state per-sample
+                use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
+                C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+            else:
+                # Low surprise or no value_net: blend
+                C_star = C_star + 0.1 * predicted_next
+            world_model_results['surprise'] = surprise
         
-        # 5c. Hierarchical memory storage/retrieval
+        # 5c. Hierarchical memory — retrieve then store
+        memory_retrieved = None
         if self.hierarchical_memory is not None:
+            # Retrieve relevant memories using z_in as query
+            if not fast:
+                retrieved_memories = []
+                for i in range(B):
+                    ret = self.hierarchical_memory.retrieve(z_in[i], k=5)
+                    # Collect working memory vectors
+                    working = ret.get('working', [])
+                    if working:
+                        vecs = torch.stack([v for v, s in working])
+                        retrieved_memories.append(vecs.mean(dim=0))
+                    else:
+                        retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
+                memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
+                # Fuse via projection
+                C_star = C_star + self.memory_projection(memory_context)
+                memory_retrieved = memory_context
+            # Store after reasoning (batched importance scoring)
+            importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
             for i in range(B):
-                self.hierarchical_memory.store(C_star[i])
+                self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
         
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
