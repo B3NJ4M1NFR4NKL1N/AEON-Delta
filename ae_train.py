@@ -1072,7 +1072,7 @@ class SafeThoughtAETrainerV4:
         )
         
         self.use_amp = config.use_amp and AMP_AVAILABLE
-        self.scaler = GradScaler() if self.use_amp else None
+        self.scaler = GradScaler(device=self.device.type) if self.use_amp else None
         
         self.global_step = 0
         self.best_loss = float('inf')
@@ -1221,7 +1221,7 @@ class SafeThoughtAETrainerV4:
                     grad_norm = self._optimizer_step()
                     self.scheduler.step()
                     
-                    avg_loss = accumulated_loss / num_accumulated
+                    avg_loss = accumulated_loss / max(num_accumulated, 1)
                     accumulated_loss = 0.0
                     num_accumulated = 0
                     
@@ -1445,7 +1445,7 @@ class ContextualRSSMTrainer:
                     }, phase="phase_B", log_every=log_every_batch)
             
             for key in epoch_metrics:
-                epoch_metrics[key] /= total_batches
+                epoch_metrics[key] /= max(total_batches, 1)
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]

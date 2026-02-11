@@ -187,7 +187,7 @@ class DeviceManager:
         
         # Initialize AMP scaler
         if self._amp_enabled:
-            self._scaler = GradScaler()
+            self._scaler = GradScaler(device=self._device.type)
         else:
             self._scaler = None
         
@@ -581,17 +581,25 @@ class TensorGuard:
             return tensor
         
         if num_bad_batches == batch_size:
-            # All corrupted - standard sanitization
+            # All corrupted - apply direct sanitization to avoid recursion
             logger.warning(
                 f"All batches corrupted in {context}, "
                 f"applying full sanitization"
             )
-            # Temporarily change policy to avoid recursion
-            old_policy = self.policy
-            self.policy = NaNPolicy.WARN
-            result = self.sanitize(tensor, context)
-            self.policy = old_policy
-            return result
+            cleaned = tensor.clone()
+            default = self.default_value
+            cleaned = torch.where(
+                torch.isnan(cleaned),
+                torch.full_like(cleaned, default),
+                cleaned
+            )
+            cleaned = torch.where(
+                torch.isinf(cleaned),
+                torch.sign(cleaned) * self.max_value,
+                cleaned
+            )
+            cleaned = torch.clamp(cleaned, min=self.min_value, max=self.max_value)
+            return cleaned
         
         # Partial corruption - replace bad batches with mean of good ones
         good_batches = tensor[~batch_has_issue]
@@ -2141,8 +2149,16 @@ class FastHessianComputer:
         return H
     
     def _hash_tensor(self, t: torch.Tensor) -> int:
-        """Hash tensor for caching."""
-        return hash((tuple(t.shape), t.sum().item(), t.device.type))
+        """Hash tensor for caching using multiple statistics to reduce collisions."""
+        t_flat = t.detach().float().flatten()
+        return hash((
+            tuple(t.shape),
+            t_flat.sum().item(),
+            t_flat.std().item() if t_flat.numel() > 1 else 0.0,
+            t_flat[0].item() if t_flat.numel() > 0 else 0.0,
+            t_flat[-1].item() if t_flat.numel() > 0 else 0.0,
+            t.device.type
+        ))
     
     def clear_cache(self):
         """Clear cache."""
@@ -2761,7 +2777,7 @@ class MemoryManager:
             logger.warning("Skipping NaN/Inf embedding in MemoryManager.add_embedding")
             return
         meta = meta or {}
-        vec_np = vec.detach().cpu().numpy()
+        vec_np = vec.detach().cpu().numpy().flatten()
         self.fallback_vectors.append(vec_np)
         self.fallback_metas.append(meta)
         self._size += 1
@@ -2771,7 +2787,7 @@ class MemoryManager:
         if not self.fallback_vectors:
             return []
         
-        vec_np = vec.detach().cpu().numpy()
+        vec_np = vec.detach().cpu().numpy().flatten()
         
         # Vectorized similarity computation
         vectors_array = np.stack(self.fallback_vectors, axis=0)  # (N, D)

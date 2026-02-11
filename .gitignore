@@ -14,6 +14,8 @@ checkpoints/
 processed_v4/
 aeon_state/
 aeon_memory/
+cache/
+logs/
 
 # IDE
 .idea/
