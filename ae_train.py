@@ -632,12 +632,6 @@ class ContextualRSSM(nn.Module):
             nn.Dropout(dropout)
         )
         
-        # Attention over context (опционально, для взвешивания)
-        self.context_attention = nn.Sequential(
-            nn.Linear(hidden_dim, 1),
-            nn.Softmax(dim=1)
-        )
-        
         # GRU для рекуррентной обработки
         self.gru = nn.GRUCell(rssm_hidden, rssm_hidden)
         
@@ -1437,6 +1431,8 @@ class ContextualRSSMTrainer:
         logger.info(f"   Context window: {K}")
         logger.info(f"   Training samples: {len(dataset):,}")
         
+        model_device = next(self.model.parameters()).device
+        
         for epoch in range(epochs):
             self.monitor.start_epoch(epoch, epochs)
             
@@ -1446,8 +1442,8 @@ class ContextualRSSMTrainer:
             }
             
             for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
-                ctx_batch = ctx_batch.to(device)
-                tgt_batch = tgt_batch.to(device)
+                ctx_batch = ctx_batch.to(model_device)
+                tgt_batch = tgt_batch.to(model_device)
                 
                 metrics = self.train_step(ctx_batch, tgt_batch)
                 
@@ -1491,7 +1487,8 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     logger.info("\n🔍 Валидация компонентов обучения v4...")
     
     issues = []
-    test_batch = torch.randint(0, config.vocab_size, (2, config.seq_length), device=device)
+    model_device = next(model.parameters()).device
+    test_batch = torch.randint(0, config.vocab_size, (2, config.seq_length), device=model_device)
     
     # Проверка Encoder
     try:
