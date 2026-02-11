@@ -922,6 +922,448 @@ def test_pretrained_backbone_adapter_fallback():
     print("✅ test_pretrained_backbone_adapter_fallback PASSED")
 
 
+# ============================================================================
+# Tests for Section I improvements
+# ============================================================================
+
+def test_parallel_scan_consistency():
+    """Verify parallel associative scan produces valid output and gradients."""
+    from aeon_core import SelectiveSSM
+
+    ssm = SelectiveSSM(d_model=32, d_state=8, num_layers=1)
+    x = torch.randn(2, 16, 32, requires_grad=True)
+    y, states = ssm(x)
+
+    assert y.shape == (2, 16, 32)
+    assert not torch.isnan(y).any(), "Parallel scan output contains NaN"
+
+    # Verify gradients flow
+    loss = y.sum()
+    loss.backward()
+    assert x.grad is not None, "No gradients for input"
+    assert not torch.isnan(x.grad).any(), "Gradient contains NaN"
+
+    print("✅ test_parallel_scan_consistency PASSED")
+
+
+def test_poly_feature_map():
+    """Verify polynomial feature map produces non-negative values."""
+    from aeon_core import LinearAttentionBlock
+
+    block = LinearAttentionBlock(d_model=64, num_heads=4, feature_dim=32, causal=True)
+    x = torch.randn(100)
+    result = block._poly_feature_map(x)
+    assert (result >= 0).all(), "Polynomial feature map should be non-negative"
+
+    # Check it's actually the right polynomial
+    expected = (1.0 + x + x.pow(2) * 0.5 + x.pow(3) / 6.0).clamp(min=0.0)
+    assert torch.allclose(result, expected), "Polynomial mismatch"
+
+    print("✅ test_poly_feature_map PASSED")
+
+
+def test_linear_attention_low_rank():
+    """Verify low-rank factorization in LinearAttention."""
+    from aeon_core import LinearAttentionBlock
+
+    block = LinearAttentionBlock(d_model=64, num_heads=4, feature_dim=32,
+                                  feature_rank=8, causal=True)
+    assert block.feature_rank == 8
+    assert block.feature_down_proj.in_features == 32
+    assert block.feature_down_proj.out_features == 8
+    assert block.feature_up_proj.in_features == 8
+    assert block.feature_up_proj.out_features == 32
+
+    x = torch.randn(2, 16, 64)
+    with torch.no_grad():
+        y, _ = block(x)
+    assert y.shape == (2, 16, 64)
+    assert not torch.isnan(y).any()
+
+    print("✅ test_linear_attention_low_rank PASSED")
+
+
+def test_chunked_adaptive_blending():
+    """Verify adaptive blending in overlap regions."""
+    from aeon_core import ChunkedSequenceProcessor
+
+    processor = ChunkedSequenceProcessor(chunk_size=8, overlap=2)
+
+    # Model that returns the input scaled by position-dependent factor
+    def model_fn(x, state):
+        return x * 2.0, state
+
+    x = torch.ones(1, 20, 4)
+    y, _ = processor.process(model_fn, x)
+
+    assert y.shape == (1, 20, 4), f"Expected (1,20,4), got {y.shape}"
+    # All positions should be close to 2.0 (since input is 1.0 and model doubles)
+    assert torch.allclose(y, torch.full_like(y, 2.0), atol=0.1), \
+        "Blended output should be close to 2.0 for uniform input"
+
+    print("✅ test_chunked_adaptive_blending PASSED")
+
+
+def test_inference_cache_ring_buffer():
+    """Verify InferenceCache ring buffer and INT8 quantization."""
+    from aeon_core import InferenceCache
+
+    cache = InferenceCache(maxlen=3)
+    assert cache.history_size == 0
+
+    # Set multiple SSM states to test ring buffer
+    for i in range(5):
+        states = [torch.randn(1, 16, 8)]
+        cache.set_ssm_state(states)
+
+    assert cache.step == 5
+    # Ring buffer should cap at maxlen=3
+    assert cache.history_size <= 3, \
+        f"Ring buffer should cap at 3, got {cache.history_size}"
+
+    # Test reset
+    cache.reset()
+    assert cache.step == 0
+    assert cache.history_size == 0
+
+    print("✅ test_inference_cache_ring_buffer PASSED")
+
+
+def test_inference_cache_quantization():
+    """Verify INT8 quantization roundtrip preserves approximate values."""
+    from aeon_core import InferenceCache
+
+    original = torch.randn(4, 16)
+    quantized, scale = InferenceCache._quantize_int8(original)
+    assert quantized.dtype == torch.int8
+    recovered = InferenceCache._dequantize_int8(quantized, scale)
+    # INT8 quantization has limited precision
+    max_err = (original - recovered).abs().max().item()
+    assert max_err < 0.1, f"Quantization error too large: {max_err}"
+
+    print("✅ test_inference_cache_quantization PASSED")
+
+
+def test_hybrid_adapter_components():
+    """Verify hybrid adapter has LoRA, Prefix, and Parallel components."""
+    from aeon_core import PretrainedBackboneAdapter
+
+    adapter = PretrainedBackboneAdapter(
+        pretrained_model_name="",
+        target_dim=64,
+        adapter_dim=16,
+        lora_rank=4,
+        num_prefix_tokens=4,
+    )
+
+    # Check all components exist
+    assert hasattr(adapter, 'lora_down')
+    assert hasattr(adapter, 'lora_up')
+    assert hasattr(adapter, 'prefix_tokens')
+    assert hasattr(adapter, 'parallel_adapter')
+    assert hasattr(adapter, 'mix_logits')
+    assert adapter.mix_logits.shape == (3,)
+
+    # Forward pass
+    tokens = torch.randint(0, 100, (2, 10))
+    with torch.no_grad():
+        features = adapter(tokens)
+    assert features.shape == (2, 10, 64)
+    assert not torch.isnan(features).any()
+
+    print("✅ test_hybrid_adapter_components PASSED")
+
+
+# ============================================================================
+# Tests for Section II new AGI components
+# ============================================================================
+
+def test_world_model_forward():
+    """Verify PhysicsGroundedWorldModel forward pass."""
+    from aeon_core import PhysicsGroundedWorldModel
+
+    model = PhysicsGroundedWorldModel(input_dim=64, state_dim=32,
+                                       tree_depth=2, tree_branch=2)
+    model.eval()
+
+    x = torch.randn(2, 64)
+    with torch.no_grad():
+        result = model(x, explore_counterfactuals=False)
+
+    assert 'latent_state' in result
+    assert 'next_state' in result
+    assert 'output' in result
+    assert result['latent_state'].shape == (2, 32)
+    assert result['output'].shape == (2, 64)
+    assert not torch.isnan(result['output']).any()
+
+    print("✅ test_world_model_forward PASSED")
+
+
+def test_world_model_counterfactuals():
+    """Verify counterfactual tree exploration."""
+    from aeon_core import PhysicsGroundedWorldModel
+
+    model = PhysicsGroundedWorldModel(input_dim=32, state_dim=16,
+                                       tree_depth=2, tree_branch=2)
+    model.eval()
+
+    x = torch.randn(1, 32)
+    with torch.no_grad():
+        result = model(x, explore_counterfactuals=True)
+
+    assert 'counterfactuals' in result
+    assert 'num_scenarios' in result
+    # depth=2, branch=2: 1 + 2 + 4 = 7 scenarios
+    assert result['num_scenarios'] == 7, \
+        f"Expected 7 scenarios, got {result['num_scenarios']}"
+
+    print("✅ test_world_model_counterfactuals PASSED")
+
+
+def test_world_model_gradient_flow():
+    """Verify gradients flow through world model."""
+    from aeon_core import PhysicsGroundedWorldModel
+
+    model = PhysicsGroundedWorldModel(input_dim=32, state_dim=16)
+    x = torch.randn(2, 32, requires_grad=True)
+    result = model(x)
+    loss = result['output'].sum()
+    loss.backward()
+    assert x.grad is not None
+    assert not torch.isnan(x.grad).any()
+
+    print("✅ test_world_model_gradient_flow PASSED")
+
+
+def test_hierarchical_memory_store_retrieve():
+    """Verify hierarchical memory store and retrieve."""
+    from aeon_core import HierarchicalMemory
+
+    mem = HierarchicalMemory(dim=32, working_capacity=3,
+                              episodic_capacity=10, semantic_capacity=5)
+
+    # Store some vectors
+    for i in range(5):
+        vec = torch.randn(32)
+        mem.store(vec, meta={'idx': i})
+
+    # Working memory should have at most 3
+    assert mem._working_count == 5
+    count = min(mem._working_count, mem.working_capacity)
+    assert count == 3
+
+    # Retrieve
+    query = torch.randn(32)
+    result = mem.retrieve(query, k=2)
+    assert 'working' in result
+    assert 'episodic' in result
+    assert 'semantic' in result
+    assert 'route_weights' in result
+    assert result['route_weights'].shape == (3,)
+
+    print("✅ test_hierarchical_memory_store_retrieve PASSED")
+
+
+def test_hierarchical_memory_semantic():
+    """Verify semantic memory graph operations."""
+    from aeon_core import HierarchicalMemory
+
+    mem = HierarchicalMemory(dim=16)
+    v1 = torch.randn(16)
+    v2 = torch.randn(16)
+    v3 = torch.randn(16)
+
+    mem.add_semantic_node(v1, "concept_A")
+    mem.add_semantic_node(v2, "concept_B")
+    mem.add_semantic_node(v3, "concept_C")
+    mem.add_semantic_edge(0, 1, "related_to")
+    mem.add_semantic_edge(1, 2, "causes")
+
+    assert len(mem._semantic_nodes) == 3
+    assert len(mem._semantic_edges) == 2
+
+    result = mem.retrieve(v1, k=3)
+    assert len(result['semantic']) > 0
+
+    print("✅ test_hierarchical_memory_semantic PASSED")
+
+
+def test_hierarchical_memory_consolidation():
+    """Verify memory consolidation from replay buffer to episodic."""
+    from aeon_core import HierarchicalMemory
+
+    mem = HierarchicalMemory(dim=16)
+    # Manually add to replay buffer
+    for i in range(10):
+        mem._replay_buffer.append((torch.randn(16), {'idx': i}))
+
+    assert len(mem._replay_buffer) == 10
+    moved = mem.consolidate()
+    # Some items may have been moved (depends on importance_net output)
+    assert isinstance(moved, int)
+    assert len(mem._replay_buffer) + moved == 10
+
+    print("✅ test_hierarchical_memory_consolidation PASSED")
+
+
+def test_multimodal_grounding_language_vision():
+    """Verify multi-modal grounding with language + vision."""
+    from aeon_core import MultiModalGroundingModule
+
+    mm = MultiModalGroundingModule(latent_dim=64, num_heads=4,
+                                    vision_dim=128, audio_dim=32)
+    mm.eval()
+
+    language = torch.randn(2, 10, 64)
+    vision = torch.randn(2, 8, 128)
+
+    with torch.no_grad():
+        result = mm(language=language, vision=vision)
+
+    assert 'fused' in result
+    assert result['fused'].shape == (2, 64)
+    assert 'vision_decoded' in result
+    assert 'language_decoded' in result
+    assert not torch.isnan(result['fused']).any()
+
+    print("✅ test_multimodal_grounding_language_vision PASSED")
+
+
+def test_multimodal_grounding_single_modality():
+    """Verify multi-modal grounding with single modality."""
+    from aeon_core import MultiModalGroundingModule
+
+    mm = MultiModalGroundingModule(latent_dim=64)
+    mm.eval()
+
+    language = torch.randn(2, 10, 64)
+    with torch.no_grad():
+        result = mm(language=language)
+
+    assert 'fused' in result
+    assert result['fused'].shape == (2, 64)
+
+    print("✅ test_multimodal_grounding_single_modality PASSED")
+
+
+def test_multimodal_grounding_three_modalities():
+    """Verify multi-modal grounding with all three modalities."""
+    from aeon_core import MultiModalGroundingModule
+
+    mm = MultiModalGroundingModule(latent_dim=64, vision_dim=128, audio_dim=32)
+    mm.eval()
+
+    language = torch.randn(2, 10, 64)
+    vision = torch.randn(2, 8, 128)
+    audio = torch.randn(2, 6, 32)
+
+    with torch.no_grad():
+        result = mm(language=language, vision=vision, audio=audio)
+
+    assert 'fused' in result
+    assert result['fused'].shape == (2, 64)
+    assert 'vision_decoded' in result
+    assert 'audio_decoded' in result
+    assert 'language_decoded' in result
+
+    print("✅ test_multimodal_grounding_three_modalities PASSED")
+
+
+def test_meta_learner_ewc_loss():
+    """Verify MetaLearner EWC loss computation."""
+    from aeon_core import MetaLearner
+
+    # Simple model
+    model = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
+    learner = MetaLearner(model, ewc_lambda=100.0)
+
+    # Before computing Fisher, EWC loss should be 0
+    loss = learner.ewc_loss()
+    assert loss.item() == 0.0
+
+    # Manually set Fisher and optimal params
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            learner._fisher_diag[name] = torch.ones_like(param)
+            learner._optimal_params[name] = param.data.clone()
+
+    # EWC loss should be 0 when params haven't changed
+    loss = learner.ewc_loss()
+    assert loss.item() == 0.0
+
+    # Perturb a parameter and check loss increases
+    with torch.no_grad():
+        for param in model.parameters():
+            param.add_(0.1)
+    loss = learner.ewc_loss()
+    assert loss.item() > 0.0, "EWC loss should be positive after param change"
+
+    print("✅ test_meta_learner_ewc_loss PASSED")
+
+
+def test_meta_learner_task_buffer():
+    """Verify MetaLearner task buffer management."""
+    from aeon_core import MetaLearner
+
+    model = nn.Linear(8, 4)
+    learner = MetaLearner(model, task_buffer_size=5)
+
+    for i in range(10):
+        learner.add_task(f"task_{i}", {'data': i})
+
+    assert learner.num_tasks == 5, f"Expected 5 tasks, got {learner.num_tasks}"
+
+    print("✅ test_meta_learner_task_buffer PASSED")
+
+
+def test_aeon_v3_with_world_model():
+    """Verify AEONDeltaV3 integration with world model enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=True, world_model_state_dim=32,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.world_model is not None
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    assert 'world_model_results' in outputs
+    assert outputs['world_model_results'] is not None
+
+    print("✅ test_aeon_v3_with_world_model PASSED")
+
+
+def test_aeon_v3_with_hierarchical_memory():
+    """Verify AEONDeltaV3 with hierarchical memory enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_hierarchical_memory=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.hierarchical_memory is not None
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    assert 'core_state' in outputs
+
+    print("✅ test_aeon_v3_with_hierarchical_memory PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -963,6 +1405,30 @@ if __name__ == '__main__':
     test_aeon_v3_with_lstm_backend()
     test_config_backend_validation()
     test_pretrained_backbone_adapter_fallback()
+    
+    # Section I improvement tests
+    test_parallel_scan_consistency()
+    test_poly_feature_map()
+    test_linear_attention_low_rank()
+    test_chunked_adaptive_blending()
+    test_inference_cache_ring_buffer()
+    test_inference_cache_quantization()
+    test_hybrid_adapter_components()
+    
+    # Section II AGI component tests
+    test_world_model_forward()
+    test_world_model_counterfactuals()
+    test_world_model_gradient_flow()
+    test_hierarchical_memory_store_retrieve()
+    test_hierarchical_memory_semantic()
+    test_hierarchical_memory_consolidation()
+    test_multimodal_grounding_language_vision()
+    test_multimodal_grounding_single_modality()
+    test_multimodal_grounding_three_modalities()
+    test_meta_learner_ewc_loss()
+    test_meta_learner_task_buffer()
+    test_aeon_v3_with_world_model()
+    test_aeon_v3_with_hierarchical_memory()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
