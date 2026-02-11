@@ -1794,10 +1794,11 @@ def test_config_mamba2_validation():
 
 
 def test_entropy_loss_single_embedding():
-    """Verify entropy_loss handles vq_num_embeddings=1 edge case.
+    """Verify config validation rejects vq_num_embeddings < 2.
     
-    When num_embeddings=1, max_entropy=log(1)=0, which previously
-    caused division by zero. Config now enforces num_embeddings>=2.
+    When num_embeddings=1, max_entropy=log(1)=0, which would cause
+    division by zero in entropy computation. Config now enforces
+    vq_num_embeddings >= 2 to prevent this at initialization time.
     """
     from ae_train import AEONConfigV4
 
