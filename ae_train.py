@@ -870,7 +870,7 @@ class DocumentAwareDataset(Dataset):
 # ==============================================================================
 
 def tokenize_batch(texts: List[str], tokenizer, max_len: int, 
-                   device: torch.device) -> torch.Tensor:
+                   device: torch.device, fallback_vocab_size: int = 50000) -> torch.Tensor:
     """
     Tokenize a batch of text strings into padded token ID tensors.
     
@@ -879,6 +879,7 @@ def tokenize_batch(texts: List[str], tokenizer, max_len: int,
         tokenizer: HuggingFace tokenizer instance, or None for ASCII fallback.
         max_len: Maximum sequence length (texts are truncated/padded to this).
         device: Target device for the output tensor.
+        fallback_vocab_size: Vocabulary size for ASCII fallback tokenizer.
         
     Returns:
         Tensor of shape [len(texts), max_len] with token IDs (dtype=torch.long).
@@ -893,10 +894,9 @@ def tokenize_batch(texts: List[str], tokenizer, max_len: int,
         )
         return encoded['input_ids'].to(device)
     
-    vocab_size = 50000
     tokenized = []
     for text in texts:
-        tokens = [ord(c) % vocab_size for c in text[:max_len]]
+        tokens = [ord(c) % fallback_vocab_size for c in text[:max_len]]
         tokens += [0] * (max_len - len(tokens))
         tokenized.append(tokens)
     return torch.tensor(tokenized, dtype=torch.long, device=device)
@@ -1725,26 +1725,30 @@ def main(
     trainer_A = SafeThoughtAETrainerV4(model, config, monitor, output_dir)
     trainer_A.fit(tokens, epochs=epochs_A)
 
+    # Release Phase A training resources before Phase B
+    del trainer_A
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # ===== Построение z_sequences =====
     logger.info("\n🔧 Построение z_sequences для Phase B...")
     model.eval()
     
     with torch.no_grad():
         if document_aware and documents:
-            # ✅ Строим z_sequences по документам
+            # ✅ Строим z_sequences по документам (batch encoding for performance)
             z_sequences = []
             
             for doc_idx, doc_chunks in enumerate(tqdm(documents, desc="Encoding documents")):
-                doc_z_list = []
-                for chunk in doc_chunks:
-                    chunk = chunk.unsqueeze(0).to(device)
-                    z = model.encode(chunk)
-                    quantized, _, _, _ = model.quantize(z)
-                    doc_z_list.append(quantized.squeeze(0).cpu())
+                if len(doc_chunks) < config.context_window + 1:
+                    continue
                 
-                if len(doc_z_list) >= config.context_window + 1:
-                    z_seq = torch.stack(doc_z_list)  # [num_chunks, D]
-                    z_sequences.append(z_seq)
+                # Batch encode all chunks in the document at once
+                chunks_batch = torch.stack(doc_chunks).to(device)
+                z_batch = model.encode(chunks_batch)
+                quantized_batch, _, _, _ = model.quantize(z_batch)
+                z_seq = quantized_batch.cpu()  # [num_chunks, D]
+                z_sequences.append(z_seq)
             
             logger.info(f"✅ Создано {len(z_sequences)} z_sequences")
             total_pairs = sum(max(0, seq.size(0) - config.context_window) for seq in z_sequences)
@@ -1766,6 +1770,12 @@ def main(
             z_sequences = [z_all]
             
             torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+
+    # Validate z_sequences before Phase B
+    if not z_sequences:
+        logger.error("❌ No z_sequences created — cannot run Phase B. "
+                      "Check that documents have enough chunks (>= context_window + 1).")
+        return
 
     # ===== Phase B =====
     logger.info("\n" + "▶" * 38)

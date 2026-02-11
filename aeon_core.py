@@ -61,7 +61,6 @@ from collections import OrderedDict, defaultdict, Counter, deque
 from contextlib import contextmanager
 from functools import wraps
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 # Core scientific computing
 import numpy as np
@@ -758,6 +757,8 @@ class AEONConfig:
     num_pillars: int = 5
     seq_length: int = 64
     action_dim: int = 64
+    cls_token_id: int = 101   # [CLS] token ID (BERT default)
+    sep_token_id: int = 102   # [SEP] token ID (BERT default)
     knowledge_dim: int = 128
     
     # ===== META-LOOP =====
@@ -860,6 +861,8 @@ class AEONConfig:
         # Critical validations
         assert self.z_dim > 0, "z_dim must be positive"
         assert self.hidden_dim > 0, "hidden_dim must be positive"
+        assert self.vocab_size > 0, "vocab_size must be positive"
+        assert self.seq_length > 0, "seq_length must be positive"
         assert self.num_pillars >= 3, "num_pillars must be >= 3"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
@@ -869,6 +872,10 @@ class AEONConfig:
         assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE", "RETURN_NONE")
         assert self.cosine_decay_steps > 0, "cosine_decay_steps must be positive"
         assert 0 < self.min_lr_ratio <= 1, "min_lr_ratio must be in (0, 1]"
+        assert 0 <= self.cls_token_id < self.vocab_size, \
+            f"cls_token_id ({self.cls_token_id}) must be in [0, vocab_size)"
+        assert 0 <= self.sep_token_id < self.vocab_size, \
+            f"sep_token_id ({self.sep_token_id}) must be in [0, vocab_size)"
         
         # Device initialization
         if self.device_str == "auto":
@@ -1042,11 +1049,14 @@ class ThoughtDecoder(nn.Module):
     - Invalid token filtering ([unused###])
     """
     
-    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256):
+    def __init__(self, vocab_size: int, emb_dim: int = 256, z_dim: int = 256,
+                 cls_token_id: int = 101, sep_token_id: int = 102):
         super().__init__()
         self.vocab_size = vocab_size
         self.emb_dim = emb_dim
         self.z_dim = z_dim
+        self.cls_token_id = cls_token_id
+        self.sep_token_id = sep_token_id
         
         self.embed = nn.Embedding(vocab_size, emb_dim)
         self.fc = nn.Linear(z_dim, emb_dim)
@@ -1199,9 +1209,9 @@ class ThoughtDecoder(nn.Module):
             generated_ids.append(prefix_tokens)
             current_token_id = prefix_tokens[:, -1:].contiguous()
         else:
-            # Start with [CLS] token (BERT convention)
+            # Start with [CLS] token
             current_token_id = torch.full(
-                (batch_size, 1), 101, dtype=torch.long, device=device
+                (batch_size, 1), self.cls_token_id, dtype=torch.long, device=device
             )
             generated_ids.append(current_token_id)
         
@@ -1225,8 +1235,8 @@ class ThoughtDecoder(nn.Module):
             else:
                 next_token_id = torch.argmax(logits_filtered, dim=-1, keepdim=True)
             
-            # Stop on [SEP] (BERT)
-            if (next_token_id == 102).all():
+            # Stop on [SEP]
+            if (next_token_id == self.sep_token_id).all():
                 break
             
             generated_ids.append(next_token_id)
@@ -1256,8 +1266,9 @@ class ThoughtDecoder(nn.Module):
         # Temperature
         scaled_logits = logits / max(temperature, 1e-6)
         
-        # Top-K
+        # Top-K (clamp to vocab size to prevent IndexError)
         if top_k > 0:
+            top_k = min(top_k, scaled_logits.size(-1))
             top_k_logits, top_k_indices = torch.topk(scaled_logits, top_k, dim=-1)
             mask = torch.full_like(scaled_logits, -float('inf'))
             mask.scatter_(1, top_k_indices, top_k_logits)
@@ -2741,7 +2752,14 @@ class MemoryManager:
         logger.info("MemoryManager initialized (fallback mode)")
     
     def add_embedding(self, vec: torch.Tensor, meta: Optional[Dict] = None):
-        """Add embedding to memory."""
+        """Add embedding to memory.
+        
+        Skips embeddings containing NaN or Inf values to prevent
+        corrupted memory entries.
+        """
+        if torch.isnan(vec).any() or torch.isinf(vec).any():
+            logger.warning("Skipping NaN/Inf embedding in MemoryManager.add_embedding")
+            return
         meta = meta or {}
         vec_np = vec.detach().cpu().numpy()
         self.fallback_vectors.append(vec_np)
@@ -2858,7 +2876,9 @@ class AEONDeltaV3(nn.Module):
         self.decoder = ThoughtDecoder(
             vocab_size=config.vocab_size,
             emb_dim=config.z_dim,
-            z_dim=config.z_dim
+            z_dim=config.z_dim,
+            cls_token_id=config.cls_token_id,
+            sep_token_id=config.sep_token_id
         ).to(self.device)
         
         # Setup tokenizer if available
@@ -2995,6 +3015,92 @@ class AEONDeltaV3(nn.Module):
         except Exception as e:
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
+    def _compute_quantum(
+        self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
+    ) -> Dict[str, Any]:
+        """Compute quantum simulation results or return defaults."""
+        if self.quantum_sim is not None and not fast:
+            quantum_results = self.quantum_sim(pillars)
+            logger.debug(
+                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
+            )
+            return quantum_results
+        return {
+            'entanglement': torch.zeros(B, device=device),
+            'action_propensity': torch.full(
+                (B, self.config.num_pillars),
+                1.0 / self.config.num_pillars,
+                device=device
+            )
+        }
+    
+    def _compute_topology(
+        self, pillars: torch.Tensor, iterations: torch.Tensor,
+        B: int, device: torch.device, fast: bool
+    ) -> Dict[str, Any]:
+        """Compute topology analysis results or return defaults."""
+        if self.topology_analyzer is not None and not fast:
+            topo_results = self.topology_analyzer(pillars, iterations)
+            logger.debug(
+                f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
+            )
+            return topo_results
+        return {
+            'potential': torch.zeros(B, device=device),
+            'gradient': torch.zeros(B, self.config.num_pillars, device=device),
+            'catastrophe_probs': torch.full((B,), 0.5, device=device),
+            'catastrophes': torch.zeros(B, dtype=torch.bool, device=device)
+        }
+    
+    def _compute_safety(
+        self, C_star: torch.Tensor, pillars: torch.Tensor,
+        quantum_results: Dict, topo_results: Dict,
+        B: int, device: torch.device
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Compute safety scores and self-report."""
+        if self.safety_system is not None:
+            action_embedding = torch.zeros(B, self.config.action_dim, device=device)
+            safety_score = self.safety_system(
+                action_embedding, C_star, pillars,
+                quantum_results, topo_results, mode='combined'
+            )
+            logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
+        else:
+            safety_score = torch.ones(B, 1, device=device)
+        
+        if self.self_reporter is not None:
+            self_report = self.self_reporter(
+                C_star, pillars, quantum_results, topo_results, mode='combined'
+            )
+            logger.debug(
+                f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
+            )
+        else:
+            self_report = {}
+        
+        return safety_score, self_report
+    
+    def _fuse_memory(
+        self, C_star: torch.Tensor, device: torch.device,
+        memory_retrieval: bool
+    ) -> torch.Tensor:
+        """Apply memory fusion if available."""
+        if memory_retrieval and self.memory_manager.size > 0:
+            memory_contexts = []
+            for q in C_star:
+                found = self.memory_manager.retrieve_relevant(q, k=3)
+                if found:
+                    vecs = [torch.from_numpy(f['vec']).to(device) for f in found]
+                    memory_contexts.append(torch.stack(vecs).mean(dim=0))
+                else:
+                    memory_contexts.append(torch.zeros_like(q))
+            
+            memory_context = torch.stack(memory_contexts)
+            C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
+            logger.debug("Memory fusion applied")
+            return C_fused
+        return C_star
+    
     @tensor_safe(policy=NaNPolicy.WARN, sanitize_outputs=True)
     def reasoning_core(
         self,
@@ -3023,98 +3129,32 @@ class AEONDeltaV3(nn.Module):
         
         logger.debug(f"reasoning_core: B={B}, fast={fast}")
         
-        # ===== 1. META-LOOP =====
+        # 1. Meta-loop convergence
         C_star, iterations, meta_results = self.meta_loop(
-            z_in, 
-            use_fixed_point=not fast
+            z_in, use_fixed_point=not fast
         )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
-        # ===== 2. PILLARS =====
+        # 2. Extract pillars
         pillars, embedded_pillars = self.pillars_module(C_star)
         logger.debug(f"Pillars: {pillars.shape}")
         
-        # ===== 3. QUANTUM SIMULATION =====
-        if self.quantum_sim is not None and not fast:
-            quantum_results = self.quantum_sim(pillars)
-            logger.debug(
-                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
-            )
-        else:
-            quantum_results = {
-                'entanglement': torch.zeros(B, device=device),
-                'action_propensity': torch.full(
-                    (B, self.config.num_pillars), 
-                    1.0 / self.config.num_pillars, 
-                    device=device
-                )
-            }
+        # 3-4. Quantum and topology (delegated to helpers)
+        quantum_results = self._compute_quantum(pillars, B, device, fast)
+        topo_results = self._compute_topology(pillars, iterations, B, device, fast)
         
-        # ===== 4. TOPOLOGY ANALYSIS =====
-        if self.topology_analyzer is not None and not fast:
-            topo_results = self.topology_analyzer(pillars, iterations)
-            logger.debug(
-                f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
-            )
-        else:
-            topo_results = {
-                'potential': torch.zeros(B, device=device),
-                'gradient': torch.zeros(B, self.config.num_pillars, device=device),
-                'catastrophe_probs': torch.full((B,), 0.5, device=device),
-                'catastrophes': torch.zeros(B, dtype=torch.bool, device=device)
-            }
+        # 5. Safety and self-reporting (delegated to helper)
+        safety_score, self_report = self._compute_safety(
+            C_star, pillars, quantum_results, topo_results, B, device
+        )
         
-        # ===== 5. SAFETY & SELF-REPORTING =====
-        if self.safety_system is not None:
-            action_embedding = torch.zeros(B, self.config.action_dim, device=device)
-            
-            safety_score = self.safety_system(
-                action_embedding,
-                C_star,
-                pillars,
-                quantum_results,
-                topo_results,
-                mode='combined'
-            )
-            logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
-        else:
-            safety_score = torch.ones(B, 1, device=device)
+        # 6. Memory fusion (delegated to helper)
+        C_fused = self._fuse_memory(C_star, device, memory_retrieval)
         
-        if self.self_reporter is not None:
-            self_report = self.self_reporter(
-                C_star,
-                pillars,
-                quantum_results,
-                topo_results,
-                mode='combined'
-            )
-            logger.debug(
-                f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
-            )
-        else:
-            self_report = {}
-        
-        # ===== 6. MEMORY FUSION =====
-        if memory_retrieval and self.memory_manager.size > 0:
-            memory_contexts = []
-            for q in C_star:
-                found = self.memory_manager.retrieve_relevant(q, k=3)
-                if (found):
-                    vecs = [torch.from_numpy(f['vec']).to(device) for f in found]
-                    memory_contexts.append(torch.stack(vecs).mean(dim=0))
-                else:
-                    memory_contexts.append(torch.zeros_like(q))
-            
-            memory_context = torch.stack(memory_contexts)
-            C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
-            logger.debug("Memory fusion applied")
-        else:
-            C_fused = C_star
-        
-        # ===== 7. RSSM DYNAMICS =====
+        # 7. RSSM dynamics
         z_rssm = self.rssm(C_fused)
         
-        # ===== 8. INTEGRATION =====
+        # 8. Integration
         z_out = self.integration_module(
             torch.cat([z_rssm, embedded_pillars], dim=-1)
         )
