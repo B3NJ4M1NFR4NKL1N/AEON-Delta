@@ -121,7 +121,7 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 # Version info
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 __author__ = "AEON Research Team"
 
 # Logging setup
@@ -3796,7 +3796,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
         if self.enable_certification and lip_const < 1.0:
             with torch.no_grad():
                 final_residual = residual_norm.mean().item()
-                certified_error = (lip_const / (1 - lip_const)) * final_residual
+                denom = max(1.0 - lip_const, 1e-6)
+                certified_error = (lip_const / denom) * final_residual
         
         # Metadata
         metadata = {
