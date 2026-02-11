@@ -1212,8 +1212,10 @@ class SafeThoughtAETrainerV4:
             
             for batch_idx, (batch,) in enumerate(loader):
                 outputs = self.train_step(batch)
-                accumulated_loss += outputs['total_loss'].item()
-                num_accumulated += 1
+                step_loss = outputs['total_loss'].item()
+                if not (math.isnan(step_loss) or math.isinf(step_loss)):
+                    accumulated_loss += step_loss
+                    num_accumulated += 1
                 
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     grad_norm = self._optimizer_step()
@@ -1264,7 +1266,7 @@ class SafeThoughtAETrainerV4:
             self.model.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая модель с loss={self.best_loss:.6f}")
         
-        self.monitor.end_training("Phase A")
+        self.monitor.end_training("phase_A")
     
     def _save_checkpoint(self, epoch: int, metrics: dict):
         os.makedirs(self.output_dir, exist_ok=True)
@@ -1432,7 +1434,7 @@ class ContextualRSSMTrainer:
                 metrics = self.train_step(ctx_batch, tgt_batch)
                 
                 for key in epoch_metrics:
-                    if key in metrics:
+                    if key in metrics and not (math.isnan(metrics[key]) or math.isinf(metrics[key])):
                         epoch_metrics[key] += metrics[key]
                 
                 if batch_idx % log_every_batch == 0:
@@ -1457,7 +1459,7 @@ class ContextualRSSMTrainer:
             self.model.rssm.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
-        self.monitor.end_training("Phase B")
+        self.monitor.end_training("phase_B")
 
 
 # ==============================================================================
