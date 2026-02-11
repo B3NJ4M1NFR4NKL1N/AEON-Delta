@@ -971,9 +971,6 @@ class AEONConfig:
                 memory_fraction=self.device_memory_fraction
             )
         
-        # Legacy compatibility
-        self.device = self.device_manager.device
-        
         # Update AMP
         if hasattr(self.device_manager, 'amp_enabled'):
             self.use_amp = self.device_manager.amp_enabled
@@ -1001,7 +998,7 @@ class AEONConfig:
         object.__setattr__(self, '_frozen', True)
         
         logger.info(f"✅ AEONConfig v{self.version} initialized")
-        logger.info(f"   Device: {self.device}")
+        logger.info(f"   Device: {self.device_manager.device}")
         logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}P")
     
     def __setattr__(self, name, value):
@@ -4991,6 +4988,13 @@ class AEONDeltaV3(nn.Module):
         self.device_manager = config.device_manager
         self.tensor_guard = config.tensor_guard
         
+        # Validate PyTorch version
+        if config.topo_method == "forward_ad" and not hasattr(torch, 'func'):
+            raise RuntimeError(
+                "forward_ad requires PyTorch >= 2.0 with torch.func support. "
+                "Use topo_method='finite_differences' instead."
+            )
+        
         logger.info("="*70)
         logger.info("Initializing AEON-Delta RMT v3.0")
         logger.info("="*70)
@@ -5415,6 +5419,15 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with logits, thoughts, and intermediate outputs
         """
+        # Input validation
+        if input_ids.dtype != torch.long:
+            raise TypeError(
+                f"input_ids must be torch.long, got {input_ids.dtype}. "
+                f"Did you forget to convert labels to input_ids?"
+            )
+        if input_ids.dim() != 2:
+            raise ValueError(f"input_ids must be 2D [B, L], got shape {input_ids.shape}")
+        
         # Device transfer
         input_ids = input_ids.to(self.device)
         if attention_mask is not None:

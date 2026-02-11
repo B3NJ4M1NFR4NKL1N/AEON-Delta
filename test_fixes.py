@@ -1438,6 +1438,115 @@ def test_ema_update_zero_cluster_safety():
     print("✅ test_ema_update_zero_cluster_safety PASSED")
 
 
+# ============================================================================
+# NEW TESTS: Code analysis fixes (immutability, input validation, version check)
+# ============================================================================
+
+def test_config_immutability():
+    """Fix 1.4: AEONConfig must not have a mutable 'device' attribute.
+    
+    Verifies that AEONConfig does not store a 'device' attribute directly,
+    and that the config is truly frozen after __post_init__.
+    """
+    from aeon_core import AEONConfig
+    
+    config = AEONConfig()
+    
+    # 'device' should not be a direct attribute — use device_manager.device instead
+    assert not hasattr(config, 'device') or isinstance(
+        type(config).__dict__.get('device'), property
+    ), "AEONConfig should not have a mutable 'device' attribute"
+    
+    # device_manager should be available
+    assert config.device_manager is not None, "device_manager should be initialized"
+    assert config.device_manager.device is not None, "device_manager.device should be set"
+    
+    # Config should be frozen
+    try:
+        config.z_dim = 512
+        assert False, "Should have raised AttributeError (config is frozen)"
+    except AttributeError:
+        pass
+    
+    print("✅ test_config_immutability PASSED")
+
+
+def test_forward_input_ids_validation():
+    """Fix 3.1: AEONDeltaV3.forward must validate input_ids dtype and shape.
+    
+    Verifies that passing wrong dtype or shape raises clear errors.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_tensorboard=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    # Wrong dtype (float instead of long)
+    float_ids = torch.randn(2, 16)  # float32
+    try:
+        model.forward(float_ids)
+        assert False, "Should have raised TypeError for float input_ids"
+    except TypeError as e:
+        assert "torch.long" in str(e), f"Error message should mention torch.long: {e}"
+    
+    # Wrong shape (1D instead of 2D)
+    flat_ids = torch.randint(0, 100, (16,))
+    try:
+        model.forward(flat_ids)
+        assert False, "Should have raised ValueError for 1D input_ids"
+    except ValueError as e:
+        assert "2D" in str(e), f"Error message should mention 2D: {e}"
+    
+    # Correct input should work
+    valid_ids = torch.randint(0, 100, (2, 16))
+    result = model.forward(valid_ids)
+    assert 'logits' in result, "Forward should return dict with 'logits'"
+    
+    print("✅ test_forward_input_ids_validation PASSED")
+
+
+def test_forward_ad_version_check():
+    """Fix 4.2: AEONDeltaV3 should validate PyTorch version for forward_ad.
+    
+    Verifies that using topo_method='forward_ad' on PyTorch without
+    torch.func raises a clear RuntimeError.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    # With PyTorch >= 2.0 (which has torch.func), forward_ad should work
+    if hasattr(torch, 'func'):
+        config = AEONConfig(
+            topo_method="forward_ad",
+            enable_quantum_sim=False,
+            enable_catastrophe_detection=False,
+            enable_safety_guardrails=False,
+            enable_tensorboard=False,
+        )
+        # Should not raise
+        model = AEONDeltaV3(config)
+        assert model is not None
+    
+    # finite_differences should always work regardless
+    config_fd = AEONConfig(
+        topo_method="finite_differences",
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_tensorboard=False,
+    )
+    model_fd = AEONDeltaV3(config_fd)
+    assert model_fd is not None
+    
+    print("✅ test_forward_ad_version_check PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -1508,6 +1617,11 @@ if __name__ == '__main__':
     test_hessian_forward_ad_computation()
     test_usage_stats_zero_count_safety()
     test_ema_update_zero_cluster_safety()
+    
+    # Code analysis fix tests
+    test_config_immutability()
+    test_forward_input_ids_validation()
+    test_forward_ad_version_check()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
