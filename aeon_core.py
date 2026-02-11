@@ -1564,8 +1564,10 @@ class _SSMBlock(nn.Module):
         state: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute selective scan in O(BLN) with parallel-scan-friendly structure.
+        Compute selective scan via parallel associative scan (Blelloch-style).
 
+        Has O(log L) parallel depth (vs O(L) for sequential), at the cost of
+        O(L log L) total work.  Net win on wide-SIMD hardware (GPUs).
         Parameters A, B, C, Δ are derived from input → selectivity.
         """
         B_batch, L, d_inner = x.shape
@@ -1581,32 +1583,52 @@ class _SSMBlock(nn.Module):
         # Continuous → discrete: A_bar = exp(Δ * A)
         A = -torch.exp(self.A_log.float())                     # [d_inner, d_state]
 
-        # Initialise state
-        if state is None:
-            h = torch.zeros(B_batch, d_inner, d_state, device=x.device, dtype=x.dtype)
-        else:
-            h = state
+        # Compute A_bar and input terms for all timesteps at once
+        dt_exp = dt.unsqueeze(-1)                               # [B, L, d_inner, 1]
+        A_bar_all = torch.exp(dt_exp * A.unsqueeze(0).unsqueeze(0))  # [B, L, d_inner, d_state]
 
-        # Sequential scan (compatible with any hardware; a fused parallel-scan
-        # kernel can be swapped in for production GPU workloads).
-        ys = []
-        for t in range(L):
-            dt_t = dt[:, t, :].unsqueeze(-1)         # [B, d_inner, 1]
-            B_t = B_ssm[:, t, :].unsqueeze(1)        # [B, 1, d_state]
-            C_t = C[:, t, :].unsqueeze(1)             # [B, 1, d_state]
-            x_t = x[:, t, :].unsqueeze(-1)            # [B, d_inner, 1]
+        x_exp = x.unsqueeze(-1)                                 # [B, L, d_inner, 1]
+        B_exp = B_ssm.unsqueeze(2)                              # [B, L, 1, d_state]
+        input_all = dt_exp * (x_exp * B_exp)                    # [B, L, d_inner, d_state]
 
-            # h = A_bar * h + B_bar * x
-            A_bar = torch.exp(dt_t * A.unsqueeze(0))  # [B, d_inner, d_state]
-            h = A_bar * h + dt_t * (x_t * B_t)
+        # Incorporate initial state into position 0
+        if state is not None:
+            input_all[:, 0] = A_bar_all[:, 0] * state + input_all[:, 0]
 
-            # y = C * h + D * x
-            y_t = (h * C_t).sum(dim=-1)               # [B, d_inner]
-            y_t = y_t + self.D * x[:, t, :]
-            ys.append(y_t)
+        # Parallel associative scan (Blelloch up-sweep)
+        # Recurrence: h[t] = A_bar[t] * h[t-1] + input[t]
+        # Associative operator on (A, b): (A2, b2) ∘ (A1, b1) = (A2*A1, A2*b1 + b2)
+        A_bar_terms = A_bar_all
+        input_terms = input_all
+        stride = 1
+        while stride < L:
+            mask = torch.arange(L, device=x.device) >= stride   # [L]
+            # Gather values from positions t - stride
+            src_idx = torch.arange(L, device=x.device) - stride  # [L]
+            src_idx = src_idx.clamp(min=0)
+            # Index into [B, L, d_inner, d_state]
+            A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
+            inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
+            # Broadcast mask to match tensor shape
+            mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
+            # Apply associative operator where mask is True
+            new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
+            new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
+            input_terms = new_input
+            A_bar_terms = new_A_bar
+            stride *= 2
 
-        y = torch.stack(ys, dim=1)                    # [B, L, d_inner]
-        return y, h
+        # input_terms now holds h for each timestep: [B, L, d_inner, d_state]
+        h_all = input_terms
+
+        # Compute y = (h * C).sum(d_state) + D * x
+        C_exp = C.unsqueeze(2)                                  # [B, L, 1, d_state]
+        y = (h_all * C_exp).sum(dim=-1)                         # [B, L, d_inner]
+        y = y + self.D.unsqueeze(0).unsqueeze(0) * x            # [B, L, d_inner]
+
+        # Final state for caching
+        h_final = h_all[:, -1, :, :]                            # [B, d_inner, d_state]
+        return y, h_final
 
 
 class LinearAttentionBlock(nn.Module):
