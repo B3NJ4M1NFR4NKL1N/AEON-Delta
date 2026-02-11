@@ -1610,7 +1610,11 @@ class _SSMBlock(nn.Module):
         B_exp = B_ssm.unsqueeze(2)                              # [B, L, 1, d_state]
         input_all = dt_exp * (x_exp * B_exp)                    # [B, L, d_inner, d_state]
 
-        # Incorporate initial state into position 0
+        # Incorporate initial state into position 0.
+        # For the associative scan recurrence h[t] = A_bar[t]*h[t-1] + input[t],
+        # when an external state is provided, the base case h[0] must be
+        # A_bar[0]*state + input[0].  Folding this into input_all[0] before
+        # the scan is the standard prefix-scan initial-value technique.
         if state is not None:
             input_all[:, 0] = A_bar_all[:, 0] * state + input_all[:, 0]
 
@@ -1684,6 +1688,10 @@ class LinearAttentionBlock(nn.Module):
         self.num_heads = num_heads
         self.feature_dim = feature_dim
         self.feature_rank = min(feature_rank, feature_dim)
+        if feature_rank > feature_dim:
+            logger.warning(
+                f"feature_rank ({feature_rank}) clamped to feature_dim ({feature_dim})"
+            )
         self.causal = causal
         self.head_dim = d_model // num_heads
         self._eps = 1e-6  # Numerical stability constant
@@ -4583,7 +4591,12 @@ class HierarchicalMemory(nn.Module):
                 next_frontier = []
                 for node in frontier:
                     for src, dst, rel in self._semantic_edges:
-                        neighbor = dst if src == node else (src if dst == node else None)
+                        if src == node:
+                            neighbor = dst
+                        elif dst == node:
+                            neighbor = src
+                        else:
+                            neighbor = None
                         if neighbor is not None and neighbor not in visited:
                             visited.add(neighbor)
                             next_frontier.append(neighbor)
@@ -4816,10 +4829,15 @@ class MetaLearner(nn.Module):
             self.model.zero_grad()
             outputs = self.model(inputs)
             if isinstance(outputs, dict):
-                loss = outputs.get('loss', F.cross_entropy(
-                    outputs.get('logits', outputs.get('output', torch.zeros(1))).view(-1, outputs.get('logits', outputs.get('output', torch.zeros(1))).size(-1)),
-                    targets.view(-1)
-                ))
+                if 'loss' in outputs:
+                    loss = outputs['loss']
+                else:
+                    logits = outputs.get('logits', outputs.get('output', None))
+                    if logits is None:
+                        continue
+                    loss = F.cross_entropy(
+                        logits.view(-1, logits.size(-1)), targets.view(-1)
+                    )
             else:
                 loss = F.cross_entropy(outputs.view(-1, outputs.size(-1)), targets.view(-1))
             loss.backward()

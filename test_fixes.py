@@ -1148,10 +1148,15 @@ def test_hierarchical_memory_store_retrieve():
         vec = torch.randn(32)
         mem.store(vec, meta={'idx': i})
 
-    # Working memory should have at most 3
+    # Working memory should track total stores but only keep capacity items
     assert mem._working_count == 5
-    count = min(mem._working_count, mem.working_capacity)
-    assert count == 3
+    # Verify that only the last `working_capacity` items are in the buffer
+    # by checking the working_memory buffer has non-zero entries only in used slots
+    wm = mem.working_memory
+    used_slots = min(mem._working_count, mem.working_capacity)
+    assert used_slots == 3
+    for i in range(used_slots):
+        assert wm[i].abs().sum() > 0, f"Working memory slot {i} should be non-zero"
 
     # Retrieve
     query = torch.randn(32)
