@@ -5856,6 +5856,12 @@ class HierarchicalVAE(nn.Module):
         
         # Abstraction level selector
         self.level_selector = nn.Linear(input_dim, num_levels)
+        
+        # Project each level back to input_dim for uniform selected_level output
+        self.level_projections = nn.ModuleList([
+            nn.Linear(dim, input_dim) if dim != input_dim else nn.Identity()
+            for dim in level_dims
+        ])
     
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Reparameterization trick."""
@@ -5914,15 +5920,16 @@ class HierarchicalVAE(nn.Module):
             level_probs = F.softmax(level_logits, dim=-1)
             abstraction_level = level_probs.argmax(dim=-1)  # [B]
         
-        # Get representation at selected level
+        # Get representation at selected level (projected to input_dim)
         if isinstance(abstraction_level, int):
-            selected = levels[min(abstraction_level, len(levels) - 1)]
+            lvl = min(abstraction_level, len(levels) - 1)
+            selected = self.level_projections[lvl](levels[lvl])
         else:
             # Batch selection
-            selected = levels[0].clone()  # Fallback to lowest
+            selected = torch.zeros(x.shape[0], self.level_dims[0], device=x.device)
             for b in range(x.shape[0]):
                 lvl = min(abstraction_level[b].item(), len(levels) - 1)
-                selected[b] = levels[int(lvl)][b]
+                selected[b] = self.level_projections[int(lvl)](levels[int(lvl)][b])
         
         return {
             'levels': levels,

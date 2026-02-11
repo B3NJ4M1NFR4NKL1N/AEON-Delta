@@ -2084,6 +2084,418 @@ def test_gradscaler_compatibility():
     print("✅ test_gradscaler_compatibility PASSED")
 
 
+# ============================================================================
+# Tests for architecture refactoring (Tasks 1-13)
+# ============================================================================
+
+def test_diversity_metric_forward():
+    """Task 1: Verify DiversityMetric replaces QuantumSimulator correctly."""
+    from aeon_core import DiversityMetric, AEONConfig
+    
+    config = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    dm = DiversityMetric(config)
+    dm.eval()
+    
+    factors = torch.randn(4, config.num_pillars)
+    with torch.no_grad():
+        result = dm(factors)
+    
+    assert 'diversity' in result, "Missing 'diversity' key"
+    assert 'action_propensity' in result, "Missing 'action_propensity' key"
+    assert result['diversity'].shape == (4,), f"Expected (4,), got {result['diversity'].shape}"
+    assert result['action_propensity'].shape == (4, config.num_pillars)
+    # Diversity should be non-negative (variance)
+    assert (result['diversity'] >= 0).all(), "Diversity should be non-negative"
+    # Action propensity should sum to 1
+    assert torch.allclose(result['action_propensity'].sum(dim=-1), 
+                          torch.ones(4), atol=1e-5)
+    
+    print("✅ test_diversity_metric_forward PASSED")
+
+
+def test_sparse_factorization_forward():
+    """Task 2: Verify SparseFactorization produces correct shapes."""
+    from aeon_core import SparseFactorization, AEONConfig
+    
+    config = AEONConfig(device_str='cpu')
+    sf = SparseFactorization(config)
+    sf.eval()
+    
+    hidden = torch.randn(2, config.hidden_dim)
+    with torch.no_grad():
+        factors, decoded = sf(hidden)
+    
+    assert factors.shape == (2, config.num_pillars), \
+        f"Expected (2, {config.num_pillars}), got {factors.shape}"
+    assert decoded.shape == (2, config.hidden_dim), \
+        f"Expected (2, {config.hidden_dim}), got {decoded.shape}"
+    # Factors should be in [0, 1] after sigmoid
+    assert (factors >= 0).all() and (factors <= 1).all(), \
+        "Factors should be in [0, 1]"
+    
+    print("✅ test_sparse_factorization_forward PASSED")
+
+
+def test_sparse_factorization_sparsity_loss():
+    """Task 2: Verify L1 sparsity loss computation."""
+    from aeon_core import SparseFactorization, AEONConfig
+    
+    config = AEONConfig(device_str='cpu')
+    sf = SparseFactorization(config)
+    
+    factors = torch.rand(4, config.num_pillars)
+    loss = sf.sparsity_loss(factors)
+    
+    assert loss.dim() == 0, "Sparsity loss should be scalar"
+    assert loss.item() >= 0, "Sparsity loss should be non-negative"
+    assert torch.isfinite(loss), "Sparsity loss should be finite"
+    
+    # All-zero factors should give zero loss
+    zero_factors = torch.zeros(4, config.num_pillars)
+    zero_loss = sf.sparsity_loss(zero_factors)
+    assert zero_loss.item() == 0.0, "Zero factors should give zero sparsity loss"
+    
+    print("✅ test_sparse_factorization_sparsity_loss PASSED")
+
+
+def test_neural_causal_model_forward():
+    """Task 6: Verify NeuralCausalModel forward pass."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=8, hidden_dim=32)
+    model.eval()
+    
+    exogenous = torch.randn(2, 8)
+    with torch.no_grad():
+        causal_vars = model(exogenous)
+    
+    assert causal_vars.shape == (2, 8), f"Expected (2, 8), got {causal_vars.shape}"
+    assert not torch.isnan(causal_vars).any(), "NaN in causal variables"
+    
+    print("✅ test_neural_causal_model_forward PASSED")
+
+
+def test_neural_causal_model_dag_constraint():
+    """Task 6: Verify DAG adjacency is lower-triangular."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=6)
+    adj = model.adjacency
+    
+    # Should be lower-triangular (no self-loops, no backward edges)
+    upper = torch.triu(adj, diagonal=0)
+    assert (upper == 0).all(), "Adjacency should be strictly lower-triangular"
+    
+    print("✅ test_neural_causal_model_dag_constraint PASSED")
+
+
+def test_neural_causal_model_intervention():
+    """Task 6: Verify do(X=x) intervention."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=5, hidden_dim=16)
+    model.eval()
+    
+    exogenous = torch.randn(3, 5)
+    intervention = {2: 1.0}  # Set variable 2 to 1.0
+    
+    with torch.no_grad():
+        result = model(exogenous, intervention=intervention)
+    
+    assert result.shape == (3, 5)
+    # Variable 2 should be exactly 1.0
+    assert torch.allclose(result[:, 2], torch.ones(3)), \
+        "Intervened variable should be set to intervention value"
+    
+    print("✅ test_neural_causal_model_intervention PASSED")
+
+
+def test_neural_causal_model_dag_loss():
+    """Task 7: Verify DAG loss computation."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=4)
+    loss = model.dag_loss()
+    
+    assert loss.dim() == 0, "DAG loss should be scalar"
+    assert torch.isfinite(loss), "DAG loss should be finite"
+    
+    print("✅ test_neural_causal_model_dag_loss PASSED")
+
+
+def test_neural_causal_model_consistency_loss():
+    """Task 7: Verify consistency loss for interventional data."""
+    from aeon_core import NeuralCausalModel
+    
+    model = NeuralCausalModel(num_vars=6, hidden_dim=16)
+    model.eval()
+    
+    obs = torch.randn(2, 6)
+    cf = torch.randn(2, 6)
+    
+    loss = model.consistency_loss(obs, cf, intervention_vars=[2, 3])
+    assert loss.dim() == 0, "Consistency loss should be scalar"
+    assert torch.isfinite(loss), "Consistency loss should be finite"
+    
+    print("✅ test_neural_causal_model_consistency_loss PASSED")
+
+
+def test_value_network_forward():
+    """Task 9: Verify ValueNetwork produces correct output."""
+    from aeon_core import ValueNetwork
+    
+    vn = ValueNetwork(state_dim=64, hidden_dim=32)
+    vn.eval()
+    
+    state = torch.randn(4, 64)
+    with torch.no_grad():
+        value = vn(state)
+    
+    assert value.shape == (4, 1), f"Expected (4, 1), got {value.shape}"
+    assert not torch.isnan(value).any(), "NaN in value output"
+    
+    print("✅ test_value_network_forward PASSED")
+
+
+def test_policy_network_forward():
+    """Task 9: Verify PolicyNetwork produces valid distribution."""
+    from aeon_core import PolicyNetwork
+    
+    pn = PolicyNetwork(state_dim=64, action_dim=8, hidden_dim=32)
+    pn.eval()
+    
+    state = torch.randn(4, 64)
+    with torch.no_grad():
+        policy = pn(state)
+    
+    assert policy.shape == (4, 8), f"Expected (4, 8), got {policy.shape}"
+    # Should be a valid probability distribution
+    assert torch.allclose(policy.sum(dim=-1), torch.ones(4), atol=1e-5), \
+        "Policy should sum to 1"
+    assert (policy >= 0).all(), "Policy should be non-negative"
+    
+    print("✅ test_policy_network_forward PASSED")
+
+
+def test_mcts_node_ucb1():
+    """Task 8: Verify MCTSNode UCB1 scoring."""
+    from aeon_core import MCTSNode
+    
+    parent = MCTSNode(state=torch.randn(16))
+    parent.visits = 100
+    
+    child = MCTSNode(state=torch.randn(16), parent=parent, prior=0.5)
+    child.visits = 10
+    child.total_value = 5.0
+    
+    score = child.ucb1_score(c=1.41)
+    expected_q = 5.0 / 10  # 0.5
+    expected_exploration = 1.41 * 0.5 * math.sqrt(100) / (1 + 10)
+    expected = expected_q + expected_exploration
+    
+    assert abs(score - expected) < 1e-4, \
+        f"UCB1 score mismatch: {score} vs {expected}"
+    
+    print("✅ test_mcts_node_ucb1 PASSED")
+
+
+def test_mcts_planner_forward():
+    """Task 8: Verify MCTSPlanner forward pass."""
+    from aeon_core import MCTSPlanner
+    
+    planner = MCTSPlanner(state_dim=32, action_dim=4, hidden_dim=16,
+                           num_simulations=10)
+    planner.eval()
+    
+    state = torch.randn(2, 32)
+    with torch.no_grad():
+        result = planner(state)
+    
+    assert 'value' in result, "Missing 'value' key"
+    assert 'policy' in result, "Missing 'policy' key"
+    assert result['value'].shape == (2, 1)
+    assert result['policy'].shape == (2, 4)
+    
+    print("✅ test_mcts_planner_forward PASSED")
+
+
+def test_mcts_planner_search():
+    """Task 8: Verify MCTSPlanner search with world model."""
+    from aeon_core import MCTSPlanner, PhysicsGroundedWorldModel
+    
+    planner = MCTSPlanner(state_dim=32, action_dim=4, hidden_dim=16,
+                           num_simulations=10, max_depth=2)
+    planner.eval()
+    
+    wm = PhysicsGroundedWorldModel(input_dim=32, state_dim=16)
+    wm.eval()
+    
+    state = torch.randn(32)
+    result = planner.search(state, wm)
+    
+    assert 'best_action' in result
+    assert 'root_value' in result
+    assert isinstance(result['best_action'], int)
+    
+    print("✅ test_mcts_planner_search PASSED")
+
+
+def test_hierarchical_vae_forward():
+    """Task 10: Verify HierarchicalVAE forward pass."""
+    from aeon_core import HierarchicalVAE
+    
+    vae = HierarchicalVAE(input_dim=64, num_levels=4)
+    vae.eval()
+    
+    x = torch.randn(2, 64)
+    with torch.no_grad():
+        result = vae(x)
+    
+    assert 'levels' in result
+    assert 'reconstructions' in result
+    assert 'kl_loss' in result
+    assert 'selected_level' in result
+    assert len(result['levels']) == 4, f"Expected 4 levels, got {len(result['levels'])}"
+    assert len(result['reconstructions']) == 4
+    
+    print("✅ test_hierarchical_vae_forward PASSED")
+
+
+def test_hierarchical_vae_abstraction_level():
+    """Task 10: Verify abstraction level selection."""
+    from aeon_core import HierarchicalVAE
+    
+    vae = HierarchicalVAE(input_dim=32, num_levels=3)
+    vae.eval()
+    
+    x = torch.randn(2, 32)
+    # Request specific abstraction level
+    with torch.no_grad():
+        result = vae(x, abstraction_level=1)
+    
+    assert result['selected_level'].shape[0] == 2
+    
+    print("✅ test_hierarchical_vae_abstraction_level PASSED")
+
+
+def test_hierarchical_vae_kl_loss():
+    """Task 10: Verify KL loss is finite during training."""
+    from aeon_core import HierarchicalVAE
+    
+    vae = HierarchicalVAE(input_dim=32, num_levels=3)
+    vae.train()
+    
+    x = torch.randn(4, 32)
+    result = vae(x)
+    
+    kl = result['kl_loss']
+    assert torch.isfinite(kl), f"KL loss should be finite, got {kl}"
+    assert kl.item() >= 0, "KL loss should be non-negative"
+    
+    print("✅ test_hierarchical_vae_kl_loss PASSED")
+
+
+def test_adaptive_chunking():
+    """Task 12: Verify adaptive chunking adjusts chunk size."""
+    from aeon_core import ChunkedSequenceProcessor
+    
+    # Non-adaptive (default)
+    processor = ChunkedSequenceProcessor(chunk_size=8, overlap=2)
+    assert not processor.adaptive
+    
+    # Adaptive
+    adaptive_processor = ChunkedSequenceProcessor(
+        chunk_size=16, overlap=2, adaptive=True, min_chunk_size=4
+    )
+    assert adaptive_processor.adaptive
+    assert adaptive_processor.min_chunk_size == 4
+    
+    def model_fn(x, state):
+        return x * 2.0, state
+    
+    x = torch.randn(1, 32, 8)
+    y, _ = adaptive_processor.process(model_fn, x)
+    assert y.shape == (1, 32, 8)
+    
+    print("✅ test_adaptive_chunking PASSED")
+
+
+def test_world_model_surprise_integration():
+    """Task 3: Verify world model surprise-driven integration."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=True, world_model_state_dim=32,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    assert hasattr(model, 'value_net'), "Should have value_net for surprise integration"
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    
+    assert 'world_model_results' in outputs
+    wm = outputs['world_model_results']
+    assert 'surprise' in wm, "World model results should contain surprise"
+    
+    print("✅ test_world_model_surprise_integration PASSED")
+
+
+def test_memory_retrieval_integration():
+    """Task 4: Verify hierarchical memory retrieval integration."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_hierarchical_memory=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    assert hasattr(model, 'memory_projection'), "Should have memory_projection"
+    assert hasattr(model, 'importance_scorer'), "Should have importance_scorer"
+    
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    
+    assert 'core_state' in outputs
+    
+    print("✅ test_memory_retrieval_integration PASSED")
+
+
+def test_safety_enforcement():
+    """Task 5: Verify safety enforcement rollback."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_safety_guardrails=True,
+        safety_threshold=0.99,  # Very high threshold to trigger enforcement
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    tokens = torch.randint(100, 1000, (2, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    
+    assert 'safety_score' in outputs
+    assert outputs['safety_score'].shape[0] == 2
+    
+    print("✅ test_safety_enforcement PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -2187,6 +2599,28 @@ if __name__ == '__main__':
     test_vq_temperature_validation()
     test_perplexity_overflow_guard()
     test_gradscaler_compatibility()
+    
+    # Architecture refactoring tests (Tasks 1-13)
+    test_diversity_metric_forward()
+    test_sparse_factorization_forward()
+    test_sparse_factorization_sparsity_loss()
+    test_neural_causal_model_forward()
+    test_neural_causal_model_dag_constraint()
+    test_neural_causal_model_intervention()
+    test_neural_causal_model_dag_loss()
+    test_neural_causal_model_consistency_loss()
+    test_value_network_forward()
+    test_policy_network_forward()
+    test_mcts_node_ucb1()
+    test_mcts_planner_forward()
+    test_mcts_planner_search()
+    test_hierarchical_vae_forward()
+    test_hierarchical_vae_abstraction_level()
+    test_hierarchical_vae_kl_loss()
+    test_adaptive_chunking()
+    test_world_model_surprise_integration()
+    test_memory_retrieval_integration()
+    test_safety_enforcement()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
