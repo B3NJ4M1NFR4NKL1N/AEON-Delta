@@ -201,6 +201,8 @@ class AEONConfigV4:
             raise ValueError(f"dropout_rate must be in [0, 1), got {self.dropout_rate}")
         if not (0 <= self.label_smoothing < 1):
             raise ValueError(f"label_smoothing must be in [0, 1), got {self.label_smoothing}")
+        if self.vq_temperature <= 0:
+            raise ValueError(f"vq_temperature must be positive, got {self.vq_temperature}")
 
 
 # ==============================================================================
@@ -488,7 +490,7 @@ class VectorQuantizerHybridV4(nn.Module):
         max_entropy = math.log(self.num_embeddings)
         
         # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
-        entropy_loss = 1.0 - (entropy / max_entropy) if max_entropy > 0 else 0.0
+        entropy_loss = 1.0 - (entropy / max_entropy) if max_entropy > 0 else torch.tensor(0.0, device=indices.device)
         
         return entropy_loss
     
@@ -1030,7 +1032,7 @@ class WarmupCosineScheduler:
         if self.current_step < self.warmup_steps:
             return self.base_lr * self.current_step / max(1, self.warmup_steps)
         else:
-            progress = (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            progress = min(1.0, (self.current_step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps))
             return self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (1 + math.cos(math.pi * progress))
     
     def get_lr(self):
@@ -1072,7 +1074,13 @@ class SafeThoughtAETrainerV4:
         )
         
         self.use_amp = config.use_amp and AMP_AVAILABLE
-        self.scaler = GradScaler(device=self.device.type) if self.use_amp else None
+        if self.use_amp:
+            try:
+                self.scaler = GradScaler(device=self.device.type)
+            except TypeError:
+                self.scaler = GradScaler()
+        else:
+            self.scaler = None
         
         self.global_step = 0
         self.best_loss = float('inf')
@@ -1108,7 +1116,6 @@ class SafeThoughtAETrainerV4:
             logger.warning(
                 f"⚠️ NaN/Inf loss detected at step {self.global_step}, skipping backward pass"
             )
-            self.optimizer.zero_grad()
             return outputs
         
         if self.use_amp:
@@ -1131,7 +1138,7 @@ class SafeThoughtAETrainerV4:
         total_loss = recon_loss + self.config.vq_loss_weight * vq_loss
         
         with torch.no_grad():
-            perplexity = torch.exp(recon_loss).item()
+            perplexity = torch.exp(recon_loss.clamp(max=80)).item()
             pred_tokens = logits[:, :-1].argmax(dim=-1)
             accuracy = (pred_tokens == tokens[:, 1:]).float().mean().item() * 100
         
@@ -1225,12 +1232,13 @@ class SafeThoughtAETrainerV4:
                     accumulated_loss = 0.0
                     num_accumulated = 0
                     
-                    epoch_metrics["recon"] += outputs['recon_loss']
-                    epoch_metrics["vq"] += outputs['vq_loss']
                     epoch_metrics["total"] += avg_loss
-                    epoch_metrics["perplexity"] += outputs['perplexity']
-                    epoch_metrics["accuracy_%"] += outputs['accuracy']
-                    epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
+                    if not (math.isnan(outputs['recon_loss']) or math.isinf(outputs['recon_loss'])):
+                        epoch_metrics["recon"] += outputs['recon_loss']
+                        epoch_metrics["vq"] += outputs['vq_loss']
+                        epoch_metrics["perplexity"] += outputs['perplexity']
+                        epoch_metrics["accuracy_%"] += outputs['accuracy']
+                        epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
                     epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
                 
                 if batch_idx % log_every_batch == 0:
