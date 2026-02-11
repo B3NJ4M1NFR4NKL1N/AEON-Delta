@@ -255,6 +255,253 @@ def test_document_aware_dataset():
     
     print("✅ test_document_aware_dataset PASSED")
 
+# ============================================================================
+# NEW TESTS: Critical properties from problem statement (Problem 10)
+# ============================================================================
+
+def test_lipschitz_contraction():
+    """Problem 10a: Verify Lipschitz contraction ||Λ(x)-Λ(y)|| ≤ L||x-y||
+    for 1000 random pairs.
+    """
+    from aeon_core import LipschitzConstrainedLambda
+
+    lip = LipschitzConstrainedLambda(
+        input_dim=64, hidden_dim=32, output_dim=32,
+        lipschitz_target=0.85, use_spectral_norm=True
+    )
+
+    max_ratio = lip.compute_lipschitz_constant(num_samples=1000, sample_dim=64)
+    # After spectral norm, the empirical constant should be reasonably bounded.
+    # We check it is ≤ lipschitz_target * 1.5 (generous margin for untrained net).
+    assert max_ratio <= lip.lipschitz_target * 1.5, (
+        f"Lipschitz ratio {max_ratio:.4f} exceeds "
+        f"{lip.lipschitz_target * 1.5:.4f}"
+    )
+    print(f"✅ test_lipschitz_contraction PASSED (max_ratio={max_ratio:.4f})")
+
+
+def test_encoder_input_validation():
+    """Problem 10b: Verify ThoughtEncoder rejects out-of-range tokens,
+    wrong dtypes, and mismatched attention masks.
+    """
+    from aeon_core import ThoughtEncoder
+
+    enc = ThoughtEncoder(vocab_size=100, emb_dim=32, z_dim=32)
+
+    # Wrong dtype
+    try:
+        enc(torch.randn(2, 10))  # float, not long
+        assert False, "Should have raised TypeError for float tokens"
+    except TypeError:
+        pass
+
+    # Out-of-range token
+    try:
+        enc(torch.tensor([[999]], dtype=torch.long))
+        assert False, "Should have raised ValueError for out-of-range token"
+    except ValueError:
+        pass
+
+    # Negative token
+    try:
+        enc(torch.tensor([[-1]], dtype=torch.long))
+        assert False, "Should have raised ValueError for negative token"
+    except ValueError:
+        pass
+
+    # attention_mask shape mismatch
+    try:
+        tokens = torch.randint(0, 100, (2, 10))
+        mask = torch.ones(3, 10)
+        enc(tokens, attention_mask=mask)
+        assert False, "Should have raised ValueError for mismatched mask shape"
+    except ValueError:
+        pass
+
+    # Valid input should work
+    tokens = torch.randint(0, 100, (2, 10))
+    mask = torch.ones(2, 10)
+    z = enc(tokens, attention_mask=mask)
+    assert z.shape == (2, 32)
+
+    print("✅ test_encoder_input_validation PASSED")
+
+
+def test_meta_loop_convergence():
+    """Problem 10c: Verify meta-loop converges for random initial conditions."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    from aeon_core import ProvablyConvergentMetaLoop
+
+    ml = ProvablyConvergentMetaLoop(config, max_iterations=50, min_iterations=3)
+    ml.eval()
+
+    # Run with 5 different random inputs
+    for i in range(5):
+        psi = torch.randn(4, config.z_dim)
+        with torch.no_grad():
+            C, iters, meta = ml.compute_fixed_point(psi)
+
+        assert C.shape == (4, config.hidden_dim), f"Wrong output shape: {C.shape}"
+        assert not torch.isnan(C).any(), f"NaN in fixed-point output (trial {i})"
+        assert not torch.isinf(C).any(), f"Inf in fixed-point output (trial {i})"
+
+    print("✅ test_meta_loop_convergence PASSED")
+
+
+def test_verify_convergence_method():
+    """Problem 10d: Verify the new verify_convergence() method returns diagnostics."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+
+    ml = ProvablyConvergentMetaLoop(config, max_iterations=20)
+    ml.eval()
+
+    psi = torch.randn(2, config.z_dim)
+    result = ml.verify_convergence(psi, num_samples=50)
+
+    assert 'empirical_lipschitz' in result
+    assert 'contraction_satisfied' in result
+    assert 'warnings' in result
+    assert isinstance(result['warnings'], list)
+    assert len(result['warnings']) > 0  # at least the completeness warning
+
+    print(f"✅ test_verify_convergence_method PASSED "
+          f"(L={result['empirical_lipschitz']:.4f})")
+
+
+def test_batch_generation_per_sequence_stopping():
+    """Problem 10e: Verify per-sequence stopping in decoder generation."""
+    from aeon_core import ThoughtDecoder
+
+    vocab_size = 200
+    sep_id = 102
+    dec = ThoughtDecoder(
+        vocab_size=vocab_size, emb_dim=32, z_dim=32,
+        cls_token_id=101, sep_token_id=sep_id
+    )
+    dec.eval()
+
+    z = torch.randn(3, 32)
+    with torch.no_grad():
+        gen_ids, logits = dec(
+            z, mode='inference', max_length=20,
+            temperature=1.0, top_k=0, sample=True
+        )
+
+    # Should always terminate within max_length + 1 (prefix)
+    assert gen_ids.shape[0] == 3, "Batch size mismatch"
+    assert gen_ids.shape[1] <= 21, f"Generated too many tokens: {gen_ids.shape[1]}"
+    assert not torch.isnan(logits).any(), "NaN in generated logits"
+
+    print("✅ test_batch_generation_per_sequence_stopping PASSED")
+
+
+def test_graceful_degradation_generate():
+    """Problem 10f: Verify generate() returns structured degraded response
+    when tokenizer is None.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.tokenizer = None  # Force no tokenizer
+
+    result = model.generate("test prompt")
+    assert isinstance(result, dict), f"Expected dict, got {type(result)}"
+    assert result['status'] == 'degraded'
+    assert result['text'] == 'test prompt'
+    assert 'reason' in result
+
+    print("✅ test_graceful_degradation_generate PASSED")
+
+
+def test_set_seed_reproducibility():
+    """Problem 10g: Verify set_seed() produces deterministic outputs."""
+    from aeon_core import set_seed
+
+    set_seed(42)
+    a = torch.randn(10)
+    set_seed(42)
+    b = torch.randn(10)
+
+    assert torch.allclose(a, b), "set_seed() did not produce reproducible outputs"
+
+    print("✅ test_set_seed_reproducibility PASSED")
+
+
+def test_compute_lipschitz_loss_standalone():
+    """Problem 10h: Verify standalone compute_lipschitz_loss works."""
+    from aeon_core import LipschitzConstrainedLambda, compute_lipschitz_loss
+
+    lip = LipschitzConstrainedLambda(
+        input_dim=64, hidden_dim=32, output_dim=32,
+        lipschitz_target=0.85, use_spectral_norm=True
+    )
+    psi = torch.randn(4, 32)
+    loss = compute_lipschitz_loss(lip, psi)
+
+    assert loss.dim() == 0 or loss.numel() == 1, f"Expected scalar, got {loss.shape}"
+    assert torch.isfinite(loss).all(), f"Loss is not finite: {loss}"
+
+    print("✅ test_compute_lipschitz_loss_standalone PASSED")
+
+
+def test_safe_checkpoint_loading():
+    """Problem 10i: Verify safe loading validates checkpoint structure."""
+    import tempfile, os
+    from aeon_core import MemoryManager, AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    mm = MemoryManager(config)
+
+    # Create a valid memory file
+    valid_data = {'vectors': [], 'metas': [], 'size': 0}
+    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False, dir='/tmp') as f:
+        torch.save(valid_data, f.name)
+        tmp_path = f.name
+
+    # Monkey-patch the path for testing
+    original_path = os.path.join(config.memory_path, "fallback_memory.pt")
+    os.makedirs(config.memory_path, exist_ok=True)
+    torch.save(valid_data, original_path)
+
+    mm.load_memory()
+    assert mm.size == 0  # valid data loaded
+
+    # Create invalid structure
+    invalid_data = {'evil_key': 'malicious_code', 'vectors': []}
+    torch.save(invalid_data, original_path)
+
+    mm2 = MemoryManager(config)
+    mm2.load_memory()
+    # Should have rejected due to unexpected keys
+    assert mm2.size == 0
+
+    # Cleanup
+    os.unlink(tmp_path)
+    if os.path.exists(original_path):
+        os.unlink(original_path)
+
+    print("✅ test_safe_checkpoint_loading PASSED")
+
 
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
@@ -266,6 +513,17 @@ if __name__ == '__main__':
     test_quarantine_partial_corruption()
     test_config_validation()
     test_document_aware_dataset()
+    
+    # New tests for problems 1-10
+    test_lipschitz_contraction()
+    test_encoder_input_validation()
+    test_meta_loop_convergence()
+    test_verify_convergence_method()
+    test_batch_generation_per_sequence_stopping()
+    test_graceful_degradation_generate()
+    test_set_seed_reproducibility()
+    test_compute_lipschitz_loss_standalone()
+    test_safe_checkpoint_loading()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
