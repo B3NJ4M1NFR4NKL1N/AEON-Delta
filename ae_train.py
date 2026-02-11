@@ -322,7 +322,7 @@ class TrainingMonitor:
             trainable_params += trainable
             self.logger.info(f"   • {name}: {params:,} (trainable: {trainable:,})")
         
-        self.logger.info(f"   ─────────────────────────────────")
+        self.logger.info("   ─────────────────────────────────")
         self.logger.info(f"   ВСЕГО: {total_params:,} (trainable: {trainable_params:,})")
         self.logger.info(f"   Память модели: ~{total_params * 4 / 1024**2:.1f} MB (FP32)")
         
@@ -1631,7 +1631,7 @@ def main(
         config.vocab_size = tokenizer.vocab_size
         logger.info(f"📖 Токенизатор: bert-base-uncased (vocab_size={config.vocab_size})")
 
-    logger.info(f"\n📋 Конфигурация v4 (ключевые изменения):")
+    logger.info("\n📋 Конфигурация v4 (ключевые изменения):")
     logger.info(f"   • grad_clip_norm: {config.grad_clip_norm} (стабилизировано)")
     logger.info(f"   • entropy_weight: {config.entropy_weight} (регуляризация кодбука)")
     logger.info(f"   • context_window: {config.context_window} (RSSM контекст)")
@@ -1711,7 +1711,7 @@ def main(
                 return
             
             model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info(f"   ✅ Checkpoint loaded successfully")
+            logger.info("   ✅ Checkpoint loaded successfully")
         except Exception as e:
             logger.error(f"❌ Failed to load checkpoint '{resume_from}': {e}")
             return

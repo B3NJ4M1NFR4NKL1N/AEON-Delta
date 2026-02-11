@@ -1229,7 +1229,6 @@ class ThoughtDecoder(nn.Module):
         device: torch.device
     ) -> torch.Tensor:
         """Teacher-forcing mode."""
-        batch_size = z.shape[0]
         seq_length = teacher_tokens.shape[1]
         
         # Project z to initial hidden state
@@ -1635,6 +1634,7 @@ class RobustVectorQuantizer(nn.Module):
         
         return {
             'total_codes': self.num_embeddings,
+            'total_usage': total_usage,
             'used_codes': used_codes,
             'unused_codes': self.num_embeddings - used_codes,
             'usage_rate': used_codes / self.num_embeddings,
@@ -1837,7 +1837,6 @@ class ProvablyConvergentMetaLoop(nn.Module):
             return C_history[-1]
         
         B = C_history[-1].shape[0]
-        H = C_history[-1].shape[1]
         
         # Stack residuals
         F = torch.stack(residual_history, dim=0)  # [m, B, H]
@@ -2440,7 +2439,6 @@ class OptimizedTopologyAnalyzer(nn.Module):
             Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics
         """
         B, P = pillars.shape
-        device = pillars.device
         
         # Potential
         with torch.enable_grad():
