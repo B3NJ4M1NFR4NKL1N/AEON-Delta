@@ -1666,25 +1666,25 @@ class _SSMBlock(nn.Module):
         h_final = h_all[:, -1, :, :]                            # [B, d_inner, d_state]
         return y, h_final
 
-    def _cumsum_scan(self, log_coeffs: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+    def _cumsum_scan(self, coeffs: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
         """
         Parallel scan via cumsum — works on all devices including MPS.
         
-        For linear recurrence h[t] = A_bar[t] * h[t-1] + input[t]:
-        - log_coeffs: [B, L, D, N] discretized A_bar (multiplicative coefficients)
+        For linear recurrence h[t] = coeffs[t] * h[t-1] + values[t]:
+        - coeffs: [B, L, D, N] discretized A_bar (multiplicative coefficients)
         - values: [B, L, D, N] input values
         Returns:
             h: [B, L, D, N] scan output
+        
+        Uses the identity:
+            h[t] = exp(S[t]) * cumsum(values * exp(-S))[t]
+        where S[t] = sum_{j=0}^{t} log(coeffs[j]).
         """
-        # Convert to log-space cumsum for numerical stability
-        log_a = torch.log(log_coeffs.clamp(min=1e-8))
-        log_cumsum = torch.cumsum(log_a, dim=1)  # [B, L, D, N]
-        # Scale values by cumulative coefficients
-        # Remove self contribution: exp(log_cumsum - log_a) = exp(cumsum up to t-1)
-        scaled = values * torch.exp(log_cumsum - log_a)
-        # Accumulate in normalized space
-        cumulated = torch.cumsum(scaled * torch.exp(-log_cumsum), dim=1)
-        h = cumulated * torch.exp(log_cumsum)
+        log_a = torch.log(coeffs.clamp(min=1e-8))  # [B, L, D, N]
+        log_cumsum = torch.cumsum(log_a, dim=1)     # S[t] = cumulative log-coefficients
+        # h[t] = exp(S[t]) * cumsum(values * exp(-S))[t]
+        scaled_values = values * torch.exp(-log_cumsum)
+        h = torch.exp(log_cumsum) * torch.cumsum(scaled_values, dim=1)
         return h
 
 
