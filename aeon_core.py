@@ -4176,17 +4176,18 @@ class AEONTestSuite:
             else:
                 results['value_match'] = False
             
-            # Gradient flow (requires train mode)
+            # Gradient flow (requires train mode and grad enabled)
             try:
                 self.model.train()
-                z = torch.randn(1, self.config.z_dim, device=self.model.device, requires_grad=True)
-                teacher = torch.randint(0, self.config.vocab_size, (1, 16), device=self.model.device)
-                
-                logits = decoder(z, teacher_tokens=teacher, mode='train')
-                loss = logits.sum()
-                loss.backward()
-                
-                results['gradient_flow'] = decoder.embed.weight.grad is not None and decoder.embed.weight.grad.norm().item() > 1e-10
+                with torch.enable_grad():
+                    z = torch.randn(1, self.config.z_dim, device=self.model.device, requires_grad=True)
+                    teacher = torch.randint(0, self.config.vocab_size, (1, 16), device=self.model.device)
+                    
+                    logits = decoder(z, teacher_tokens=teacher, mode='train')
+                    loss = logits.sum()
+                    loss.backward()
+                    
+                    results['gradient_flow'] = decoder.embed.weight.grad is not None and decoder.embed.weight.grad.norm().item() > 1e-10
                 
                 decoder.zero_grad()
                 self.model.eval()

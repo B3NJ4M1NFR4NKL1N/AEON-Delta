@@ -1212,8 +1212,10 @@ class SafeThoughtAETrainerV4:
             
             for batch_idx, (batch,) in enumerate(loader):
                 outputs = self.train_step(batch)
-                accumulated_loss += outputs['total_loss'].item()
-                num_accumulated += 1
+                step_loss = outputs['total_loss'].item()
+                if not (math.isnan(step_loss) or math.isinf(step_loss)):
+                    accumulated_loss += step_loss
+                    num_accumulated += 1
                 
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     grad_norm = self._optimizer_step()
@@ -1264,7 +1266,7 @@ class SafeThoughtAETrainerV4:
             self.model.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая модель с loss={self.best_loss:.6f}")
         
-        self.monitor.end_training("Phase A")
+        self.monitor.end_training("phase_A")
     
     def _save_checkpoint(self, epoch: int, metrics: dict):
         os.makedirs(self.output_dir, exist_ok=True)
@@ -1432,7 +1434,7 @@ class ContextualRSSMTrainer:
                 metrics = self.train_step(ctx_batch, tgt_batch)
                 
                 for key in epoch_metrics:
-                    if key in metrics:
+                    if key in metrics and not (math.isnan(metrics[key]) or math.isinf(metrics[key])):
                         epoch_metrics[key] += metrics[key]
                 
                 if batch_idx % log_every_batch == 0:
@@ -1457,7 +1459,7 @@ class ContextualRSSMTrainer:
             self.model.rssm.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
-        self.monitor.end_training("Phase B")
+        self.monitor.end_training("phase_B")
 
 
 # ==============================================================================
@@ -1725,6 +1727,9 @@ def main(
     trainer_A = SafeThoughtAETrainerV4(model, config, monitor, output_dir)
     trainer_A.fit(tokens, epochs=epochs_A)
 
+    # Save best loss before releasing Phase A resources
+    best_loss_A = trainer_A.best_loss
+
     # Release Phase A training resources before Phase B
     del trainer_A
     if torch.cuda.is_available():
@@ -1803,7 +1808,7 @@ def main(
         'training_info': {
             'epochs_A': epochs_A,
             'epochs_B': epochs_B,
-            'final_loss_A': trainer_A.best_loss,
+            'final_loss_A': best_loss_A,
             'final_loss_B': trainer_B.best_loss,
             'document_aware': document_aware,
             'timestamp': datetime.now().isoformat(),
@@ -1821,7 +1826,7 @@ def main(
     logger.info(f"💾 Финальная модель: {final_path}")
     
     logger.info("\n📊 ИТОГОВАЯ СВОДКА v4:")
-    logger.info(f"   Phase A лучший loss: {trainer_A.best_loss:.6f}")
+    logger.info(f"   Phase A лучший loss: {best_loss_A:.6f}")
     logger.info(f"   Phase B лучший MSE: {trainer_B.best_loss:.6f}")
     logger.info(f"   Codebook utilization: {model.vq.get_codebook_usage():.2f}%")
     logger.info(f"   Context window: {config.context_window}")
