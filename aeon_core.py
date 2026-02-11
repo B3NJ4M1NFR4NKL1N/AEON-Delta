@@ -590,7 +590,12 @@ class TensorGuard:
         - If problems everywhere: fallback to standard sanitization
         """
         if tensor.dim() < 1:
-            return self.sanitize(tensor, context)
+            # Direct sanitization to avoid infinite recursion with QUARANTINE policy
+            cleaned = tensor.clone()
+            default = self.default_value
+            cleaned = torch.where(torch.isnan(cleaned), torch.full_like(cleaned, default), cleaned)
+            cleaned = torch.where(torch.isinf(cleaned), torch.sign(cleaned) * self.max_value, cleaned)
+            return torch.clamp(cleaned, min=self.min_value, max=self.max_value)
         
         # Vectorized check per batch dimension (avoid Python loop)
         batch_size = tensor.shape[0]
@@ -4212,6 +4217,8 @@ class FastHessianComputer:
     def _hash_tensor(self, t: torch.Tensor) -> int:
         """Hash tensor for caching using multiple statistics to reduce collisions."""
         t_flat = t.detach().float().flatten()
+        # Replace NaN/Inf to avoid unhashable or orphaned cache entries
+        t_flat = torch.nan_to_num(t_flat, nan=0.0, posinf=1e6, neginf=-1e6)
         return hash((
             tuple(t.shape),
             t_flat.sum().item(),
@@ -6215,10 +6222,12 @@ class AEONDeltaV3(nn.Module):
         reg_loss = self.config.lambda_reg * l2_reg
         
         # ===== TOTAL LOSS =====
+        # Note: consistency_loss is excluded because it is computed under
+        # torch.no_grad() and would contribute zero gradient.  It is still
+        # returned in the dict for monitoring purposes.
         total_loss = (
             lm_loss +
             vq_loss +
-            consistency_loss +
             self.config.lambda_lipschitz * lipschitz_loss +
             self.config.lambda_safety * safety_loss +
             reg_loss
@@ -6774,7 +6783,10 @@ class AEONTrainer:
         self.global_step += 1
         
         # Convert to float
-        metrics = {k: float(v.item()) for k, v in loss_dict.items()}
+        metrics = {
+            k: float(v.item()) if isinstance(v, torch.Tensor) else float(v)
+            for k, v in loss_dict.items()
+        }
         metrics['lr'] = float(self.scheduler.get_last_lr()[0])
         
         return metrics
@@ -6806,7 +6818,10 @@ class AEONTrainer:
             attention_mask
         )
         
-        metrics = {k: float(v.item()) for k, v in loss_dict.items()}
+        metrics = {
+            k: float(v.item()) if isinstance(v, torch.Tensor) else float(v)
+            for k, v in loss_dict.items()
+        }
         return metrics
     
     def train(
@@ -7381,7 +7396,7 @@ def main():
                 temperature=0.8,
                 top_k=50
             )
-            logger.info(f"✅ Generated: {output}")
+            logger.info(f"✅ Generated: {output['text']}")
         else:
             logger.warning("⚠️  Tokenizer not available, skipping generation")
         
@@ -7488,7 +7503,7 @@ def main():
                 temperature=args.temperature,
                 top_k=args.top_k
             )
-            logger.info(f"✅ Generated: {output}")
+            logger.info(f"✅ Generated: {output['text']}")
             
             # Interactive loop
             logger.info("\nEntering interactive mode (type 'exit' to quit)...")
@@ -7506,7 +7521,7 @@ def main():
                         temperature=args.temperature,
                         top_k=args.top_k
                     )
-                    print(f"AEON: {output}")
+                    print(f"AEON: {output['text']}")
                 
                 except KeyboardInterrupt:
                     break
