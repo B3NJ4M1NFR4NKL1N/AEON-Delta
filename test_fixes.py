@@ -620,6 +620,27 @@ def test_mamba2_thought_encoder():
     assert z.shape == (2, 64), f"Expected (2,64), got {z.shape}"
     assert not torch.isnan(z).any(), "Encoder output has NaN"
 
+    # Input validation - wrong dtype
+    try:
+        enc(torch.randn(2, 10))
+        assert False, "Should have raised TypeError"
+    except TypeError:
+        pass
+
+    # Input validation - out of range
+    try:
+        enc(torch.tensor([[999]], dtype=torch.long))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
+    # Input validation - mask mismatch
+    try:
+        enc(torch.randint(0, 100, (2, 10)), attention_mask=torch.ones(3, 10))
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
+
     print("✅ test_mamba2_thought_encoder PASSED")
 
 
