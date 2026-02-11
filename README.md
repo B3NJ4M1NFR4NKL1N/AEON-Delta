@@ -23,21 +23,20 @@ The system implements a **provably convergent architecture** with certified erro
 
 ## 🧠 Core Architecture: AEON-Delta RMT v3.1
 
-### **0. Advanced Sequence Processing — SSM, Mamba-2 & Linear Attention**
+### **0. Advanced Sequence Processing — Mamba-2 & Linear Attention**
 AEON-Δ v3.1 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
 
-| Dimension | Transformer | AEON-Δ (SSM/Mamba-1) | AEON-Δ (Mamba-2 SSD) | AEON-Δ (Linear Attn) |
-|---|---|---|---|---|
-| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
-| **Training Complexity** | O(n²) | **O(n)** | **O(n)** with chunk-wise SSD | **O(n)** |
-| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
-| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** | **Linear memory** |
-| **Multi-head** | Yes | No (single head) | **Yes (multi-head SSM)** | Yes |
-| **Hardware Utilisation** | Good | Good (parallel scan) | **Excellent (chunked SSD)** | Good |
+| Dimension | Transformer | AEON-Δ (Mamba-2 SSD) | AEON-Δ (Linear Attn) |
+|---|---|---|---|
+| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
+| **Training Complexity** | O(n²) | **O(n)** with chunk-wise SSD | **O(n)** |
+| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
+| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** |
+| **Multi-head** | Yes | **Yes (multi-head SSM)** | Yes |
+| **Hardware Utilisation** | Good | **Excellent (chunked SSD)** | Good |
 
 **Available backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
-- **`ssm`** (default): Selective State Space Model inspired by Mamba (Gu & Dao, 2023) — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
-- **`mamba2`**: **NEW** — Mamba-2 Structured State Space Duality (Dao & Gu, 2024) — multi-head SSM with per-head scalar decay, chunk-wise SSD for superior hardware utilisation, RMSNorm for training stability
+- **`mamba2`** (default): Mamba-2 Structured State Space Duality (Dao & Gu, 2024) — multi-head SSM with per-head scalar decay, chunk-wise SSD for superior hardware utilisation, RMSNorm for training stability
 - **`linear_attention`**: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
 - **`lstm`**: Original LSTM backend for backward compatibility
 

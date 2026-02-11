@@ -1439,7 +1439,7 @@ class _SSDBlock(nn.Module):
     """
     Single Mamba-2 block implementing the Structured State Space Duality.
 
-    Key differences from the original Mamba-1 architecture:
+    Key design principles:
     - **Multi-head SSM**: d_inner is split into ``nheads`` independent heads,
       each with its own scalar decay parameter *A*.  This mirrors the
       multi-head design of Transformers while keeping linear complexity.
@@ -1449,8 +1449,7 @@ class _SSDBlock(nn.Module):
     - **Chunk-wise SSD scan**: sequences are processed in fixed-size chunks
       (default 64) using a *dual* quadratic-within-chunk / linear-across-chunk
       decomposition, improving GPU utilization.
-    - **RMSNorm** before the output projection (replaces the post-gate
-      position of Mamba-1).
+    - **RMSNorm** before the output projection.
     - **Simplified Δ projection**: Δ is per-head rather than per-channel,
       reducing dt_proj from ``[dt_rank → d_inner]`` to ``[dt_rank → nheads]``.
 
@@ -1687,7 +1686,7 @@ class SelectiveSSMv2(nn.Module):
     """
     Mamba-2 (SSD) — Structured State Space Duality (Dao & Gu, 2024).
 
-    Improvements over the original Mamba-1 architecture:
+    Key design principles:
 
     1. **Multi-head SSM** with per-head scalar decay, mirroring multi-head
        attention while retaining O(n) complexity.
