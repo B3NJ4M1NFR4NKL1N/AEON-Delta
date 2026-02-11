@@ -874,7 +874,8 @@ def load_documents_from_json(json_path: str, tokenizer, max_len: int,
         logger.info(f"✅ Загружено {len(documents):,} документов")
         total_chunks = sum(len(d) for d in documents)
         logger.info(f"   Всего чанков: {total_chunks:,}")
-        logger.info(f"   Среднее чанков/документ: {total_chunks/len(documents):.1f}" if documents else "   Среднее чанков/документ: 0")
+        avg_chunks = total_chunks / len(documents) if documents else 0
+        logger.info(f"   Среднее чанков/документ: {avg_chunks:.1f}")
         logger.info(f"   Пропущено с ошибками: {errors}")
     
     return documents
@@ -1501,7 +1502,8 @@ def main(
     # Загрузка checkpoint
     if resume_from and os.path.exists(resume_from):
         logger.info(f"📂 Загрузка checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device, weights_only=True)
+        # weights_only=False required: checkpoint contains optimizer state with non-tensor types
+        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
     
     # Валидация

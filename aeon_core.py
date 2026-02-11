@@ -2785,7 +2785,8 @@ class MemoryManager:
         path = os.path.join(self.config.memory_path, "fallback_memory.pt")
         if os.path.exists(path):
             try:
-                data = torch.load(path, map_location='cpu', weights_only=True)
+                # weights_only=False required: memory contains numpy arrays and metadata dicts
+                data = torch.load(path, map_location='cpu', weights_only=False)
                 self.fallback_vectors = data.get('vectors', [])
                 self.fallback_metas = data.get('metas', [])
                 self._size = data.get('size', len(self.fallback_vectors))
