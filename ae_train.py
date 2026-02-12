@@ -185,6 +185,8 @@ class AEONConfigV4:
             raise ValueError(f"gradient_accumulation_steps must be positive, got {self.gradient_accumulation_steps}")
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.min_learning_rate <= 0:
+            raise ValueError(f"min_learning_rate must be positive, got {self.min_learning_rate}")
         if self.vq_commitment_cost < 0:
             raise ValueError(f"vq_commitment_cost must be non-negative, got {self.vq_commitment_cost}")
         if self.context_window < 1:
@@ -203,6 +205,16 @@ class AEONConfigV4:
             raise ValueError(f"label_smoothing must be in [0, 1), got {self.label_smoothing}")
         if self.vq_temperature <= 0:
             raise ValueError(f"vq_temperature must be positive, got {self.vq_temperature}")
+        if self.entropy_weight < 0:
+            raise ValueError(f"entropy_weight must be non-negative, got {self.entropy_weight}")
+        if self.vq_loss_weight < 0:
+            raise ValueError(f"vq_loss_weight must be non-negative, got {self.vq_loss_weight}")
+        if self.save_every_n_epochs <= 0:
+            raise ValueError(f"save_every_n_epochs must be positive, got {self.save_every_n_epochs}")
+        if self.keep_n_checkpoints <= 0:
+            raise ValueError(f"keep_n_checkpoints must be positive, got {self.keep_n_checkpoints}")
+        if self.min_doc_chunks < 1:
+            raise ValueError(f"min_doc_chunks must be >= 1, got {self.min_doc_chunks}")
 
 
 # ==============================================================================
@@ -340,8 +352,12 @@ class TrainingMonitor:
             "best_loss": self.best_loss,
             "timestamp": datetime.now().isoformat()
         }
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+        try:
+            os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+        except OSError as e:
+            self.logger.error(f"❌ Failed to save metrics to {filepath}: {e}")
 
 
 # ==============================================================================
@@ -1277,21 +1293,22 @@ class SafeThoughtAETrainerV4:
         self.monitor.end_training("phase_A")
     
     def _save_checkpoint(self, epoch: int, metrics: dict):
-        os.makedirs(self.output_dir, exist_ok=True)
-        checkpoint_path = os.path.join(
-            self.output_dir, 
-            f"checkpoint_epoch_{epoch+1}.pt"
-        )
-        
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'metrics': metrics,
-            'config': asdict(self.config)
-        }, checkpoint_path)
-        
-        logger.info(f"   💾 Checkpoint сохранён: {checkpoint_path}")
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            checkpoint_path = os.path.join(
+                self.output_dir, 
+                f"checkpoint_epoch_{epoch+1}.pt"
+            )
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'metrics': metrics,
+                'config': asdict(self.config)
+            }, checkpoint_path)
+            logger.info(f"   💾 Checkpoint сохранён: {checkpoint_path}")
+        except OSError as e:
+            logger.error(f"   ❌ Failed to save checkpoint: {e}")
 
 
 class ContextualRSSMTrainer:
@@ -1354,7 +1371,6 @@ class ContextualRSSMTrainer:
             logger.warning(
                 f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}, skipping backward pass"
             )
-            self.optimizer.zero_grad()
             return {
                 "mse_loss": float('nan'), "smooth_l1": float('nan'),
                 "total_loss": float('nan'), "cosine_sim": 0.0,
@@ -1701,7 +1717,10 @@ def main(
     logger.info(f"   Токенов для Phase A: {tokens.shape}")
     
     # Сохраняем токены
-    torch.save(tokens.cpu(), os.path.join(output_dir, "tokens.pt"))
+    try:
+        torch.save(tokens.cpu(), os.path.join(output_dir, "tokens.pt"))
+    except OSError as e:
+        logger.error(f"❌ Failed to save tokens: {e}")
 
     # Создание модели v4
     model = AEONDeltaV4(config).to(device)
@@ -1782,7 +1801,10 @@ def main(
             logger.info(f"   Всего пар для обучения: {total_pairs:,}")
             
             # Сохраняем
-            torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+            try:
+                torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+            except OSError as e:
+                logger.error(f"❌ Failed to save z_sequences: {e}")
             
         else:
             # Fallback: старый метод (все z подряд)
@@ -1796,7 +1818,10 @@ def main(
             # Создаём один большой sequence
             z_sequences = [z_all]
             
-            torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+            try:
+                torch.save(z_sequences, os.path.join(output_dir, "z_sequences.pt"))
+            except OSError as e:
+                logger.error(f"❌ Failed to save z_sequences: {e}")
 
     # Validate z_sequences before Phase B
     if not z_sequences:
@@ -1836,7 +1861,11 @@ def main(
         }
     }
     
-    torch.save(save_dict, final_path)
+    try:
+        torch.save(save_dict, final_path)
+        logger.info(f"💾 Финальная модель сохранена: {final_path}")
+    except OSError as e:
+        logger.error(f"❌ Failed to save final model to {final_path}: {e}")
     monitor.save_metrics(os.path.join(output_dir, "training_metrics_v4.json"))
     
     # Финальный отчёт

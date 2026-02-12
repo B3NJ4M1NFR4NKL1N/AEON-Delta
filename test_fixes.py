@@ -3149,6 +3149,182 @@ def test_active_learning_planner_search():
     print("✅ test_active_learning_planner_search PASSED")
 
 
+# ============================================================================
+# Tests for ae_train.py robustness fixes
+# ============================================================================
+
+def test_save_checkpoint_error_handling():
+    """Verify _save_checkpoint handles I/O errors gracefully."""
+    import tempfile
+    from ae_train import SafeThoughtAETrainerV4, AEONConfigV4, AEONDeltaV4, TrainingMonitor
+    
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    
+    # Create a file where a directory is expected, causing makedirs to fail
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        blocker_path = f.name
+    invalid_dir = os.path.join(blocker_path, "subdir")
+    
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir=invalid_dir)
+    
+    # Should NOT raise — error should be caught and logged
+    try:
+        trainer._save_checkpoint(0, {"loss": 1.0})
+    except OSError:
+        assert False, "_save_checkpoint should catch OSError, not propagate it"
+    finally:
+        os.unlink(blocker_path)
+    
+    print("✅ test_save_checkpoint_error_handling PASSED")
+
+
+def test_save_metrics_error_handling():
+    """Verify save_metrics handles I/O errors gracefully."""
+    import tempfile
+    from ae_train import TrainingMonitor
+    
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    
+    # Create a file where a directory is expected, causing makedirs to fail
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        blocker_path = f.name
+    invalid_path = os.path.join(blocker_path, "subdir", "metrics.json")
+    
+    # Should NOT raise — error should be caught and logged
+    try:
+        monitor.save_metrics(invalid_path)
+    except OSError:
+        assert False, "save_metrics should catch OSError, not propagate it"
+    finally:
+        os.unlink(blocker_path)
+    
+    print("✅ test_save_metrics_error_handling PASSED")
+
+
+def test_rssm_nan_branch_no_zero_grad():
+    """Verify ContextualRSSMTrainer NaN branch does NOT call optimizer.zero_grad().
+    
+    When NaN loss is detected, the NaN branch should simply skip backward
+    without zeroing gradients, preserving any accumulated gradients from
+    prior valid steps.
+    """
+    from ae_train import ContextualRSSMTrainer, AEONConfigV4, AEONDeltaV4, TrainingMonitor
+    
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+    
+    # First, do a valid training step to accumulate gradients
+    K = config.context_window
+    z_context = torch.randn(2, K, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    trainer.train_step(z_context, z_target)
+    
+    # Now manually set some gradients on RSSM params to simulate accumulation
+    for p in model.rssm.parameters():
+        if p.requires_grad:
+            p.grad = torch.ones_like(p)
+    
+    grad_snapshot = {
+        name: p.grad.clone()
+        for name, p in model.rssm.named_parameters()
+        if p.requires_grad and p.grad is not None
+    }
+    assert len(grad_snapshot) > 0, "Should have gradient snapshots"
+    
+    # Monkey-patch to produce NaN loss
+    original_forward = model.rssm.forward
+    def nan_forward(z_ctx):
+        result = original_forward(z_ctx)
+        return result * float('nan')
+    model.rssm.forward = nan_forward
+    
+    # NaN training step should NOT destroy gradients
+    metrics = trainer.train_step(z_context, z_target)
+    assert math.isnan(metrics['total_loss']), "Should have detected NaN"
+    
+    # Verify gradients are preserved (not zeroed)
+    for name, old_grad in grad_snapshot.items():
+        param = dict(model.rssm.named_parameters())[name]
+        assert param.grad is not None, f"Gradient for {name} was zeroed"
+        assert torch.equal(param.grad, old_grad), (
+            f"Gradient for {name} was modified by NaN path"
+        )
+    
+    # Restore
+    model.rssm.forward = original_forward
+    
+    print("✅ test_rssm_nan_branch_no_zero_grad PASSED")
+
+
+def test_config_v4_extended_validation():
+    """Verify AEONConfigV4 validates additional parameters."""
+    from ae_train import AEONConfigV4
+    
+    # entropy_weight < 0 should raise
+    try:
+        AEONConfigV4(entropy_weight=-0.1)
+        assert False, "Should have raised ValueError for negative entropy_weight"
+    except ValueError as e:
+        assert "entropy_weight" in str(e)
+    
+    # vq_loss_weight < 0 should raise
+    try:
+        AEONConfigV4(vq_loss_weight=-1.0)
+        assert False, "Should have raised ValueError for negative vq_loss_weight"
+    except ValueError as e:
+        assert "vq_loss_weight" in str(e)
+    
+    # min_learning_rate <= 0 should raise
+    try:
+        AEONConfigV4(min_learning_rate=0)
+        assert False, "Should have raised ValueError for zero min_learning_rate"
+    except ValueError as e:
+        assert "min_learning_rate" in str(e)
+    
+    # save_every_n_epochs <= 0 should raise
+    try:
+        AEONConfigV4(save_every_n_epochs=0)
+        assert False, "Should have raised ValueError for zero save_every_n_epochs"
+    except ValueError as e:
+        assert "save_every_n_epochs" in str(e)
+    
+    # keep_n_checkpoints <= 0 should raise
+    try:
+        AEONConfigV4(keep_n_checkpoints=0)
+        assert False, "Should have raised ValueError for zero keep_n_checkpoints"
+    except ValueError as e:
+        assert "keep_n_checkpoints" in str(e)
+    
+    # min_doc_chunks < 1 should raise
+    try:
+        AEONConfigV4(min_doc_chunks=0)
+        assert False, "Should have raised ValueError for zero min_doc_chunks"
+    except ValueError as e:
+        assert "min_doc_chunks" in str(e)
+    
+    # Valid values should pass
+    config = AEONConfigV4(
+        entropy_weight=0.0,
+        vq_loss_weight=0.0,
+        min_learning_rate=1e-7,
+        save_every_n_epochs=1,
+        keep_n_checkpoints=1,
+        min_doc_chunks=1,
+    )
+    assert config.entropy_weight == 0.0
+    assert config.min_doc_chunks == 1
+    
+    print("✅ test_config_v4_extended_validation PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3323,6 +3499,12 @@ if __name__ == '__main__':
     test_active_learning_planner_forward()
     test_active_learning_planner_intrinsic_reward()
     test_active_learning_planner_search()
+    
+    # ae_train.py robustness fix tests
+    test_save_checkpoint_error_handling()
+    test_save_metrics_error_handling()
+    test_rssm_nan_branch_no_zero_grad()
+    test_config_v4_extended_validation()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
