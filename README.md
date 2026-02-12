@@ -20,6 +20,8 @@ The system implements a **provably convergent architecture** with certified erro
 - **Multi-modal grounding** (vision, audio, language fusion with CLIP-style contrastive learning)  
 - **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)  
 - **Planning** (MCTS planner with curiosity-driven exploration and active learning)
+- **Neuro-symbolic reasoning** (differentiable forward chaining with fuzzy logic)
+- **Unified memory** (differentiable neural computer with content and temporal addressing)
 
 ---
 
@@ -232,6 +234,8 @@ Beyond the core `ProvablyConvergentMetaLoop`:
 - **`HierarchicalMetaLoop`**: Routes inputs to fast (5 iter), medium (20 iter), or deep (50 iter) meta-loops based on learned complexity scoring — ~10× latency reduction on simple queries  
 - **`RecursiveMetaLoop`**: Hierarchical meta-cognition across 3 abstraction levels with error-bound-based rollback to prevent cascading failures  
 - **`ConvergenceMonitor`**: Tracks contraction ratios over a sliding window; classifies iterations as warmup, converging, converged, or diverging  
+- **`CertifiedMetaLoop`**: Formally certified convergence via Interval Bound Propagation (IBP) — rigorous Lipschitz upper bounds through spectral norm analysis, replacing EMA-based estimates with formal verification of Banach fixed-point theorem preconditions  
+- **`AdaptiveMetaLoop`**: Adaptive Computation Time (ACT) — learned halting probability network enabling per-sample variable iteration counts; simple inputs halt early while complex inputs iterate longer, with ponder cost regularization for compute efficiency  
 
 Adaptive reasoning depth based on input complexity.
 
@@ -241,6 +245,41 @@ Adaptive reasoning depth based on input complexity.
 Production-grade execution and compositional organization:
 - **`ParallelCognitivePipeline`**: Executes independent sub-modules (diversity, safety, topology, world model) in parallel via `ThreadPoolExecutor` after the mandatory sequential meta-loop  
 - **`HierarchicalCognitiveArchitecture`**: 4-level compositional hierarchy — Core (meta-loop, VQ), Safety, Reasoning (factors, causal), and Planning (MCTS) — enabling lightweight "AEON-Lite" deployment
+
+---
+
+### **18. Unified Memory: Differentiable Neural Computer**  
+End-to-end trainable memory architecture unifying all memory subsystems:
+- **Content-addressable memory matrix** with configurable capacity and dimensionality  
+- **Read/write heads** with attention-based addressing for differentiable access  
+- **Usage vector** with LRU-based slot allocation for efficient memory management  
+- **Temporal link matrix** tracking sequential write relationships across memory slots  
+- **Batched operations** supporting parallel queries across batch dimension  
+
+Provides a fully differentiable alternative to the discrete `HierarchicalMemory`, enabling gradient-based optimization of memory access patterns.
+
+---
+
+### **19. Hierarchical World Model**  
+Multi-level world model with temporal abstractions for hierarchical planning:
+- **3 abstraction levels**: reactive (1-step), tactical (10-step), strategic (100-step)  
+- **Bottom-up encoding**: Progressive state abstraction across levels via learned bridges  
+- **Top-down goal propagation**: Subgoal decomposition from strategic to reactive levels  
+- **Configurable level selection**: Single-level or multi-level processing  
+- **Bidirectional information flow** between all levels  
+
+Extends the `PhysicsGroundedWorldModel` with temporal hierarchy for long-horizon planning.
+
+---
+
+### **20. Neuro-Symbolic Reasoning**  
+Hybrid neural-symbolic reasoning combining continuous representations with discrete logic:
+- **`DifferentiableForwardChainer`**: Continuous fuzzy logic theorem prover using product t-norms (element-wise multiplication) for conjunction — enables gradient flow through logical inference with monotonic knowledge accumulation  
+- **`NeuroSymbolicReasoner`**: Full pipeline converting neural representations → soft logical predicates → differentiable forward chaining → neural conclusions  
+- **Sigmoid-bounded facts and rules** ensuring all truth values remain in [0, 1]  
+- **Learnable rule weights** for data-driven inference rule discovery  
+
+Enables reasoning that combines the interpretability of symbolic logic with the learnability of neural networks.
 
 ---
 
@@ -301,7 +340,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 151 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 170 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -316,6 +355,11 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 151 tests) verifyi
 - **Thread safety** (quarantine batch handling, policy mutation prevention)  
 - **Inference cache** (ring buffer, INT8 quantization, state caching)  
 - **Hierarchical VAE** (ladder architecture, KL divergence)  
+- **Certified convergence** (IBP-based Lipschitz bounds, formal precondition verification)  
+- **Unified memory** (DNC read/write, batched operations, temporal link tracking)  
+- **Hierarchical world model** (multi-level forward pass, single-level routing, gradient flow)  
+- **Adaptive computation** (ACT forward pass, ponder cost regularization, gradient flow)  
+- **Neuro-symbolic reasoning** (forward chaining monotonicity, fact/rule unit interval bounds, gradient flow)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -339,7 +383,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (151 tests) — stability, gradients, causal, planning
+├── test_fixes.py     # Comprehensive test suite (170 tests) — stability, gradients, causal, planning
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
