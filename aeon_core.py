@@ -7277,6 +7277,14 @@ class HierarchicalWorldModel(nn.Module):
             for i in range(2)
         ])
 
+        # Top-down goal projections (upscale goals from higher to lower levels)
+        # goal_projections[0]: level 2 dim → level 1 dim
+        # goal_projections[1]: level 1 dim → level 0 dim
+        self.goal_projections = nn.ModuleList([
+            nn.Linear(base_dim // (2 ** (i + 1)), base_dim // (2 ** i))
+            for i in reversed(range(2))
+        ])
+
     def forward(
         self,
         state: torch.Tensor,
@@ -7311,8 +7319,8 @@ class HierarchicalWorldModel(nn.Module):
 
         # Top-down goal propagation
         goal_2 = self.levels[2].predict(h2, horizon=100)
-        goal_1 = self.levels[1].predict(h1, goal=goal_2, horizon=10)
-        prediction = self.levels[0].predict(h0, goal=goal_1, horizon=1)
+        goal_1 = self.levels[1].predict(h1, goal=self.goal_projections[0](goal_2), horizon=10)
+        prediction = self.levels[0].predict(h0, goal=self.goal_projections[1](goal_1), horizon=1)
 
         return prediction, {'h0': h0, 'h1': h1, 'h2': h2}
 
