@@ -1416,7 +1416,8 @@ class ThoughtDecoder(nn.Module):
             if invalid_mask.any():
                 scaled_logits[:, invalid_mask] = -float('inf')
         
-        # Protect against NaN — replace with large negative finite value
+        # Protect against NaN — use finite large negative values instead of -inf
+        # so that softmax produces near-zero probabilities rather than uniform
         scaled_logits = torch.nan_to_num(
             scaled_logits, 
             nan=-1e9,
@@ -6413,12 +6414,13 @@ class AEONDeltaV3(nn.Module):
                     f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
                     f"below threshold {safety_threshold}, applying rollback"
                 )
-                # Blend toward z_in proportionally to how far below threshold
-                # safety_score is in [0, 1], so blend_alpha in [0, 1]
-                blend_alpha = (safety_score / max(safety_threshold, 1e-6)).clamp(0.0, 1.0)  # [B, 1]
+                # Blend C_star toward z_in: higher safety_score preserves more C_star,
+                # lower safety_score shifts more toward the safe fallback z_in.
+                # safety_score in [0, threshold) → c_star_weight in [0, 1)
+                c_star_weight = (safety_score / max(safety_threshold, 1e-6)).clamp(0.0, 1.0)  # [B, 1]
                 C_star = torch.where(
                     unsafe_mask.unsqueeze(-1),
-                    blend_alpha * C_star + (1 - blend_alpha) * z_in,
+                    c_star_weight * C_star + (1 - c_star_weight) * z_in,
                     C_star
                 )
         
