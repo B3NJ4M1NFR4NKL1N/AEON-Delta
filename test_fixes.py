@@ -3416,6 +3416,230 @@ def test_fit_remaining_batch_metrics():
     print("✅ test_fit_remaining_batch_metrics PASSED")
 
 
+# ============================================================================
+# Advanced Cognitive Modules Tests (Priority 1-5)
+# ============================================================================
+
+def test_certified_meta_loop_forward():
+    """Priority 1: CertifiedMetaLoop forward pass produces valid output."""
+    from aeon_core import CertifiedMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = CertifiedMetaLoop(config, max_iterations=5)
+    z = torch.randn(2, config.hidden_dim)
+    C, iters, meta = model(z)
+    assert C.shape == (2, config.hidden_dim), f"Expected shape (2, {config.hidden_dim}), got {C.shape}"
+    assert 'certified_convergence' in meta
+    assert 'certified_error_bound' in meta
+    assert 'ibp_lipschitz' in meta
+    assert iters.shape == (2,)
+    print("✅ test_certified_meta_loop_forward PASSED")
+
+
+def test_certified_meta_loop_verify_preconditions():
+    """Priority 1: verify_convergence_preconditions returns bool and optional float."""
+    from aeon_core import CertifiedMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = CertifiedMetaLoop(config)
+    z = torch.randn(2, config.hidden_dim)
+    guaranteed, cert_err = model.verify_convergence_preconditions(z)
+    assert isinstance(guaranteed, bool)
+    if guaranteed:
+        assert cert_err is not None and cert_err >= 0.0
+    else:
+        assert cert_err is None
+    print("✅ test_certified_meta_loop_verify_preconditions PASSED")
+
+
+def test_certified_meta_loop_ibp_lipschitz():
+    """Priority 1: IBP Lipschitz estimate is a positive finite number."""
+    from aeon_core import CertifiedMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = CertifiedMetaLoop(config)
+    z = torch.randn(1, config.hidden_dim)
+    L = model._compute_certified_lipschitz(z)
+    assert L > 0, f"Lipschitz should be positive, got {L}"
+    assert math.isfinite(L), f"Lipschitz should be finite, got {L}"
+    print("✅ test_certified_meta_loop_ibp_lipschitz PASSED")
+
+
+def test_unified_memory_read():
+    """Priority 2: UnifiedMemory read returns correct shape."""
+    from aeon_core import UnifiedMemory
+    mem = UnifiedMemory(capacity=64, dim=32)
+    query = torch.randn(32)
+    result = mem(query)
+    assert result.shape == (32,), f"Expected (32,), got {result.shape}"
+    print("✅ test_unified_memory_read PASSED")
+
+
+def test_unified_memory_write_and_read():
+    """Priority 2: UnifiedMemory write then read retrieves relevant content."""
+    from aeon_core import UnifiedMemory
+    mem = UnifiedMemory(capacity=64, dim=32)
+    value = torch.randn(32)
+    # Write
+    mem(value, value=value)
+    assert mem.num_used_slots >= 1, "Should have at least 1 used slot after write"
+    # Read with same query should return something non-zero
+    result = mem(value)
+    assert result.shape == (32,)
+    assert torch.norm(result).item() > 0, "Read result should be non-zero after write"
+    print("✅ test_unified_memory_write_and_read PASSED")
+
+
+def test_unified_memory_batched():
+    """Priority 2: UnifiedMemory handles batched queries."""
+    from aeon_core import UnifiedMemory
+    mem = UnifiedMemory(capacity=64, dim=32, num_read_heads=4)
+    query = torch.randn(4, 32)
+    result = mem(query)
+    assert result.shape == (4, 32), f"Expected (4, 32), got {result.shape}"
+    print("✅ test_unified_memory_batched PASSED")
+
+
+def test_unified_memory_temporal_links():
+    """Priority 2: UnifiedMemory builds temporal links across writes."""
+    from aeon_core import UnifiedMemory
+    mem = UnifiedMemory(capacity=64, dim=16)
+    v1 = torch.randn(16)
+    v2 = torch.randn(16)
+    mem(v1, value=v1)
+    mem(v2, value=v2)
+    # Link matrix should have at least one non-zero entry
+    assert mem.L.abs().sum().item() > 0, "Link matrix should be non-zero after 2 writes"
+    print("✅ test_unified_memory_temporal_links PASSED")
+
+
+def test_hierarchical_world_model_forward():
+    """Priority 3: HierarchicalWorldModel forward produces valid output."""
+    from aeon_core import HierarchicalWorldModel, AEONConfig
+    config = AEONConfig()
+    model = HierarchicalWorldModel(config)
+    state = torch.randn(2, config.hidden_dim)
+    pred, hiddens = model(state)
+    assert pred.shape == (2, config.hidden_dim), f"Expected (2, {config.hidden_dim}), got {pred.shape}"
+    assert 'h0' in hiddens and 'h1' in hiddens and 'h2' in hiddens
+    print("✅ test_hierarchical_world_model_forward PASSED")
+
+
+def test_hierarchical_world_model_single_level():
+    """Priority 3: HierarchicalWorldModel can run at a single level."""
+    from aeon_core import HierarchicalWorldModel, AEONConfig
+    config = AEONConfig()
+    model = HierarchicalWorldModel(config)
+    state = torch.randn(2, config.hidden_dim)
+    pred, hiddens = model(state, level='0')
+    assert pred.shape == (2, config.hidden_dim)
+    assert 'h0' in hiddens
+    print("✅ test_hierarchical_world_model_single_level PASSED")
+
+
+def test_hierarchical_world_model_gradient_flow():
+    """Priority 3: Gradients flow through all levels of HierarchicalWorldModel."""
+    from aeon_core import HierarchicalWorldModel, AEONConfig
+    config = AEONConfig()
+    model = HierarchicalWorldModel(config)
+    state = torch.randn(2, config.hidden_dim, requires_grad=True)
+    pred, _ = model(state)
+    loss = pred.sum()
+    loss.backward()
+    assert state.grad is not None, "Gradient should flow to input"
+    assert state.grad.abs().sum().item() > 0, "Gradient should be non-zero"
+    print("✅ test_hierarchical_world_model_gradient_flow PASSED")
+
+
+def test_adaptive_meta_loop_forward():
+    """Priority 4: AdaptiveMetaLoop produces valid output and metadata."""
+    from aeon_core import AdaptiveMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = AdaptiveMetaLoop(config, max_steps=10)
+    z = torch.randn(2, config.hidden_dim)
+    C, meta = model(z)
+    assert C.shape == (2, config.hidden_dim)
+    assert 'steps' in meta
+    assert 'ponder_cost' in meta
+    assert 'halted' in meta
+    assert 'mean_steps' in meta
+    print("✅ test_adaptive_meta_loop_forward PASSED")
+
+
+def test_adaptive_meta_loop_ponder_cost():
+    """Priority 4: Ponder cost is a non-negative scalar."""
+    from aeon_core import AdaptiveMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = AdaptiveMetaLoop(config, max_steps=10)
+    z = torch.randn(4, config.hidden_dim)
+    _, meta = model(z)
+    assert meta['ponder_cost'].item() >= 0, "Ponder cost should be non-negative"
+    print("✅ test_adaptive_meta_loop_ponder_cost PASSED")
+
+
+def test_adaptive_meta_loop_gradient_flow():
+    """Priority 4: Gradients flow through AdaptiveMetaLoop."""
+    from aeon_core import AdaptiveMetaLoop, AEONConfig
+    config = AEONConfig()
+    model = AdaptiveMetaLoop(config, max_steps=5)
+    z = torch.randn(2, config.hidden_dim, requires_grad=True)
+    C, _ = model(z)
+    loss = C.sum()
+    loss.backward()
+    assert z.grad is not None, "Gradient should flow to input"
+    print("✅ test_adaptive_meta_loop_gradient_flow PASSED")
+
+
+def test_neuro_symbolic_reasoner_forward():
+    """Priority 5: NeuroSymbolicReasoner produces conclusions."""
+    from aeon_core import NeuroSymbolicReasoner
+    reasoner = NeuroSymbolicReasoner(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64)
+    result = reasoner(state)
+    assert 'conclusions' in result
+    assert 'facts' in result
+    assert 'rules' in result
+    assert 'derived' in result
+    assert result['conclusions'].shape == (2, 64)
+    assert result['facts'].shape == (2, 16)
+    print("✅ test_neuro_symbolic_reasoner_forward PASSED")
+
+
+def test_neuro_symbolic_reasoner_gradient_flow():
+    """Priority 5: Gradients flow through NeuroSymbolicReasoner."""
+    from aeon_core import NeuroSymbolicReasoner
+    reasoner = NeuroSymbolicReasoner(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64, requires_grad=True)
+    result = reasoner(state)
+    loss = result['conclusions'].sum()
+    loss.backward()
+    assert state.grad is not None
+    assert state.grad.abs().sum().item() > 0
+    print("✅ test_neuro_symbolic_reasoner_gradient_flow PASSED")
+
+
+def test_differentiable_forward_chainer():
+    """Priority 5: DifferentiableForwardChainer is monotonic."""
+    from aeon_core import DifferentiableForwardChainer
+    chainer = DifferentiableForwardChainer(num_predicates=8, max_depth=3)
+    facts = torch.rand(2, 8) * 0.5  # Initial facts in [0, 0.5]
+    rules = torch.rand(2, 8)
+    derived = chainer(facts, rules)
+    # Monotonicity: derived facts >= initial facts
+    assert (derived >= facts - 1e-6).all(), "Forward chaining should be monotonic"
+    assert derived.shape == (2, 8)
+    print("✅ test_differentiable_forward_chainer PASSED")
+
+
+def test_neuro_symbolic_facts_in_unit_interval():
+    """Priority 5: Facts and rules are in [0, 1] (sigmoid output)."""
+    from aeon_core import NeuroSymbolicReasoner
+    reasoner = NeuroSymbolicReasoner(hidden_dim=64, num_predicates=16)
+    state = torch.randn(4, 64)
+    result = reasoner(state)
+    assert (result['facts'] >= 0).all() and (result['facts'] <= 1).all()
+    assert (result['rules'] >= 0).all() and (result['rules'] <= 1).all()
+    assert (result['derived'] >= 0).all() and (result['derived'] <= 1).all()
+    print("✅ test_neuro_symbolic_facts_in_unit_interval PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3600,6 +3824,25 @@ if __name__ == '__main__':
     # Stride and metrics fixes
     test_chunked_processor_adaptive_stride_not_zero()
     test_fit_remaining_batch_metrics()
+    
+    # Advanced Cognitive Modules tests (Priority 1-5)
+    test_certified_meta_loop_forward()
+    test_certified_meta_loop_verify_preconditions()
+    test_certified_meta_loop_ibp_lipschitz()
+    test_unified_memory_read()
+    test_unified_memory_write_and_read()
+    test_unified_memory_batched()
+    test_unified_memory_temporal_links()
+    test_hierarchical_world_model_forward()
+    test_hierarchical_world_model_single_level()
+    test_hierarchical_world_model_gradient_flow()
+    test_adaptive_meta_loop_forward()
+    test_adaptive_meta_loop_ponder_cost()
+    test_adaptive_meta_loop_gradient_flow()
+    test_neuro_symbolic_reasoner_forward()
+    test_neuro_symbolic_reasoner_gradient_flow()
+    test_differentiable_forward_chainer()
+    test_neuro_symbolic_facts_in_unit_interval()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
