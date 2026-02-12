@@ -3155,6 +3155,7 @@ def test_active_learning_planner_search():
 
 def test_save_checkpoint_error_handling():
     """Verify _save_checkpoint handles I/O errors gracefully."""
+    import tempfile
     from ae_train import SafeThoughtAETrainerV4, AEONConfigV4, AEONDeltaV4, TrainingMonitor
     
     config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
@@ -3163,29 +3164,43 @@ def test_save_checkpoint_error_handling():
     model = AEONDeltaV4(config)
     monitor = TrainingMonitor(logging.getLogger("test"))
     
-    # Use an invalid path to trigger OSError
-    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/dev/null/impossible_path")
+    # Create a file where a directory is expected, causing makedirs to fail
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        blocker_path = f.name
+    invalid_dir = os.path.join(blocker_path, "subdir")
+    
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir=invalid_dir)
     
     # Should NOT raise — error should be caught and logged
     try:
         trainer._save_checkpoint(0, {"loss": 1.0})
     except OSError:
         assert False, "_save_checkpoint should catch OSError, not propagate it"
+    finally:
+        os.unlink(blocker_path)
     
     print("✅ test_save_checkpoint_error_handling PASSED")
 
 
 def test_save_metrics_error_handling():
     """Verify save_metrics handles I/O errors gracefully."""
+    import tempfile
     from ae_train import TrainingMonitor
     
     monitor = TrainingMonitor(logging.getLogger("test"))
     
+    # Create a file where a directory is expected, causing makedirs to fail
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        blocker_path = f.name
+    invalid_path = os.path.join(blocker_path, "subdir", "metrics.json")
+    
     # Should NOT raise — error should be caught and logged
     try:
-        monitor.save_metrics("/dev/null/impossible_path/metrics.json")
+        monitor.save_metrics(invalid_path)
     except OSError:
         assert False, "save_metrics should catch OSError, not propagate it"
+    finally:
+        os.unlink(blocker_path)
     
     print("✅ test_save_metrics_error_handling PASSED")
 
