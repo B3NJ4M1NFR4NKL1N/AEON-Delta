@@ -3894,10 +3894,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
         if self.enable_certification and lip_const < 1.0:
             with torch.no_grad():
                 final_residual = residual_norm.mean().item()
-                if not math.isfinite(final_residual):
-                    final_residual = float('inf')
-                denom = max(1.0 - lip_const, 1e-6)
-                certified_error = (lip_const / denom) * final_residual
+                if math.isfinite(final_residual):
+                    denom = max(1.0 - lip_const, 1e-6)
+                    certified_error = (lip_const / denom) * final_residual
         
         # Metadata
         metadata = {
