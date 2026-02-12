@@ -7278,8 +7278,8 @@ class HierarchicalWorldModel(nn.Module):
         ])
 
         # Top-down goal projections (upscale goals from higher to lower levels)
-        # goal_projections[0]: level 2 dim → level 1 dim
-        # goal_projections[1]: level 1 dim → level 0 dim
+        # goal_projections[0]: level 2 dim (64) → level 1 dim (128)
+        # goal_projections[1]: level 1 dim (128) → level 0 dim (256)
         self.goal_projections = nn.ModuleList([
             nn.Linear(base_dim // (2 ** (i + 1)), base_dim // (2 ** i))
             for i in reversed(range(2))
