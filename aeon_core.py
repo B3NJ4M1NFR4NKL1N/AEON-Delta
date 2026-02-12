@@ -854,7 +854,7 @@ class AEONConfig:
     lora_target: Tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
     
     # ===== SAFETY =====
-    safety_threshold: float = 0.85
+    safety_threshold: float = 0.5
     nan_policy: str = "WARN"
     enable_safety_guardrails: bool = True
     safety_alert_threshold: int = 10
@@ -1396,8 +1396,9 @@ class ThoughtDecoder(nn.Module):
         device: torch.device
     ) -> torch.Tensor:
         """Apply temperature scaling and top-K filtering."""
-        # Temperature
-        scaled_logits = logits / max(temperature, 1e-6)
+        # Temperature — clamp to reasonable range to avoid numerical instability
+        temperature = max(temperature, 0.1)
+        scaled_logits = logits / temperature
         
         # Top-K (clamp to vocab size to prevent IndexError)
         if top_k > 0:
@@ -1415,12 +1416,21 @@ class ThoughtDecoder(nn.Module):
             if invalid_mask.any():
                 scaled_logits[:, invalid_mask] = -float('inf')
         
-        # Protect against NaN/Inf
+        # Protect against NaN — replace with large negative finite value
         scaled_logits = torch.nan_to_num(
             scaled_logits, 
-            neginf=-float('inf'), 
-            posinf=float('inf')
+            nan=-1e9,
+            posinf=1e9,
+            neginf=-1e9
         )
+        
+        # Guard: if all logits are extremely negative (all filtered out),
+        # fall back to the original unfiltered logits to avoid uniform random sampling
+        all_neg = (scaled_logits.max(dim=-1).values < -1e8)
+        if all_neg.any():
+            fallback = logits[all_neg] / temperature
+            fallback = torch.nan_to_num(fallback, nan=-1e9, posinf=1e9, neginf=-1e9)
+            scaled_logits[all_neg] = fallback
         
         return scaled_logits
 
@@ -2833,7 +2843,7 @@ class SSMThoughtDecoder(nn.Module):
             logits = self.head(out.squeeze(1))             # [B, V]
             all_logits.append(logits)
 
-            scaled = logits / max(temperature, 1e-6)
+            scaled = logits / max(temperature, 0.1)
             if top_k > 0:
                 top_k_clamped = min(top_k, scaled.size(-1))
                 vals, idx = torch.topk(scaled, top_k_clamped, dim=-1)
@@ -2842,7 +2852,14 @@ class SSMThoughtDecoder(nn.Module):
                 scaled = mask
             if hasattr(self, "_invalid_token_mask") and self._invalid_token_mask.any():
                 scaled[:, self._invalid_token_mask.to(device)] = -float('inf')
-            scaled = torch.nan_to_num(scaled, neginf=-float('inf'), posinf=float('inf'))
+            scaled = torch.nan_to_num(scaled, nan=-1e9, posinf=1e9, neginf=-1e9)
+
+            # Guard: if all logits filtered out, fall back to unfiltered logits
+            all_neg = (scaled.max(dim=-1).values < -1e8)
+            if all_neg.any():
+                fallback = logits[all_neg] / max(temperature, 0.1)
+                fallback = torch.nan_to_num(fallback, nan=-1e9, posinf=1e9, neginf=-1e9)
+                scaled[all_neg] = fallback
 
             if sample:
                 probs = F.softmax(scaled, dim=-1)
@@ -3097,7 +3114,7 @@ class Mamba2ThoughtDecoder(nn.Module):
             logits = self.head(out.squeeze(1))
             all_logits.append(logits)
 
-            scaled = logits / max(temperature, 1e-6)
+            scaled = logits / max(temperature, 0.1)
             if top_k > 0:
                 top_k_clamped = min(top_k, scaled.size(-1))
                 vals, idx = torch.topk(scaled, top_k_clamped, dim=-1)
@@ -3106,7 +3123,14 @@ class Mamba2ThoughtDecoder(nn.Module):
                 scaled = mask
             if hasattr(self, "_invalid_token_mask") and self._invalid_token_mask.any():
                 scaled[:, self._invalid_token_mask.to(device)] = -float('inf')
-            scaled = torch.nan_to_num(scaled, neginf=-float('inf'), posinf=float('inf'))
+            scaled = torch.nan_to_num(scaled, nan=-1e9, posinf=1e9, neginf=-1e9)
+
+            # Guard: if all logits filtered out, fall back to unfiltered logits
+            all_neg = (scaled.max(dim=-1).values < -1e8)
+            if all_neg.any():
+                fallback = logits[all_neg] / max(temperature, 0.1)
+                fallback = torch.nan_to_num(fallback, nan=-1e9, posinf=1e9, neginf=-1e9)
+                scaled[all_neg] = fallback
 
             if sample:
                 probs = F.softmax(scaled, dim=-1)
@@ -6380,7 +6404,7 @@ class AEONDeltaV3(nn.Module):
             C_star, factors, diversity_results, topo_results, B, device
         )
         
-        # 5a. Safety enforcement — rollback unsafe states
+        # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         if self.safety_system is not None:
             safety_threshold = self.config.safety_threshold
             unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
@@ -6389,8 +6413,14 @@ class AEONDeltaV3(nn.Module):
                     f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
                     f"below threshold {safety_threshold}, applying rollback"
                 )
-                # Rollback: replace unsafe C_star with input z_in (safe fallback)
-                C_star = torch.where(unsafe_mask.unsqueeze(-1), z_in, C_star)
+                # Blend toward z_in proportionally to how far below threshold
+                # safety_score is in [0, 1], so blend_alpha in [0, 1]
+                blend_alpha = (safety_score / max(safety_threshold, 1e-6)).clamp(0.0, 1.0)  # [B, 1]
+                C_star = torch.where(
+                    unsafe_mask.unsqueeze(-1),
+                    blend_alpha * C_star + (1 - blend_alpha) * z_in,
+                    C_star
+                )
         
         # 5b. World model — surprise-driven integration
         world_model_results = {}
@@ -7019,15 +7049,22 @@ class AEONDeltaV3(nn.Module):
                     logger.warning(f"Removing incompatible {key}")
                     del state_dict[key]
                 
-                # Add missing keys with zeros
+                # Add missing keys with proper initialization
                 for key in missing:
                     if key not in state_dict:
                         expected_shape = model_state[key].shape
-                        state_dict[key] = torch.zeros(
+                        param_tensor = torch.zeros(
                             expected_shape,
                             device=self.device,
                             dtype=model_state[key].dtype
                         )
+                        # Use Xavier for weight matrices, zeros for biases/buffers
+                        if 'weight' in key and param_tensor.dim() >= 2:
+                            nn.init.xavier_uniform_(param_tensor)
+                        elif 'bias' in key:
+                            nn.init.zeros_(param_tensor)
+                        # Leave buffers (A_log, ema, counters, etc.) as zeros
+                        state_dict[key] = param_tensor
                         logger.info(f"Initialized missing {key}")
                 
                 # Load
