@@ -3333,34 +3333,40 @@ def test_chunked_processor_adaptive_stride_not_zero():
     The fix ensures stride = max(chunk_size - overlap, 1).
     """
     from aeon_core import ChunkedSequenceProcessor
+    import threading
     
     # Create processor where min_chunk_size == overlap (stride would be 0 without fix)
     processor = ChunkedSequenceProcessor(
         chunk_size=512, overlap=64, adaptive=True, min_chunk_size=64
     )
     
-    # Create input that would cause adaptive_factor to minimize chunk_size
-    # Uniform variance => adaptive_factor ≈ 0 => chunk_size = min_chunk_size = overlap
+    # Uniform input => all per-position variances equal => adaptive_factor ≈ 0
+    # => chunk_size = min_chunk_size = overlap = 64 => stride would be 0 without fix
     B, L, D = 2, 256, 32
-    x = torch.randn(B, L, D)
+    x = torch.ones(B, L, D)
     
     def dummy_model(chunk, state):
         return chunk, state
     
-    # This should NOT hang (infinite loop) — stride must be >= 1
-    import signal
+    # Run in a thread with timeout to detect infinite loops
+    result = [None]
+    error = [None]
     
-    def timeout_handler(signum, frame):
-        raise TimeoutError("ChunkedSequenceProcessor.process() timed out — possible infinite loop")
+    def run_process():
+        try:
+            result[0] = processor.process(dummy_model, x)
+        except Exception as e:
+            error[0] = e
     
-    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(5)  # 5-second timeout
-    try:
-        y, _ = processor.process(dummy_model, x)
-        assert y.shape == (B, L, D), f"Output shape mismatch: {y.shape}"
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
+    t = threading.Thread(target=run_process)
+    t.start()
+    t.join(timeout=5)  # 5-second timeout
+    
+    assert not t.is_alive(), "ChunkedSequenceProcessor.process() timed out — possible infinite loop"
+    assert error[0] is None, f"Unexpected error: {error[0]}"
+    
+    y, _ = result[0]
+    assert y.shape == (B, L, D), f"Output shape mismatch: {y.shape}"
     
     print("✅ test_chunked_processor_adaptive_stride_not_zero PASSED")
 
