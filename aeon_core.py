@@ -4220,10 +4220,12 @@ class RecursiveMetaLoop(nn.Module):
 
         current = z
         all_meta: List[Dict[str, Any]] = []
+        final_level = 0
 
         for level in range(target_abstraction + 1):
             current, iterations, meta = self.levels[level](current)
             all_meta.append(meta)
+            final_level = level
 
             certified_err = meta.get('certified_error_bound')
             if certified_err is not None and certified_err > self.error_threshold:
@@ -4235,7 +4237,7 @@ class RecursiveMetaLoop(nn.Module):
                 break
 
         metadata = {
-            'final_level': min(level, target_abstraction),
+            'final_level': final_level,
             'target_level': target_abstraction,
             'level_metadata': all_meta,
             'rollback_occurred': False,
@@ -5699,7 +5701,7 @@ class NeurogenicMemorySystem(nn.Module):
 
     def _find_dominant(self) -> int:
         """Return index of the most activated neuron."""
-        if not self._activations:
+        if not self._activations or len(self._activations) == 0:
             return 0
         return int(max(range(len(self._activations)),
                        key=lambda i: self._activations[i]))
@@ -6444,9 +6446,9 @@ class CausalWorldModel(nn.Module):
             exogenous: [B, num_causal_vars] inferred noise.
         """
         causal_vars = self.state_to_causal(state)
-        # Simplified abduction: exogenous ≈ observed - predicted
+        # Abduction: exogenous = observed - predicted (Pearl's SCM framework)
         predicted = self.causal_model(causal_vars, intervention=None)
-        return (causal_vars - predicted.detach()) + causal_vars
+        return causal_vars - predicted.detach()
 
     def counterfactual_rollout(
         self,
@@ -6857,7 +6859,9 @@ class ActiveLearningPlanner(MCTSPlanner):
 
     def _simulate(self, node: 'MCTSNode') -> float:
         """
-        Override: combine value network estimate with intrinsic curiosity.
+        Override MCTS simulation to combine extrinsic value with intrinsic
+        curiosity reward. The returned value is used for backpropagation
+        in the MCTS tree, biasing search toward uncertain states.
         """
         with torch.no_grad():
             value = self.value_net(node.state.unsqueeze(0)).item()

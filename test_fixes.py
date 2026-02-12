@@ -3040,6 +3040,7 @@ def test_neurogenic_memory_capacity_limit():
     nms = NeurogenicMemorySystem(base_dim=16, max_capacity=5, importance_threshold=0.0)
     for _ in range(10):
         nms.consolidate(torch.randn(16), importance=0.9)
+    assert nms.num_neurons > 1, "No neurons were created during consolidation"
     assert nms.num_neurons <= 5, f"Exceeded capacity: {nms.num_neurons}"
     print("✅ test_neurogenic_memory_capacity_limit PASSED")
 
@@ -3079,7 +3080,7 @@ def test_causal_world_model_intervention():
     state = torch.randn(2, 64)
     result = cwm(state, intervention={0: 1.0})
     assert 'dag_loss' in result
-    assert result['endogenous'][:, 0].allclose(torch.ones(2))
+    assert torch.allclose(result['endogenous'][:, 0], torch.ones(2))
     print("✅ test_causal_world_model_intervention PASSED")
 
 
