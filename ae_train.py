@@ -1267,10 +1267,16 @@ class SafeThoughtAETrainerV4:
                     }, log_every=log_every_batch)
             
             if num_accumulated > 0:
+                avg_loss = accumulated_loss / max(num_accumulated, 1)
+                epoch_metrics["total"] += avg_loss
                 grad_norm = self._optimizer_step()
                 self.scheduler.step()
+                epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
             
-            num_steps = max(total_batches // self.config.gradient_accumulation_steps, 1)
+            num_steps = max(
+                (total_batches + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps,
+                1
+            )
             for key in epoch_metrics:
                 epoch_metrics[key] /= num_steps
             
