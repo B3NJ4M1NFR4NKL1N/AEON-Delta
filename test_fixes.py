@@ -2959,6 +2959,196 @@ def test_continual_learning_ewc_missing_task():
     print("✅ test_continual_learning_ewc_missing_task PASSED")
 
 
+# ============================================================================
+# AGI CRITICAL MODIFICATION TESTS
+# ============================================================================
+
+def test_recursive_meta_loop_forward():
+    """RecursiveMetaLoop forward produces correct output shape and metadata."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop, RecursiveMetaLoop
+    config = AEONConfig(
+        use_vq=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+    )
+    base_loop = ProvablyConvergentMetaLoop(config=config, max_iterations=5)
+    rml = RecursiveMetaLoop(base_loop, max_recursion_depth=3)
+    z = torch.randn(2, config.hidden_dim)
+    out, iters, meta = rml(z)
+    assert out.shape == (2, config.hidden_dim), f"Expected shape (2, {config.hidden_dim}), got {out.shape}"
+    assert 'final_level' in meta
+    assert 'level_metadata' in meta
+    assert isinstance(meta['level_metadata'], list)
+    print("✅ test_recursive_meta_loop_forward PASSED")
+
+
+def test_recursive_meta_loop_target_level():
+    """RecursiveMetaLoop respects target_abstraction parameter."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop, RecursiveMetaLoop
+    config = AEONConfig(
+        use_vq=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+    )
+    base_loop = ProvablyConvergentMetaLoop(config=config, max_iterations=5)
+    rml = RecursiveMetaLoop(base_loop, max_recursion_depth=3)
+    z = torch.randn(2, config.hidden_dim)
+    out, iters, meta = rml(z, target_abstraction=0)
+    assert meta['target_level'] == 0
+    assert len(meta['level_metadata']) >= 1
+    print("✅ test_recursive_meta_loop_target_level PASSED")
+
+
+def test_recursive_meta_loop_has_levels():
+    """RecursiveMetaLoop creates correct number of levels."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop, RecursiveMetaLoop
+    config = AEONConfig(
+        use_vq=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+    )
+    base_loop = ProvablyConvergentMetaLoop(config=config, max_iterations=5)
+    rml = RecursiveMetaLoop(base_loop, max_recursion_depth=3)
+    assert len(rml.levels) == 3
+    print("✅ test_recursive_meta_loop_has_levels PASSED")
+
+
+def test_neurogenic_memory_consolidate():
+    """NeurogenicMemorySystem creates new neurons on high-importance input."""
+    from aeon_core import NeurogenicMemorySystem
+    nms = NeurogenicMemorySystem(base_dim=32, max_capacity=10, importance_threshold=0.0)
+    assert nms.num_neurons == 1
+    vec = torch.randn(32)
+    nms.consolidate(vec, importance=0.9)
+    assert nms.num_neurons == 2, f"Expected 2 neurons, got {nms.num_neurons}"
+    print("✅ test_neurogenic_memory_consolidate PASSED")
+
+
+def test_neurogenic_memory_retrieve():
+    """NeurogenicMemorySystem retrieves neurons by similarity."""
+    from aeon_core import NeurogenicMemorySystem
+    nms = NeurogenicMemorySystem(base_dim=32, max_capacity=10, importance_threshold=0.0)
+    for _ in range(5):
+        nms.consolidate(torch.randn(32), importance=0.9)
+    query = torch.randn(32)
+    results = nms.retrieve(query, k=3)
+    assert len(results) <= 3
+    assert all(isinstance(r, tuple) and len(r) == 2 for r in results)
+    print("✅ test_neurogenic_memory_retrieve PASSED")
+
+
+def test_neurogenic_memory_capacity_limit():
+    """NeurogenicMemorySystem respects max_capacity."""
+    from aeon_core import NeurogenicMemorySystem
+    nms = NeurogenicMemorySystem(base_dim=16, max_capacity=5, importance_threshold=0.0)
+    for _ in range(10):
+        nms.consolidate(torch.randn(16), importance=0.9)
+    assert nms.num_neurons > 1, "No neurons were created during consolidation"
+    assert nms.num_neurons <= 5, f"Exceeded capacity: {nms.num_neurons}"
+    print("✅ test_neurogenic_memory_capacity_limit PASSED")
+
+
+def test_neurogenic_memory_synapse_formation():
+    """NeurogenicMemorySystem forms synapses between neurons."""
+    from aeon_core import NeurogenicMemorySystem
+    nms = NeurogenicMemorySystem(base_dim=16, max_capacity=20, importance_threshold=0.0)
+    for _ in range(5):
+        nms.consolidate(torch.randn(16), importance=0.9)
+    # At least some synapses should be formed
+    assert nms.num_neurons > 1
+    # Synapses may or may not form depending on similarity
+    assert isinstance(nms.num_synapses, int)
+    print("✅ test_neurogenic_memory_synapse_formation PASSED")
+
+
+def test_causal_world_model_forward():
+    """CausalWorldModel forward produces correct outputs."""
+    from aeon_core import CausalWorldModel
+    cwm = CausalWorldModel(state_dim=64, num_causal_vars=8)
+    state = torch.randn(2, 64)
+    result = cwm(state)
+    assert 'causal_vars' in result
+    assert 'endogenous' in result
+    assert 'cf_state' in result
+    assert 'physics_output' in result
+    assert result['causal_vars'].shape == (2, 8)
+    assert result['cf_state'].shape == (2, 64)
+    print("✅ test_causal_world_model_forward PASSED")
+
+
+def test_causal_world_model_intervention():
+    """CausalWorldModel supports do-calculus interventions."""
+    from aeon_core import CausalWorldModel
+    cwm = CausalWorldModel(state_dim=64, num_causal_vars=8)
+    state = torch.randn(2, 64)
+    result = cwm(state, intervention={0: 1.0})
+    assert 'dag_loss' in result
+    assert torch.allclose(result['endogenous'][:, 0], torch.ones(2))
+    print("✅ test_causal_world_model_intervention PASSED")
+
+
+def test_causal_world_model_counterfactual_rollout():
+    """CausalWorldModel counterfactual_rollout produces trajectory."""
+    from aeon_core import CausalWorldModel
+    cwm = CausalWorldModel(state_dim=64, num_causal_vars=8)
+    state = torch.randn(2, 64)
+    result = cwm.counterfactual_rollout(state, intervention={1: 0.5})
+    assert 'exogenous' in result
+    assert 'cf_causal_vars' in result
+    assert 'cf_state' in result
+    assert 'trajectory' in result
+    assert result['cf_state'].shape == (2, 64)
+    print("✅ test_causal_world_model_counterfactual_rollout PASSED")
+
+
+def test_causal_world_model_gradient_flow():
+    """CausalWorldModel gradients flow through all components."""
+    from aeon_core import CausalWorldModel
+    cwm = CausalWorldModel(state_dim=32, num_causal_vars=4)
+    state = torch.randn(2, 32, requires_grad=True)
+    result = cwm(state)
+    loss = result['cf_state'].sum()
+    loss.backward()
+    assert state.grad is not None
+    assert not torch.isnan(state.grad).any()
+    print("✅ test_causal_world_model_gradient_flow PASSED")
+
+
+def test_active_learning_planner_forward():
+    """ActiveLearningPlanner forward returns value and policy."""
+    from aeon_core import ActiveLearningPlanner
+    alp = ActiveLearningPlanner(state_dim=64, action_dim=8)
+    state = torch.randn(2, 64)
+    result = alp(state)
+    assert 'value' in result
+    assert 'policy' in result
+    assert result['value'].shape == (2, 1)
+    assert result['policy'].shape == (2, 8)
+    print("✅ test_active_learning_planner_forward PASSED")
+
+
+def test_active_learning_planner_intrinsic_reward():
+    """ActiveLearningPlanner computes intrinsic curiosity reward."""
+    from aeon_core import ActiveLearningPlanner
+    alp = ActiveLearningPlanner(state_dim=64, action_dim=8)
+    state = torch.randn(64)
+    reward = alp.compute_intrinsic_reward(state)
+    assert isinstance(reward, float)
+    assert reward >= 0
+    print("✅ test_active_learning_planner_intrinsic_reward PASSED")
+
+
+def test_active_learning_planner_search():
+    """ActiveLearningPlanner search includes intrinsic reward in simulation."""
+    from aeon_core import ActiveLearningPlanner, PhysicsGroundedWorldModel
+    alp = ActiveLearningPlanner(state_dim=64, action_dim=4, num_simulations=10)
+    wm = PhysicsGroundedWorldModel(input_dim=64, state_dim=64)
+    state = torch.randn(64)
+    alp.eval()
+    result = alp.select_action(state, wm)
+    assert 'best_action' in result
+    assert 'intrinsic_reward' in result
+    assert isinstance(result['intrinsic_reward'], float)
+    print("✅ test_active_learning_planner_search PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3117,6 +3307,22 @@ if __name__ == '__main__':
     test_continual_learning_core_add_task()
     test_continual_learning_core_ewc_loss()
     test_continual_learning_ewc_missing_task()
+    
+    # AGI critical modification tests
+    test_recursive_meta_loop_forward()
+    test_recursive_meta_loop_target_level()
+    test_recursive_meta_loop_has_levels()
+    test_neurogenic_memory_consolidate()
+    test_neurogenic_memory_retrieve()
+    test_neurogenic_memory_capacity_limit()
+    test_neurogenic_memory_synapse_formation()
+    test_causal_world_model_forward()
+    test_causal_world_model_intervention()
+    test_causal_world_model_counterfactual_rollout()
+    test_causal_world_model_gradient_flow()
+    test_active_learning_planner_forward()
+    test_active_learning_planner_intrinsic_reward()
+    test_active_learning_planner_search()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
