@@ -11,13 +11,15 @@ Welcome to the official repository for **AEON-Δ RMT v3.1** (*Reflective Meta-Th
 
 The system implements a **provably convergent architecture** with certified error bounds, operating across multiple critical domains:
 
-- **Cognitive primitives** (Five Pillars framework)  
-- **Quantum-inspired representation** (entanglement and coherence)  
+- **Sparse factorization** (learnable interpretable factors replacing hardcoded Five Pillars)  
+- **Diversity metrics** (variance-based thought diversity measurement)  
 - **Topological stability analysis** (catastrophe detection)  
 - **Physics-grounded world modeling** (multi-backend dynamics and counterfactual reasoning)  
-- **Hierarchical memory** (working, episodic, and semantic memory levels)  
-- **Multi-modal grounding** (vision, audio, language fusion)  
-- **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)
+- **Causal reasoning** (structural causal models with do-calculus and counterfactual rollouts)  
+- **Hierarchical memory** (working, episodic, semantic, temporal, and neurogenic memory levels)  
+- **Multi-modal grounding** (vision, audio, language fusion with CLIP-style contrastive learning)  
+- **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)  
+- **Planning** (MCTS planner with curiosity-driven exploration and active learning)
 
 ---
 
@@ -58,15 +60,16 @@ Unlike conventional systems, AEON-Δ implements production-grade tensor safety w
 
 ---
 
-### **2. Cognitive Core: Five Pillars Framework**  
-The `PillarsModule` extracts five interpretable cognitive axes from latent states:
-- **🔥 Will**: Goal-directed persistence and volition  
-- **⚔️ Resolve**: Decision stability under perturbation  
-- **🔄 Growth**: Adaptive learning and expansion capacity  
-- **🛡️ Union**: Integration of disparate representations  
-- **🌊 Movement**: Temporal dynamics and state transitions  
+### **2. Cognitive Core: Sparse Factorization & Causal Factors**  
+The `SparseFactorization` module replaces the hardcoded Five Pillars with learnable, interpretable factors:
+- **Learnable sparse basis** (64 factors by default via `num_pillars` config)  
+- **L1-sparsity regularization** encouraging compact, interpretable representations  
+- **Encode/decode symmetry** with LayerNorm for stable training  
+- **No imposed philosophical categories** — factors emerge from data  
 
-Each pillar is continuously monitored, normalized, and fed into downstream reasoning systems.
+The `CausalFactorExtractor` extends this with an explicit learnable DAG structure for causal reasoning over factors.  
+
+Each factor is continuously monitored, normalized, and fed into downstream reasoning systems.
 
 ---
 
@@ -83,15 +86,13 @@ This transforms initial perception ψ₀ into a stable thought state **C\*** thr
 
 ---
 
-### **4. Quantum Simulator: Entanglement & Coherence**  
-The quantum-inspired simulator computes:
-- **Matrix Product State (MPS) architecture** with bond dimension control  
-- **Von Neumann entropy** via Schmidt decomposition  
-- **Action propensity** from quantum state measurements  
-- **CPU fallback mechanisms** for MPS device compatibility  
-- **Safe SVD computation** with numerical stability guarantees  
+### **4. Diversity Metric**  
+The `DiversityMetric` module replaces the former quantum-inspired simulator with a principled approach:
+- **Variance-based diversity** across factor activations  
+- **Action propensity** from softmax over learned projection  
+- **Lightweight computation** without pseudoscientific quantum mechanics  
 
-This provides a measure of internal coherence and decision certainty.
+This provides a measure of internal thought diversity and decision certainty.
 
 ---
 
@@ -154,12 +155,16 @@ Enables physical reasoning and multi-step planning.
 ---
 
 ### **10. Hierarchical Memory System**  
-Three-level memory architecture inspired by cognitive science:
+Multi-level memory architecture inspired by cognitive science:
 - **Working Memory**: Fixed-capacity buffer (7 elements), FIFO eviction  
 - **Episodic Memory**: Event-based storage with importance-based routing (threshold > 0.7)  
 - **Semantic Memory**: Concept graph with nodes, edges, and relational structure  
 - **Consolidation**: Replay buffer → episodic → semantic promotion pipeline  
 - **Retrieval Router**: Learnable softmax over memory levels for query-driven access  
+
+Additional memory systems:
+- **`TemporalMemory`**: Exponential temporal decay (Ebbinghaus forgetting curve) with merging of similar memories during consolidation  
+- **`NeurogenicMemorySystem`**: Dynamically grows capacity via neuron splitting and synaptic connection formation, bounded by configurable max capacity  
 
 Provides structured long-term and short-term context retention.
 
@@ -173,11 +178,13 @@ Cross-modal understanding and generation:
 - **Fusion Layer**: Three-stream fusion into a single grounded representation  
 - **Modality Decoders**: Per-modality output generation from fused state  
 
+Additionally, `GroundedMultimodalLearning` provides CLIP-style contrastive learning for symbol grounding and zero-shot classification.
+
 Supports cross-modal retrieval, compositional generation, and visual grounding.
 
 ---
 
-### **12. Meta-Learning: MAML + EWC**  
+### **12. Meta-Learning: MAML + EWC + Continual Learning**  
 Few-shot adaptation and continual learning:
 - **MAML Inner Loop**: Task-specific adaptation via gradient steps  
 - **MAML Outer Loop**: Meta-update for cross-task generalization  
@@ -185,7 +192,55 @@ Few-shot adaptation and continual learning:
 - **Fisher Information**: Diagonal Fisher computed after each task  
 - **Task Buffer**: Stores last 100 tasks for lifelong learning  
 
+Additionally, `ContinualLearningCore` combines Progressive Neural Networks (new columns per task) with EWC to prevent catastrophic forgetting across task boundaries.
+
 Enables few-shot learning and knowledge transfer across domains.
+
+---
+
+### **13. Causal Reasoning: Neural Causal Model & Causal World Model**  
+Structural causal models for interventional and counterfactual reasoning:
+- **`NeuralCausalModel`**: Learnable DAG structure with per-variable causal mechanisms, supporting interventions `do(X=x)` and counterfactuals via abduction-action-prediction  
+- **`CausalWorldModel`**: Integrates structural causal models (SCM) with physics-grounded dynamics using Pearl's do-calculus for three-step counterfactual rollout (abduction → action → prediction)  
+
+Enables answering "what if" and "why" questions about system behavior.
+
+---
+
+### **14. Planning: MCTS & Curiosity-Driven Exploration**  
+Monte Carlo Tree Search with intrinsic motivation:
+- **`MCTSPlanner`**: UCB1 selection, expansion, rollout, and backpropagation with `ValueNetwork` (state evaluation) and `PolicyNetwork` (action priors)  
+- **`CuriosityDrivenExploration`**: Intrinsic Curiosity Module (ICM) with forward and inverse models — exploration reward as forward-model prediction error  
+- **`ActiveLearningPlanner`**: Extends MCTS to bias search toward maximum-uncertainty states via variance-based intrinsic rewards  
+
+Supports multi-step planning and autonomous exploration.
+
+---
+
+### **15. Hierarchical VAE**  
+Hierarchical Variational AutoEncoder with ladder architecture:
+- **5 abstraction levels**: tokens → phrases → sentences → concepts → goals  
+- **Bottom-up deterministic** and **top-down stochastic** passes  
+- **KL-divergence regularization** at each level  
+
+Enables hierarchical latent representation learning across multiple granularities.
+
+---
+
+### **16. Advanced Meta-Loop Variants**  
+Beyond the core `ProvablyConvergentMetaLoop`:
+- **`HierarchicalMetaLoop`**: Routes inputs to fast (5 iter), medium (20 iter), or deep (50 iter) meta-loops based on learned complexity scoring — ~10× latency reduction on simple queries  
+- **`RecursiveMetaLoop`**: Hierarchical meta-cognition across 3 abstraction levels with error-bound-based rollback to prevent cascading failures  
+- **`ConvergenceMonitor`**: Tracks contraction ratios over a sliding window; classifies iterations as warmup, converging, converged, or diverging  
+
+Adaptive reasoning depth based on input complexity.
+
+---
+
+### **17. Parallel Cognitive Pipeline & Architecture Hierarchy**  
+Production-grade execution and compositional organization:
+- **`ParallelCognitivePipeline`**: Executes independent sub-modules (diversity, safety, topology, world model) in parallel via `ThreadPoolExecutor` after the mandatory sequential meta-loop  
+- **`HierarchicalCognitiveArchitecture`**: 4-level compositional hierarchy — Core (meta-loop, VQ), Safety, Reasoning (factors, causal), and Planning (MCTS) — enabling lightweight "AEON-Lite" deployment
 
 ---
 
@@ -246,16 +301,21 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 67 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 147 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
-- **Gradient flow** through all components (SSM, world model, meta-learner)  
+- **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
 - **Shape consistency** across the computational graph  
 - **Numerical stability** under edge cases  
-- **Backend validation** (SSM, LSTM, Linear Attention encoder/decoder factories)  
-- **AGI components** (world model physics, hierarchical memory, multi-modal grounding, meta-learning EWC)  
+- **Backend validation** (SSM, LSTM, Mamba-2, Linear Attention encoder/decoder factories)  
+- **Causal reasoning** (neural causal model, causal world model, interventions, counterfactual rollouts)  
+- **Planning & exploration** (MCTS planner, curiosity-driven exploration, active learning)  
+- **Advanced memory** (hierarchical memory, temporal memory with decay, neurogenic memory with synapse formation)  
+- **Multi-modal grounding** (single/multi-modality, CLIP-style contrastive learning, zero-shot classification)  
+- **Meta-cognition** (hierarchical meta-loop, recursive meta-loop, convergence monitor)  
 - **Thread safety** (quarantine batch handling, policy mutation prevention)  
 - **Inference cache** (ring buffer, INT8 quantization, state caching)  
+- **Hierarchical VAE** (ladder architecture, KL divergence)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -266,7 +326,7 @@ Each test provides detailed reporting with error diagnostics and scoring.
 AEON-Δ is engineered to model **emergent reasoning**—how thoughts form, evolve through recursive self-reflection, and ultimately lead to coherent action. Our architecture is built on three principles:
 
 1. **Mathematical rigor**: Convergence guarantees through Lipschitz constraints and fixed-point theory  
-2. **Cognitive interpretability**: Five Pillars framework providing human-understandable reasoning axes  
+2. **Cognitive interpretability**: Sparse factorization framework providing data-driven, interpretable reasoning factors  
 3. **Production robustness**: Tensor safety, monitoring, and fallback systems for reliable operation  
 
 This is not merely an academic exercise—it's a foundation for building truly reflective AI systems that can explain their reasoning, detect their own inconsistencies, and operate safely in complex environments.
@@ -279,7 +339,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (67 tests) — stability, gradients, AGI components
+├── test_fixes.py     # Comprehensive test suite (147 tests) — stability, gradients, causal, planning
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
@@ -318,6 +378,9 @@ python ae_train.py --json_path data.json --epochsA 30 --epochsB 10
 
 # Document-aware training mode
 python ae_train.py --document_aware --json_path structured_data.json
+
+# Resume from checkpoint
+python ae_train.py --resume checkpoints/checkpoint_epoch_10.pt
 ```
 
 ---
