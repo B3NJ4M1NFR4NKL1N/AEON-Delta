@@ -1738,7 +1738,7 @@ def main(
             # Try safe loading first
             try:
                 checkpoint = torch.load(resume_from, map_location=device, weights_only=True)
-            except Exception:
+            except (RuntimeError, TypeError):
                 logger.warning(
                     "⚠️ Loading checkpoint with weights_only=False. "
                     "Only load checkpoints from trusted sources."

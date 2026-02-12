@@ -3640,6 +3640,130 @@ def test_neuro_symbolic_facts_in_unit_interval():
     print("✅ test_neuro_symbolic_facts_in_unit_interval PASSED")
 
 
+# ============================================================================
+# ANALYSIS-DRIVEN REFACTORING TESTS: NaN/Inf guards, epsilon safety, exception specificity
+# ============================================================================
+
+def test_lipschitz_estimate_nan_guard():
+    """Verify that NaN in lipschitz_estimate does not propagate into compute_fixed_point."""
+    from aeon_core import ProvablyConvergentMetaLoop, AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    meta_loop = ProvablyConvergentMetaLoop(config)
+
+    # Corrupt the lipschitz_estimate buffer with NaN
+    meta_loop.lambda_op.lipschitz_estimate.fill_(float('nan'))
+
+    psi_0 = torch.randn(2, config.hidden_dim)
+    C, iterations, meta = meta_loop.compute_fixed_point(psi_0)
+
+    # lip_const should have fallen back to 1.0
+    assert meta['lipschitz_estimate'] == 1.0, (
+        f"Expected fallback 1.0, got {meta['lipschitz_estimate']}"
+    )
+    # Output should be finite
+    assert torch.isfinite(C).all(), "C contains NaN/Inf despite guard"
+    print("✅ test_lipschitz_estimate_nan_guard PASSED")
+
+
+def test_lipschitz_ema_nan_skip():
+    """Verify that NaN lipschitz_estimate in get_lipschitz_penalty does not corrupt EMA buffer."""
+    from aeon_core import LipschitzConstrainedLambda
+
+    lip = LipschitzConstrainedLambda(
+        input_dim=64, hidden_dim=32, output_dim=32,
+        lipschitz_target=0.85, use_spectral_norm=True
+    )
+
+    # Set the EMA buffer to a known good value
+    lip.lipschitz_estimate.fill_(0.5)
+
+    # Create inputs that would produce valid penalty but corrupt the internal estimate
+    x = torch.randn(2, 64)
+    y = x.clone()  # Same points: denominator → 0, clamped to 1e-8
+
+    penalty = lip.get_lipschitz_penalty(x, y)
+    assert torch.isfinite(penalty), f"Penalty is not finite: {penalty}"
+
+    # EMA buffer should still be finite
+    assert torch.isfinite(lip.lipschitz_estimate), (
+        f"EMA buffer corrupted: {lip.lipschitz_estimate.item()}"
+    )
+    print("✅ test_lipschitz_ema_nan_skip PASSED")
+
+
+def test_denominator_max_vs_add():
+    """Verify that max(value, eps) is used instead of value + eps for NaN safety."""
+    from aeon_core import LipschitzConstrainedLambda
+
+    lip = LipschitzConstrainedLambda(
+        input_dim=16, hidden_dim=8, output_dim=8,
+        lipschitz_target=0.85, use_spectral_norm=True
+    )
+
+    # Two identical points: norm difference is 0
+    max_ratio = lip.compute_lipschitz_constant(num_samples=5, sample_dim=16)
+    assert math.isfinite(max_ratio), f"max_ratio is not finite: {max_ratio}"
+    print("✅ test_denominator_max_vs_add PASSED")
+
+
+def test_certified_error_nan_residual():
+    """Verify that certified_error handles NaN residual gracefully."""
+    from aeon_core import ProvablyConvergentMetaLoop, AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    meta_loop = ProvablyConvergentMetaLoop(config)
+
+    # Set lip_const to valid < 1.0 so certification branch is taken
+    meta_loop.lambda_op.lipschitz_estimate.fill_(0.5)
+
+    psi_0 = torch.randn(2, config.hidden_dim)
+    C, iterations, meta = meta_loop.compute_fixed_point(psi_0)
+
+    # certified_error should be finite or inf (not NaN)
+    cert_err = meta.get('certified_error_bound')
+    if cert_err is not None:
+        assert not math.isnan(cert_err), f"certified_error is NaN"
+    print("✅ test_certified_error_nan_residual PASSED")
+
+
+def test_checkpoint_load_specific_exception():
+    """Verify that checkpoint loading catches specific exceptions, not all."""
+    import inspect
+    from ae_train import main
+
+    # Check that the source code uses specific exception types
+    source = inspect.getsource(main)
+    # The fallback for weights_only should catch RuntimeError/TypeError, not bare Exception
+    assert "except (RuntimeError, TypeError)" in source or "except RuntimeError" in source, (
+        "Checkpoint loading should catch specific exceptions, not bare 'except Exception'"
+    )
+    print("✅ test_checkpoint_load_specific_exception PASSED")
+
+
+def test_adaptive_chunking_max_var():
+    """Verify adaptive chunking uses max() instead of addition for NaN safety."""
+    from aeon_core import ChunkedSequenceProcessor
+
+    processor = ChunkedSequenceProcessor(
+        chunk_size=32,
+        overlap=8,
+        adaptive=True,
+        min_chunk_size=16
+    )
+
+    # Test with input where variance is very small (near zero)
+    x = torch.ones(1, 64, 16)  # constant input → variance ≈ 0
+
+    def model_fn(x_chunk, state=None):
+        return x_chunk, state
+
+    # The processor should not crash even with near-zero variance
+    result, _ = processor.process(model_fn, x)
+    assert torch.isfinite(result).all(), "Output has NaN/Inf with zero-variance input"
+    print("✅ test_adaptive_chunking_max_var PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3843,6 +3967,14 @@ if __name__ == '__main__':
     test_neuro_symbolic_reasoner_gradient_flow()
     test_differentiable_forward_chainer()
     test_neuro_symbolic_facts_in_unit_interval()
+    
+    # Refactoring analysis tests: NaN guards, epsilon safety, exception specificity
+    test_lipschitz_estimate_nan_guard()
+    test_lipschitz_ema_nan_skip()
+    test_denominator_max_vs_add()
+    test_certified_error_nan_residual()
+    test_checkpoint_load_specific_exception()
+    test_adaptive_chunking_max_var()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

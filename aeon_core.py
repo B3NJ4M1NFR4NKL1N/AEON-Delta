@@ -768,7 +768,7 @@ class SafeTensorProcessor:
         for _name, module in model.named_modules():
             try:
                 module.register_forward_hook(_hook)
-            except Exception:
+            except (RuntimeError, AttributeError):
                 pass
 
 
@@ -1237,7 +1237,7 @@ class ThoughtDecoder(nn.Module):
             return
         try:
             idx = torch.tensor(list(token_ids), dtype=torch.long)
-        except Exception:
+        except (TypeError, ValueError, RuntimeError):
             idx = torch.empty((0,), dtype=torch.long)
         if idx.numel() > 0:
             idx = idx[(idx >= 0) & (idx < self.vocab_size)]
@@ -2292,7 +2292,7 @@ class ChunkedSequenceProcessor:
         if self.adaptive:
             # Adaptive chunk size based on content entropy
             content_var = x.var(dim=-1).mean(dim=0)  # [L] variance per position
-            max_var = content_var.max().item() + 1e-8
+            max_var = max(content_var.max().item(), 1e-8)
             # Higher variance → smaller chunks (more detail needed)
             adaptive_factor = 1.0 - (content_var.mean().item() / max_var)
             chunk_size = max(self.min_chunk_size, 
@@ -3622,7 +3622,7 @@ class LipschitzConstrainedLambda(nn.Module):
                 fy = self.forward(y)
                 
                 numerator = torch.norm(fx - fy).item()
-                denominator = torch.norm(x - y).item() + 1e-8
+                denominator = max(torch.norm(x - y).item(), 1e-8)
                 ratio = numerator / denominator
                 
                 max_ratio = max(max_ratio, ratio)
@@ -3645,11 +3645,12 @@ class LipschitzConstrainedLambda(nn.Module):
         
         lipschitz_estimate = (numerator / denominator).mean()
         
-        # EMA update
+        # EMA update (skip if NaN/Inf to prevent corruption)
         with torch.no_grad():
-            self.lipschitz_estimate.mul_(self.lipschitz_ema_decay).add_(
-                lipschitz_estimate * (1 - self.lipschitz_ema_decay)
-            )
+            if torch.isfinite(lipschitz_estimate):
+                self.lipschitz_estimate.mul_(self.lipschitz_ema_decay).add_(
+                    lipschitz_estimate * (1 - self.lipschitz_ema_decay)
+                )
         
         # Penalty
         penalty = F.relu(lipschitz_estimate - self.lipschitz_target) ** 2
@@ -3824,8 +3825,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
         converged = torch.zeros(B, dtype=torch.bool, device=device)
         iterations = torch.zeros(B, device=device)
         
-        # Get Lipschitz estimate
-        lip_const = self.lambda_op.lipschitz_estimate.item()
+        # Get Lipschitz estimate (guard against NaN/Inf)
+        lip_raw = self.lambda_op.lipschitz_estimate
+        lip_const = lip_raw.item() if torch.isfinite(lip_raw) else 1.0
         
         for iter_idx in range(self.max_iterations):
             C_prev = C.clone()
@@ -3892,8 +3894,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
         if self.enable_certification and lip_const < 1.0:
             with torch.no_grad():
                 final_residual = residual_norm.mean().item()
-                denom = max(1.0 - lip_const, 1e-6)
-                certified_error = (lip_const / denom) * final_residual
+                if math.isfinite(final_residual):
+                    denom = max(1.0 - lip_const, 1e-6)
+                    certified_error = (lip_const / denom) * final_residual
         
         # Metadata
         metadata = {
@@ -3959,7 +3962,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
             empirical_L = self.lambda_op.compute_lipschitz_constant(
                 num_samples=num_samples
             )
-            ema_L = self.lambda_op.lipschitz_estimate.item()
+            ema_L_raw = self.lambda_op.lipschitz_estimate
+            ema_L = ema_L_raw.item() if torch.isfinite(ema_L_raw) else 1.0
             target = self.lambda_op.lipschitz_target
             
             C, iterations, meta = self.compute_fixed_point(psi_0)
