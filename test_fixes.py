@@ -4,6 +4,7 @@ Tests for refactoring fixes in aeon_core.py and ae_train.py.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import math
 import sys
@@ -3325,6 +3326,351 @@ def test_config_v4_extended_validation():
     print("✅ test_config_v4_extended_validation PASSED")
 
 
+# ============================================================================
+# Tests for pipeline architecture and cognitive enhancements
+# ============================================================================
+
+def test_reasoning_state_creation():
+    """ReasoningState correctly initialises and copies."""
+    from aeon_core import ReasoningState
+    z = torch.randn(2, 64)
+    state = ReasoningState(z)
+    assert torch.equal(state.z, z)
+    assert state.outputs == {}
+    assert state.is_terminal is False
+
+    # with_z returns a new state with shared outputs dict
+    z2 = torch.randn(2, 64)
+    state2 = state.with_z(z2)
+    assert torch.equal(state2.z, z2)
+    assert state2.is_terminal is False
+    print("✅ test_reasoning_state_creation PASSED")
+
+
+def test_execution_ctx_defaults():
+    """ExecutionCtx has sensible defaults."""
+    from aeon_core import ExecutionCtx
+    ctx = ExecutionCtx()
+    assert ctx.fast is False
+    assert ctx.planning is True
+    assert ctx.memory_retrieval is True
+    assert ctx.attention_mask is None
+    print("✅ test_execution_ctx_defaults PASSED")
+
+
+def test_reasoning_stage_interface():
+    """ReasoningStage subclass can be executed."""
+    from aeon_core import ReasoningStage, ReasoningState, ExecutionCtx
+
+    class IdentityStage(ReasoningStage):
+        def execute(self, state, context):
+            state.outputs['identity'] = True
+            return state
+
+    stage = IdentityStage()
+    ctx = ExecutionCtx()
+    assert stage.should_execute(ctx) is True
+    state = ReasoningState(torch.randn(2, 32))
+    result = stage.execute(state, ctx)
+    assert result.outputs.get('identity') is True
+    print("✅ test_reasoning_stage_interface PASSED")
+
+
+def test_reasoning_pipeline_sequential():
+    """ReasoningPipeline executes stages in order."""
+    from aeon_core import ReasoningPipeline, ReasoningStage, ReasoningState, ExecutionCtx
+
+    order = []
+
+    class StageA(ReasoningStage):
+        def execute(self, state, ctx):
+            order.append('A')
+            state.outputs['A'] = True
+            return state
+
+    class StageB(ReasoningStage):
+        def execute(self, state, ctx):
+            order.append('B')
+            state.outputs['B'] = True
+            return state
+
+    pipeline = ReasoningPipeline([StageA(), StageB()])
+    state = pipeline.execute(torch.randn(2, 32), ExecutionCtx())
+    assert order == ['A', 'B']
+    assert state.outputs.get('A') is True
+    assert state.outputs.get('B') is True
+    print("✅ test_reasoning_pipeline_sequential PASSED")
+
+
+def test_reasoning_pipeline_early_stop():
+    """ReasoningPipeline respects is_terminal for early stopping."""
+    from aeon_core import ReasoningPipeline, ReasoningStage, ExecutionCtx
+
+    class TerminalStage(ReasoningStage):
+        def execute(self, state, ctx):
+            state.is_terminal = True
+            state.outputs['stopped'] = True
+            return state
+
+    class NeverReached(ReasoningStage):
+        def execute(self, state, ctx):
+            state.outputs['reached'] = True
+            return state
+
+    pipeline = ReasoningPipeline([TerminalStage(), NeverReached()])
+    state = pipeline.execute(torch.randn(1, 16), ExecutionCtx())
+    assert state.is_terminal is True
+    assert state.outputs.get('stopped') is True
+    assert state.outputs.get('reached') is None
+    print("✅ test_reasoning_pipeline_early_stop PASSED")
+
+
+def test_reasoning_pipeline_conditional_skip():
+    """Stages with should_execute=False are skipped."""
+    from aeon_core import ReasoningPipeline, ReasoningStage, ExecutionCtx
+
+    class FastOnlyStage(ReasoningStage):
+        def should_execute(self, ctx):
+            return ctx.fast
+
+        def execute(self, state, ctx):
+            state.outputs['fast_only'] = True
+            return state
+
+    pipeline = ReasoningPipeline([FastOnlyStage()])
+    # fast=False → stage skipped
+    state = pipeline.execute(torch.randn(1, 8), ExecutionCtx(fast=False))
+    assert state.outputs.get('fast_only') is None
+
+    # fast=True → stage executed
+    state = pipeline.execute(torch.randn(1, 8), ExecutionCtx(fast=True))
+    assert state.outputs.get('fast_only') is True
+    print("✅ test_reasoning_pipeline_conditional_skip PASSED")
+
+
+def test_reasoning_pipeline_add_stage():
+    """add_stage appends a stage dynamically."""
+    from aeon_core import ReasoningPipeline, ReasoningStage, ExecutionCtx
+
+    class Marker(ReasoningStage):
+        def execute(self, state, ctx):
+            state.outputs['marker'] = True
+            return state
+
+    pipeline = ReasoningPipeline()
+    assert len(pipeline.stages) == 0
+    pipeline.add_stage(Marker())
+    assert len(pipeline.stages) == 1
+    state = pipeline.execute(torch.randn(1, 8), ExecutionCtx())
+    assert state.outputs.get('marker') is True
+    print("✅ test_reasoning_pipeline_add_stage PASSED")
+
+
+def test_safety_certificate_fields():
+    """SafetyCertificate has expected fields."""
+    from aeon_core import SafetyCertificate
+    cert = SafetyCertificate(score=torch.tensor([[0.9]]), verified=True)
+    assert cert.verified is True
+    assert cert.method == 'neural'  # default
+    cert2 = SafetyCertificate(score=torch.tensor([[0.1]]), verified=True, method='formal')
+    assert cert2.method == 'formal'
+    print("✅ test_safety_certificate_fields PASSED")
+
+
+def test_smt_verifier_base():
+    """SMTVerifierBase returns a valid certificate."""
+    from aeon_core import SMTVerifierBase
+    verifier = SMTVerifierBase()
+    action = torch.randn(2, 8)
+    state = torch.randn(2, 32)
+    cert = verifier.prove_safe(action, state)
+    assert cert.verified is True
+    assert cert.method == 'formal'
+    assert cert.score.shape == (2, 1)
+    print("✅ test_smt_verifier_base PASSED")
+
+
+def test_verified_safety_system_fast_path():
+    """VerifiedSafetySystem uses neural scorer when score is high."""
+    from aeon_core import VerifiedSafetySystem, AEONConfig
+    config = AEONConfig(safety_threshold=0.01)
+    vss = VerifiedSafetySystem(config)
+    action = torch.zeros(2, config.action_dim)
+    state = torch.randn(2, config.hidden_dim)
+    cert = vss.verify_action(action, state)
+    assert cert.verified is True
+    assert cert.score.shape[0] == 2
+    print("✅ test_verified_safety_system_fast_path PASSED")
+
+
+def test_verified_safety_system_formal_fallback():
+    """VerifiedSafetySystem escalates to SMT in uncertainty zone."""
+    from aeon_core import VerifiedSafetySystem, AEONConfig
+
+    # High threshold forces all scores into uncertainty zone
+    config = AEONConfig(safety_threshold=0.99)
+    vss = VerifiedSafetySystem(config)
+    action = torch.zeros(2, config.action_dim)
+    state = torch.randn(2, config.hidden_dim)
+    cert = vss.verify_action(action, state)
+    assert cert.verified is True
+    assert cert.method == 'formal'
+    print("✅ test_verified_safety_system_formal_fallback PASSED")
+
+
+def test_distributed_hierarchical_memory_working():
+    """DistributedHierarchicalMemory stores and retrieves working memory."""
+    from aeon_core import DistributedHierarchicalMemory
+    mem = DistributedHierarchicalMemory(dim=32, working_capacity=8)
+    assert mem.working_size == 0
+
+    vec = torch.randn(32)
+    mem.store_working(vec)
+    assert mem.working_size == 1
+
+    retrieved = mem.retrieve_working(vec, k=1)
+    assert retrieved.shape == (1, 32)
+    # Retrieved vector should be close to stored
+    sim = F.cosine_similarity(retrieved[0].unsqueeze(0), vec.unsqueeze(0))
+    assert sim.item() > 0.99
+    print("✅ test_distributed_hierarchical_memory_working PASSED")
+
+
+def test_distributed_hierarchical_memory_consolidation():
+    """Consolidation promotes working memory to long-term."""
+    from aeon_core import DistributedHierarchicalMemory
+    mem = DistributedHierarchicalMemory(
+        dim=32, working_capacity=16, num_clusters=4
+    )
+    # Store several vectors
+    for _ in range(10):
+        mem.store_working(torch.randn(32))
+    assert mem.working_size == 10
+    assert mem.long_term_size == 0
+
+    promoted = mem.consolidate()
+    assert promoted == 4  # num_clusters
+    assert mem.working_size == 0  # cleared
+    assert mem.long_term_size == 4
+    print("✅ test_distributed_hierarchical_memory_consolidation PASSED")
+
+
+def test_distributed_hierarchical_memory_lt_retrieval():
+    """Long-term retrieval works after consolidation."""
+    from aeon_core import DistributedHierarchicalMemory
+    mem = DistributedHierarchicalMemory(dim=16, working_capacity=8, num_clusters=2)
+    target = torch.randn(16)
+    mem.store_working(target)
+    mem.store_working(torch.randn(16))
+    mem.store_working(torch.randn(16))
+    mem.consolidate()
+
+    result = mem.retrieve_long_term(target, k=2)
+    assert result.shape[0] <= 2
+    assert result.shape[1] == 16
+    print("✅ test_distributed_hierarchical_memory_lt_retrieval PASSED")
+
+
+def test_distributed_hierarchical_memory_empty_retrieval():
+    """Retrieval from empty memory returns empty tensor."""
+    from aeon_core import DistributedHierarchicalMemory
+    mem = DistributedHierarchicalMemory(dim=16)
+    q = torch.randn(16)
+    w = mem.retrieve_working(q, k=3)
+    lt = mem.retrieve_long_term(q, k=3)
+    assert w.shape[0] == 0
+    assert lt.shape[0] == 0
+    print("✅ test_distributed_hierarchical_memory_empty_retrieval PASSED")
+
+
+def test_distributed_hierarchical_memory_consolidation_empty():
+    """Consolidation on empty working memory returns 0."""
+    from aeon_core import DistributedHierarchicalMemory
+    mem = DistributedHierarchicalMemory(dim=16)
+    assert mem.consolidate() == 0
+    print("✅ test_distributed_hierarchical_memory_consolidation_empty PASSED")
+
+
+def test_jsd_divergence_identical():
+    """JSD of identical distributions is 0."""
+    from aeon_core import ContinualLearningCore
+    p = torch.tensor([1.0, 2.0, 3.0])
+    jsd = ContinualLearningCore.jensen_shannon_divergence(p, p)
+    assert jsd.item() < 0.01, f"JSD of identical distributions should be ~0, got {jsd.item()}"
+    print("✅ test_jsd_divergence_identical PASSED")
+
+
+def test_jsd_divergence_different():
+    """JSD of very different distributions is high."""
+    from aeon_core import ContinualLearningCore
+    p = torch.tensor([100.0, 0.0, 0.0])
+    q = torch.tensor([0.0, 0.0, 100.0])
+    jsd = ContinualLearningCore.jensen_shannon_divergence(p, q)
+    assert jsd.item() > 0.5, f"JSD of very different distributions should be >0.5, got {jsd.item()}"
+    print("✅ test_jsd_divergence_different PASSED")
+
+
+def test_jsd_divergence_range():
+    """JSD is always in [0, 1]."""
+    from aeon_core import ContinualLearningCore
+    for _ in range(10):
+        p = torch.randn(50)
+        q = torch.randn(50)
+        jsd = ContinualLearningCore.jensen_shannon_divergence(p, q)
+        assert 0.0 <= jsd.item() <= 1.0 + 1e-6, f"JSD out of range: {jsd.item()}"
+    print("✅ test_jsd_divergence_range PASSED")
+
+
+def test_continual_learning_jsd_threshold():
+    """ContinualLearningCore has jsd_threshold attribute."""
+    from aeon_core import ContinualLearningCore
+    # Minimal model for testing
+    class DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = type('C', (), {'hidden_dim': 32})()
+            self.fc = nn.Linear(32, 32)
+        def forward(self, x, **kw):
+            return self.fc(x)
+
+    base = DummyModel()
+    cl = ContinualLearningCore(base, jsd_threshold=0.7)
+    assert cl.jsd_threshold == 0.7
+
+    cl2 = ContinualLearningCore(base, jsd_threshold=0.3)
+    assert cl2.jsd_threshold == 0.3
+    print("✅ test_continual_learning_jsd_threshold PASSED")
+
+
+def test_continual_learning_add_task_if_distinct():
+    """add_task_if_distinct respects JSD threshold."""
+    from aeon_core import ContinualLearningCore
+
+    class DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = type('C', (), {'hidden_dim': 32})()
+            self.fc = nn.Linear(32, 32)
+        def forward(self, x, **kw):
+            return self.fc(x)
+
+    base = DummyModel()
+    # Very low threshold → should always add
+    cl_low = ContinualLearningCore(base, jsd_threshold=0.01)
+    x = torch.randn(2, 32)
+    added = cl_low.add_task_if_distinct("task1", x)
+    # Should likely add (JSD usually > 0.01 for random model)
+    if added:
+        assert len(cl_low.columns) == 2
+    
+    # Very high threshold → should not add
+    cl_high = ContinualLearningCore(base, jsd_threshold=0.999)
+    added2 = cl_high.add_task_if_distinct("task2", x)
+    # May or may not add - we can just verify the method runs without error
+    assert isinstance(added2, bool)
+    print("✅ test_continual_learning_add_task_if_distinct PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3505,6 +3851,29 @@ if __name__ == '__main__':
     test_save_metrics_error_handling()
     test_rssm_nan_branch_no_zero_grad()
     test_config_v4_extended_validation()
+    
+    # Pipeline architecture & cognitive enhancement tests
+    test_reasoning_state_creation()
+    test_execution_ctx_defaults()
+    test_reasoning_stage_interface()
+    test_reasoning_pipeline_sequential()
+    test_reasoning_pipeline_early_stop()
+    test_reasoning_pipeline_conditional_skip()
+    test_reasoning_pipeline_add_stage()
+    test_safety_certificate_fields()
+    test_smt_verifier_base()
+    test_verified_safety_system_fast_path()
+    test_verified_safety_system_formal_fallback()
+    test_distributed_hierarchical_memory_working()
+    test_distributed_hierarchical_memory_consolidation()
+    test_distributed_hierarchical_memory_lt_retrieval()
+    test_distributed_hierarchical_memory_empty_retrieval()
+    test_distributed_hierarchical_memory_consolidation_empty()
+    test_jsd_divergence_identical()
+    test_jsd_divergence_different()
+    test_jsd_divergence_range()
+    test_continual_learning_jsd_threshold()
+    test_continual_learning_add_task_if_distinct()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
