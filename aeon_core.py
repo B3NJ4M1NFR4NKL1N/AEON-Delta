@@ -792,7 +792,7 @@ class AEONConfig:
     hidden_dim: int = 256
     meta_dim: int = 256
     vocab_size: int = 30522
-    num_pillars: int = 5
+    num_pillars: int = 64
     seq_length: int = 64
     action_dim: int = 64
     cls_token_id: int = 101   # [CLS] token ID (BERT default)
@@ -824,9 +824,9 @@ class AEONConfig:
     topo_use_cache: bool = True
     enable_catastrophe_detection: bool = True
     
-    # ===== QUANTUM =====
-    quantum_bond_dim: int = 16
-    quantum_method: str = "mps"
+    # ===== DIVERSITY METRIC =====
+    quantum_bond_dim: int = 16  # deprecated, kept for compatibility
+    quantum_method: str = "mps"  # deprecated, kept for compatibility
     enable_quantum_sim: bool = True
     
     # ===== TRAINING =====
@@ -845,6 +845,7 @@ class AEONConfig:
     lambda_safety: float = 0.1
     lambda_lipschitz: float = 0.05
     kl_weight: float = 0.1
+    sparsity_target: float = 0.95
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -906,6 +907,7 @@ class AEONConfig:
     world_model_state_dim: int = 128
     world_model_tree_depth: int = 3
     world_model_tree_branch: int = 3
+    surprise_threshold: float = 0.5
     
     # ===== HIERARCHICAL MEMORY =====
     enable_hierarchical_memory: bool = False
@@ -920,8 +922,13 @@ class AEONConfig:
     meta_ewc_lambda: float = 1000.0
     meta_task_buffer_size: int = 100
     
+    # ===== CAUSAL & PLANNING =====
+    enable_causal_model: bool = False
+    enable_mcts_planner: bool = False
+    
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
+    enable_hierarchical_vae: bool = False
     enable_social_cognition: bool = False
     enable_deception_suppressor: bool = True
     enable_code_execution: bool = False
@@ -939,7 +946,7 @@ class AEONConfig:
         assert self.hidden_dim > 0, "hidden_dim must be positive"
         assert self.vocab_size > 0, "vocab_size must be positive"
         assert self.seq_length > 0, "seq_length must be positive"
-        assert self.num_pillars >= 3, "num_pillars must be >= 3"
+        assert self.num_pillars >= 2, "num_pillars must be >= 2"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
         assert 0 <= self.alpha <= 1, "alpha must be in [0, 1]"
@@ -1006,7 +1013,7 @@ class AEONConfig:
         
         logger.info(f"✅ AEONConfig v{self.version} initialized")
         logger.info(f"   Device: {self.device_manager.device}")
-        logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}P")
+        logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}F")
     
     def __setattr__(self, name, value):
         """Enforce immutability."""
@@ -1627,26 +1634,28 @@ class _SSMBlock(nn.Module):
         # Associative operator on (A, b): (A2, b2) ∘ (A1, b1) = (A2*A1, A2*b1 + b2)
         A_bar_terms = A_bar_all
         input_terms = input_all
-        stride = 1
-        while stride < L:
-            mask = torch.arange(L, device=x.device) >= stride   # [L]
-            # Gather values from positions t - stride
-            src_idx = torch.arange(L, device=x.device) - stride  # [L]
-            src_idx = src_idx.clamp(min=0)
-            # Index into [B, L, d_inner, d_state]
-            A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
-            inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
-            # Broadcast mask to match tensor shape
-            mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
-            # Apply associative operator where mask is True
-            new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
-            new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
-            input_terms = new_input
-            A_bar_terms = new_A_bar
-            stride *= 2
-
-        # input_terms now holds h for each timestep: [B, L, d_inner, d_state]
-        h_all = input_terms
+        try:
+            stride = 1
+            while stride < L:
+                mask = torch.arange(L, device=x.device) >= stride   # [L]
+                # Gather values from positions t - stride
+                src_idx = torch.arange(L, device=x.device) - stride  # [L]
+                src_idx = src_idx.clamp(min=0)
+                # Index into [B, L, d_inner, d_state]
+                A_prev = A_bar_terms[:, src_idx]                     # [B, L, d_inner, d_state]
+                inp_prev = input_terms[:, src_idx]                   # [B, L, d_inner, d_state]
+                # Broadcast mask to match tensor shape
+                mask_exp = mask.view(1, L, 1, 1)                    # [1, L, 1, 1]
+                # Apply associative operator where mask is True
+                new_input = torch.where(mask_exp, A_bar_terms * inp_prev + input_terms, input_terms)
+                new_A_bar = torch.where(mask_exp, A_bar_terms * A_prev, A_bar_terms)
+                input_terms = new_input
+                A_bar_terms = new_A_bar
+                stride *= 2
+            h_all = input_terms
+        except RuntimeError:
+            # Efficient scan via cumsum (works on all devices including MPS)
+            h_all = self._cumsum_scan(A_bar_all, input_all)
 
         # Compute y = (h * C).sum(d_state) + D * x
         C_exp = C.unsqueeze(2)                                  # [B, L, 1, d_state]
@@ -1656,6 +1665,27 @@ class _SSMBlock(nn.Module):
         # Final state for caching
         h_final = h_all[:, -1, :, :]                            # [B, d_inner, d_state]
         return y, h_final
+
+    def _cumsum_scan(self, coeffs: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        """
+        Parallel scan via cumsum — works on all devices including MPS.
+        
+        For linear recurrence h[t] = coeffs[t] * h[t-1] + values[t]:
+        - coeffs: [B, L, D, N] discretized A_bar (multiplicative coefficients)
+        - values: [B, L, D, N] input values
+        Returns:
+            h: [B, L, D, N] scan output
+        
+        Uses the identity:
+            h[t] = exp(S[t]) * cumsum(values * exp(-S))[t]
+        where S[t] = sum_{j=0}^{t} log(coeffs[j]).
+        """
+        log_a = torch.log(coeffs.clamp(min=1e-8))  # [B, L, D, N]
+        log_cumsum = torch.cumsum(log_a, dim=1)     # S[t] = cumulative log-coefficients
+        # h[t] = exp(S[t]) * cumsum(values * exp(-S))[t]
+        scaled_values = values * torch.exp(-log_cumsum)
+        h = torch.exp(log_cumsum) * torch.cumsum(scaled_values, dim=1)
+        return h
 
 
 # ---------------------------------------------------------------------------
@@ -2191,12 +2221,15 @@ class ChunkedSequenceProcessor:
     - Compatible with any sequence model that accepts (x, state) → (y, state)
     """
 
-    def __init__(self, chunk_size: int = 512, overlap: int = 64):
+    def __init__(self, chunk_size: int = 512, overlap: int = 64,
+                 adaptive: bool = False, min_chunk_size: int = 64):
         assert chunk_size > overlap >= 0, \
             f"chunk_size ({chunk_size}) must be > overlap ({overlap})"
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.stride = chunk_size - overlap
+        self.adaptive = adaptive
+        self.min_chunk_size = min_chunk_size
 
     def process(
         self,
@@ -2225,13 +2258,26 @@ class ChunkedSequenceProcessor:
         if L <= self.chunk_size:
             return model_fn(x, initial_state)
 
+        if self.adaptive:
+            # Adaptive chunk size based on content entropy
+            content_var = x.var(dim=-1).mean(dim=0)  # [L] variance per position
+            max_var = content_var.max().item() + 1e-8
+            # Higher variance → smaller chunks (more detail needed)
+            adaptive_factor = 1.0 - (content_var.mean().item() / max_var)
+            chunk_size = max(self.min_chunk_size, 
+                             int(self.chunk_size * adaptive_factor))
+        else:
+            chunk_size = self.chunk_size
+
+        stride = chunk_size - self.overlap
+
         y = torch.zeros(B, L, D, device=x.device, dtype=x.dtype)
         state = initial_state
         pos = 0
         prev_overlap_output = None  # [B, overlap, D] from tail of previous chunk
 
         while pos < L:
-            end = min(pos + self.chunk_size, L)
+            end = min(pos + chunk_size, L)
             chunk = x[:, pos:end, :]
             y_chunk, state = model_fn(chunk, state)
 
@@ -2260,7 +2306,7 @@ class ChunkedSequenceProcessor:
             else:
                 prev_overlap_output = None
 
-            pos += self.stride
+            pos += stride
 
         return y, state
 
@@ -4272,29 +4318,29 @@ class OptimizedTopologyAnalyzer(nn.Module):
             nn.Sigmoid()
         )
     
-    def compute_potential(self, pillars: torch.Tensor) -> torch.Tensor:
-        """V(pillars) → [B]."""
-        return self.potential_net(pillars).squeeze(-1)
+    def compute_potential(self, factors: torch.Tensor) -> torch.Tensor:
+        """V(factors) → [B]."""
+        return self.potential_net(factors).squeeze(-1)
     
-    def forward(self, pillars: torch.Tensor, iterations=None):
+    def forward(self, factors: torch.Tensor, iterations=None):
         """
         Topological analysis with efficient Hessian.
         
         Returns:
             Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics
         """
-        B, P = pillars.shape
-        device = pillars.device
+        B, P = factors.shape
+        device = factors.device
         
         # Potential
         with torch.enable_grad():
-            pillars_grad = pillars.clone().requires_grad_(True)
-            potential = self.compute_potential(pillars_grad)
+            factors_grad = factors.clone().requires_grad_(True)
+            potential = self.compute_potential(factors_grad)
             
             # Gradient
             gradient = torch.autograd.grad(
                 potential.sum(),
-                pillars_grad,
+                factors_grad,
                 create_graph=False
             )[0]
         
@@ -4304,7 +4350,7 @@ class OptimizedTopologyAnalyzer(nn.Module):
         
         hessian, eigenvalues = self.hessian_computer.compute_hessian(
             potential_fn,
-            pillars,
+            factors,
             return_eigenvalues=True
         )
         
@@ -4314,7 +4360,7 @@ class OptimizedTopologyAnalyzer(nn.Module):
         
         # Features
         features = torch.cat([
-            pillars,
+            factors,
             gradient,
             potential.unsqueeze(-1),
             grad_norm.unsqueeze(-1)
@@ -4339,261 +4385,86 @@ class OptimizedTopologyAnalyzer(nn.Module):
 # SECTION 10: QUANTUM SIMULATOR WITH IMPROVED ENTROPY
 # ============================================================================
 
-class MatrixProductStateLayer(nn.Module):
-    """MPS layer for quantum simulation."""
-    
-    def __init__(self, bond_dim: int = 8):
-        super().__init__()
-        self.bond_dim = bond_dim
-        self.inp = nn.Linear(bond_dim + 1, bond_dim)
-        self.mix = nn.GRUCell(bond_dim, bond_dim)
-    
-    def forward(self, state: torch.Tensor, pillar_scalar: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            state: [B, bond_dim]
-            pillar_scalar: [B, 1]
-        
-        Returns:
-            [B, bond_dim]
-        """
-        x = torch.cat([state, pillar_scalar], dim=-1)
-        y = torch.tanh(self.inp(x))
-        result = self.mix(y, state)
-        return result
-
-
-class QuantumSimulator(nn.Module):
+class DiversityMetric(nn.Module):
     """
-    Quantum-inspired simulator with Von Neumann entropy.
-    
-    Features:
-    - Matrix Product State architecture
-    - Proper Schmidt decomposition for entropy
-    - Action propensity from quantum state
+    Simple diversity metric via state variance.
+    Replaces QuantumSimulator — no pseudoscientific quantum entanglement.
     """
     
     def __init__(self, config):
         super().__init__()
-        self.bond_dim = config.quantum_bond_dim
-        self.num_pillars = config.num_pillars
-        
-        self.layers = nn.ModuleList([
-            MatrixProductStateLayer(self.bond_dim)
-            for _ in range(config.num_pillars)
-        ])
-        
-        self.ent_head = nn.Sequential(
-            nn.Linear(self.bond_dim, self.bond_dim // 2),
-            nn.GELU(),
-            nn.Linear(self.bond_dim // 2, 1)
-        )
-        
+        self.num_factors = config.num_pillars
         self.prop_head = nn.Sequential(
-            nn.Linear(self.bond_dim, config.num_pillars)
+            nn.Linear(config.num_pillars, config.num_pillars)
         )
     
-    @staticmethod
-    def _near_square_factors(n: int) -> Tuple[int, int]:
-        """Find near-square factorization n = a*b."""
-        a = int(math.isqrt(n))
-        while a > 1 and (n % a) != 0:
-            a -= 1
-        b = n // a
-        return a, b
-    
-    @staticmethod
-    def _safe_svdvals(x: torch.Tensor) -> torch.Tensor:
+    def forward(self, factors: torch.Tensor) -> Dict[str, Any]:
         """
-        Compute singular values with CPU fallback for MPS.
-        MPS doesn't support svdvals, so we move to CPU if needed.
-        """
-        original_device = x.device
-        
-        try:
-            # Try on original device first
-            return torch.linalg.svdvals(x)
-        except (NotImplementedError, RuntimeError):
-            pass
-        
-        # Fallback to CPU
-        try:
-            x_cpu = x.cpu()
-            svdvals_cpu = torch.linalg.svdvals(x_cpu)
-            return svdvals_cpu.to(original_device)
-        except Exception as e:
-            logger.warning(f"SVD computation failed: {e}, returning uniform distribution")
-            # Return uniform singular values as fallback
-            if x.dim() == 2:
-                n = min(x.shape)
-                return torch.ones(n, device=original_device, dtype=x.dtype) / n
-            elif x.dim() == 3:
-                B = x.shape[0]
-                n = min(x.shape[1], x.shape[2])
-                return torch.ones(B, n, device=original_device, dtype=x.dtype) / n
-            else:
-                return torch.tensor([1.0], device=original_device, dtype=x.dtype)
-    
-    def _compute_von_neumann_entropy(self, state_matrix: torch.Tensor) -> torch.Tensor:
-        """
-        Von Neumann entropy via Schmidt spectrum.
-        S = -Σ pᵢ log pᵢ where pᵢ = sᵢ²/Σsⱼ²
-        """
-        device = state_matrix.device
-        eps = 1e-12
-        
-        try:
-            x = state_matrix
-            
-            # Handle different input shapes
-            if x.dim() == 1:
-                n = x.numel()
-                a, b = self._near_square_factors(n)
-                M = x.reshape(a, b)
-                s = self._safe_svdvals(M)
-                s2 = s * s
-                Z = s2.sum().clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum()
-                rank = p.numel()
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            elif x.dim() == 2:
-                s = self._safe_svdvals(x)
-                s2 = s * s
-                Z = s2.sum().clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum()
-                rank = p.numel()
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            elif x.dim() == 3:
-                # Batch of matrices
-                s = self._safe_svdvals(x)
-                s2 = s * s
-                Z = s2.sum(dim=-1, keepdim=True).clamp_min(eps)
-                p = (s2 / Z).clamp_min(eps)
-                H = -(p * torch.log(p)).sum(dim=-1)
-                rank = p.shape[-1]
-                maxH = torch.log(torch.tensor(float(rank), device=device)).clamp_min(eps)
-                return torch.clamp(H / maxH, 0.0, 1.0)
-            
-            else:
-                logger.warning(f"Entropy: unsupported dims={x.dim()}, fallback 0.5")
-                return torch.tensor(0.5, device=device)
-        
-        except Exception as e:
-            logger.warning(f"Entropy computation failed: {e}, fallback 0.5")
-            return torch.tensor(0.5, device=device)
-    
-    def forward(self, pillars: torch.Tensor):
-        """
-        Quantum simulation forward pass.
+        Compute diversity as variance of factor activations.
         
         Args:
-            pillars: [B, num_pillars]
-        
+            factors: [B, num_factors]
         Returns:
-            Dict with entanglement and action_propensity
+            Dict with 'diversity' and 'action_propensity'
         """
-        B = pillars.size(0)
-        device = pillars.device
-        
-        # Initialize state
-        state = torch.zeros(B, self.bond_dim, device=device)
-        
-        # Process through MPS layers
-        for i, layer in enumerate(self.layers):
-            scalar = pillars[:, i:i+1]
-            state = layer(state, scalar)
-        
-        # Reshape to batch of matrices for entropy
-        a, b = self._near_square_factors(self.bond_dim)
-        state_m = state.reshape(B, a, b)
-        
-        # Compute entanglement
-        entanglement = self._compute_von_neumann_entropy(state_m)
-        
-        # Action propensity
-        action_propensity = F.softmax(self.prop_head(state), dim=-1)
-        
+        # Diversity = variance across factor dimensions
+        diversity = factors.var(dim=-1)  # [B]
+        action_propensity = F.softmax(self.prop_head(factors), dim=-1)
         return {
-            'entanglement': entanglement,
+            'diversity': diversity,
             'action_propensity': action_propensity
         }
 
 
 # ============================================================================
-# SECTION 11: PILLARS MODULE
+# SECTION 11: SPARSE FACTORIZATION (replaces hardcoded Five Pillars)
 # ============================================================================
 
-PILLAR_NAMES = ["Will", "Resolve", "Growth", "Union", "Movement"]
-PILLAR_DESCRIPTIONS = {
-    "Will": "Goal-directed persistence and volition",
-    "Resolve": "Decision stability under perturbation",
-    "Growth": "Adaptive learning and expansion capacity",
-    "Union": "Integration of disparate representations",
-    "Movement": "Temporal dynamics and state transitions",
-}
 
-
-class PillarsModule(nn.Module):
+class SparseFactorization(nn.Module):
     """
-    Five Pillars cognitive primitives.
+    Learnable sparse factorization replacing hardcoded Five Pillars.
     
-    Pillars:
-    - Will: Goal-directed behavior
-    - Resolve: Stability
-    - Growth: Learning capacity
-    - Union: Integration
-    - Movement: Dynamics
+    Uses L1-sparsity to learn a compact, interpretable representation
+    without imposing arbitrary philosophical categories.
     """
     
     def __init__(self, config):
         super().__init__()
         self.config = config
+        dim = config.hidden_dim
+        num_factors = config.num_pillars  # now 64 by default
         
-        self.hidden_to_pillars = nn.Sequential(
-            nn.Linear(config.hidden_dim, config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim // 2, config.num_pillars)
+        self.encode = nn.Sequential(
+            nn.Linear(dim, num_factors),
+            nn.LayerNorm(num_factors),
         )
         
-        self.pillars_to_hidden = nn.Sequential(
-            nn.Linear(config.num_pillars, config.hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(config.hidden_dim // 2, config.hidden_dim)
+        self.decode = nn.Sequential(
+            nn.Linear(num_factors, dim),
+            nn.LayerNorm(dim),
         )
-        
-        self.pillar_norm = nn.LayerNorm(config.num_pillars)
-        self.hidden_norm = nn.LayerNorm(config.hidden_dim)
     
-    def extract_pillars(self, hidden_state: torch.Tensor) -> torch.Tensor:
-        """Extract pillars from hidden state."""
-        raw_pillars = self.hidden_to_pillars(hidden_state)
-        pillars = torch.sigmoid(raw_pillars)
-        return self.pillar_norm(pillars)
+    def extract_factors(self, hidden_state: torch.Tensor) -> torch.Tensor:
+        """Extract sparse factors from hidden state."""
+        raw = self.encode(hidden_state)
+        # Soft sparsity via sigmoid (values close to 0 or 1)
+        factors = torch.sigmoid(raw)
+        return factors
     
-    def embed_pillars(self, pillars: torch.Tensor) -> torch.Tensor:
-        """Embed pillars back to hidden dimension."""
-        hidden = self.pillars_to_hidden(pillars)
-        return self.hidden_norm(hidden)
+    def embed_factors(self, factors: torch.Tensor) -> torch.Tensor:
+        """Embed factors back to hidden dimension."""
+        return self.decode(factors)
+    
+    def sparsity_loss(self, factors: torch.Tensor) -> torch.Tensor:
+        """L1 sparsity loss encouraging sparse activations."""
+        return factors.abs().mean()
     
     def forward(self, hidden_state: torch.Tensor):
-        """Forward pass."""
-        pillars = self.extract_pillars(hidden_state)
-        embedded = self.embed_pillars(pillars)
-        return pillars, embedded
-
-
-def get_pillar_dict(tensor: torch.Tensor) -> List[Dict[str, float]]:
-    """Convert pillar tensor to interpretable dict."""
-    out = []
-    for row in tensor.detach().cpu().tolist():
-        out.append({n: float(v) for n, v in zip(PILLAR_NAMES, row)})
-    return out
+        """Forward pass: extract factors and decode back."""
+        factors = self.extract_factors(hidden_state)
+        decoded = self.embed_factors(factors)
+        return factors, decoded
 
 
 # ============================================================================
@@ -4639,8 +4510,8 @@ class MultiLevelSafetySystem(nn.Module):
         self,
         action_embedding: torch.Tensor,
         core_state: torch.Tensor,
-        pillars: torch.Tensor,
-        quantum: Dict,
+        factors: torch.Tensor,
+        diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
     ) -> torch.Tensor:
@@ -4654,7 +4525,7 @@ class MultiLevelSafetySystem(nn.Module):
         device = core_state.device
         
         # Extract metrics
-        ent = quantum.get("entanglement", torch.zeros(B, device=device))
+        ent = diversity.get("diversity", torch.zeros(B, device=device))
         if ent.dim() == 1:
             ent = ent.view(B, 1)
         
@@ -4673,7 +4544,7 @@ class MultiLevelSafetySystem(nn.Module):
         cognitive_safe = self.cognitive_safety(core_state)
         
         # Level 3: Ethical alignment
-        ethical_input = torch.cat([core_state, pillars], dim=-1)
+        ethical_input = torch.cat([core_state, factors], dim=-1)
         ethical_safe = self.ethical_aligner(ethical_input)
         
         # Combined with adaptive weights
@@ -4742,8 +4613,8 @@ class TransparentSelfReporting(nn.Module):
     def forward(
         self,
         core_state: torch.Tensor,
-        pillars: torch.Tensor,
-        quantum: Dict,
+        factors: torch.Tensor,
+        diversity: Dict,
         topo: Dict,
         mode: str = 'combined'
     ) -> Dict:
@@ -4757,7 +4628,7 @@ class TransparentSelfReporting(nn.Module):
         device = core_state.device
         
         # Extract metrics with proper shape handling
-        ent = quantum.get('entanglement', torch.zeros(B, device=device)).float()
+        ent = diversity.get('diversity', torch.zeros(B, device=device)).float()
         ent = torch.nan_to_num(ent, nan=0.0).clamp(0.0, 1.0)
         # Ensure ent is [B] shape
         if ent.dim() == 0:
@@ -4773,10 +4644,10 @@ class TransparentSelfReporting(nn.Module):
         elif pot.dim() == 1:
             pot = pot.unsqueeze(-1)  # [B] -> [B, 1]
         
-        # Normalize pillars
-        pillars_norm = F.normalize(pillars, p=2, dim=-1)
+        # Normalize factors
+        factors_norm = F.normalize(factors, p=2, dim=-1)
         
-        # Expand entanglement to match pillars dimension
+        # Expand entanglement to match factors dimension
         # Input size = hidden_dim + num_pillars + num_pillars + 1
         ent_expanded = ent.unsqueeze(-1).expand(-1, self.config.num_pillars)  # [B, num_pillars]
         
@@ -4784,7 +4655,7 @@ class TransparentSelfReporting(nn.Module):
         # Expected: [B, hidden_dim + num_pillars + num_pillars + 1]
         feature_vector = torch.cat([
             core_state,       # [B, hidden_dim]
-            pillars_norm,     # [B, num_pillars]
+            factors_norm,     # [B, num_pillars]
             ent_expanded,     # [B, num_pillars]
             pot               # [B, 1]
         ], dim=-1)
@@ -5606,7 +5477,476 @@ class MetaLearner(nn.Module):
 
 
 # ============================================================================
-# SECTION 14: CORE ARCHITECTURE INTEGRATION
+# SECTION 14: NEURAL CAUSAL MODEL
+# ============================================================================
+
+class NeuralCausalModel(nn.Module):
+    """
+    Neural causal model with learnable DAG structure.
+    
+    Architecture:
+    - adjacency_logits → sigmoid + lower-triangular mask for DAG guarantee
+    - Mechanism f_i(parents) for each variable
+    - Support for interventions do(X=x) and counterfactuals
+    """
+    
+    def __init__(self, num_vars: int, hidden_dim: int = 64):
+        super().__init__()
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+        
+        # Learnable DAG adjacency (lower-triangular enforces acyclicity)
+        self.adjacency_logits = nn.Parameter(torch.randn(num_vars, num_vars) * 0.01)
+        
+        # Causal mechanisms: one network per variable
+        self.mechanisms = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(num_vars, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 1),
+            )
+            for _ in range(num_vars)
+        ])
+        
+        # Exogenous noise encoder
+        self.noise_encoder = nn.Linear(num_vars, num_vars)
+    
+    @property
+    def adjacency(self) -> torch.Tensor:
+        """Get adjacency matrix with DAG guarantee via lower-triangular mask."""
+        mask = torch.tril(torch.ones(self.num_vars, self.num_vars, 
+                                      device=self.adjacency_logits.device), diagonal=-1)
+        return torch.sigmoid(self.adjacency_logits) * mask
+    
+    def forward(self, exogenous: torch.Tensor, 
+                intervention: Optional[Dict[int, float]] = None) -> torch.Tensor:
+        """
+        Forward pass through causal model.
+        
+        Args:
+            exogenous: [B, num_vars] exogenous noise
+            intervention: Optional dict {var_index: value} for do(X=x)
+        Returns:
+            causal_vars: [B, num_vars] endogenous variables
+        """
+        B = exogenous.shape[0]
+        adj = self.adjacency  # [num_vars, num_vars]
+        noise = self.noise_encoder(exogenous)  # [B, num_vars]
+        
+        # Topological forward pass (lower-triangular ensures correct order)
+        # Use list to avoid in-place assignment that breaks autograd
+        var_list: List[torch.Tensor] = []
+        
+        for i in range(self.num_vars):
+            if intervention is not None and i in intervention:
+                var_list.append(torch.full((B,), intervention[i], device=exogenous.device))
+            else:
+                # Build parent input from already-computed variables
+                if var_list:
+                    prev = torch.stack(var_list, dim=-1)  # [B, i]
+                    padded = F.pad(prev, (0, self.num_vars - i))  # [B, num_vars]
+                else:
+                    padded = torch.zeros(B, self.num_vars, device=exogenous.device)
+                parent_weights = adj[i]  # [num_vars]
+                weighted_input = padded * parent_weights.unsqueeze(0)  # [B, num_vars]
+                var_list.append(self.mechanisms[i](weighted_input).squeeze(-1) + noise[:, i])
+        
+        return torch.stack(var_list, dim=-1)
+    
+    def counterfactual(self, observed: torch.Tensor, 
+                       intervention: Dict[int, float]) -> torch.Tensor:
+        """
+        Compute counterfactual: what would have happened under intervention?
+        
+        Args:
+            observed: [B, num_vars] observed values
+            intervention: {var_index: value} for counterfactual
+        Returns:
+            cf_vars: [B, num_vars] counterfactual variables
+        """
+        # Abduction: infer exogenous noise from observations
+        # Note: simplified abduction — proper implementation would invert causal mechanisms
+        exogenous = observed - self.forward(observed, intervention=None).detach() + observed
+        # Intervene and propagate
+        return self.forward(exogenous, intervention=intervention)
+    
+    def dag_loss(self) -> torch.Tensor:
+        """DAG constraint loss: trace(exp(A ⊙ A)) - num_vars."""
+        adj = self.adjacency
+        # Ensure DAG: trace(matrix_exp(A ⊙ A)) - d = 0 for DAGs
+        product = adj * adj
+        # Use matrix exponential approximation for efficiency
+        # exp(M) ≈ I + M + M²/2 + M³/6
+        I = torch.eye(self.num_vars, device=adj.device)
+        M = product
+        M2 = M @ M
+        M3 = M2 @ M
+        approx_exp = I + M + M2 / 2.0 + M3 / 6.0
+        return torch.trace(approx_exp) - self.num_vars
+    
+    def consistency_loss(self, obs_out: torch.Tensor, cf_out: torch.Tensor,
+                         intervention_vars: List[int]) -> torch.Tensor:
+        """
+        Consistency loss: non-intervened variables should be consistent.
+        
+        Args:
+            obs_out: [B, num_vars] observational output
+            cf_out: [B, num_vars] counterfactual output
+            intervention_vars: list of variable indices that were intervened on
+        Returns:
+            loss: scalar consistency loss
+        """
+        unchanged_mask = torch.ones(self.num_vars, dtype=torch.bool, device=obs_out.device)
+        for v in intervention_vars:
+            # Mark intervened variable and its descendants as changed
+            unchanged_mask[v] = False
+        if unchanged_mask.any():
+            return F.mse_loss(obs_out[:, unchanged_mask], cf_out[:, unchanged_mask])
+        return torch.tensor(0.0, device=obs_out.device)
+
+
+# ============================================================================
+# SECTION 15: MCTS PLANNER WITH AUXILIARY NETWORKS
+# ============================================================================
+
+class ValueNetwork(nn.Module):
+    """Value network V(s) for state evaluation."""
+    
+    def __init__(self, state_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+    
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Evaluate state value. Returns [B, 1]."""
+        return self.net(state)
+
+
+class PolicyNetwork(nn.Module):
+    """Policy network π(a|s) for action priors."""
+    
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, action_dim),
+        )
+    
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Compute action distribution π(a|s). Returns [B, action_dim] softmax."""
+        return F.softmax(self.net(state), dim=-1)
+
+
+class MCTSNode:
+    """Node in the MCTS search tree."""
+    
+    __slots__ = ['state', 'parent', 'children', 'visits', 'total_value', 
+                 'prior', 'action_idx']
+    
+    def __init__(self, state: torch.Tensor, parent=None, 
+                 prior: float = 1.0, action_idx: int = -1):
+        self.state = state
+        self.parent = parent
+        self.children: List = []
+        self.visits = 0
+        self.total_value = 0.0
+        self.prior = prior
+        self.action_idx = action_idx
+    
+    @property
+    def q_value(self) -> float:
+        """Mean value Q(s,a)."""
+        return self.total_value / max(self.visits, 1)
+    
+    def ucb1_score(self, c: float = 1.41) -> float:
+        """UCB1: Q + c * prior * sqrt(parent_visits) / (1 + visits)."""
+        if self.parent is None:
+            return 0.0
+        parent_visits = max(self.parent.visits, 1)
+        exploration = c * self.prior * math.sqrt(parent_visits) / (1 + self.visits)
+        return self.q_value + exploration
+
+
+class MCTSPlanner(nn.Module):
+    """
+    Monte Carlo Tree Search planner with world model rollouts.
+    
+    Components:
+    - UCB1 scoring for selection
+    - World model for state transitions
+    - Value network for leaf evaluation
+    - Policy network for action priors
+    """
+    
+    def __init__(self, state_dim: int, action_dim: int, 
+                 hidden_dim: int = 128, num_simulations: int = 50,
+                 max_depth: int = 5, c_puct: float = 1.41):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.num_simulations = num_simulations
+        self.max_depth = max_depth
+        self.c_puct = c_puct
+        
+        self.value_net = ValueNetwork(state_dim, hidden_dim)
+        self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim)
+    
+    def _select(self, node: 'MCTSNode') -> 'MCTSNode':
+        """Select best child using UCB1."""
+        while node.children:
+            node = max(node.children, key=lambda c: c.ucb1_score(self.c_puct))
+        return node
+    
+    def _expand(self, node: 'MCTSNode', world_model, 
+                policy_priors: torch.Tensor) -> 'MCTSNode':
+        """Expand node by generating children for each action."""
+        state = node.state
+        for a in range(min(self.action_dim, 8)):  # Limit branching factor
+            prior = policy_priors[a].item()
+            # Use world model to predict next state
+            with torch.no_grad():
+                noise = torch.randn_like(state) * 0.1
+                action_state = state + noise  # Simple action encoding
+                wm_result = world_model(action_state.unsqueeze(0))
+                next_state = wm_result['output'].squeeze(0)
+            
+            child = MCTSNode(
+                state=next_state,
+                parent=node,
+                prior=prior,
+                action_idx=a,
+            )
+            node.children.append(child)
+        
+        return node.children[0] if node.children else node
+    
+    def _simulate(self, node: 'MCTSNode') -> float:
+        """Evaluate leaf node using value network."""
+        with torch.no_grad():
+            value = self.value_net(node.state.unsqueeze(0)).item()
+        return value
+    
+    def _backpropagate(self, node: 'MCTSNode', value: float):
+        """Backpropagate value up the tree."""
+        while node is not None:
+            node.visits += 1
+            node.total_value += value
+            node = node.parent
+    
+    @torch.no_grad()
+    def search(self, state: torch.Tensor, world_model) -> Dict[str, Any]:
+        """
+        Run MCTS search from given state.
+        
+        Args:
+            state: [state_dim] current state
+            world_model: PhysicsGroundedWorldModel for rollouts
+        Returns:
+            Dict with best_action, visit_counts, values
+        """
+        root = MCTSNode(state=state)
+        
+        for _ in range(self.num_simulations):
+            # Select
+            leaf = self._select(root)
+            
+            # Expand (if not too deep)
+            if leaf.visits > 0 or leaf is root:
+                depth = 0
+                node = leaf
+                while node.parent is not None:
+                    depth += 1
+                    node = node.parent
+                
+                if depth < self.max_depth:
+                    policy = self.policy_net(leaf.state.unsqueeze(0)).squeeze(0)
+                    leaf = self._expand(leaf, world_model, policy)
+            
+            # Simulate
+            value = self._simulate(leaf)
+            
+            # Backpropagate
+            self._backpropagate(leaf, value)
+        
+        # Return results
+        if root.children:
+            best_child = max(root.children, key=lambda c: c.visits)
+            visit_counts = [c.visits for c in root.children]
+            values = [c.q_value for c in root.children]
+            return {
+                'best_action': best_child.action_idx,
+                'best_state': best_child.state,
+                'visit_counts': visit_counts,
+                'values': values,
+                'root_value': root.q_value,
+            }
+        return {
+            'best_action': 0,
+            'best_state': state,
+            'visit_counts': [],
+            'values': [],
+            'root_value': 0.0,
+        }
+    
+    def forward(self, state: torch.Tensor, world_model=None) -> Dict[str, Any]:
+        """Forward pass - run search or return value/policy."""
+        if world_model is not None and not self.training:
+            # Single state search (unbatched for MCTS)
+            if state.dim() == 1:
+                return self.search(state, world_model)
+            # Batch: return value and policy (MCTS is single-state only)
+        
+        return {
+            'value': self.value_net(state),
+            'policy': self.policy_net(state),
+        }
+
+
+# ============================================================================
+# SECTION 15b: HIERARCHICAL VAE
+# ============================================================================
+
+class HierarchicalVAE(nn.Module):
+    """
+    Hierarchical Variational Autoencoder with ladder architecture.
+    
+    Levels: tokens → phrases → sentences → concepts → goals
+    Architecture: bottom-up deterministic + top-down stochastic passes.
+    """
+    
+    def __init__(self, input_dim: int, level_dims: Optional[List[int]] = None,
+                 num_levels: int = 5):
+        super().__init__()
+        self.num_levels = num_levels
+        
+        if level_dims is None:
+            # Default: progressively compress
+            level_dims = [input_dim // (2 ** i) for i in range(num_levels)]
+            level_dims = [max(d, 16) for d in level_dims]
+        
+        self.level_dims = level_dims
+        
+        # Bottom-up deterministic encoders
+        self.bu_encoders = nn.ModuleList()
+        for i in range(num_levels - 1):
+            self.bu_encoders.append(nn.Sequential(
+                nn.Linear(level_dims[i], level_dims[i + 1]),
+                nn.LayerNorm(level_dims[i + 1]),
+                nn.GELU(),
+            ))
+        
+        # Top-down stochastic decoders (mean and logvar)
+        self.td_mean = nn.ModuleList()
+        self.td_logvar = nn.ModuleList()
+        self.td_decoders = nn.ModuleList()
+        
+        for i in range(num_levels - 1):
+            higher_dim = level_dims[i + 1]
+            lower_dim = level_dims[i]
+            self.td_mean.append(nn.Linear(higher_dim, lower_dim))
+            self.td_logvar.append(nn.Linear(higher_dim, lower_dim))
+            self.td_decoders.append(nn.Sequential(
+                nn.Linear(lower_dim, lower_dim),
+                nn.LayerNorm(lower_dim),
+                nn.GELU(),
+            ))
+        
+        # Abstraction level selector
+        self.level_selector = nn.Linear(input_dim, num_levels)
+        
+        # Project each level back to input_dim for uniform selected_level output
+        self.level_projections = nn.ModuleList([
+            nn.Linear(dim, input_dim) if dim != input_dim else nn.Identity()
+            for dim in level_dims
+        ])
+    
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """Reparameterization trick."""
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return mu + eps * std
+        return mu
+    
+    def encode(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """Bottom-up encoding through all levels."""
+        levels = [x]
+        h = x
+        for encoder in self.bu_encoders:
+            h = encoder(h)
+            levels.append(h)
+        return levels
+    
+    def decode(self, levels: List[torch.Tensor]) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Top-down decoding with stochastic sampling."""
+        kl_total = torch.tensor(0.0, device=levels[-1].device)
+        reconstructions = [levels[-1]]
+        
+        h = levels[-1]
+        for i in range(self.num_levels - 2, -1, -1):
+            mu = self.td_mean[i](h)
+            logvar = self.td_logvar[i](h)
+            z = self.reparameterize(mu, logvar)
+            
+            # KL divergence for this level
+            kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
+            kl_total = kl_total + kl.mean()
+            
+            h = self.td_decoders[i](z)
+            reconstructions.insert(0, h)
+        
+        return reconstructions, kl_total
+    
+    def forward(self, x: torch.Tensor, 
+                abstraction_level: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Forward pass with optional abstraction level selection.
+        
+        Args:
+            x: [B, input_dim] input
+            abstraction_level: If provided, return representation at this level (0-4)
+        Returns:
+            Dict with levels, reconstructions, kl_loss, selected_level
+        """
+        levels = self.encode(x)
+        reconstructions, kl_loss = self.decode(levels)
+        
+        # Auto-select abstraction level if not specified
+        if abstraction_level is None:
+            level_logits = self.level_selector(x)
+            level_probs = F.softmax(level_logits, dim=-1)
+            abstraction_level = level_probs.argmax(dim=-1)  # [B]
+        
+        # Get representation at selected level (projected to input_dim)
+        if isinstance(abstraction_level, int):
+            lvl = min(abstraction_level, len(levels) - 1)
+            selected = self.level_projections[lvl](levels[lvl])
+        else:
+            # Batch selection
+            selected = torch.zeros(x.shape[0], self.level_dims[0], device=x.device)
+            for b in range(x.shape[0]):
+                lvl = min(abstraction_level[b].item(), len(levels) - 1)
+                selected[b] = self.level_projections[int(lvl)](levels[int(lvl)][b])
+        
+        return {
+            'levels': levels,
+            'reconstructions': reconstructions,
+            'kl_loss': kl_loss,
+            'selected_level': selected,
+            'abstraction_level': abstraction_level,
+        }
+
+
+# ============================================================================
+# SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
 class AEONDeltaV3(nn.Module):
@@ -5707,17 +6047,17 @@ class AEONDeltaV3(nn.Module):
             enable_certification=True
         ).to(self.device)
         
-        # ===== PILLARS =====
-        logger.info("Loading Five Pillars...")
-        self.pillars_module = PillarsModule(config).to(self.device)
+        # ===== SPARSE FACTORIZATION =====
+        logger.info("Loading SparseFactorization...")
+        self.sparse_factors = SparseFactorization(config).to(self.device)
         
-        # ===== QUANTUM SIMULATOR =====
+        # ===== DIVERSITY METRIC =====
         if config.enable_quantum_sim:
-            logger.info("Loading QuantumSimulator...")
-            self.quantum_sim = QuantumSimulator(config).to(self.device)
+            logger.info("Loading DiversityMetric...")
+            self.diversity_metric = DiversityMetric(config).to(self.device)
         else:
-            self.quantum_sim = None
-            logger.info("QuantumSimulator disabled")
+            self.diversity_metric = None
+            logger.info("DiversityMetric disabled")
         
         # ===== TOPOLOGY ANALYZER =====
         if config.enable_catastrophe_detection:
@@ -5746,6 +6086,12 @@ class AEONDeltaV3(nn.Module):
                 tree_depth=config.world_model_tree_depth,
                 tree_branch=config.world_model_tree_branch,
             ).to(self.device)
+            # Value network for state selection
+            self.value_net = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim // 2, 1),
+            ).to(self.device)
         else:
             self.world_model = None
         
@@ -5757,6 +6103,13 @@ class AEONDeltaV3(nn.Module):
                 working_capacity=config.hierarchical_working_capacity,
                 episodic_capacity=config.hierarchical_episodic_capacity,
                 semantic_capacity=config.hierarchical_semantic_capacity,
+            ).to(self.device)
+            self.memory_projection = nn.Linear(config.hidden_dim, config.hidden_dim).to(self.device)
+            self.importance_scorer = nn.Sequential(
+                nn.Linear(config.hidden_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 1),
+                nn.Sigmoid(),
             ).to(self.device)
         else:
             self.hierarchical_memory = None
@@ -5772,6 +6125,37 @@ class AEONDeltaV3(nn.Module):
         
         # ===== META-LEARNING =====
         self.meta_learner = None  # Initialized post-construction via init_meta_learner()
+        
+        # ===== CAUSAL MODEL =====
+        if getattr(config, 'enable_causal_model', False):
+            logger.info("Loading NeuralCausalModel...")
+            self.causal_model = NeuralCausalModel(
+                num_vars=config.num_pillars,
+                hidden_dim=config.hidden_dim // 2,
+            ).to(self.device)
+        else:
+            self.causal_model = None
+        
+        # ===== MCTS PLANNER =====
+        if getattr(config, 'enable_mcts_planner', False):
+            logger.info("Loading MCTSPlanner...")
+            self.mcts_planner = MCTSPlanner(
+                state_dim=config.hidden_dim,
+                action_dim=config.action_dim,
+                hidden_dim=config.hidden_dim // 2,
+            ).to(self.device)
+        else:
+            self.mcts_planner = None
+        
+        # ===== HIERARCHICAL VAE =====
+        if getattr(config, 'enable_hierarchical_vae', False):
+            logger.info("Loading HierarchicalVAE...")
+            self.hierarchical_vae = HierarchicalVAE(
+                input_dim=config.hidden_dim,
+                num_levels=5,
+            ).to(self.device)
+        else:
+            self.hierarchical_vae = None
         
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
@@ -5803,7 +6187,7 @@ class AEONDeltaV3(nn.Module):
         self.metrics_log = {
             'iterations': [],
             'consistency': [],
-            'entanglement': [],
+            'diversity': [],
             'catastrophes': [],
             'safety_scores': []
         }
@@ -5840,25 +6224,18 @@ class AEONDeltaV3(nn.Module):
         except Exception as e:
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
-    def _compute_quantum(
-        self, pillars: torch.Tensor, B: int, device: torch.device, fast: bool
+    def _compute_diversity(
+        self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
-        """Compute quantum simulation results or return defaults.
-        
-        Args:
-            pillars: [B, num_pillars] pillar activations.
-            B: Batch size.
-            device: Target device.
-            fast: If True, skip quantum sim and return defaults.
-        """
-        if self.quantum_sim is not None and not fast:
-            quantum_results = self.quantum_sim(pillars)
+        """Compute diversity metric or return defaults."""
+        if self.diversity_metric is not None and not fast:
+            diversity_results = self.diversity_metric(factors)
             logger.debug(
-                f"Quantum: entanglement={quantum_results['entanglement'].mean().item():.4f}"
+                f"Diversity: score={diversity_results['diversity'].mean().item():.4f}"
             )
-            return quantum_results
+            return diversity_results
         return {
-            'entanglement': torch.zeros(B, device=device),
+            'diversity': torch.zeros(B, device=device),
             'action_propensity': torch.full(
                 (B, self.config.num_pillars),
                 1.0 / self.config.num_pillars,
@@ -5867,20 +6244,20 @@ class AEONDeltaV3(nn.Module):
         }
     
     def _compute_topology(
-        self, pillars: torch.Tensor, iterations: torch.Tensor,
+        self, factors: torch.Tensor, iterations: torch.Tensor,
         B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
         """Compute topology analysis results or return defaults.
         
         Args:
-            pillars: [B, num_pillars] pillar activations.
+            factors: [B, num_pillars] factor activations.
             iterations: [B] convergence iterations from meta-loop.
             B: Batch size.
             device: Target device.
             fast: If True, skip topology analysis and return defaults.
         """
         if self.topology_analyzer is not None and not fast:
-            topo_results = self.topology_analyzer(pillars, iterations)
+            topo_results = self.topology_analyzer(factors, iterations)
             logger.debug(
                 f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
             )
@@ -5893,16 +6270,16 @@ class AEONDeltaV3(nn.Module):
         }
     
     def _compute_safety(
-        self, C_star: torch.Tensor, pillars: torch.Tensor,
-        quantum_results: Dict, topo_results: Dict,
+        self, C_star: torch.Tensor, factors: torch.Tensor,
+        diversity_results: Dict, topo_results: Dict,
         B: int, device: torch.device
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Compute safety scores and self-report.
         
         Args:
             C_star: [B, hidden_dim] converged thought state.
-            pillars: [B, num_pillars] pillar activations.
-            quantum_results: Dict from quantum simulation.
+            factors: [B, num_pillars] factor activations.
+            diversity_results: Dict from diversity metric.
             topo_results: Dict from topology analysis.
             B: Batch size.
             device: Target device.
@@ -5910,8 +6287,8 @@ class AEONDeltaV3(nn.Module):
         if self.safety_system is not None:
             action_embedding = torch.zeros(B, self.config.action_dim, device=device)
             safety_score = self.safety_system(
-                action_embedding, C_star, pillars,
-                quantum_results, topo_results, mode='combined'
+                action_embedding, C_star, factors,
+                diversity_results, topo_results, mode='combined'
             )
             logger.debug(f"Safety: score={safety_score.mean().item():.4f}")
         else:
@@ -5919,7 +6296,7 @@ class AEONDeltaV3(nn.Module):
         
         if self.self_reporter is not None:
             self_report = self.self_reporter(
-                C_star, pillars, quantum_results, topo_results, mode='combined'
+                C_star, factors, diversity_results, topo_results, mode='combined'
             )
             logger.debug(
                 f"Self-report: honesty={self_report['honesty_gate'].mean().item():.4f}"
@@ -5990,31 +6367,85 @@ class AEONDeltaV3(nn.Module):
         )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
-        # 2. Extract pillars
-        pillars, embedded_pillars = self.pillars_module(C_star)
-        logger.debug(f"Pillars: {pillars.shape}")
+        # 2. Extract factors
+        factors, embedded_factors = self.sparse_factors(C_star)
+        logger.debug(f"Factors: {factors.shape}")
         
-        # 3-4. Quantum and topology (delegated to helpers)
-        quantum_results = self._compute_quantum(pillars, B, device, fast)
-        topo_results = self._compute_topology(pillars, iterations, B, device, fast)
+        # 3-4. Diversity and topology (delegated to helpers)
+        diversity_results = self._compute_diversity(factors, B, device, fast)
+        topo_results = self._compute_topology(factors, iterations, B, device, fast)
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
-            C_star, pillars, quantum_results, topo_results, B, device
+            C_star, factors, diversity_results, topo_results, B, device
         )
         
-        # 5b. World model (physics reasoning)
+        # 5a. Safety enforcement — rollback unsafe states
+        if self.safety_system is not None:
+            safety_threshold = self.config.safety_threshold
+            unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
+            if unsafe_mask.any():
+                logger.warning(
+                    f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
+                    f"below threshold {safety_threshold}, applying rollback"
+                )
+                # Rollback: replace unsafe C_star with input z_in (safe fallback)
+                C_star = torch.where(unsafe_mask.unsqueeze(-1), z_in, C_star)
+        
+        # 5b. World model — surprise-driven integration
         world_model_results = {}
+        surprise = torch.tensor(0.0, device=device)
         if self.world_model is not None and not fast:
             world_model_results = self.world_model(
                 C_star, explore_counterfactuals=planning
             )
-            C_star = C_star + world_model_results['output']
+            predicted_next = world_model_results['output']
+            # Surprise = prediction error
+            surprise = F.mse_loss(C_star, predicted_next, reduction='none').mean(dim=-1)  # [B]
+            # High surprise → use value_net to select state
+            surprise_threshold = self.config.surprise_threshold
+            high_surprise = surprise > surprise_threshold  # [B] bool
+            if high_surprise.any() and self.config.enable_world_model:
+                # Score original vs predicted
+                v_original = self.value_net(C_star)  # [B, 1]
+                v_predicted = self.value_net(predicted_next)  # [B, 1]
+                # Select better state per-sample
+                use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
+                C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+            else:
+                # Low surprise or no value_net: blend
+                C_star = C_star + 0.1 * predicted_next
+            world_model_results['surprise'] = surprise
         
-        # 5c. Hierarchical memory storage/retrieval
+        # 5b2. MCTS planning
+        mcts_results = {}
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast:
+            # Run MCTS for first sample (as demonstration)
+            mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
+        
+        # 5c. Hierarchical memory — retrieve then store
+        memory_retrieved = None
         if self.hierarchical_memory is not None:
+            # Retrieve relevant memories using z_in as query
+            if not fast:
+                retrieved_memories = []
+                for i in range(B):
+                    ret = self.hierarchical_memory.retrieve(z_in[i], k=5)
+                    # Collect working memory vectors
+                    working = ret.get('working', [])
+                    if working:
+                        vecs = torch.stack([v for v, s in working])
+                        retrieved_memories.append(vecs.mean(dim=0))
+                    else:
+                        retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
+                memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
+                # Fuse via projection
+                C_star = C_star + self.memory_projection(memory_context)
+                memory_retrieved = memory_context
+            # Store after reasoning (batched importance scoring)
+            importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
             for i in range(B):
-                self.hierarchical_memory.store(C_star[i])
+                self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
         
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
@@ -6022,17 +6453,22 @@ class AEONDeltaV3(nn.Module):
         # 7. RSSM dynamics
         z_rssm = self.rssm(C_fused)
         
+        # 7b. Multimodal grounding (if available)
+        if self.multimodal is not None and not fast:
+            # Use z_rssm as language representation
+            mm_result = self.multimodal(language=z_rssm.unsqueeze(1))
+            z_rssm = z_rssm + mm_result['fused']
+        
         # 8. Integration
         z_out = self.integration_module(
-            torch.cat([z_rssm, embedded_pillars], dim=-1)
+            torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         
         # Package outputs
         outputs = {
             'core_state': C_star,
-            'pillars': pillars,
-            'pillar_dict': get_pillar_dict(pillars),
-            'quantum_results': quantum_results,
+            'factors': factors,
+            'diversity_results': diversity_results,
             'topo_results': topo_results,
             'safety_score': safety_score,
             'self_report': self_report,
@@ -6040,6 +6476,7 @@ class AEONDeltaV3(nn.Module):
             'iterations': iterations,
             'psi_0': z_in,
             'world_model_results': world_model_results,
+            'mcts_results': mcts_results,
         }
         
         return z_out, outputs
@@ -6221,6 +6658,12 @@ class AEONDeltaV3(nn.Module):
         )
         reg_loss = self.config.lambda_reg * l2_reg
         
+        # ===== 7. SPARSITY LOSS =====
+        if 'factors' in outputs and hasattr(self, 'sparse_factors'):
+            sparsity_loss = self.sparse_factors.sparsity_loss(outputs['factors'])
+        else:
+            sparsity_loss = torch.tensor(0.0, device=self.device)
+        
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
@@ -6230,6 +6673,7 @@ class AEONDeltaV3(nn.Module):
             vq_loss +
             self.config.lambda_lipschitz * lipschitz_loss +
             self.config.lambda_safety * safety_loss +
+            self.config.sparsity_target * sparsity_loss +
             reg_loss
         )
         
@@ -6248,6 +6692,7 @@ class AEONDeltaV3(nn.Module):
             'consistency_loss': consistency_loss,
             'lipschitz_loss': lipschitz_loss,
             'safety_loss': safety_loss,
+            'sparsity_loss': sparsity_loss,
             'reg_loss': reg_loss,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
         }
@@ -6261,8 +6706,8 @@ class AEONDeltaV3(nn.Module):
             self.metrics_log['consistency'].append(
                 float(consistency.item()) if isinstance(consistency, torch.Tensor) else float(consistency)
             )
-            self.metrics_log['entanglement'].append(
-                float(outputs['quantum_results']['entanglement'].mean().item())
+            self.metrics_log['diversity'].append(
+                float(outputs['diversity_results']['diversity'].mean().item())
             )
             self.metrics_log['catastrophes'].append(
                 float(outputs['topo_results']['catastrophes'].float().mean().item())
@@ -6411,14 +6856,17 @@ class AEONDeltaV3(nn.Module):
             ("BackboneAdapter", self.backbone_adapter),
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
-            ("PillarsModule", self.pillars_module),
-            ("QuantumSimulator", self.quantum_sim),
+            ("SparseFactorization", self.sparse_factors),
+            ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
             ("SafetySystem", self.safety_system),
             ("SelfReporter", self.self_reporter),
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
             ("MultiModal", self.multimodal),
+            ("CausalModel", self.causal_model),
+            ("MCTSPlanner", self.mcts_planner),
+            ("HierarchicalVAE", self.hierarchical_vae),
         ]
         
         for name, module in modules:
@@ -6614,7 +7062,7 @@ class AEONDeltaV3(nn.Module):
 
 
 # ============================================================================
-# SECTION 15: TRAINING PIPELINE
+# SECTION 17: TRAINING PIPELINE
 # ============================================================================
 
 class AEONTrainer:
@@ -6958,7 +7406,7 @@ class AEONTrainer:
 
 
 # ============================================================================
-# SECTION 16: TESTING FRAMEWORK
+# SECTION 18: TESTING FRAMEWORK
 # ============================================================================
 
 class AEONTestSuite:
@@ -7262,7 +7710,7 @@ class AEONTestSuite:
 
 
 # ============================================================================
-# SECTION 17: CLI INTERFACE
+# SECTION 19: CLI INTERFACE
 # ============================================================================
 
 def parse_args():
@@ -7330,7 +7778,7 @@ Examples:
 
 
 # ============================================================================
-# SECTION 18: MAIN ENTRY POINT
+# SECTION 20: MAIN ENTRY POINT
 # ============================================================================
 
 def main():
@@ -7428,15 +7876,17 @@ def main():
             
             logger.info("✅ Metrics:")
             logger.info(f"  - Consistency: {consistency:.4f}")
-            logger.info(f"  - Entanglement: {outputs['quantum_results']['entanglement'].mean().item():.4f}")
+            logger.info(f"  - Diversity: {outputs['diversity_results']['diversity'].mean().item():.4f}")
             logger.info(f"  - Catastrophes: {outputs['topo_results']['catastrophes'].float().mean().item():.4f}")
             logger.info(f"  - Safety: {outputs['safety_score'].mean().item():.4f}")
             logger.info(f"  - Iterations: {outputs['iterations'].mean().item():.2f}")
             
-            if 'pillar_dict' in outputs:
-                logger.info("  - Pillars:")
-                for p in outputs['pillar_dict'][0].items():
-                    logger.info(f"      {p[0]}: {p[1]:.4f}")
+            if 'factors' in outputs:
+                logger.info("  - Factors (top 5):")
+                factor_vals = outputs['factors'][0].detach().cpu().tolist()
+                top_indices = sorted(range(len(factor_vals)), key=lambda i: factor_vals[i], reverse=True)[:5]
+                for idx in top_indices:
+                    logger.info(f"      factor_{idx}: {factor_vals[idx]:.4f}")
     
     # ===== MODE: TRAIN =====
     elif args.mode == 'train':
