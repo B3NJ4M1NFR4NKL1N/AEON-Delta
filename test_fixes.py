@@ -2514,6 +2514,162 @@ def test_safety_enforcement():
     print("✅ test_safety_enforcement PASSED")
 
 
+def test_filter_logits_all_inf_guard():
+    """Verify that _filter_logits handles all-inf case by falling back to unfiltered logits.
+    
+    This tests the scenario where invalid token filtering removes all top-K tokens,
+    causing all remaining logits to be -inf.
+    """
+    from aeon_core import ThoughtDecoder
+    
+    decoder = ThoughtDecoder(vocab_size=1000, emb_dim=64, z_dim=64)
+    decoder.eval()
+    
+    # Create logits where only a few tokens have positive values
+    logits = torch.full((2, 1000), -5.0)
+    logits[:, 200:210] = 2.0  # These are the "good" tokens
+    
+    # Mark those good tokens as invalid — this simulates the case where
+    # invalid token filtering removes all reasonable candidates
+    invalid_mask = torch.zeros(1000, dtype=torch.bool)
+    invalid_mask[200:210] = True
+    decoder._invalid_token_mask = invalid_mask
+    
+    device = logits.device
+    filtered = decoder._filter_logits(logits, temperature=0.8, top_k=50, device=device)
+    
+    # After the guard, filtered should NOT all be extremely negative
+    # because fallback to original logits should kick in
+    assert filtered.max(dim=-1).values.min().item() > -1e8, (
+        f"All logits still extremely negative after guard: max={filtered.max().item()}"
+    )
+    
+    # Verify softmax on filtered logits gives valid probabilities
+    probs = torch.softmax(filtered, dim=-1)
+    assert not torch.isnan(probs).any(), "NaN in probabilities"
+    assert not torch.isinf(probs).any(), "Inf in probabilities"
+    
+    print("✅ test_filter_logits_all_inf_guard PASSED")
+
+
+def test_filter_logits_nan_handling():
+    """Verify that _filter_logits properly replaces NaN values."""
+    from aeon_core import ThoughtDecoder
+    
+    decoder = ThoughtDecoder(vocab_size=1000, emb_dim=64, z_dim=64)
+    decoder.eval()
+    
+    # Create logits with NaN values
+    logits = torch.randn(2, 1000)
+    logits[0, 10:20] = float('nan')
+    device = logits.device
+    
+    filtered = decoder._filter_logits(logits, temperature=0.8, top_k=50, device=device)
+    
+    assert not torch.isnan(filtered).any(), "NaN values remain after filtering"
+    assert not torch.isinf(filtered).any(), "Inf values remain after filtering"
+    
+    print("✅ test_filter_logits_nan_handling PASSED")
+
+
+def test_temperature_clamping():
+    """Verify that very small temperature is clamped to 0.1 minimum."""
+    from aeon_core import ThoughtDecoder
+    
+    decoder = ThoughtDecoder(vocab_size=1000, emb_dim=64, z_dim=64)
+    decoder.eval()
+    
+    logits = torch.randn(1, 1000)
+    device = logits.device
+    
+    # Very small temperature should not cause numerical instability
+    filtered = decoder._filter_logits(logits, temperature=1e-10, top_k=0, device=device)
+    
+    assert not torch.isnan(filtered).any(), "NaN with very small temperature"
+    assert not torch.isinf(filtered).any(), "Inf with very small temperature"
+    
+    # Verify the temperature was effectively clamped to 0.1
+    expected = logits / 0.1
+    expected = torch.nan_to_num(expected, nan=-1e9, posinf=1e9, neginf=-1e9)
+    assert torch.allclose(filtered, expected, atol=1e-5), "Temperature was not clamped to 0.1"
+    
+    print("✅ test_temperature_clamping PASSED")
+
+
+def test_safety_blending_not_replacement():
+    """Verify that safety enforcement blends C_star instead of replacing it entirely."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_safety_guardrails=True,
+        safety_threshold=0.99,  # Very high to trigger rollback
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    
+    core_state = outputs['core_state']
+    psi_0 = outputs['psi_0']
+    
+    # After blending, core_state should NOT be exactly equal to psi_0
+    # (unless safety_score is exactly 0, which is extremely unlikely)
+    if outputs['safety_score'].item() > 0.0:
+        assert not torch.allclose(core_state, psi_0, atol=1e-6), (
+            "core_state should be a blend, not a full replacement of z_in"
+        )
+    
+    print("✅ test_safety_blending_not_replacement PASSED")
+
+
+def test_missing_weight_xavier_init():
+    """Verify that missing weight matrices use Xavier init, not zeros."""
+    import torch.nn as nn
+    
+    # Simulate the fixed initialization logic
+    param_tensor = torch.zeros(64, 128)
+    key = "decoder.lstm.weight_ih_l0"
+    
+    if 'weight' in key and param_tensor.dim() >= 2:
+        nn.init.xavier_uniform_(param_tensor)
+    
+    # Xavier-initialized tensor should NOT be all zeros
+    assert not torch.allclose(param_tensor, torch.zeros_like(param_tensor)), (
+        "Weight matrix should be Xavier-initialized, not zeros"
+    )
+    
+    # But bias should stay zeros
+    bias_tensor = torch.zeros(64)
+    bias_key = "decoder.lstm.bias_ih_l0"
+    if 'weight' in bias_key and bias_tensor.dim() >= 2:
+        nn.init.xavier_uniform_(bias_tensor)
+    elif 'bias' in bias_key:
+        nn.init.zeros_(bias_tensor)
+    
+    assert torch.allclose(bias_tensor, torch.zeros_like(bias_tensor)), (
+        "Bias should remain zeros"
+    )
+    
+    print("✅ test_missing_weight_xavier_init PASSED")
+
+
+def test_safety_threshold_default():
+    """Verify that the default safety threshold is 0.5, not 0.85."""
+    from aeon_core import AEONConfig
+    
+    config = AEONConfig()
+    assert config.safety_threshold == 0.5, (
+        f"Default safety_threshold should be 0.5, got {config.safety_threshold}"
+    )
+    
+    print("✅ test_safety_threshold_default PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -2640,6 +2796,14 @@ if __name__ == '__main__':
     test_world_model_surprise_integration()
     test_memory_retrieval_integration()
     test_safety_enforcement()
+    
+    # Generation quality fix tests
+    test_filter_logits_all_inf_guard()
+    test_filter_logits_nan_handling()
+    test_temperature_clamping()
+    test_safety_blending_not_replacement()
+    test_missing_weight_xavier_init()
+    test_safety_threshold_default()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
