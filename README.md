@@ -301,7 +301,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 147 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 151 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -339,7 +339,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (147 tests) — stability, gradients, causal, planning
+├── test_fixes.py     # Comprehensive test suite (151 tests) — stability, gradients, causal, planning
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
