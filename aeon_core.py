@@ -4093,7 +4093,7 @@ class HierarchicalMetaLoop(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        z_dim = config.hidden_dim
+        z_dim = config.hidden_dim  # psi_0 is [B, hidden_dim]
 
         # Three meta-loops with increasing depth
         self.fast_loop = ProvablyConvergentMetaLoop(

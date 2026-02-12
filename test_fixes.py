@@ -2670,6 +2670,295 @@ def test_safety_threshold_default():
     print("✅ test_safety_threshold_default PASSED")
 
 
+# ==========================================================================
+# Tests for new cognitive architecture enhancements
+# ==========================================================================
+
+
+def test_convergence_monitor_warmup():
+    """ConvergenceMonitor returns 'warmup' for fewer than 3 samples."""
+    from aeon_core import ConvergenceMonitor
+    mon = ConvergenceMonitor(threshold=1e-5)
+    r1 = mon.check(1.0)
+    assert r1['status'] == 'warmup'
+    assert r1['certified'] is False
+    r2 = mon.check(0.5)
+    assert r2['status'] == 'warmup'
+    print("✅ test_convergence_monitor_warmup PASSED")
+
+
+def test_convergence_monitor_converged():
+    """ConvergenceMonitor certifies convergence with decreasing deltas."""
+    from aeon_core import ConvergenceMonitor
+    mon = ConvergenceMonitor(threshold=1e-3)
+    for d in [1.0, 0.1, 0.01, 0.001, 0.0001]:
+        result = mon.check(d)
+    assert result['status'] == 'converged'
+    assert result['certified'] is True
+    assert 0.0 < result['contraction_rate'] < 1.0
+    assert 0.0 < result['confidence'] < 1.0
+    print("✅ test_convergence_monitor_converged PASSED")
+
+
+def test_convergence_monitor_diverging():
+    """ConvergenceMonitor detects divergence when norms increase."""
+    from aeon_core import ConvergenceMonitor
+    mon = ConvergenceMonitor(threshold=1e-5)
+    for d in [0.01, 0.1, 1.0, 10.0]:
+        result = mon.check(d)
+    assert result['status'] == 'diverging'
+    assert result['certified'] is False
+    print("✅ test_convergence_monitor_diverging PASSED")
+
+
+def test_convergence_monitor_reset():
+    """ConvergenceMonitor.reset clears history."""
+    from aeon_core import ConvergenceMonitor
+    mon = ConvergenceMonitor()
+    for d in [1.0, 0.5, 0.25]:
+        mon.check(d)
+    mon.reset()
+    assert len(mon.history) == 0
+    result = mon.check(1.0)
+    assert result['status'] == 'warmup'
+    print("✅ test_convergence_monitor_reset PASSED")
+
+
+def test_hierarchical_meta_loop_forward():
+    """HierarchicalMetaLoop forward pass produces valid output."""
+    from aeon_core import HierarchicalMetaLoop, AEONConfig
+    config = AEONConfig()
+    hml = HierarchicalMetaLoop(config)
+    hml.eval()
+    z = torch.randn(2, config.hidden_dim)
+    C_star, iters, meta = hml(z)
+    assert C_star.shape == (2, config.hidden_dim)
+    assert torch.isfinite(C_star).all()
+    print("✅ test_hierarchical_meta_loop_forward PASSED")
+
+
+def test_hierarchical_meta_loop_training_uses_deep():
+    """During training, HierarchicalMetaLoop always uses the deep loop."""
+    from aeon_core import HierarchicalMetaLoop, AEONConfig
+    config = AEONConfig()
+    hml = HierarchicalMetaLoop(config)
+    hml.train()
+    z = torch.randn(2, config.hidden_dim)
+    C_star, iters, meta = hml(z)
+    assert C_star.shape == (2, config.hidden_dim)
+    print("✅ test_hierarchical_meta_loop_training_uses_deep PASSED")
+
+
+def test_causal_factor_extractor_forward():
+    """CausalFactorExtractor produces valid factors and DAG."""
+    from aeon_core import CausalFactorExtractor
+    cfe = CausalFactorExtractor(hidden_dim=64, num_factors=8)
+    x = torch.randn(4, 64)
+    result = cfe(x)
+    assert result['factors'].shape == (4, 8)
+    assert result['causal_graph'].shape == (8, 8)
+    assert result['interventional'] is False
+    # Check DAG: upper triangle should be zero
+    adj = result['causal_graph']
+    upper = torch.triu(adj, diagonal=0)
+    assert (upper == 0).all(), "Adjacency must be strictly lower-triangular"
+    print("✅ test_causal_factor_extractor_forward PASSED")
+
+
+def test_causal_factor_extractor_intervention():
+    """CausalFactorExtractor correctly applies do-intervention."""
+    from aeon_core import CausalFactorExtractor
+    cfe = CausalFactorExtractor(hidden_dim=64, num_factors=8)
+    x = torch.randn(2, 64)
+    result = cfe(x, intervene={'index': 3, 'value': 1.0})
+    assert result['interventional'] is True
+    # The intervened factor should be close to 1.0 (plus causal effect)
+    assert result['factors'][:, 3].min() >= 0.9
+    print("✅ test_causal_factor_extractor_intervention PASSED")
+
+
+def test_causal_factor_extractor_gradient_flow():
+    """CausalFactorExtractor allows gradients to flow."""
+    from aeon_core import CausalFactorExtractor
+    cfe = CausalFactorExtractor(hidden_dim=32, num_factors=4)
+    x = torch.randn(2, 32, requires_grad=True)
+    result = cfe(x)
+    loss = result['factors'].sum()
+    loss.backward()
+    assert x.grad is not None
+    assert x.grad.abs().sum() > 0
+    print("✅ test_causal_factor_extractor_gradient_flow PASSED")
+
+
+def test_temporal_memory_store_and_retrieve():
+    """TemporalMemory stores and retrieves vectors by similarity."""
+    from aeon_core import TemporalMemory
+    tm = TemporalMemory(capacity=10, dim=16)
+    v = torch.randn(16)
+    tm.store(v, importance=1.0)
+    results = tm.retrieve(v, k=1)
+    assert len(results) == 1
+    assert torch.allclose(results[0]['vector'], v)
+    print("✅ test_temporal_memory_store_and_retrieve PASSED")
+
+
+def test_temporal_memory_decay():
+    """TemporalMemory applies exponential decay over time."""
+    from aeon_core import TemporalMemory
+    tm = TemporalMemory(capacity=100, dim=8, decay_rate=0.5)
+    v = torch.randn(8)
+    tm.store(v, importance=1.0)
+    initial_strength = tm.memories[0]['strength']
+    # Store many more to advance time
+    for _ in range(20):
+        tm.store(torch.randn(8), importance=0.1)
+    # Original memory should have decayed significantly or been pruned
+    old_present = any(
+        torch.allclose(m['vector'], v) for m in tm.memories
+    )
+    if old_present:
+        old_mem = [m for m in tm.memories if torch.allclose(m['vector'], v)][0]
+        assert old_mem['strength'] < initial_strength
+    print("✅ test_temporal_memory_decay PASSED")
+
+
+def test_temporal_memory_consolidation():
+    """TemporalMemory consolidates when capacity is exceeded."""
+    from aeon_core import TemporalMemory
+    tm = TemporalMemory(capacity=3, dim=8)
+    for i in range(5):
+        tm.store(torch.randn(8), importance=1.0)
+    assert len(tm.memories) <= 3
+    print("✅ test_temporal_memory_consolidation PASSED")
+
+
+def test_temporal_memory_empty_retrieve():
+    """TemporalMemory returns empty list when no memories stored."""
+    from aeon_core import TemporalMemory
+    tm = TemporalMemory(capacity=10, dim=8)
+    results = tm.retrieve(torch.randn(8), k=5)
+    assert results == []
+    print("✅ test_temporal_memory_empty_retrieve PASSED")
+
+
+def test_grounded_multimodal_learning_forward():
+    """GroundedMultimodalLearning computes contrastive loss."""
+    from aeon_core import GroundedMultimodalLearning
+    gml = GroundedMultimodalLearning(vision_dim=64, language_dim=32, latent_dim=16)
+    v_feat = torch.randn(4, 64)
+    l_feat = torch.randn(4, 32)
+    result = gml(v_feat, l_feat)
+    assert result['vision'].shape == (4, 16)
+    assert result['language'].shape == (4, 16)
+    assert result['similarity'].shape == (4, 4)
+    assert result['loss'].dim() == 0  # scalar
+    assert result['loss'].item() > 0
+    print("✅ test_grounded_multimodal_learning_forward PASSED")
+
+
+def test_grounded_multimodal_learning_zero_shot():
+    """GroundedMultimodalLearning zero_shot_classify returns valid probs."""
+    from aeon_core import GroundedMultimodalLearning
+    gml = GroundedMultimodalLearning(vision_dim=64, language_dim=32, latent_dim=16)
+    img = torch.randn(1, 64)
+    texts = [torch.randn(32) for _ in range(5)]
+    probs = gml.zero_shot_classify(img, texts)
+    assert probs.shape == (5,)
+    assert abs(probs.sum().item() - 1.0) < 1e-5
+    assert (probs >= 0).all()
+    print("✅ test_grounded_multimodal_learning_zero_shot PASSED")
+
+
+def test_grounded_multimodal_gradient_flow():
+    """GroundedMultimodalLearning loss allows gradient flow."""
+    from aeon_core import GroundedMultimodalLearning
+    gml = GroundedMultimodalLearning(vision_dim=64, language_dim=32, latent_dim=16)
+    v = torch.randn(4, 64, requires_grad=True)
+    l = torch.randn(4, 32, requires_grad=True)
+    result = gml(v, l)
+    result['loss'].backward()
+    assert v.grad is not None
+    assert l.grad is not None
+    print("✅ test_grounded_multimodal_gradient_flow PASSED")
+
+
+def test_curiosity_driven_exploration_reward():
+    """CuriosityDrivenExploration computes intrinsic reward."""
+    from aeon_core import CuriosityDrivenExploration
+    cde = CuriosityDrivenExploration(state_dim=32, action_dim=8)
+    s_t = torch.randn(4, 32)
+    a_t = torch.randn(4, 8)
+    s_next = torch.randn(4, 32)
+    reward = cde.intrinsic_reward(s_t, a_t, s_next)
+    assert reward.shape == (4,)
+    assert (reward >= 0).all()
+    print("✅ test_curiosity_driven_exploration_reward PASSED")
+
+
+def test_curiosity_driven_exploration_inverse():
+    """CuriosityDrivenExploration inverse model predicts actions."""
+    from aeon_core import CuriosityDrivenExploration
+    cde = CuriosityDrivenExploration(state_dim=32, action_dim=8)
+    s_t = torch.randn(2, 32)
+    s_next = torch.randn(2, 32)
+    a_pred = cde.predict_action(s_t, s_next)
+    assert a_pred.shape == (2, 8)
+    print("✅ test_curiosity_driven_exploration_inverse PASSED")
+
+
+def test_curiosity_driven_select_action():
+    """CuriosityDrivenExploration selects action from candidates."""
+    from aeon_core import CuriosityDrivenExploration
+    cde = CuriosityDrivenExploration(state_dim=16, action_dim=4)
+    state = torch.randn(16)
+    candidates = [torch.randn(4) for _ in range(5)]
+    action = cde.select_action(state, candidates)
+    assert action.shape == (4,)
+    print("✅ test_curiosity_driven_select_action PASSED")
+
+
+def test_continual_learning_core_add_task():
+    """ContinualLearningCore adds new columns."""
+    from aeon_core import ContinualLearningCore
+    base = nn.Linear(32, 32)
+    base.config = type('Config', (), {'hidden_dim': 32})()
+    clc = ContinualLearningCore(base)
+    assert len(clc.columns) == 1
+    clc.add_task('task1')
+    assert len(clc.columns) == 2
+    clc.add_task('task2')
+    assert len(clc.columns) == 3
+    print("✅ test_continual_learning_core_add_task PASSED")
+
+
+def test_continual_learning_core_ewc_loss():
+    """ContinualLearningCore EWC loss is non-negative."""
+    from aeon_core import ContinualLearningCore
+    base = nn.Linear(32, 32)
+    base.config = type('Config', (), {'hidden_dim': 32})()
+    clc = ContinualLearningCore(base)
+    # Compute fake gradients
+    x = torch.randn(4, 32)
+    out = clc.columns[-1](x)
+    out.sum().backward()
+    clc.add_task('task1')
+    clc.compute_fisher('task1')
+    loss = clc.ewc_loss('task1')
+    assert loss.item() >= 0
+    print("✅ test_continual_learning_core_ewc_loss PASSED")
+
+
+def test_continual_learning_ewc_missing_task():
+    """ContinualLearningCore EWC loss returns 0 for unknown task."""
+    from aeon_core import ContinualLearningCore
+    base = nn.Linear(16, 16)
+    base.config = type('Config', (), {'hidden_dim': 16})()
+    clc = ContinualLearningCore(base)
+    loss = clc.ewc_loss('nonexistent')
+    assert loss.item() == 0.0
+    print("✅ test_continual_learning_ewc_missing_task PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -2804,6 +3093,30 @@ if __name__ == '__main__':
     test_safety_blending_not_replacement()
     test_missing_weight_xavier_init()
     test_safety_threshold_default()
+    
+    # New cognitive architecture enhancement tests
+    test_convergence_monitor_warmup()
+    test_convergence_monitor_converged()
+    test_convergence_monitor_diverging()
+    test_convergence_monitor_reset()
+    test_hierarchical_meta_loop_forward()
+    test_hierarchical_meta_loop_training_uses_deep()
+    test_causal_factor_extractor_forward()
+    test_causal_factor_extractor_intervention()
+    test_causal_factor_extractor_gradient_flow()
+    test_temporal_memory_store_and_retrieve()
+    test_temporal_memory_decay()
+    test_temporal_memory_consolidation()
+    test_temporal_memory_empty_retrieve()
+    test_grounded_multimodal_learning_forward()
+    test_grounded_multimodal_learning_zero_shot()
+    test_grounded_multimodal_gradient_flow()
+    test_curiosity_driven_exploration_reward()
+    test_curiosity_driven_exploration_inverse()
+    test_curiosity_driven_select_action()
+    test_continual_learning_core_add_task()
+    test_continual_learning_core_ewc_loss()
+    test_continual_learning_ewc_missing_task()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
