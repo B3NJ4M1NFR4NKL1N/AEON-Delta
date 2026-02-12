@@ -5072,7 +5072,7 @@ class VerifiedSafetySystem(nn.Module):
     formally verified certificate.
 
     Engineering rationale:
-    - 41 % fewer false positives compared to pure neural approaches.
+    - 41% fewer false positives compared to pure neural approaches.
     - Guaranteed non-bypassability for critical actions via SMT.
     - Pure formal verification is infeasible for continuous action
       spaces; this hybrid provides practical safety without
@@ -5658,7 +5658,7 @@ class DistributedHierarchicalMemory(nn.Module):
 
     Engineering rationale:
     - Biologically inspired sleep-wake cycle reduces energy (write
-      operations) by ~68 % compared to always-write policies.
+      operations) by ~68% compared to always-write policies.
     - FAISS enables scaling to > 10⁹ records for production
       deployments while the fallback keeps the module testable
       without extra dependencies.
@@ -7406,7 +7406,7 @@ class ReasoningState:
     def with_z(self, z: torch.Tensor) -> 'ReasoningState':
         """Return a copy with an updated latent tensor."""
         new = ReasoningState(z)
-        new.outputs = dict(self.outputs)
+        new.outputs = copy.deepcopy(self.outputs)
         new.is_terminal = self.is_terminal
         return new
 
@@ -7460,7 +7460,7 @@ class ReasoningStage(nn.Module):
 
 class ReasoningPipeline(nn.Module):
     """
-    Conвеyer (pipeline) architecture for the reasoning core.
+    Conveyer (pipeline) architecture for the reasoning core.
 
     Replaces the monolithic ``reasoning_core`` function with an ordered
     list of ``ReasoningStage`` instances.  Each stage is conditionally
