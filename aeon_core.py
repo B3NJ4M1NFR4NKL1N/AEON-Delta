@@ -5311,6 +5311,76 @@ class PhysicsGroundedWorldModel(nn.Module):
         return result
 
 
+class LatentDynamicsModel(nn.Module):
+    """
+    MuZero-inspired latent dynamics world model.
+
+    Learns state transitions, reward prediction, and value estimation
+    entirely in latent space, enabling model-based RL and multi-step
+    planning without reconstructing observations.
+
+    Reference: Schrittwieser et al. 2020 "Mastering Atari, Go, Chess and
+    Shogi by Planning with a Learned Model"
+
+    Components:
+    - transition: predicts next latent state given (state, action)
+    - reward_pred: predicts immediate reward from latent state
+    - value_pred: predicts cumulative value from latent state
+    - rollout: multi-step forward simulation for planning
+    """
+
+    def __init__(self, latent_dim: int, action_dim: int):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+
+        self.transition = nn.Sequential(
+            nn.Linear(latent_dim + action_dim, latent_dim * 2),
+            nn.LayerNorm(latent_dim * 2),
+            nn.GELU(),
+            nn.Linear(latent_dim * 2, latent_dim),
+        )
+        self.reward_pred = nn.Linear(latent_dim, 1)
+        self.value_pred = nn.Linear(latent_dim, 1)
+
+    def forward(
+        self, state: torch.Tensor, action: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Single-step latent transition.
+
+        Args:
+            state: [B, latent_dim] current latent state.
+            action: [B, action_dim] action representation.
+        Returns:
+            (next_state, reward, value) tuple.
+        """
+        next_state = self.transition(torch.cat([state, action], dim=-1))
+        reward = self.reward_pred(next_state)
+        value = self.value_pred(next_state)
+        return next_state, reward, value
+
+    def rollout(
+        self, state: torch.Tensor, actions: List[torch.Tensor]
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        Multi-step rollout for planning.
+
+        Args:
+            state: [B, latent_dim] initial state.
+            actions: list of [B, action_dim] tensors, one per step.
+        Returns:
+            (trajectory, rewards) where trajectory includes initial state.
+        """
+        trajectory = [state]
+        rewards: List[torch.Tensor] = []
+        for action in actions:
+            state, reward, _ = self.forward(state, action)
+            trajectory.append(state)
+            rewards.append(reward)
+        return trajectory, rewards
+
+
 # ============================================================================
 # SECTION 13c: HIERARCHICAL MEMORY
 # ============================================================================
@@ -5524,6 +5594,166 @@ class HierarchicalMemory(nn.Module):
                 remaining.append((vec, meta))
         self._replay_buffer = remaining
         return moved
+
+
+class _NTMAttentionHead(nn.Module):
+    """Attention head for Neural Turing Machine read/write operations."""
+
+    def __init__(self, controller_dim: int, memory_dim: int):
+        super().__init__()
+        self.key_proj = nn.Linear(controller_dim, memory_dim)
+        self.strength_proj = nn.Linear(controller_dim, 1)
+
+    def forward(
+        self, controller_state: torch.Tensor, memory: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Content-based addressing and read.
+
+        Args:
+            controller_state: [B, controller_dim]
+            memory: [memory_size, memory_dim]
+        Returns:
+            read_vector: [B, memory_dim]
+        """
+        weights = self.weights(controller_state, memory)  # [B, memory_size]
+        return weights @ memory  # [B, memory_dim]
+
+    def weights(
+        self, controller_state: torch.Tensor, memory: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute content-based attention weights.
+
+        Args:
+            controller_state: [B, controller_dim]
+            memory: [memory_size, memory_dim]
+        Returns:
+            weights: [B, memory_size]
+        """
+        key = self.key_proj(controller_state)  # [B, memory_dim]
+        strength = F.softplus(self.strength_proj(controller_state))  # [B, 1]
+        # Cosine similarity
+        sim = F.cosine_similarity(
+            key.unsqueeze(1), memory.unsqueeze(0), dim=-1
+        )  # [B, memory_size]
+        return F.softmax(strength * sim, dim=-1)
+
+
+class NeuralTuringMachine(nn.Module):
+    """
+    Neural Turing Machine with differentiable read/write heads.
+
+    Based on Graves et al. 2014. Provides a principled external memory
+    architecture with content-based addressing. Replaces ad-hoc
+    hierarchical memory designs with a proven architecture that has been
+    validated on algorithmic tasks.
+
+    Features:
+    - Differentiable content-based addressing
+    - Multiple read heads for parallel memory access
+    - Single write head for memory updates
+    - LSTM controller for sequential processing
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 128,
+        memory_size: int = 128,
+        memory_dim: int = 64,
+        num_read_heads: int = 4,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.memory_size = memory_size
+        self.memory_dim = memory_dim
+        self.num_read_heads = num_read_heads
+
+        self.memory = nn.Parameter(
+            torch.randn(memory_size, memory_dim) * 0.01
+        )
+        self.controller = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.read_heads = nn.ModuleList(
+            [_NTMAttentionHead(hidden_dim, memory_dim) for _ in range(num_read_heads)]
+        )
+        self.write_head = _NTMAttentionHead(hidden_dim, memory_dim)
+        self.write_content = nn.Linear(hidden_dim, memory_dim)
+
+        # Output projection: controller hidden + all read vectors
+        self.output_proj = nn.Linear(
+            hidden_dim + num_read_heads * memory_dim, hidden_dim
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """
+        Forward pass through NTM.
+
+        Args:
+            x: [B, input_dim] or [B, T, input_dim] input.
+        Returns:
+            (output, info) where output is [B, hidden_dim].
+        """
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # [B, 1, input_dim]
+
+        h_seq, (h_n, _) = self.controller(x)  # h_seq: [B, T, hidden_dim]
+        h = h_seq[:, -1, :]  # [B, hidden_dim] – last time step
+
+        # Read from memory
+        read_vectors = [head(h, self.memory) for head in self.read_heads]
+
+        # Write to memory (soft attention update)
+        write_weights = self.write_head.weights(h, self.memory)  # [B, memory_size]
+        new_content = self.write_content(h)  # [B, memory_dim]
+        # Aggregate write across batch (mean) to update shared memory
+        # write_weights: [B, memory_size] → mean → [memory_size]
+        # new_content: [B, memory_dim] → mean → [memory_dim]
+        write_update = write_weights.mean(dim=0).unsqueeze(-1) * new_content.mean(dim=0).unsqueeze(0)
+        # Apply write update to memory parameter
+        self.memory.data = self.memory.data + write_update
+
+        combined = torch.cat([h] + read_vectors, dim=-1)
+        output = self.output_proj(combined)
+
+        info = {
+            'read_vectors': read_vectors,
+            'write_weights': write_weights,
+            'controller_hidden': h,
+            'write_update': write_update,
+        }
+        return output, info
+
+    def store(self, vec: torch.Tensor, meta: Optional[Dict] = None):
+        """Compatibility method: store a vector by writing to memory."""
+        if vec.dim() == 1:
+            vec = vec.unsqueeze(0)
+        # Use input_dim projection if needed
+        if vec.size(-1) != self.input_dim:
+            return
+        with torch.no_grad():
+            self.forward(vec)
+
+    def retrieve(self, query: torch.Tensor, k: int = 5) -> Dict[str, Any]:
+        """Compatibility method: retrieve from memory by reading."""
+        if query.dim() == 1:
+            query = query.unsqueeze(0)
+        if query.size(-1) != self.input_dim:
+            # Fallback for dimension mismatch
+            return {'read_vectors': [], 'working': [], 'episodic': [], 'semantic': []}
+        with torch.no_grad():
+            output, info = self.forward(query)
+        # Squeeze batch dim for compatibility with per-sample retrieval
+        squeezed_reads = [rv.squeeze(0) for rv in info['read_vectors'][:k]]
+        return {
+            'output': output.squeeze(0),
+            'read_vectors': squeezed_reads,
+            'working': [(rv, 1.0) for rv in squeezed_reads],
+            'episodic': [],
+            'semantic': [],
+            'route_weights': torch.ones(3) / 3.0,
+        }
 
 
 def _argmax_off_diagonal(sim: torch.Tensor):
@@ -6517,6 +6747,180 @@ class CausalWorldModel(nn.Module):
             result['dag_loss'] = self.causal_model.dag_loss()
 
         return result
+
+
+class CausalProgrammaticModel(nn.Module):
+    """
+    Causal model via structural equations (pure PyTorch implementation).
+
+    Implements Pearl's structural causal model (SCM) framework with:
+    - Learnable structural equations for each variable
+    - Topological ordering via lower-triangular masks
+    - do(X=x) interventions for causal reasoning
+    - Counterfactual inference via abduction-action-prediction
+
+    This provides a principled approach to causal discovery and
+    counterfactual reasoning, naturally expressing Pearl's
+    do-calculus.
+
+    Reference: Pearl, 2009 "Causality: Models, Reasoning and Inference"
+    """
+
+    def __init__(self, num_variables: int, hidden_dim: int = 64):
+        super().__init__()
+        self.num_vars = num_variables
+        self.hidden_dim = hidden_dim
+
+        # Structural equations: X_i = f_i(parents) + noise_i
+        self.equations = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(num_variables, hidden_dim),
+                    nn.GELU(),
+                    nn.Linear(hidden_dim, 1),
+                )
+                for _ in range(num_variables)
+            ]
+        )
+
+        # Learnable adjacency (lower-triangular for DAG guarantee)
+        self.adjacency_logits = nn.Parameter(
+            torch.randn(num_variables, num_variables) * 0.01
+        )
+
+        # Noise scale per variable (learned)
+        self.log_noise_scale = nn.Parameter(torch.zeros(num_variables))
+
+    @property
+    def adjacency(self) -> torch.Tensor:
+        """DAG-constrained adjacency via lower-triangular mask."""
+        mask = torch.tril(
+            torch.ones(
+                self.num_vars, self.num_vars,
+                device=self.adjacency_logits.device,
+            ),
+            diagonal=-1,
+        )
+        return torch.sigmoid(self.adjacency_logits) * mask
+
+    def forward(
+        self,
+        observations: Optional[torch.Tensor] = None,
+        batch_size: int = 1,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generative forward pass through structural equations.
+
+        Args:
+            observations: [B, num_vars] optional observations for conditioning.
+            batch_size: number of samples if observations is None.
+        Returns:
+            (variables, log_prob) where variables is [B, num_vars].
+        """
+        B = observations.shape[0] if observations is not None else batch_size
+        device = self.adjacency_logits.device
+        adj = self.adjacency  # [num_vars, num_vars]
+        noise_scale = self.log_noise_scale.exp()
+
+        var_list: List[torch.Tensor] = []
+        total_log_prob = torch.zeros(B, device=device)
+
+        for i in range(self.num_vars):
+            # Exogenous noise
+            noise = torch.randn(B, device=device) * noise_scale[i]
+
+            # Build parent input
+            if var_list:
+                prev = torch.stack(var_list, dim=-1)  # [B, i]
+                padded = F.pad(prev, (0, self.num_vars - i))  # [B, num_vars]
+            else:
+                padded = torch.zeros(B, self.num_vars, device=device)
+
+            # Apply adjacency weighting
+            weighted = padded * adj[i].unsqueeze(0)  # [B, num_vars]
+            mean = self.equations[i](weighted).squeeze(-1)  # [B]
+            var_i = mean + noise
+
+            # Log probability under normal: -0.5 * log(2π σ²) - 0.5 * ((x-μ)/σ)²
+            sigma = noise_scale[i] + 1e-8
+            total_log_prob = total_log_prob - 0.5 * math.log(2 * math.pi) - torch.log(sigma) - 0.5 * (
+                (var_i - mean) / sigma
+            ) ** 2
+
+            # Condition on observations if provided
+            if observations is not None:
+                var_i = observations[:, i]
+
+            var_list.append(var_i)
+
+        variables = torch.stack(var_list, dim=-1)  # [B, num_vars]
+        return variables, total_log_prob
+
+    def counterfactual(
+        self,
+        observations: torch.Tensor,
+        intervention: Dict[int, float],
+    ) -> torch.Tensor:
+        """
+        Perform do(X_i = x) intervention (counterfactual query).
+
+        Three-step procedure:
+        1. Abduction: infer exogenous noise from observations
+        2. Action: apply intervention
+        3. Prediction: propagate through modified structural equations
+
+        Args:
+            observations: [B, num_vars] observed values.
+            intervention: {variable_index: forced_value}
+        Returns:
+            cf_vars: [B, num_vars] counterfactual variable values.
+        """
+        B = observations.shape[0]
+        device = observations.device
+        adj = self.adjacency
+        noise_scale = self.log_noise_scale.exp()
+
+        # Step 1: Abduction — infer exogenous noise from observed values
+        inferred_noise: List[torch.Tensor] = []
+        for i in range(self.num_vars):
+            if i > 0:
+                prev = observations[:, :i]
+                padded = F.pad(prev, (0, self.num_vars - i))
+            else:
+                padded = torch.zeros(B, self.num_vars, device=device)
+            weighted = padded * adj[i].unsqueeze(0)
+            predicted_mean = self.equations[i](weighted).squeeze(-1)
+            inferred_noise.append(observations[:, i] - predicted_mean)
+
+        # Steps 2-3: Action + Prediction with intervention
+        cf_list: List[torch.Tensor] = []
+        for i in range(self.num_vars):
+            if i in intervention:
+                cf_list.append(
+                    torch.full((B,), intervention[i], device=device)
+                )
+            else:
+                if cf_list:
+                    prev = torch.stack(cf_list, dim=-1)
+                    padded = F.pad(prev, (0, self.num_vars - i))
+                else:
+                    padded = torch.zeros(B, self.num_vars, device=device)
+                weighted = padded * adj[i].unsqueeze(0)
+                mean = self.equations[i](weighted).squeeze(-1)
+                cf_list.append(mean + inferred_noise[i])
+
+        return torch.stack(cf_list, dim=-1)
+
+    def dag_loss(self) -> torch.Tensor:
+        """DAG constraint: trace(exp(A ⊙ A)) - num_vars = 0 for DAGs."""
+        adj = self.adjacency
+        product = adj * adj
+        I = torch.eye(self.num_vars, device=adj.device)
+        M = product
+        M2 = M @ M
+        M3 = M2 @ M
+        approx_exp = I + M + M2 / 2.0 + M3 / 6.0
+        return torch.trace(approx_exp) - self.num_vars
 
 
 # ============================================================================
@@ -8023,14 +8427,15 @@ class AEONDeltaV3(nn.Module):
         else:
             self.world_model = None
         
-        # ===== HIERARCHICAL MEMORY =====
+        # ===== HIERARCHICAL MEMORY (Neural Turing Machine) =====
         if config.enable_hierarchical_memory:
-            logger.info("Loading Hierarchical Memory...")
-            self.hierarchical_memory = HierarchicalMemory(
-                dim=config.hidden_dim,
-                working_capacity=config.hierarchical_working_capacity,
-                episodic_capacity=config.hierarchical_episodic_capacity,
-                semantic_capacity=config.hierarchical_semantic_capacity,
+            logger.info("Loading Neural Turing Machine Memory...")
+            self.hierarchical_memory = NeuralTuringMachine(
+                input_dim=config.hidden_dim,
+                hidden_dim=config.hidden_dim,
+                memory_size=getattr(config, 'hierarchical_episodic_capacity', 128),
+                memory_dim=config.hidden_dim,
+                num_read_heads=4,
             ).to(self.device)
             self.memory_projection = nn.Linear(config.hidden_dim, config.hidden_dim).to(self.device)
             self.importance_scorer = nn.Sequential(
