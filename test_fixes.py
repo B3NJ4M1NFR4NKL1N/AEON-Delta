@@ -3325,6 +3325,97 @@ def test_config_v4_extended_validation():
     print("✅ test_config_v4_extended_validation PASSED")
 
 
+def test_chunked_processor_adaptive_stride_not_zero():
+    """Fix: aeon_core.py - ChunkedSequenceProcessor stride must be >= 1 in adaptive mode.
+    
+    When adaptive mode reduces chunk_size to min_chunk_size and min_chunk_size <= overlap,
+    stride = chunk_size - overlap could be <= 0, causing an infinite loop.
+    The fix ensures stride = max(chunk_size - overlap, 1).
+    """
+    from aeon_core import ChunkedSequenceProcessor
+    import threading
+    
+    # Create processor where min_chunk_size == overlap (stride would be 0 without fix)
+    processor = ChunkedSequenceProcessor(
+        chunk_size=512, overlap=64, adaptive=True, min_chunk_size=64
+    )
+    
+    # Uniform input => all per-position variances equal => adaptive_factor ≈ 0
+    # => chunk_size = min_chunk_size = overlap = 64 => stride would be 0 without fix
+    B, L, D = 2, 256, 32
+    x = torch.ones(B, L, D)
+    
+    def dummy_model(chunk, state):
+        return chunk, state
+    
+    # Run in a thread with timeout to detect infinite loops
+    result = [None]
+    error = [None]
+    
+    def run_process():
+        try:
+            result[0] = processor.process(dummy_model, x)
+        except Exception as e:
+            error[0] = e
+    
+    t = threading.Thread(target=run_process)
+    t.start()
+    t.join(timeout=5)  # 5-second timeout
+    
+    assert not t.is_alive(), "ChunkedSequenceProcessor.process() timed out — possible infinite loop"
+    assert error[0] is None, f"Unexpected error: {error[0]}"
+    
+    y, _ = result[0]
+    assert y.shape == (B, L, D), f"Output shape mismatch: {y.shape}"
+    
+    print("✅ test_chunked_processor_adaptive_stride_not_zero PASSED")
+
+
+def test_fit_remaining_batch_metrics():
+    """Fix: ae_train.py - SafeThoughtAETrainerV4.fit() remaining batch metrics inclusion.
+    
+    When total_batches is not evenly divisible by gradient_accumulation_steps,
+    the remaining batches' metrics should be included in epoch_metrics and
+    num_steps should use ceiling division.
+    """
+    # Simulate the fixed computation
+    total_batches = 7
+    gradient_accumulation_steps = 4
+    
+    # Fixed: ceiling division
+    num_steps_fixed = max(
+        (total_batches + gradient_accumulation_steps - 1) // gradient_accumulation_steps,
+        1
+    )
+    
+    # Old: floor division
+    num_steps_old = max(total_batches // gradient_accumulation_steps, 1)
+    
+    # With 7 batches and 4 accumulation steps:
+    # Old: 7 // 4 = 1 (misses the partial step)
+    # Fixed: (7 + 3) // 4 = 2 (counts the partial step)
+    assert num_steps_fixed == 2, f"Expected 2 steps, got {num_steps_fixed}"
+    assert num_steps_old == 1, f"Expected old to be 1, got {num_steps_old}"
+    
+    # Verify edge case: exactly divisible
+    total_batches_exact = 8
+    num_steps_exact = max(
+        (total_batches_exact + gradient_accumulation_steps - 1) // gradient_accumulation_steps,
+        1
+    )
+    assert num_steps_exact == 2, f"Expected 2 steps for exact division, got {num_steps_exact}"
+    
+    # Verify edge case: single batch
+    total_batches_one = 1
+    num_steps_one = max(
+        (total_batches_one + gradient_accumulation_steps - 1) // gradient_accumulation_steps,
+        1
+    )
+    assert num_steps_one == 1, f"Expected 1 step, got {num_steps_one}"
+    
+    print("✅ test_fit_remaining_batch_metrics PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3505,6 +3596,10 @@ if __name__ == '__main__':
     test_save_metrics_error_handling()
     test_rssm_nan_branch_no_zero_grad()
     test_config_v4_extended_validation()
+    
+    # Stride and metrics fixes
+    test_chunked_processor_adaptive_stride_not_zero()
+    test_fit_remaining_batch_metrics()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

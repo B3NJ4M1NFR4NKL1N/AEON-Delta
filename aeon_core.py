@@ -2300,7 +2300,7 @@ class ChunkedSequenceProcessor:
         else:
             chunk_size = self.chunk_size
 
-        stride = chunk_size - self.overlap
+        stride = max(chunk_size - self.overlap, 1)
 
         y = torch.zeros(B, L, D, device=x.device, dtype=x.dtype)
         state = initial_state
