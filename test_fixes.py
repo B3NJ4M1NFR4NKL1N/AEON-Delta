@@ -3764,6 +3764,229 @@ def test_adaptive_chunking_max_var():
     print("✅ test_adaptive_chunking_max_var PASSED")
 
 
+# ============================================================================
+# Tests for architectural recommendations (Gumbel-Softmax, NTM, LatentDynamics, CausalProgrammatic)
+# ============================================================================
+
+def test_gumbel_vector_quantizer_forward():
+    """GumbelVectorQuantizer forward pass produces correct shapes and valid outputs."""
+    from ae_train import GumbelVectorQuantizer
+
+    gvq = GumbelVectorQuantizer(num_embeddings=16, embedding_dim=32)
+    z = torch.randn(4, 32)
+    z_q, loss, indices, stats = gvq(z)
+    assert z_q.shape == (4, 32), f"Expected (4, 32), got {z_q.shape}"
+    assert loss.shape == (), f"Expected scalar loss, got {loss.shape}"
+    assert indices.shape == (4,), f"Expected (4,) indices, got {indices.shape}"
+    assert 'codebook_usage_%' in stats
+    assert 'entropy_loss' in stats
+    assert not torch.isnan(z_q).any()
+    assert not torch.isnan(loss).any()
+    print("✅ test_gumbel_vector_quantizer_forward PASSED")
+
+
+def test_gumbel_vector_quantizer_training_vs_eval():
+    """GumbelVectorQuantizer uses Gumbel-Softmax in training, argmax in eval."""
+    from ae_train import GumbelVectorQuantizer
+
+    gvq = GumbelVectorQuantizer(num_embeddings=8, embedding_dim=16)
+    z = torch.randn(2, 16)
+
+    gvq.train()
+    z_q_train, _, _, stats_train = gvq(z)
+    assert 'temperature' in stats_train
+
+    gvq.eval()
+    z_q_eval, _, _, stats_eval = gvq(z)
+    assert z_q_eval.shape == z_q_train.shape
+    print("✅ test_gumbel_vector_quantizer_training_vs_eval PASSED")
+
+
+def test_gumbel_vector_quantizer_gradient_flow():
+    """Gradients flow through GumbelVectorQuantizer (fully differentiable)."""
+    from ae_train import GumbelVectorQuantizer
+
+    gvq = GumbelVectorQuantizer(num_embeddings=16, embedding_dim=32)
+    gvq.train()
+    z = torch.randn(4, 32, requires_grad=True)
+    z_q, loss, _, _ = gvq(z)
+    total_loss = z_q.sum() + loss
+    total_loss.backward()
+    assert z.grad is not None, "Gradient did not flow through GumbelVectorQuantizer"
+    assert not torch.isnan(z.grad).any()
+    print("✅ test_gumbel_vector_quantizer_gradient_flow PASSED")
+
+
+def test_gumbel_vector_quantizer_temperature_annealing():
+    """Temperature decreases during training with Gumbel-Softmax."""
+    from ae_train import GumbelVectorQuantizer
+
+    gvq = GumbelVectorQuantizer(
+        num_embeddings=16, embedding_dim=32,
+        temperature=2.0, min_temperature=0.5, anneal_rate=0.1,
+    )
+    gvq.train()
+    initial_temp = gvq.temperature
+    z = torch.randn(4, 32)
+    for _ in range(5):
+        gvq(z)
+    assert gvq.temperature < initial_temp, \
+        f"Temperature should decrease: {gvq.temperature} >= {initial_temp}"
+    assert gvq.temperature >= 0.5, \
+        f"Temperature should not go below min: {gvq.temperature}"
+    print("✅ test_gumbel_vector_quantizer_temperature_annealing PASSED")
+
+
+def test_neural_turing_machine_forward():
+    """NeuralTuringMachine forward pass produces correct shapes."""
+    from aeon_core import NeuralTuringMachine
+
+    ntm = NeuralTuringMachine(
+        input_dim=32, hidden_dim=64, memory_size=16, memory_dim=32, num_read_heads=2
+    )
+    x = torch.randn(2, 32)
+    output, info = ntm(x)
+    assert output.shape == (2, 64), f"Expected (2, 64), got {output.shape}"
+    assert 'read_vectors' in info
+    assert len(info['read_vectors']) == 2  # 2 read heads
+    assert not torch.isnan(output).any()
+    print("✅ test_neural_turing_machine_forward PASSED")
+
+
+def test_neural_turing_machine_store_retrieve():
+    """NeuralTuringMachine store and retrieve compatibility methods work."""
+    from aeon_core import NeuralTuringMachine
+
+    ntm = NeuralTuringMachine(
+        input_dim=32, hidden_dim=64, memory_size=16, memory_dim=32, num_read_heads=2
+    )
+    vec = torch.randn(32)
+    ntm.store(vec)
+
+    result = ntm.retrieve(vec, k=2)
+    assert 'working' in result
+    assert 'episodic' in result
+    assert 'semantic' in result
+    assert 'route_weights' in result
+    assert result['route_weights'].shape == (3,)
+    # working should have up to k entries
+    assert len(result['working']) <= 2
+    print("✅ test_neural_turing_machine_store_retrieve PASSED")
+
+
+def test_neural_turing_machine_gradient_flow():
+    """Gradients flow through NeuralTuringMachine."""
+    from aeon_core import NeuralTuringMachine
+
+    ntm = NeuralTuringMachine(
+        input_dim=32, hidden_dim=64, memory_size=16, memory_dim=32, num_read_heads=2
+    )
+    x = torch.randn(2, 32, requires_grad=True)
+    output, _ = ntm(x)
+    loss = output.sum()
+    loss.backward()
+    assert x.grad is not None
+    assert not torch.isnan(x.grad).any()
+    print("✅ test_neural_turing_machine_gradient_flow PASSED")
+
+
+def test_latent_dynamics_model_forward():
+    """LatentDynamicsModel single-step forward produces correct outputs."""
+    from aeon_core import LatentDynamicsModel
+
+    ldm = LatentDynamicsModel(latent_dim=64, action_dim=8)
+    state = torch.randn(2, 64)
+    action = torch.randn(2, 8)
+    next_state, reward, value = ldm(state, action)
+    assert next_state.shape == (2, 64), f"Expected (2, 64), got {next_state.shape}"
+    assert reward.shape == (2, 1), f"Expected (2, 1), got {reward.shape}"
+    assert value.shape == (2, 1), f"Expected (2, 1), got {value.shape}"
+    assert not torch.isnan(next_state).any()
+    print("✅ test_latent_dynamics_model_forward PASSED")
+
+
+def test_latent_dynamics_model_rollout():
+    """LatentDynamicsModel multi-step rollout produces correct trajectory."""
+    from aeon_core import LatentDynamicsModel
+
+    ldm = LatentDynamicsModel(latent_dim=32, action_dim=4)
+    state = torch.randn(1, 32)
+    actions = [torch.randn(1, 4) for _ in range(5)]
+    trajectory, rewards = ldm.rollout(state, actions)
+    assert len(trajectory) == 6, f"Expected 6 states (initial + 5 steps), got {len(trajectory)}"
+    assert len(rewards) == 5, f"Expected 5 rewards, got {len(rewards)}"
+    assert trajectory[0].shape == (1, 32)
+    assert trajectory[-1].shape == (1, 32)
+    print("✅ test_latent_dynamics_model_rollout PASSED")
+
+
+def test_latent_dynamics_model_gradient_flow():
+    """Gradients flow through LatentDynamicsModel rollout."""
+    from aeon_core import LatentDynamicsModel
+
+    ldm = LatentDynamicsModel(latent_dim=32, action_dim=4)
+    state = torch.randn(2, 32, requires_grad=True)
+    action = torch.randn(2, 4)
+    next_state, reward, value = ldm(state, action)
+    loss = next_state.sum() + reward.sum() + value.sum()
+    loss.backward()
+    assert state.grad is not None
+    assert not torch.isnan(state.grad).any()
+    print("✅ test_latent_dynamics_model_gradient_flow PASSED")
+
+
+def test_causal_programmatic_model_forward():
+    """CausalProgrammaticModel generative forward pass produces valid variables."""
+    from aeon_core import CausalProgrammaticModel
+
+    cpm = CausalProgrammaticModel(num_variables=5, hidden_dim=32)
+    obs = torch.randn(2, 5)
+    variables, log_prob = cpm(observations=obs)
+    assert variables.shape == (2, 5), f"Expected (2, 5), got {variables.shape}"
+    assert log_prob.shape == (2,), f"Expected (2,), got {log_prob.shape}"
+    assert not torch.isnan(variables).any()
+    print("✅ test_causal_programmatic_model_forward PASSED")
+
+
+def test_causal_programmatic_model_counterfactual():
+    """CausalProgrammaticModel counterfactual intervention applies do(X=x)."""
+    from aeon_core import CausalProgrammaticModel
+
+    cpm = CausalProgrammaticModel(num_variables=4, hidden_dim=32)
+    obs = torch.randn(2, 4)
+    cf = cpm.counterfactual(obs, intervention={0: 1.0})
+    assert cf.shape == (2, 4), f"Expected (2, 4), got {cf.shape}"
+    # Intervened variable should be fixed to intervention value
+    assert torch.allclose(cf[:, 0], torch.ones(2)), \
+        f"Expected intervened var to be 1.0, got {cf[:, 0]}"
+    print("✅ test_causal_programmatic_model_counterfactual PASSED")
+
+
+def test_causal_programmatic_model_dag_loss():
+    """CausalProgrammaticModel dag_loss returns a non-negative scalar."""
+    from aeon_core import CausalProgrammaticModel
+
+    cpm = CausalProgrammaticModel(num_variables=4, hidden_dim=32)
+    dag_loss = cpm.dag_loss()
+    assert dag_loss.shape == (), f"Expected scalar, got {dag_loss.shape}"
+    assert dag_loss.item() >= 0, f"DAG loss should be non-negative, got {dag_loss.item()}"
+    print("✅ test_causal_programmatic_model_dag_loss PASSED")
+
+
+def test_causal_programmatic_model_gradient_flow():
+    """Gradients flow through CausalProgrammaticModel counterfactual."""
+    from aeon_core import CausalProgrammaticModel
+
+    cpm = CausalProgrammaticModel(num_variables=4, hidden_dim=32)
+    obs = torch.randn(2, 4, requires_grad=True)
+    cf = cpm.counterfactual(obs, intervention={1: 0.5})
+    loss = cf.sum()
+    loss.backward()
+    assert obs.grad is not None
+    assert not torch.isnan(obs.grad).any()
+    print("✅ test_causal_programmatic_model_gradient_flow PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -3975,6 +4198,22 @@ if __name__ == '__main__':
     test_certified_error_nan_residual()
     test_checkpoint_load_specific_exception()
     test_adaptive_chunking_max_var()
+    
+    # New architecture recommendation tests
+    test_gumbel_vector_quantizer_forward()
+    test_gumbel_vector_quantizer_training_vs_eval()
+    test_gumbel_vector_quantizer_gradient_flow()
+    test_gumbel_vector_quantizer_temperature_annealing()
+    test_neural_turing_machine_forward()
+    test_neural_turing_machine_store_retrieve()
+    test_neural_turing_machine_gradient_flow()
+    test_latent_dynamics_model_forward()
+    test_latent_dynamics_model_rollout()
+    test_latent_dynamics_model_gradient_flow()
+    test_causal_programmatic_model_forward()
+    test_causal_programmatic_model_counterfactual()
+    test_causal_programmatic_model_dag_loss()
+    test_causal_programmatic_model_gradient_flow()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

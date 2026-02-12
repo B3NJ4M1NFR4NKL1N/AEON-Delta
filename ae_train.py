@@ -393,6 +393,125 @@ class ThoughtEncoder(nn.Module):
         return z
 
 
+class GumbelVectorQuantizer(nn.Module):
+    """
+    Gumbel-Softmax based vector quantizer replacing VQ-VAE.
+
+    Advantages over straight-through VQ-VAE:
+    - Fully differentiable (no straight-through hack)
+    - Temperature annealing provides smooth transition from soft to hard
+    - Less collapsed codes (Gumbel noise prevents mode collapse)
+
+    Reference: Jang et al. 2017 "Categorical Reparameterization with Gumbel-Softmax"
+    """
+
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        commitment_cost: float = 0.25,
+        temperature: float = 1.0,
+        min_temperature: float = 0.1,
+        anneal_rate: float = 1e-5,
+        **kwargs,
+    ):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+        self.temperature = temperature
+        self.min_temperature = min_temperature
+        self.anneal_rate = anneal_rate
+
+        self.embeddings = nn.Embedding(num_embeddings, embedding_dim)
+        self.embeddings.weight.data.normal_(0, 0.1)
+
+        # Monitoring
+        self.register_buffer('code_usage', torch.zeros(num_embeddings))
+        self.register_buffer('total_count', torch.tensor(0.0))
+        self.register_buffer('global_step', torch.tensor(0))
+
+    def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """
+        Args:
+            z: [B, embedding_dim] encoded representation.
+        Returns:
+            (quantized, loss, indices, stats) matching VectorQuantizerHybridV4 signature.
+        """
+        # Negative squared distances as logits  [B, num_embeddings]
+        logits = -torch.cdist(z.unsqueeze(0), self.embeddings.weight.unsqueeze(0)).squeeze(0)
+
+        if self.training:
+            # Gumbel-Softmax: differentiable sampling
+            soft_idx = F.gumbel_softmax(logits, tau=self.temperature, hard=False)
+            z_q = soft_idx @ self.embeddings.weight  # [B, embedding_dim]
+
+            # Anneal temperature
+            self.temperature = max(
+                self.min_temperature,
+                self.temperature * math.exp(-self.anneal_rate),
+            )
+        else:
+            # Hard assignment for inference
+            soft_idx = F.softmax(logits, dim=-1)
+            z_q = soft_idx @ self.embeddings.weight
+
+        # Hard indices for monitoring / stats
+        indices = logits.argmax(dim=-1)
+
+        # Loss: commitment + soft entropy regularization
+        commitment_loss = F.mse_loss(z, z_q.detach())
+        # Entropy regularization to encourage uniform codebook usage
+        avg_probs = soft_idx.mean(dim=0)
+        entropy = -(avg_probs * torch.log(avg_probs + 1e-10)).sum()
+        max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
+        entropy_loss = 1.0 - entropy / max_entropy
+
+        loss = self.commitment_cost * commitment_loss + 0.1 * entropy_loss
+
+        if self.training:
+            self._update_stats(indices)
+
+        stats = self._compute_stats(indices)
+        stats['entropy_loss'] = entropy_loss.item()
+        stats['temperature'] = self.temperature
+
+        return z_q, loss, indices, stats
+
+    def _update_stats(self, indices: torch.Tensor):
+        with torch.no_grad():
+            self.global_step += 1
+            self.total_count += indices.size(0)
+            used = indices.unique()
+            self.code_usage[used] += 1
+
+    def _compute_stats(self, indices: torch.Tensor) -> dict:
+        with torch.no_grad():
+            unique_in_batch = len(indices.unique())
+            total_used = (self.code_usage > 0).sum().item()
+            usage_pct = total_used / self.num_embeddings * 100
+            if self.total_count > 0:
+                probs = self.code_usage / (self.total_count + 1e-10)
+                probs = probs[probs > 0]
+                entropy = -(probs * torch.log(probs + 1e-10)).sum().item()
+                max_ent = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
+                normalized_entropy = entropy / max_ent
+            else:
+                normalized_entropy = 0
+            return {
+                "codebook_usage_%": usage_pct,
+                "unique_codes_batch": unique_in_batch,
+                "total_used_codes": total_used,
+                "codebook_entropy": normalized_entropy,
+            }
+
+    def get_codebook_usage(self) -> float:
+        if self.total_count > 0:
+            used = (self.code_usage > 0).sum().item()
+            return used / self.num_embeddings * 100
+        return 0.0
+
+
 class VectorQuantizerHybridV4(nn.Module):
     """
     VQ-VAE v4 с entropy regularization
@@ -733,15 +852,11 @@ class AEONDeltaV4(nn.Module):
             dropout=config.dropout_rate
         )
         
-        self.vq = VectorQuantizerHybridV4(
+        self.vq = GumbelVectorQuantizer(
             config.vq_num_embeddings, 
             config.vq_embedding_dim,
             commitment_cost=config.vq_commitment_cost,
-            decay=config.vq_ema_decay,
             temperature=config.vq_temperature,
-            reset_threshold=config.vq_reset_threshold,
-            entropy_weight=config.entropy_weight,
-            code_reset_noise_scale=config.code_reset_noise_scale
         )
         
         self.decoder = ThoughtDecoder(
