@@ -445,12 +445,6 @@ class GumbelVectorQuantizer(nn.Module):
             # Gumbel-Softmax: differentiable sampling
             soft_idx = F.gumbel_softmax(logits, tau=self.temperature, hard=False)
             z_q = soft_idx @ self.embeddings.weight  # [B, embedding_dim]
-
-            # Anneal temperature
-            self.temperature = max(
-                self.min_temperature,
-                self.temperature * math.exp(-self.anneal_rate),
-            )
         else:
             # Hard assignment for inference
             soft_idx = F.softmax(logits, dim=-1)
@@ -484,6 +478,14 @@ class GumbelVectorQuantizer(nn.Module):
             self.total_count += indices.size(0)
             used = indices.unique()
             self.code_usage[used] += 1
+            self.anneal_temperature()
+
+    def anneal_temperature(self):
+        """Anneal temperature towards min_temperature. Call after each training step."""
+        self.temperature = max(
+            self.min_temperature,
+            self.temperature * math.exp(-self.anneal_rate),
+        )
 
     def _compute_stats(self, indices: torch.Tensor) -> dict:
         with torch.no_grad():

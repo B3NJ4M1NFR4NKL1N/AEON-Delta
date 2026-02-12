@@ -5704,11 +5704,15 @@ class NeuralTuringMachine(nn.Module):
         # Read from memory
         read_vectors = [head(h, self.memory) for head in self.read_heads]
 
-        # Write to memory (in-place update via soft attention)
+        # Write to memory (soft attention update)
         write_weights = self.write_head.weights(h, self.memory)  # [B, memory_size]
         new_content = self.write_content(h)  # [B, memory_dim]
         # Aggregate write across batch (mean) to update shared memory
+        # write_weights: [B, memory_size] → mean → [memory_size]
+        # new_content: [B, memory_dim] → mean → [memory_dim]
         write_update = write_weights.mean(dim=0).unsqueeze(-1) * new_content.mean(dim=0).unsqueeze(0)
+        # Apply write update to memory parameter
+        self.memory.data = self.memory.data + write_update
 
         combined = torch.cat([h] + read_vectors, dim=-1)
         output = self.output_proj(combined)
@@ -6837,9 +6841,10 @@ class CausalProgrammaticModel(nn.Module):
             mean = self.equations[i](weighted).squeeze(-1)  # [B]
             var_i = mean + noise
 
-            # Log probability under normal
-            total_log_prob = total_log_prob - 0.5 * (
-                (var_i - mean) / (noise_scale[i] + 1e-8)
+            # Log probability under normal: -0.5 * log(2π σ²) - 0.5 * ((x-μ)/σ)²
+            sigma = noise_scale[i] + 1e-8
+            total_log_prob = total_log_prob - 0.5 * math.log(2 * math.pi) - torch.log(sigma) - 0.5 * (
+                (var_i - mean) / sigma
             ) ** 2
 
             # Condition on observations if provided
