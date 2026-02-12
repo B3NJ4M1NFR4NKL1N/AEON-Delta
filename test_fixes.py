@@ -2758,10 +2758,10 @@ def test_causal_factor_extractor_forward():
     assert result['factors'].shape == (4, 8)
     assert result['causal_graph'].shape == (8, 8)
     assert result['interventional'] is False
-    # Check DAG: upper triangle should be zero
+    # Check DAG: diagonal and upper triangle should be zero
     adj = result['causal_graph']
     upper = torch.triu(adj, diagonal=0)
-    assert (upper == 0).all(), "Adjacency must be strictly lower-triangular"
+    assert (upper == 0).all(), "Adjacency must be strictly lower-triangular (zero on and above diagonal)"
     print("✅ test_causal_factor_extractor_forward PASSED")
 
 

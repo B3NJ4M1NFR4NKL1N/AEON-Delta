@@ -4635,9 +4635,10 @@ class CausalFactorExtractor(nn.Module):
     - ``interventional``: whether an intervention was applied.
     """
 
-    def __init__(self, hidden_dim: int, num_factors: int):
+    def __init__(self, hidden_dim: int, num_factors: int, causal_scale: float = 0.1):
         super().__init__()
         self.num_factors = num_factors
+        self.causal_scale = causal_scale
         self.sparse_net = nn.Linear(hidden_dim, num_factors)
         self.causal_adj = nn.Parameter(
             torch.randn(num_factors, num_factors) * 0.01
@@ -4674,7 +4675,7 @@ class CausalFactorExtractor(nn.Module):
         factors_causal = torch.zeros_like(factors)
         for i in range(self.num_factors):
             parents = adj[i] @ factors.T  # [B]
-            factors_causal[:, i] = factors[:, i] + 0.1 * parents
+            factors_causal[:, i] = factors[:, i] + self.causal_scale * parents
 
         return {
             'factors': factors_causal,
@@ -5418,11 +5419,13 @@ class TemporalMemory(nn.Module):
     high-importance memories a longer effective lifespan.
     """
 
-    def __init__(self, capacity: int, dim: int, decay_rate: float = 0.01):
+    def __init__(self, capacity: int, dim: int, decay_rate: float = 0.01,
+                 pruning_threshold: float = 0.01):
         super().__init__()
         self.capacity = capacity
         self.dim = dim
         self.decay_rate = decay_rate
+        self.pruning_threshold = pruning_threshold
         self.memories: List[Dict[str, Any]] = []
         self.current_time: int = 0
 
@@ -5448,7 +5451,9 @@ class TemporalMemory(nn.Module):
             )
 
         # Prune weak memories
-        self.memories = [m for m in self.memories if m['strength'] > 0.01]
+        self.memories = [
+            m for m in self.memories if m['strength'] > self.pruning_threshold
+        ]
 
         self.memories.append({
             'vector': vector.detach().clone(),
@@ -6554,6 +6559,7 @@ class ParallelCognitivePipeline(nn.Module):
         self.safety_system = MultiLevelSafetySystem(config)
         self.world_model = PhysicsGroundedWorldModel(config.hidden_dim)
         self.integrator = nn.Linear(config.hidden_dim * 2, config.hidden_dim)
+        self._executor = ThreadPoolExecutor(max_workers=4)
 
     def forward(
         self,
@@ -6587,17 +6593,15 @@ class ParallelCognitivePipeline(nn.Module):
             return self.world_model(C_star)
 
         if urgency == 'normal':
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                f_div = pool.submit(_run_diversity)
-                f_safe = pool.submit(_run_safety)
+            f_div = self._executor.submit(_run_diversity)
+            f_safe = self._executor.submit(_run_safety)
             result['diversity'] = f_div.result()
             result['safety'] = f_safe.result()
         else:  # thorough
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                f_div = pool.submit(_run_diversity)
-                f_safe = pool.submit(_run_safety)
-                f_topo = pool.submit(_run_topology)
-                f_wm = pool.submit(_run_world_model)
+            f_div = self._executor.submit(_run_diversity)
+            f_safe = self._executor.submit(_run_safety)
+            f_topo = self._executor.submit(_run_topology)
+            f_wm = self._executor.submit(_run_world_model)
             result['diversity'] = f_div.result()
             result['safety'] = f_safe.result()
             result['topology'] = f_topo.result()
