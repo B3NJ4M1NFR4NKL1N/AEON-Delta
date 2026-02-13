@@ -829,9 +829,9 @@ class ContextualRSSM(nn.Module):
         # Выходная проекция с residual
         z_pred = self.out_proj(hx_new)
         
-        # Residual connection: blend last z with attention-weighted context
+        # Residual: last z + attention-weighted context
         z_last = z_context[:, -1, :]
-        z_pred = z_pred + self.residual_weight * (z_last + weighted_context)
+        z_pred = z_pred + self.residual_weight * z_last + weighted_context
         
         return z_pred
     
