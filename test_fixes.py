@@ -5721,6 +5721,399 @@ def test_validate_training_components_uses_model_device():
     print("✅ test_validate_training_components_uses_model_device PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL ROADMAP TESTS (Phases 1-5)
+# ============================================================================
+
+
+def test_shared_workspace_broadcast_and_read():
+    """Phase 1: SharedWorkspace stores and returns broadcast content."""
+    from aeon_core import SharedWorkspace
+    ws = SharedWorkspace(capacity=64)
+    data = torch.randn(1, 64)
+    ws.broadcast(data)
+    out = ws.read()
+    assert out.shape == (1, 64)
+    assert torch.allclose(out, data, atol=1e-6)
+    print("✅ test_shared_workspace_broadcast_and_read PASSED")
+
+
+def test_shared_workspace_padding():
+    """Phase 1: SharedWorkspace pads smaller tensors."""
+    from aeon_core import SharedWorkspace
+    ws = SharedWorkspace(capacity=64)
+    small = torch.ones(1, 10)
+    ws.broadcast(small)
+    out = ws.read()
+    assert out.shape == (1, 64)
+    assert torch.allclose(out[0, :10], small[0])
+    assert (out[0, 10:] == 0).all()
+    print("✅ test_shared_workspace_padding PASSED")
+
+
+def test_shared_workspace_truncation():
+    """Phase 1: SharedWorkspace truncates larger tensors."""
+    from aeon_core import SharedWorkspace
+    ws = SharedWorkspace(capacity=32)
+    big = torch.ones(1, 64)
+    ws.broadcast(big)
+    out = ws.read()
+    assert out.shape == (1, 32)
+    print("✅ test_shared_workspace_truncation PASSED")
+
+
+def test_attention_arbiter_urgency():
+    """Phase 1: AttentionArbiter produces valid urgency scores."""
+    from aeon_core import AttentionArbiter
+    arb = AttentionArbiter(["a", "b", "c"], state_dim=32)
+    state = torch.randn(2, 32)
+    urgency = arb.compute_urgency(state)
+    assert urgency.shape == (2, 3)
+    assert torch.allclose(urgency.sum(dim=-1), torch.ones(2), atol=1e-5)
+    print("✅ test_attention_arbiter_urgency PASSED")
+
+
+def test_attention_arbiter_top_k():
+    """Phase 1: AttentionArbiter top_k returns correct count."""
+    from aeon_core import AttentionArbiter
+    arb = AttentionArbiter(["a", "b", "c", "d"], state_dim=32)
+    state = torch.randn(2, 32)
+    urgency = arb.compute_urgency(state)
+    indices = arb.top_k_indices(urgency, k=2)
+    assert len(indices) == 2
+    assert all(0 <= i < 4 for i in indices)
+    print("✅ test_attention_arbiter_top_k PASSED")
+
+
+def test_meta_monitor_update():
+    """Phase 1: MetaMonitor tracks quality stats."""
+    from aeon_core import MetaMonitor
+    mon = MetaMonitor(window_size=10)
+    state = torch.randn(2, 32)
+    winner = torch.randn(1, 32)
+    stats = mon.update(state, winner)
+    assert "mean" in stats and "std" in stats and "count" in stats
+    assert stats["count"] == 1
+    for _ in range(15):
+        mon.update(state, winner)
+    assert mon.stats()["count"] == 10  # window enforced
+    print("✅ test_meta_monitor_update PASSED")
+
+
+def test_cognitive_executive_function_forward():
+    """Phase 1: CognitiveExecutiveFunction runs full pipeline."""
+    from aeon_core import CognitiveExecutiveFunction
+    subs = {
+        "fast": nn.Linear(32, 32),
+        "slow": nn.Linear(32, 32),
+        "safe": nn.Linear(32, 32),
+    }
+    cef = CognitiveExecutiveFunction(subs, state_dim=32, workspace_capacity=64, top_k=2)
+    state = torch.randn(2, 32)
+    out = cef(state)
+    assert "winner" in out
+    assert "urgency" in out
+    assert "executed" in out
+    assert "meta_stats" in out
+    assert "workspace" in out
+    assert len(out["executed"]) <= 2
+    print("✅ test_cognitive_executive_function_forward PASSED")
+
+
+def test_cognitive_executive_function_gradient_flow():
+    """Phase 1: Gradients flow through CognitiveExecutiveFunction."""
+    from aeon_core import CognitiveExecutiveFunction
+    subs = {"a": nn.Linear(16, 16), "b": nn.Linear(16, 16)}
+    cef = CognitiveExecutiveFunction(subs, state_dim=16, workspace_capacity=32, top_k=2)
+    state = torch.randn(2, 16, requires_grad=True)
+    out = cef(state)
+    loss = out["winner"].sum()
+    loss.backward()
+    assert state.grad is not None
+    assert state.grad.abs().sum().item() > 0
+    print("✅ test_cognitive_executive_function_gradient_flow PASSED")
+
+
+def test_recovery_experience_replay_push_and_sample():
+    """Phase 2: RecoveryExperienceReplay stores and samples transitions."""
+    from aeon_core import RecoveryExperienceReplay
+    buf = RecoveryExperienceReplay(capacity=50)
+    for i in range(20):
+        buf.push(torch.randn(8), i % 4, float(i), torch.randn(8))
+    assert len(buf) == 20
+    batch = buf.sample(5)
+    assert len(batch) == 5
+    print("✅ test_recovery_experience_replay_push_and_sample PASSED")
+
+
+def test_recovery_experience_replay_capacity():
+    """Phase 2: RecoveryExperienceReplay respects capacity limit."""
+    from aeon_core import RecoveryExperienceReplay
+    buf = RecoveryExperienceReplay(capacity=10)
+    for i in range(25):
+        buf.push(torch.randn(4), 0, 1.0, torch.randn(4))
+    assert len(buf) == 10
+    print("✅ test_recovery_experience_replay_capacity PASSED")
+
+
+def test_meta_recovery_learner_forward():
+    """Phase 2: MetaRecoveryLearner selects a valid strategy."""
+    from aeon_core import MetaRecoveryLearner
+    mrl = MetaRecoveryLearner(state_dim=32, hidden_dim=64)
+    ctx = torch.randn(1, 32)
+    out = mrl(ctx)
+    assert "action" in out and "strategy" in out and "value" in out
+    assert out["strategy"] in MetaRecoveryLearner.STRATEGIES
+    print("✅ test_meta_recovery_learner_forward PASSED")
+
+
+def test_meta_recovery_learner_compute_loss():
+    """Phase 2: MetaRecoveryLearner loss is a valid scalar."""
+    from aeon_core import MetaRecoveryLearner
+    mrl = MetaRecoveryLearner(state_dim=16, hidden_dim=32)
+    states = torch.randn(4, 16)
+    actions = torch.tensor([0, 1, 2, 3])
+    rewards = torch.tensor([1.0, 0.5, 0.0, -0.5])
+    next_states = torch.randn(4, 16)
+    loss = mrl.compute_loss(states, actions, rewards, next_states)
+    assert loss.dim() == 0
+    assert torch.isfinite(loss)
+    loss.backward()
+    print("✅ test_meta_recovery_learner_compute_loss PASSED")
+
+
+def test_meta_recovery_learner_gradient_flow():
+    """Phase 2: Gradients flow through MetaRecoveryLearner."""
+    from aeon_core import MetaRecoveryLearner
+    mrl = MetaRecoveryLearner(state_dim=16, hidden_dim=32)
+    ctx = torch.randn(2, 16, requires_grad=True)
+    out = mrl(ctx)
+    out["value"].sum().backward()
+    assert ctx.grad is not None
+    assert ctx.grad.abs().sum().item() > 0
+    print("✅ test_meta_recovery_learner_gradient_flow PASSED")
+
+
+def test_unified_causal_simulator_forward():
+    """Phase 3: UnifiedCausalSimulator produces next_state and causal_vars."""
+    from aeon_core import UnifiedCausalSimulator
+    sim = UnifiedCausalSimulator(state_dim=32, num_causal_vars=8)
+    state = torch.randn(2, 32)
+    out = sim(state)
+    assert "next_state" in out
+    assert "causal_vars" in out
+    assert "causal_graph" in out
+    assert out["next_state"].shape == (2, 32)
+    assert out["causal_vars"].shape == (2, 8)
+    print("✅ test_unified_causal_simulator_forward PASSED")
+
+
+def test_unified_causal_simulator_intervention():
+    """Phase 3: UnifiedCausalSimulator applies do-calculus intervention."""
+    from aeon_core import UnifiedCausalSimulator
+    sim = UnifiedCausalSimulator(state_dim=32, num_causal_vars=8)
+    state = torch.randn(2, 32)
+    out_no_iv = sim(state)
+    out_iv = sim(state, intervention={"index": 0, "value": 1.0})
+    assert out_iv["interventional"] is True
+    assert out_no_iv["interventional"] is False
+    print("✅ test_unified_causal_simulator_intervention PASSED")
+
+
+def test_unified_causal_simulator_counterfactual():
+    """Phase 3: UnifiedCausalSimulator plans counterfactuals."""
+    from aeon_core import UnifiedCausalSimulator
+    sim = UnifiedCausalSimulator(state_dim=32, num_causal_vars=8)
+    observed = torch.randn(2, 32)
+    goal = torch.randn(2, 32)
+    result = sim.plan_counterfactual(observed, goal, num_interventions=4)
+    assert "best_intervention" in result
+    assert "predicted_outcome" in result
+    assert "loss" in result
+    assert result["predicted_outcome"].shape == (2, 32)
+    print("✅ test_unified_causal_simulator_counterfactual PASSED")
+
+
+def test_unified_causal_simulator_gradient_flow():
+    """Phase 3: Gradients flow through UnifiedCausalSimulator."""
+    from aeon_core import UnifiedCausalSimulator
+    sim = UnifiedCausalSimulator(state_dim=16, num_causal_vars=4)
+    state = torch.randn(2, 16, requires_grad=True)
+    out = sim(state)
+    out["next_state"].sum().backward()
+    assert state.grad is not None
+    assert state.grad.abs().sum().item() > 0
+    print("✅ test_unified_causal_simulator_gradient_flow PASSED")
+
+
+def test_neuro_symbolic_bridge_roundtrip():
+    """Phase 4: NeuroSymbolicBridge extracts and re-embeds correctly."""
+    from aeon_core import NeuroSymbolicBridge
+    bridge = NeuroSymbolicBridge(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64)
+    facts = bridge.extract_facts(state)
+    rules = bridge.extract_rules(state)
+    assert facts.shape == (2, 16)
+    assert rules.shape == (2, 16)
+    assert (facts >= 0).all() and (facts <= 1).all()
+    embedded = bridge.embed_conclusions(facts)
+    assert embedded.shape == (2, 64)
+    print("✅ test_neuro_symbolic_bridge_roundtrip PASSED")
+
+
+def test_temporal_knowledge_graph_add_and_retrieve():
+    """Phase 4: TemporalKnowledgeGraph stores and retrieves facts."""
+    from aeon_core import TemporalKnowledgeGraph
+    tkg = TemporalKnowledgeGraph(capacity=100)
+    facts = torch.randn(2, 16)
+    tkg.add_facts(facts, confidence=0.9)
+    assert len(tkg) == 1
+    query = torch.randn(2, 16)
+    result = tkg.retrieve_relevant(query, top_k=3)
+    assert result.shape == facts.shape
+    print("✅ test_temporal_knowledge_graph_add_and_retrieve PASSED")
+
+
+def test_temporal_knowledge_graph_capacity():
+    """Phase 4: TemporalKnowledgeGraph evicts old entries."""
+    from aeon_core import TemporalKnowledgeGraph
+    tkg = TemporalKnowledgeGraph(capacity=5)
+    for _ in range(10):
+        tkg.add_facts(torch.randn(1, 8))
+    assert len(tkg) == 5
+    print("✅ test_temporal_knowledge_graph_capacity PASSED")
+
+
+def test_temporal_knowledge_graph_empty_retrieve():
+    """Phase 4: Empty TKG returns zeros."""
+    from aeon_core import TemporalKnowledgeGraph
+    tkg = TemporalKnowledgeGraph()
+    query = torch.randn(2, 16)
+    result = tkg.retrieve_relevant(query)
+    assert result.shape == query.shape
+    assert (result == 0).all()
+    print("✅ test_temporal_knowledge_graph_empty_retrieve PASSED")
+
+
+def test_hybrid_reasoning_engine_forward():
+    """Phase 4: HybridReasoningEngine produces conclusions."""
+    from aeon_core import HybridReasoningEngine
+    engine = HybridReasoningEngine(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64)
+    out = engine(state)
+    assert "conclusions" in out
+    assert "facts" in out
+    assert "rules" in out
+    assert "derived" in out
+    assert out["conclusions"].shape == (2, 64)
+    print("✅ test_hybrid_reasoning_engine_forward PASSED")
+
+
+def test_hybrid_reasoning_engine_with_query():
+    """Phase 4: HybridReasoningEngine uses KB when query provided."""
+    from aeon_core import HybridReasoningEngine
+    engine = HybridReasoningEngine(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64)
+    # First call to populate KB
+    engine.reason(state)
+    # Second call with query
+    query = torch.randn(2, 16)
+    out = engine.reason(state, query=query)
+    assert out["conclusions"].shape == (2, 64)
+    assert len(engine.knowledge_graph) >= 2
+    print("✅ test_hybrid_reasoning_engine_with_query PASSED")
+
+
+def test_hybrid_reasoning_engine_gradient_flow():
+    """Phase 4: Gradients flow through HybridReasoningEngine."""
+    from aeon_core import HybridReasoningEngine
+    engine = HybridReasoningEngine(hidden_dim=32, num_predicates=8)
+    state = torch.randn(2, 32, requires_grad=True)
+    out = engine(state)
+    out["conclusions"].sum().backward()
+    assert state.grad is not None
+    assert state.grad.abs().sum().item() > 0
+    print("✅ test_hybrid_reasoning_engine_gradient_flow PASSED")
+
+
+def test_critic_network_forward():
+    """Phase 5: CriticNetwork returns all four scores in [0,1]."""
+    from aeon_core import CriticNetwork
+    critic = CriticNetwork(hidden_dim=32)
+    query = torch.randn(2, 32)
+    candidate = torch.randn(2, 32)
+    scores = critic(query, candidate)
+    for key in ["correctness", "coherence", "safety", "novelty"]:
+        assert key in scores
+        assert (scores[key] >= 0).all() and (scores[key] <= 1).all()
+    print("✅ test_critic_network_forward PASSED")
+
+
+def test_critic_network_explain_failure():
+    """Phase 5: CriticNetwork explain_failure returns 4-dim signal."""
+    from aeon_core import CriticNetwork
+    critic = CriticNetwork(hidden_dim=32)
+    query = torch.randn(2, 32)
+    candidate = torch.randn(2, 32)
+    scores = critic(query, candidate)
+    signal = critic.explain_failure(scores)
+    assert signal.shape[-1] == 4
+    print("✅ test_critic_network_explain_failure PASSED")
+
+
+def test_revision_network_forward():
+    """Phase 5: RevisionNetwork produces revised query."""
+    from aeon_core import RevisionNetwork
+    reviser = RevisionNetwork(hidden_dim=32)
+    query = torch.randn(2, 32)
+    candidate = torch.randn(2, 32)
+    critique = torch.randn(2, 4)
+    revised = reviser(query, candidate, critique)
+    assert revised.shape == (2, 32)
+    print("✅ test_revision_network_forward PASSED")
+
+
+def test_auto_critic_loop_forward():
+    """Phase 5: AutoCriticLoop produces candidate with iteration count."""
+    from aeon_core import AutoCriticLoop
+    generator = nn.Linear(32, 32)
+    acl = AutoCriticLoop(generator, hidden_dim=32, max_iterations=3, threshold=0.99)
+    query = torch.randn(2, 32)
+    out = acl(query)
+    assert "candidate" in out
+    assert "iterations" in out
+    assert "final_score" in out
+    assert out["candidate"].shape == (2, 32)
+    assert 1 <= out["iterations"] <= 3
+    print("✅ test_auto_critic_loop_forward PASSED")
+
+
+def test_auto_critic_loop_trajectory():
+    """Phase 5: AutoCriticLoop returns trajectory when requested."""
+    from aeon_core import AutoCriticLoop
+    generator = nn.Linear(16, 16)
+    acl = AutoCriticLoop(generator, hidden_dim=16, max_iterations=3, threshold=0.99)
+    query = torch.randn(2, 16)
+    out = acl(query, return_trajectory=True)
+    assert "trajectory" in out
+    assert len(out["trajectory"]) >= 1
+    assert "correctness" in out["trajectory"][0]
+    print("✅ test_auto_critic_loop_trajectory PASSED")
+
+
+def test_auto_critic_loop_gradient_flow():
+    """Phase 5: Gradients flow through AutoCriticLoop."""
+    from aeon_core import AutoCriticLoop
+    generator = nn.Linear(16, 16)
+    acl = AutoCriticLoop(generator, hidden_dim=16, max_iterations=2, threshold=0.99)
+    query = torch.randn(2, 16, requires_grad=True)
+    out = acl(query)
+    out["candidate"].sum().backward()
+    assert query.grad is not None
+    assert query.grad.abs().sum().item() > 0
+    print("✅ test_auto_critic_loop_gradient_flow PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6052,6 +6445,38 @@ if __name__ == '__main__':
     # Device consistency tests
     test_rssm_trainer_uses_model_device()
     test_validate_training_components_uses_model_device()
+    
+    # Architectural Roadmap tests (Phases 1-5)
+    test_shared_workspace_broadcast_and_read()
+    test_shared_workspace_padding()
+    test_shared_workspace_truncation()
+    test_attention_arbiter_urgency()
+    test_attention_arbiter_top_k()
+    test_meta_monitor_update()
+    test_cognitive_executive_function_forward()
+    test_cognitive_executive_function_gradient_flow()
+    test_recovery_experience_replay_push_and_sample()
+    test_recovery_experience_replay_capacity()
+    test_meta_recovery_learner_forward()
+    test_meta_recovery_learner_compute_loss()
+    test_meta_recovery_learner_gradient_flow()
+    test_unified_causal_simulator_forward()
+    test_unified_causal_simulator_intervention()
+    test_unified_causal_simulator_counterfactual()
+    test_unified_causal_simulator_gradient_flow()
+    test_neuro_symbolic_bridge_roundtrip()
+    test_temporal_knowledge_graph_add_and_retrieve()
+    test_temporal_knowledge_graph_capacity()
+    test_temporal_knowledge_graph_empty_retrieve()
+    test_hybrid_reasoning_engine_forward()
+    test_hybrid_reasoning_engine_with_query()
+    test_hybrid_reasoning_engine_gradient_flow()
+    test_critic_network_forward()
+    test_critic_network_explain_failure()
+    test_revision_network_forward()
+    test_auto_critic_loop_forward()
+    test_auto_critic_loop_trajectory()
+    test_auto_critic_loop_gradient_flow()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

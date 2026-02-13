@@ -61,6 +61,7 @@ from enum import Enum, auto
 from collections import OrderedDict, defaultdict, Counter, deque
 from contextlib import contextmanager
 from functools import wraps
+import random
 import threading
 import copy
 from concurrent.futures import ThreadPoolExecutor
@@ -9645,6 +9646,692 @@ class CompositionalSlotAttention(nn.Module):
             slots = self.gru(attn_flat, slots_flat).reshape(B, self.num_slots, self.slot_dim)
 
         return slots
+
+
+# ============================================================================
+# SECTION 15d: ARCHITECTURAL ROADMAP — COGNITIVE CONTROL & SELF-IMPROVEMENT
+# ============================================================================
+
+
+class SharedWorkspace(nn.Module):
+    """
+    Broadcast buffer for Global Workspace Theory (Baars, 1988).
+
+    Maintains a fixed-capacity workspace that stores the winning hypothesis
+    so that all subsystems can read a shared representation.
+    """
+
+    def __init__(self, capacity: int = 512):
+        super().__init__()
+        self.capacity = capacity
+        self.register_buffer("_buffer", torch.zeros(1, capacity))
+
+    def broadcast(self, winner: torch.Tensor) -> None:
+        """Write *winner* into the workspace (detached copy)."""
+        flat = winner.detach().reshape(1, -1)
+        if flat.shape[-1] > self.capacity:
+            flat = flat[:, : self.capacity]
+        elif flat.shape[-1] < self.capacity:
+            pad = torch.zeros(1, self.capacity - flat.shape[-1], device=flat.device)
+            flat = torch.cat([flat, pad], dim=-1)
+        self._buffer.copy_(flat)
+
+    def read(self) -> torch.Tensor:
+        """Return the current workspace content."""
+        return self._buffer.clone()
+
+
+class AttentionArbiter(nn.Module):
+    """
+    Computes urgency scores for a dictionary of named subsystems and
+    selects the winning hypothesis from their outputs.
+    """
+
+    def __init__(self, subsystem_names: List[str], state_dim: int = 256):
+        super().__init__()
+        self.subsystem_names = list(subsystem_names)
+        self.urgency_net = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, len(self.subsystem_names)),
+        )
+
+    def compute_urgency(self, state: torch.Tensor) -> torch.Tensor:
+        """Return softmax urgency scores [B, num_subsystems]."""
+        return F.softmax(self.urgency_net(state), dim=-1)
+
+    def top_k_indices(self, urgency: torch.Tensor, k: int = 3) -> List[int]:
+        """Return indices of the top-k subsystems (batch-averaged)."""
+        mean_urgency = urgency.mean(dim=0)
+        k = min(k, len(self.subsystem_names))
+        _, indices = mean_urgency.topk(k)
+        return indices.tolist()
+
+    def select_hypothesis(
+        self, results: Dict[str, torch.Tensor], urgency: torch.Tensor
+    ) -> torch.Tensor:
+        """Return the output from the subsystem with highest urgency."""
+        mean_urgency = urgency.mean(dim=0)
+        best_idx = mean_urgency.argmax().item()
+        best_name = self.subsystem_names[best_idx]
+        if best_name in results:
+            return results[best_name]
+        # Fallback: return first available result
+        return next(iter(results.values()))
+
+
+class MetaMonitor(nn.Module):
+    """
+    Meta-cognitive monitor that tracks workspace performance over time
+    and exposes running statistics.
+    """
+
+    def __init__(self, window_size: int = 100):
+        super().__init__()
+        self.window_size = window_size
+        self._scores: List[float] = []
+
+    def update(self, state: torch.Tensor, winner: torch.Tensor) -> Dict[str, float]:
+        """Record a scalar quality estimate derived from *state* and *winner*."""
+        with torch.no_grad():
+            s_flat = state.detach().mean(dim=0).flatten()
+            w_flat = winner.detach().mean(dim=0).flatten()
+            min_len = min(s_flat.shape[0], w_flat.shape[0])
+            score = F.cosine_similarity(
+                s_flat[:min_len].unsqueeze(0),
+                w_flat[:min_len].unsqueeze(0),
+                dim=-1,
+            ).item()
+        self._scores.append(score)
+        if len(self._scores) > self.window_size:
+            self._scores = self._scores[-self.window_size :]
+        return self.stats()
+
+    def stats(self) -> Dict[str, float]:
+        if not self._scores:
+            return {"mean": 0.0, "std": 0.0, "count": 0}
+        t = torch.tensor(self._scores)
+        return {
+            "mean": t.mean().item(),
+            "std": t.std().item() if len(self._scores) > 1 else 0.0,
+            "count": len(self._scores),
+        }
+
+
+class CognitiveExecutiveFunction(nn.Module):
+    """
+    Global Workspace Theory dispatcher (Baars, 1988).
+
+    Prioritises subsystems via an attention budget, executes the top-K,
+    broadcasts the winning hypothesis, and updates a meta-cognitive
+    monitor.
+
+    Args:
+        subsystems: name → nn.Module mapping.
+        workspace_capacity: broadcast buffer size.
+        top_k: number of subsystems executed per step.
+    """
+
+    def __init__(
+        self,
+        subsystems: Dict[str, nn.Module],
+        state_dim: int = 256,
+        workspace_capacity: int = 512,
+        top_k: int = 3,
+    ):
+        super().__init__()
+        self.subsystem_names = list(subsystems.keys())
+        self.subsystems = nn.ModuleDict(subsystems)
+        self.workspace = SharedWorkspace(capacity=workspace_capacity)
+        self.arbiter = AttentionArbiter(self.subsystem_names, state_dim=state_dim)
+        self.metacognitive_monitor = MetaMonitor()
+        self.top_k = top_k
+
+    def forward(self, state: torch.Tensor) -> Dict[str, Any]:
+        # 1. Urgency scores
+        urgency = self.arbiter.compute_urgency(state)
+
+        # 2. Execute top-K subsystems
+        indices = self.arbiter.top_k_indices(urgency, k=self.top_k)
+        results: Dict[str, torch.Tensor] = {}
+        for idx in indices:
+            name = self.subsystem_names[idx]
+            results[name] = self.subsystems[name](state)
+
+        # 3. Select & broadcast winner
+        winner = self.arbiter.select_hypothesis(results, urgency)
+        self.workspace.broadcast(winner)
+
+        # 4. Meta-cognitive update
+        meta_stats = self.metacognitive_monitor.update(state, winner)
+
+        return {
+            "winner": winner,
+            "urgency": urgency,
+            "executed": list(results.keys()),
+            "meta_stats": meta_stats,
+            "workspace": self.workspace.read(),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Self-Improving Error Recovery
+# ---------------------------------------------------------------------------
+
+
+class RecoveryExperienceReplay:
+    """
+    Fixed-capacity circular buffer that stores (state, action, reward,
+    next_state) tuples for offline recovery-strategy learning.
+    """
+
+    def __init__(self, capacity: int = 10000):
+        self.capacity = capacity
+        self._buffer: List[Tuple[torch.Tensor, int, float, torch.Tensor]] = []
+        self._pos: int = 0
+
+    def push(
+        self,
+        state: torch.Tensor,
+        action: int,
+        reward: float,
+        next_state: torch.Tensor,
+    ) -> None:
+        entry = (state.detach(), action, reward, next_state.detach())
+        if len(self._buffer) < self.capacity:
+            self._buffer.append(entry)
+        else:
+            self._buffer[self._pos] = entry
+        self._pos = (self._pos + 1) % self.capacity
+
+    def sample(self, batch_size: int) -> List[Tuple[torch.Tensor, int, float, torch.Tensor]]:
+        if len(self._buffer) == 0:
+            return []
+        batch_size = min(batch_size, len(self._buffer))
+        indices = random.sample(range(len(self._buffer)), batch_size)
+        return [self._buffer[i] for i in indices]
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+
+class MetaRecoveryLearner(nn.Module):
+    """
+    Learns optimal recovery strategies through offline RL.
+
+    State:  encoded (error_class, system_state, past_history)
+    Action: index into [sanitize, rollback, fallback, retry]
+    Reward: success_rate * (-latency_penalty)
+    """
+
+    STRATEGIES = ["sanitize", "rollback", "fallback", "retry"]
+
+    def __init__(self, state_dim: int = 64, hidden_dim: int = 256, epsilon: float = 0.1, gamma: float = 0.99):
+        super().__init__()
+        self.state_dim = state_dim
+        self.num_strategies = len(self.STRATEGIES)
+        self.epsilon = epsilon
+        self.gamma = gamma
+
+        self.state_encoder = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.policy_net = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.num_strategies),
+        )
+        self.value_net = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+        self.recovery_buffer = RecoveryExperienceReplay(capacity=10000)
+
+    def encode_error_context(self, error_context: torch.Tensor) -> torch.Tensor:
+        return self.state_encoder(error_context)
+
+    def select_strategy(self, error_context: torch.Tensor) -> Tuple[int, str]:
+        """Return (action_index, strategy_name)."""
+        encoded = self.encode_error_context(error_context)
+        logits = self.policy_net(encoded)
+        policy = F.softmax(logits, dim=-1)
+
+        if self.training and random.random() < self.epsilon:
+            action = random.randrange(self.num_strategies)
+        else:
+            # Average over batch dimension for action selection
+            mean_policy = policy.mean(dim=0) if policy.dim() > 1 else policy
+            action = mean_policy.argmax(dim=-1).item()
+        return action, self.STRATEGIES[action]
+
+    def compute_loss(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        rewards: torch.Tensor,
+        next_states: torch.Tensor,
+    ) -> torch.Tensor:
+        """Actor-critic policy-gradient loss on a batch."""
+        encoded = self.state_encoder(states)
+        encoded_next = self.state_encoder(next_states)
+
+        values = self.value_net(encoded).squeeze(-1)
+        next_values = self.value_net(encoded_next).squeeze(-1)
+
+        advantage = rewards + self.gamma * next_values.detach() - values
+
+        logits = self.policy_net(encoded)
+        log_probs = F.log_softmax(logits, dim=-1)
+        chosen_log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)
+
+        policy_loss = -(chosen_log_probs * advantage.detach()).mean()
+        value_loss = advantage.pow(2).mean()
+
+        return policy_loss + 0.5 * value_loss
+
+    def forward(self, error_context: torch.Tensor) -> Dict[str, Any]:
+        action, strategy = self.select_strategy(error_context)
+        encoded = self.encode_error_context(error_context)
+        value = self.value_net(encoded)
+        return {
+            "action": action,
+            "strategy": strategy,
+            "value": value,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Causal World Model Integration
+# ---------------------------------------------------------------------------
+
+
+class UnifiedCausalSimulator(nn.Module):
+    """
+    Integrates physics-grounded dynamics with a causal DAG.
+
+    Pipeline::
+
+        state → CausalEncoder → latent_vars → PhysicsEngine → next_state
+                    ↓
+        Counterfactual: do(X=x) → intervene → alternative_future
+    """
+
+    def __init__(self, state_dim: int, num_causal_vars: int = 16):
+        super().__init__()
+        self.state_dim = state_dim
+        self.num_causal_vars = num_causal_vars
+
+        self.causal_encoder = CausalFactorExtractor(state_dim, num_causal_vars)
+        self.physics_engine = PhysicsGroundedWorldModel(
+            input_dim=state_dim, state_dim=state_dim
+        )
+        self.causal_decoder = nn.Sequential(
+            nn.Linear(num_causal_vars, state_dim),
+            nn.LayerNorm(state_dim),
+            nn.GELU(),
+        )
+        self.inverse_model = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, state_dim),
+        )
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        intervention: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        # 1. Factorise state → causal variables
+        causal_out = self.causal_encoder(state, intervene=intervention)
+        causal_vars = causal_out["factors"]
+
+        # 2. Decode causal variables back to state space
+        decoded = self.causal_decoder(causal_vars)
+
+        # 3. Physics simulation
+        physics_out = self.physics_engine(decoded)
+
+        return {
+            "next_state": physics_out["output"],
+            "causal_vars": causal_vars,
+            "causal_graph": causal_out["causal_graph"],
+            "physics_latent": physics_out["latent_state"],
+            "interventional": causal_out["interventional"],
+        }
+
+    def plan_counterfactual(
+        self,
+        observed_state: torch.Tensor,
+        goal_state: torch.Tensor,
+        num_interventions: int = 4,
+    ) -> Dict[str, Any]:
+        """Search for the best single-factor intervention to reach *goal_state*."""
+        noise = self.inverse_model(observed_state)
+        best_loss = float("inf")
+        best_intervention: Optional[Dict[str, Any]] = None
+        best_outcome: Optional[torch.Tensor] = None
+
+        for idx in range(min(num_interventions, self.num_causal_vars)):
+            iv = {"index": idx, "value": 1.0}
+            result = self.forward(observed_state + noise * 0.1, intervention=iv)
+            loss = F.mse_loss(result["next_state"], goal_state).item()
+            if loss < best_loss:
+                best_loss = loss
+                best_intervention = iv
+                best_outcome = result["next_state"]
+
+        return {
+            "best_intervention": best_intervention,
+            "predicted_outcome": best_outcome,
+            "loss": best_loss,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Neuro-Symbolic Integration
+# ---------------------------------------------------------------------------
+
+
+class NeuroSymbolicBridge(nn.Module):
+    """
+    Bidirectional bridge between neural representations and symbolic
+    predicates.
+
+    ``extract_facts`` and ``extract_rules`` ground continuous vectors
+    into soft truth values; ``embed_conclusions`` lifts them back.
+    """
+
+    def __init__(self, hidden_dim: int, num_predicates: int = 32):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_predicates = num_predicates
+
+        self.fact_extractor = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_predicates),
+            nn.Sigmoid(),
+        )
+        self.rule_extractor = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_predicates),
+            nn.Sigmoid(),
+        )
+        self.embedder = nn.Sequential(
+            nn.Linear(num_predicates, 128),
+            nn.ReLU(),
+            nn.Linear(128, hidden_dim),
+        )
+
+    def extract_facts(self, neural_state: torch.Tensor) -> torch.Tensor:
+        return self.fact_extractor(neural_state)
+
+    def extract_rules(self, neural_state: torch.Tensor) -> torch.Tensor:
+        return self.rule_extractor(neural_state)
+
+    def embed_conclusions(self, conclusions: torch.Tensor) -> torch.Tensor:
+        return self.embedder(conclusions)
+
+
+class TemporalKnowledgeGraph:
+    """
+    In-memory temporal knowledge graph that stores soft facts with
+    timestamps and confidence scores.  Supports retrieval of the
+    most-relevant entries via cosine similarity.
+    """
+
+    def __init__(self, capacity: int = 1000):
+        self.capacity = capacity
+        self._store: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+
+    def add_facts(
+        self,
+        facts: torch.Tensor,
+        confidence: float = 0.8,
+        timestamp: Optional[int] = None,
+    ) -> None:
+        with self._lock:
+            entry = {
+                "facts": facts.detach().cpu(),
+                "confidence": confidence,
+                "timestamp": timestamp or len(self._store),
+            }
+            self._store.append(entry)
+            if len(self._store) > self.capacity:
+                self._store = self._store[-self.capacity :]
+
+    def retrieve_relevant(
+        self, query: torch.Tensor, top_k: int = 5
+    ) -> torch.Tensor:
+        """Return the average of the *top_k* most similar stored facts."""
+        if not self._store:
+            return torch.zeros_like(query)
+        query_flat = query.detach().cpu().flatten()
+        scored = []
+        for entry in self._store:
+            stored = entry["facts"].flatten()
+            min_len = min(stored.shape[0], query_flat.shape[0])
+            sim = F.cosine_similarity(
+                stored[:min_len].unsqueeze(0),
+                query_flat[:min_len].unsqueeze(0),
+                dim=-1,
+            ).item()
+            scored.append((sim * entry["confidence"], entry["facts"]))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[: min(top_k, len(scored))]
+        avg = torch.stack([t for _, t in top]).mean(dim=0)
+        return avg.to(query.device)
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+
+class HybridReasoningEngine(nn.Module):
+    """
+    Tight coupling between neural representations and a symbolic
+    knowledge base.
+
+    Architecture::
+
+        neural_state → NeuroSymbolicBridge → predicates →
+            DifferentiableForwardChainer → conclusions
+                                              ↓
+                                    TemporalKnowledgeGraph (persistent)
+    """
+
+    def __init__(self, hidden_dim: int, num_predicates: int = 32, max_depth: int = 3):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_predicates = num_predicates
+
+        self.bridge = NeuroSymbolicBridge(hidden_dim, num_predicates)
+        self.forward_chainer = DifferentiableForwardChainer(
+            num_predicates=num_predicates, max_depth=max_depth
+        )
+        self.knowledge_graph = TemporalKnowledgeGraph()
+
+    def reason(self, neural_state: torch.Tensor, query: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        # 1. Grounding
+        facts = self.bridge.extract_facts(neural_state)
+        rules = self.bridge.extract_rules(neural_state)
+
+        # 2. Augment with persistent KB
+        if query is not None:
+            kb_facts = self.knowledge_graph.retrieve_relevant(query)
+            # Ensure compatible shapes via padding/truncation
+            if kb_facts.dim() < facts.dim():
+                kb_facts = kb_facts.unsqueeze(0).expand_as(facts)
+            if kb_facts.shape != facts.shape:
+                aligned = torch.zeros_like(facts)
+                rows = min(kb_facts.shape[0], facts.shape[0])
+                cols = min(kb_facts.shape[-1], facts.shape[-1]) if kb_facts.dim() > 1 else 0
+                if kb_facts.dim() == 1:
+                    aligned[0, : kb_facts.shape[0]] = kb_facts[: facts.shape[-1]]
+                else:
+                    aligned[:rows, :cols] = kb_facts[:rows, :cols]
+                kb_facts = aligned
+            facts = torch.clamp(facts + kb_facts * 0.3, 0.0, 1.0)
+
+        # 3. Forward chaining
+        derived = self.forward_chainer(facts, rules)
+
+        # 4. Store new knowledge
+        self.knowledge_graph.add_facts(derived, confidence=0.8)
+
+        # 5. Ungrounding
+        conclusions = self.bridge.embed_conclusions(derived)
+
+        return {
+            "conclusions": conclusions,
+            "facts": facts,
+            "rules": rules,
+            "derived": derived,
+        }
+
+    def forward(self, neural_state: torch.Tensor) -> Dict[str, Any]:
+        return self.reason(neural_state)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Self-Referential Meta-Cognition
+# ---------------------------------------------------------------------------
+
+
+class CriticNetwork(nn.Module):
+    """
+    Evaluates a (query, candidate) pair and returns scores for
+    correctness, coherence, safety, and novelty — all in [0, 1].
+    """
+
+    def __init__(self, hidden_dim: int = 512):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 4),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self, query: torch.Tensor, candidate: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        combined = torch.cat([query, candidate], dim=-1)
+        scores = self.net(combined)
+        return {
+            "correctness": scores[..., 0:1],
+            "coherence": scores[..., 1:2],
+            "safety": scores[..., 2:3],
+            "novelty": scores[..., 3:4],
+        }
+
+    def explain_failure(self, scores: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Return a single critique signal derived from the scores."""
+        return torch.cat(list(scores.values()), dim=-1)
+
+
+class RevisionNetwork(nn.Module):
+    """
+    Produces a revised query that incorporates the critique signal and
+    the previous candidate.
+    """
+
+    def __init__(self, hidden_dim: int = 512):
+        super().__init__()
+        # query + candidate + critique(4 scores)
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + 4, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        candidate: torch.Tensor,
+        critique_signal: torch.Tensor,
+    ) -> torch.Tensor:
+        combined = torch.cat([query, candidate, critique_signal], dim=-1)
+        return self.net(combined)
+
+
+class AutoCriticLoop(nn.Module):
+    """
+    System-2 iterative self-critique (Kahneman, 2011).
+
+    Loop:
+    1. Generate candidate answer
+    2. Critic evaluates [correctness, coherence, safety, novelty]
+    3. If score < threshold → revise and repeat
+    4. Else → commit answer
+
+    Args:
+        base_model: callable that maps query → candidate.
+        hidden_dim: representation size.
+        max_iterations: self-critique budget.
+        threshold: correctness score required to commit.
+    """
+
+    def __init__(
+        self,
+        base_model: nn.Module,
+        hidden_dim: int = 512,
+        max_iterations: int = 5,
+        threshold: float = 0.85,
+    ):
+        super().__init__()
+        self.generator = base_model
+        self.critic = CriticNetwork(hidden_dim=hidden_dim)
+        self.reviser = RevisionNetwork(hidden_dim=hidden_dim)
+        self.max_iterations = max_iterations
+        self.threshold = threshold
+
+    def forward(
+        self, query: torch.Tensor, return_trajectory: bool = False
+    ) -> Dict[str, Any]:
+        trajectory: List[Dict[str, Any]] = []
+
+        current_query = query
+        best_candidate = self.generator(query)  # default candidate
+        best_score = -1.0
+
+        for iteration in range(self.max_iterations):
+            candidate = self.generator(current_query)
+            scores = self.critic(current_query, candidate)
+
+            correctness = scores["correctness"].mean().item()
+            if correctness > best_score:
+                best_score = correctness
+                best_candidate = candidate
+
+            trajectory.append(
+                {
+                    "iteration": iteration,
+                    "correctness": correctness,
+                    "scores": {k: v.mean().item() for k, v in scores.items()},
+                }
+            )
+
+            if correctness > self.threshold:
+                break
+
+            # Revise
+            critique_signal = self.critic.explain_failure(scores)
+            current_query = self.reviser(current_query, candidate, critique_signal)
+
+        result: Dict[str, Any] = {
+            "candidate": best_candidate,
+            "iterations": len(trajectory),
+            "final_score": best_score,
+        }
+        if return_trajectory:
+            result["trajectory"] = trajectory
+        return result
 
 
 # ============================================================================
