@@ -4998,6 +4998,338 @@ def test_ema_reset_on_checkpoint_concept():
     print("✅ test_ema_reset_on_checkpoint_concept PASSED")
 
 
+# ============================================================================
+# AGI Modernization: Decision Audit, State Validation & Error Classification
+# ============================================================================
+
+def test_decision_audit_log_record_and_recent():
+    """Verify DecisionAuditLog records entries and retrieves recent ones."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+
+    # Record several decisions
+    audit.record("meta_loop", "converged", {"iterations": 12})
+    audit.record("safety", "rollback", {"score": 0.3})
+    audit.record("world_model", "surprise_switch", {"surprise": 0.8})
+
+    recent = audit.recent(2)
+    assert len(recent) == 2, f"Expected 2 recent entries, got {len(recent)}"
+    assert recent[-1]["subsystem"] == "world_model"
+    assert recent[-1]["decision"] == "surprise_switch"
+    assert recent[-1]["metadata"]["surprise"] == 0.8
+
+    # Verify timestamp ordering
+    assert recent[0]["timestamp"] <= recent[1]["timestamp"]
+
+    print("✅ test_decision_audit_log_record_and_recent PASSED")
+
+
+def test_decision_audit_log_summary():
+    """Verify DecisionAuditLog summary aggregation."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    audit.record("meta_loop", "converged", {})
+    audit.record("meta_loop", "converged", {})
+    audit.record("safety", "rollback", {})
+
+    summary = audit.summary()
+    assert summary["total_decisions"] == 3
+    assert summary["counts"]["meta_loop.converged"] == 2
+    assert summary["counts"]["safety.rollback"] == 1
+
+    print("✅ test_decision_audit_log_summary PASSED")
+
+
+def test_decision_audit_log_bounded_capacity():
+    """Verify DecisionAuditLog respects max_entries bound."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=5)
+    for i in range(10):
+        audit.record("test", f"decision_{i}", {"idx": i})
+
+    recent = audit.recent(100)
+    assert len(recent) == 5, f"Expected 5 entries (bounded), got {len(recent)}"
+    # Entries 0-4 evicted; oldest retained entry should be idx=5
+    assert recent[0]["metadata"]["idx"] == 5
+
+    print("✅ test_decision_audit_log_bounded_capacity PASSED")
+
+
+def test_decision_audit_log_reset():
+    """Verify DecisionAuditLog reset clears all data."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    audit.record("meta_loop", "converged", {})
+    audit.reset()
+
+    summary = audit.summary()
+    assert summary["total_decisions"] == 0
+    assert len(summary["counts"]) == 0
+
+    print("✅ test_decision_audit_log_reset PASSED")
+
+
+def test_decision_audit_log_thread_safety():
+    """Verify DecisionAuditLog is thread-safe under concurrent writes."""
+    from aeon_core import DecisionAuditLog
+    import threading
+
+    audit = DecisionAuditLog(max_entries=1000)
+
+    def writer(subsystem, n):
+        for i in range(n):
+            audit.record(subsystem, "test", {"i": i})
+
+    threads = [
+        threading.Thread(target=writer, args=(f"thread_{t}", 50))
+        for t in range(4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    summary = audit.summary()
+    assert summary["total_decisions"] == 200, (
+        f"Expected 200 total decisions, got {summary['total_decisions']}"
+    )
+
+    print("✅ test_decision_audit_log_thread_safety PASSED")
+
+
+def test_state_consistency_validator_valid():
+    """Verify StateConsistencyValidator passes for valid tensors."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C_star = torch.randn(4, 64)
+    factors = torch.randn(4, 8)
+
+    result = validator.validate(C_star, factors=factors)
+    assert result["valid"], f"Expected valid, got violations: {result['violations']}"
+    assert "c_star_max_abs" in result["stats"]
+
+    print("✅ test_state_consistency_validator_valid PASSED")
+
+
+def test_state_consistency_validator_nan_detection():
+    """Verify StateConsistencyValidator detects NaN values."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C_star = torch.randn(4, 64)
+    C_star[0, 0] = float('nan')
+
+    result = validator.validate(C_star)
+    assert not result["valid"]
+    assert any("NaN" in v for v in result["violations"])
+
+    print("✅ test_state_consistency_validator_nan_detection PASSED")
+
+
+def test_state_consistency_validator_shape_mismatch():
+    """Verify StateConsistencyValidator detects shape mismatches."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C_star = torch.randn(4, 32)  # Wrong dim
+
+    result = validator.validate(C_star)
+    assert not result["valid"]
+    assert any("shape" in v for v in result["violations"])
+
+    print("✅ test_state_consistency_validator_shape_mismatch PASSED")
+
+
+def test_state_consistency_validator_activation_magnitude():
+    """Verify StateConsistencyValidator detects excessive activations."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64, max_activation=10.0)
+    C_star = torch.randn(4, 64) * 100  # Exceeds max
+
+    result = validator.validate(C_star)
+    assert not result["valid"]
+    assert any("activation" in v for v in result["violations"])
+
+    print("✅ test_state_consistency_validator_activation_magnitude PASSED")
+
+
+def test_semantic_error_classifier_numerical():
+    """Verify SemanticErrorClassifier classifies numerical errors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    error = ValueError("NaN detected in tensor output")
+    cls, detail = classifier.classify(error)
+    assert cls == "numerical", f"Expected 'numerical', got '{cls}'"
+
+    print("✅ test_semantic_error_classifier_numerical PASSED")
+
+
+def test_semantic_error_classifier_shape():
+    """Verify SemanticErrorClassifier classifies shape errors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    error = RuntimeError("shape mismatch: expected [4, 64], got [4, 32]")
+    cls, detail = classifier.classify(error)
+    assert cls == "shape", f"Expected 'shape', got '{cls}'"
+
+    print("✅ test_semantic_error_classifier_shape PASSED")
+
+
+def test_semantic_error_classifier_resource():
+    """Verify SemanticErrorClassifier classifies resource errors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    error = RuntimeError("CUDA out of memory")
+    cls, detail = classifier.classify(error)
+    assert cls == "resource", f"Expected 'resource', got '{cls}'"
+
+    print("✅ test_semantic_error_classifier_resource PASSED")
+
+
+def test_semantic_error_classifier_unknown():
+    """Verify SemanticErrorClassifier falls back to unknown."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    error = IOError("disk full")
+    cls, detail = classifier.classify(error)
+    assert cls == "unknown", f"Expected 'unknown', got '{cls}'"
+
+    print("✅ test_semantic_error_classifier_unknown PASSED")
+
+
+def test_semantic_error_classifier_tensor_state_healthy():
+    """Verify classify_tensor_state returns None for healthy tensors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    t = torch.randn(4, 64)
+    result = classifier.classify_tensor_state(t, "test")
+    assert result is None, f"Expected None for healthy tensor, got {result}"
+
+    print("✅ test_semantic_error_classifier_tensor_state_healthy PASSED")
+
+
+def test_semantic_error_classifier_tensor_state_nan():
+    """Verify classify_tensor_state detects NaN tensors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    t = torch.tensor([1.0, float('nan'), 3.0])
+    result = classifier.classify_tensor_state(t, "test")
+    assert result is not None
+    assert result[0] == "numerical"
+    assert "NaN" in result[1]
+
+    print("✅ test_semantic_error_classifier_tensor_state_nan PASSED")
+
+
+def test_semantic_error_classifier_tensor_state_inf():
+    """Verify classify_tensor_state detects Inf tensors."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+    t = torch.tensor([1.0, float('inf'), 3.0])
+    result = classifier.classify_tensor_state(t, "test")
+    assert result is not None
+    assert result[0] == "numerical"
+    assert "Inf" in result[1]
+
+    print("✅ test_semantic_error_classifier_tensor_state_inf PASSED")
+
+
+def test_audit_log_in_reasoning_core():
+    """Verify that reasoning_core populates the audit log."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=32, hidden_dim=32, meta_dim=32,
+        vq_embedding_dim=32, lipschitz_target=0.95,
+        device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Reset audit log
+    model.audit_log.reset()
+
+    # Run a forward pass
+    B, L = 2, config.seq_length
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='train', fast=True)
+
+    # Check that audit log has at least the meta_loop entry
+    summary = model.get_audit_summary()
+    assert summary["total_decisions"] >= 1, (
+        f"Expected at least 1 audit decision, got {summary['total_decisions']}"
+    )
+    assert "meta_loop.completed" in summary["counts"], (
+        f"Expected 'meta_loop.completed' in audit, got {summary['counts']}"
+    )
+
+    print("✅ test_audit_log_in_reasoning_core PASSED")
+
+
+def test_state_validation_in_reasoning_output():
+    """Verify state_validation key is present in reasoning_core outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=32, hidden_dim=32, meta_dim=32,
+        vq_embedding_dim=32, lipschitz_target=0.95,
+        device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, config.seq_length
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='train', fast=True)
+
+    assert 'state_validation' in outputs, (
+        "Expected 'state_validation' key in model outputs"
+    )
+    sv = outputs['state_validation']
+    assert 'valid' in sv
+    assert 'violations' in sv
+    assert 'stats' in sv
+    # For normal inputs, state should be valid
+    assert sv['valid'], f"Expected valid state, got violations: {sv['violations']}"
+
+    print("✅ test_state_validation_in_reasoning_output PASSED")
+
+
+def test_memory_load_specific_exception():
+    """Verify load_memory uses specific exception types, not bare except."""
+    import inspect
+    from aeon_core import MemoryManager
+
+    source = inspect.getsource(MemoryManager.load_memory)
+    # The bare 'except Exception:' (without 'as e') should no longer exist
+    assert "except Exception:" not in source, (
+        "load_memory still contains bare 'except Exception:'"
+    )
+
+    print("✅ test_memory_load_specific_exception PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -5282,6 +5614,27 @@ if __name__ == '__main__':
     test_memory_manager_timestamp_tracking()
     test_memory_manager_timestamp_eviction()
     test_ema_reset_on_checkpoint_concept()
+    
+    # AGI Modernization: Decision audit, state validation & error classification
+    test_decision_audit_log_record_and_recent()
+    test_decision_audit_log_summary()
+    test_decision_audit_log_bounded_capacity()
+    test_decision_audit_log_reset()
+    test_decision_audit_log_thread_safety()
+    test_state_consistency_validator_valid()
+    test_state_consistency_validator_nan_detection()
+    test_state_consistency_validator_shape_mismatch()
+    test_state_consistency_validator_activation_magnitude()
+    test_semantic_error_classifier_numerical()
+    test_semantic_error_classifier_shape()
+    test_semantic_error_classifier_resource()
+    test_semantic_error_classifier_unknown()
+    test_semantic_error_classifier_tensor_state_healthy()
+    test_semantic_error_classifier_tensor_state_nan()
+    test_semantic_error_classifier_tensor_state_inf()
+    test_audit_log_in_reasoning_core()
+    test_state_validation_in_reasoning_output()
+    test_memory_load_specific_exception()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
