@@ -790,13 +790,30 @@ class DecisionAuditLog:
     Thread-safe: all mutations go through a single ``deque`` with a bounded
     ``maxlen`` to prevent unbounded memory growth.
 
+    Severity levels (lowest to highest):
+    - ``"debug"`` – fine-grained diagnostic events.
+    - ``"info"``  – normal operational decisions (default).
+    - ``"warning"`` – recoverable anomalies.
+    - ``"error"`` – failures requiring recovery.
+    - ``"critical"`` – system-level failures.
+
     Example::
 
         audit = DecisionAuditLog(max_entries=500)
         audit.record("meta_loop", "converged", {"iterations": 12, "residual": 1e-6})
-        audit.record("safety", "rollback", {"score": 0.3, "threshold": 0.5})
+        audit.record("safety", "rollback", {"score": 0.3, "threshold": 0.5},
+                     severity="warning")
         summary = audit.summary()
+        warnings = audit.filter_by(subsystem="safety", min_severity="warning")
     """
+
+    SEVERITY_LEVELS: Dict[str, int] = {
+        "debug": 0,
+        "info": 1,
+        "warning": 2,
+        "error": 3,
+        "critical": 4,
+    }
 
     def __init__(self, max_entries: int = 1000):
         self._max_entries = max(1, max_entries)
@@ -809,6 +826,7 @@ class DecisionAuditLog:
         subsystem: str,
         decision: str,
         metadata: Optional[Dict[str, Any]] = None,
+        severity: str = "info",
     ) -> None:
         """Append an audit entry.
 
@@ -818,12 +836,15 @@ class DecisionAuditLog:
             decision: Short label for the decision (e.g. ``"converged"``,
                 ``"rollback"``, ``"surprise_switch"``).
             metadata: Arbitrary key-value pairs with decision context.
+            severity: One of ``"debug"``, ``"info"``, ``"warning"``,
+                ``"error"``, ``"critical"``.  Defaults to ``"info"``.
         """
         entry = {
             "timestamp": time.monotonic(),
             "subsystem": subsystem,
             "decision": decision,
             "metadata": metadata or {},
+            "severity": severity if severity in self.SEVERITY_LEVELS else "info",
         }
         with self._lock:
             self._entries.append(entry)
@@ -834,6 +855,34 @@ class DecisionAuditLog:
         with self._lock:
             items = list(self._entries)
         return items[-n:]
+
+    def filter_by(
+        self,
+        subsystem: Optional[str] = None,
+        min_severity: str = "debug",
+    ) -> List[Dict[str, Any]]:
+        """Return entries matching *subsystem* and at least *min_severity*.
+
+        Args:
+            subsystem: If given, only return entries from this subsystem.
+            min_severity: Minimum severity level (inclusive).
+
+        Returns:
+            List of matching entries, oldest first.
+        """
+        threshold = self.SEVERITY_LEVELS.get(min_severity, 0)
+        with self._lock:
+            items = list(self._entries)
+        result = []
+        for entry in items:
+            if subsystem is not None and entry["subsystem"] != subsystem:
+                continue
+            entry_level = self.SEVERITY_LEVELS.get(
+                entry.get("severity", "info"), 1
+            )
+            if entry_level >= threshold:
+                result.append(entry)
+        return result
 
     def summary(self) -> Dict[str, Any]:
         """Aggregate statistics over the current window."""
@@ -952,10 +1001,55 @@ class StateConsistencyValidator:
             "stats": stats,
         }
 
+    def validate_and_recover(
+        self,
+        C_star: torch.Tensor,
+        factors: Optional[torch.Tensor] = None,
+        residual_norm: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Validate state and apply deterministic recovery if invalid.
 
-# ============================================================================
-# SECTION 3d: SEMANTIC ERROR CLASSIFIER
-# ============================================================================
+        Runs :meth:`validate`, then — if violations are found — applies
+        a sequence of deterministic fixes:
+
+        1. Replace NaN/Inf with zeros.
+        2. Clamp activations to ``[-max_activation, max_activation]``.
+        3. If shape is wrong, return a zero tensor of the correct shape.
+
+        Args:
+            C_star: Core thought state ``[B, hidden_dim]``.
+            factors: Factor activations (optional).
+            residual_norm: Per-sample residual (optional).
+
+        Returns:
+            Tuple of ``(recovered_C_star, validation_result)``.
+        """
+        result = self.validate(C_star, factors, residual_norm)
+
+        if result["valid"]:
+            return C_star, result
+
+        recovered = C_star.clone()
+
+        # Fix 1: replace non-finite values
+        if not torch.isfinite(recovered).all():
+            recovered = torch.nan_to_num(
+                recovered, nan=0.0, posinf=0.0, neginf=0.0
+            )
+
+        # Fix 2: clamp activations
+        recovered = recovered.clamp(-self.max_activation, self.max_activation)
+
+        # Fix 3: shape correction
+        if recovered.dim() != 2 or recovered.shape[-1] != self.hidden_dim:
+            B = recovered.shape[0] if recovered.dim() >= 1 else 1
+            recovered = torch.zeros(
+                B, self.hidden_dim,
+                device=C_star.device, dtype=C_star.dtype,
+            )
+
+        result["recovered"] = True
+        return recovered, result
 
 class SemanticErrorClassifier:
     """
@@ -1026,6 +1120,30 @@ class SemanticErrorClassifier:
 
         return "unknown", str(error)
 
+    _RECOVERY_SUGGESTIONS: Dict[str, str] = {
+        "numerical": "Sanitize tensors with TensorGuard or clamp extreme values.",
+        "shape": "Check input dimensions; ensure batch/sequence/feature alignment.",
+        "convergence": "Reduce learning rate, increase max_iterations, or lower Lipschitz target.",
+        "resource": "Reduce batch size, enable gradient checkpointing, or offload to CPU.",
+        "semantic": "Validate output constraints (e.g. probabilities in [0,1]).",
+        "unknown": "Inspect traceback; consider adding this error pattern to the classifier.",
+    }
+
+    def classify_with_suggestion(
+        self, error: BaseException
+    ) -> Tuple[str, str, str]:
+        """Classify an exception and return a recovery suggestion.
+
+        Args:
+            error: The caught exception.
+
+        Returns:
+            Tuple of ``(error_class, detail_message, recovery_suggestion)``.
+        """
+        error_class, detail = self.classify(error)
+        suggestion = self._RECOVERY_SUGGESTIONS.get(error_class, "")
+        return error_class, detail, suggestion
+
     def classify_tensor_state(
         self,
         tensor: torch.Tensor,
@@ -1054,6 +1172,274 @@ class SemanticErrorClassifier:
                 f"{context}: {inf_pct:.1f}% Inf values detected",
             )
         return None
+
+
+# ============================================================================
+# SECTION 3e: ERROR RECOVERY MANAGER
+# ============================================================================
+
+class ErrorRecoveryManager:
+    """
+    Centralized error recovery with strategy-pattern dispatch.
+
+    Maps each :class:`SemanticErrorClassifier` error class to a concrete
+    recovery action, producing deterministic behaviour even under
+    unexpected failures.  All recovery attempts are recorded in the
+    :class:`DecisionAuditLog` for post-hoc analysis.
+
+    Recovery strategies:
+    - ``numerical``: sanitize tensors via :class:`TensorGuard`.
+    - ``shape``: return a safe zero-tensor of the expected shape.
+    - ``convergence``: reset meta-loop state and return last-known-good.
+    - ``resource``: offload to CPU and retry.
+    - ``semantic``: log and return fallback.
+    - ``unknown``: log, record, and return fallback.
+
+    Thread-safe: uses an internal lock for mutable counters.
+
+    Example::
+
+        mgr = ErrorRecoveryManager(hidden_dim=256, audit_log=audit)
+        ok, value = mgr.recover(exc, context="meta_loop", fallback=torch.zeros(1, 256))
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        audit_log: Optional[DecisionAuditLog] = None,
+        tensor_guard: Optional[TensorGuard] = None,
+        max_retries: int = 3,
+    ):
+        self.hidden_dim = hidden_dim
+        self.audit_log = audit_log or DecisionAuditLog()
+        self.tensor_guard = tensor_guard or TensorGuard(
+            policy=NaNPolicy.WARN, enable_tracking=True
+        )
+        self.error_classifier = SemanticErrorClassifier()
+        self.max_retries = max(1, max_retries)
+        self._lock = threading.Lock()
+        self._recovery_counts: Dict[str, int] = defaultdict(int)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def recover(
+        self,
+        error: BaseException,
+        context: str = "",
+        fallback: Optional[torch.Tensor] = None,
+        last_good_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        """Attempt recovery from *error*.
+
+        Args:
+            error: The caught exception.
+            context: Human-readable label for audit logging.
+            fallback: A pre-allocated tensor returned when no smarter
+                recovery is possible.
+            last_good_state: Most recent valid state for rollback strategies.
+
+        Returns:
+            ``(success, recovered_value)`` — *success* is ``True`` when the
+            manager was able to produce a usable result.
+        """
+        error_class, detail = self.error_classifier.classify(error)
+
+        with self._lock:
+            self._recovery_counts[error_class] += 1
+
+        self.audit_log.record("error_recovery", error_class, {
+            "context": context,
+            "detail": detail,
+        })
+
+        strategy = self._STRATEGIES.get(error_class, self._recover_unknown)
+        return strategy(self, context, fallback, last_good_state)
+
+    def get_recovery_stats(self) -> Dict[str, Any]:
+        """Return a snapshot of recovery counters."""
+        with self._lock:
+            return {
+                "total": sum(self._recovery_counts.values()),
+                "by_class": dict(self._recovery_counts),
+            }
+
+    def reset_stats(self) -> None:
+        """Clear all counters."""
+        with self._lock:
+            self._recovery_counts.clear()
+
+    # ------------------------------------------------------------------
+    # Strategy implementations (private)
+    # ------------------------------------------------------------------
+
+    def _recover_numerical(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        if last_good is not None:
+            sanitized = self.tensor_guard.sanitize(
+                last_good.clone(), context=f"recovery_{context}"
+            )
+            return True, sanitized
+        if fallback is not None:
+            return True, fallback
+        return True, torch.zeros(1, self.hidden_dim)
+
+    def _recover_shape(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        if fallback is not None:
+            return True, fallback
+        return True, torch.zeros(1, self.hidden_dim)
+
+    def _recover_convergence(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        if last_good is not None:
+            return True, last_good
+        if fallback is not None:
+            return True, fallback
+        return True, torch.zeros(1, self.hidden_dim)
+
+    def _recover_resource(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        logger.warning(f"Resource error in {context}: offloading to CPU")
+        if last_good is not None:
+            return True, last_good.cpu()
+        if fallback is not None:
+            return True, fallback.cpu()
+        return True, torch.zeros(1, self.hidden_dim)
+
+    def _recover_semantic(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        logger.warning(f"Semantic error in {context}: returning fallback")
+        if fallback is not None:
+            return True, fallback
+        return False, None
+
+    def _recover_unknown(
+        self, context: str, fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> Tuple[bool, Optional[torch.Tensor]]:
+        logger.error(f"Unknown error in {context}: returning fallback")
+        if fallback is not None:
+            return True, fallback
+        return False, None
+
+    _STRATEGIES: Dict[str, Callable] = {
+        "numerical": _recover_numerical,
+        "shape": _recover_shape,
+        "convergence": _recover_convergence,
+        "resource": _recover_resource,
+        "semantic": _recover_semantic,
+        "unknown": _recover_unknown,
+    }
+
+
+# ============================================================================
+# SECTION 3f: CONTEXT WINDOW MANAGER
+# ============================================================================
+
+class ContextWindowManager:
+    """
+    Bounded context window with overflow protection for RAG integration.
+
+    Maintains an ordered list of context entries, each tagged with a
+    relevance score and provenance metadata.  When the window exceeds
+    ``max_entries`` the least-relevant entries are evicted automatically.
+
+    Thread-safe: all mutations protected by a lock.
+
+    Example::
+
+        ctx = ContextWindowManager(max_entries=128, hidden_dim=256)
+        ctx.add("retriever", embedding, relevance=0.92, metadata={"doc_id": 42})
+        top = ctx.get_top_k(10)
+    """
+
+    def __init__(self, max_entries: int = 256, hidden_dim: int = 256):
+        self.max_entries = max(1, max_entries)
+        self.hidden_dim = hidden_dim
+        self._entries: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._total_added: int = 0
+        self._total_evicted: int = 0
+
+    def add(
+        self,
+        source: str,
+        embedding: torch.Tensor,
+        relevance: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Insert a context entry, evicting least-relevant if full.
+
+        Args:
+            source: Provenance tag (e.g. ``"retriever"``, ``"memory"``).
+            embedding: Context vector ``[hidden_dim]`` or ``[1, hidden_dim]``.
+            relevance: Scalar relevance score (higher = more relevant).
+            metadata: Arbitrary key-value pairs.
+        """
+        if not isinstance(embedding, torch.Tensor):
+            return
+        if not torch.isfinite(embedding).all():
+            logger.warning(f"ContextWindowManager: skipping non-finite entry from {source}")
+            return
+
+        entry = {
+            "source": source,
+            "embedding": embedding.detach().clone(),
+            "relevance": float(relevance),
+            "metadata": metadata or {},
+            "timestamp": time.monotonic(),
+        }
+
+        with self._lock:
+            self._entries.append(entry)
+            self._total_added += 1
+            if len(self._entries) > self.max_entries:
+                self._entries.sort(key=lambda e: e["relevance"])
+                evicted = len(self._entries) - self.max_entries
+                self._entries = self._entries[evicted:]
+                self._total_evicted += evicted
+
+    def get_top_k(self, k: int = 10) -> List[Dict[str, Any]]:
+        """Return the *k* most relevant entries (highest relevance first)."""
+        with self._lock:
+            sorted_entries = sorted(
+                self._entries, key=lambda e: e["relevance"], reverse=True
+            )
+        return sorted_entries[:k]
+
+    def get_context_tensor(self, k: int = 10) -> Optional[torch.Tensor]:
+        """Stack top-k embeddings into ``[k, hidden_dim]``, or ``None``."""
+        top = self.get_top_k(k)
+        if not top:
+            return None
+        return torch.stack([e["embedding"].squeeze(0) for e in top], dim=0)
+
+    def clear(self) -> None:
+        """Remove all entries."""
+        with self._lock:
+            self._entries.clear()
+
+    def stats(self) -> Dict[str, Any]:
+        """Return window statistics."""
+        with self._lock:
+            return {
+                "current_size": len(self._entries),
+                "max_entries": self.max_entries,
+                "total_added": self._total_added,
+                "total_evicted": self._total_evicted,
+            }
 
 
 # ============================================================================
@@ -2074,7 +2460,7 @@ class _SSDBlock(nn.Module):
         self.nheads = nheads
         self.head_dim = d_inner // nheads
         self.dt_rank = dt_rank
-        self.chunk_len = chunk_len
+        self.chunk_len = max(chunk_len, 1)
         assert d_inner % nheads == 0, \
             f"d_inner ({d_inner}) must be divisible by nheads ({nheads}). " \
             f"Choose nheads as a divisor of d_inner, or adjust expand_factor."
