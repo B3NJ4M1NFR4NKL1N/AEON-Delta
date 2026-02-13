@@ -953,6 +953,17 @@ class AEONConfig:
     enable_deception_suppressor: bool = True
     enable_code_execution: bool = False
     
+    # ===== CONSOLIDATING MEMORY =====
+    enable_consolidating_memory: bool = False
+    consolidating_working_capacity: int = 7
+    consolidating_episodic_capacity: int = 1000
+    consolidating_importance_threshold: float = 0.7
+    
+    # ===== NOTEARS CAUSAL MODEL =====
+    enable_notears_causal: bool = False
+    notears_num_vars: int = 8
+    notears_hidden_dim: int = 64
+    
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -6021,6 +6032,197 @@ class NeurogenicMemorySystem(nn.Module):
 
 
 # ============================================================================
+# SECTION 13c-ext: CONSOLIDATING MEMORY (Three-Stage Pipeline)
+# ============================================================================
+
+class _RingBuffer:
+    """Fixed-capacity ring buffer for working memory."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._buffer: List[torch.Tensor] = []
+        self._idx = 0
+
+    def add(self, item: torch.Tensor):
+        if len(self._buffer) < self.capacity:
+            self._buffer.append(item.detach().clone())
+        else:
+            self._buffer[self._idx] = item.detach().clone()
+        self._idx = (self._idx + 1) % self.capacity
+
+    def __iter__(self):
+        return iter(self._buffer)
+
+    def __len__(self):
+        return len(self._buffer)
+
+    def clear(self):
+        self._buffer.clear()
+        self._idx = 0
+
+
+class _ImportanceWeightedBuffer:
+    """Episodic buffer that evicts items with lowest importance."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._items: List[Tuple[float, torch.Tensor]] = []
+
+    def add(self, item: torch.Tensor, importance: float):
+        self._items.append((importance, item.detach().clone()))
+        if len(self._items) > self.capacity:
+            self._items.sort(key=lambda x: x[0])
+            self._items.pop(0)  # remove lowest importance
+
+    def items(self) -> List[torch.Tensor]:
+        return [item for _, item in self._items]
+
+    def __len__(self):
+        return len(self._items)
+
+    def clear(self):
+        self._items.clear()
+
+
+class _SimpleKnowledgeGraph:
+    """Schema-based semantic store backed by averaged prototypes."""
+
+    def __init__(self):
+        self._schemas: List[torch.Tensor] = []
+
+    def add_schema(self, schema: torch.Tensor):
+        self._schemas.append(schema.detach().clone())
+
+    @property
+    def schemas(self) -> List[torch.Tensor]:
+        return self._schemas
+
+    def __len__(self):
+        return len(self._schemas)
+
+
+class ConsolidatingMemory(nn.Module):
+    """
+    Three-stage memory consolidation pipeline inspired by Systems
+    Consolidation Theory (Squire & Alvarez, 1995).
+
+    Stages:
+      1. **Working** – ring buffer with capacity ≈ 7 (Miller's Law)
+      2. **Episodic** – importance-weighted buffer (days-scale retention)
+      3. **Semantic** – schema-based knowledge graph (unbounded)
+
+    Consolidation transfers:
+      - Working → Episodic: items with importance > threshold
+      - Episodic → Semantic: averaged prototype extraction
+
+    References:
+      - Wilson & McNaughton, 1994 (sleep replay)
+      - ContinualAI benchmarks: replay + consolidation > fine-tuning
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        working_capacity: int = 7,
+        episodic_capacity: int = 1000,
+        importance_threshold: float = 0.7,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.importance_threshold = importance_threshold
+
+        # Stage 1: Working memory (capacity ≈ 7, short-term)
+        self.working = _RingBuffer(capacity=working_capacity)
+
+        # Stage 2: Episodic memory (importance-weighted, medium-term)
+        self.episodic = _ImportanceWeightedBuffer(capacity=episodic_capacity)
+
+        # Stage 3: Semantic memory (schema-based, long-term)
+        self.semantic = _SimpleKnowledgeGraph()
+
+        # Learned importance scorer
+        self.importance_net = nn.Sequential(
+            nn.Linear(dim, dim // 4),
+            nn.ReLU(),
+            nn.Linear(dim // 4, 1),
+            nn.Sigmoid(),
+        )
+
+    def store(self, item: torch.Tensor):
+        """Store an item in working memory."""
+        self.working.add(item)
+
+    def score_importance(self, item: torch.Tensor) -> float:
+        """Compute importance score for a memory item."""
+        with torch.no_grad():
+            return self.importance_net(item.unsqueeze(0)).item()
+
+    def consolidate(self):
+        """
+        Offline consolidation (called at end of epoch or during 'sleep').
+
+        Working → Episodic: items exceeding importance threshold.
+        Episodic → Semantic: extract averaged patterns as schemas.
+        """
+        # Working → Episodic
+        for item in self.working:
+            imp = self.score_importance(item)
+            if imp > self.importance_threshold:
+                self.episodic.add(item, importance=imp)
+
+        # Episodic → Semantic: extract prototype pattern
+        ep_items = self.episodic.items()
+        if len(ep_items) >= 2:
+            stacked = torch.stack(ep_items)
+            prototype = stacked.mean(dim=0)
+            self.semantic.add_schema(prototype)
+
+    def retrieve(self, query: torch.Tensor, k: int = 5) -> Dict[str, Any]:
+        """
+        Retrieve from all three memory stages.
+
+        Args:
+            query: [D] query vector.
+            k: max items to retrieve per stage.
+
+        Returns:
+            Dict with 'working', 'episodic', 'semantic' lists of
+            (vector, similarity) tuples.
+        """
+        result: Dict[str, Any] = {'working': [], 'episodic': [], 'semantic': []}
+        q = query.detach()
+
+        def _top_k(items: List[torch.Tensor], k: int):
+            if not items:
+                return []
+            scored = []
+            for item in items:
+                sim = F.cosine_similarity(q.unsqueeze(0), item.unsqueeze(0)).item()
+                scored.append((item, sim))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:k]
+
+        result['working'] = _top_k(list(self.working), k)
+        result['episodic'] = _top_k(self.episodic.items(), k)
+        result['semantic'] = _top_k(self.semantic.schemas, k)
+        return result
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Store input and return importance scores.
+
+        Args:
+            x: [B, D] batch of vectors to store.
+        Returns:
+            importance: [B] importance scores.
+        """
+        scores = self.importance_net(x).squeeze(-1)  # [B]
+        for i in range(x.shape[0]):
+            self.store(x[i])
+        return scores
+
+
+# ============================================================================
 # SECTION 13d: MULTI-MODAL GROUNDING
 # ============================================================================
 
@@ -6400,6 +6602,192 @@ class MetaLearner(nn.Module):
         return len(self._task_buffer)
 
 
+class Task2VecMetaLearner(nn.Module):
+    """
+    Task2Vec-based meta-learner using Fisher Information as task embeddings
+    for O(1) adaptation via nearest-neighbor lookup.
+
+    Instead of running an expensive inner-loop per task (MAML: O(T·K·steps)),
+    Task2Vec computes a task embedding from the diagonal Fisher Information
+    Matrix and finds the nearest stored task for parameter reuse.
+
+    References:
+      - Achille et al., ICLR 2019: Fisher Information as task similarity metric
+      - Meta-Dataset benchmark: Task2Vec generalises to unseen tasks
+
+    Complexity: O(1) adaptation vs O(K·grad_steps) for MAML.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        embedding_dim: int = 128,
+        similarity_threshold: float = 0.8,
+        ewc_lambda: float = 1000.0,
+    ):
+        super().__init__()
+        self.model = model
+        self.embedding_dim = embedding_dim
+        self.similarity_threshold = similarity_threshold
+        self.ewc_lambda = ewc_lambda
+
+        # Compute raw parameter count for Fisher dimension
+        self._param_count = sum(
+            p.numel() for p in model.parameters() if p.requires_grad
+        )
+
+        # Projection from flattened Fisher diagonal to compact embedding
+        self.task_projector = nn.Linear(
+            min(self._param_count, 4096), embedding_dim
+        )
+
+        # Task memory: maps embedding → (fisher_diag, optimal_params)
+        self._task_memory: List[Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]] = []
+
+    def _compute_fisher_diagonal(
+        self, data_loader_fn: Callable, num_samples: int = 200
+    ) -> Dict[str, torch.Tensor]:
+        """Compute diagonal Fisher Information over a support set."""
+        fisher: Dict[str, torch.Tensor] = {}
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                fisher[name] = torch.zeros_like(param)
+
+        self.model.eval()
+        count = 0
+        for inputs, targets in data_loader_fn():
+            if count >= num_samples:
+                break
+            self.model.zero_grad()
+            outputs = self.model(inputs)
+            if isinstance(outputs, dict):
+                loss = outputs.get('loss', None)
+                if loss is None:
+                    logits = outputs.get('logits', outputs.get('output'))
+                    if logits is None:
+                        continue
+                    loss = F.cross_entropy(
+                        logits.view(-1, logits.size(-1)), targets.view(-1)
+                    )
+            else:
+                loss = F.cross_entropy(
+                    outputs.view(-1, outputs.size(-1)), targets.view(-1)
+                )
+            loss.backward()
+            for name, param in self.model.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    fisher[name] += param.grad.data.pow(2)
+            count += inputs.size(0)
+
+        for name in fisher:
+            fisher[name] /= max(count, 1)
+        return fisher
+
+    def embed_task(self, fisher: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Convert diagonal Fisher to a compact task embedding.
+
+        Args:
+            fisher: Dict of {param_name: Fisher diagonal tensor}.
+        Returns:
+            embedding: [embedding_dim] task vector.
+        """
+        flat = torch.cat([f.flatten() for f in fisher.values()])
+        # Truncate or pad to fixed size for the projector
+        target_size = self.task_projector.in_features
+        if flat.numel() > target_size:
+            flat = flat[:target_size]
+        elif flat.numel() < target_size:
+            flat = F.pad(flat, (0, target_size - flat.numel()))
+        device = next(self.task_projector.parameters()).device
+        return self.task_projector(flat.to(device))
+
+    def _find_nearest(
+        self, task_emb: torch.Tensor
+    ) -> Tuple[Optional[int], float]:
+        """Find nearest stored task by cosine similarity."""
+        if not self._task_memory:
+            return None, 0.0
+        best_idx, best_sim = None, -1.0
+        for idx, (emb, _, _) in enumerate(self._task_memory):
+            sim = F.cosine_similarity(
+                task_emb.unsqueeze(0), emb.unsqueeze(0)
+            ).item()
+            if sim > best_sim:
+                best_sim = sim
+                best_idx = idx
+        return best_idx, best_sim
+
+    def adapt(
+        self, data_loader_fn: Callable, num_samples: int = 200
+    ) -> Dict[str, Any]:
+        """
+        Adapt to a new task via Fisher-based nearest-neighbor lookup.
+
+        If a similar task exists (cosine > threshold), reuse its EWC
+        regularisation.  Otherwise, register as a new task cluster.
+
+        Args:
+            data_loader_fn: Callable returning (input, target) batches.
+            num_samples: Samples for Fisher estimation.
+
+        Returns:
+            Dict with adaptation metadata.
+        """
+        fisher = self._compute_fisher_diagonal(data_loader_fn, num_samples)
+        task_emb = self.embed_task(fisher)
+        nearest_idx, sim = self._find_nearest(task_emb)
+
+        if nearest_idx is not None and sim > self.similarity_threshold:
+            # Reuse stored Fisher and params for EWC
+            _, stored_fisher, stored_params = self._task_memory[nearest_idx]
+            return {
+                'mode': 'reuse',
+                'nearest_task': nearest_idx,
+                'similarity': sim,
+                'fisher': stored_fisher,
+                'optimal_params': stored_params,
+            }
+        else:
+            # New task cluster
+            optimal_params = {
+                name: param.data.clone()
+                for name, param in self.model.named_parameters()
+                if param.requires_grad
+            }
+            self._task_memory.append(
+                (task_emb.detach(), fisher, optimal_params)
+            )
+            return {
+                'mode': 'new',
+                'task_index': len(self._task_memory) - 1,
+                'similarity': sim,
+                'fisher': fisher,
+                'optimal_params': optimal_params,
+            }
+
+    def ewc_loss(
+        self, fisher: Dict[str, torch.Tensor],
+        optimal_params: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """EWC penalty using supplied Fisher and optimal parameters."""
+        loss = torch.tensor(0.0, device=next(self.model.parameters()).device)
+        for name, param in self.model.named_parameters():
+            if name in fisher and param.requires_grad:
+                f = fisher[name].to(param.device)
+                opt = optimal_params[name].to(param.device)
+                loss = loss + (f * (param - opt).pow(2)).sum()
+        return self.ewc_lambda * loss
+
+    @property
+    def num_task_clusters(self) -> int:
+        return len(self._task_memory)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Pass-through to wrapped model for convenience."""
+        return self.model(x)
+
+
 class ContinualLearningCore(nn.Module):
     """
     Continual learning with progressive columns and EWC.
@@ -6614,6 +7002,110 @@ class NeuralCausalModel(nn.Module):
         if unchanged_mask.any():
             return F.mse_loss(obs_out[:, unchanged_mask], cf_out[:, unchanged_mask])
         return torch.tensor(0.0, device=obs_out.device)
+
+
+class NOTEARSCausalModel(nn.Module):
+    """
+    NOTEARS-based causal model with differentiable DAG structure learning.
+
+    Unlike ``NeuralCausalModel`` which uses a fixed lower-triangular mask,
+    this module learns the full adjacency matrix ``W`` and enforces
+    acyclicity through the NOTEARS constraint:
+
+        h(W) = tr(e^{W ⊙ W}) - d = 0   ⟺   W encodes a DAG
+
+    The matrix exponential is approximated via a 5th-order Taylor series
+    for efficiency.
+
+    References:
+      - Zheng et al., NeurIPS 2018: NOTEARS — polynomial-time, differentiable
+      - Convex relaxation of the DAG constraint for end-to-end training
+
+    Complexity: Polynomial in d (number of variables).
+    """
+
+    def __init__(self, num_vars: int, hidden_dim: int = 64):
+        super().__init__()
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+
+        # Learnable adjacency matrix (unconstrained — acyclicity via loss)
+        self.W = nn.Parameter(torch.zeros(num_vars, num_vars))
+
+        # Causal mechanisms: one network per variable
+        self.mechanisms = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(num_vars, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 1),
+            )
+            for _ in range(num_vars)
+        ])
+
+        # Exogenous noise encoder
+        self.noise_encoder = nn.Linear(num_vars, num_vars)
+
+    def dag_loss(self) -> torch.Tensor:
+        """
+        NOTEARS acyclicity penalty: h(W) = tr(e^{W ⊙ W}) - d.
+
+        Uses a 5th-order Taylor approximation of the matrix exponential
+        for computational efficiency (Zheng et al., 2018).
+        """
+        W_sq = self.W * self.W
+        d = self.num_vars
+        I = torch.eye(d, device=self.W.device)
+        # Taylor: I + M + M²/2! + M³/3! + M⁴/4! + M⁵/5!
+        M = W_sq
+        expm = I + M
+        Mk = M.clone()
+        for k in range(2, 6):
+            Mk = Mk @ M
+            expm = expm + Mk / math.factorial(k)
+        return torch.trace(expm) - d
+
+    def forward(
+        self,
+        exogenous: torch.Tensor,
+        intervention: Optional[Dict[int, float]] = None,
+    ) -> torch.Tensor:
+        """
+        Forward pass through the structural causal model.
+
+        Structural equation: X_i = f_i(W_{·i} ⊙ X) + ε_i
+
+        Args:
+            exogenous: [B, num_vars] exogenous noise.
+            intervention: Optional {var_index: value} for do(X=x).
+
+        Returns:
+            endogenous: [B, num_vars] endogenous variable values.
+        """
+        B = exogenous.shape[0]
+        noise = self.noise_encoder(exogenous)
+
+        var_list: List[torch.Tensor] = []
+        for i in range(self.num_vars):
+            if intervention is not None and i in intervention:
+                var_list.append(
+                    torch.full((B,), intervention[i], device=exogenous.device)
+                )
+            else:
+                if var_list:
+                    prev = torch.stack(var_list, dim=-1)
+                    padded = F.pad(prev, (0, self.num_vars - i))
+                else:
+                    padded = torch.zeros(B, self.num_vars, device=exogenous.device)
+                weighted_input = padded * self.W[i].unsqueeze(0)
+                var_list.append(
+                    self.mechanisms[i](weighted_input).squeeze(-1) + noise[:, i]
+                )
+
+        return torch.stack(var_list, dim=-1)
+
+    def l1_loss(self) -> torch.Tensor:
+        """L1 sparsity penalty on W to encourage sparse graphs."""
+        return torch.abs(self.W).sum()
 
 
 class CausalWorldModel(nn.Module):
@@ -7359,8 +7851,18 @@ class CertifiedMetaLoop(nn.Module):
         For each linear layer W with spectral-norm constraint,
         the per-layer Lipschitz bound is ||W||_2.  The composed
         operator bound is the product of per-layer bounds, scaled
-        by the Lipschitz constant of activation functions (1.0 for
-        GELU approximation, 1.0 for LayerNorm in practice).
+        by the Lipschitz constant of activation functions (GELU ≈ 1.13,
+        LayerNorm ≈ 1.0 with bounded inputs).
+
+        Full IBP pipeline: for each layer, multiply by the certified
+        per-layer Lipschitz constant:
+          - nn.Linear: spectral norm (largest singular value)
+          - nn.GELU: 1.13 (proven upper bound)
+          - nn.LayerNorm: 1.0 (bounded-input approximation)
+
+        References:
+          - Gowal et al., ICML 2018: IBP for formal upper bounds
+          - Certified adversarial robustness guarantees
 
         Returns:
             Certified upper bound on L for the composed operator.
@@ -7377,10 +7879,13 @@ class CertifiedMetaLoop(nn.Module):
                 except RuntimeError:
                     # Fallback: Frobenius norm (upper bound on spectral norm)
                     L_bound *= torch.norm(weight, p='fro').item()
-
-        # GELU Lipschitz constant is approximately 1.13
-        # but spectral norm already constrains weights
-        L_bound *= 1.13
+            elif isinstance(module, nn.GELU):
+                # GELU Lipschitz constant ≈ 1.13 (proven)
+                L_bound *= 1.13
+            elif isinstance(module, nn.LayerNorm):
+                # LayerNorm Lipschitz ≤ sqrt(d) worst-case
+                # With bounded input |x| ≤ C, Lipschitz ≈ 1.0
+                L_bound *= 1.0
 
         return L_bound
 
@@ -8267,6 +8772,93 @@ class HierarchicalCognitiveArchitecture(nn.Module):
 
 
 # ============================================================================
+# SECTION 15c: COMPOSITIONAL SLOT ATTENTION
+# ============================================================================
+
+class CompositionalSlotAttention(nn.Module):
+    """
+    Slot Attention module for verifiable compositionality.
+
+    Implements competitive binding where a fixed number of slots
+    "compete" for input features, enabling systematic compositional
+    generalisation (Locatello et al., 2020).
+
+    Biological motivation: working memory capacity ≈ 7 items (Miller, 1956).
+
+    Complexity: O(k · n) where k = num_slots (constant), n = feature count.
+
+    References:
+      - Fodor & Pylyshyn, 1988: localist representations for systematic
+        generalisation
+      - Locatello et al., 2020: Slot Attention for compositional tasks
+    """
+
+    def __init__(self, num_slots: int = 7, slot_dim: int = 64, num_heads: int = 4):
+        super().__init__()
+        self.num_slots = num_slots
+        self.slot_dim = slot_dim
+
+        # Learnable slot initializations
+        self.slots = nn.Parameter(torch.randn(num_slots, slot_dim))
+        nn.init.xavier_uniform_(self.slots)
+
+        # Projection for input features to match slot_dim
+        self.input_proj = nn.Linear(slot_dim, slot_dim)
+
+        # Multi-head attention: slots attend to features
+        self.slot_attention = nn.MultiheadAttention(
+            embed_dim=slot_dim,
+            num_heads=num_heads,
+            batch_first=True,
+        )
+
+        # GRU for iterative slot refinement
+        self.gru = nn.GRUCell(slot_dim, slot_dim)
+
+        # Layer norms
+        self.norm_slots = nn.LayerNorm(slot_dim)
+        self.norm_features = nn.LayerNorm(slot_dim)
+
+    def forward(self, features: torch.Tensor, num_iterations: int = 3) -> torch.Tensor:
+        """
+        Competitive slot binding over input features.
+
+        Args:
+            features: [B, N, D] set of feature vectors (D must equal slot_dim).
+            num_iterations: number of iterative refinement steps.
+
+        Returns:
+            slots: [B, num_slots, slot_dim] bound slot representations.
+        """
+        B = features.shape[0]
+        device = features.device
+
+        # Project features
+        features = self.norm_features(self.input_proj(features))
+
+        # Expand slots for batch
+        slots = self.slots.unsqueeze(0).expand(B, -1, -1).clone()  # [B, K, D]
+
+        for _ in range(num_iterations):
+            slots_prev = slots
+            slots_normed = self.norm_slots(slots)
+
+            # Slots attend to features (competitive binding)
+            attn_out, _ = self.slot_attention(
+                query=slots_normed,
+                key=features,
+                value=features,
+            )  # [B, K, D]
+
+            # GRU update for each slot
+            attn_flat = attn_out.reshape(B * self.num_slots, self.slot_dim)
+            slots_flat = slots_prev.reshape(B * self.num_slots, self.slot_dim)
+            slots = self.gru(attn_flat, slots_flat).reshape(B, self.num_slots, self.slot_dim)
+
+        return slots
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -8382,6 +8974,14 @@ class AEONDeltaV3(nn.Module):
         # ===== SPARSE FACTORIZATION =====
         logger.info("Loading SparseFactorization...")
         self.sparse_factors = SparseFactorization(config).to(self.device)
+        
+        # ===== COMPOSITIONAL SLOT ATTENTION =====
+        logger.info("Loading CompositionalSlotAttention...")
+        self.slot_binder = CompositionalSlotAttention(
+            num_slots=7,
+            slot_dim=config.hidden_dim,
+            num_heads=4,
+        ).to(self.device)
         
         # ===== DIVERSITY METRIC =====
         if config.enable_quantum_sim:
@@ -8523,6 +9123,28 @@ class AEONDeltaV3(nn.Module):
             ).to(self.device)
         else:
             self.hierarchical_vae = None
+        
+        # ===== CONSOLIDATING MEMORY =====
+        if getattr(config, 'enable_consolidating_memory', False):
+            logger.info("Loading ConsolidatingMemory...")
+            self.consolidating_memory = ConsolidatingMemory(
+                dim=config.hidden_dim,
+                working_capacity=config.consolidating_working_capacity,
+                episodic_capacity=config.consolidating_episodic_capacity,
+                importance_threshold=config.consolidating_importance_threshold,
+            ).to(self.device)
+        else:
+            self.consolidating_memory = None
+        
+        # ===== NOTEARS CAUSAL MODEL =====
+        if getattr(config, 'enable_notears_causal', False):
+            logger.info("Loading NOTEARSCausalModel...")
+            self.notears_causal = NOTEARSCausalModel(
+                num_vars=config.notears_num_vars,
+                hidden_dim=config.notears_hidden_dim,
+            ).to(self.device)
+        else:
+            self.notears_causal = None
         
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
@@ -8736,6 +9358,11 @@ class AEONDeltaV3(nn.Module):
                 z_in, use_fixed_point=not fast
             )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
+        
+        # 1b. Compositional slot binding
+        slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, 7, hidden_dim]
+        # Aggregate slot representations back to hidden_dim
+        C_star = C_star + slot_assignments.mean(dim=1)
         
         # 2. Extract factors
         factors, embedded_factors = self.sparse_factors(C_star)

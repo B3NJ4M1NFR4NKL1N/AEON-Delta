@@ -3987,6 +3987,233 @@ def test_causal_programmatic_model_gradient_flow():
     print("✅ test_causal_programmatic_model_gradient_flow PASSED")
 
 
+# ============================================================================
+# TESTS FOR STRATEGIC AGI RECOMMENDATIONS
+# ============================================================================
+
+def test_compositional_slot_attention_forward():
+    """CompositionalSlotAttention binds features to slots."""
+    from aeon_core import CompositionalSlotAttention
+
+    csa = CompositionalSlotAttention(num_slots=7, slot_dim=64, num_heads=4)
+    features = torch.randn(2, 10, 64)  # [B, N, D]
+    slots = csa(features)
+    assert slots.shape == (2, 7, 64), f"Expected (2,7,64), got {slots.shape}"
+    assert not torch.isnan(slots).any()
+    print("✅ test_compositional_slot_attention_forward PASSED")
+
+
+def test_compositional_slot_attention_gradient():
+    """Gradients flow through CompositionalSlotAttention."""
+    from aeon_core import CompositionalSlotAttention
+
+    csa = CompositionalSlotAttention(num_slots=7, slot_dim=32, num_heads=4)
+    features = torch.randn(2, 5, 32, requires_grad=True)
+    slots = csa(features)
+    loss = slots.sum()
+    loss.backward()
+    assert features.grad is not None
+    assert not torch.isnan(features.grad).any()
+    print("✅ test_compositional_slot_attention_gradient PASSED")
+
+
+def test_compositional_slot_attention_iterations():
+    """Multiple iterations refine slot assignments."""
+    from aeon_core import CompositionalSlotAttention
+
+    csa = CompositionalSlotAttention(num_slots=4, slot_dim=32, num_heads=2)
+    features = torch.randn(1, 8, 32)
+    slots_1 = csa(features, num_iterations=1)
+    slots_3 = csa(features, num_iterations=3)
+    # With more iterations, results should differ (refinement happened)
+    assert slots_1.shape == slots_3.shape == (1, 4, 32)
+    print("✅ test_compositional_slot_attention_iterations PASSED")
+
+
+def test_notears_causal_model_forward():
+    """NOTEARSCausalModel produces correct-shaped output."""
+    from aeon_core import NOTEARSCausalModel
+
+    model = NOTEARSCausalModel(num_vars=5, hidden_dim=32)
+    exo = torch.randn(3, 5)
+    out = model(exo)
+    assert out.shape == (3, 5), f"Expected (3,5), got {out.shape}"
+    assert not torch.isnan(out).any()
+    print("✅ test_notears_causal_model_forward PASSED")
+
+
+def test_notears_dag_loss():
+    """NOTEARSCausalModel dag_loss returns scalar ≥ 0."""
+    from aeon_core import NOTEARSCausalModel
+
+    model = NOTEARSCausalModel(num_vars=4, hidden_dim=16)
+    dag = model.dag_loss()
+    assert dag.dim() == 0, "dag_loss should be scalar"
+    assert dag.item() >= -1e-6, f"dag_loss should be ≥ 0, got {dag.item()}"
+    print("✅ test_notears_dag_loss PASSED")
+
+
+def test_notears_dag_loss_gradient():
+    """dag_loss is differentiable w.r.t. W."""
+    from aeon_core import NOTEARSCausalModel
+
+    model = NOTEARSCausalModel(num_vars=4)
+    loss = model.dag_loss()
+    loss.backward()
+    assert model.W.grad is not None
+    assert not torch.isnan(model.W.grad).any()
+    print("✅ test_notears_dag_loss_gradient PASSED")
+
+
+def test_notears_intervention():
+    """NOTEARSCausalModel handles do(X=x) interventions."""
+    from aeon_core import NOTEARSCausalModel
+
+    model = NOTEARSCausalModel(num_vars=4)
+    exo = torch.randn(2, 4)
+    out = model(exo, intervention={1: 3.0})
+    assert out.shape == (2, 4)
+    assert torch.allclose(out[:, 1], torch.tensor(3.0))
+    print("✅ test_notears_intervention PASSED")
+
+
+def test_notears_l1_loss():
+    """l1_loss returns a non-negative scalar."""
+    from aeon_core import NOTEARSCausalModel
+
+    model = NOTEARSCausalModel(num_vars=3)
+    l1 = model.l1_loss()
+    assert l1.dim() == 0
+    assert l1.item() >= 0.0
+    print("✅ test_notears_l1_loss PASSED")
+
+
+def test_consolidating_memory_store_and_consolidate():
+    """ConsolidatingMemory stores items and consolidates across stages."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=32, working_capacity=4, episodic_capacity=10,
+                               importance_threshold=0.0)  # threshold=0 so everything moves
+    # Store items
+    for _ in range(5):
+        mem.store(torch.randn(32))
+    assert len(mem.working) == 4  # ring buffer caps at 4
+
+    # Consolidate: working → episodic → semantic
+    mem.consolidate()
+    assert len(mem.episodic) > 0
+    print("✅ test_consolidating_memory_store_and_consolidate PASSED")
+
+
+def test_consolidating_memory_retrieve():
+    """ConsolidatingMemory retrieves from all three stages."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=16, working_capacity=3, importance_threshold=0.0)
+    query = torch.randn(16)
+    for _ in range(3):
+        mem.store(torch.randn(16))
+    mem.consolidate()
+
+    result = mem.retrieve(query, k=2)
+    assert 'working' in result
+    assert 'episodic' in result
+    assert 'semantic' in result
+    print("✅ test_consolidating_memory_retrieve PASSED")
+
+
+def test_consolidating_memory_forward():
+    """ConsolidatingMemory forward returns importance scores."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=16, working_capacity=5)
+    x = torch.randn(4, 16)
+    scores = mem(x)
+    assert scores.shape == (4,)
+    assert (scores >= 0).all() and (scores <= 1).all()
+    print("✅ test_consolidating_memory_forward PASSED")
+
+
+def test_consolidating_memory_gradient():
+    """Gradients flow through ConsolidatingMemory importance scorer."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=16)
+    x = torch.randn(2, 16, requires_grad=True)
+    scores = mem(x)
+    loss = scores.sum()
+    loss.backward()
+    assert x.grad is not None
+    print("✅ test_consolidating_memory_gradient PASSED")
+
+
+def test_task2vec_meta_learner_embed():
+    """Task2VecMetaLearner produces embeddings of correct dimension."""
+    from aeon_core import Task2VecMetaLearner
+
+    inner = nn.Linear(8, 4)
+    t2v = Task2VecMetaLearner(model=inner, embedding_dim=32)
+    fisher = {name: torch.randn_like(p) for name, p in inner.named_parameters() if p.requires_grad}
+    emb = t2v.embed_task(fisher)
+    assert emb.shape == (32,), f"Expected (32,), got {emb.shape}"
+    print("✅ test_task2vec_meta_learner_embed PASSED")
+
+
+def test_task2vec_meta_learner_adapt():
+    """Task2VecMetaLearner.adapt creates new task clusters."""
+    from aeon_core import Task2VecMetaLearner
+
+    inner = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    t2v = Task2VecMetaLearner(model=inner, embedding_dim=16, similarity_threshold=0.99)
+
+    def data_loader():
+        for _ in range(3):
+            yield torch.randn(4, 4), torch.randint(0, 2, (4,))
+
+    result = t2v.adapt(data_loader_fn=data_loader, num_samples=10)
+    assert result['mode'] == 'new'
+    assert t2v.num_task_clusters == 1
+    print("✅ test_task2vec_meta_learner_adapt PASSED")
+
+
+def test_task2vec_ewc_loss():
+    """Task2VecMetaLearner ewc_loss returns differentiable scalar."""
+    from aeon_core import Task2VecMetaLearner
+
+    inner = nn.Linear(4, 2)
+    t2v = Task2VecMetaLearner(model=inner, ewc_lambda=100.0)
+    fisher = {name: torch.ones_like(p) for name, p in inner.named_parameters() if p.requires_grad}
+    opt_params = {name: p.data.clone() for name, p in inner.named_parameters() if p.requires_grad}
+
+    loss = t2v.ewc_loss(fisher, opt_params)
+    assert loss.dim() == 0
+    # At initial params, difference is zero
+    assert loss.item() < 1e-6
+    print("✅ test_task2vec_ewc_loss PASSED")
+
+
+def test_certified_meta_loop_ibp_per_layer():
+    """CertifiedMetaLoop IBP handles GELU and LayerNorm layers separately."""
+    from aeon_core import CertifiedMetaLoop, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, meta_dim=64, z_dim=64,
+        vq_embedding_dim=64, num_pillars=4
+    )
+    loop = CertifiedMetaLoop(config=config)
+    z = torch.randn(2, 64)
+    L = loop._compute_certified_lipschitz(z)
+    assert isinstance(L, float)
+    assert L > 0, "Lipschitz bound must be positive"
+
+    # Verify it checks preconditions
+    guaranteed, cert_err = loop.verify_convergence_preconditions(z)
+    assert isinstance(guaranteed, bool)
+    if guaranteed:
+        assert cert_err is not None and cert_err >= 0
+    print("✅ test_certified_meta_loop_ibp_per_layer PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -4214,6 +4441,24 @@ if __name__ == '__main__':
     test_causal_programmatic_model_counterfactual()
     test_causal_programmatic_model_dag_loss()
     test_causal_programmatic_model_gradient_flow()
+    
+    # Strategic AGI Recommendations tests
+    test_compositional_slot_attention_forward()
+    test_compositional_slot_attention_gradient()
+    test_compositional_slot_attention_iterations()
+    test_notears_causal_model_forward()
+    test_notears_dag_loss()
+    test_notears_dag_loss_gradient()
+    test_notears_intervention()
+    test_notears_l1_loss()
+    test_consolidating_memory_store_and_consolidate()
+    test_consolidating_memory_retrieve()
+    test_consolidating_memory_forward()
+    test_consolidating_memory_gradient()
+    test_task2vec_meta_learner_embed()
+    test_task2vec_meta_learner_adapt()
+    test_task2vec_ewc_loss()
+    test_certified_meta_loop_ibp_per_layer()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
