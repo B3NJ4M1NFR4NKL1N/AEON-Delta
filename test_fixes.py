@@ -6126,24 +6126,20 @@ def test_fisher_computation_nan_guard():
     model = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
     learner = MetaLearner(model, ewc_lambda=100.0)
 
-    call_count = 0
-
     def data_loader_with_nan():
-        nonlocal call_count
+        # Yield a batch with NaN inputs that will produce NaN loss
+        nan_inputs = torch.full((4, 16), float('nan'))
+        yield nan_inputs, torch.randint(0, 4, (4,))
         # Yield a normal batch
-        call_count += 1
-        yield torch.randn(4, 16), torch.randint(0, 4, (4,))
-        # Yield another normal batch
-        call_count += 1
         yield torch.randn(4, 16), torch.randint(0, 4, (4,))
 
-    # Should not raise even if internal computations encounter issues
+    # Should not raise even when encountering NaN losses
     learner.compute_fisher(data_loader_with_nan, num_samples=8)
 
     # Fisher should be computed (non-empty)
     assert len(learner._fisher_diag) > 0, "Fisher diagonal should be populated"
 
-    # All Fisher values should be finite
+    # All Fisher values should be finite (NaN batch was skipped)
     for name, f in learner._fisher_diag.items():
         assert torch.isfinite(f).all(), f"Fisher[{name}] contains non-finite values"
 
@@ -6157,13 +6153,17 @@ def test_task2vec_fisher_nan_guard():
     model = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 4))
     t2v = Task2VecMetaLearner(model=model, ewc_lambda=10.0)
 
-    def data_loader():
-        yield torch.randn(4, 8), torch.randint(0, 4, (4,))
+    def data_loader_with_nan():
+        # Yield a batch with NaN inputs that will produce NaN loss
+        nan_inputs = torch.full((4, 8), float('nan'))
+        yield nan_inputs, torch.randint(0, 4, (4,))
+        # Yield a normal batch
         yield torch.randn(4, 8), torch.randint(0, 4, (4,))
 
-    fisher = t2v._compute_fisher_diagonal(data_loader, num_samples=8)
+    fisher = t2v._compute_fisher_diagonal(data_loader_with_nan, num_samples=8)
     assert len(fisher) > 0, "Fisher diagonal should be populated"
 
+    # All Fisher values should be finite (NaN batch was skipped)
     for name, f in fisher.items():
         assert torch.isfinite(f).all(), f"Fisher[{name}] contains non-finite values"
 
