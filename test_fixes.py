@@ -5330,6 +5330,365 @@ def test_memory_load_specific_exception():
     print("✅ test_memory_load_specific_exception PASSED")
 
 
+# ============================================================================
+# AGI Modernization: Error recovery, context window, audit & validator tests
+# ============================================================================
+
+def test_error_recovery_numerical():
+    """ErrorRecoveryManager recovers from numerical errors."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit)
+
+    fallback = torch.zeros(1, 64)
+    last_good = torch.randn(1, 64)
+    last_good[0, 0] = float('nan')
+
+    err = ValueError("NaN detected in output")
+    ok, val = mgr.recover(err, context="test", fallback=fallback, last_good_state=last_good)
+
+    assert ok, "Recovery should succeed for numerical errors"
+    assert val is not None
+    assert torch.isfinite(val).all(), "Recovered tensor should be finite"
+
+    stats = mgr.get_recovery_stats()
+    assert stats["total"] == 1
+    assert stats["by_class"]["numerical"] == 1
+
+    print("✅ test_error_recovery_numerical PASSED")
+
+
+def test_error_recovery_convergence():
+    """ErrorRecoveryManager rolls back to last_good on convergence failure."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64)
+    last_good = torch.ones(1, 64) * 0.5
+
+    err = RuntimeError("Meta-loop failed to converge after 50 iterations")
+    ok, val = mgr.recover(err, context="meta_loop", last_good_state=last_good)
+
+    assert ok, "Recovery should succeed for convergence errors"
+    assert val is not None
+    assert torch.allclose(val, last_good), "Should return last_good_state"
+
+    print("✅ test_error_recovery_convergence PASSED")
+
+
+def test_error_recovery_unknown_with_fallback():
+    """ErrorRecoveryManager returns fallback for unknown errors."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64)
+    fallback = torch.zeros(2, 64)
+
+    err = KeyError("unexpected key")
+    ok, val = mgr.recover(err, context="test", fallback=fallback)
+
+    assert ok, "Recovery with fallback should succeed"
+    assert val is not None
+    assert val.shape == (2, 64)
+
+    print("✅ test_error_recovery_unknown_with_fallback PASSED")
+
+
+def test_error_recovery_unknown_no_fallback():
+    """ErrorRecoveryManager returns False with no fallback on unknown error."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64)
+    err = KeyError("unexpected key")
+    ok, val = mgr.recover(err, context="test")
+
+    assert not ok, "Recovery without fallback should fail for unknown errors"
+    assert val is None
+
+    print("✅ test_error_recovery_unknown_no_fallback PASSED")
+
+
+def test_error_recovery_reset_stats():
+    """ErrorRecoveryManager.reset_stats clears counters."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64)
+    mgr.recover(ValueError("NaN"), context="test", fallback=torch.zeros(1, 64))
+    assert mgr.get_recovery_stats()["total"] >= 1
+
+    mgr.reset_stats()
+    assert mgr.get_recovery_stats()["total"] == 0
+
+    print("✅ test_error_recovery_reset_stats PASSED")
+
+
+def test_error_recovery_resource():
+    """ErrorRecoveryManager offloads to CPU on resource errors."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64)
+    last_good = torch.randn(1, 64)
+
+    err = RuntimeError("CUDA out of memory")
+    ok, val = mgr.recover(err, context="forward", last_good_state=last_good)
+
+    assert ok
+    assert val.device == torch.device("cpu"), "Should offload to CPU"
+
+    print("✅ test_error_recovery_resource PASSED")
+
+
+def test_context_window_add_and_retrieve():
+    """ContextWindowManager stores and retrieves entries by relevance."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=10, hidden_dim=32)
+
+    for i in range(5):
+        ctx.add("retriever", torch.randn(32), relevance=float(i))
+
+    top = ctx.get_top_k(3)
+    assert len(top) == 3
+    assert top[0]["relevance"] >= top[1]["relevance"] >= top[2]["relevance"]
+
+    print("✅ test_context_window_add_and_retrieve PASSED")
+
+
+def test_context_window_eviction():
+    """ContextWindowManager evicts least-relevant entries when full."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=5, hidden_dim=16)
+
+    for i in range(10):
+        ctx.add("mem", torch.randn(16), relevance=float(i))
+
+    stats = ctx.stats()
+    assert stats["current_size"] == 5
+    assert stats["total_added"] == 10
+    assert stats["total_evicted"] == 5
+
+    top = ctx.get_top_k(5)
+    # Should keep the 5 highest-relevance entries (5-9)
+    assert all(e["relevance"] >= 5.0 for e in top)
+
+    print("✅ test_context_window_eviction PASSED")
+
+
+def test_context_window_rejects_nonfinite():
+    """ContextWindowManager skips non-finite embeddings."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=10, hidden_dim=16)
+    nan_emb = torch.full((16,), float('nan'))
+    ctx.add("bad_source", nan_emb, relevance=1.0)
+
+    assert ctx.stats()["current_size"] == 0
+
+    print("✅ test_context_window_rejects_nonfinite PASSED")
+
+
+def test_context_window_get_context_tensor():
+    """ContextWindowManager.get_context_tensor stacks embeddings."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=10, hidden_dim=32)
+    for i in range(4):
+        ctx.add("src", torch.randn(32), relevance=float(i))
+
+    tensor = ctx.get_context_tensor(k=3)
+    assert tensor is not None
+    assert tensor.shape == (3, 32)
+
+    # Empty context returns None
+    ctx.clear()
+    assert ctx.get_context_tensor() is None
+
+    print("✅ test_context_window_get_context_tensor PASSED")
+
+
+def test_audit_log_severity_levels():
+    """DecisionAuditLog supports severity levels in records."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+
+    audit.record("meta_loop", "converged", severity="info")
+    audit.record("safety", "rollback", severity="warning")
+    audit.record("system", "crash", severity="critical")
+
+    entries = audit.recent(3)
+    assert entries[0].get("severity") == "info"
+    assert entries[1].get("severity") == "warning"
+    assert entries[2].get("severity") == "critical"
+
+    print("✅ test_audit_log_severity_levels PASSED")
+
+
+def test_audit_log_filter_by_subsystem():
+    """DecisionAuditLog.filter_by returns entries for a specific subsystem."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    audit.record("meta_loop", "converged", severity="info")
+    audit.record("safety", "rollback", severity="warning")
+    audit.record("meta_loop", "diverged", severity="error")
+
+    meta_entries = audit.filter_by(subsystem="meta_loop")
+    assert len(meta_entries) == 2
+    assert all(e["subsystem"] == "meta_loop" for e in meta_entries)
+
+    print("✅ test_audit_log_filter_by_subsystem PASSED")
+
+
+def test_audit_log_filter_by_severity():
+    """DecisionAuditLog.filter_by respects min_severity threshold."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    audit.record("a", "d1", severity="debug")
+    audit.record("a", "d2", severity="info")
+    audit.record("a", "d3", severity="warning")
+    audit.record("a", "d4", severity="error")
+    audit.record("a", "d5", severity="critical")
+
+    warnings_up = audit.filter_by(min_severity="warning")
+    assert len(warnings_up) == 3
+    for e in warnings_up:
+        assert e["severity"] in ("warning", "error", "critical")
+
+    print("✅ test_audit_log_filter_by_severity PASSED")
+
+
+def test_audit_log_backward_compat():
+    """DecisionAuditLog.record still works without severity argument."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    audit.record("test", "decision", {"key": "value"})
+
+    entries = audit.recent(1)
+    assert len(entries) == 1
+    assert entries[0]["severity"] == "info"  # default
+
+    print("✅ test_audit_log_backward_compat PASSED")
+
+
+def test_validator_validate_and_recover_clean():
+    """StateConsistencyValidator.validate_and_recover passes clean tensors."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C = torch.randn(2, 64)
+    recovered, result = validator.validate_and_recover(C)
+
+    assert result["valid"]
+    assert "recovered" not in result
+    assert torch.equal(recovered, C)
+
+    print("✅ test_validator_validate_and_recover_clean PASSED")
+
+
+def test_validator_validate_and_recover_nan():
+    """StateConsistencyValidator.validate_and_recover fixes NaN tensors."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C = torch.randn(2, 64)
+    C[0, :10] = float('nan')
+    C[1, 5] = float('inf')
+
+    recovered, result = validator.validate_and_recover(C)
+
+    assert not result["valid"]
+    assert result.get("recovered") is True
+    assert torch.isfinite(recovered).all()
+
+    print("✅ test_validator_validate_and_recover_nan PASSED")
+
+
+def test_validator_validate_and_recover_shape():
+    """StateConsistencyValidator.validate_and_recover fixes wrong shapes."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64)
+    C = torch.randn(2, 32)  # Wrong hidden_dim
+
+    recovered, result = validator.validate_and_recover(C)
+
+    assert not result["valid"]
+    assert result.get("recovered") is True
+    assert recovered.shape == (2, 64)
+
+    print("✅ test_validator_validate_and_recover_shape PASSED")
+
+
+def test_validator_validate_and_recover_activation_clamp():
+    """StateConsistencyValidator.validate_and_recover clamps large activations."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(hidden_dim=64, max_activation=100.0)
+    C = torch.randn(2, 64) * 1000.0  # Way above max_activation
+
+    recovered, result = validator.validate_and_recover(C)
+
+    assert not result["valid"]
+    assert result.get("recovered") is True
+    assert recovered.abs().max().item() <= 100.0
+
+    print("✅ test_validator_validate_and_recover_activation_clamp PASSED")
+
+
+def test_semantic_error_classifier_with_suggestion():
+    """SemanticErrorClassifier.classify_with_suggestion returns suggestions."""
+    from aeon_core import SemanticErrorClassifier
+
+    classifier = SemanticErrorClassifier()
+
+    # Numerical
+    cls, detail, suggestion = classifier.classify_with_suggestion(
+        ValueError("NaN detected")
+    )
+    assert cls == "numerical"
+    assert len(suggestion) > 0
+    assert "Sanitize" in suggestion
+
+    # Shape
+    cls, detail, suggestion = classifier.classify_with_suggestion(
+        RuntimeError("shape mismatch")
+    )
+    assert cls == "shape"
+    assert "dimension" in suggestion.lower()
+
+    # Resource
+    cls, detail, suggestion = classifier.classify_with_suggestion(
+        RuntimeError("CUDA out of memory")
+    )
+    assert cls == "resource"
+    assert "batch" in suggestion.lower()
+
+    # Convergence
+    cls, detail, suggestion = classifier.classify_with_suggestion(
+        RuntimeError("failed to converge")
+    )
+    assert cls == "convergence"
+    assert "learning rate" in suggestion.lower() or "Lipschitz" in suggestion
+
+    print("✅ test_semantic_error_classifier_with_suggestion PASSED")
+
+
+def test_ssd_block_chunk_len_guard():
+    """_SSDBlock enforces chunk_len >= 1."""
+    from aeon_core import SelectiveSSMv2
+
+    # chunk_len=0 should be clamped to 1
+    ssm = SelectiveSSMv2(d_model=64, chunk_len=0)
+    x = torch.randn(1, 8, 64)
+    y, state = ssm(x)
+    assert y.shape == (1, 8, 64)
+    assert torch.isfinite(y).all()
+
+    print("✅ test_ssd_block_chunk_len_guard PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -5635,6 +5994,28 @@ if __name__ == '__main__':
     test_audit_log_in_reasoning_core()
     test_state_validation_in_reasoning_output()
     test_memory_load_specific_exception()
+    
+    # AGI Modernization: Error recovery, context window, audit & validator tests
+    test_error_recovery_numerical()
+    test_error_recovery_convergence()
+    test_error_recovery_unknown_with_fallback()
+    test_error_recovery_unknown_no_fallback()
+    test_error_recovery_reset_stats()
+    test_error_recovery_resource()
+    test_context_window_add_and_retrieve()
+    test_context_window_eviction()
+    test_context_window_rejects_nonfinite()
+    test_context_window_get_context_tensor()
+    test_audit_log_severity_levels()
+    test_audit_log_filter_by_subsystem()
+    test_audit_log_filter_by_severity()
+    test_audit_log_backward_compat()
+    test_validator_validate_and_recover_clean()
+    test_validator_validate_and_recover_nan()
+    test_validator_validate_and_recover_shape()
+    test_validator_validate_and_recover_activation_clamp()
+    test_semantic_error_classifier_with_suggestion()
+    test_ssd_block_chunk_len_guard()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
