@@ -1219,6 +1219,14 @@ class ErrorRecoveryManager:
         self.max_retries = max(1, max_retries)
         self._lock = threading.Lock()
         self._recovery_counts: Dict[str, int] = defaultdict(int)
+        self._strategies: Dict[str, Callable] = {
+            "numerical": self._recover_numerical,
+            "shape": self._recover_shape,
+            "convergence": self._recover_convergence,
+            "resource": self._recover_resource,
+            "semantic": self._recover_semantic,
+            "unknown": self._recover_unknown,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -1254,8 +1262,8 @@ class ErrorRecoveryManager:
             "detail": detail,
         })
 
-        strategy = self._STRATEGIES.get(error_class, self._recover_unknown)
-        return strategy(self, context, fallback, last_good_state)
+        strategy = self._strategies.get(error_class, self._recover_unknown)
+        return strategy(context, fallback, last_good_state)
 
     def get_recovery_stats(self) -> Dict[str, Any]:
         """Return a snapshot of recovery counters."""
@@ -1333,15 +1341,6 @@ class ErrorRecoveryManager:
         if fallback is not None:
             return True, fallback
         return False, None
-
-    _STRATEGIES: Dict[str, Callable] = {
-        "numerical": _recover_numerical,
-        "shape": _recover_shape,
-        "convergence": _recover_convergence,
-        "resource": _recover_resource,
-        "semantic": _recover_semantic,
-        "unknown": _recover_unknown,
-    }
 
 
 # ============================================================================
