@@ -9845,6 +9845,8 @@ class RecoveryExperienceReplay:
         self._pos = (self._pos + 1) % self.capacity
 
     def sample(self, batch_size: int) -> List[Tuple[torch.Tensor, int, float, torch.Tensor]]:
+        if len(self._buffer) == 0:
+            return []
         batch_size = min(batch_size, len(self._buffer))
         indices = random.sample(range(len(self._buffer)), batch_size)
         return [self._buffer[i] for i in indices]
@@ -10160,11 +10162,18 @@ class HybridReasoningEngine(nn.Module):
         # 2. Augment with persistent KB
         if query is not None:
             kb_facts = self.knowledge_graph.retrieve_relevant(query)
-            # Ensure compatible shapes
+            # Ensure compatible shapes via padding/truncation
             if kb_facts.dim() < facts.dim():
                 kb_facts = kb_facts.unsqueeze(0).expand_as(facts)
-            elif kb_facts.shape != facts.shape:
-                kb_facts = kb_facts[: facts.shape[0], : facts.shape[1]]
+            if kb_facts.shape != facts.shape:
+                aligned = torch.zeros_like(facts)
+                rows = min(kb_facts.shape[0], facts.shape[0])
+                cols = min(kb_facts.shape[-1], facts.shape[-1]) if kb_facts.dim() > 1 else 0
+                if kb_facts.dim() == 1:
+                    aligned[0, : kb_facts.shape[0]] = kb_facts[: facts.shape[-1]]
+                else:
+                    aligned[:rows, :cols] = kb_facts[:rows, :cols]
+                kb_facts = aligned
             facts = torch.clamp(facts + kb_facts * 0.3, 0.0, 1.0)
 
         # 3. Forward chaining
@@ -10288,7 +10297,7 @@ class AutoCriticLoop(nn.Module):
         trajectory: List[Dict[str, Any]] = []
 
         current_query = query
-        best_candidate = None
+        best_candidate = self.generator(query)  # default candidate
         best_score = -1.0
 
         for iteration in range(self.max_iterations):
@@ -10316,7 +10325,7 @@ class AutoCriticLoop(nn.Module):
             current_query = self.reviser(current_query, candidate, critique_signal)
 
         result: Dict[str, Any] = {
-            "candidate": best_candidate if best_candidate is not None else candidate,
+            "candidate": best_candidate,
             "iterations": len(trajectory),
             "final_score": best_score,
         }
