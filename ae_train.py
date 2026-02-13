@@ -829,9 +829,9 @@ class ContextualRSSM(nn.Module):
         # Выходная проекция с residual
         z_pred = self.out_proj(hx_new)
         
-        # Residual connection к последнему z
+        # Residual connection: blend last z with attention-weighted context
         z_last = z_context[:, -1, :]
-        z_pred = z_pred + self.residual_weight * z_last
+        z_pred = z_pred + self.residual_weight * (z_last + weighted_context)
         
         return z_pred
     
@@ -1196,7 +1196,7 @@ class SafeThoughtAETrainerV4:
                  monitor: TrainingMonitor, output_dir: str):
         self.model = model
         self.config = config
-        self.device = device
+        self.device = next(model.parameters()).device
         self.monitor = monitor
         self.output_dir = output_dir
         

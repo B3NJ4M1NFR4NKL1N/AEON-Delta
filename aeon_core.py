@@ -1928,7 +1928,6 @@ class _SSDBlock(nn.Module):
         # For each position t within the chunk, compute the running SSM state
         # via a simple sequential scan (chunk is small, so this is fast)
         y_chunks = []
-        state_out_chunks = []
         h_prev = state if state is not None else torch.zeros(
             B, H, P, N, device=x.device, dtype=x.dtype
         )
@@ -6967,7 +6966,7 @@ class NeuralCausalModel(nn.Module):
         """
         # Abduction: infer exogenous noise from observations
         # Note: simplified abduction — proper implementation would invert causal mechanisms
-        exogenous = observed - self.forward(observed, intervention=None).detach() + observed
+        exogenous = observed - self.forward(observed, intervention=None).detach()
         # Intervene and propagate
         return self.forward(exogenous, intervention=intervention)
     
