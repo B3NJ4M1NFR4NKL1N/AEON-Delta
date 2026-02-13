@@ -4177,9 +4177,9 @@ class RobustVectorQuantizer(nn.Module):
             alpha=1 - self.decay
         )
         
-        # Laplace smoothing
+        # Laplace smoothing (in-place to preserve registered buffer)
         n = self._ema_cluster_size.sum()
-        self._ema_cluster_size = (
+        self._ema_cluster_size.copy_(
             (self._ema_cluster_size + self.epsilon)
             / (n + self.num_embeddings * self.epsilon)
             * n

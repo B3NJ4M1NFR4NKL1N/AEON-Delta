@@ -579,7 +579,7 @@ class VectorQuantizerHybridV4(nn.Module):
             torch.sum(z**2, dim=1, keepdim=True) + 
             torch.sum(self.embedding.weight**2, dim=1) - 
             2 * torch.matmul(z, self.embedding.weight.t())
-        ) / self.temperature
+        ) / max(self.temperature, 1e-8)
         
         # Выбор ближайших кодов
         indices = torch.argmin(distances, dim=1)
@@ -665,6 +665,13 @@ class VectorQuantizerHybridV4(nn.Module):
             self.code_usage[used_codes] += 1
             self.code_age += 1
             self.code_age[used_codes] = 0
+            
+            # Update embedding from EMA weights (Laplace-smoothed)
+            n = self.ema_cluster_size.sum()
+            smoothed = (self.ema_cluster_size + self.epsilon) / (n + self.num_embeddings * self.epsilon) * n
+            self.embedding.weight.data.copy_(
+                self.ema_w / smoothed.clamp(min=self.epsilon).unsqueeze(1)
+            )
             
             # Периодический сброс (чаще чем в v3)
             if self.global_step % 50 == 0:
@@ -1403,7 +1410,7 @@ class SafeThoughtAETrainerV4:
                         epoch_metrics["perplexity"] += outputs['perplexity']
                         epoch_metrics["accuracy_%"] += outputs['accuracy']
                         epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
-                    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
+                    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and math.isfinite(grad_norm)) else 0
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -1425,7 +1432,7 @@ class SafeThoughtAETrainerV4:
                     epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
                 grad_norm = self._optimizer_step()
                 self.scheduler.step()
-                epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
+                epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and math.isfinite(grad_norm)) else 0
             
             num_steps = max(
                 (total_batches + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps,
