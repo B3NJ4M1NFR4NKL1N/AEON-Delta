@@ -1749,6 +1749,9 @@ class AEONConfig:
             config_dict = json.load(f)
         config_dict.pop('device', None)
         config_dict.pop('version', None)
+        # JSON deserializes tuples as lists; restore tuple fields
+        if 'lora_target' in config_dict and isinstance(config_dict['lora_target'], list):
+            config_dict['lora_target'] = tuple(config_dict['lora_target'])
         return cls(**config_dict)
     
     def get_model_signature(self) -> str:
@@ -2703,6 +2706,9 @@ class SelectiveSSMv2(nn.Module):
         self.d_inner = d_inner
         if nheads <= 0:
             nheads = max(1, d_inner // 64)
+            # Ensure nheads divides d_inner; fall back to nearest divisor
+            while d_inner % nheads != 0 and nheads > 1:
+                nheads -= 1
         self.nheads = nheads
         self.dt_rank = dt_rank if dt_rank > 0 else max(1, d_model // 16)
 
@@ -5530,10 +5536,17 @@ class CausalFactorExtractor(nn.Module):
             factors[:, idx] = intervene['value']
 
         # Propagate causal effects (topological order guaranteed by mask)
-        factors_causal = torch.zeros_like(factors)
+        causal_list: List[torch.Tensor] = []
         for i in range(self.num_factors):
-            parents = adj[i] @ factors.T  # [B]
-            factors_causal[:, i] = factors[:, i] + self.causal_scale * parents
+            # Parents come from already-propagated factors (topological order)
+            if causal_list:
+                prev = torch.stack(causal_list, dim=-1)  # [B, i]
+                padded = F.pad(prev, (0, self.num_factors - i))  # [B, num_factors]
+            else:
+                padded = torch.zeros_like(factors)
+            parents = adj[i] @ padded.T  # [B]
+            causal_list.append(factors[:, i] + self.causal_scale * parents)
+        factors_causal = torch.stack(causal_list, dim=-1)  # [B, num_factors]
 
         return {
             'factors': factors_causal,
@@ -5848,12 +5861,13 @@ class MemoryManager:
         try:
             path = os.path.join(self.config.memory_path, "fallback_memory.pt")
             os.makedirs(self.config.memory_path, exist_ok=True)
-            torch.save({
-                'vectors': self.fallback_vectors,
-                'metas': self.fallback_metas,
-                'timestamps': self.fallback_timestamps,
-                'size': self._size
-            }, path)
+            with self._lock:
+                torch.save({
+                    'vectors': list(self.fallback_vectors),
+                    'metas': list(self.fallback_metas),
+                    'timestamps': list(self.fallback_timestamps),
+                    'size': self._size
+                }, path)
             logger.info(f"Memory saved to {path}")
         except Exception as e:
             logger.error(f"Failed to save memory: {e}")
@@ -5900,13 +5914,14 @@ class MemoryManager:
                     )
                     return
                 
-                self.fallback_vectors = data.get('vectors', [])
-                self.fallback_metas = data.get('metas', [])
-                self.fallback_timestamps = data.get(
-                    'timestamps',
-                    [time.monotonic()] * len(self.fallback_vectors)
-                )
-                self._size = data.get('size', len(self.fallback_vectors))
+                with self._lock:
+                    self.fallback_vectors = data.get('vectors', [])
+                    self.fallback_metas = data.get('metas', [])
+                    self.fallback_timestamps = data.get(
+                        'timestamps',
+                        [time.monotonic()] * len(self.fallback_vectors)
+                    )
+                    self._size = data.get('size', len(self.fallback_vectors))
                 logger.info(f"Memory loaded from {path}")
             except Exception as e:
                 logger.error(f"Failed to load memory from '{path}': {e}")
@@ -6466,8 +6481,10 @@ class NeuralTuringMachine(nn.Module):
         # write_weights: [B, memory_size] → mean → [memory_size]
         # new_content: [B, memory_dim] → mean → [memory_dim]
         write_update = write_weights.mean(dim=0).unsqueeze(-1) * new_content.mean(dim=0).unsqueeze(0)
-        # Apply write update to memory parameter
-        self.memory.data = self.memory.data + write_update
+        # Defer memory write to avoid in-place modification that
+        # invalidates the autograd graph for reads earlier in forward().
+        # Using .data bypasses version tracking so reads remain valid.
+        self.memory.data = self.memory.data + write_update.detach()
 
         combined = torch.cat([h] + read_vectors, dim=-1)
         output = self.output_proj(combined)
@@ -10665,11 +10682,11 @@ class AEONDeltaV3(nn.Module):
         self._step_counter = 0
         
         self.metrics_log = {
-            'iterations': [],
-            'consistency': [],
-            'diversity': [],
-            'catastrophes': [],
-            'safety_scores': []
+            'iterations': deque(maxlen=10000),
+            'consistency': deque(maxlen=10000),
+            'diversity': deque(maxlen=10000),
+            'catastrophes': deque(maxlen=10000),
+            'safety_scores': deque(maxlen=10000)
         }
         
         # ===== AUDIT & VALIDATION =====
@@ -11689,7 +11706,7 @@ class AEONDeltaV3(nn.Module):
                     metrics = json.load(f)
                     for k, v in metrics.items():
                         if k in self.metrics_log:
-                            self.metrics_log[k] = v
+                            self.metrics_log[k] = deque(v, maxlen=10000)
             
             logger.info(f"✅ State loaded from {save_dir}")
             return True
