@@ -3909,7 +3909,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
             
             # Guard against NaN/Inf from Anderson acceleration or
             # numerical instability — revert to previous state per-sample.
-            non_finite_mask = ~torch.isfinite(C).all(dim=-1)  # [B]
+            non_finite_mask = torch.any(~torch.isfinite(C), dim=-1)  # [B]
             if non_finite_mask.any():
                 C[non_finite_mask] = C_prev[non_finite_mask]
             
@@ -5125,11 +5125,12 @@ class MemoryManager:
             self.fallback_vectors.append(vec_np)
             self.fallback_metas.append(meta)
             self._size += 1
-            # Evict oldest entries when capacity is exceeded
-            while self._size > self._max_capacity:
-                self.fallback_vectors.pop(0)
-                self.fallback_metas.pop(0)
-                self._size -= 1
+            # Evict oldest entries when capacity is exceeded (O(1) via slicing)
+            if self._size > self._max_capacity:
+                excess = self._size - self._max_capacity
+                self.fallback_vectors = self.fallback_vectors[excess:]
+                self.fallback_metas = self.fallback_metas[excess:]
+                self._size = self._max_capacity
     
     def retrieve_relevant(self, vec: torch.Tensor, k: int = 5) -> List[Dict]:
         """Retrieve k most similar vectors."""
@@ -9608,10 +9609,11 @@ class AEONDeltaV3(nn.Module):
         z_out = self.integration_norm(z_integrated + z_rssm)
         
         # 8a. Final output sanitization — last line of defense against
-        # non-finite values before decoding.
+        # non-finite values before decoding.  Falls back to z_rssm to
+        # maintain semantic continuity rather than zeroing.
         if not torch.isfinite(z_out).all():
-            logger.warning("Non-finite values in integration output; clamping")
-            z_out = torch.where(torch.isfinite(z_out), z_out, torch.zeros_like(z_out))
+            logger.warning("Non-finite values in integration output; using RSSM state")
+            z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
