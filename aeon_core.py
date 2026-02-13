@@ -6636,7 +6636,9 @@ class Task2VecMetaLearner(nn.Module):
             p.numel() for p in model.parameters() if p.requires_grad
         )
 
-        # Projection from flattened Fisher diagonal to compact embedding
+        # Projection from flattened Fisher diagonal to compact embedding.
+        # Truncate to 4096 dimensions to cap memory/compute cost for large
+        # models while retaining sufficient task-discriminative information.
         self.task_projector = nn.Linear(
             min(self._param_count, 4096), embedding_dim
         )
@@ -7857,8 +7859,9 @@ class CertifiedMetaLoop(nn.Module):
         Full IBP pipeline: for each layer, multiply by the certified
         per-layer Lipschitz constant:
           - nn.Linear: spectral norm (largest singular value)
-          - nn.GELU: 1.13 (proven upper bound)
-          - nn.LayerNorm: 1.0 (bounded-input approximation)
+          - nn.GELU: 1.13 (proven upper bound over the entire real line)
+          - nn.LayerNorm: 1.0 (approximation valid for inputs with
+            bounded variance; worst-case is sqrt(d))
 
         References:
           - Gowal et al., ICML 2018: IBP for formal upper bounds
@@ -7866,6 +7869,11 @@ class CertifiedMetaLoop(nn.Module):
 
         Returns:
             Certified upper bound on L for the composed operator.
+
+        Note:
+            The LayerNorm bound of 1.0 assumes inputs are normalised
+            (bounded variance).  For unconstrained inputs, the true
+            worst-case Lipschitz constant is sqrt(d).
         """
         L_bound = 1.0
 
@@ -7883,8 +7891,9 @@ class CertifiedMetaLoop(nn.Module):
                 # GELU Lipschitz constant ≈ 1.13 (proven)
                 L_bound *= 1.13
             elif isinstance(module, nn.LayerNorm):
-                # LayerNorm Lipschitz ≤ sqrt(d) worst-case
-                # With bounded input |x| ≤ C, Lipschitz ≈ 1.0
+                # LayerNorm Lipschitz ≤ sqrt(d) worst-case.
+                # With bounded-variance inputs (as ensured by preceding
+                # normalisations), the effective constant ≈ 1.0.
                 L_bound *= 1.0
 
         return L_bound
@@ -9359,9 +9368,11 @@ class AEONDeltaV3(nn.Module):
             )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
-        # 1b. Compositional slot binding
+        # 1b. Compositional slot binding — slots compete for features,
+        # then mean-pooled back into hidden_dim as a residual.  Mean
+        # pooling preserves permutation invariance across slots and
+        # avoids introducing additional learnable parameters.
         slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, 7, hidden_dim]
-        # Aggregate slot representations back to hidden_dim
         C_star = C_star + slot_assignments.mean(dim=1)
         
         # 2. Extract factors
