@@ -627,7 +627,10 @@ class VectorQuantizerHybridV4(nn.Module):
         max_entropy = math.log(self.num_embeddings)
         
         # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
-        entropy_loss = 1.0 - (entropy / max_entropy) if max_entropy > 0 else torch.tensor(0.0, device=indices.device)
+        if max_entropy > 0:
+            entropy_loss = 1.0 - (entropy / max_entropy)
+        else:
+            entropy_loss = torch.tensor(0.0, device=indices.device)
         
         return entropy_loss
     
@@ -1103,6 +1106,8 @@ def load_documents_from_json(json_path: str, tokenizer, max_len: int,
                 errors += 1
                 if errors <= 3 and logger:
                     logger.warning(f"   Ошибка строки {line_num}: {e}")
+                elif errors == 4 and logger:
+                    logger.warning("   ... (suppressing further per-line error messages)")
     
     if logger:
         logger.info(f"✅ Загружено {len(documents):,} документов")
@@ -1303,7 +1308,7 @@ class SafeThoughtAETrainerV4:
         self.optimizer.zero_grad()
         self.global_step += 1
         
-        return grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+        return grad_norm.item() if torch.is_tensor(grad_norm) else float(grad_norm)
 
     def fit(self, tokenized_tensor: torch.Tensor, epochs: int = 30, 
             log_every_batch: int = 10):
@@ -1372,7 +1377,7 @@ class SafeThoughtAETrainerV4:
                         epoch_metrics["perplexity"] += outputs['perplexity']
                         epoch_metrics["accuracy_%"] += outputs['accuracy']
                         epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
-                    epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
+                    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -1388,7 +1393,7 @@ class SafeThoughtAETrainerV4:
                 epoch_metrics["total"] += avg_loss
                 grad_norm = self._optimizer_step()
                 self.scheduler.step()
-                epoch_metrics["grad_norm"] += grad_norm if grad_norm else 0
+                epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
             
             num_steps = max(
                 (total_batches + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps,
@@ -1831,8 +1836,8 @@ def main(
                     text = data.get("text", "") if isinstance(data, dict) else str(data)
                     if text and len(text.strip()) > 10:
                         texts.append(text)
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    pass
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.debug(f"Skipping malformed line: {e}")
         
         tokens = tokenize_batch(texts, tokenizer, config.seq_length, device)
         documents = None
