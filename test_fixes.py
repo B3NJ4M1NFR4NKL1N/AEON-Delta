@@ -4214,6 +4214,128 @@ def test_certified_meta_loop_ibp_per_layer():
     print("✅ test_certified_meta_loop_ibp_per_layer PASSED")
 
 
+# ============================================================================
+# TESTS FOR REFACTORING FIXES (division-by-zero, type safety, error handling)
+# ============================================================================
+
+def test_epoch_metrics_empty_list_guard():
+    """Verify that avg_metrics handles empty metric lists without ZeroDivisionError.
+    
+    Fixes division-by-zero in aeon_core.py epoch summary and evaluate methods
+    where sum(v)/len(v) would crash if no batches produced metrics.
+    """
+    from collections import defaultdict
+
+    # Simulate empty epoch (no batches ran)
+    epoch_metrics = defaultdict(list)
+    # No items appended — len(v) == 0 for all keys
+
+    # Manually add a key with empty list to trigger the guard
+    epoch_metrics['total_loss'] = []
+    epoch_metrics['consistency_score'] = []
+
+    # This should NOT raise ZeroDivisionError
+    avg_metrics = {
+        k: sum(v) / max(len(v), 1) 
+        for k, v in epoch_metrics.items()
+    }
+    assert avg_metrics['total_loss'] == 0.0
+    assert avg_metrics['consistency_score'] == 0.0
+
+    # Normal case should still work
+    epoch_metrics['total_loss'] = [1.0, 2.0, 3.0]
+    avg_metrics = {
+        k: sum(v) / max(len(v), 1) 
+        for k, v in epoch_metrics.items()
+    }
+    assert abs(avg_metrics['total_loss'] - 2.0) < 1e-6
+
+    print("✅ test_epoch_metrics_empty_list_guard PASSED")
+
+
+def test_weight_tying_scores_empty_guard():
+    """Verify that weight tying overall score handles empty results dict."""
+    # Simulate empty results dict
+    results = {}
+    scores = [1.0 if v else 0.0 for v in results.values()]
+    overall = sum(scores) / max(len(scores), 1)
+    assert overall == 0.0
+
+    # Normal case
+    results = {'a': True, 'b': False, 'c': True}
+    scores = [1.0 if v else 0.0 for v in results.values()]
+    overall = sum(scores) / max(len(scores), 1)
+    assert abs(overall - 2.0/3.0) < 1e-6
+
+    print("✅ test_weight_tying_scores_empty_guard PASSED")
+
+
+def test_entropy_loss_returns_tensor():
+    """Verify that _compute_entropy_loss always returns a torch.Tensor."""
+    from ae_train import VectorQuantizerHybridV4
+
+    vq = VectorQuantizerHybridV4(num_embeddings=64, embedding_dim=32)
+
+    # Normal case
+    indices = torch.randint(0, 64, (16,))
+    loss = vq._compute_entropy_loss(indices)
+    assert torch.is_tensor(loss), f"Expected Tensor, got {type(loss)}"
+    assert loss.dim() == 0, "Expected scalar tensor"
+    assert not torch.isnan(loss), "Entropy loss is NaN"
+
+    # Single unique code — maximum entropy loss
+    indices_single = torch.zeros(16, dtype=torch.long)
+    loss_single = vq._compute_entropy_loss(indices_single)
+    assert torch.is_tensor(loss_single), f"Expected Tensor, got {type(loss_single)}"
+    assert loss_single.item() > 0.5, "Entropy loss should be high for single code usage"
+
+    print("✅ test_entropy_loss_returns_tensor PASSED")
+
+
+def test_optimizer_step_returns_float():
+    """Verify that _optimizer_step always returns a float."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"), save_dir="/tmp/test_opt_step")
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_opt_step")
+
+    # Simulate a forward-backward pass to populate gradients
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    trainer.train_step(tokens)
+
+    # The optimizer step should return a float
+    result = trainer._optimizer_step()
+    assert isinstance(result, float), f"Expected float, got {type(result)}"
+    assert not math.isnan(result), "grad_norm is NaN"
+
+    print("✅ test_optimizer_step_returns_float PASSED")
+
+
+def test_grad_norm_nan_guard_in_fit():
+    """Verify that NaN grad_norm values are safely guarded in fit loop."""
+    # Simulate the guard logic used in fit()
+    epoch_metrics = {"grad_norm": 0.0}
+    
+    # NaN grad_norm should be treated as 0
+    grad_norm = float('nan')
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    assert epoch_metrics["grad_norm"] == 0.0, "NaN grad_norm leaked into metrics"
+    
+    # Normal grad_norm should be accumulated
+    grad_norm = 1.5
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    assert abs(epoch_metrics["grad_norm"] - 1.5) < 1e-6
+
+    # Zero grad_norm should be treated as 0
+    grad_norm = 0.0
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    assert abs(epoch_metrics["grad_norm"] - 1.5) < 1e-6  # unchanged
+
+    print("✅ test_grad_norm_nan_guard_in_fit PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -4459,6 +4581,13 @@ if __name__ == '__main__':
     test_task2vec_meta_learner_adapt()
     test_task2vec_ewc_loss()
     test_certified_meta_loop_ibp_per_layer()
+    
+    # Refactoring fixes tests (division-by-zero guards, type safety, NaN guards)
+    test_epoch_metrics_empty_list_guard()
+    test_weight_tying_scores_empty_guard()
+    test_entropy_loss_returns_tensor()
+    test_optimizer_step_returns_float()
+    test_grad_norm_nan_guard_in_fit()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

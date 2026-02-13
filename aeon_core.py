@@ -10377,7 +10377,7 @@ class AEONTrainer:
             
             # Epoch summary
             avg_metrics = {
-                k: sum(v) / len(v) 
+                k: sum(v) / max(len(v), 1) 
                 for k, v in epoch_metrics.items()
             }
             logger.info(
@@ -10428,7 +10428,7 @@ class AEONTrainer:
                 all_metrics[k].append(v)
         
         avg_metrics = {
-            k: sum(v) / len(v)
+            k: sum(v) / max(len(v), 1)
             for k, v in all_metrics.items()
         }
         
@@ -10584,7 +10584,7 @@ class AEONTestSuite:
             
             # Overall
             scores = [1.0 if v else 0.0 for v in results.values()]
-            overall = sum(scores) / len(scores)
+            overall = sum(scores) / max(len(scores), 1)
             
             return {'weight_tying': overall, 'details': results}
         
