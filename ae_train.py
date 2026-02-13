@@ -1377,7 +1377,7 @@ class SafeThoughtAETrainerV4:
                         epoch_metrics["perplexity"] += outputs['perplexity']
                         epoch_metrics["accuracy_%"] += outputs['accuracy']
                         epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
-                    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+                    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -1393,7 +1393,7 @@ class SafeThoughtAETrainerV4:
                 epoch_metrics["total"] += avg_loss
                 grad_norm = self._optimizer_step()
                 self.scheduler.step()
-                epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+                epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
             
             num_steps = max(
                 (total_batches + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps,

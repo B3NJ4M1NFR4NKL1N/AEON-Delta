@@ -4320,17 +4320,22 @@ def test_grad_norm_nan_guard_in_fit():
     
     # NaN grad_norm should be treated as 0
     grad_norm = float('nan')
-    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
     assert epoch_metrics["grad_norm"] == 0.0, "NaN grad_norm leaked into metrics"
     
     # Normal grad_norm should be accumulated
     grad_norm = 1.5
-    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
     assert abs(epoch_metrics["grad_norm"] - 1.5) < 1e-6
 
-    # Zero grad_norm should be treated as 0
+    # Zero grad_norm should be accumulated (valid value)
     grad_norm = 0.0
-    epoch_metrics["grad_norm"] += grad_norm if (grad_norm and not math.isnan(grad_norm)) else 0
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
+    assert abs(epoch_metrics["grad_norm"] - 1.5) < 1e-6  # 1.5 + 0.0 = 1.5
+
+    # None grad_norm should be treated as 0
+    grad_norm = None
+    epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
     assert abs(epoch_metrics["grad_norm"] - 1.5) < 1e-6  # unchanged
 
     print("✅ test_grad_norm_nan_guard_in_fit PASSED")
