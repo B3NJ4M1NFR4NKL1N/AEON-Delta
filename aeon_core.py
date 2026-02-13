@@ -2431,12 +2431,14 @@ class InferenceCache:
 
     @property
     def step(self) -> int:
-        return self._step
+        with self._lock:
+            return self._step
 
     @property
     def history_size(self) -> int:
         """Number of compressed states in ring buffer."""
-        return len(self._history)
+        with self._lock:
+            return len(self._history)
 
     def reset(self):
         with self._lock:
@@ -8169,6 +8171,8 @@ class UnifiedMemory(nn.Module):
         )  # [B, N]
 
         # Temporal addressing via link matrix
+        # Clamp u to non-negative (decay can drift below zero) and use
+        # 1e-6 epsilon (vs 1e-8) to prevent NaN when all slots are unused.
         u_clamped = self.u.clamp(min=0.0)
         u_norm = u_clamped / (u_clamped.sum() + 1e-6)
         forward_weights = u_norm @ self.L        # [N]
@@ -8460,10 +8464,12 @@ class DifferentiableForwardChainer(nn.Module):
     - Rocktäschel & Riedel, 2017: End-to-end differentiable proving
     """
 
-    def __init__(self, num_predicates: int, max_depth: int = 3):
+    def __init__(self, num_predicates: int, max_depth: int = 3,
+                 inference_decay: float = 0.95):
         super().__init__()
         self.num_predicates = num_predicates
         self.max_depth = max_depth
+        self.inference_decay = inference_decay
 
         # Learnable rule weights
         self.rule_weights = nn.Parameter(
@@ -8489,7 +8495,7 @@ class DifferentiableForwardChainer(nn.Module):
             new_facts = facts.unsqueeze(-1) * rule_matrix.unsqueeze(0)  # [B, P, P]
             new_facts = new_facts.max(dim=1).values  # [B, P]
             # Monotonic accumulation with decay to prevent saturation
-            facts = torch.max(facts, new_facts * 0.95)
+            facts = torch.max(facts, new_facts * self.inference_decay)
         return facts
 
 

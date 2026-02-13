@@ -4926,7 +4926,7 @@ def test_forward_chainer_saturation_prevention():
 def test_memory_manager_timestamp_tracking():
     """Verify MemoryManager tracks timestamps and reports age."""
     from aeon_core import MemoryManager, AEONConfig
-    import time as _time
+    import time
 
     config = AEONConfig(device_str='cpu')
     mm = MemoryManager(config)
@@ -4934,7 +4934,7 @@ def test_memory_manager_timestamp_tracking():
     v1 = torch.randn(256)
     mm.add_embedding(v1, {'id': 1})
 
-    _time.sleep(0.05)  # Small delay so age > 0
+    time.sleep(0.05)  # Small delay so age > 0
 
     v2 = torch.randn(256)
     mm.add_embedding(v2, {'id': 2})
