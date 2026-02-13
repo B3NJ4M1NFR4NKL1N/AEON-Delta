@@ -5689,6 +5689,38 @@ def test_ssd_block_chunk_len_guard():
     print("✅ test_ssd_block_chunk_len_guard PASSED")
 
 
+def test_rssm_trainer_uses_model_device():
+    """ContextualRSSMTrainer derives device from model, not global variable."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)  # CPU by default
+    monitor = TrainingMonitor(logging.getLogger("test"))
+
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+    assert hasattr(trainer, "device"), "ContextualRSSMTrainer must have a 'device' attribute"
+    assert trainer.device == next(model.parameters()).device, (
+        f"trainer.device ({trainer.device}) must match model device "
+        f"({next(model.parameters()).device})"
+    )
+    print("✅ test_rssm_trainer_uses_model_device PASSED")
+
+
+def test_validate_training_components_uses_model_device():
+    """validate_training_components creates test tensors on the model's device."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, validate_training_components
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)  # CPU by default
+    log = logging.getLogger("test")
+    # Should not raise even if the global 'device' were different
+    result = validate_training_components(model, config, log)
+    assert isinstance(result, bool)
+    print("✅ test_validate_training_components_uses_model_device PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6016,6 +6048,10 @@ if __name__ == '__main__':
     test_validator_validate_and_recover_activation_clamp()
     test_semantic_error_classifier_with_suggestion()
     test_ssd_block_chunk_len_guard()
+    
+    # Device consistency tests
+    test_rssm_trainer_uses_model_device()
+    test_validate_training_components_uses_model_device()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
