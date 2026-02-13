@@ -7277,6 +7277,8 @@ class MetaLearner(nn.Module):
                     )
             else:
                 loss = F.cross_entropy(outputs.view(-1, outputs.size(-1)), targets.view(-1))
+            if torch.isnan(loss) or torch.isinf(loss):
+                continue
             loss.backward()
             for name, param in self.model.named_parameters():
                 if param.requires_grad and param.grad is not None:
@@ -7436,6 +7438,8 @@ class Task2VecMetaLearner(nn.Module):
                 loss = F.cross_entropy(
                     outputs.view(-1, outputs.size(-1)), targets.view(-1)
                 )
+            if torch.isnan(loss) or torch.isinf(loss):
+                continue
             loss.backward()
             for name, param in self.model.named_parameters():
                 if param.requires_grad and param.grad is not None:

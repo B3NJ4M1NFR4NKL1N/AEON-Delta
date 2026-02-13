@@ -1292,7 +1292,7 @@ class SafeThoughtAETrainerV4:
         
         return outputs
     
-    def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, float]:
+    def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, Any]:
         z = self.model.encode(tokens)
         quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
         logits = self.model.decode(quantized, tokens)
