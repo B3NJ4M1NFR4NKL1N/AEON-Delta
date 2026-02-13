@@ -2380,6 +2380,7 @@ class InferenceCache:
         self._step: int = 0
         self.maxlen = maxlen
         self._history: deque = deque(maxlen=maxlen)
+        self._model_version: Optional[int] = None
 
     @staticmethod
     def _quantize_int8(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -2437,6 +2438,31 @@ class InferenceCache:
         self._attn_states = None
         self._step = 0
         self._history.clear()
+
+    def validate_model_version(self, model_version: int) -> bool:
+        """Check if cache is valid for the current model version.
+
+        If the model weights have changed (version mismatch), the cache
+        is automatically reset to prevent stale-state correctness bugs.
+
+        Args:
+            model_version: Integer version counter from the model.
+
+        Returns:
+            True if cache was valid, False if it was invalidated.
+        """
+        if self._model_version is None:
+            self._model_version = model_version
+            return True
+        if self._model_version != model_version:
+            logger.debug(
+                f"InferenceCache invalidated: model version changed "
+                f"from {self._model_version} to {model_version}"
+            )
+            self.reset()
+            self._model_version = model_version
+            return False
+        return True
 
 
 class PretrainedBackboneAdapter(nn.Module):
@@ -3830,7 +3856,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
         
         C_history = []
         residual_history = []
-        convergence_trajectory = []
+        # Bound trajectory to max_iterations to prevent unbounded memory growth
+        convergence_trajectory = deque(maxlen=self.max_iterations)
         
         converged = torch.zeros(B, dtype=torch.bool, device=device)
         iterations = torch.zeros(B, device=device)
@@ -3880,6 +3907,12 @@ class ProvablyConvergentMetaLoop(nn.Module):
             # Update
             C = alpha.unsqueeze(-1) * C_anderson + (1 - alpha.unsqueeze(-1)) * C_prev
             
+            # Guard against NaN/Inf from Anderson acceleration or
+            # numerical instability — revert to previous state per-sample.
+            non_finite_mask = ~torch.isfinite(C).all(dim=-1)  # [B]
+            if non_finite_mask.any():
+                C[non_finite_mask] = C_prev[non_finite_mask]
+            
             # Convergence check
             newly_converged = (residual_norm < self.convergence_threshold) & ~converged
             converged |= newly_converged
@@ -3915,7 +3948,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'residual_norm': residual_norm.mean().item(),
             'lipschitz_estimate': lip_const,
             'certified_error_bound': certified_error,
-            'convergence_trajectory': convergence_trajectory,
+            'convergence_trajectory': list(convergence_trajectory),
             'stability_scores': torch.ones(B, device=device),
             'convergence_scores': converged.float(),
             'instability_flags': torch.zeros(B, dtype=torch.bool, device=device),
@@ -4400,7 +4433,8 @@ class FastHessianComputer:
             if self.autograd_hessian_available:
                 try:
                     H = self._hessian_autograd(func, x)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Autograd Hessian failed ({e}), using finite differences")
                     H = self._hessian_finite_differences(func, x)
             else:
                 H = self._hessian_finite_differences(func, x)
@@ -4487,6 +4521,10 @@ class FastHessianComputer:
                     
                     H[:, i, j] = (f_pp - f_base) / (eps ** 2) - (grad[:, i] + grad[:, j]) / eps
                     H[:, j, i] = H[:, i, j]
+        
+        # Sanitize non-finite values to prevent downstream NaN propagation
+        if not torch.isfinite(H).all():
+            H = torch.where(torch.isfinite(H), H, torch.zeros_like(H))
         
         return H
     
@@ -5050,15 +5088,21 @@ class MemoryManager:
     Memory management with fallback storage.
     
     Features:
-    - Local vector storage
+    - Local vector storage with configurable capacity limit
     - Retrieval via cosine similarity
     - Sampling for training
+    - Thread-safe read/write via lock
     """
+    
+    # Default maximum number of stored embeddings
+    _DEFAULT_MAX_CAPACITY = 10000
     
     def __init__(self, config):
         self.config = config
         self._size = 0
         self.default_user = "aeon"
+        self._max_capacity = getattr(config, 'memory_max_capacity', self._DEFAULT_MAX_CAPACITY)
+        self._lock = threading.Lock()
         
         self.fallback_vectors = []
         self.fallback_metas = []
@@ -5069,40 +5113,48 @@ class MemoryManager:
         """Add embedding to memory.
         
         Skips embeddings containing NaN or Inf values to prevent
-        corrupted memory entries.
+        corrupted memory entries.  Evicts the oldest entry when
+        capacity is exceeded to prevent unbounded memory growth.
         """
         if torch.isnan(vec).any() or torch.isinf(vec).any():
             logger.warning("Skipping NaN/Inf embedding in MemoryManager.add_embedding")
             return
         meta = meta or {}
         vec_np = vec.detach().cpu().numpy().flatten()
-        self.fallback_vectors.append(vec_np)
-        self.fallback_metas.append(meta)
-        self._size += 1
+        with self._lock:
+            self.fallback_vectors.append(vec_np)
+            self.fallback_metas.append(meta)
+            self._size += 1
+            # Evict oldest entries when capacity is exceeded
+            while self._size > self._max_capacity:
+                self.fallback_vectors.pop(0)
+                self.fallback_metas.pop(0)
+                self._size -= 1
     
     def retrieve_relevant(self, vec: torch.Tensor, k: int = 5) -> List[Dict]:
         """Retrieve k most similar vectors."""
-        if not self.fallback_vectors:
-            return []
-        
-        vec_np = vec.detach().cpu().numpy().flatten()
-        
-        # Vectorized similarity computation
-        vectors_array = np.stack(self.fallback_vectors, axis=0)  # (N, D)
-        numerator = np.dot(vectors_array, vec_np)
-        denominator = (
-            np.linalg.norm(vectors_array, axis=1) *
-            np.linalg.norm(vec_np) + 1e-8
-        )
-        similarities = numerator / denominator
-        
-        # Top-k
-        top_indices = np.argsort(similarities)[-k:][::-1]
-        
-        return [
-            {'vec': self.fallback_vectors[i], 'meta': self.fallback_metas[i]}
-            for i in top_indices
-        ]
+        with self._lock:
+            if not self.fallback_vectors:
+                return []
+            
+            vec_np = vec.detach().cpu().numpy().flatten()
+            
+            # Vectorized similarity computation
+            vectors_array = np.stack(self.fallback_vectors, axis=0)  # (N, D)
+            numerator = np.dot(vectors_array, vec_np)
+            denominator = (
+                np.linalg.norm(vectors_array, axis=1) *
+                np.linalg.norm(vec_np) + 1e-8
+            )
+            similarities = numerator / denominator
+            
+            # Top-k
+            top_indices = np.argsort(similarities)[-k:][::-1]
+            
+            return [
+                {'vec': self.fallback_vectors[i], 'meta': self.fallback_metas[i]}
+                for i in top_indices
+            ]
     
     def save_memory(self):
         """Save memory to disk."""
@@ -7483,7 +7535,8 @@ class MCTSNode:
             return 0.0
         parent_visits = max(self.parent.visits, 1)
         exploration = c * self.prior * math.sqrt(parent_visits) / (1 + self.visits)
-        return self.q_value + exploration
+        score = self.q_value + exploration
+        return score if math.isfinite(score) else 0.0
 
 
 class MCTSPlanner(nn.Module):
@@ -7543,7 +7596,7 @@ class MCTSPlanner(nn.Module):
         """Evaluate leaf node using value network."""
         with torch.no_grad():
             value = self.value_net(node.state.unsqueeze(0)).item()
-        return value
+        return value if math.isfinite(value) else 0.0
     
     def _backpropagate(self, node: 'MCTSNode', value: float):
         """Backpropagate value up the tree."""
@@ -9401,6 +9454,15 @@ class AEONDeltaV3(nn.Module):
             )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         
+        # 1a. Semantic error recovery — if meta-loop produced NaN/Inf,
+        # fall back to the input to prevent cascading failures.
+        if not torch.isfinite(C_star).all():
+            logger.warning(
+                "Non-finite values detected in meta-loop output; "
+                "falling back to input z_in"
+            )
+            C_star = z_in.clone()
+        
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
         # pooling preserves permutation invariance across slots and
@@ -9527,6 +9589,12 @@ class AEONDeltaV3(nn.Module):
         z_rssm_raw = self.rssm_cell(C_fused)
         z_rssm = self.rssm_norm(z_rssm_raw + C_fused)
         
+        # 7a. Sanitize RSSM output — GRU cells can produce NaN under
+        # adversarial or out-of-distribution inputs.
+        if not torch.isfinite(z_rssm).all():
+            logger.warning("Non-finite values in RSSM output; using fused input")
+            z_rssm = C_fused
+        
         # 7b. Multimodal grounding (if available)
         if self.multimodal is not None and not fast:
             # Use z_rssm as language representation
@@ -9538,6 +9606,12 @@ class AEONDeltaV3(nn.Module):
             torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         z_out = self.integration_norm(z_integrated + z_rssm)
+        
+        # 8a. Final output sanitization — last line of defense against
+        # non-finite values before decoding.
+        if not torch.isfinite(z_out).all():
+            logger.warning("Non-finite values in integration output; clamping")
+            z_out = torch.where(torch.isfinite(z_out), z_out, torch.zeros_like(z_out))
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -9833,6 +9907,11 @@ class AEONDeltaV3(nn.Module):
             }
         
         self.eval()
+        
+        # Reset inference cache for new sequence to prevent cross-sequence
+        # state leakage from previous generation calls.
+        if self.inference_cache is not None:
+            self.inference_cache.reset()
         
         try:
             # Tokenize
