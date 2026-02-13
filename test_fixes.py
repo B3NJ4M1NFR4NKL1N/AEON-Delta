@@ -4341,6 +4341,210 @@ def test_grad_norm_nan_guard_in_fit():
     print("✅ test_grad_norm_nan_guard_in_fit PASSED")
 
 
+# ============================================================================
+# MODERNIZATION TESTS: Robust logic improvements
+# ============================================================================
+
+
+def test_rssm_residual_and_norm():
+    """Verify RSSM uses residual connection and LayerNorm for stable dynamics."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the RSSM components exist
+    assert hasattr(model, 'rssm_cell'), "rssm_cell not found"
+    assert hasattr(model, 'rssm_norm'), "rssm_norm not found"
+    assert isinstance(model.rssm_cell, torch.nn.GRUCell)
+    assert isinstance(model.rssm_norm, torch.nn.LayerNorm)
+
+    # Run a forward pass to ensure the pipeline works end-to-end
+    input_ids = torch.randint(0, 1000, (2, 8))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    assert result['logits'] is not None
+    assert torch.isfinite(result['logits']).all(), "Logits contain NaN/Inf"
+
+    print("✅ test_rssm_residual_and_norm PASSED")
+
+
+def test_integration_module_residual_norm():
+    """Verify integration module uses projection + LayerNorm + residual."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'integration_proj'), "integration_proj not found"
+    assert hasattr(model, 'integration_norm'), "integration_norm not found"
+    assert isinstance(model.integration_proj, torch.nn.Linear)
+    assert isinstance(model.integration_norm, torch.nn.LayerNorm)
+
+    # Verify shapes: proj takes hidden_dim*2 → hidden_dim
+    assert model.integration_proj.in_features == config.hidden_dim * 2
+    assert model.integration_proj.out_features == config.hidden_dim
+    assert model.integration_norm.normalized_shape[0] == config.hidden_dim
+
+    print("✅ test_integration_module_residual_norm PASSED")
+
+
+def test_consistency_gate_forward():
+    """Verify consistency gate produces valid gating signals in [0, 1]."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Test the consistency gate directly
+    B = 4
+    x = torch.randn(B, config.hidden_dim * 2)
+    with torch.no_grad():
+        gate = model.consistency_gate(x)
+
+    assert gate.shape == (B, config.hidden_dim), f"Expected ({B}, {config.hidden_dim}), got {gate.shape}"
+    assert (gate >= 0).all(), "Gate values below 0 (Sigmoid should be >= 0)"
+    assert (gate <= 1).all(), "Gate values above 1 (Sigmoid should be <= 1)"
+    assert torch.isfinite(gate).all(), "Gate contains NaN/Inf"
+
+    print("✅ test_consistency_gate_forward PASSED")
+
+
+def test_consistency_gate_gradient_flow():
+    """Verify gradients flow through the consistency gate."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    input_ids = torch.randint(0, 1000, (2, 8))
+    result = model(input_ids, fast=True)
+    loss = result['logits'].sum()
+    loss.backward()
+
+    # Check that consistency gate parameters received gradients
+    has_grad = False
+    for p in model.consistency_gate.parameters():
+        if p.grad is not None and p.grad.abs().sum() > 0:
+            has_grad = True
+            break
+    assert has_grad, "No gradients flowed through consistency_gate"
+
+    print("✅ test_consistency_gate_gradient_flow PASSED")
+
+
+def test_consistency_gate_in_reasoning_output():
+    """Verify reasoning_core outputs include consistency_gate and convergence_quality."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 1000, (2, 8))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+
+    assert 'consistency_gate' in result, "consistency_gate missing from outputs"
+    assert 'convergence_quality' in result, "convergence_quality missing from outputs"
+
+    gate = result['consistency_gate']
+    assert gate.shape == (2, config.hidden_dim), f"Gate shape mismatch: {gate.shape}"
+    assert (gate >= 0).all() and (gate <= 1).all(), "Gate values out of [0, 1]"
+
+    print("✅ test_consistency_gate_in_reasoning_output PASSED")
+
+
+def test_value_net_has_layer_norm():
+    """Verify value_net includes LayerNorm for stable value estimation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'value_net'), "value_net not found"
+    # Check that LayerNorm is present in the value_net
+    has_ln = any(isinstance(m, torch.nn.LayerNorm) for m in model.value_net.modules())
+    assert has_ln, "value_net should include LayerNorm for stable value estimation"
+
+    # Verify it produces valid scalar outputs
+    x = torch.randn(3, config.hidden_dim)
+    with torch.no_grad():
+        val = model.value_net(x)
+    assert val.shape == (3, 1), f"Expected (3, 1), got {val.shape}"
+    assert torch.isfinite(val).all(), "value_net output contains NaN/Inf"
+
+    print("✅ test_value_net_has_layer_norm PASSED")
+
+
+def test_importance_scorer_has_layer_norm():
+    """Verify importance_scorer includes LayerNorm for gradient stability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_hierarchical_memory=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'importance_scorer'), "importance_scorer not found"
+    has_ln = any(isinstance(m, torch.nn.LayerNorm) for m in model.importance_scorer.modules())
+    assert has_ln, "importance_scorer should include LayerNorm"
+
+    # Verify valid output range [0, 1] from Sigmoid
+    x = torch.randn(4, config.hidden_dim)
+    with torch.no_grad():
+        scores = model.importance_scorer(x)
+    assert scores.shape == (4, 1), f"Expected (4, 1), got {scores.shape}"
+    assert (scores >= 0).all() and (scores <= 1).all(), "Scores out of [0, 1]"
+
+    print("✅ test_importance_scorer_has_layer_norm PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -4593,6 +4797,15 @@ if __name__ == '__main__':
     test_entropy_loss_returns_tensor()
     test_optimizer_step_returns_float()
     test_grad_norm_nan_guard_in_fit()
+    
+    # Modernization tests: Robust logic improvements
+    test_rssm_residual_and_norm()
+    test_integration_module_residual_norm()
+    test_consistency_gate_forward()
+    test_consistency_gate_gradient_flow()
+    test_consistency_gate_in_reasoning_output()
+    test_value_net_has_layer_norm()
+    test_importance_scorer_has_layer_norm()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
