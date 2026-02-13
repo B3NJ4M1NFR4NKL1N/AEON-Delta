@@ -9030,6 +9030,7 @@ class AEONDeltaV3(nn.Module):
             # Value network for state selection
             self.value_net = nn.Sequential(
                 nn.Linear(config.hidden_dim, config.hidden_dim // 2),
+                nn.LayerNorm(config.hidden_dim // 2),
                 nn.GELU(),
                 nn.Linear(config.hidden_dim // 2, 1),
             ).to(self.device)
@@ -9049,6 +9050,7 @@ class AEONDeltaV3(nn.Module):
             self.memory_projection = nn.Linear(config.hidden_dim, config.hidden_dim).to(self.device)
             self.importance_scorer = nn.Sequential(
                 nn.Linear(config.hidden_dim, 64),
+                nn.LayerNorm(64),
                 nn.ReLU(),
                 nn.Linear(64, 1),
                 nn.Sigmoid(),
@@ -9167,14 +9169,27 @@ class AEONDeltaV3(nn.Module):
             nn.Dropout(config.dropout_rate)
         ).to(self.device)
         
-        self.rssm = nn.GRUCell(
+        self.rssm_cell = nn.GRUCell(
             input_size=config.hidden_dim,
             hidden_size=config.hidden_dim
         ).to(self.device)
+        self.rssm_norm = nn.LayerNorm(config.hidden_dim).to(self.device)
         
-        self.integration_module = nn.Linear(
+        self.integration_proj = nn.Linear(
             config.hidden_dim * 2,
             config.hidden_dim
+        ).to(self.device)
+        self.integration_norm = nn.LayerNorm(config.hidden_dim).to(self.device)
+        
+        # ===== COGNITIVE CONSISTENCY GATE =====
+        # Cross-validates meta-loop output against factor-embedded state
+        # to produce a gating signal that dampens logically inconsistent
+        # components before final integration.
+        self.consistency_gate = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.GELU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.Sigmoid(),
         ).to(self.device)
         
         # ===== MONITORING =====
@@ -9379,6 +9394,13 @@ class AEONDeltaV3(nn.Module):
         factors, embedded_factors = self.sparse_factors(C_star)
         logger.debug(f"Factors: {factors.shape}")
         
+        # 2b. Cognitive consistency gate — cross-validate C_star against
+        # factor-embedded reconstruction to dampen inconsistent dimensions
+        gate = self.consistency_gate(
+            torch.cat([C_star, embedded_factors], dim=-1)
+        )  # [B, hidden_dim]
+        C_star = C_star * gate
+        
         # 3-4. Diversity and topology (delegated to helpers)
         diversity_results = self._compute_diversity(factors, B, device, fast)
         topo_results = self._compute_topology(factors, iterations, B, device, fast)
@@ -9483,8 +9505,9 @@ class AEONDeltaV3(nn.Module):
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
         
-        # 7. RSSM dynamics
-        z_rssm = self.rssm(C_fused)
+        # 7. RSSM dynamics with residual connection and normalization
+        z_rssm_raw = self.rssm_cell(C_fused)
+        z_rssm = self.rssm_norm(z_rssm_raw + C_fused)
         
         # 7b. Multimodal grounding (if available)
         if self.multimodal is not None and not fast:
@@ -9492,15 +9515,19 @@ class AEONDeltaV3(nn.Module):
             mm_result = self.multimodal(language=z_rssm.unsqueeze(1))
             z_rssm = z_rssm + mm_result['fused']
         
-        # 8. Integration
-        z_out = self.integration_module(
+        # 8. Integration with residual and normalization
+        z_integrated = self.integration_proj(
             torch.cat([z_rssm, embedded_factors], dim=-1)
         )
+        z_out = self.integration_norm(z_integrated + z_rssm)
         
         # Package outputs
+        convergence_quality = meta_results.get('convergence_rate', 0.0)
         outputs = {
             'core_state': C_star,
             'factors': factors,
+            'consistency_gate': gate,
+            'convergence_quality': convergence_quality,
             'diversity_results': diversity_results,
             'topo_results': topo_results,
             'safety_score': safety_score,
