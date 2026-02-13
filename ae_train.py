@@ -597,7 +597,12 @@ class VectorQuantizerHybridV4(nn.Module):
         
         # 3. ✅ НОВОЕ: Entropy regularization
         # Поощряет равномерное использование кодов
-        entropy_loss = self._compute_entropy_loss(indices)
+        # Use soft probabilities from distances for differentiable entropy
+        soft_probs = F.softmax(-distances, dim=-1)  # [B, num_embeddings]
+        avg_probs = soft_probs.mean(dim=0)  # [num_embeddings]
+        entropy = -(avg_probs * torch.log(avg_probs + 1e-10)).sum()
+        max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
+        entropy_loss = 1.0 - entropy / max_entropy
         
         # Общий loss
         loss = codebook_loss + self.commitment_cost * commitment_loss + self.entropy_weight * entropy_loss
@@ -889,13 +894,20 @@ class AEONDeltaV4(nn.Module):
         self._init_weights()
         
     def _init_weights(self):
+        initialized_data_ptrs = set()
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                data_ptr = module.weight.data.data_ptr()
+                if data_ptr not in initialized_data_ptrs:
+                    nn.init.xavier_uniform_(module.weight)
+                    initialized_data_ptrs.add(data_ptr)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, std=0.02)
+                data_ptr = module.weight.data.data_ptr()
+                if data_ptr not in initialized_data_ptrs:
+                    nn.init.normal_(module.weight, std=0.02)
+                    initialized_data_ptrs.add(data_ptr)
             elif isinstance(module, (nn.LSTM, nn.GRU, nn.GRUCell)):
                 for name, param in module.named_parameters():
                     if 'weight' in name:
@@ -1045,6 +1057,8 @@ def tokenize_batch(texts: List[str], tokenizer, max_len: int,
         tokens = [ord(c) % fallback_vocab_size for c in text[:max_len]]
         tokens += [0] * (max_len - len(tokens))
         tokenized.append(tokens)
+    if not tokenized:
+        return torch.zeros((0, max_len), dtype=torch.long, device=device)
     return torch.tensor(tokenized, dtype=torch.long, device=device)
 
 
@@ -1371,8 +1385,12 @@ class SafeThoughtAETrainerV4:
                     num_accumulated += 1
                 
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
-                    grad_norm = self._optimizer_step()
-                    self.scheduler.step()
+                    if num_accumulated > 0:
+                        grad_norm = self._optimizer_step()
+                        self.scheduler.step()
+                    else:
+                        self.optimizer.zero_grad()
+                        grad_norm = 0.0
                     
                     avg_loss = accumulated_loss / max(num_accumulated, 1)
                     accumulated_loss = 0.0
@@ -1837,6 +1855,11 @@ def main(
         all_tokens = []
         for doc in documents:
             all_tokens.extend(doc)
+        
+        if not all_tokens:
+            logger.error("❌ No token chunks found in documents — cannot train.")
+            return
+        
         tokens = torch.stack(all_tokens).to(device)
         
     else:
@@ -1858,6 +1881,10 @@ def main(
         
         tokens = tokenize_batch(texts, tokenizer, config.seq_length, device)
         documents = None
+    
+    if tokens.numel() == 0:
+        logger.error("❌ No valid training data found — tokens tensor is empty.")
+        return
     
     logger.info(f"   Токенов для Phase A: {tokens.shape}")
     
