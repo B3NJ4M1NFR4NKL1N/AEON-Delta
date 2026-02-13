@@ -5499,7 +5499,7 @@ class MemoryManager:
                 # Try safe loading first
                 try:
                     data = torch.load(path, map_location='cpu', weights_only=True)
-                except (RuntimeError, TypeError, pickle.UnpicklingError) as e:
+                except (RuntimeError, TypeError, pickle.PickleError) as e:
                     logger.warning(
                         f"Loading memory with weights_only=False from '{path}' "
                         f"(reason: {e}). "
@@ -9785,8 +9785,8 @@ class AEONDeltaV3(nn.Module):
             )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         self.audit_log.record("meta_loop", "completed", {
-            "avg_iterations": float(iterations.mean().item()),
-            "convergence_rate": float(meta_results.get("convergence_rate", 0.0)),
+            "avg_iterations": iterations.mean().item(),
+            "convergence_rate": meta_results.get("convergence_rate", 0.0),
             "recursive": self.recursive_meta_loop is not None and not fast,
         })
         

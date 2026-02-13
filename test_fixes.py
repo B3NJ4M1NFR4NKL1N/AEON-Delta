@@ -5052,7 +5052,7 @@ def test_decision_audit_log_bounded_capacity():
 
     recent = audit.recent(100)
     assert len(recent) == 5, f"Expected 5 entries (bounded), got {len(recent)}"
-    # Oldest entries should have been evicted
+    # Entries 0-4 evicted; oldest retained entry should be idx=5
     assert recent[0]["metadata"]["idx"] == 5
 
     print("✅ test_decision_audit_log_bounded_capacity PASSED")
