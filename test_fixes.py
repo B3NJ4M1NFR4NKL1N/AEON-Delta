@@ -6267,7 +6267,7 @@ def test_context_window_decay():
 
     # Simulate time passing
     import time as _time
-    _time.sleep(0.05)
+    _time.sleep(0.01)
 
     # Add a new entry with lower relevance
     new_emb = torch.ones(4) * 2
@@ -6335,7 +6335,7 @@ def test_audit_log_retrieve_by_time_range():
 
     t0 = _time.monotonic()
     audit.record("A", "a1")
-    _time.sleep(0.02)
+    _time.sleep(0.005)
     t1 = _time.monotonic()
     audit.record("B", "b1")
     t2 = _time.monotonic()

@@ -11040,7 +11040,7 @@ class AEONDeltaV3(nn.Module):
                 f"reasoning_core pipeline error [{error_class}]: {detail}"
             )
             # Deterministic fallback — return input as-is with empty outputs
-            z_fallback = z_in.clone()
+            z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
                 'core_state': z_fallback,
                 'factors': torch.zeros(
