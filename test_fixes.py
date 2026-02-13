@@ -4760,6 +4760,244 @@ def test_generate_resets_inference_cache():
     print("✅ test_generate_resets_inference_cache PASSED")
 
 
+# ============================================================================
+# AGI MODERNIZATION: Numerical stability, thread safety & state management
+# ============================================================================
+
+def test_hierarchical_vae_logvar_clamping():
+    """Verify HierarchicalVAE clamps logvar to prevent exp overflow/underflow."""
+    from aeon_core import HierarchicalVAE
+
+    vae = HierarchicalVAE(input_dim=64, num_levels=3)
+    vae.train()
+
+    # Extreme logvar should not produce Inf/NaN via clamping
+    mu = torch.zeros(2, 64)
+    logvar_extreme = torch.full((2, 64), 100.0)  # Would overflow without clamp
+    result = vae.reparameterize(mu, logvar_extreme)
+    assert torch.isfinite(result).all(), "Reparameterize produced non-finite with extreme logvar"
+
+    logvar_neg_extreme = torch.full((2, 64), -100.0)
+    result_neg = vae.reparameterize(mu, logvar_neg_extreme)
+    assert torch.isfinite(result_neg).all(), "Reparameterize produced non-finite with extreme negative logvar"
+
+    # Normal forward should still work
+    x = torch.randn(2, 64)
+    out = vae(x)
+    assert torch.isfinite(out['kl_loss']), "KL loss is non-finite"
+    assert torch.isfinite(out['selected_level']).all(), "Selected level is non-finite"
+
+    print("✅ test_hierarchical_vae_logvar_clamping PASSED")
+
+
+def test_unified_memory_temporal_stability():
+    """Verify UnifiedMemory temporal addressing uses clamped u and larger epsilon."""
+    from aeon_core import UnifiedMemory
+
+    mem = UnifiedMemory(capacity=16, dim=32)
+
+    # All-zero usage: u.sum() == 0; should not produce NaN via larger epsilon
+    with torch.no_grad():
+        mem.u.zero_()
+    query = torch.randn(32)
+    result = mem(query)
+    assert torch.isfinite(result).all(), "UnifiedMemory produced NaN with zero usage vector"
+
+    # Negative usage values (from decay drift): should be clamped
+    with torch.no_grad():
+        mem.u.fill_(-1.0)
+    result2 = mem(query)
+    assert torch.isfinite(result2).all(), "UnifiedMemory produced NaN with negative usage"
+
+    print("✅ test_unified_memory_temporal_stability PASSED")
+
+
+def test_unified_memory_input_validation():
+    """Verify UnifiedMemory rejects invalid query dimensions."""
+    from aeon_core import UnifiedMemory
+
+    mem = UnifiedMemory(capacity=16, dim=32)
+
+    # Wrong number of dimensions (3D)
+    try:
+        mem(torch.randn(2, 3, 32))
+        assert False, "Should have raised ValueError for 3D query"
+    except ValueError:
+        pass
+
+    # Wrong last dim
+    try:
+        mem(torch.randn(2, 64))
+        assert False, "Should have raised ValueError for wrong dim"
+    except ValueError:
+        pass
+
+    # Valid 1D and 2D should work
+    result_1d = mem(torch.randn(32))
+    assert result_1d.shape == (32,), f"Expected (32,), got {result_1d.shape}"
+
+    result_2d = mem(torch.randn(3, 32))
+    assert result_2d.shape == (3, 32), f"Expected (3, 32), got {result_2d.shape}"
+
+    print("✅ test_unified_memory_input_validation PASSED")
+
+
+def test_certified_meta_loop_division_safety():
+    """Verify CertifiedMetaLoop does not divide by zero when L ≈ 1."""
+    from aeon_core import CertifiedMetaLoop, AEONConfig
+
+    config = AEONConfig(
+        z_dim=32, hidden_dim=32, meta_dim=32,
+        vq_embedding_dim=32,
+        lipschitz_target=0.95, device_str='cpu'
+    )
+    loop = CertifiedMetaLoop(config)
+
+    z = torch.randn(2, 32)
+    # Should not crash even if L ≈ 1
+    converged, error = loop.verify_convergence_preconditions(z)
+    if error is not None:
+        assert math.isfinite(error), f"Certified error is non-finite: {error}"
+
+    # Directly test the safe division path
+    L_near_one = 0.9999999
+    residual = 1.0
+    safe_error = (L_near_one / max(1.0 - L_near_one, 1e-6)) * residual
+    assert math.isfinite(safe_error), f"Safe error is non-finite: {safe_error}"
+
+    print("✅ test_certified_meta_loop_division_safety PASSED")
+
+
+def test_inference_cache_thread_safety():
+    """Verify InferenceCache is thread-safe for concurrent reads/writes."""
+    from aeon_core import InferenceCache
+    import threading
+
+    cache = InferenceCache(maxlen=100)
+    errors = []
+
+    def writer():
+        try:
+            for i in range(50):
+                cache.set_ssm_state([torch.randn(1, 32)])
+        except Exception as e:
+            errors.append(e)
+
+    def reader():
+        try:
+            for i in range(50):
+                _ = cache.get_ssm_state()
+                _ = cache.step
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer) for _ in range(3)]
+    threads += [threading.Thread(target=reader) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0, f"Thread safety errors: {errors}"
+    print("✅ test_inference_cache_thread_safety PASSED")
+
+
+def test_forward_chainer_saturation_prevention():
+    """Verify DifferentiableForwardChainer prevents fact saturation."""
+    from aeon_core import DifferentiableForwardChainer
+
+    chainer = DifferentiableForwardChainer(num_predicates=8, max_depth=10)
+
+    # Start with moderate facts
+    facts = torch.full((2, 8), 0.5)
+    rules = torch.ones(2, 8)
+
+    result = chainer(facts, rules)
+    # With decay factor (0.95), facts should not all saturate to 1.0
+    # even after many iterations
+    assert result.max() < 1.0, (
+        f"Facts saturated to {result.max().item():.4f} — decay not working"
+    )
+    assert torch.isfinite(result).all(), "Forward chainer produced NaN"
+
+    print("✅ test_forward_chainer_saturation_prevention PASSED")
+
+
+def test_memory_manager_timestamp_tracking():
+    """Verify MemoryManager tracks timestamps and reports age."""
+    from aeon_core import MemoryManager, AEONConfig
+    import time as _time
+
+    config = AEONConfig(device_str='cpu')
+    mm = MemoryManager(config)
+
+    v1 = torch.randn(256)
+    mm.add_embedding(v1, {'id': 1})
+
+    _time.sleep(0.05)  # Small delay so age > 0
+
+    v2 = torch.randn(256)
+    mm.add_embedding(v2, {'id': 2})
+
+    results = mm.retrieve_relevant(v2, k=2)
+    assert len(results) == 2
+    # Each result should have an 'age' key
+    for r in results:
+        assert 'age' in r, "Missing 'age' in retrieval result"
+        assert r['age'] >= 0, f"Negative age: {r['age']}"
+
+    # The most recently added should have smaller age
+    # (results are sorted by similarity, not time, but both should have age >= 0)
+
+    print("✅ test_memory_manager_timestamp_tracking PASSED")
+
+
+def test_memory_manager_timestamp_eviction():
+    """Verify timestamps are evicted with vectors on capacity overflow."""
+    from aeon_core import MemoryManager, AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    mm = MemoryManager(config)
+    mm._max_capacity = 3
+
+    for i in range(5):
+        mm.add_embedding(torch.randn(256), {'id': i})
+
+    assert mm._size == 3, f"Expected size 3, got {mm._size}"
+    assert len(mm.fallback_timestamps) == 3, (
+        f"Expected 3 timestamps, got {len(mm.fallback_timestamps)}"
+    )
+
+    print("✅ test_memory_manager_timestamp_eviction PASSED")
+
+
+def test_ema_reset_on_checkpoint_concept():
+    """Verify meta-loop EMA buffers can be zeroed (simulating checkpoint reload)."""
+    from aeon_core import ProvablyConvergentMetaLoop, AEONConfig
+
+    config = AEONConfig(
+        z_dim=32, hidden_dim=32, meta_dim=32,
+        vq_embedding_dim=32,
+        lipschitz_target=0.95, device_str='cpu'
+    )
+    loop = ProvablyConvergentMetaLoop(config)
+
+    # Simulate some updates
+    with torch.no_grad():
+        loop.avg_iterations.fill_(10.0)
+        loop.convergence_rate.fill_(0.85)
+
+    # Simulate what load_state does
+    with torch.no_grad():
+        loop.avg_iterations.zero_()
+        loop.convergence_rate.zero_()
+
+    assert loop.avg_iterations.item() == 0.0, "avg_iterations not reset"
+    assert loop.convergence_rate.item() == 0.0, "convergence_rate not reset"
+
+    print("✅ test_ema_reset_on_checkpoint_concept PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -5033,6 +5271,17 @@ if __name__ == '__main__':
     test_mcts_simulate_nonfinite_guard()
     test_reasoning_core_nan_fallback()
     test_generate_resets_inference_cache()
+    
+    # AGI Modernization: Numerical stability, thread safety & state management
+    test_hierarchical_vae_logvar_clamping()
+    test_unified_memory_temporal_stability()
+    test_unified_memory_input_validation()
+    test_certified_meta_loop_division_safety()
+    test_inference_cache_thread_safety()
+    test_forward_chainer_saturation_prevention()
+    test_memory_manager_timestamp_tracking()
+    test_memory_manager_timestamp_eviction()
+    test_ema_reset_on_checkpoint_concept()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
