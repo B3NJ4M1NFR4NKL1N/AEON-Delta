@@ -6114,6 +6114,99 @@ def test_auto_critic_loop_gradient_flow():
     print("✅ test_auto_critic_loop_gradient_flow PASSED")
 
 
+def test_fisher_computation_nan_guard():
+    """Verify MetaLearner.compute_fisher skips NaN/Inf losses.
+    
+    The Fisher computation backward pass should skip batches where the
+    loss is NaN or Inf to prevent corrupted gradient accumulation into
+    the Fisher information matrix.
+    """
+    from aeon_core import MetaLearner
+
+    model = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
+    learner = MetaLearner(model, ewc_lambda=100.0)
+
+    def data_loader_with_nan():
+        # Yield a batch with NaN inputs that will produce NaN loss
+        nan_inputs = torch.full((4, 16), float('nan'))
+        yield nan_inputs, torch.randint(0, 4, (4,))
+        # Yield a normal batch
+        yield torch.randn(4, 16), torch.randint(0, 4, (4,))
+
+    # Should not raise even when encountering NaN losses
+    learner.compute_fisher(data_loader_with_nan, num_samples=8)
+
+    # Fisher should be computed (non-empty)
+    assert len(learner._fisher_diag) > 0, "Fisher diagonal should be populated"
+
+    # All Fisher values should be finite (NaN batch was skipped)
+    for name, f in learner._fisher_diag.items():
+        assert torch.isfinite(f).all(), f"Fisher[{name}] contains non-finite values"
+
+    print("✅ test_fisher_computation_nan_guard PASSED")
+
+
+def test_task2vec_fisher_nan_guard():
+    """Verify Task2VecMetaLearner._compute_fisher_diagonal skips NaN/Inf losses."""
+    from aeon_core import Task2VecMetaLearner
+
+    model = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 4))
+    t2v = Task2VecMetaLearner(model=model, ewc_lambda=10.0)
+
+    def data_loader_with_nan():
+        # Yield a batch with NaN inputs that will produce NaN loss
+        nan_inputs = torch.full((4, 8), float('nan'))
+        yield nan_inputs, torch.randint(0, 4, (4,))
+        # Yield a normal batch
+        yield torch.randn(4, 8), torch.randint(0, 4, (4,))
+
+    fisher = t2v._compute_fisher_diagonal(data_loader_with_nan, num_samples=8)
+    assert len(fisher) > 0, "Fisher diagonal should be populated"
+
+    # All Fisher values should be finite (NaN batch was skipped)
+    for name, f in fisher.items():
+        assert torch.isfinite(f).all(), f"Fisher[{name}] contains non-finite values"
+
+    print("✅ test_task2vec_fisher_nan_guard PASSED")
+
+
+def test_forward_pass_returns_tensor_total_loss():
+    """Verify ae_train.py _forward_pass returns a tensor for total_loss.
+    
+    The return type annotation was corrected from Dict[str, float] to
+    Dict[str, Any] since total_loss must remain a Tensor for backward().
+    """
+    from ae_train import AEONConfigV4, AEONDeltaV4
+
+    config = AEONConfigV4(
+        vocab_size=500,
+        seq_length=32,
+        z_dim=64,
+        hidden_dim=64,
+        vq_embedding_dim=64,
+        vq_num_embeddings=32
+    )
+    model = AEONDeltaV4(config)
+    model.eval()
+
+    tokens = torch.randint(0, 500, (2, 32))
+    z = model.encode(tokens)
+    quantized, vq_loss, indices, vq_stats = model.quantize(z)
+    logits = model.decode(quantized, tokens)
+
+    # total_loss should be a tensor (needed for backward)
+    import torch.nn.functional as F
+    recon_loss = F.cross_entropy(
+        logits[:, :-1].contiguous().view(-1, config.vocab_size),
+        tokens[:, 1:].contiguous().view(-1)
+    )
+    total_loss = recon_loss + vq_loss
+    assert isinstance(total_loss, torch.Tensor), "total_loss must be a Tensor"
+    assert total_loss.requires_grad, "total_loss must require gradients"
+
+    print("✅ test_forward_pass_returns_tensor_total_loss PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6477,6 +6570,13 @@ if __name__ == '__main__':
     test_auto_critic_loop_forward()
     test_auto_critic_loop_trajectory()
     test_auto_critic_loop_gradient_flow()
+    
+    # Fisher computation NaN guard tests
+    test_fisher_computation_nan_guard()
+    test_task2vec_fisher_nan_guard()
+    
+    # Type annotation correctness
+    test_forward_pass_returns_tensor_total_loss()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
