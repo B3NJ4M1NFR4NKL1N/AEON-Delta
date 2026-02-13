@@ -15,13 +15,16 @@ The system implements a **provably convergent architecture** with certified erro
 - **Diversity metrics** (variance-based thought diversity measurement)  
 - **Topological stability analysis** (catastrophe detection)  
 - **Physics-grounded world modeling** (multi-backend dynamics and counterfactual reasoning)  
-- **Causal reasoning** (structural causal models with do-calculus and counterfactual rollouts)  
-- **Hierarchical memory** (working, episodic, semantic, temporal, and neurogenic memory levels)  
+- **Causal reasoning** (structural causal models with do-calculus, NOTEARS discovery, and counterfactual rollouts)  
+- **Hierarchical memory** (working, episodic, semantic, temporal, neurogenic, and consolidating memory levels)  
 - **Multi-modal grounding** (vision, audio, language fusion with CLIP-style contrastive learning)  
-- **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)  
+- **Meta-learning** (MAML + EWC + Task2Vec for few-shot adaptation and continual learning)  
 - **Planning** (MCTS planner with curiosity-driven exploration and active learning)
-- **Neuro-symbolic reasoning** (differentiable forward chaining with fuzzy logic)
-- **Unified memory** (differentiable neural computer with content and temporal addressing)
+- **Neuro-symbolic reasoning** (differentiable forward chaining with fuzzy logic and hybrid reasoning engine)
+- **Unified memory** (differentiable neural computer and Neural Turing Machine with content and temporal addressing)
+- **Global Workspace Theory** (cognitive executive function with attention arbiter and shared workspace)
+- **Self-critique** (auto-critic loop with iterative generate→evaluate→revise cycles)
+- **Audit & recovery** (decision audit logs, semantic error classification, and meta-recovery learning)
 
 ---
 
@@ -167,6 +170,7 @@ Multi-level memory architecture inspired by cognitive science:
 Additional memory systems:
 - **`TemporalMemory`**: Exponential temporal decay (Ebbinghaus forgetting curve) with merging of similar memories during consolidation  
 - **`NeurogenicMemorySystem`**: Dynamically grows capacity via neuron splitting and synaptic connection formation, bounded by configurable max capacity  
+- **`ConsolidatingMemory`**: Three-stage memory consolidation pipeline (working → episodic → semantic) inspired by Systems Consolidation Theory — uses `_RingBuffer` (fixed-capacity FIFO working memory), `_ImportanceWeightedBuffer` (importance-scored episodic storage with eviction), and `_SimpleKnowledgeGraph` (schema-based semantic prototypes)
 
 Provides structured long-term and short-term context retention.
 
@@ -186,7 +190,7 @@ Supports cross-modal retrieval, compositional generation, and visual grounding.
 
 ---
 
-### **12. Meta-Learning: MAML + EWC + Continual Learning**  
+### **12. Meta-Learning: MAML + EWC + Task2Vec + Continual Learning**  
 Few-shot adaptation and continual learning:
 - **MAML Inner Loop**: Task-specific adaptation via gradient steps  
 - **MAML Outer Loop**: Meta-update for cross-task generalization  
@@ -194,7 +198,9 @@ Few-shot adaptation and continual learning:
 - **Fisher Information**: Diagonal Fisher computed after each task  
 - **Task Buffer**: Stores last 100 tasks for lifelong learning  
 
-Additionally, `ContinualLearningCore` combines Progressive Neural Networks (new columns per task) with EWC to prevent catastrophic forgetting across task boundaries.
+Additionally:
+- **`ContinualLearningCore`**: Combines Progressive Neural Networks (new columns per task) with EWC to prevent catastrophic forgetting across task boundaries  
+- **`Task2VecMetaLearner`**: Computes Fisher Information task embeddings for O(1) adaptation via nearest-neighbor lookup instead of expensive inner-loops
 
 Enables few-shot learning and knowledge transfer across domains.
 
@@ -204,6 +210,8 @@ Enables few-shot learning and knowledge transfer across domains.
 Structural causal models for interventional and counterfactual reasoning:
 - **`NeuralCausalModel`**: Learnable DAG structure with per-variable causal mechanisms, supporting interventions `do(X=x)` and counterfactuals via abduction-action-prediction  
 - **`CausalWorldModel`**: Integrates structural causal models (SCM) with physics-grounded dynamics using Pearl's do-calculus for three-step counterfactual rollout (abduction → action → prediction)  
+- **`NOTEARSCausalModel`**: Learns differentiable DAG structure with acyclicity constraint via matrix exponential — enables end-to-end causal discovery training  
+- **`CausalProgrammaticModel`**: Implements Pearl's Structural Causal Model with learnable structural equations, topological ordering, do-calculus interventions, and counterfactual inference  
 
 Enables answering "what if" and "why" questions about system behavior.
 
@@ -248,25 +256,36 @@ Production-grade execution and compositional organization:
 
 ---
 
-### **18. Unified Memory: Differentiable Neural Computer**  
-End-to-end trainable memory architecture unifying all memory subsystems:
+### **18. Unified Memory: Differentiable Neural Computer & Neural Turing Machine**  
+End-to-end trainable memory architectures unifying all memory subsystems:
+
+**`UnifiedMemory`** (Differentiable Neural Computer):
 - **Content-addressable memory matrix** with configurable capacity and dimensionality  
 - **Read/write heads** with attention-based addressing for differentiable access  
 - **Usage vector** with LRU-based slot allocation for efficient memory management  
 - **Temporal link matrix** tracking sequential write relationships across memory slots  
 - **Batched operations** supporting parallel queries across batch dimension  
 
-Provides a fully differentiable alternative to the discrete `HierarchicalMemory`, enabling gradient-based optimization of memory access patterns.
+**`NeuralTuringMachine`** (NTM):
+- **Differentiable external memory** with content-based addressing  
+- **Multiple read heads** for parallel memory access  
+- **LSTM controller** for sequential processing and algorithmic tasks  
+
+Provides fully differentiable alternatives to discrete `HierarchicalMemory`, enabling gradient-based optimization of memory access patterns.
 
 ---
 
-### **19. Hierarchical World Model**  
+### **19. Hierarchical World Model & Latent Dynamics**  
 Multi-level world model with temporal abstractions for hierarchical planning:
 - **3 abstraction levels**: reactive (1-step), tactical (10-step), strategic (100-step)  
 - **Bottom-up encoding**: Progressive state abstraction across levels via learned bridges  
 - **Top-down goal propagation**: Subgoal decomposition from strategic to reactive levels  
 - **Configurable level selection**: Single-level or multi-level processing  
 - **Bidirectional information flow** between all levels  
+
+**`LatentDynamicsModel`** (MuZero-inspired):
+- Learns state transitions, reward prediction, and value estimation entirely in latent space  
+- Enables model-based RL and multi-step planning without access to ground-truth observations  
 
 Extends the `PhysicsGroundedWorldModel` with temporal hierarchy for long-horizon planning.
 
@@ -278,8 +297,62 @@ Hybrid neural-symbolic reasoning combining continuous representations with discr
 - **`NeuroSymbolicReasoner`**: Full pipeline converting neural representations → soft logical predicates → differentiable forward chaining → neural conclusions  
 - **Sigmoid-bounded facts and rules** ensuring all truth values remain in [0, 1]  
 - **Learnable rule weights** for data-driven inference rule discovery  
+- **`NeuroSymbolicBridge`**: Bidirectional bridge grounding continuous neural representations into soft truth values for symbolic predicates and lifting conclusions back to neural space  
+- **`TemporalKnowledgeGraph`**: In-memory knowledge graph storing soft facts with timestamps and confidence scores; supports similarity-based retrieval of relevant facts  
+- **`HybridReasoningEngine`**: Couples neural representations with symbolic knowledge via the bridge, forward-chaining rules, and persistent temporal knowledge graph  
 
 Enables reasoning that combines the interpretability of symbolic logic with the learnability of neural networks.
+
+---
+
+### **21. Cognitive Executive Function & Global Workspace Theory**  
+Production-grade cognitive control and consciousness-inspired broadcasting:
+- **`CompositionalSlotAttention`**: Slot Attention module where a fixed number of slots compete for input features, enabling systematic compositional generalization with O(k·n) complexity  
+- **`SharedWorkspace`**: Broadcast buffer implementing Global Workspace Theory — stores the winning hypothesis so all subsystems can read a shared representation  
+- **`AttentionArbiter`**: Computes urgency scores for named subsystems and selects the winning hypothesis via attention-based prioritization  
+- **`MetaMonitor`**: Meta-cognitive monitor tracking workspace performance over time via running statistics (mean, std, count) over a sliding window  
+- **`CognitiveExecutiveFunction`**: Global Workspace Theory dispatcher that prioritizes subsystems via attention budget, executes top-K, broadcasts winners, and updates meta-cognitive monitoring  
+
+Enables consciousness-inspired information integration and adaptive cognitive resource allocation.
+
+---
+
+### **22. Auto-Critic Loop: Iterative Self-Revision**  
+System-2 deliberate reasoning with iterative quality improvement:
+- **`CriticNetwork`**: Evaluates (query, candidate) pairs returning multi-dimensional scores (correctness, coherence, safety, novelty) in [0, 1] range  
+- **`RevisionNetwork`**: Produces revised outputs incorporating critique signals and previous candidates to iteratively improve quality  
+- **`AutoCriticLoop`**: Full generate→evaluate→revise cycle that iterates until quality threshold is met or max iterations reached  
+
+Enables reflective self-improvement of generated outputs through systematic critique.
+
+---
+
+### **23. Audit, Validation & Error Recovery Infrastructure**  
+Production-grade observability and resilience:
+- **`DecisionAuditLog`**: Structured audit trail recording all significant cognitive decisions (meta-loop convergence, safety enforcement, memory retrieval) with timestamps, context, and outcomes for post-hoc analysis  
+- **`StateConsistencyValidator`**: Validates the cognitive pipeline's internal state via finite checks, shape checks, range checks, and monotonicity checks to detect numerical or logical inconsistencies  
+- **`SemanticErrorClassifier`**: Classifies runtime errors into categories (numerical, shape, convergence, resource, semantic) to enable appropriate recovery strategies  
+- **`ErrorRecoveryManager`**: Centralized error recovery dispatcher mapping error classes to recovery actions (sanitization, rollback, fallback, retry) with strategy-pattern dispatch  
+- **`ContextWindowManager`**: Bounded context window with automatic eviction of least-relevant entries; maintains relevance scores and provenance metadata for RAG integration  
+
+Provides comprehensive observability, diagnostics, and autonomous error recovery.
+
+---
+
+### **24. Meta-Recovery Learning**  
+Offline reinforcement learning for autonomous recovery strategy optimization:
+- **`RecoveryExperienceReplay`**: Circular buffer storing (state, action, reward, next_state) tuples for offline recovery-strategy learning  
+- **`MetaRecoveryLearner`**: Learns optimal recovery strategies through offline RL; selects from [sanitize, rollback, fallback, retry] based on encoded error context with policy and value networks  
+
+Enables the system to learn from past failures and autonomously select optimal recovery strategies.
+
+---
+
+### **25. Unified Causal Simulator**  
+Integrated simulation engine combining physics and causal inference:
+- **`UnifiedCausalSimulator`**: Integrates physics-grounded dynamics with causal DAG for forward simulation and counterfactual planning via interventions  
+
+Enables physically-grounded causal reasoning and intervention planning in a unified framework.
 
 ---
 
@@ -340,16 +413,16 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 170 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 308 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
 - **Shape consistency** across the computational graph  
 - **Numerical stability** under edge cases  
 - **Backend validation** (SSM, LSTM, Mamba-2, Linear Attention encoder/decoder factories)  
-- **Causal reasoning** (neural causal model, causal world model, interventions, counterfactual rollouts)  
+- **Causal reasoning** (neural causal model, NOTEARS discovery, causal world model, programmatic SCM, interventions, counterfactual rollouts)  
 - **Planning & exploration** (MCTS planner, curiosity-driven exploration, active learning)  
-- **Advanced memory** (hierarchical memory, temporal memory with decay, neurogenic memory with synapse formation)  
+- **Advanced memory** (hierarchical memory, temporal memory with decay, neurogenic memory with synapse formation, consolidating memory, NTM)  
 - **Multi-modal grounding** (single/multi-modality, CLIP-style contrastive learning, zero-shot classification)  
 - **Meta-cognition** (hierarchical meta-loop, recursive meta-loop, convergence monitor)  
 - **Thread safety** (quarantine batch handling, policy mutation prevention)  
@@ -360,6 +433,12 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 170 tests) verifyi
 - **Hierarchical world model** (multi-level forward pass, single-level routing, gradient flow)  
 - **Adaptive computation** (ACT forward pass, ponder cost regularization, gradient flow)  
 - **Neuro-symbolic reasoning** (forward chaining monotonicity, fact/rule unit interval bounds, gradient flow)  
+- **Cognitive executive** (slot attention, shared workspace, attention arbiter, meta-monitor)  
+- **Auto-critic** (critic network, revision network, iterative self-critique)  
+- **Recovery & audit** (decision audit logging, state consistency validation, semantic error classification, error recovery, context window management)  
+- **Meta-recovery learning** (experience replay, recovery strategy optimization)  
+- **Advanced causal** (unified causal simulator, neuro-symbolic bridge, temporal knowledge graph, hybrid reasoning engine)  
+- **Advanced meta-learning** (Task2Vec embeddings, latent dynamics model)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -383,7 +462,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (170 tests) — stability, gradients, causal, planning
+├── test_fixes.py     # Comprehensive test suite (308 tests) — stability, gradients, causal, planning, audit, recovery
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
