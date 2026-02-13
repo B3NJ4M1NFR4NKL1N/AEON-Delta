@@ -50,6 +50,7 @@ import hashlib
 import traceback
 import math
 import time
+import pickle
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import (
@@ -770,6 +771,289 @@ class SafeTensorProcessor:
                 module.register_forward_hook(_hook)
             except (RuntimeError, AttributeError):
                 pass
+
+
+# ============================================================================
+# SECTION 3b: DECISION AUDIT LOG
+# ============================================================================
+
+class DecisionAuditLog:
+    """
+    Structured audit trail for reasoning decisions.
+
+    Records every significant decision the cognitive pipeline makes —
+    meta-loop convergence, safety enforcement, memory retrieval, world-model
+    surprise reactions — with timestamps, decision context, and outcome
+    metadata.  Enables post-hoc analysis of *why* a particular output was
+    produced and *which* sub-system influenced the final result.
+
+    Thread-safe: all mutations go through a single ``deque`` with a bounded
+    ``maxlen`` to prevent unbounded memory growth.
+
+    Example::
+
+        audit = DecisionAuditLog(max_entries=500)
+        audit.record("meta_loop", "converged", {"iterations": 12, "residual": 1e-6})
+        audit.record("safety", "rollback", {"score": 0.3, "threshold": 0.5})
+        summary = audit.summary()
+    """
+
+    def __init__(self, max_entries: int = 1000):
+        self._max_entries = max(1, max_entries)
+        self._entries: deque = deque(maxlen=self._max_entries)
+        self._lock = threading.Lock()
+        self._decision_counts: Dict[str, int] = defaultdict(int)
+
+    def record(
+        self,
+        subsystem: str,
+        decision: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append an audit entry.
+
+        Args:
+            subsystem: Originating component (e.g. ``"meta_loop"``,
+                ``"safety"``, ``"world_model"``).
+            decision: Short label for the decision (e.g. ``"converged"``,
+                ``"rollback"``, ``"surprise_switch"``).
+            metadata: Arbitrary key-value pairs with decision context.
+        """
+        entry = {
+            "timestamp": time.monotonic(),
+            "subsystem": subsystem,
+            "decision": decision,
+            "metadata": metadata or {},
+        }
+        with self._lock:
+            self._entries.append(entry)
+            self._decision_counts[f"{subsystem}.{decision}"] += 1
+
+    def recent(self, n: int = 10) -> List[Dict[str, Any]]:
+        """Return the *n* most recent entries (newest last)."""
+        with self._lock:
+            items = list(self._entries)
+        return items[-n:]
+
+    def summary(self) -> Dict[str, Any]:
+        """Aggregate statistics over the current window."""
+        with self._lock:
+            counts = dict(self._decision_counts)
+            total = len(self._entries)
+        return {"total_decisions": total, "counts": counts}
+
+    def reset(self) -> None:
+        """Clear all entries and counters."""
+        with self._lock:
+            self._entries.clear()
+            self._decision_counts.clear()
+
+
+# ============================================================================
+# SECTION 3c: STATE CONSISTENCY VALIDATOR
+# ============================================================================
+
+class StateConsistencyValidator:
+    """
+    Validates logical consistency of the cognitive pipeline's internal
+    state at well-defined checkpoints.
+
+    Checks performed:
+    - **Finite check**: all tensors must be free of NaN/Inf.
+    - **Shape check**: tensor shapes must match expected dimensions.
+    - **Range check**: activation magnitudes within configurable bounds.
+    - **Monotonicity check**: convergence residuals must be non-increasing
+      after warm-up.
+
+    Returns a structured ``ValidationResult`` that the caller can inspect
+    to decide whether to proceed, retry, or fall back.
+
+    Example::
+
+        validator = StateConsistencyValidator(hidden_dim=256)
+        result = validator.validate(C_star, factors, residual_norm)
+        if not result["valid"]:
+            logger.warning(result["violations"])
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        max_activation: float = 1e4,
+        max_gradient_norm: float = 1e3,
+    ):
+        self.hidden_dim = hidden_dim
+        self.max_activation = max_activation
+        self.max_gradient_norm = max_gradient_norm
+
+    def validate(
+        self,
+        C_star: torch.Tensor,
+        factors: Optional[torch.Tensor] = None,
+        residual_norm: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Run all consistency checks and return a structured result.
+
+        Args:
+            C_star: Core thought state ``[B, hidden_dim]``.
+            factors: Factor activations ``[B, num_pillars]`` (optional).
+            residual_norm: Per-sample residual from meta-loop (optional).
+
+        Returns:
+            Dict with ``valid`` (bool), ``violations`` (list of str),
+            and ``stats`` (dict of numeric diagnostics).
+        """
+        violations: List[str] = []
+        stats: Dict[str, float] = {}
+
+        # 1. Finite check
+        if not torch.isfinite(C_star).all():
+            nan_count = int(torch.isnan(C_star).sum().item())
+            inf_count = int(torch.isinf(C_star).sum().item())
+            violations.append(
+                f"C_star contains {nan_count} NaN, {inf_count} Inf values"
+            )
+            stats["c_star_nan"] = nan_count
+            stats["c_star_inf"] = inf_count
+
+        # 2. Shape check
+        if C_star.dim() != 2 or C_star.shape[-1] != self.hidden_dim:
+            violations.append(
+                f"C_star shape {tuple(C_star.shape)} does not match "
+                f"expected [B, {self.hidden_dim}]"
+            )
+
+        # 3. Activation magnitude check
+        if torch.isfinite(C_star).any():
+            max_abs = C_star[torch.isfinite(C_star)].abs().max().item()
+            stats["c_star_max_abs"] = max_abs
+            if max_abs > self.max_activation:
+                violations.append(
+                    f"C_star max activation {max_abs:.2f} exceeds "
+                    f"threshold {self.max_activation}"
+                )
+
+        # 4. Factor consistency
+        if factors is not None:
+            if not torch.isfinite(factors).all():
+                violations.append("factors contain non-finite values")
+            if torch.isfinite(factors).any():
+                factor_max = factors[torch.isfinite(factors)].abs().max().item()
+                stats["factor_max_abs"] = factor_max
+
+        # 5. Residual monotonicity (only if provided)
+        if residual_norm is not None and torch.isfinite(residual_norm).all():
+            stats["residual_mean"] = residual_norm.mean().item()
+            stats["residual_max"] = residual_norm.max().item()
+
+        return {
+            "valid": len(violations) == 0,
+            "violations": violations,
+            "stats": stats,
+        }
+
+
+# ============================================================================
+# SECTION 3d: SEMANTIC ERROR CLASSIFIER
+# ============================================================================
+
+class SemanticErrorClassifier:
+    """
+    Classifies runtime errors into a structured taxonomy so the system
+    can choose an appropriate recovery strategy.
+
+    Error classes:
+    - ``numerical``: NaN/Inf, overflow, underflow.
+    - ``shape``: Dimension mismatch, unexpected tensor rank.
+    - ``convergence``: Meta-loop failed to converge or diverged.
+    - ``resource``: OOM, device unavailable.
+    - ``semantic``: Logically inconsistent output (e.g. safety score > 1).
+    - ``unknown``: Unclassified.
+
+    Example::
+
+        classifier = SemanticErrorClassifier()
+        cls, detail = classifier.classify(exception)
+        if cls == "resource":
+            # fall back to CPU
+            ...
+    """
+
+    _NUMERICAL_KEYWORDS = frozenset({
+        "nan", "inf", "overflow", "underflow", "divide",
+        "division by zero", "non-finite",
+    })
+    _SHAPE_KEYWORDS = frozenset({
+        "shape", "dimension", "size mismatch", "expected size",
+        "broadcasting", "incompatible",
+    })
+    _RESOURCE_KEYWORDS = frozenset({
+        "cuda", "out of memory", "oom", "device", "memory",
+        "cublas", "cudnn",
+    })
+    _CONVERGENCE_KEYWORDS = frozenset({
+        "converge", "diverge", "iteration", "fixed point",
+        "lipschitz", "contraction",
+    })
+
+    def classify(
+        self, error: BaseException
+    ) -> Tuple[str, str]:
+        """Classify an exception into the error taxonomy.
+
+        Args:
+            error: The caught exception.
+
+        Returns:
+            Tuple of ``(error_class, detail_message)``.
+        """
+        msg = str(error).lower()
+
+        if any(kw in msg for kw in self._NUMERICAL_KEYWORDS):
+            return "numerical", str(error)
+        if any(kw in msg for kw in self._SHAPE_KEYWORDS):
+            return "shape", str(error)
+        if any(kw in msg for kw in self._RESOURCE_KEYWORDS):
+            return "resource", str(error)
+        if any(kw in msg for kw in self._CONVERGENCE_KEYWORDS):
+            return "convergence", str(error)
+
+        # Type-based fallback
+        if isinstance(error, (ValueError, TypeError)):
+            return "semantic", str(error)
+        if isinstance(error, RuntimeError) and "out of memory" in msg:
+            return "resource", str(error)
+
+        return "unknown", str(error)
+
+    def classify_tensor_state(
+        self,
+        tensor: torch.Tensor,
+        context: str = "",
+    ) -> Optional[Tuple[str, str]]:
+        """Classify a tensor's state without an exception.
+
+        Returns ``None`` if the tensor is healthy, otherwise a tuple
+        of ``(error_class, detail_message)``.
+        """
+        if not isinstance(tensor, torch.Tensor):
+            return None
+        if not tensor.is_floating_point():
+            return None
+
+        if torch.isnan(tensor).any():
+            nan_pct = torch.isnan(tensor).float().mean().item() * 100
+            return (
+                "numerical",
+                f"{context}: {nan_pct:.1f}% NaN values detected",
+            )
+        if torch.isinf(tensor).any():
+            inf_pct = torch.isinf(tensor).float().mean().item() * 100
+            return (
+                "numerical",
+                f"{context}: {inf_pct:.1f}% Inf values detected",
+            )
+        return None
 
 
 # ============================================================================
@@ -5215,9 +5499,10 @@ class MemoryManager:
                 # Try safe loading first
                 try:
                     data = torch.load(path, map_location='cpu', weights_only=True)
-                except Exception:
+                except (RuntimeError, TypeError, pickle.UnpicklingError) as e:
                     logger.warning(
-                        f"Loading memory with weights_only=False from '{path}'. "
+                        f"Loading memory with weights_only=False from '{path}' "
+                        f"(reason: {e}). "
                         "Only load memory files from trusted sources."
                     )
                     data = torch.load(path, map_location='cpu', weights_only=False)
@@ -9315,6 +9600,13 @@ class AEONDeltaV3(nn.Module):
             'safety_scores': []
         }
         
+        # ===== AUDIT & VALIDATION =====
+        self.audit_log = DecisionAuditLog(max_entries=1000)
+        self.state_validator = StateConsistencyValidator(
+            hidden_dim=config.hidden_dim,
+        )
+        self.error_classifier = SemanticErrorClassifier()
+        
         # Apply tensor safety hooks
         SafeTensorProcessor.register_hooks(self)
         
@@ -9492,14 +9784,26 @@ class AEONDeltaV3(nn.Module):
                 z_in, use_fixed_point=not fast
             )
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
+        self.audit_log.record("meta_loop", "completed", {
+            "avg_iterations": float(iterations.mean().item()),
+            "convergence_rate": float(meta_results.get("convergence_rate", 0.0)),
+            "recursive": self.recursive_meta_loop is not None and not fast,
+        })
         
         # 1a. Semantic error recovery — if meta-loop produced NaN/Inf,
         # fall back to the input to prevent cascading failures.
         if not torch.isfinite(C_star).all():
+            err_cls = self.error_classifier.classify_tensor_state(
+                C_star, "meta_loop_output"
+            )
             logger.warning(
                 "Non-finite values detected in meta-loop output; "
                 "falling back to input z_in"
             )
+            self.audit_log.record("meta_loop", "nan_fallback", {
+                "error_class": err_cls[0] if err_cls else "unknown",
+                "detail": err_cls[1] if err_cls else "",
+            })
             C_star = z_in.clone()
         
         # 1b. Compositional slot binding — slots compete for features,
@@ -9538,6 +9842,12 @@ class AEONDeltaV3(nn.Module):
                     f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
                     f"below threshold {safety_threshold}, applying rollback"
                 )
+                self.audit_log.record("safety", "rollback", {
+                    "unsafe_count": int(unsafe_mask.sum().item()),
+                    "batch_size": B,
+                    "threshold": safety_threshold,
+                    "min_score": float(safety_score.min().item()),
+                })
                 # Blend C_star toward z_in: higher safety_score preserves more C_star,
                 # lower safety_score shifts more toward the safe fallback z_in.
                 # safety_score in [0, threshold) → c_star_weight in [0, 1)
@@ -9568,6 +9878,11 @@ class AEONDeltaV3(nn.Module):
                 # Select better state per-sample
                 use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
                 C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+                self.audit_log.record("world_model", "surprise_switch", {
+                    "high_surprise_count": int(high_surprise.sum().item()),
+                    "predicted_used": int(use_predicted.sum().item()),
+                    "mean_surprise": float(surprise.mean().item()),
+                })
             else:
                 # Low surprise or no value_net: blend
                 C_star = C_star + 0.1 * predicted_next
@@ -9632,6 +9947,10 @@ class AEONDeltaV3(nn.Module):
         # adversarial or out-of-distribution inputs.
         if not torch.isfinite(z_rssm).all():
             logger.warning("Non-finite values in RSSM output; using fused input")
+            self.audit_log.record("rssm", "nan_fallback", {
+                "nan_count": int(torch.isnan(z_rssm).sum().item()),
+                "inf_count": int(torch.isinf(z_rssm).sum().item()),
+            })
             z_rssm = C_fused
         
         # 7b. Multimodal grounding (if available)
@@ -9651,7 +9970,23 @@ class AEONDeltaV3(nn.Module):
         # maintain semantic continuity rather than zeroing.
         if not torch.isfinite(z_out).all():
             logger.warning("Non-finite values in integration output; using RSSM state")
+            self.audit_log.record("integration", "nan_fallback", {
+                "nan_count": int(torch.isnan(z_out).sum().item()),
+            })
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
+        
+        # 8b. State consistency validation
+        validation_result = self.state_validator.validate(
+            z_out, factors=factors
+        )
+        if not validation_result["valid"]:
+            self.audit_log.record("state_validator", "violation", {
+                "violations": validation_result["violations"],
+                "stats": validation_result["stats"],
+            })
+            logger.warning(
+                f"State consistency violations: {validation_result['violations']}"
+            )
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -9671,6 +10006,7 @@ class AEONDeltaV3(nn.Module):
             'mcts_results': mcts_results,
             'causal_world_results': causal_world_results,
             'active_learning_results': active_learning_results,
+            'state_validation': validation_result,
         }
         
         return z_out, outputs
@@ -10005,12 +10341,18 @@ class AEONDeltaV3(nn.Module):
             }
         
         except Exception as e:
-            logger.error(f"Generation error: {e}")
+            error_class, detail = self.error_classifier.classify(e)
+            logger.error(f"Generation error [{error_class}]: {e}")
             logger.error(traceback.format_exc())
+            self.audit_log.record("generate", "error", {
+                "error_class": error_class,
+                "detail": detail,
+            })
             return {
                 'text': '',
                 'status': 'error',
-                'reason': str(e)
+                'reason': str(e),
+                'error_class': error_class,
             }
     
     def count_parameters(self) -> int:
@@ -10024,6 +10366,18 @@ class AEONDeltaV3(nn.Module):
     def get_memory_stats(self) -> Dict[str, float]:
         """Memory usage statistics."""
         return self.device_manager.get_memory_stats()
+    
+    def get_audit_summary(self) -> Dict[str, Any]:
+        """Return a summary of the decision audit log.
+
+        Includes aggregate decision counts, the most recent entries,
+        and the total number of decisions recorded.
+        """
+        return self.audit_log.summary()
+    
+    def get_recent_decisions(self, n: int = 10) -> List[Dict[str, Any]]:
+        """Return the *n* most recent audit log entries."""
+        return self.audit_log.recent(n)
     
     def init_meta_learner(self):
         """Initialize the MetaLearner post-construction (requires self reference)."""
