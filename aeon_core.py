@@ -1928,7 +1928,6 @@ class _SSDBlock(nn.Module):
         # For each position t within the chunk, compute the running SSM state
         # via a simple sequential scan (chunk is small, so this is fast)
         y_chunks = []
-        state_out_chunks = []
         h_prev = state if state is not None else torch.zeros(
             B, H, P, N, device=x.device, dtype=x.dtype
         )
@@ -6967,7 +6966,7 @@ class NeuralCausalModel(nn.Module):
         """
         # Abduction: infer exogenous noise from observations
         # Note: simplified abduction — proper implementation would invert causal mechanisms
-        exogenous = observed - self.forward(observed, intervention=None).detach() + observed
+        exogenous = observed - self.forward(observed, intervention=None).detach()
         # Intervene and propagate
         return self.forward(exogenous, intervention=intervention)
     
@@ -8664,7 +8663,13 @@ class ParallelCognitivePipeline(nn.Module):
             return self.diversity_metric(C_star)
 
         def _run_safety():
-            return self.safety_system(C_star)
+            B = C_star.shape[0]
+            device = C_star.device
+            action_emb = torch.zeros(B, self.config.action_dim, device=device)
+            factors = torch.zeros(B, self.config.num_pillars, device=device)
+            diversity = {'diversity': torch.zeros(B, device=device)}
+            topo = {'potential': torch.zeros(B, device=device)}
+            return self.safety_system(action_emb, C_star, factors, diversity, topo)
 
         def _run_topology():
             return self.topology_analyzer(C_star)
@@ -8708,6 +8713,7 @@ class HierarchicalCognitiveArchitecture(nn.Module):
 
     def __init__(self, config, enabled_levels: Optional[List[int]] = None):
         super().__init__()
+        self.config = config
         if enabled_levels is None:
             enabled_levels = [0, 1, 2]
         self.enabled_levels = set(enabled_levels)
@@ -8740,7 +8746,11 @@ class HierarchicalCognitiveArchitecture(nn.Module):
             assert 0 in self.enabled_levels, "Level 3 requires Level 0"
             assert 2 in self.enabled_levels, "Level 3 requires Level 2"
             self.world_model = PhysicsGroundedWorldModel(config.hidden_dim)
-            self.mcts_planner = MCTSPlanner(config)
+            self.mcts_planner = MCTSPlanner(
+                state_dim=config.hidden_dim,
+                action_dim=config.action_dim,
+                hidden_dim=config.hidden_dim // 2,
+            )
 
     def forward(self, z: torch.Tensor, level: Union[str, int] = 'full'):
         """
@@ -8760,7 +8770,15 @@ class HierarchicalCognitiveArchitecture(nn.Module):
 
         # Level 1
         if 1 in self.enabled_levels:
-            result['safety'] = self.safety_system(C_star)
+            B = C_star.shape[0]
+            device = C_star.device
+            action_emb = torch.zeros(B, self.config.action_dim, device=device)
+            factors_dummy = torch.zeros(B, self.config.num_pillars, device=device)
+            diversity = {'diversity': torch.zeros(B, device=device)}
+            topo = {'potential': torch.zeros(B, device=device)}
+            result['safety'] = self.safety_system(
+                action_emb, C_star, factors_dummy, diversity, topo
+            )
             if level in ('safe', 1):
                 return result
 

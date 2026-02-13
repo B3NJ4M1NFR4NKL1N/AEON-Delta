@@ -419,7 +419,6 @@ class GumbelVectorQuantizer(nn.Module):
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.commitment_cost = commitment_cost
-        self.temperature = temperature
         self.min_temperature = min_temperature
         self.anneal_rate = anneal_rate
 
@@ -430,6 +429,15 @@ class GumbelVectorQuantizer(nn.Module):
         self.register_buffer('code_usage', torch.zeros(num_embeddings))
         self.register_buffer('total_count', torch.tensor(0.0))
         self.register_buffer('global_step', torch.tensor(0))
+        self.register_buffer('_temperature', torch.tensor(float(temperature)))
+
+    @property
+    def temperature(self) -> float:
+        return self._temperature.item()
+
+    @temperature.setter
+    def temperature(self, value: float):
+        self._temperature.fill_(value)
 
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
@@ -821,9 +829,9 @@ class ContextualRSSM(nn.Module):
         # Выходная проекция с residual
         z_pred = self.out_proj(hx_new)
         
-        # Residual connection к последнему z
+        # Residual: last z + attention-weighted context
         z_last = z_context[:, -1, :]
-        z_pred = z_pred + self.residual_weight * z_last
+        z_pred = z_pred + self.residual_weight * z_last + weighted_context
         
         return z_pred
     
@@ -1188,7 +1196,7 @@ class SafeThoughtAETrainerV4:
                  monitor: TrainingMonitor, output_dir: str):
         self.model = model
         self.config = config
-        self.device = device
+        self.device = next(model.parameters()).device
         self.monitor = monitor
         self.output_dir = output_dir
         
@@ -1391,6 +1399,12 @@ class SafeThoughtAETrainerV4:
             if num_accumulated > 0:
                 avg_loss = accumulated_loss / max(num_accumulated, 1)
                 epoch_metrics["total"] += avg_loss
+                if not (math.isnan(outputs['recon_loss']) or math.isinf(outputs['recon_loss'])):
+                    epoch_metrics["recon"] += outputs['recon_loss']
+                    epoch_metrics["vq"] += outputs['vq_loss']
+                    epoch_metrics["perplexity"] += outputs['perplexity']
+                    epoch_metrics["accuracy_%"] += outputs['accuracy']
+                    epoch_metrics["codebook_%"] += outputs.get('codebook_usage_%', 0)
                 grad_norm = self._optimizer_step()
                 self.scheduler.step()
                 epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and not math.isnan(grad_norm)) else 0
@@ -1709,8 +1723,9 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
         if has_grad:
             logger.info(f"   ✅ {name}: градиенты проходят")
         else:
-            if name == "vq" and hasattr(component, 'embedding'):
-                if component.embedding.weight.grad is not None:
+            embed_attr = getattr(component, 'embedding', None) or getattr(component, 'embeddings', None)
+            if name == "vq" and embed_attr is not None:
+                if embed_attr.weight.grad is not None:
                     logger.info(f"   ✅ {name}: градиенты через embedding")
                     continue
             issues.append(f"{name}: нет градиентов")
