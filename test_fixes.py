@@ -6207,6 +6207,273 @@ def test_forward_pass_returns_tensor_total_loss():
     print("✅ test_forward_pass_returns_tensor_total_loss PASSED")
 
 
+# ============================================================================
+# MODERNIZATION: RELIABILITY & RESILIENCE TESTS
+# ============================================================================
+
+
+def test_error_recovery_retry_and_history():
+    """ErrorRecoveryManager records recovery history and supports retries."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit, max_retries=3)
+
+    # Trigger a numerical recovery
+    err = RuntimeError("NaN detected in output")
+    fallback = torch.zeros(1, 64)
+    ok, val = mgr.recover(err, context="test_retry", fallback=fallback)
+    assert ok, "Recovery should succeed"
+
+    # Check history was recorded
+    history = mgr.get_recovery_history(5)
+    assert len(history) >= 1, "Should have at least one history entry"
+    assert history[-1]["success"] is True
+    assert history[-1]["error_class"] == "numerical"
+
+    # Success rate should be 1.0
+    assert mgr.get_success_rate() == 1.0
+
+    print("✅ test_error_recovery_retry_and_history PASSED")
+
+
+def test_error_recovery_success_rate():
+    """ErrorRecoveryManager.get_success_rate tracks success/failure ratio."""
+    from aeon_core import ErrorRecoveryManager
+
+    mgr = ErrorRecoveryManager(hidden_dim=64, max_retries=1)
+
+    # Successful recovery
+    mgr.recover(RuntimeError("NaN"), context="ok", fallback=torch.zeros(1, 64))
+
+    # Failed recovery (unknown error, no fallback)
+    mgr.recover(KeyError("bad_key"), context="fail")
+
+    rate = mgr.get_success_rate()
+    assert 0.0 < rate < 1.0, f"Success rate should be partial, got {rate}"
+
+    print("✅ test_error_recovery_success_rate PASSED")
+
+
+def test_context_window_decay():
+    """ContextWindowManager with decay_rate favours recent entries."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=10, hidden_dim=4, decay_rate=100.0)
+
+    # Add an old entry with high relevance
+    old_emb = torch.ones(4)
+    ctx.add("old_source", old_emb, relevance=1.0)
+
+    # Simulate time passing
+    import time as _time
+    _time.sleep(0.05)
+
+    # Add a new entry with lower relevance
+    new_emb = torch.ones(4) * 2
+    ctx.add("new_source", new_emb, relevance=0.5)
+
+    top = ctx.get_top_k(2)
+    assert len(top) == 2
+    # With strong decay, the newer entry should rank first
+    assert top[0]["source"] == "new_source", (
+        "Newer entry should rank higher with strong decay"
+    )
+
+    print("✅ test_context_window_decay PASSED")
+
+
+def test_context_window_no_decay_backward_compat():
+    """ContextWindowManager with decay_rate=0 preserves old behaviour."""
+    from aeon_core import ContextWindowManager
+
+    ctx = ContextWindowManager(max_entries=10, hidden_dim=4, decay_rate=0.0)
+
+    ctx.add("A", torch.ones(4), relevance=0.9)
+    ctx.add("B", torch.ones(4), relevance=0.5)
+
+    top = ctx.get_top_k(2)
+    assert top[0]["source"] == "A", "Highest relevance should rank first"
+
+    print("✅ test_context_window_no_decay_backward_compat PASSED")
+
+
+def test_audit_log_export_json():
+    """DecisionAuditLog.export_json writes valid JSON to disk."""
+    import tempfile, json as _json
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=50)
+    audit.record("meta_loop", "converged", {"iters": 5})
+    audit.record("safety", "rollback", {"score": 0.3}, severity="warning")
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+
+    audit.export_json(path)
+
+    with open(path) as fh:
+        data = _json.load(fh)
+
+    assert "entries" in data
+    assert len(data["entries"]) == 2
+    assert "summary" in data
+    assert data["summary"]["total_decisions"] == 2
+
+    import os
+    os.unlink(path)
+
+    print("✅ test_audit_log_export_json PASSED")
+
+
+def test_audit_log_retrieve_by_time_range():
+    """DecisionAuditLog.retrieve_by_time_range filters correctly."""
+    import time as _time
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+
+    t0 = _time.monotonic()
+    audit.record("A", "a1")
+    _time.sleep(0.02)
+    t1 = _time.monotonic()
+    audit.record("B", "b1")
+    t2 = _time.monotonic()
+
+    # Only entries in [t1, t2] should match
+    result = audit.retrieve_by_time_range(t1, t2)
+    assert len(result) == 1
+    assert result[0]["subsystem"] == "B"
+
+    # Full range
+    all_entries = audit.retrieve_by_time_range(t0, t2)
+    assert len(all_entries) == 2
+
+    print("✅ test_audit_log_retrieve_by_time_range PASSED")
+
+
+def test_validator_validate_gradients():
+    """StateConsistencyValidator.validate_gradients detects anomalies."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(
+        hidden_dim=64, max_gradient_norm=1.0
+    )
+
+    # Simple model with known gradient
+    model = torch.nn.Linear(64, 64)
+    x = torch.randn(2, 64)
+    loss = model(x).sum()
+    loss.backward()
+
+    result = validator.validate_gradients(model)
+    assert "valid" in result
+    assert "total_grad_norm" in result
+    assert isinstance(result["total_grad_norm"], float)
+    assert result["total_grad_norm"] > 0
+
+    print("✅ test_validator_validate_gradients PASSED")
+
+
+def test_validator_validate_gradients_explosion():
+    """StateConsistencyValidator.validate_gradients flags exploding grads."""
+    from aeon_core import StateConsistencyValidator
+
+    validator = StateConsistencyValidator(
+        hidden_dim=64, max_gradient_norm=0.001
+    )
+
+    model = torch.nn.Linear(64, 64)
+    x = torch.randn(2, 64)
+    loss = model(x).sum()
+    loss.backward()
+
+    result = validator.validate_gradients(model)
+    # With threshold 0.001, normal gradients will exceed it
+    assert result["grad_explosion"] is True
+
+    print("✅ test_validator_validate_gradients_explosion PASSED")
+
+
+def test_reasoning_core_pipeline_error_recovery():
+    """reasoning_core returns a deterministic fallback on internal errors."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=64,
+        hidden_dim=64,
+        vocab_size=500,
+        num_pillars=8,
+        vq_embedding_dim=64,
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_world_model=False,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+        use_vq=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 64)
+
+    # Sabotage the inner impl to force an error
+    original_impl = model._reasoning_core_impl
+
+    def broken_impl(*args, **kwargs):
+        raise RuntimeError("Simulated pipeline failure")
+
+    model._reasoning_core_impl = broken_impl
+
+    # Should not raise — should return fallback
+    z_out, outputs = model.reasoning_core(z_in)
+    assert z_out.shape == (2, 64), f"Expected shape (2, 64), got {z_out.shape}"
+    assert outputs.get("error_recovered") is True
+    assert outputs.get("error_class") is not None
+
+    # Restore original
+    model._reasoning_core_impl = original_impl
+
+    print("✅ test_reasoning_core_pipeline_error_recovery PASSED")
+
+
+def test_trainer_gradient_anomaly_tracking():
+    """AEONTrainer tracks gradient norms and loss EMA."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(
+        z_dim=64,
+        hidden_dim=64,
+        vocab_size=500,
+        num_pillars=8,
+        vq_embedding_dim=64,
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_world_model=False,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+        use_vq=False,
+    )
+    model = AEONDeltaV3(config)
+    trainer = AEONTrainer(model, config)
+
+    batch = {
+        'input_ids': torch.randint(0, 500, (2, 32)),
+        'labels': torch.randint(0, 500, (2, 32)),
+    }
+    metrics = trainer.train_step(batch)
+
+    assert 'grad_norm' in metrics, "Metrics should include grad_norm"
+    assert metrics['grad_norm'] >= 0
+    assert 'loss_ema' in metrics, "Metrics should include loss_ema"
+    assert trainer._loss_ema is not None
+    assert len(trainer._grad_norm_history) == 1
+
+    print("✅ test_trainer_gradient_anomaly_tracking PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6577,6 +6844,18 @@ if __name__ == '__main__':
     
     # Type annotation correctness
     test_forward_pass_returns_tensor_total_loss()
+    
+    # Modernization: Reliability & Resilience tests
+    test_error_recovery_retry_and_history()
+    test_error_recovery_success_rate()
+    test_context_window_decay()
+    test_context_window_no_decay_backward_compat()
+    test_audit_log_export_json()
+    test_audit_log_retrieve_by_time_range()
+    test_validator_validate_gradients()
+    test_validator_validate_gradients_explosion()
+    test_reasoning_core_pipeline_error_recovery()
+    test_trainer_gradient_anomaly_tracking()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

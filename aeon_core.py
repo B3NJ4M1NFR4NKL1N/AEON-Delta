@@ -898,6 +898,40 @@ class DecisionAuditLog:
             self._entries.clear()
             self._decision_counts.clear()
 
+    def export_json(self, filepath: Union[str, Path]) -> None:
+        """Export audit log to a JSON file.
+
+        Args:
+            filepath: Destination path for the JSON export.
+        """
+        with self._lock:
+            entries = list(self._entries)
+            counts = dict(self._decision_counts)
+        payload = {
+            "entries": entries,
+            "summary": {"total_decisions": len(entries), "counts": counts},
+        }
+        with open(filepath, "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+
+    def retrieve_by_time_range(
+        self, start_time: float, end_time: float
+    ) -> List[Dict[str, Any]]:
+        """Return entries whose timestamp falls within *[start, end]*.
+
+        Args:
+            start_time: Inclusive lower bound (``time.monotonic()`` value).
+            end_time: Inclusive upper bound.
+
+        Returns:
+            List of matching entries, oldest first.
+        """
+        with self._lock:
+            return [
+                e for e in self._entries
+                if start_time <= e["timestamp"] <= end_time
+            ]
+
 
 # ============================================================================
 # SECTION 3c: STATE CONSISTENCY VALIDATOR
@@ -1051,6 +1085,56 @@ class StateConsistencyValidator:
 
         result["recovered"] = True
         return recovered, result
+
+    def validate_gradients(
+        self,
+        model: nn.Module,
+    ) -> Dict[str, Any]:
+        """Validate gradient health across the model.
+
+        Flags exploding gradients (norm > ``max_gradient_norm``) and
+        vanishing gradients (norm < 1e-10) for every parameter that has
+        a ``.grad`` attached.
+
+        Args:
+            model: The :class:`nn.Module` whose gradients to inspect.
+
+        Returns:
+            Dict with ``valid`` (bool), ``violations`` (list of str),
+            ``stats`` (per-parameter gradient norms), ``total_grad_norm``,
+            ``grad_explosion`` and ``grad_vanishing`` flags.
+        """
+        violations: List[str] = []
+        stats: Dict[str, float] = {}
+        total_sq = 0.0
+
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                continue
+            grad_norm = param.grad.data.norm().item()
+            total_sq += grad_norm ** 2
+            if grad_norm > self.max_gradient_norm:
+                violations.append(
+                    f"{name}: grad_norm={grad_norm:.2e} exceeds "
+                    f"threshold {self.max_gradient_norm}"
+                )
+            elif grad_norm < 1e-10 and param.requires_grad:
+                violations.append(
+                    f"{name}: vanishing gradient (norm={grad_norm:.2e})"
+                )
+            stats[f"{name}_grad_norm"] = grad_norm
+
+        total_norm = math.sqrt(total_sq)
+        stats["total_grad_norm"] = total_norm
+
+        return {
+            "valid": len(violations) == 0,
+            "violations": violations,
+            "stats": stats,
+            "total_grad_norm": total_norm,
+            "grad_explosion": total_norm > self.max_gradient_norm,
+            "grad_vanishing": total_norm < 1e-8 and total_sq > 0,
+        }
 
 class SemanticErrorClassifier:
     """
@@ -1220,6 +1304,7 @@ class ErrorRecoveryManager:
         self.max_retries = max(1, max_retries)
         self._lock = threading.Lock()
         self._recovery_counts: Dict[str, int] = defaultdict(int)
+        self._recovery_history: deque = deque(maxlen=500)
         self._strategies: Dict[str, Callable] = {
             "numerical": self._recover_numerical,
             "shape": self._recover_shape,
@@ -1240,7 +1325,7 @@ class ErrorRecoveryManager:
         fallback: Optional[torch.Tensor] = None,
         last_good_state: Optional[torch.Tensor] = None,
     ) -> Tuple[bool, Optional[torch.Tensor]]:
-        """Attempt recovery from *error*.
+        """Attempt recovery from *error* with retry and exponential backoff.
 
         Args:
             error: The caught exception.
@@ -1264,7 +1349,57 @@ class ErrorRecoveryManager:
         })
 
         strategy = self._strategies.get(error_class, self._recover_unknown)
-        return strategy(context, fallback, last_good_state)
+
+        last_exc: Optional[BaseException] = None
+        for attempt in range(self.max_retries):
+            try:
+                success, value = strategy(context, fallback, last_good_state)
+                with self._lock:
+                    self._recovery_history.append({
+                        "timestamp": time.monotonic(),
+                        "error_class": error_class,
+                        "context": context,
+                        "success": success,
+                        "attempts": attempt + 1,
+                    })
+                return success, value
+            except Exception as retry_error:
+                last_exc = retry_error
+                if attempt < self.max_retries - 1:
+                    backoff = min((2 ** attempt) * 0.01, 1.0)
+                    time.sleep(backoff)
+
+        with self._lock:
+            self._recovery_history.append({
+                "timestamp": time.monotonic(),
+                "error_class": error_class,
+                "context": context,
+                "success": False,
+                "attempts": self.max_retries,
+            })
+        self.audit_log.record("error_recovery", "exhausted_retries", {
+            "context": context,
+            "error_class": error_class,
+            "last_error": str(last_exc),
+        }, severity="error")
+
+        if fallback is not None:
+            return True, fallback
+        return False, None
+
+    def get_recovery_history(self, n: int = 20) -> List[Dict[str, Any]]:
+        """Return the *n* most recent recovery events (newest last)."""
+        with self._lock:
+            items = list(self._recovery_history)
+        return items[-n:]
+
+    def get_success_rate(self) -> float:
+        """Return the fraction of successful recoveries, or 1.0 if empty."""
+        with self._lock:
+            items = list(self._recovery_history)
+        if not items:
+            return 1.0
+        return sum(1 for e in items if e["success"]) / len(items)
 
     def get_recovery_stats(self) -> Dict[str, Any]:
         """Return a snapshot of recovery counters."""
@@ -1365,9 +1500,15 @@ class ContextWindowManager:
         top = ctx.get_top_k(10)
     """
 
-    def __init__(self, max_entries: int = 256, hidden_dim: int = 256):
+    def __init__(
+        self,
+        max_entries: int = 256,
+        hidden_dim: int = 256,
+        decay_rate: float = 0.0,
+    ):
         self.max_entries = max(1, max_entries)
         self.hidden_dim = hidden_dim
+        self.decay_rate = max(0.0, decay_rate)
         self._entries: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._total_added: int = 0
@@ -1412,11 +1553,27 @@ class ContextWindowManager:
                 self._total_evicted += evicted
 
     def get_top_k(self, k: int = 10) -> List[Dict[str, Any]]:
-        """Return the *k* most relevant entries (highest relevance first)."""
+        """Return the *k* most relevant entries (highest relevance first).
+
+        When ``decay_rate > 0``, entry relevance is exponentially decayed
+        by elapsed time so that stale context naturally fades away.
+        """
+        now = time.monotonic()
         with self._lock:
-            sorted_entries = sorted(
-                self._entries, key=lambda e: e["relevance"], reverse=True
-            )
+            if self.decay_rate > 0.0:
+                scored = []
+                for entry in self._entries:
+                    age = now - entry["timestamp"]
+                    effective = entry["relevance"] * math.exp(
+                        -self.decay_rate * age
+                    )
+                    scored.append((effective, entry))
+                scored.sort(key=lambda t: t[0], reverse=True)
+                sorted_entries = [e for _, e in scored]
+            else:
+                sorted_entries = sorted(
+                    self._entries, key=lambda e: e["relevance"], reverse=True
+                )
         return sorted_entries[:k]
 
     def get_context_tensor(self, k: int = 10) -> Optional[torch.Tensor]:
@@ -10869,6 +11026,81 @@ class AEONDeltaV3(nn.Module):
         
         logger.debug(f"reasoning_core: B={B}, fast={fast}")
         
+        try:
+            return self._reasoning_core_impl(
+                z_in, attention_mask, memory_retrieval, planning, fast
+            )
+        except Exception as pipeline_error:
+            error_class, detail = self.error_classifier.classify(pipeline_error)
+            self.audit_log.record("reasoning_core", "pipeline_error", {
+                "error_class": error_class,
+                "detail": detail,
+            }, severity="error")
+            logger.error(
+                f"reasoning_core pipeline error [{error_class}]: {detail}"
+            )
+            # Deterministic fallback — return input as-is with empty outputs
+            z_fallback = z_in.clone()
+            fallback_outputs: Dict[str, Any] = {
+                'core_state': z_fallback,
+                'factors': torch.zeros(
+                    B, self.config.num_pillars, device=device
+                ),
+                'consistency_gate': torch.ones(
+                    B, self.config.hidden_dim, device=device
+                ),
+                'convergence_quality': 0.0,
+                'diversity_results': {
+                    'diversity': torch.zeros(B, device=device),
+                    'action_propensity': torch.full(
+                        (B, self.config.num_pillars),
+                        1.0 / self.config.num_pillars,
+                        device=device,
+                    ),
+                },
+                'topo_results': {
+                    'potential': torch.zeros(B, device=device),
+                    'gradient': torch.zeros(
+                        B, self.config.num_pillars, device=device
+                    ),
+                    'catastrophe_probs': torch.full(
+                        (B,), 0.5, device=device
+                    ),
+                    'catastrophes': torch.zeros(
+                        B, dtype=torch.bool, device=device
+                    ),
+                },
+                'safety_score': torch.ones(B, 1, device=device),
+                'self_report': {},
+                'meta_results': {},
+                'iterations': torch.zeros(B, device=device),
+                'psi_0': z_in,
+                'world_model_results': {},
+                'mcts_results': {},
+                'causal_world_results': {},
+                'active_learning_results': {},
+                'state_validation': {
+                    "valid": False,
+                    "violations": [f"pipeline_error: {error_class}"],
+                    "stats": {},
+                },
+                'error_recovered': True,
+                'error_class': error_class,
+            }
+            return z_fallback, fallback_outputs
+
+    def _reasoning_core_impl(
+        self,
+        z_in: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        memory_retrieval: bool = True,
+        planning: bool = True,
+        fast: bool = False,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Inner implementation of reasoning_core (no exception guard)."""
+        B = z_in.shape[0]
+        device = z_in.device
+        
         # 1. Meta-loop convergence
         if self.recursive_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.recursive_meta_loop(z_in)
@@ -11139,6 +11371,50 @@ class AEONDeltaV3(nn.Module):
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
         
+        try:
+            result = self._forward_impl(
+                input_ids, attention_mask, decode_mode, fast, **kwargs
+            )
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.warning(f"⚠️  OOM in forward pass: {e}")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.audit_log.record("forward", "oom_recovery", {
+                    "batch_size": input_ids.shape[0],
+                    "seq_length": input_ids.shape[1],
+                }, severity="error")
+                B, L = input_ids.shape
+                result = {
+                    'logits': torch.zeros(
+                        B, L, self.config.vocab_size, device=self.device
+                    ),
+                    'thoughts': torch.zeros(
+                        B, self.config.hidden_dim, device=self.device
+                    ),
+                    'vq_loss': torch.tensor(0.0, device=self.device),
+                    'vq_indices': None,
+                    'generated_ids': None,
+                    'oom_recovered': True,
+                }
+            else:
+                raise
+        
+        # Update counters
+        self._total_forward_calls += 1
+        self._step_counter += 1
+        
+        return result
+
+    def _forward_impl(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        decode_mode: str,
+        fast: bool,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Inner forward logic (separated for OOM recovery)."""
         # ===== ENCODE =====
         z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
         
@@ -11196,10 +11472,6 @@ class AEONDeltaV3(nn.Module):
             'generated_ids': generated_ids,
             **outputs
         }
-        
-        # Update counters
-        self._total_forward_calls += 1
-        self._step_counter += 1
         
         return result
     
@@ -11767,6 +12039,10 @@ class AEONTrainer:
         # Monitoring
         self.global_step = 0
         self.epoch = 0
+        self._loss_ema: Optional[float] = None
+        self._loss_ema_beta: float = 0.99
+        self._grad_norm_history: deque = deque(maxlen=100)
+        self._loss_divergence_threshold: float = 3.0
         
         # Logging
         self.writer = None
@@ -11879,7 +12155,7 @@ class AEONTrainer:
         if self.use_amp:
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.config.gradient_clip_norm
             )
@@ -11887,11 +12163,38 @@ class AEONTrainer:
             self.scaler.update()
         else:
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.config.gradient_clip_norm
             )
             self.optimizer.step()
+        
+        # Gradient anomaly detection
+        grad_norm_val = float(grad_norm) if torch.isfinite(grad_norm) else 0.0
+        self._grad_norm_history.append(grad_norm_val)
+        if grad_norm_val > self.config.gradient_clip_norm * 10:
+            logger.warning(
+                f"⚠️  Exploding gradients at step {self.global_step}: "
+                f"grad_norm={grad_norm_val:.2e}"
+            )
+
+        # Loss divergence tracking (EMA)
+        loss_val = float(total_loss.item())
+        if self._loss_ema is None:
+            self._loss_ema = loss_val
+        else:
+            self._loss_ema = (
+                self._loss_ema_beta * self._loss_ema
+                + (1 - self._loss_ema_beta) * loss_val
+            )
+            if self._loss_ema > 0:
+                divergence_ratio = loss_val / self._loss_ema
+                if divergence_ratio > self._loss_divergence_threshold:
+                    logger.warning(
+                        f"⚠️  Loss divergence at step {self.global_step}: "
+                        f"{divergence_ratio:.2f}x EMA "
+                        f"(loss={loss_val:.4f}, ema={self._loss_ema:.4f})"
+                    )
         
         self.scheduler.step()
         self.global_step += 1
@@ -11902,6 +12205,9 @@ class AEONTrainer:
             for k, v in loss_dict.items()
         }
         metrics['lr'] = float(self.scheduler.get_last_lr()[0])
+        metrics['grad_norm'] = grad_norm_val
+        if self._loss_ema is not None:
+            metrics['loss_ema'] = self._loss_ema
         
         return metrics
     
