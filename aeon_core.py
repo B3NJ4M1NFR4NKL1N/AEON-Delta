@@ -2381,6 +2381,7 @@ class InferenceCache:
         self.maxlen = maxlen
         self._history: deque = deque(maxlen=maxlen)
         self._model_version: Optional[int] = None
+        self._lock = threading.Lock()
 
     @staticmethod
     def _quantize_int8(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -2396,48 +2397,55 @@ class InferenceCache:
         return quantized.float() * scale
 
     def get_ssm_state(self) -> Optional[List[torch.Tensor]]:
-        return self._ssm_states
+        with self._lock:
+            return self._ssm_states
 
     def set_ssm_state(self, states: List[torch.Tensor]):
-        # Compress and archive old state before overwriting
-        if self._ssm_states is not None:
-            compressed = []
-            for s in self._ssm_states:
-                q, scale = self._quantize_int8(s)
-                compressed.append((q, scale))
-            self._history.append(('ssm', compressed))
-        self._ssm_states = states
-        self._step += 1
+        with self._lock:
+            # Compress and archive old state before overwriting
+            if self._ssm_states is not None:
+                compressed = []
+                for s in self._ssm_states:
+                    q, scale = self._quantize_int8(s)
+                    compressed.append((q, scale))
+                self._history.append(('ssm', compressed))
+            self._ssm_states = states
+            self._step += 1
 
     def get_attn_state(self) -> Optional[List[Tuple[torch.Tensor, torch.Tensor]]]:
-        return self._attn_states
+        with self._lock:
+            return self._attn_states
 
     def set_attn_state(self, states: List[Tuple[torch.Tensor, torch.Tensor]]):
-        # Compress and archive old state before overwriting
-        if self._attn_states is not None:
-            compressed = []
-            for S, z in self._attn_states:
-                S_q, S_scale = self._quantize_int8(S)
-                z_q, z_scale = self._quantize_int8(z)
-                compressed.append((S_q, S_scale, z_q, z_scale))
-            self._history.append(('attn', compressed))
-        self._attn_states = states
-        self._step += 1
+        with self._lock:
+            # Compress and archive old state before overwriting
+            if self._attn_states is not None:
+                compressed = []
+                for S, z in self._attn_states:
+                    S_q, S_scale = self._quantize_int8(S)
+                    z_q, z_scale = self._quantize_int8(z)
+                    compressed.append((S_q, S_scale, z_q, z_scale))
+                self._history.append(('attn', compressed))
+            self._attn_states = states
+            self._step += 1
 
     @property
     def step(self) -> int:
-        return self._step
+        with self._lock:
+            return self._step
 
     @property
     def history_size(self) -> int:
         """Number of compressed states in ring buffer."""
-        return len(self._history)
+        with self._lock:
+            return len(self._history)
 
     def reset(self):
-        self._ssm_states = None
-        self._attn_states = None
-        self._step = 0
-        self._history.clear()
+        with self._lock:
+            self._ssm_states = None
+            self._attn_states = None
+            self._step = 0
+            self._history.clear()
 
     def validate_model_version(self, model_version: int) -> bool:
         """Check if cache is valid for the current model version.
@@ -5106,6 +5114,7 @@ class MemoryManager:
         
         self.fallback_vectors = []
         self.fallback_metas = []
+        self.fallback_timestamps = []
         
         logger.info("MemoryManager initialized (fallback mode)")
     
@@ -5124,16 +5133,18 @@ class MemoryManager:
         with self._lock:
             self.fallback_vectors.append(vec_np)
             self.fallback_metas.append(meta)
+            self.fallback_timestamps.append(time.monotonic())
             self._size += 1
             # Evict oldest entries when capacity is exceeded (O(1) via slicing)
             if self._size > self._max_capacity:
                 excess = self._size - self._max_capacity
                 self.fallback_vectors = self.fallback_vectors[excess:]
                 self.fallback_metas = self.fallback_metas[excess:]
+                self.fallback_timestamps = self.fallback_timestamps[excess:]
                 self._size = self._max_capacity
     
     def retrieve_relevant(self, vec: torch.Tensor, k: int = 5) -> List[Dict]:
-        """Retrieve k most similar vectors."""
+        """Retrieve k most similar vectors with staleness information."""
         with self._lock:
             if not self.fallback_vectors:
                 return []
@@ -5152,8 +5163,13 @@ class MemoryManager:
             # Top-k
             top_indices = np.argsort(similarities)[-k:][::-1]
             
+            now = time.monotonic()
             return [
-                {'vec': self.fallback_vectors[i], 'meta': self.fallback_metas[i]}
+                {
+                    'vec': self.fallback_vectors[i],
+                    'meta': self.fallback_metas[i],
+                    'age': now - self.fallback_timestamps[i],
+                }
                 for i in top_indices
             ]
     
@@ -5165,6 +5181,7 @@ class MemoryManager:
             torch.save({
                 'vectors': self.fallback_vectors,
                 'metas': self.fallback_metas,
+                'timestamps': self.fallback_timestamps,
                 'size': self._size
             }, path)
             logger.info(f"Memory saved to {path}")
@@ -5176,7 +5193,7 @@ class MemoryManager:
         """Validate that loaded memory data has expected structure."""
         if not isinstance(data, dict):
             return False
-        allowed_keys = {'vectors', 'metas', 'size'}
+        allowed_keys = {'vectors', 'metas', 'timestamps', 'size'}
         if not set(data.keys()).issubset(allowed_keys):
             logger.warning(
                 f"Memory file contains unexpected keys: "
@@ -5214,6 +5231,10 @@ class MemoryManager:
                 
                 self.fallback_vectors = data.get('vectors', [])
                 self.fallback_metas = data.get('metas', [])
+                self.fallback_timestamps = data.get(
+                    'timestamps',
+                    [time.monotonic()] * len(self.fallback_vectors)
+                )
                 self._size = data.get('size', len(self.fallback_vectors))
                 logger.info(f"Memory loaded from {path}")
             except Exception as e:
@@ -7977,7 +7998,7 @@ class CertifiedMetaLoop(nn.Module):
         L_certified = self._compute_certified_lipschitz(z)
         if L_certified < 1.0:
             residual = self._compute_residual(z)
-            certified_error = (L_certified / (1.0 - L_certified)) * residual
+            certified_error = (L_certified / max(1.0 - L_certified, 1e-6)) * residual
             return True, certified_error
         else:
             return False, None
@@ -8126,7 +8147,19 @@ class UnifiedMemory(nn.Module):
 
         Returns:
             retrieved: [D] or [B, D] memory read result.
+
+        Raises:
+            ValueError: If query has incorrect number of dimensions or
+                        last dimension does not match memory dim.
         """
+        if query.dim() not in (1, 2):
+            raise ValueError(
+                f"query must be 1D [D] or 2D [B, D], got {query.dim()}D"
+            )
+        if query.shape[-1] != self.dim:
+            raise ValueError(
+                f"query last dim must be {self.dim}, got {query.shape[-1]}"
+            )
         squeeze_output = False
         if query.dim() == 1:
             query = query.unsqueeze(0)
@@ -8138,7 +8171,10 @@ class UnifiedMemory(nn.Module):
         )  # [B, N]
 
         # Temporal addressing via link matrix
-        u_norm = self.u / (self.u.sum() + 1e-8)
+        # Clamp u to non-negative (decay can drift below zero) and use
+        # 1e-6 epsilon (vs 1e-8) to prevent NaN when all slots are unused.
+        u_clamped = self.u.clamp(min=0.0)
+        u_norm = u_clamped / (u_clamped.sum() + 1e-6)
         forward_weights = u_norm @ self.L        # [N]
         backward_weights = u_norm @ self.L.T     # [N]
 
@@ -8428,10 +8464,12 @@ class DifferentiableForwardChainer(nn.Module):
     - Rocktäschel & Riedel, 2017: End-to-end differentiable proving
     """
 
-    def __init__(self, num_predicates: int, max_depth: int = 3):
+    def __init__(self, num_predicates: int, max_depth: int = 3,
+                 inference_decay: float = 0.95):
         super().__init__()
         self.num_predicates = num_predicates
         self.max_depth = max_depth
+        self.inference_decay = inference_decay
 
         # Learnable rule weights
         self.rule_weights = nn.Parameter(
@@ -8456,8 +8494,8 @@ class DifferentiableForwardChainer(nn.Module):
             rule_matrix = torch.sigmoid(self.rule_weights)  # [P, P]
             new_facts = facts.unsqueeze(-1) * rule_matrix.unsqueeze(0)  # [B, P, P]
             new_facts = new_facts.max(dim=1).values  # [B, P]
-            # Monotonic accumulation (facts can only become more true)
-            facts = torch.max(facts, new_facts)
+            # Monotonic accumulation with decay to prevent saturation
+            facts = torch.max(facts, new_facts * self.inference_decay)
         return facts
 
 
@@ -8591,9 +8629,9 @@ class HierarchicalVAE(nn.Module):
         ])
     
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Reparameterization trick."""
+        """Reparameterization trick with numerically stable logvar clamping."""
         if self.training:
-            std = torch.exp(0.5 * logvar)
+            std = torch.exp(0.5 * logvar.clamp(min=-20.0, max=20.0))
             eps = torch.randn_like(std)
             return mu + eps * std
         return mu
@@ -8615,7 +8653,7 @@ class HierarchicalVAE(nn.Module):
         h = levels[-1]
         for i in range(self.num_levels - 2, -1, -1):
             mu = self.td_mean[i](h)
-            logvar = self.td_logvar[i](h)
+            logvar = self.td_logvar[i](h).clamp(min=-20.0, max=20.0)
             z = self.reparameterize(mu, logvar)
             
             # KL divergence for this level
@@ -10202,6 +10240,13 @@ class AEONDeltaV3(nn.Module):
                 self.load_state_dict(state_dict, strict=False)
                 self.to(self.device)
                 logger.info("✅ Model weights loaded")
+                
+                # Reset EMA statistics in meta-loop after checkpoint load
+                # to prevent stale convergence estimates from a previous run.
+                if hasattr(self, 'meta_loop'):
+                    with torch.no_grad():
+                        self.meta_loop.avg_iterations.zero_()
+                        self.meta_loop.convergence_rate.zero_()
             
             # Config (optional update)
             config_path = save_dir / "config.json"
