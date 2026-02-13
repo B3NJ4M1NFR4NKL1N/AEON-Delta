@@ -11863,6 +11863,12 @@ class AEONTrainer:
             
             total_loss = loss_dict['total_loss']
         
+        # Skip backward pass on NaN/Inf to prevent gradient corruption
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.warning(f"⚠️ NaN/Inf loss at step {self.global_step}, skipping update")
+            metrics = {k: float('nan') for k in loss_dict}
+            return metrics
+        
         # Backward
         self.optimizer.zero_grad()
         

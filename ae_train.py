@@ -1601,7 +1601,7 @@ class ContextualRSSMTrainer:
         targets_tensor = torch.stack(all_targets)  # [N, D]
         
         dataset = TensorDataset(contexts_tensor, targets_tensor)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
         total_batches = len(loader)
         
         self.monitor.start_training(f"Phase B (Contextual RSSM, K={K})", epochs, len(dataset))
@@ -1618,6 +1618,7 @@ class ContextualRSSMTrainer:
                 "mse_loss": 0.0, "cosine_sim": 0.0, 
                 "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0
             }
+            valid_batches = 0
             
             for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
                 ctx_batch = ctx_batch.to(self.device)
@@ -1625,9 +1626,13 @@ class ContextualRSSMTrainer:
                 
                 metrics = self.train_step(ctx_batch, tgt_batch)
                 
+                batch_valid = False
                 for key in epoch_metrics:
                     if key in metrics and not (math.isnan(metrics[key]) or math.isinf(metrics[key])):
                         epoch_metrics[key] += metrics[key]
+                        batch_valid = True
+                if batch_valid:
+                    valid_batches += 1
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -1637,7 +1642,7 @@ class ContextualRSSMTrainer:
                     }, phase="phase_B", log_every=log_every_batch)
             
             for key in epoch_metrics:
-                epoch_metrics[key] /= max(total_batches, 1)
+                epoch_metrics[key] /= max(valid_batches, 1)
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
