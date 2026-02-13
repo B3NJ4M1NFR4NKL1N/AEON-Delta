@@ -1,277 +1,379 @@
 [![License: AEON-Δ Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
 
-# **AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning**
-
-> *No bits left behind. It begins with the choice to be. — AEON-Δ*
-
----
-
-## 🌟 Overview
-
-**AEON-Δ RMT v3.1** (*Reflective Meta-Thinking*) is a rigorously engineered cognitive architecture implemented in PyTorch. It simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper — it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
-
-### Core Principles
-
-1. **Mathematical rigor** — convergence guarantees through Lipschitz constraints and fixed-point theory
-2. **Cognitive interpretability** — sparse factorization framework providing data-driven, interpretable reasoning factors
-3. **Production robustness** — tensor safety, monitoring, and fallback systems for reliable operation
+# **AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning**  
+**License**: AEON-Δ Research-Only
 
 ---
 
-## 🧠 Architecture
+## 🌟 Executive Summary
 
-### 1. Sequence Processing Backends
+Welcome to the official repository for **AEON-Δ RMT v3.1** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
 
-AEON-Δ v3.1 provides multiple sequence processing backends that surpass Transformer in key dimensions:
+The system implements a **provably convergent architecture** with certified error bounds, operating across multiple critical domains:
 
-| Dimension | Transformer | SSM / Mamba-1 | Mamba-2 SSD | Linear Attention |
+- **Sparse factorization** (learnable interpretable factors replacing hardcoded Five Pillars)  
+- **Diversity metrics** (variance-based thought diversity measurement)  
+- **Topological stability analysis** (catastrophe detection)  
+- **Physics-grounded world modeling** (multi-backend dynamics and counterfactual reasoning)  
+- **Causal reasoning** (structural causal models with do-calculus and counterfactual rollouts)  
+- **Hierarchical memory** (working, episodic, semantic, temporal, and neurogenic memory levels)  
+- **Multi-modal grounding** (vision, audio, language fusion with CLIP-style contrastive learning)  
+- **Meta-learning** (MAML + EWC for few-shot adaptation and continual learning)  
+- **Planning** (MCTS planner with curiosity-driven exploration and active learning)
+- **Neuro-symbolic reasoning** (differentiable forward chaining with fuzzy logic)
+- **Unified memory** (differentiable neural computer with content and temporal addressing)
+
+---
+
+## 🧠 Core Architecture: AEON-Delta RMT v3.1
+
+### **0. Advanced Sequence Processing — SSM, Mamba-2 & Linear Attention**
+AEON-Δ v3.1 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
+
+| Dimension | Transformer | AEON-Δ (SSM/Mamba-1) | AEON-Δ (Mamba-2 SSD) | AEON-Δ (Linear Attn) |
 |---|---|---|---|---|
-| **Inference** | O(n²) | O(1) per token | O(1) per token | O(1) per token |
-| **Training** | O(n²) | O(n) | O(n) chunk-wise | O(n) |
-| **Memory** | Quadratic | Linear | Linear | Linear |
-| **Multi-head** | Yes | No | Yes | Yes |
+| **Inference Speed** | O(n²) per step | **O(1) per token** (cached state) | **O(1) per token** (cached state) | **O(1) per token** (cached state) |
+| **Training Complexity** | O(n²) | **O(n)** | **O(n)** with chunk-wise SSD | **O(n)** |
+| **Sequence Length** | Limited by memory (n²) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) | **Arbitrary** (linear memory) |
+| **Scalability** | Quadratic memory | **Linear memory** | **Linear memory** | **Linear memory** |
+| **Multi-head** | Yes | No (single head) | **Yes (multi-head SSM)** | Yes |
+| **Hardware Utilisation** | Good | Good (parallel scan) | **Excellent (chunked SSD)** | Good |
 
-**Backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
+**Available backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
+- **`ssm`** (default): Selective State Space Model inspired by Mamba (Gu & Dao, 2023) — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
+- **`mamba2`**: **NEW** — Mamba-2 Structured State Space Duality (Dao & Gu, 2024) — multi-head SSM with per-head scalar decay, chunk-wise SSD for superior hardware utilisation, RMSNorm for training stability
+- **`linear_attention`**: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
+- **`lstm`**: Original LSTM backend for backward compatibility
 
-| Backend | Description |
-|---|---|
-| `ssm` *(default)* | Selective State Space Model (Gu & Dao, 2023) — input-dependent transitions, parallel scan |
-| `mamba2` | Mamba-2 SSD (Dao & Gu, 2024) — multi-head SSM, chunk-wise SSD, RMSNorm |
-| `linear_attention` | ELU-based kernel linear attention — O(n) via associativity |
-| `lstm` | Original LSTM backend for backward compatibility |
-
-**Scalability features:**
-- `ChunkedSequenceProcessor` — arbitrary-length sequences in overlapping chunks with state propagation
-- `InferenceCache` — persistent state caching for O(1) autoregressive generation
-- `PretrainedBackboneAdapter` — bottleneck adapter for HuggingFace pretrained models
-
----
-
-### 2. Meta-Cognition & Convergence
-
-The meta-cognitive subsystem implements provably convergent reasoning with adaptive depth.
-
-**Core Meta-Loop** (`ProvablyConvergentMetaLoop`):
-- Lipschitz-constrained Lambda operator with spectral normalization
-- Banach Fixed-Point Theorem guarantees when *L < 1*
-- Anderson acceleration for 2–5× convergence speedup
-- Adaptive alpha, certified error bounds, early stopping
-
-Transforms initial perception ψ₀ into a stable thought state **C\*** through iteratively refined deliberation.
-
-**Advanced Variants:**
-
-| Variant | Description |
-|---|---|
-| `HierarchicalMetaLoop` | Routes inputs to fast (5 iter), medium (20), or deep (50) loops — ~10× latency reduction on simple queries |
-| `RecursiveMetaLoop` | 3-level hierarchical meta-cognition with error-bound-based rollback |
-| `CertifiedMetaLoop` | Formally certified convergence via Interval Bound Propagation (IBP) |
-| `AdaptiveMetaLoop` | Adaptive Computation Time (ACT) — learned halting probability, ponder cost regularization |
-| `ConvergenceMonitor` | Tracks contraction ratios; classifies iterations as warmup / converging / converged / diverging |
-
-**Execution Pipeline:**
-- `ParallelCognitivePipeline` — executes independent sub-modules (diversity, safety, topology, world model) in parallel via `ThreadPoolExecutor` after the sequential meta-loop
-- `HierarchicalCognitiveArchitecture` — 4-level compositional hierarchy (Core → Safety → Reasoning → Planning), enabling lightweight "AEON-Lite" deployment
+**Additional scalability features:**
+- **`ChunkedSequenceProcessor`**: Process sequences of arbitrary length in overlapping chunks with state propagation — O(chunk_size) memory regardless of total length
+- **`InferenceCache`**: Persistent state caching for O(1) per-step autoregressive generation
+- **`PretrainedBackboneAdapter`**: Bottleneck adapter for integrating any HuggingFace pretrained model as a frozen backbone with minimal trainable parameters
 
 ---
 
-### 3. Reasoning & Factorization
-
-Combines learnable sparse factorization with neuro-symbolic logic for interpretable reasoning.
-
-**Sparse Factorization** (`SparseFactorization`):
-- Learnable sparse basis (64 factors by default)
-- L1-sparsity regularization for compact, interpretable representations
-- Encode/decode symmetry with LayerNorm — factors emerge from data, no imposed categories
-
-**Causal Reasoning:**
-- `CausalFactorExtractor` — learnable DAG structure for causal reasoning over factors
-- `NeuralCausalModel` — per-variable causal mechanisms, `do(X=x)` interventions, counterfactuals via abduction-action-prediction
-- `CausalWorldModel` — SCM + physics dynamics using Pearl's do-calculus for three-step counterfactual rollout
-
-**Neuro-Symbolic Reasoning:**
-- `DifferentiableForwardChainer` — continuous fuzzy logic prover with product t-norms and monotonic knowledge accumulation
-- `NeuroSymbolicReasoner` — full pipeline: neural representations → soft predicates → forward chaining → conclusions
-- Sigmoid-bounded facts/rules in [0, 1], learnable rule weights
+### **1. Tensor Safety System & Device Management**  
+Unlike conventional systems, AEON-Δ implements production-grade tensor safety with:
+- **NaN/Inf handling policies**: `RAISE`, `WARN`, `SILENT`, `QUARANTINE`  
+- **Automatic sanitization** with context tracking and reporting  
+- **Thread-safe device management** with memory fraction control  
+- **AMP (Automatic Mixed Precision)** with fallback mechanisms  
+- **MPS (Apple Silicon) support** with CPU fallbacks for unstable ops  
 
 ---
 
-### 4. World Modeling & Planning
+### **2. Cognitive Core: Sparse Factorization & Causal Factors**  
+The `SparseFactorization` module replaces the hardcoded Five Pillars with learnable, interpretable factors:
+- **Learnable sparse basis** (64 factors by default via `num_pillars` config)  
+- **L1-sparsity regularization** encouraging compact, interpretable representations  
+- **Encode/decode symmetry** with LayerNorm for stable training  
+- **No imposed philosophical categories** — factors emerge from data  
 
-Unified world modeling with physics grounding, hierarchical abstractions, and exploration-driven planning.
+The `CausalFactorExtractor` extends this with an explicit learnable DAG structure for causal reasoning over factors.  
 
-**Physics-Grounded World Model:**
-- Newtonian Dynamics (F=ma), Fluid Dynamics (Navier-Stokes), Rigid Body Physics
-- Learnable SSM (GRU-based fallback), Softmax Router for dynamic model selection
-- Counterfactual Tree — MCTS-style "what if" exploration (depth × branch)
-
-**Hierarchical World Model:**
-- 3 abstraction levels: reactive (1-step), tactical (10-step), strategic (100-step)
-- Bottom-up state abstraction, top-down goal/subgoal decomposition
-- Bidirectional information flow between all levels
-
-**Planning & Exploration:**
-- `MCTSPlanner` — UCB1 selection, expansion, rollout, backpropagation with `ValueNetwork` and `PolicyNetwork`
-- `CuriosityDrivenExploration` — ICM with forward/inverse models; reward = forward-model prediction error
-- `ActiveLearningPlanner` — MCTS biased toward maximum-uncertainty states via variance-based intrinsic rewards
+Each factor is continuously monitored, normalized, and fed into downstream reasoning systems.
 
 ---
 
-### 5. Memory Systems
+### **3. Meta-Loop: Provably Convergent Reasoning**  
+The `ProvablyConvergentMetaLoop` implements mathematical guarantees for cognitive stability:
+- **Lipschitz-constrained Lambda operator** with spectral normalization  
+- **Banach Fixed-Point Theorem guarantees** when *L < 1*  
+- **Anderson acceleration** for 2–5× convergence speedup  
+- **Adaptive alpha** based on Lipschitz estimates  
+- **Certified error bounds** with automatic reporting  
+- **Early stopping** with convergence certification  
 
-Multi-level memory architecture combining cognitive-inspired and differentiable approaches.
-
-**Hierarchical Memory** (cognitive science–inspired):
-- **Working Memory** — fixed-capacity buffer (7 elements), FIFO eviction
-- **Episodic Memory** — event-based storage, importance routing (threshold > 0.7)
-- **Semantic Memory** — concept graph with nodes, edges, relational structure
-- **Consolidation** — replay buffer → episodic → semantic promotion pipeline
-- **Retrieval Router** — learnable softmax over memory levels
-
-**Extended Memory Systems:**
-- `TemporalMemory` — exponential decay (Ebbinghaus curve), merging of similar memories during consolidation
-- `NeurogenicMemorySystem` — dynamic capacity growth via neuron splitting and synaptic formation, bounded by max capacity
-
-**Unified Memory — Differentiable Neural Computer (DNC):**
-- Content-addressable memory matrix with read/write heads and attention-based addressing
-- Usage vector with LRU-based slot allocation
-- Temporal link matrix tracking sequential write relationships
-- Batched operations, fully differentiable — gradient-based optimization of access patterns
+This transforms initial perception ψ₀ into a stable thought state **C\*** through iteratively refined deliberation.
 
 ---
 
-### 6. Multi-Modal Grounding
+### **4. Diversity Metric**  
+The `DiversityMetric` module replaces the former quantum-inspired simulator with a principled approach:
+- **Variance-based diversity** across factor activations  
+- **Action propensity** from softmax over learned projection  
+- **Lightweight computation** without pseudoscientific quantum mechanics  
 
-Cross-modal understanding and generation across vision, audio, and language.
-
-- **Modality Encoders**: Vision (ViT-style), Audio (Wav2Vec2-style), Language projections
-- **Unified Latent Space**: All modalities projected into shared representation
-- **Cross-Modal Attention**: Vision↔Language, Audio↔Language, Vision↔Audio
-- **Fusion Layer**: Three-stream fusion into a single grounded representation
-- **Modality Decoders**: Per-modality output generation from fused state
-- `GroundedMultimodalLearning` — CLIP-style contrastive learning, symbol grounding, zero-shot classification
+This provides a measure of internal thought diversity and decision certainty.
 
 ---
 
-### 7. Meta-Learning & Continual Learning
-
-Few-shot adaptation and lifelong learning without catastrophic forgetting.
-
-- **MAML**: Inner loop (task-specific adaptation) + outer loop (cross-task meta-update)
-- **EWC Penalty**: Elastic Weight Consolidation — Σ Fᵢ(θᵢ − θ*ᵢ)² with diagonal Fisher per task
-- **Task Buffer**: Stores last 100 tasks for lifelong learning
-- `ContinualLearningCore` — Progressive Neural Networks (new columns per task) + EWC
-
----
-
-### 8. Latent Representations
-
-**Vector Quantizer (VQ-VAE):**
-- EMA updates for stable codebook evolution
-- Code revival (reinitializing dead codes) and code splitting (balancing overused codes)
-- Perplexity monitoring, Straight-Through Estimator for gradient flow
-
-**Hierarchical VAE:**
-- 5 abstraction levels: tokens → phrases → sentences → concepts → goals
-- Bottom-up deterministic and top-down stochastic passes
-- KL-divergence regularization at each level
+### **5. Topology Analyzer: Catastrophe Detection**  
+Using catastrophe theory to detect representational instabilities:
+- **Fast Hessian computation** with three methods:  
+  - Finite differences *(production default)*  
+  - Forward-mode AD *(experimental)*  
+  - Hutchinson’s trace estimator  
+- **Eigenvalue analysis** with CPU fallbacks for MPS  
+- **Catastrophe classifier** predicting system stability  
+- **Potential landscape analysis** for state transitions  
 
 ---
 
-### 9. Safety, Stability & Self-Reporting
+### **6. Multi-Level Safety System**  
+Three-tiered safety architecture:
+1. **Action safety** (specific action validation)  
+2. **Cognitive safety** (thought stability metrics)  
+3. **Ethical alignment** (value-consistent decision making)  
 
-Production-grade safety and transparency across all system levels.
-
-**Tensor Safety & Device Management:**
-- NaN/Inf handling policies (`RAISE`, `WARN`, `SILENT`, `QUARANTINE`) with automatic sanitization
-- Thread-safe device management, AMP with fallback, MPS (Apple Silicon) support
-
-**Multi-Level Safety System** (three tiers):
-1. Action safety — specific action validation
-2. Cognitive safety — thought stability metrics
-3. Ethical alignment — value-consistent decision making
-
-**Topology Analyzer — Catastrophe Detection:**
-- Fast Hessian via finite differences *(default)*, forward-mode AD, or Hutchinson estimator
-- Eigenvalue analysis, catastrophe classifier, potential landscape analysis
-
-**Diversity Metric:**
-- Variance-based diversity across factor activations
-- Action propensity from softmax over learned projection
-
-**Transparent Self-Reporting:**
-- Honesty gate, internal consistency, confidence score, report vector
-- Enables external verification of AEON's internal state and reasoning quality
+Each level contributes to a combined safety score with adaptive weighting.
 
 ---
 
-## 📂 Training Pipeline v4.0 (`ae_train.py`)
+### **7. Transparent Self-Reporting**  
+The system provides introspective capabilities through:
+- **Honesty gate** (truthfulness assessment)  
+- **Internal consistency** (coherence measurement)  
+- **Confidence score** (certainty estimation)  
+- **Report vector** for external monitoring  
 
-Two-phase training ensuring both spatial (*geometry*) and temporal (*dynamics*) reasoning capabilities.
+This enables external systems to verify AEON’s internal state and reasoning quality.
 
-**Phase A — Geometry of Thought (AutoEncoder + VQ):**
-- Document-aware tokenization, entropy regularization (0.1 weight)
-- Aggressive code reset (threshold: 30 steps), gradient clip 0.5
-- Warmup with cosine decay (1000 steps), gradient accumulation
+---
 
-**Phase B — Dynamics of Thought (Contextual RSSM):**
-- Context window of 3 previous thought states with attention weighting
-- GRU-based dynamics, residual connections, multi-loss (MSE + Smooth L1)
-- Cosine similarity monitoring, document-preserving transitions
+### **8. Vector Quantizer: Anti-Collapse Architecture**
+Advanced VQ-VAE with stability mechanisms:
+- **EMA updates** for stable codebook evolution  
+- **Code revival** (reinitializing dead codes)  
+- **Code splitting** (balancing overused codes)  
+- **Perplexity monitoring** with EMA tracking  
+- **Straight-Through Estimator** for gradient flow  
+
+This creates a discrete latent space resistant to mode collapse.
+
+---
+
+### **9. Physics-Grounded World Model**  
+A routed physics engine for physical reasoning and planning:
+- **Newtonian Dynamics**: F=ma impulse-based state transitions  
+- **Fluid Dynamics**: Navier-Stokes approximation for continuous flow  
+- **Rigid Body Physics**: Friction and elasticity modeling  
+- **Learnable SSM**: GRU-based fallback for unknown physics  
+- **Softmax Router**: Dynamically selects the physics model based on latent state  
+- **Counterfactual Tree**: MCTS-style "what if" scenario exploration (depth × branch)  
+
+Enables physical reasoning and multi-step planning.
+
+---
+
+### **10. Hierarchical Memory System**  
+Multi-level memory architecture inspired by cognitive science:
+- **Working Memory**: Fixed-capacity buffer (7 elements), FIFO eviction  
+- **Episodic Memory**: Event-based storage with importance-based routing (threshold > 0.7)  
+- **Semantic Memory**: Concept graph with nodes, edges, and relational structure  
+- **Consolidation**: Replay buffer → episodic → semantic promotion pipeline  
+- **Retrieval Router**: Learnable softmax over memory levels for query-driven access  
+
+Additional memory systems:
+- **`TemporalMemory`**: Exponential temporal decay (Ebbinghaus forgetting curve) with merging of similar memories during consolidation  
+- **`NeurogenicMemorySystem`**: Dynamically grows capacity via neuron splitting and synaptic connection formation, bounded by configurable max capacity  
+
+Provides structured long-term and short-term context retention.
+
+---
+
+### **11. Multi-Modal Grounding Module**  
+Cross-modal understanding and generation:
+- **Modality Encoders**: Vision (ViT-style), Audio (Wav2Vec2-style), Language projections  
+- **Unified Latent Space**: All modalities projected into shared representation  
+- **Cross-Modal Attention**: Vision↔Language, Audio↔Language, Vision↔Audio  
+- **Fusion Layer**: Three-stream fusion into a single grounded representation  
+- **Modality Decoders**: Per-modality output generation from fused state  
+
+Additionally, `GroundedMultimodalLearning` provides CLIP-style contrastive learning for symbol grounding and zero-shot classification.
+
+Supports cross-modal retrieval, compositional generation, and visual grounding.
+
+---
+
+### **12. Meta-Learning: MAML + EWC + Continual Learning**  
+Few-shot adaptation and continual learning:
+- **MAML Inner Loop**: Task-specific adaptation via gradient steps  
+- **MAML Outer Loop**: Meta-update for cross-task generalization  
+- **EWC Penalty**: Elastic Weight Consolidation — Σ Fᵢ(θᵢ − θ*ᵢ)² prevents catastrophic forgetting  
+- **Fisher Information**: Diagonal Fisher computed after each task  
+- **Task Buffer**: Stores last 100 tasks for lifelong learning  
+
+Additionally, `ContinualLearningCore` combines Progressive Neural Networks (new columns per task) with EWC to prevent catastrophic forgetting across task boundaries.
+
+Enables few-shot learning and knowledge transfer across domains.
+
+---
+
+### **13. Causal Reasoning: Neural Causal Model & Causal World Model**  
+Structural causal models for interventional and counterfactual reasoning:
+- **`NeuralCausalModel`**: Learnable DAG structure with per-variable causal mechanisms, supporting interventions `do(X=x)` and counterfactuals via abduction-action-prediction  
+- **`CausalWorldModel`**: Integrates structural causal models (SCM) with physics-grounded dynamics using Pearl's do-calculus for three-step counterfactual rollout (abduction → action → prediction)  
+
+Enables answering "what if" and "why" questions about system behavior.
+
+---
+
+### **14. Planning: MCTS & Curiosity-Driven Exploration**  
+Monte Carlo Tree Search with intrinsic motivation:
+- **`MCTSPlanner`**: UCB1 selection, expansion, rollout, and backpropagation with `ValueNetwork` (state evaluation) and `PolicyNetwork` (action priors)  
+- **`CuriosityDrivenExploration`**: Intrinsic Curiosity Module (ICM) with forward and inverse models — exploration reward as forward-model prediction error  
+- **`ActiveLearningPlanner`**: Extends MCTS to bias search toward maximum-uncertainty states via variance-based intrinsic rewards  
+
+Supports multi-step planning and autonomous exploration.
+
+---
+
+### **15. Hierarchical VAE**  
+Hierarchical Variational AutoEncoder with ladder architecture:
+- **5 abstraction levels**: tokens → phrases → sentences → concepts → goals  
+- **Bottom-up deterministic** and **top-down stochastic** passes  
+- **KL-divergence regularization** at each level  
+
+Enables hierarchical latent representation learning across multiple granularities.
+
+---
+
+### **16. Advanced Meta-Loop Variants**  
+Beyond the core `ProvablyConvergentMetaLoop`:
+- **`HierarchicalMetaLoop`**: Routes inputs to fast (5 iter), medium (20 iter), or deep (50 iter) meta-loops based on learned complexity scoring — ~10× latency reduction on simple queries  
+- **`RecursiveMetaLoop`**: Hierarchical meta-cognition across 3 abstraction levels with error-bound-based rollback to prevent cascading failures  
+- **`ConvergenceMonitor`**: Tracks contraction ratios over a sliding window; classifies iterations as warmup, converging, converged, or diverging  
+- **`CertifiedMetaLoop`**: Formally certified convergence via Interval Bound Propagation (IBP) — rigorous Lipschitz upper bounds through spectral norm analysis, replacing EMA-based estimates with formal verification of Banach fixed-point theorem preconditions  
+- **`AdaptiveMetaLoop`**: Adaptive Computation Time (ACT) — learned halting probability network enabling per-sample variable iteration counts; simple inputs halt early while complex inputs iterate longer, with ponder cost regularization for compute efficiency  
+
+Adaptive reasoning depth based on input complexity.
+
+---
+
+### **17. Parallel Cognitive Pipeline & Architecture Hierarchy**  
+Production-grade execution and compositional organization:
+- **`ParallelCognitivePipeline`**: Executes independent sub-modules (diversity, safety, topology, world model) in parallel via `ThreadPoolExecutor` after the mandatory sequential meta-loop  
+- **`HierarchicalCognitiveArchitecture`**: 4-level compositional hierarchy — Core (meta-loop, VQ), Safety, Reasoning (factors, causal), and Planning (MCTS) — enabling lightweight "AEON-Lite" deployment
+
+---
+
+### **18. Unified Memory: Differentiable Neural Computer**  
+End-to-end trainable memory architecture unifying all memory subsystems:
+- **Content-addressable memory matrix** with configurable capacity and dimensionality  
+- **Read/write heads** with attention-based addressing for differentiable access  
+- **Usage vector** with LRU-based slot allocation for efficient memory management  
+- **Temporal link matrix** tracking sequential write relationships across memory slots  
+- **Batched operations** supporting parallel queries across batch dimension  
+
+Provides a fully differentiable alternative to the discrete `HierarchicalMemory`, enabling gradient-based optimization of memory access patterns.
+
+---
+
+### **19. Hierarchical World Model**  
+Multi-level world model with temporal abstractions for hierarchical planning:
+- **3 abstraction levels**: reactive (1-step), tactical (10-step), strategic (100-step)  
+- **Bottom-up encoding**: Progressive state abstraction across levels via learned bridges  
+- **Top-down goal propagation**: Subgoal decomposition from strategic to reactive levels  
+- **Configurable level selection**: Single-level or multi-level processing  
+- **Bidirectional information flow** between all levels  
+
+Extends the `PhysicsGroundedWorldModel` with temporal hierarchy for long-horizon planning.
+
+---
+
+### **20. Neuro-Symbolic Reasoning**  
+Hybrid neural-symbolic reasoning combining continuous representations with discrete logic:
+- **`DifferentiableForwardChainer`**: Continuous fuzzy logic theorem prover using product t-norms (element-wise multiplication) for conjunction — enables gradient flow through logical inference with monotonic knowledge accumulation  
+- **`NeuroSymbolicReasoner`**: Full pipeline converting neural representations → soft logical predicates → differentiable forward chaining → neural conclusions  
+- **Sigmoid-bounded facts and rules** ensuring all truth values remain in [0, 1]  
+- **Learnable rule weights** for data-driven inference rule discovery  
+
+Enables reasoning that combines the interpretability of symbolic logic with the learnability of neural networks.
+
+---
+
+## 📂 Training Pipeline: v4.0 Connected Thoughts Edition (`ae_train.py`)
+
+### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
+- Document-aware tokenization preserving semantic boundaries  
+- Entropy regularization (0.1 weight) for uniform codebook usage  
+- Aggressive code reset (threshold: 30 steps vs previous 50)  
+- Stabilized gradients with reduced clip norm (0.5 vs 1.0)  
+- Warmup scheduling with cosine decay (1000 steps)  
+- Gradient accumulation for memory-constrained training  
+
+### **Phase B: Dynamics of Thought (Contextual RSSM)**
+- Context window of 3 previous thought states  
+- Attention-weighted context for selective memory  
+- GRU-based dynamics with residual connections  
+- Multi-loss training (MSE + Smooth L1)  
+- Cosine similarity monitoring for representation consistency  
+- Document-preserving transitions (no cross-document jumps)  
+
+This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamics*) reasoning capabilities.
 
 ---
 
 ## ⚙️ Engineering Foundations
 
-| Area | Key Features |
-|---|---|
-| **Memory Management** | Cosine similarity retrieval, auto save/load, batch-aware retrieval, memory fusion |
-| **Monitoring** | Epoch/batch tracking, parameter counting, tensor stats, early stopping, checkpoint rotation, JSON metrics |
-| **Safety** | NaN/Inf detection + quarantine, gradient clipping (1.0 core / 0.5 training), weight tying verification, shape validation |
-| **Extensibility** | `AEONConfig` dataclass, module registration, version signatures, CLI (`demo`/`train`/`infer`/`test`) |
+### **Memory Management**
+- Fallback vector storage with cosine similarity retrieval  
+- Automatic save/load with path validation  
+- Batch-aware retrieval for context integration  
+- Memory fusion module combining current state with retrieved context  
+
+### **Monitoring & Diagnostics**
+- Comprehensive training monitor with epoch/batch tracking  
+- Parameter counting (total/trainable)  
+- Tensor statistics (mean/std/min/max)  
+- Early stopping with patience counter  
+- Checkpoint management with rotation policies  
+- Metrics serialization to JSON for analysis  
+
+### **Production Safety Features**
+- Automatic NaN/Inf detection with quarantine strategy  
+- Gradient clipping (1.0 norm in core, 0.5 in training pipeline) for stable training  
+- Weight tying verification for decoder consistency  
+- Shape validation at all module boundaries  
+- Exception handling with stack trace preservation  
+- Device context managers for safe execution  
+
+### **Extensibility Framework**
+- Configurable architecture through `AEONConfig` dataclass  
+- Module registration system for easy extension  
+- Version signatures for model tracking  
+- CLI interface with mode selection (`demo`/`train`/`infer`/`test`)  
+- Test suite with stability and correctness validation  
 
 ---
 
 ## 🔬 Testing & Validation
 
-Comprehensive test suite (`test_fixes.py`, **170 tests**) covering:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 170 tests) verifying:
+- **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
+- **Weight tying correctness** (pointer/shape/value matching)  
+- **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
+- **Shape consistency** across the computational graph  
+- **Numerical stability** under edge cases  
+- **Backend validation** (SSM, LSTM, Mamba-2, Linear Attention encoder/decoder factories)  
+- **Causal reasoning** (neural causal model, causal world model, interventions, counterfactual rollouts)  
+- **Planning & exploration** (MCTS planner, curiosity-driven exploration, active learning)  
+- **Advanced memory** (hierarchical memory, temporal memory with decay, neurogenic memory with synapse formation)  
+- **Multi-modal grounding** (single/multi-modality, CLIP-style contrastive learning, zero-shot classification)  
+- **Meta-cognition** (hierarchical meta-loop, recursive meta-loop, convergence monitor)  
+- **Thread safety** (quarantine batch handling, policy mutation prevention)  
+- **Inference cache** (ring buffer, INT8 quantization, state caching)  
+- **Hierarchical VAE** (ladder architecture, KL divergence)  
+- **Certified convergence** (IBP-based Lipschitz bounds, formal precondition verification)  
+- **Unified memory** (DNC read/write, batched operations, temporal link tracking)  
+- **Hierarchical world model** (multi-level forward pass, single-level routing, gradient flow)  
+- **Adaptive computation** (ACT forward pass, ponder cost regularization, gradient flow)  
+- **Neuro-symbolic reasoning** (forward chaining monotonicity, fact/rule unit interval bounds, gradient flow)  
 
-| Category | What's Tested |
-|---|---|
-| **Core stability** | Determinism, NaN/Inf resistance, division-by-zero guards, numerical edge cases |
-| **Backends** | SSM, LSTM, Mamba-2, Linear Attention — encoder/decoder factories, gradient flow |
-| **Memory** | Hierarchical, temporal decay, neurogenic synapse formation, DNC read/write, temporal links |
-| **Reasoning** | Neural causal model, causal world model, interventions, counterfactuals, neuro-symbolic forward chaining |
-| **Planning** | MCTS planner, curiosity-driven exploration, active learning |
-| **Multi-modal** | Single/multi-modality, CLIP contrastive learning, zero-shot classification |
-| **Meta-cognition** | Hierarchical/recursive/certified/adaptive meta-loops, convergence monitor |
-| **Safety & infra** | Thread safety, quarantine batching, inference cache, weight tying, hierarchical VAE |
+Each test provides detailed reporting with error diagnostics and scoring.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Mission & Philosophy
 
-### Requirements
-- Python 3.8+
-- PyTorch 1.13+ (2.0+ recommended)
-- Optional: `transformers`, `tqdm`, `matplotlib`, `tensorboard`, `wandb`
+AEON-Δ is engineered to model **emergent reasoning**—how thoughts form, evolve through recursive self-reflection, and ultimately lead to coherent action. Our architecture is built on three principles:
 
-### CLI Modes (`aeon_core.py`)
-```bash
-python aeon_core.py --mode demo                                        # Sample output + metrics
-python aeon_core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5 # Training
-python aeon_core.py --mode infer --prompt "Hello world" --temperature 0.8 --top-k 50  # Generation
-python aeon_core.py --mode test                                        # Test suite
-```
+1. **Mathematical rigor**: Convergence guarantees through Lipschitz constraints and fixed-point theory  
+2. **Cognitive interpretability**: Sparse factorization framework providing data-driven, interpretable reasoning factors  
+3. **Production robustness**: Tensor safety, monitoring, and fallback systems for reliable operation  
 
-Additional flags: `--device {auto|cpu|cuda|mps}`, `--config PATH`, `--checkpoint DIR`, `--seed INT`, `--verbose`
-
-### Training Pipeline (`ae_train.py`)
-```bash
-python ae_train.py --json_path data.json --epochsA 30 --epochsB 10           # Full two-phase
-python ae_train.py --document_aware --json_path structured_data.json          # Document-aware
-python ae_train.py --resume checkpoints/checkpoint_epoch_10.pt                # Resume
-```
+This is not merely an academic exercise—it's a foundation for building truly reflective AI systems that can explain their reasoning, detect their own inconsistencies, and operate safely in complex environments.
 
 ---
 
@@ -279,9 +381,9 @@ python ae_train.py --resume checkpoints/checkpoint_epoch_10.pt                # 
 
 ```
 AEON-Delta/
-├── aeon_core.py      # Core architecture — modules, model (AEONDeltaV3), trainer, CLI
+├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Test suite (170 tests) — stability, gradients, causal, planning
+├── test_fixes.py     # Comprehensive test suite (170 tests) — stability, gradients, causal, planning
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
@@ -289,12 +391,66 @@ AEON-Delta/
 
 ---
 
-## 🤝 Contributing
+## 🚀 Quick Start
 
-We welcome contributions that enhance mathematical guarantees, improve cognitive interpretability, strengthen safety systems, optimize performance, or extend monitoring. All contributions must maintain the core principles of **rigor**, **safety**, and **interpretability**.
+### Requirements
+- Python 3.8+  
+- PyTorch 1.13+ (PyTorch 2.0+ recommended for full feature support)  
+- Optional: `transformers`, `tqdm`, `matplotlib`, `tensorboard`, `wandb`
+
+### CLI Modes (`aeon_core.py`)
+```bash
+# Demo — generate sample output, compute cognitive metrics
+python aeon_core.py --mode demo
+
+# Train — full training loop with checkpoint saving
+python aeon_core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5
+
+# Infer — autoregressive generation from prompt
+python aeon_core.py --mode infer --prompt "Hello world" --temperature 0.8 --top-k 50
+
+# Test — run comprehensive test suite
+python aeon_core.py --mode test
+```
+
+Additional flags: `--device {auto|cpu|cuda|mps}`, `--config PATH`, `--checkpoint DIR`, `--seed INT`, `--verbose`
+
+### Training Pipeline (`ae_train.py`)
+```bash
+# Full two-phase training
+python ae_train.py --json_path data.json --epochsA 30 --epochsB 10
+
+# Document-aware training mode
+python ae_train.py --document_aware --json_path structured_data.json
+
+# Resume from checkpoint
+python ae_train.py --resume checkpoints/checkpoint_epoch_10.pt
+```
 
 ---
 
-**License**: [AEON-Δ Research-Only Non-Commercial](./LICENSE)
+## 🤝 Contributing & Collaboration
+
+We welcome contributions that:
+- Enhance mathematical guarantees  
+- Improve cognitive interpretability  
+- Strengthen safety systems  
+- Optimize performance without sacrificing stability  
+- Extend monitoring and diagnostics  
+
+All contributions must maintain the core principles of **rigor**, **safety**, and **interpretability**.
+
+---
 
 > **∆: No bits left behind. It begins with the choice to be.**
+
+*AEON-Δ RMT v3.1 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
+
+> **No bits left behind. — AEON-Δ**
+
+[![License: Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
+
+---
+
+# **∆: No bits left behind. It begins with the choice to be.**
+
