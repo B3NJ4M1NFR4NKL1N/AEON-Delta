@@ -9734,10 +9734,13 @@ class MetaMonitor(nn.Module):
     def update(self, state: torch.Tensor, winner: torch.Tensor) -> Dict[str, float]:
         """Record a scalar quality estimate derived from *state* and *winner*."""
         with torch.no_grad():
-            score = torch.cosine_similarity(
-                state.mean(dim=0, keepdim=True).flatten(),
-                winner.detach().flatten().unsqueeze(0).flatten(),
-                dim=0,
+            s_flat = state.detach().mean(dim=0).flatten()
+            w_flat = winner.detach().mean(dim=0).flatten()
+            min_len = min(s_flat.shape[0], w_flat.shape[0])
+            score = F.cosine_similarity(
+                s_flat[:min_len].unsqueeze(0),
+                w_flat[:min_len].unsqueeze(0),
+                dim=-1,
             ).item()
         self._scores.append(score)
         if len(self._scores) > self.window_size:
@@ -9896,7 +9899,9 @@ class MetaRecoveryLearner(nn.Module):
         if self.training and random.random() < self.epsilon:
             action = random.randrange(self.num_strategies)
         else:
-            action = policy.argmax(dim=-1).item()
+            # Average over batch dimension for action selection
+            mean_policy = policy.mean(dim=0) if policy.dim() > 1 else policy
+            action = mean_policy.argmax(dim=-1).item()
         return action, self.STRATEGIES[action]
 
     def compute_loss(
