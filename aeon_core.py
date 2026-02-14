@@ -13548,8 +13548,19 @@ class AEONDeltaV3(nn.Module):
                 "meta_loop": C_star,
                 "factors": embedded_factors,
             }
+            # Include safety-gated state if safety enforcement modified C_star
+            if safety_enforced:
+                coherence_states["safety_gated"] = C_star.detach().clone()
             coherence_results = self.module_coherence(coherence_states)
             _coherence_deficit = coherence_results.get("needs_recheck", False)
+            # Record coherence deficit in error evolution tracker so the
+            # system can learn from coherence failures over time.
+            if _coherence_deficit and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="coherence_deficit",
+                    strategy_used="metacognitive_recursion",
+                    success=False,
+                )
             self.audit_log.record("module_coherence", "verified", {
                 "coherence_score": float(coherence_results["coherence_score"].mean().item()),
                 "needs_recheck": _coherence_deficit,
@@ -13581,6 +13592,18 @@ class AEONDeltaV3(nn.Module):
                     "trigger_score": metacognitive_info["trigger_score"],
                     "recursion_count": metacognitive_info["recursion_count"],
                 })
+                # Record metacognitive recursion in causal trace for
+                # full traceability of why deeper reasoning was invoked.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "metacognitive_recursion", "triggered",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "triggers_active": metacognitive_info["triggers_active"],
+                            "trigger_score": metacognitive_info["trigger_score"],
+                            "recursion_count": metacognitive_info["recursion_count"],
+                        },
+                    )
                 # Re-run meta-loop with tightened parameters
                 _tight_threshold = (
                     self.config.convergence_threshold
@@ -13872,6 +13895,24 @@ class AEONDeltaV3(nn.Module):
                         ].mean().item(),
                     },
                 )
+            # Low reconciliation agreement indicates inter-module
+            # disagreement — record in error evolution so the system
+            # learns from cross-module conflicts over time.
+            _agreement_val = reconciliation_results["agreement_score"].mean().item()
+            if _agreement_val < self.config.cross_validation_agreement and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="reconciliation_disagreement",
+                    strategy_used="cross_validation",
+                    success=False,
+                )
+            # Tighten adaptive safety threshold when reconciliation
+            # agreement is low — disagreeing modules warrant more
+            # protective safety behavior.
+            if _agreement_val < self.config.cross_validation_agreement:
+                adaptive_safety_threshold = min(
+                    adaptive_safety_threshold,
+                    adaptive_safety_threshold * (0.5 + 0.5 * _agreement_val),
+                )
         
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
@@ -14128,6 +14169,53 @@ class AEONDeltaV3(nn.Module):
                 strategy_used="normal",
                 success=True,
             )
+        
+        # 8f. Post-integration coherence verification — a second coherence
+        # pass that includes all subsystem outputs produced during the
+        # forward pass.  This provides a comprehensive cross-validation
+        # of the full pipeline, not just the early meta-loop/factor pair.
+        # The result is recorded in the output for training supervision
+        # via the coherence loss and for runtime diagnostics.
+        if self.module_coherence is not None and not fast:
+            post_states: Dict[str, torch.Tensor] = {
+                "integrated_output": z_out,
+                "core_state": C_star,
+            }
+            # Include world model prediction if available
+            _wm_pred = world_model_results.get("predicted_next", None)
+            if _wm_pred is not None and _wm_pred.shape[-1] == z_out.shape[-1]:
+                post_states["world_model"] = _wm_pred
+            # Include hybrid reasoning conclusions if available
+            _hr_conc = hybrid_reasoning_results.get("conclusions", None)
+            if _hr_conc is not None and _hr_conc.shape[-1] == z_out.shape[-1]:
+                post_states["hybrid_reasoning"] = _hr_conc
+            if len(post_states) >= 2:
+                post_coherence = self.module_coherence(post_states)
+                # Merge into coherence_results: use the lower of pre/post
+                # coherence scores to be conservative.
+                if coherence_results:
+                    _pre_score = coherence_results["coherence_score"]
+                    _post_score = post_coherence["coherence_score"]
+                    coherence_results = {
+                        "coherence_score": torch.min(_pre_score, _post_score),
+                        "pairwise": {
+                            **coherence_results.get("pairwise", {}),
+                            **{(f"post_{k[0]}", f"post_{k[1]}"): v
+                               for k, v in post_coherence.get("pairwise", {}).items()},
+                        },
+                        "needs_recheck": (
+                            coherence_results.get("needs_recheck", False)
+                            or post_coherence.get("needs_recheck", False)
+                        ),
+                    }
+                else:
+                    coherence_results = post_coherence
+                self.audit_log.record("module_coherence_post", "verified", {
+                    "post_coherence_score": float(
+                        post_coherence["coherence_score"].mean().item()
+                    ),
+                    "num_states_verified": len(post_states),
+                })
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
