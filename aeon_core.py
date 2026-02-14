@@ -616,9 +616,12 @@ class TensorGuard:
             raise ValueError(error_msg)
         
         elif self.policy == NaNPolicy.WARN:
-            if self._sanitize_count % self.alert_threshold == 0:
+            with self._stats_lock:
+                should_warn = self._sanitize_count % self.alert_threshold == 0
+                count_snapshot = self._sanitize_count
+            if should_warn:
                 logger.warning(
-                    f"⚠️  NaN/Inf sanitization #{self._sanitize_count} in {context}: "
+                    f"⚠️  NaN/Inf sanitization #{count_snapshot} in {context}: "
                     f"shape={tensor.shape}, nan={int(nan_mask.sum().item())}, "
                     f"inf={int(inf_mask.sum().item()) if inf_mask is not None else 0}"
                 )
@@ -2158,7 +2161,8 @@ class DeterministicExecutionGuard:
         safe_input = self.normalize_input(input_tensor)
         try:
             output = fn(safe_input, **kwargs)
-        except Exception:
+        except Exception as exc:
+            logger.warning("execute_with_guard caught exception in stage '%s': %s", stage, exc)
             if fallback is not None:
                 return False, fallback
             return False, torch.zeros_like(safe_input)
@@ -3918,7 +3922,7 @@ class InferenceCache:
         amax = clean.abs().amax().clamp(min=1e-8)
         scale = amax / 127.0
         quantized = (clean / scale).round().clamp(-128, 127).to(torch.int8)
-        return quantized, scale
+        return quantized, scale.detach()
 
     @staticmethod
     def _dequantize_int8(quantized: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -10984,11 +10988,14 @@ class TemporalKnowledgeGraph:
         self, query: torch.Tensor, top_k: int = 5
     ) -> torch.Tensor:
         """Return the average of the *top_k* most similar stored facts."""
-        if not self._store:
-            return torch.zeros_like(query)
+        with self._lock:
+            if not self._store:
+                return torch.zeros_like(query)
+            # Snapshot under lock to prevent concurrent modification
+            store_snapshot = list(self._store)
         query_flat = query.detach().cpu().flatten()
         scored = []
-        for entry in self._store:
+        for entry in store_snapshot:
             stored = entry["facts"].flatten()
             min_len = min(stored.shape[0], query_flat.shape[0])
             sim = F.cosine_similarity(
