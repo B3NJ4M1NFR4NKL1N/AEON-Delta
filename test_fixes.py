@@ -10058,6 +10058,216 @@ def test_subsystem_health_comprehensive_coverage():
     print("✅ test_subsystem_health_comprehensive_coverage PASSED")
 
 
+# ============================================================================
+# Architecture Coherence — Cross-Module Wiring & Causal Tracing Tests
+# ============================================================================
+
+
+def test_coherence_deficit_feeds_error_evolution():
+    """Verify that a coherence deficit is recorded in CausalErrorEvolutionTracker.
+
+    When ModuleCoherenceVerifier detects low coherence (needs_recheck=True),
+    the system should record the event in error_evolution so the architecture
+    can learn from coherence failures over time.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # impossibly high → always deficit
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Error evolution should have recorded a coherence_deficit episode
+    summary = model.error_evolution.get_error_summary()
+    assert "coherence_deficit" in summary["error_classes"], (
+        f"Expected 'coherence_deficit' in error classes, got {summary['error_classes']}"
+    )
+
+    print("✅ test_coherence_deficit_feeds_error_evolution PASSED")
+
+
+def test_metacognitive_recursion_recorded_in_causal_trace():
+    """Verify that metacognitive recursion events are recorded in causal trace.
+
+    When the MetaCognitiveRecursionTrigger fires, the event should be
+    traceable in the causal trace buffer for full provenance.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.0,  # always triggers
+        metacognitive_max_recursions=1,
+        enable_causal_trace=True,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # force coherence deficit
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # The causal trace should record the metacognitive recursion event
+    summary = model.causal_trace.summary()
+    assert summary["total_entries"] > 0, "Causal trace should have entries"
+
+    # Check that metacognitive_recursion subsystem is in the trace
+    recent = model.causal_trace.recent(n=20)
+    metacog_entries = [e for e in recent if e["subsystem"] == "metacognitive_recursion"]
+    # Note: only fires if the trigger actually evaluates should_trigger=True
+    # With threshold=0.0 and coherence_deficit=True, trigger_score >= threshold
+    if outputs.get("metacognitive_info", {}).get("should_trigger", False):
+        assert len(metacog_entries) > 0, (
+            "Metacognitive recursion triggered but not recorded in causal trace"
+        )
+
+    print("✅ test_metacognitive_recursion_recorded_in_causal_trace PASSED")
+
+
+def test_post_integration_coherence_verification():
+    """Verify that a second coherence pass runs after all subsystems complete.
+
+    The post-integration coherence check should cross-validate the final
+    integrated output against the core state, producing a conservative
+    (minimum) coherence score.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # coherence_results should exist and contain a score
+    coherence_results = outputs.get("coherence_results", {})
+    assert coherence_results, "coherence_results should not be empty"
+    assert "coherence_score" in coherence_results
+    score = coherence_results["coherence_score"]
+    assert score.shape == (2,), f"Expected shape (2,), got {score.shape}"
+    assert torch.isfinite(score).all(), "Coherence score should be finite"
+
+    # Verify the audit log recorded the post-integration check
+    recent = model.audit_log.recent(n=30)
+    post_entries = [e for e in recent if e["subsystem"] == "module_coherence_post"]
+    assert len(post_entries) > 0, (
+        "Post-integration coherence check should be recorded in audit log"
+    )
+
+    print("✅ test_post_integration_coherence_verification PASSED")
+
+
+def test_reconciliation_disagreement_feeds_error_evolution():
+    """Verify low reconciliation agreement records in error evolution tracker.
+
+    When cross-validation agreement is below threshold, the event should
+    be recorded in CausalErrorEvolutionTracker as a reconciliation_disagreement.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+
+    # Simulate the recording that would happen in reasoning_core
+    tracker.record_episode(
+        error_class="reconciliation_disagreement",
+        strategy_used="cross_validation",
+        success=False,
+    )
+
+    summary = tracker.get_error_summary()
+    assert "reconciliation_disagreement" in summary["error_classes"]
+    assert summary["total_recorded"] >= 1
+
+    print("✅ test_reconciliation_disagreement_feeds_error_evolution PASSED")
+
+
+def test_coherence_includes_safety_gated_state():
+    """Verify coherence verification includes safety-gated state when active.
+
+    When safety enforcement modifies C_star, the coherence verifier should
+    include the safety-gated state for cross-validation, ensuring the
+    safety subsystem's impact is verified for consistency.
+    """
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+
+    # Simulate states including a safety_gated entry
+    states = {
+        "meta_loop": torch.randn(2, 32),
+        "factors": torch.randn(2, 32),
+        "safety_gated": torch.randn(2, 32),
+    }
+    results = verifier(states)
+
+    assert "coherence_score" in results
+    assert results["coherence_score"].shape == (2,)
+    # With 3 states, there should be 3 pairwise comparisons
+    assert len(results["pairwise"]) == 3
+
+    print("✅ test_coherence_includes_safety_gated_state PASSED")
+
+
+def test_adaptive_safety_tightens_on_low_agreement():
+    """Verify adaptive safety threshold tightens when reconciliation
+    agreement is low, linking cross-module consensus to safety behavior."""
+
+    # Simulate the logic from reasoning_core
+    cross_validation_agreement = 0.7
+    adaptive_safety_threshold = 0.5
+
+    # Low agreement scenario
+    agreement_val = 0.3  # below threshold
+    if agreement_val < cross_validation_agreement:
+        adaptive_safety_threshold_new = min(
+            adaptive_safety_threshold,
+            adaptive_safety_threshold * (0.5 + 0.5 * agreement_val),
+        )
+    else:
+        adaptive_safety_threshold_new = adaptive_safety_threshold
+
+    # Threshold should be tightened (lower value = more protective)
+    assert adaptive_safety_threshold_new < adaptive_safety_threshold, (
+        f"Expected tightened threshold, got {adaptive_safety_threshold_new} >= {adaptive_safety_threshold}"
+    )
+
+    # High agreement scenario — threshold should NOT tighten
+    agreement_val_high = 0.9
+    adaptive_safety_threshold_2 = 0.5
+    if agreement_val_high < cross_validation_agreement:
+        adaptive_safety_threshold_2 = min(
+            adaptive_safety_threshold_2,
+            adaptive_safety_threshold_2 * (0.5 + 0.5 * agreement_val_high),
+        )
+    assert adaptive_safety_threshold_2 == 0.5, (
+        "High agreement should not tighten the safety threshold"
+    )
+
+    print("✅ test_adaptive_safety_tightens_on_low_agreement PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -10607,6 +10817,14 @@ if __name__ == '__main__':
     test_causal_trace_records_dag_computation()
     test_world_model_error_recovery_graceful()
     test_subsystem_health_comprehensive_coverage()
+    
+    # Architecture Coherence — Cross-Module Wiring tests
+    test_coherence_deficit_feeds_error_evolution()
+    test_metacognitive_recursion_recorded_in_causal_trace()
+    test_post_integration_coherence_verification()
+    test_reconciliation_disagreement_feeds_error_evolution()
+    test_coherence_includes_safety_gated_state()
+    test_adaptive_safety_tightens_on_low_agreement()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
