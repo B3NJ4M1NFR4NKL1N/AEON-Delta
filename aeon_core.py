@@ -1064,12 +1064,24 @@ class DecisionAuditLog:
         error_rate = error_count / total
         nan_rate = nan_count / total
 
-        recommend_deeper = (rollback_rate > 0.15 or error_rate > 0.1)
+        # Count error_recovery events (recorded by ErrorRecoveryManager
+        # through the shared audit log) to expose recovery load.
+        recovery_count = sum(
+            1 for e in entries if e["subsystem"] == "error_recovery"
+        )
+        recovery_rate = recovery_count / total
+
+        recommend_deeper = (
+            rollback_rate > 0.15
+            or error_rate > 0.1
+            or recovery_rate > 0.1
+        )
 
         return {
             "rollback_rate": rollback_rate,
             "nan_fallback_rate": nan_rate,
             "error_rate": error_rate,
+            "recovery_rate": recovery_rate,
             "dominant_failure": dominant_failure,
             "recommend_deeper_reasoning": recommend_deeper,
         }
@@ -1555,6 +1567,28 @@ class ErrorRecoveryManager:
         """Clear all counters."""
         with self._lock:
             self._recovery_counts.clear()
+
+    def record_event(
+        self,
+        error_class: str,
+        context: str,
+        success: bool,
+    ) -> None:
+        """Record an external recovery event (e.g. safety rollback).
+
+        This allows other subsystems to contribute to the unified
+        recovery history without going through the full ``recover()``
+        retry pipeline.
+        """
+        with self._lock:
+            self._recovery_counts[error_class] += 1
+            self._recovery_history.append({
+                "timestamp": time.monotonic(),
+                "error_class": error_class,
+                "context": context,
+                "success": success,
+                "attempts": 1,
+            })
 
     # ------------------------------------------------------------------
     # Strategy implementations (private)
@@ -12784,6 +12818,17 @@ class AEONDeltaV3(nn.Module):
         )
         self.error_classifier = SemanticErrorClassifier()
         
+        # ===== ERROR RECOVERY MANAGER =====
+        # Centralized strategy-pattern dispatch for runtime errors.
+        # Shares audit_log and tensor_guard with the rest of the pipeline
+        # so recovery events feed into pattern insights and tensor
+        # sanitization is consistent.
+        self.error_recovery = ErrorRecoveryManager(
+            hidden_dim=config.hidden_dim,
+            audit_log=self.audit_log,
+            tensor_guard=self.tensor_guard,
+        )
+        
         # ===== CONVERGENCE MONITOR =====
         # Tracks contraction ratios across forward passes to detect
         # sustained divergence and trigger meta-cognitive cycles.
@@ -12992,6 +13037,15 @@ class AEONDeltaV3(nn.Module):
             logger.error(
                 f"reasoning_core pipeline error [{error_class}]: {detail}"
             )
+            # ErrorRecoveryManager: strategy-pattern dispatch with retry
+            recovery_success, recovered_value = self.error_recovery.recover(
+                error=pipeline_error,
+                context="reasoning_core",
+                fallback=z_in,
+                last_good_state=z_in,
+            )
+            if recovery_success and recovered_value is not None:
+                recovered_value = recovered_value.to(device)
             # MetaRecoveryLearner: record experience for learning
             if self.meta_recovery is not None:
                 try:
@@ -13025,7 +13079,7 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.record_episode(
                     error_class=error_class,
                     strategy_used=strategy_name,
-                    success=False,  # pipeline error → recovery was a fallback
+                    success=recovery_success,
                     metadata={"detail": detail},
                 )
             # Deterministic fallback — return input as-is with empty outputs
@@ -13095,6 +13149,7 @@ class AEONDeltaV3(nn.Module):
                 'convergence_verdict': {'status': 'unknown', 'certified': False},
                 'coherence_results': {},
                 'metacognitive_info': {},
+                'error_recovery_stats': self.error_recovery.get_recovery_stats(),
             }
             return z_fallback, fallback_outputs
 
@@ -13200,6 +13255,11 @@ class AEONDeltaV3(nn.Module):
                 "error_class": err_cls[0] if err_cls else "unknown",
                 "detail": err_cls[1] if err_cls else "",
             })
+            self.error_recovery.record_event(
+                error_class="numerical",
+                context="meta_loop_nan_fallback",
+                success=True,
+            )
             C_star = z_in.clone()
         
         # Record meta-loop health and checkpoint
@@ -13323,6 +13383,14 @@ class AEONDeltaV3(nn.Module):
                     "threshold": safety_threshold,
                     "min_score": float(safety_score.min().item()),
                 })
+                # Record into ErrorRecoveryManager so recovery patterns
+                # are visible in get_recovery_stats() and feed back into
+                # audit-driven depth adjustment.
+                self.error_recovery.record_event(
+                    error_class="safety_rollback",
+                    context="safety_enforcement",
+                    success=True,
+                )
                 # Blend C_star toward z_in: higher safety_score preserves more C_star,
                 # lower safety_score shifts more toward the safe fallback z_in.
                 # safety_score in [0, threshold) → c_star_weight in [0, 1)
@@ -13633,6 +13701,11 @@ class AEONDeltaV3(nn.Module):
                 "nan_count": int(torch.isnan(z_rssm).sum().item()),
                 "inf_count": int(torch.isinf(z_rssm).sum().item()),
             })
+            self.error_recovery.record_event(
+                error_class="numerical",
+                context="rssm_nan_fallback",
+                success=True,
+            )
             z_rssm = C_fused
         
         # 7b. Multimodal grounding (if available)
@@ -13655,6 +13728,11 @@ class AEONDeltaV3(nn.Module):
             self.audit_log.record("integration", "nan_fallback", {
                 "nan_count": int(torch.isnan(z_out).sum().item()),
             })
+            self.error_recovery.record_event(
+                error_class="numerical",
+                context="integration_nan_fallback",
+                success=True,
+            )
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
         
         # 8a-ii. Deterministic output validation
@@ -13815,6 +13893,7 @@ class AEONDeltaV3(nn.Module):
             'convergence_verdict': convergence_verdict,
             'coherence_results': coherence_results,
             'metacognitive_info': metacognitive_info,
+            'error_recovery_stats': self.error_recovery.get_recovery_stats(),
         }
         
         return z_out, outputs

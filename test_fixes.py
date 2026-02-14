@@ -7957,6 +7957,7 @@ def test_audit_log_get_pattern_insights_empty():
     assert insights["rollback_rate"] == 0.0
     assert insights["nan_fallback_rate"] == 0.0
     assert insights["error_rate"] == 0.0
+    assert insights["recovery_rate"] == 0.0
     assert insights["dominant_failure"] is None
     assert insights["recommend_deeper_reasoning"] is False
     print("✅ test_audit_log_get_pattern_insights_empty PASSED")
@@ -8985,6 +8986,171 @@ def test_aeon_v3_all_new_coherence_components():
 
     print("✅ test_aeon_v3_all_new_coherence_components PASSED")
 
+# ============================================================================
+# ERROR RECOVERY MANAGER INTEGRATION TESTS
+# ============================================================================
+
+def test_error_recovery_manager_instantiated():
+    """Verify AEONDeltaV3 instantiates ErrorRecoveryManager with shared deps."""
+    from aeon_core import AEONConfig, AEONDeltaV3, ErrorRecoveryManager
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'error_recovery')
+    assert isinstance(model.error_recovery, ErrorRecoveryManager)
+    # Shared references — same audit_log and tensor_guard
+    assert model.error_recovery.audit_log is model.audit_log
+    assert model.error_recovery.tensor_guard is model.tensor_guard
+
+    print("✅ test_error_recovery_manager_instantiated PASSED")
+
+
+def test_error_recovery_record_event():
+    """Verify ErrorRecoveryManager.record_event updates stats."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    mgr = ErrorRecoveryManager(hidden_dim=32, audit_log=audit)
+
+    mgr.record_event("safety_rollback", "safety_enforcement", success=True)
+    mgr.record_event("numerical", "meta_loop_nan_fallback", success=True)
+
+    stats = mgr.get_recovery_stats()
+    assert stats["total"] == 2
+    assert stats["by_class"]["safety_rollback"] == 1
+    assert stats["by_class"]["numerical"] == 1
+    assert mgr.get_success_rate() == 1.0
+
+    history = mgr.get_recovery_history(n=5)
+    assert len(history) == 2
+    assert history[0]["error_class"] == "safety_rollback"
+    assert history[1]["error_class"] == "numerical"
+
+    print("✅ test_error_recovery_record_event PASSED")
+
+
+def test_error_recovery_in_reasoning_core_error_path():
+    """Verify ErrorRecoveryManager is invoked on pipeline error."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    # Force an error by breaking meta_loop
+    original_meta = model.meta_loop
+    model.meta_loop = None  # Will cause AttributeError
+
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+
+    model.meta_loop = original_meta  # Restore
+
+    # ErrorRecoveryManager should have been called
+    assert 'error_recovery_stats' in outputs
+    stats = outputs['error_recovery_stats']
+    assert stats['total'] >= 1, f"Expected >= 1 recovery, got {stats['total']}"
+
+    print("✅ test_error_recovery_in_reasoning_core_error_path PASSED")
+
+
+def test_error_recovery_stats_in_normal_output():
+    """Verify error_recovery_stats key present in normal (non-error) outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'error_recovery_stats' in outputs
+    stats = outputs['error_recovery_stats']
+    assert isinstance(stats, dict)
+    assert 'total' in stats
+    assert 'by_class' in stats
+
+    print("✅ test_error_recovery_stats_in_normal_output PASSED")
+
+
+def test_safety_rollback_feeds_error_recovery():
+    """Verify safety rollbacks are recorded in ErrorRecoveryManager."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=True,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        safety_threshold=0.99,  # Very high → likely triggers rollback
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    stats = outputs['error_recovery_stats']
+    # If safety rollback was triggered, it should appear in recovery stats
+    if stats['total'] > 0:
+        assert 'safety_rollback' in stats['by_class']
+
+    print("✅ test_safety_rollback_feeds_error_recovery PASSED")
+
+
+def test_pattern_insights_recovery_rate():
+    """Verify get_pattern_insights includes recovery_rate field."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    # Record some normal events and some error_recovery events
+    for i in range(8):
+        audit.record("meta_loop", "completed", {})
+    for i in range(2):
+        audit.record("error_recovery", "numerical", {"context": "test"})
+
+    insights = audit.get_pattern_insights()
+
+    assert "recovery_rate" in insights
+    assert insights["recovery_rate"] == 2.0 / 10.0  # 0.2
+
+    print("✅ test_pattern_insights_recovery_rate PASSED")
+
+
+def test_pattern_insights_recovery_triggers_deeper_reasoning():
+    """Verify high recovery rate triggers recommend_deeper_reasoning."""
+    from aeon_core import DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    # Record 5 normal + 2 error_recovery events (28% > 10% threshold)
+    for i in range(5):
+        audit.record("meta_loop", "completed", {})
+    for i in range(2):
+        audit.record("error_recovery", "convergence", {"context": "test"})
+
+    insights = audit.get_pattern_insights()
+    # recovery_rate = 2/7 ≈ 0.286 > 0.1 threshold
+    assert insights["recommend_deeper_reasoning"] is True
+
+    print("✅ test_pattern_insights_recovery_triggers_deeper_reasoning PASSED")
+
 
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
@@ -9487,6 +9653,15 @@ if __name__ == '__main__':
     test_new_components_disabled_by_default_coherence()
     test_error_fallback_has_new_keys()
     test_aeon_v3_all_new_coherence_components()
+    
+    # Error Recovery Manager integration tests
+    test_error_recovery_manager_instantiated()
+    test_error_recovery_record_event()
+    test_error_recovery_in_reasoning_core_error_path()
+    test_error_recovery_stats_in_normal_output()
+    test_safety_rollback_feeds_error_recovery()
+    test_pattern_insights_recovery_rate()
+    test_pattern_insights_recovery_triggers_deeper_reasoning()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
