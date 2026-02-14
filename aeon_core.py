@@ -13425,6 +13425,14 @@ class AEONDeltaV3(nn.Module):
         factors, embedded_factors = self.sparse_factors(C_star)
         logger.debug(f"Factors: {factors.shape}")
         
+        # 2a. Record factor extraction health — sparsity and finite checks
+        _factors_finite = torch.isfinite(factors).all().item()
+        _factor_sparsity = float((factors.abs() < 1e-6).float().mean().item())
+        self.integrity_monitor.record_health("factor_extraction", 1.0 if _factors_finite else 0.0, {
+            "finite": _factors_finite,
+            "sparsity": _factor_sparsity,
+        })
+        
         # 2b. Cognitive consistency gate — cross-validate C_star against
         # factor-embedded reconstruction to dampen inconsistent dimensions
         gate = self.consistency_gate(
@@ -13514,6 +13522,17 @@ class AEONDeltaV3(nn.Module):
                 uncertainty=uncertainty,
                 subsystem_health=_recovery_health,
             ).detach()
+        
+        # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
+        # feedback to refine uncertainty for the current pass.  When recovery
+        # health is degraded (many past errors), escalate uncertainty so that
+        # downstream metacognitive cycles activate more aggressively.  This
+        # closes the loop within a single forward pass rather than waiting
+        # for the next one.
+        if _recovery_health_scalar < 1.0:
+            _feedback_uncertainty_boost = (1.0 - _recovery_health_scalar) * 0.3
+            uncertainty = min(1.0, uncertainty + _feedback_uncertainty_boost)
+            high_uncertainty = uncertainty > 0.5
         
         # 5a-iii. Module coherence verification — cross-validate key
         # subsystem outputs to detect internal inconsistencies.  Low
@@ -13609,32 +13628,49 @@ class AEONDeltaV3(nn.Module):
             and not high_uncertainty
         )
         self.provenance_tracker.record_before("world_model", C_star)
+        _world_model_healthy = True
         if self.world_model is not None and not fast and not _world_model_should_skip:
-            world_model_results = self.world_model(
-                C_star, explore_counterfactuals=planning
-            )
-            predicted_next = world_model_results['output']
-            # Surprise = prediction error
-            surprise = F.mse_loss(C_star, predicted_next, reduction='none').mean(dim=-1)  # [B]
-            # High surprise → use value_net to select state
-            surprise_threshold = self.config.surprise_threshold
-            high_surprise = surprise > surprise_threshold  # [B] bool
-            if high_surprise.any() and self.config.enable_world_model:
-                # Score original vs predicted
-                v_original = self.value_net(C_star)  # [B, 1]
-                v_predicted = self.value_net(predicted_next)  # [B, 1]
-                # Select better state per-sample
-                use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
-                C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
-                self.audit_log.record("world_model", "surprise_switch", {
-                    "high_surprise_count": int(high_surprise.sum().item()),
-                    "predicted_used": int(use_predicted.sum().item()),
-                    "mean_surprise": float(surprise.mean().item()),
-                })
-            else:
-                # Low surprise or no value_net: blend
-                C_star = C_star + 0.1 * predicted_next
-            world_model_results['surprise'] = surprise
+            try:
+                world_model_results = self.world_model(
+                    C_star, explore_counterfactuals=planning
+                )
+                predicted_next = world_model_results['output']
+                # Surprise = prediction error
+                surprise = F.mse_loss(C_star, predicted_next, reduction='none').mean(dim=-1)  # [B]
+                # High surprise → use value_net to select state
+                surprise_threshold = self.config.surprise_threshold
+                high_surprise = surprise > surprise_threshold  # [B] bool
+                if high_surprise.any() and self.config.enable_world_model:
+                    # Score original vs predicted
+                    v_original = self.value_net(C_star)  # [B, 1]
+                    v_predicted = self.value_net(predicted_next)  # [B, 1]
+                    # Select better state per-sample
+                    use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
+                    C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+                    self.audit_log.record("world_model", "surprise_switch", {
+                        "high_surprise_count": int(high_surprise.sum().item()),
+                        "predicted_used": int(use_predicted.sum().item()),
+                        "mean_surprise": float(surprise.mean().item()),
+                    })
+                else:
+                    # Low surprise or no value_net: blend
+                    C_star = C_star + 0.1 * predicted_next
+                world_model_results['surprise'] = surprise
+            except Exception as wm_err:
+                _world_model_healthy = False
+                logger.warning(f"World model error (non-fatal): {wm_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="world_model_forward",
+                    success=True,
+                )
+                self.audit_log.record("world_model", "error_recovered", {
+                    "error": str(wm_err)[:200],
+                }, severity="warning")
+        self.integrity_monitor.record_health("world_model", 1.0 if _world_model_healthy else 0.0, {
+            "executed": self.world_model is not None and not fast and not _world_model_should_skip,
+            "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
+        })
         self.provenance_tracker.record_after("world_model", C_star)
         
         # 5b2. MCTS planning — gated by complexity gate[1]
@@ -13650,29 +13686,42 @@ class AEONDeltaV3(nn.Module):
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
         _memory_empty_count = 0
+        _memory_healthy = True
         self.provenance_tracker.record_before("memory", C_star)
         if self.hierarchical_memory is not None:
-            # Retrieve relevant memories using z_in as query
-            if not fast:
-                retrieved_memories = []
+            try:
+                # Retrieve relevant memories using z_in as query
+                if not fast:
+                    retrieved_memories = []
+                    for i in range(B):
+                        ret = self.hierarchical_memory.retrieve(z_in[i], k=5)
+                        # Collect working memory vectors
+                        working = ret.get('working', [])
+                        if working:
+                            vecs = torch.stack([v for v, s in working])
+                            retrieved_memories.append(vecs.mean(dim=0))
+                        else:
+                            retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
+                            _memory_empty_count += 1
+                    memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
+                    # Fuse via projection
+                    C_star = C_star + self.memory_projection(memory_context)
+                    memory_retrieved = memory_context
+                # Store after reasoning (batched importance scoring)
+                importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
                 for i in range(B):
-                    ret = self.hierarchical_memory.retrieve(z_in[i], k=5)
-                    # Collect working memory vectors
-                    working = ret.get('working', [])
-                    if working:
-                        vecs = torch.stack([v for v, s in working])
-                        retrieved_memories.append(vecs.mean(dim=0))
-                    else:
-                        retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
-                        _memory_empty_count += 1
-                memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
-                # Fuse via projection
-                C_star = C_star + self.memory_projection(memory_context)
-                memory_retrieved = memory_context
-            # Store after reasoning (batched importance scoring)
-            importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
-            for i in range(B):
-                self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
+                    self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
+            except Exception as mem_err:
+                _memory_healthy = False
+                logger.warning(f"Memory subsystem error (non-fatal): {mem_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="hierarchical_memory",
+                    success=True,
+                )
+                self.audit_log.record("memory", "error_recovered", {
+                    "error": str(mem_err)[:200],
+                }, severity="warning")
         
         # Update memory staleness flag for next forward pass — if the
         # majority of samples had empty retrieval, signal staleness to
@@ -13705,6 +13754,14 @@ class AEONDeltaV3(nn.Module):
                     vecs = torch.stack([v for v, _s in semantic_items])
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
         
+        # Record memory subsystem health — covers hierarchical, neurogenic,
+        # and consolidating memory stages.
+        _memory_retrieval_quality = 1.0 - (_memory_empty_count / max(B, 1))
+        self.integrity_monitor.record_health("memory", _memory_retrieval_quality if _memory_healthy else 0.0, {
+            "healthy": _memory_healthy,
+            "stale": self._memory_stale,
+            "empty_ratio": _memory_empty_count / max(B, 1),
+        })
         self.provenance_tracker.record_after("memory", C_star)
         
         # 5d. Causal world model — gated by complexity gate[2]
@@ -13721,19 +13778,42 @@ class AEONDeltaV3(nn.Module):
         # among the cognitive pillars.  The resulting causal variables are
         # blended back as a residual to ground the state in causal structure.
         causal_model_results: Dict[str, Any] = {}
+        _causal_healthy = True
         if self.causal_model is not None and not fast:
-            causal_vars = self.causal_model(factors)  # [B, num_pillars]
-            causal_model_results = {
-                'causal_vars': causal_vars,
-                'adjacency': self.causal_model.adjacency.detach(),
-                'dag_loss': self.causal_model.dag_loss(),
-            }
-            # Blend causal signal into factor embedding as a residual
-            causal_residual = causal_vars - factors.detach()
-            C_star = C_star + self.config.causal_blend_weight * causal_residual.mean(dim=-1, keepdim=True)
-            self.audit_log.record("causal_model", "computed", {
-                "dag_loss": float(causal_model_results['dag_loss'].item()),
-            })
+            try:
+                causal_vars = self.causal_model(factors)  # [B, num_pillars]
+                causal_model_results = {
+                    'causal_vars': causal_vars,
+                    'adjacency': self.causal_model.adjacency.detach(),
+                    'dag_loss': self.causal_model.dag_loss(),
+                }
+                # Blend causal signal into factor embedding as a residual
+                causal_residual = causal_vars - factors.detach()
+                C_star = C_star + self.config.causal_blend_weight * causal_residual.mean(dim=-1, keepdim=True)
+                self.audit_log.record("causal_model", "computed", {
+                    "dag_loss": float(causal_model_results['dag_loss'].item()),
+                })
+                # Record causal provenance for traceability
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "causal_model", "dag_computed",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "dag_loss": float(causal_model_results['dag_loss'].item()),
+                            "num_factors": factors.shape[-1],
+                        },
+                    )
+            except Exception as causal_err:
+                _causal_healthy = False
+                logger.warning(f"Causal model error (non-fatal): {causal_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="causal_model_forward",
+                    success=True,
+                )
+                self.audit_log.record("causal_model", "error_recovered", {
+                    "error": str(causal_err)[:200],
+                }, severity="warning")
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
         # Provides a complementary causal analysis with NOTEARS acyclicity
@@ -13756,6 +13836,12 @@ class AEONDeltaV3(nn.Module):
                 "dag_loss": float(notears_dag_loss.item()),
                 "l1_loss": float(notears_l1.item()),
             })
+        
+        self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
+            "causal_model_executed": self.causal_model is not None and not fast,
+            "notears_executed": self.notears_causal is not None and not fast,
+            "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
+        })
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions
         reconciliation_results: Dict[str, Any] = {}
@@ -13812,16 +13898,32 @@ class AEONDeltaV3(nn.Module):
         
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
+        _hybrid_healthy = True
         if self.hybrid_reasoning is not None and not fast:
-            hybrid_reasoning_results = self.hybrid_reasoning(C_star)
-            conclusions = hybrid_reasoning_results.get("conclusions", None)
-            if conclusions is not None and torch.isfinite(conclusions).all():
-                C_star = C_star + self.config.hybrid_reasoning_blend * conclusions
-            self.audit_log.record("hybrid_reasoning", "computed", {
-                "num_derived": int(
-                    hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
-                ),
-            })
+            try:
+                hybrid_reasoning_results = self.hybrid_reasoning(C_star)
+                conclusions = hybrid_reasoning_results.get("conclusions", None)
+                if conclusions is not None and torch.isfinite(conclusions).all():
+                    C_star = C_star + self.config.hybrid_reasoning_blend * conclusions
+                self.audit_log.record("hybrid_reasoning", "computed", {
+                    "num_derived": int(
+                        hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
+                    ),
+                })
+            except Exception as hr_err:
+                _hybrid_healthy = False
+                logger.warning(f"Hybrid reasoning error (non-fatal): {hr_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="hybrid_reasoning_forward",
+                    success=True,
+                )
+                self.audit_log.record("hybrid_reasoning", "error_recovered", {
+                    "error": str(hr_err)[:200],
+                }, severity="warning")
+        self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
+            "executed": self.hybrid_reasoning is not None and not fast,
+        })
         
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations

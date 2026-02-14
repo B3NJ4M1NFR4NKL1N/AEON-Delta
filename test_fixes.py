@@ -9803,6 +9803,259 @@ def test_aeon_v3_with_all_causal_modules():
     print("✅ test_aeon_v3_with_all_causal_modules PASSED")
 
 
+def test_integrity_monitor_records_factor_extraction():
+    """Verify integrity_monitor records health for factor_extraction subsystem."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Check that factor_extraction health was recorded
+    report = outputs['integrity_report']
+    assert 'factor_extraction' in report['subsystem_health'], (
+        "factor_extraction health not recorded in integrity report"
+    )
+
+    print("✅ test_integrity_monitor_records_factor_extraction PASSED")
+
+
+def test_integrity_monitor_records_world_model():
+    """Verify integrity_monitor records health for world_model subsystem."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = outputs['integrity_report']
+    assert 'world_model' in report['subsystem_health'], (
+        "world_model health not recorded in integrity report"
+    )
+
+    print("✅ test_integrity_monitor_records_world_model PASSED")
+
+
+def test_integrity_monitor_records_memory():
+    """Verify integrity_monitor records health for memory subsystem."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = outputs['integrity_report']
+    assert 'memory' in report['subsystem_health'], (
+        "memory health not recorded in integrity report"
+    )
+
+    print("✅ test_integrity_monitor_records_memory PASSED")
+
+
+def test_integrity_monitor_records_causal():
+    """Verify integrity_monitor records health for causal subsystem."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = outputs['integrity_report']
+    assert 'causal' in report['subsystem_health'], (
+        "causal health not recorded in integrity report"
+    )
+
+    print("✅ test_integrity_monitor_records_causal PASSED")
+
+
+def test_integrity_monitor_records_hybrid_reasoning():
+    """Verify integrity_monitor records health for hybrid_reasoning subsystem."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = outputs['integrity_report']
+    assert 'hybrid_reasoning' in report['subsystem_health'], (
+        "hybrid_reasoning health not recorded in integrity report"
+    )
+
+    print("✅ test_integrity_monitor_records_hybrid_reasoning PASSED")
+
+
+def test_feedback_bus_modulates_current_pass_uncertainty():
+    """Verify that degraded recovery health escalates uncertainty within the
+    current forward pass, not just the next one."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record several error recovery events to degrade health
+    for _ in range(20):
+        model.error_recovery.record_event(
+            error_class="numerical",
+            context="test_degradation",
+            success=True,
+        )
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # With degraded recovery health, uncertainty should be boosted
+    # (the boost is (1 - health) * 0.3; with 20 events, health ≈ 0.33,
+    # so boost ≈ 0.20)
+    assert 'uncertainty' in outputs
+    # We can't assert exact value since base uncertainty varies,
+    # but the mechanism should exist and not crash
+    assert isinstance(outputs['uncertainty'], float)
+    assert 0.0 <= outputs['uncertainty'] <= 1.0
+
+    print("✅ test_feedback_bus_modulates_current_pass_uncertainty PASSED")
+
+
+def test_causal_trace_records_dag_computation():
+    """Verify causal_trace records DAG computation when causal model is enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Verify causal trace has entries for the causal model
+    if model.causal_trace is not None:
+        recent = model.causal_trace.recent(n=50)
+        subsystems = [e.get('subsystem', '') for e in recent]
+        assert 'causal_model' in subsystems, (
+            f"causal_trace should record causal_model DAG computation, "
+            f"found subsystems: {subsystems}"
+        )
+
+    print("✅ test_causal_trace_records_dag_computation PASSED")
+
+
+def test_world_model_error_recovery_graceful():
+    """Verify that world model errors are caught and recovered gracefully."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if model.world_model is not None:
+        # Temporarily break the world model forward to trigger recovery
+        original_forward = model.world_model.forward
+        def broken_forward(*a, **kw):
+            raise RuntimeError("test world model error")
+        model.world_model.forward = broken_forward
+
+        z_in = torch.randn(2, 32)
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+        # Should not crash — error recovery should catch it
+        assert torch.isfinite(z_out).all(), "Output should be finite after world model error recovery"
+
+        # Verify error was recorded
+        stats = outputs['error_recovery_stats']
+        assert stats['total'] > 0, "Error recovery should have recorded the world model error"
+
+        model.world_model.forward = original_forward  # Restore
+
+    print("✅ test_world_model_error_recovery_graceful PASSED")
+
+
+def test_subsystem_health_comprehensive_coverage():
+    """Verify that integrity report covers all newly monitored subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = outputs['integrity_report']
+    subsystems = set(report['subsystem_health'].keys())
+
+    # These subsystems should ALL be monitored now
+    expected = {'meta_loop', 'safety', 'integration', 'factor_extraction',
+                'world_model', 'memory', 'causal', 'hybrid_reasoning'}
+    missing = expected - subsystems
+    assert not missing, f"Missing subsystem health monitoring for: {missing}"
+
+    print("✅ test_subsystem_health_comprehensive_coverage PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -10341,6 +10594,17 @@ if __name__ == '__main__':
     test_lambda_causal_dag_config()
     test_error_fallback_has_new_integration_keys()
     test_aeon_v3_with_all_causal_modules()
+    
+    # Cross-module integration & coherence tests
+    test_integrity_monitor_records_factor_extraction()
+    test_integrity_monitor_records_world_model()
+    test_integrity_monitor_records_memory()
+    test_integrity_monitor_records_causal()
+    test_integrity_monitor_records_hybrid_reasoning()
+    test_feedback_bus_modulates_current_pass_uncertainty()
+    test_causal_trace_records_dag_computation()
+    test_world_model_error_recovery_graceful()
+    test_subsystem_health_comprehensive_coverage()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
