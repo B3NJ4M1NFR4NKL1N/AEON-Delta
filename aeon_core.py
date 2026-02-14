@@ -473,11 +473,12 @@ class TensorGuard:
         self.alert_threshold = alert_threshold
         self._max_history_size = max_history_size
         
-        # Tracking statistics
+        # Tracking statistics (protected by _stats_lock for thread safety)
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
         self._context_history = deque(maxlen=max_history_size)
+        self._stats_lock = threading.Lock()
         
         logger.info(f"TensorGuard initialized: policy={policy.name}")
     
@@ -521,19 +522,22 @@ class TensorGuard:
         
         # Tracking
         if self.enable_tracking:
-            self._nan_count += int(torch.isnan(tensor).sum().item())
-            self._inf_count += int(torch.isinf(tensor).sum().item())
-            self._sanitize_count += 1
-            self._context_history.append({
-                'context': context,
-                'shape': tuple(tensor.shape),
-                'nan_count': int(torch.isnan(tensor).sum().item()),
-                'inf_count': int(torch.isinf(tensor).sum().item()),
-                'stacktrace': (
-                    ''.join(traceback.format_stack()[-3:-1]) 
-                    if self.policy == NaNPolicy.RAISE else None
-                )
-            })
+            nan_count = int(torch.isnan(tensor).sum().item())
+            inf_count = int(torch.isinf(tensor).sum().item())
+            with self._stats_lock:
+                self._nan_count += nan_count
+                self._inf_count += inf_count
+                self._sanitize_count += 1
+                self._context_history.append({
+                    'context': context,
+                    'shape': tuple(tensor.shape),
+                    'nan_count': nan_count,
+                    'inf_count': inf_count,
+                    'stacktrace': (
+                        ''.join(traceback.format_stack()[-3:-1]) 
+                        if self.policy == NaNPolicy.RAISE else None
+                    )
+                })
         
         # Policy enforcement
         if self.policy == NaNPolicy.RAISE:
@@ -672,10 +676,20 @@ class TensorGuard:
     
     def reset_stats(self):
         """Reset statistics."""
-        self._nan_count = 0
-        self._inf_count = 0
-        self._sanitize_count = 0
-        self._context_history = deque(maxlen=self._max_history_size)
+        with self._stats_lock:
+            self._nan_count = 0
+            self._inf_count = 0
+            self._sanitize_count = 0
+            self._context_history = deque(maxlen=self._max_history_size)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['_stats_lock']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._stats_lock = threading.Lock()
 
 
 def tensor_safe(
