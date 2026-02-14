@@ -13079,6 +13079,8 @@ class AEONDeltaV3(nn.Module):
     
     # Recovery pressure scaling: 0.1 means ~10 recoveries reach max pressure
     _RECOVERY_PRESSURE_RATE = 0.1
+    # Health threshold below which a subsystem is considered degraded
+    _SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD = 0.5
 
     def _compute_recovery_pressure(self) -> float:
         """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
@@ -14659,7 +14661,7 @@ class AEONDeltaV3(nn.Module):
             for _sub_name, _sub_health in _final_healths.items():
                 if (isinstance(_sub_health, (int, float))
                         and math.isfinite(_sub_health)
-                        and _sub_health < 0.5):
+                        and _sub_health < self._SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD):
                     self.error_evolution.record_episode(
                         error_class=f"subsystem_degraded_{_sub_name}",
                         strategy_used="integrity_monitor",
@@ -14806,7 +14808,7 @@ class AEONDeltaV3(nn.Module):
             _subsystem_healths = integrity_report.get("subsystem_health", {})
             _degraded = [
                 name for name, h in _subsystem_healths.items()
-                if isinstance(h, (int, float)) and h < 0.5
+                if isinstance(h, (int, float)) and h < self._SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD
             ]
             self.causal_trace.record(
                 "subsystem_health", "aggregated",

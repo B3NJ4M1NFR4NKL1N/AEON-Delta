@@ -11802,8 +11802,10 @@ def test_architecture_summary_comprehensive_modules():
     handler.setLevel(logging.INFO)
     logger = logging.getLogger("AEON-Delta")
     logger.addHandler(handler)
-    model.print_architecture_summary()
-    logger.removeHandler(handler)
+    try:
+        model.print_architecture_summary()
+    finally:
+        logger.removeHandler(handler)
     summary_text = buf.getvalue()
 
     # These modules must appear in the summary now
@@ -11845,7 +11847,7 @@ def test_late_stage_integrity_feeds_error_evolution():
     model.eval()
 
     # Simulate a degraded subsystem by recording low health
-    model.integrity_monitor.record_health("test_subsystem", 0.3, {"test": True})
+    model.integrity_monitor.record_health("synthetic_test_subsystem", 0.3, {"test": True})
 
     # Run a forward pass
     B, L = 2, 16
@@ -11857,8 +11859,8 @@ def test_late_stage_integrity_feeds_error_evolution():
     # degraded subsystem
     summary = model.error_evolution.get_error_summary()
     error_classes = summary.get("error_classes", {})
-    assert "subsystem_degraded_test_subsystem" in error_classes, (
-        f"Expected error evolution to record 'subsystem_degraded_test_subsystem' "
+    assert "subsystem_degraded_synthetic_test_subsystem" in error_classes, (
+        f"Expected error evolution to record 'subsystem_degraded_synthetic_test_subsystem' "
         f"but got classes: {list(error_classes.keys())}"
     )
 
