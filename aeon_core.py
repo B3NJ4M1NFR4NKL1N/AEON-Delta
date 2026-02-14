@@ -3219,9 +3219,10 @@ class InferenceCache:
     @staticmethod
     def _quantize_int8(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Symmetric FP32→INT8 quantization (4× compression)."""
-        amax = tensor.abs().amax().clamp(min=1e-8)
+        clean = torch.nan_to_num(tensor, nan=0.0, posinf=1e6, neginf=-1e6)
+        amax = clean.abs().amax().clamp(min=1e-8)
         scale = amax / 127.0
-        quantized = (tensor / scale).round().clamp(-128, 127).to(torch.int8)
+        quantized = (clean / scale).round().clamp(-128, 127).to(torch.int8)
         return quantized, scale
 
     @staticmethod
@@ -4500,6 +4501,10 @@ class LipschitzConstrainedLambda(nn.Module):
                 
                 numerator = torch.norm(fx - fy).item()
                 denominator = max(torch.norm(x - y).item(), 1e-8)
+                
+                if not (math.isfinite(numerator) and math.isfinite(denominator)):
+                    continue
+                
                 ratio = numerator / denominator
                 
                 max_ratio = max(max_ratio, ratio)
@@ -5435,16 +5440,14 @@ class FastHessianComputer:
         return H_batch
 
     def _hash_tensor(self, t: torch.Tensor) -> int:
-        """Hash tensor for caching using multiple statistics to reduce collisions."""
+        """Hash tensor for caching using content bytes to avoid collisions."""
         t_flat = t.detach().float().flatten()
         # Replace NaN/Inf to avoid unhashable or orphaned cache entries
         t_flat = torch.nan_to_num(t_flat, nan=0.0, posinf=1e6, neginf=-1e6)
+        content_hash = hashlib.sha256(t_flat.cpu().numpy().tobytes()).hexdigest()
         return hash((
             tuple(t.shape),
-            t_flat.sum().item(),
-            t_flat.std().item() if t_flat.numel() > 1 else 0.0,
-            t_flat[0].item() if t_flat.numel() > 0 else 0.0,
-            t_flat[-1].item() if t_flat.numel() > 0 else 0.0,
+            content_hash,
             t.device.type
         ))
     
