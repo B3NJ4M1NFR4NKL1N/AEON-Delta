@@ -13529,8 +13529,12 @@ class AEONDeltaV3(nn.Module):
         # downstream metacognitive cycles activate more aggressively.  This
         # closes the loop within a single forward pass rather than waiting
         # for the next one.
+        # The boost factor (0.3) caps the maximum uncertainty increase from
+        # recovery degradation alone, preventing a single bad batch from
+        # overwhelming the base uncertainty signal.
+        _FEEDBACK_UNCERTAINTY_SCALE = 0.3
         if _recovery_health_scalar < 1.0:
-            _feedback_uncertainty_boost = (1.0 - _recovery_health_scalar) * 0.3
+            _feedback_uncertainty_boost = (1.0 - _recovery_health_scalar) * _FEEDBACK_UNCERTAINTY_SCALE
             uncertainty = min(1.0, uncertainty + _feedback_uncertainty_boost)
             high_uncertainty = uncertainty > 0.5
         

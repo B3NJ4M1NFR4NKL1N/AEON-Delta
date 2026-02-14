@@ -9939,7 +9939,9 @@ def test_feedback_bus_modulates_current_pass_uncertainty():
     model = AEONDeltaV3(config)
     model.eval()
 
-    # Record several error recovery events to degrade health
+    # Record enough error recovery events to significantly degrade health.
+    # With decay rate 0.1 (from ErrorRecoveryManager), 20 events yields
+    # health = 1/(1 + 20*0.1) = 0.33, ensuring the boost is noticeable.
     for _ in range(20):
         model.error_recovery.record_event(
             error_class="numerical",
@@ -9950,9 +9952,9 @@ def test_feedback_bus_modulates_current_pass_uncertainty():
     z_in = torch.randn(2, 32)
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
-    # With degraded recovery health, uncertainty should be boosted
-    # (the boost is (1 - health) * 0.3; with 20 events, health ≈ 0.33,
-    # so boost ≈ 0.20)
+    # With degraded recovery health, uncertainty should be boosted.
+    # Exact value depends on base uncertainty and health formula
+    # (health = 1/(1+total*0.1), boost = (1-health)*0.3).
     assert 'uncertainty' in outputs
     # We can't assert exact value since base uncertainty varies,
     # but the mechanism should exist and not crash
