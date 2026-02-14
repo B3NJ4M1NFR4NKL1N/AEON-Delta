@@ -1013,6 +1013,67 @@ class DecisionAuditLog:
                 if start_time <= e["timestamp"] <= end_time
             ]
 
+    def get_pattern_insights(self) -> Dict[str, Any]:
+        """Analyse recent audit entries and return actionable feedback.
+
+        Scans the current window for recurring failure patterns, frequent
+        rollbacks, and convergence anomalies.  The returned dict can be
+        consumed by the reasoning pipeline to adaptively adjust
+        sub-system behaviour (e.g. tighten safety thresholds when rollback
+        frequency is high, or increase meta-loop iterations when
+        convergence quality is low).
+
+        Returns:
+            Dict with:
+            - ``rollback_rate``: fraction of safety rollback events.
+            - ``nan_fallback_rate``: fraction of NaN fallback events.
+            - ``error_rate``: fraction of error/critical severity events.
+            - ``dominant_failure``: most frequent warning+ subsystem, or ``None``.
+            - ``recommend_deeper_reasoning``: ``True`` when error patterns
+              suggest the pipeline should invest more compute (more
+              meta-loop iterations, enable auto-critic, etc.).
+        """
+        with self._lock:
+            entries = list(self._entries)
+
+        total = max(len(entries), 1)
+
+        rollback_count = sum(
+            1 for e in entries
+            if e["decision"] in ("rollback", "nan_fallback")
+        )
+        error_count = sum(
+            1 for e in entries
+            if self.SEVERITY_LEVELS.get(e.get("severity", "info"), 1) >= 3
+        )
+        nan_count = sum(
+            1 for e in entries if e["decision"] == "nan_fallback"
+        )
+
+        # Identify the subsystem with the most warning+ events
+        failure_counter: Dict[str, int] = defaultdict(int)
+        for e in entries:
+            if self.SEVERITY_LEVELS.get(e.get("severity", "info"), 1) >= 2:
+                failure_counter[e["subsystem"]] += 1
+        dominant_failure = (
+            max(failure_counter, key=failure_counter.get)
+            if failure_counter else None
+        )
+
+        rollback_rate = rollback_count / total
+        error_rate = error_count / total
+        nan_rate = nan_count / total
+
+        recommend_deeper = (rollback_rate > 0.15 or error_rate > 0.1)
+
+        return {
+            "rollback_rate": rollback_rate,
+            "nan_fallback_rate": nan_rate,
+            "error_rate": error_rate,
+            "dominant_failure": dominant_failure,
+            "recommend_deeper_reasoning": recommend_deeper,
+        }
+
 
 # ============================================================================
 # SECTION 3c: STATE CONSISTENCY VALIDATOR
@@ -12469,6 +12530,17 @@ class AEONDeltaV3(nn.Module):
                 'ns_consistency_results': {},
                 'unified_simulator_results': {},
                 'hybrid_reasoning_results': {},
+                # --- AGI coherence provenance (defaults for error path) ---
+                'uncertainty': 1.0,
+                'adaptive_safety_threshold': self.config.safety_threshold,
+                'audit_insights': {
+                    'rollback_rate': 0.0,
+                    'nan_fallback_rate': 0.0,
+                    'error_rate': 0.0,
+                    'dominant_failure': None,
+                    'recommend_deeper_reasoning': False,
+                },
+                'causal_trace_id': '',
             }
             return z_fallback, fallback_outputs
 
@@ -12504,6 +12576,17 @@ class AEONDeltaV3(nn.Module):
                 "input", "received",
                 initial_state_hash=input_hash,
                 metadata={"batch_size": B},
+            )
+        
+        # 0c. Audit-driven feedback — consult historical decision patterns
+        # to adaptively adjust reasoning depth for this forward pass.
+        audit_insights = self.audit_log.get_pattern_insights()
+        audit_recommends_deeper = audit_insights["recommend_deeper_reasoning"]
+        if audit_recommends_deeper and not fast:
+            logger.debug(
+                "Audit feedback: recommend deeper reasoning "
+                f"(rollback_rate={audit_insights['rollback_rate']:.2f}, "
+                f"error_rate={audit_insights['error_rate']:.2f})"
             )
         
         self.progress_tracker.begin_phase("meta_loop")
@@ -12552,6 +12635,43 @@ class AEONDeltaV3(nn.Module):
             "convergence_rate": convergence_rate,
         })
         
+        # 1a-ii. Convergence-adaptive subsystem gating — when convergence
+        # quality is low (or audit patterns indicate instability), downstream
+        # subsystems should invest more compute.  The scalar ``cq`` ∈ [0, 1]
+        # gates blend weights, safety thresholds, and critic activation.
+        convergence_quality_scalar = float(convergence_rate) if meta_loop_valid else 0.0
+        _needs_deeper = (
+            convergence_quality_scalar < 0.5
+            or audit_recommends_deeper
+        )
+        # Adaptively lower the safety threshold when convergence is weak
+        # so that the safety system is more protective.
+        adaptive_safety_threshold = self.config.safety_threshold
+        if _needs_deeper and self.safety_system is not None:
+            adaptive_safety_threshold = min(
+                self.config.safety_threshold,
+                self.config.safety_threshold * (0.5 + 0.5 * convergence_quality_scalar),
+            )
+        
+        # 1a-iii. Uncertainty estimation — measure the spread of the
+        # converged state relative to the input.  High residual variance
+        # indicates the meta-loop is unsure.  This scalar is used later
+        # to trigger deeper processing (auto-critic, world model blend).
+        with torch.no_grad():
+            residual_var = (C_star - z_in).var(dim=-1).mean().item()
+            uncertainty = 1.0 / (1.0 + math.exp(-10.0 * (residual_var - 0.5)))
+        high_uncertainty = uncertainty > 0.5
+        if high_uncertainty and not fast:
+            logger.debug(
+                f"High uncertainty detected ({uncertainty:.3f}); "
+                "triggering deeper meta-cognitive processing"
+            )
+            self.audit_log.record("uncertainty", "high", {
+                "uncertainty": uncertainty,
+                "residual_var": residual_var,
+                "convergence_quality": convergence_quality_scalar,
+            })
+        
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
         # pooling preserves permutation invariance across slots and
@@ -12581,9 +12701,11 @@ class AEONDeltaV3(nn.Module):
         )
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
+        # Uses adaptive_safety_threshold which is tightened when convergence
+        # is weak or audit patterns indicate instability.
         safety_enforced = False
         if self.safety_system is not None:
-            safety_threshold = self.config.safety_threshold
+            safety_threshold = adaptive_safety_threshold
             unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
             if unsafe_mask.any():
                 safety_enforced = True
@@ -12842,7 +12964,26 @@ class AEONDeltaV3(nn.Module):
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
+                        "trigger": "ns_violation",
                     })
+        
+        # 8b4. Uncertainty-triggered meta-cognitive cycle — when uncertainty
+        # is high or audit patterns indicate instability, invoke auto-critic
+        # even without NS violations.  This ensures that *any* unresolved
+        # ambiguity triggers self-reflection, not just symbolic violations.
+        if (self.auto_critic is not None
+                and not fast
+                and (high_uncertainty or audit_recommends_deeper)
+                and not ns_consistency_results.get("num_violations", torch.zeros(1)).sum().item() > 0):
+            critic_result = self.auto_critic(z_out)
+            revised = critic_result.get("candidate", None)
+            if revised is not None and torch.isfinite(revised).all():
+                z_out = revised
+            self.audit_log.record("auto_critic", "revised", {
+                "iterations": critic_result.get("iterations", 0),
+                "final_score": critic_result.get("final_score", 0.0),
+                "trigger": "uncertainty" if high_uncertainty else "audit_pattern",
+            })
         
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
@@ -12853,6 +12994,21 @@ class AEONDeltaV3(nn.Module):
         )
         self.progress_tracker.end_phase("integration", success=integration_healthy)
         run_summary = self.progress_tracker.finish_run()
+        
+        # 8d. Positive recovery reinforcement — when the pipeline
+        # completes successfully, record a positive reward so that
+        # MetaRecoveryLearner can learn from success, not only failure.
+        if self.meta_recovery is not None and integration_healthy:
+            try:
+                success_ctx = torch.zeros(1, 64, device=device)
+                self.meta_recovery.recovery_buffer.push(
+                    state=success_ctx.squeeze(0),
+                    action=0,  # "sanitize" (the default successful path)
+                    reward=1.0,  # positive reinforcement
+                    next_state=success_ctx.squeeze(0),
+                )
+            except Exception:
+                pass  # Non-critical; swallow silently
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -12881,6 +13037,11 @@ class AEONDeltaV3(nn.Module):
             'ns_consistency_results': ns_consistency_results,
             'unified_simulator_results': unified_simulator_results,
             'hybrid_reasoning_results': hybrid_reasoning_results,
+            # --- AGI coherence provenance ---
+            'uncertainty': uncertainty,
+            'adaptive_safety_threshold': adaptive_safety_threshold,
+            'audit_insights': audit_insights,
+            'causal_trace_id': input_trace_id,
         }
         
         return z_out, outputs

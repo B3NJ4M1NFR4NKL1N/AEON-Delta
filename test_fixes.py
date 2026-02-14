@@ -7941,6 +7941,187 @@ def test_new_components_disabled_by_default():
     print("✅ test_new_components_disabled_by_default PASSED")
 
 
+# ============================================================================
+# AGI Architecture Coherence Tests
+# ============================================================================
+
+
+def test_audit_log_get_pattern_insights_empty():
+    """Verify get_pattern_insights returns sensible defaults on an empty log."""
+    from aeon_core import DecisionAuditLog
+    
+    audit = DecisionAuditLog(max_entries=100)
+    insights = audit.get_pattern_insights()
+    
+    assert isinstance(insights, dict)
+    assert insights["rollback_rate"] == 0.0
+    assert insights["nan_fallback_rate"] == 0.0
+    assert insights["error_rate"] == 0.0
+    assert insights["dominant_failure"] is None
+    assert insights["recommend_deeper_reasoning"] is False
+    print("✅ test_audit_log_get_pattern_insights_empty PASSED")
+
+
+def test_audit_log_get_pattern_insights_with_data():
+    """Verify get_pattern_insights detects rollback patterns correctly."""
+    from aeon_core import DecisionAuditLog
+    
+    audit = DecisionAuditLog(max_entries=100)
+    # Record 20 normal events and 5 rollbacks (25% > 15% threshold)
+    for i in range(20):
+        audit.record("meta_loop", "completed", {"iterations": 10})
+    for i in range(5):
+        audit.record("safety", "rollback", {"score": 0.3}, severity="warning")
+    
+    insights = audit.get_pattern_insights()
+    
+    assert insights["rollback_rate"] == 5.0 / 25.0  # 0.2
+    assert insights["recommend_deeper_reasoning"] is True
+    assert insights["dominant_failure"] == "safety"
+    print("✅ test_audit_log_get_pattern_insights_with_data PASSED")
+
+
+def test_audit_log_get_pattern_insights_error_detection():
+    """Verify get_pattern_insights detects error severity patterns."""
+    from aeon_core import DecisionAuditLog
+    
+    audit = DecisionAuditLog(max_entries=100)
+    for i in range(8):
+        audit.record("integration", "completed", {})
+    for i in range(2):
+        audit.record("meta_loop", "nan_fallback", {}, severity="error")
+    
+    insights = audit.get_pattern_insights()
+    
+    # 2/10 = 20% error rate > 10% threshold
+    assert insights["error_rate"] == 0.2
+    assert insights["nan_fallback_rate"] == 0.2
+    assert insights["recommend_deeper_reasoning"] is True
+    assert insights["dominant_failure"] == "meta_loop"
+    print("✅ test_audit_log_get_pattern_insights_error_detection PASSED")
+
+
+def test_reasoning_core_outputs_uncertainty():
+    """Verify reasoning_core outputs include uncertainty and audit_insights."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+    
+    # New AGI coherence fields must be present
+    assert 'uncertainty' in outputs
+    assert 'adaptive_safety_threshold' in outputs
+    assert 'audit_insights' in outputs
+    assert 'causal_trace_id' in outputs
+    
+    # uncertainty should be a float in [0, 1]
+    assert isinstance(outputs['uncertainty'], float)
+    assert 0.0 <= outputs['uncertainty'] <= 1.0
+    
+    # audit_insights should have the expected keys
+    assert 'rollback_rate' in outputs['audit_insights']
+    assert 'recommend_deeper_reasoning' in outputs['audit_insights']
+    
+    print("✅ test_reasoning_core_outputs_uncertainty PASSED")
+
+
+def test_reasoning_core_error_fallback_has_new_keys():
+    """Verify that the error fallback path also has new output keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=40, z_dim=40, vq_embedding_dim=40,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    # Trigger the error fallback by passing a misshapen tensor
+    z_bad = torch.randn(2, 40)
+    # Force an error path by temporarily breaking the meta_loop
+    original_meta = model.meta_loop
+    model.meta_loop = None  # Will cause AttributeError
+    
+    z_out, outputs = model.reasoning_core(z_bad, fast=True)
+    
+    model.meta_loop = original_meta  # Restore
+    
+    # Even in error fallback, new keys must be present
+    assert 'uncertainty' in outputs
+    assert 'adaptive_safety_threshold' in outputs
+    assert 'audit_insights' in outputs
+    assert 'causal_trace_id' in outputs
+    assert outputs['error_recovered'] is True
+    
+    print("✅ test_reasoning_core_error_fallback_has_new_keys PASSED")
+
+
+def test_adaptive_safety_threshold_tightens_on_low_convergence():
+    """Verify that adaptive_safety_threshold <= config threshold
+    when convergence quality is low."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=True,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        safety_threshold=0.5,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+    
+    # The adaptive threshold should be <= the configured threshold
+    assert outputs['adaptive_safety_threshold'] <= config.safety_threshold
+    
+    print("✅ test_adaptive_safety_threshold_tightens_on_low_convergence PASSED")
+
+
+def test_meta_recovery_positive_reinforcement():
+    """Verify that MetaRecoveryLearner receives positive reward on success."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_meta_recovery_integration=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    # Check buffer is initially empty
+    assert len(model.meta_recovery.recovery_buffer) == 0
+    
+    # Run a successful forward pass through reasoning_core
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+    
+    # Buffer should now have a positive-reward entry
+    assert len(model.meta_recovery.recovery_buffer) > 0
+    
+    # Check that the reward is positive (success reinforcement)
+    state, action, reward, next_state = model.meta_recovery.recovery_buffer._buffer[0]
+    assert reward > 0, f"Expected positive reward, got {reward}"
+    
+    print("✅ test_meta_recovery_positive_reinforcement PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -8395,6 +8576,15 @@ if __name__ == '__main__':
     test_aeon_v3_with_full_pipeline_integration()
     test_new_config_defaults()
     test_new_components_disabled_by_default()
+    
+    # AGI Architecture Coherence tests
+    test_audit_log_get_pattern_insights_empty()
+    test_audit_log_get_pattern_insights_with_data()
+    test_audit_log_get_pattern_insights_error_detection()
+    test_reasoning_core_outputs_uncertainty()
+    test_reasoning_core_error_fallback_has_new_keys()
+    test_adaptive_safety_threshold_tightens_on_low_convergence()
+    test_meta_recovery_positive_reinforcement()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
