@@ -13372,6 +13372,18 @@ class AEONDeltaV3(nn.Module):
                 "residual_norm": residual_norm_scalar,
                 "verdict": convergence_verdict,
             }, severity="warning")
+            # Record divergence in error evolution so the system can
+            # learn from sustained convergence failures over time and
+            # adapt its recovery strategy accordingly.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="convergence_divergence",
+                    strategy_used="deeper_meta_loop",
+                    success=False,
+                    metadata={
+                        "residual_norm": residual_norm_scalar,
+                    },
+                )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
         # quality is low, audit patterns indicate instability, or the
@@ -13515,8 +13527,24 @@ class AEONDeltaV3(nn.Module):
             # approaches 0 as recovery count grows.
             _RECOVERY_DECAY_RATE = 0.1
             _recovery_health_scalar = 1.0 / (1.0 + _total_recoveries * _RECOVERY_DECAY_RATE)
+            # Blend integrity monitor's aggregate subsystem health with
+            # recovery-based health so the feedback bus reflects both
+            # error frequency AND current subsystem status.  This ensures
+            # that even a system with zero recoveries will modulate its
+            # next forward pass when subsystems report degraded health.
+            _integrity_health_scalar = 1.0
+            _integrity_report = self.integrity_monitor.get_integrity_report()
+            _subsystem_healths = _integrity_report.get("subsystem_health", {})
+            if _subsystem_healths:
+                _health_values = [
+                    v for v in _subsystem_healths.values()
+                    if isinstance(v, (int, float)) and math.isfinite(v)
+                ]
+                if _health_values:
+                    _integrity_health_scalar = sum(_health_values) / len(_health_values)
+            _combined_health_scalar = min(_recovery_health_scalar, _integrity_health_scalar)
             _recovery_health = torch.full(
-                (B, 1), _recovery_health_scalar, device=device,
+                (B, 1), _combined_health_scalar, device=device,
             )
             self._cached_feedback = self.feedback_bus(
                 batch_size=B,
@@ -13726,6 +13754,23 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
+        
+        # 5b1b. World model surprise escalates uncertainty — high
+        # prediction error from the world model indicates the system's
+        # internal model is inaccurate, which should trigger deeper
+        # metacognitive processing.  The surprise signal is scaled by
+        # _SURPRISE_UNCERTAINTY_SCALE to prevent a single noisy
+        # prediction from overwhelming the base uncertainty.
+        _SURPRISE_UNCERTAINTY_SCALE = 0.2
+        if surprise.numel() > 0:
+            _mean_surprise = float(surprise.mean().item())
+            if math.isfinite(_mean_surprise) and _mean_surprise > self.config.surprise_threshold:
+                _surprise_boost = min(
+                    1.0 - uncertainty,
+                    _mean_surprise * _SURPRISE_UNCERTAINTY_SCALE,
+                )
+                uncertainty = min(1.0, uncertainty + _surprise_boost)
+                high_uncertainty = uncertainty > 0.5
         
         # 5b2. MCTS planning — gated by complexity gate[1]
         mcts_results = {}
@@ -14012,6 +14057,21 @@ class AEONDeltaV3(nn.Module):
             self.audit_log.record("hierarchical_vae", "computed", {
                 "kl_loss": float(vae_out['kl_loss'].item()),
             })
+            # High HVAE KL divergence indicates the latent space
+            # distributions are highly spread, signalling abstraction-
+            # level uncertainty.  Escalate the uncertainty scalar so
+            # that metacognitive cycles activate when the VAE is unsure
+            # about the correct level of abstraction.
+            _HVAE_KL_THRESHOLD = 1.0
+            _HVAE_UNCERTAINTY_SCALE = 0.15
+            _hvae_kl_val = float(vae_out['kl_loss'].item())
+            if math.isfinite(_hvae_kl_val) and _hvae_kl_val > _HVAE_KL_THRESHOLD:
+                _hvae_boost = min(
+                    1.0 - uncertainty,
+                    (_hvae_kl_val - _HVAE_KL_THRESHOLD) * _HVAE_UNCERTAINTY_SCALE,
+                )
+                uncertainty = min(1.0, uncertainty + _hvae_boost)
+                high_uncertainty = uncertainty > 0.5
         
         # 5f. Causal context — store current state into hierarchical context
         if self.causal_context is not None:
@@ -14261,6 +14321,26 @@ class AEONDeltaV3(nn.Module):
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
         integrity_report = self.integrity_monitor.get_integrity_report()
+        
+        # 8g. Record aggregated subsystem health in causal trace so that
+        # root-cause analysis can link system-wide health degradation
+        # back to specific subsystem failures within this forward pass.
+        if self.causal_trace is not None:
+            _subsystem_healths = integrity_report.get("subsystem_health", {})
+            _degraded = [
+                name for name, h in _subsystem_healths.items()
+                if isinstance(h, (int, float)) and h < 0.5
+            ]
+            self.causal_trace.record(
+                "subsystem_health", "aggregated",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "degraded_subsystems": _degraded,
+                    "num_degraded": len(_degraded),
+                    "overall_healthy": len(_degraded) == 0,
+                },
+            )
+        
         outputs = {
             'core_state': C_star,
             'factors': factors,
