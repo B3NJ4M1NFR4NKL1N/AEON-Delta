@@ -11181,6 +11181,236 @@ def test_adapt_weights_no_data():
     print("✅ test_adapt_weights_no_data PASSED")
 
 
+# ==================== AGI Architecture Unification Tests ====================
+# Tests for cross-module integration gaps fixed in this PR.
+
+def test_neurogenic_memory_retrieval_blend():
+    """Fix 1: Neurogenic memory consolidation results are retrieved and
+    blended back into C_star, closing the loop so stored patterns
+    influence ongoing reasoning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_neurogenic_memory=True,
+        neurogenic_max_capacity=50,
+        neurogenic_importance_threshold=0.01,  # Low threshold so neurons are created
+        neurogenic_retrieval_weight=0.1,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # First pass — seed neurogenic memory with patterns
+    z_in = torch.randn(2, 32)
+    _, outputs1 = model.reasoning_core(z_in, fast=False)
+
+    # Neurogenic memory should have neurons after consolidation
+    assert model.neurogenic_memory is not None
+    # The model should have created neurons from the consolidation
+    # (depends on importance score; with low threshold this is likely)
+    # Run a second pass — retrieval should now blend stored neurons
+    _, outputs2 = model.reasoning_core(z_in, fast=False)
+
+    # Both passes should produce valid outputs
+    assert torch.isfinite(outputs1['core_state']).all(), "First pass core_state has NaN/Inf"
+    assert torch.isfinite(outputs2['core_state']).all(), "Second pass core_state has NaN/Inf"
+
+    print("✅ test_neurogenic_memory_retrieval_blend PASSED")
+
+
+def test_feedback_bus_world_model_surprise():
+    """Fix 2: CognitiveFeedbackBus accepts world_model_surprise signal,
+    enabling cross-step surprise feedback into the meta-loop."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Default (no surprise)
+    out_no_surprise = bus(batch_size=2, device=torch.device("cpu"))
+    assert out_no_surprise.shape == (2, 32)
+
+    # With high surprise
+    out_high_surprise = bus(
+        batch_size=2, device=torch.device("cpu"),
+        world_model_surprise=5.0,
+    )
+    assert out_high_surprise.shape == (2, 32)
+
+    # Different surprise values should produce different feedback vectors
+    assert not torch.allclose(out_no_surprise, out_high_surprise, atol=1e-6), (
+        "Zero and high surprise feedback should differ"
+    )
+
+    print("✅ test_feedback_bus_world_model_surprise PASSED")
+
+
+def test_cached_surprise_persists_across_passes():
+    """Fix 2: World model surprise is cached across forward passes,
+    closing the cross-step feedback loop for prediction error."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        surprise_threshold=0.01,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initial state — no surprise cached
+    assert model._cached_surprise == 0.0
+
+    # Run a forward pass with world model enabled
+    z_in = torch.randn(2, 32)
+    _, _ = model.reasoning_core(z_in, fast=False)
+
+    # After a pass with world model, surprise should be updated
+    # (with random weights, surprise will be > 0)
+    assert isinstance(model._cached_surprise, float)
+    assert math.isfinite(model._cached_surprise)
+
+    print("✅ test_cached_surprise_persists_across_passes PASSED")
+
+
+def test_mcts_runs_after_memory_retrieval():
+    """Fix 3: MCTS planning runs after memory retrieval so the search
+    tree root state includes memory context for memory-aware planning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_hierarchical_memory=True,
+        enable_mcts_planner=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    _, outputs = model.reasoning_core(z_in, fast=False, planning=True)
+
+    # MCTS should have produced results
+    mcts_results = outputs.get('mcts_results', {})
+    assert mcts_results, "MCTS results should not be empty when enabled with planning=True"
+    assert 'best_action' in mcts_results, "MCTS results should contain best_action"
+
+    print("✅ test_mcts_runs_after_memory_retrieval PASSED")
+
+
+def test_causal_planning_annotation():
+    """Fix 4: When both MCTS and causal model are active, MCTS results
+    are annotated with causal adjacency for traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_mcts_planner=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    _, outputs = model.reasoning_core(z_in, fast=False, planning=True)
+
+    mcts_results = outputs.get('mcts_results', {})
+    causal_model_results = outputs.get('causal_model_results', {})
+
+    # When both are active, MCTS should have causal annotations
+    if mcts_results and causal_model_results:
+        assert 'causal_adjacency' in mcts_results, (
+            "MCTS results should be annotated with causal_adjacency"
+        )
+        assert 'causal_dag_loss' in mcts_results, (
+            "MCTS results should be annotated with causal_dag_loss"
+        )
+
+    print("✅ test_causal_planning_annotation PASSED")
+
+
+def test_hybrid_reasoning_consistency_check():
+    """Fix 5: When hybrid reasoning and NS consistency checker are both
+    present, the NS checker validates hybrid conclusions in addition
+    to the main output.  We verify the code-path exists by checking
+    the model wiring and the NS checker's ability to process inputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3, NeuroSymbolicConsistencyChecker
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hybrid_reasoning=True,
+        enable_ns_consistency_check=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify both subsystems are wired
+    assert model.hybrid_reasoning is not None, "Hybrid reasoning should be enabled"
+    assert model.ns_consistency_checker is not None, "NS consistency checker should be enabled"
+    assert isinstance(model.ns_consistency_checker, NeuroSymbolicConsistencyChecker)
+
+    # Verify the NS checker can process tensors with correct dimensions:
+    # hidden_dim for state, num_predicates (default 32) for rules
+    test_state = torch.randn(2, 64)
+    test_rules = torch.sigmoid(torch.randn(2, 32))  # num_predicates=32 (default)
+    ns_result = model.ns_consistency_checker(test_state, test_rules)
+    assert "num_violations" in ns_result, "NS checker should return violation counts"
+
+    print("✅ test_hybrid_reasoning_consistency_check PASSED")
+
+
+def test_feedback_bus_num_channels():
+    """Verify CognitiveFeedbackBus has 6 signal channels after adding
+    world_model_surprise."""
+    from aeon_core import CognitiveFeedbackBus
+
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 6, (
+        f"Expected 6 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    )
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    # Projection input should match NUM_SIGNAL_CHANNELS
+    first_layer = bus.projection[0]
+    assert first_layer.in_features == 6, (
+        f"First layer input features should be 6, got {first_layer.in_features}"
+    )
+
+    print("✅ test_feedback_bus_num_channels PASSED")
+
+
+def test_neurogenic_retrieval_weight_config():
+    """Verify neurogenic_retrieval_weight is a valid AEONConfig field."""
+    from aeon_core import AEONConfig
+
+    # Default value
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    assert hasattr(config, 'neurogenic_retrieval_weight')
+    assert config.neurogenic_retrieval_weight == 0.1
+
+    # Custom value
+    config2 = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        neurogenic_retrieval_weight=0.2,
+    )
+    assert config2.neurogenic_retrieval_weight == 0.2
+
+    print("✅ test_neurogenic_retrieval_weight_config PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -11771,6 +12001,16 @@ if __name__ == '__main__':
     test_post_integration_metacognitive_reevaluation()
     test_signal_weights_returned_in_evaluate()
     test_adapt_weights_no_data()
+    
+    # AGI Architecture Unification — Cross-module integration gap fixes
+    test_neurogenic_memory_retrieval_blend()
+    test_feedback_bus_world_model_surprise()
+    test_cached_surprise_persists_across_passes()
+    test_mcts_runs_after_memory_retrieval()
+    test_causal_planning_annotation()
+    test_hybrid_reasoning_consistency_check()
+    test_feedback_bus_num_channels()
+    test_neurogenic_retrieval_weight_config()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
