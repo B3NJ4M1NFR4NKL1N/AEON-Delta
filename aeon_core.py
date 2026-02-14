@@ -3835,8 +3835,7 @@ class ChunkedSequenceProcessor:
             # Adaptive chunk size based on content entropy
             content_var = x.var(dim=-1).mean(dim=0)  # [L] variance per position
             max_var_raw = content_var.max().item()
-            max_var = max_var_raw if math.isfinite(max_var_raw) else 1e-8
-            max_var = max(max_var, 1e-8)
+            max_var = max(max_var_raw, 1e-8) if math.isfinite(max_var_raw) else 1e-8
             # Higher variance → smaller chunks (more detail needed)
             mean_var_raw = content_var.mean().item()
             mean_var = mean_var_raw if math.isfinite(mean_var_raw) else 0.0
@@ -5368,8 +5367,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
             if not torch.isfinite(alpha).all():
                 raise RuntimeError("Non-finite values in solve result")
             alpha = alpha / alpha.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            if torch.isfinite(alpha).all():
-                return alpha
+            return alpha
         except (RuntimeError, NotImplementedError):
             pass
         
@@ -5381,8 +5379,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
             if not torch.isfinite(alpha_cpu).all():
                 raise RuntimeError("Non-finite values in CPU solve result")
             alpha_cpu = alpha_cpu / alpha_cpu.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            if torch.isfinite(alpha_cpu).all():
-                return alpha_cpu.to(device)
+            return alpha_cpu.to(device)
         except RuntimeError:
             pass
         
