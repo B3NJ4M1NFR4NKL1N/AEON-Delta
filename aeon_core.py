@@ -13229,6 +13229,10 @@ class AEONDeltaV3(nn.Module):
                 'coherence_results': {},
                 'metacognitive_info': {},
                 'error_recovery_stats': self.error_recovery.get_recovery_stats(),
+                'error_evolution_summary': (
+                    self.error_evolution.get_error_summary()
+                    if self.error_evolution is not None else {}
+                ),
             }
             return z_fallback, fallback_outputs
 
@@ -13582,15 +13586,24 @@ class AEONDeltaV3(nn.Module):
                 memory_staleness=self._memory_stale,
             )
             if metacognitive_info.get("should_trigger", False):
+                # Consult error evolution for historically best strategy
+                # when facing metacognitive re-reasoning decisions.
+                _evolved_metacog_strategy: Optional[str] = None
+                if self.error_evolution is not None:
+                    _evolved_metacog_strategy = self.error_evolution.get_best_strategy(
+                        "metacognitive_rerun"
+                    )
                 logger.info(
                     f"Meta-cognitive recursion triggered "
                     f"(triggers={metacognitive_info['triggers_active']}, "
-                    f"recursion={metacognitive_info['recursion_count']})"
+                    f"recursion={metacognitive_info['recursion_count']}, "
+                    f"evolved_strategy={_evolved_metacog_strategy})"
                 )
                 self.audit_log.record("metacognitive_recursion", "triggered", {
                     "triggers_active": metacognitive_info["triggers_active"],
                     "trigger_score": metacognitive_info["trigger_score"],
                     "recursion_count": metacognitive_info["recursion_count"],
+                    "evolved_strategy": _evolved_metacog_strategy,
                 })
                 # Record metacognitive recursion in causal trace for
                 # full traceability of why deeper reasoning was invoked.
@@ -13625,9 +13638,11 @@ class AEONDeltaV3(nn.Module):
                 self.meta_loop.convergence_threshold = orig_threshold
                 self.meta_loop.max_iterations = orig_max_iter
                 # Only accept deeper result if it's finite and converged better
+                _metacog_accepted = False
                 if torch.isfinite(C_star_deeper).all():
                     deeper_rate = meta_deeper.get("convergence_rate", 0.0)
                     if deeper_rate >= convergence_quality_scalar:
+                        _metacog_accepted = True
                         C_star = C_star_deeper
                         # Re-extract factors with refined C_star
                         factors, embedded_factors = self.sparse_factors(C_star)
@@ -13641,6 +13656,18 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
+                # Record metacognitive re-reasoning outcome in error
+                # evolution so the system learns from both successful
+                # and unsuccessful deeper reasoning attempts.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="metacognitive_rerun",
+                        strategy_used="deeper_meta_loop",
+                        success=_metacog_accepted,
+                        metadata={
+                            "triggers": metacognitive_info.get("triggers_active", []),
+                        },
+                    )
         
         # 5b. World model — surprise-driven integration
         # Gated by complexity estimator gate[0] when available.
@@ -14216,6 +14243,20 @@ class AEONDeltaV3(nn.Module):
                     ),
                     "num_states_verified": len(post_states),
                 })
+                # Record post-integration coherence deficit in error
+                # evolution so the system can learn from cross-module
+                # inconsistencies detected after full pipeline execution.
+                if post_coherence.get("needs_recheck", False) and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="post_integration_coherence_deficit",
+                        strategy_used="coherence_verification",
+                        success=False,
+                        metadata={
+                            "post_coherence_score": float(
+                                post_coherence["coherence_score"].mean().item()
+                            ),
+                        },
+                    )
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -14257,6 +14298,10 @@ class AEONDeltaV3(nn.Module):
             'coherence_results': coherence_results,
             'metacognitive_info': metacognitive_info,
             'error_recovery_stats': self.error_recovery.get_recovery_stats(),
+            'error_evolution_summary': (
+                self.error_evolution.get_error_summary()
+                if self.error_evolution is not None else {}
+            ),
         }
         
         return z_out, outputs

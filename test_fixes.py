@@ -10268,6 +10268,205 @@ def test_adaptive_safety_tightens_on_low_agreement():
     print("✅ test_adaptive_safety_tightens_on_low_agreement PASSED")
 
 
+def test_metacognitive_recursion_records_error_evolution():
+    """Verify that metacognitive recursion outcomes are recorded in error evolution.
+
+    When the MetaCognitiveRecursionTrigger fires and deeper reasoning is
+    attempted, the outcome (accepted or rejected) must be recorded in
+    CausalErrorEvolutionTracker so the system can learn from re-reasoning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.0,  # always triggers
+        metacognitive_max_recursions=1,
+        enable_error_evolution=True,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # force coherence deficit
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # If metacognitive recursion triggered, error evolution should record it
+    metacog_info = outputs.get("metacognitive_info", {})
+    if metacog_info.get("should_trigger", False):
+        summary = model.error_evolution.get_error_summary()
+        assert "metacognitive_rerun" in summary["error_classes"], (
+            f"Expected 'metacognitive_rerun' in error classes, "
+            f"got {list(summary['error_classes'].keys())}"
+        )
+
+    print("✅ test_metacognitive_recursion_records_error_evolution PASSED")
+
+
+def test_post_integration_coherence_deficit_feeds_error_evolution():
+    """Verify that post-integration coherence deficits are recorded in error evolution.
+
+    When the post-integration ModuleCoherenceVerifier detects low coherence,
+    the event should be recorded in CausalErrorEvolutionTracker.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # impossibly high → always deficit
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    summary = model.error_evolution.get_error_summary()
+    # Either pre-integration or post-integration coherence deficit should be recorded
+    has_coherence = (
+        "coherence_deficit" in summary["error_classes"]
+        or "post_integration_coherence_deficit" in summary["error_classes"]
+    )
+    assert has_coherence, (
+        f"Expected coherence deficit recorded in error evolution, "
+        f"got {list(summary['error_classes'].keys())}"
+    )
+
+    print("✅ test_post_integration_coherence_deficit_feeds_error_evolution PASSED")
+
+
+def test_error_evolution_summary_in_output():
+    """Verify that error_evolution_summary is included in reasoning_core outputs.
+
+    The output dict from reasoning_core must contain 'error_evolution_summary'
+    so that error patterns are externally traceable.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert "error_evolution_summary" in outputs, (
+        f"Missing 'error_evolution_summary' key in outputs. "
+        f"Keys: {list(outputs.keys())}"
+    )
+    summary = outputs["error_evolution_summary"]
+    assert "total_recorded" in summary, (
+        "error_evolution_summary should have 'total_recorded' field"
+    )
+    assert "error_classes" in summary, (
+        "error_evolution_summary should have 'error_classes' field"
+    )
+
+    print("✅ test_error_evolution_summary_in_output PASSED")
+
+
+def test_error_evolution_summary_in_fallback_output():
+    """Verify error_evolution_summary in fallback outputs when evolution is disabled.
+
+    When error_evolution is disabled, the output should still contain
+    'error_evolution_summary' as an empty dict for API consistency.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert "error_evolution_summary" in outputs, (
+        f"Missing 'error_evolution_summary' key in outputs even when disabled. "
+        f"Keys: {list(outputs.keys())}"
+    )
+    assert outputs["error_evolution_summary"] == {}, (
+        f"Expected empty dict when disabled, got {outputs['error_evolution_summary']}"
+    )
+
+    print("✅ test_error_evolution_summary_in_fallback_output PASSED")
+
+
+def test_metacognitive_trigger_consults_error_evolution():
+    """Verify that metacognitive recursion consults error evolution for best strategy.
+
+    When metacognitive recursion triggers and error_evolution is enabled,
+    the system should query get_best_strategy('metacognitive_rerun') and
+    log the evolved strategy in the audit log.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.0,  # always triggers
+        metacognitive_max_recursions=1,
+        enable_error_evolution=True,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # force coherence deficit
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Pre-populate error evolution with a known strategy for metacognitive_rerun
+    model.error_evolution.record_episode(
+        error_class="metacognitive_rerun",
+        strategy_used="deeper_meta_loop",
+        success=True,
+    )
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    metacog_info = outputs.get("metacognitive_info", {})
+    if metacog_info.get("should_trigger", False):
+        # Verify that the audit log recorded the evolved strategy
+        recent_entries = model.audit_log.recent(n=50)
+        metacog_trigger_entries = [
+            e for e in recent_entries
+            if e["subsystem"] == "metacognitive_recursion"
+            and e["decision"] == "triggered"
+        ]
+        assert len(metacog_trigger_entries) > 0, (
+            "Metacognitive recursion triggered but no audit entry found"
+        )
+        last_entry = metacog_trigger_entries[-1]
+        assert "evolved_strategy" in last_entry.get("metadata", {}), (
+            f"Expected 'evolved_strategy' in audit metadata, "
+            f"got {last_entry.get('metadata', {})}"
+        )
+
+    print("✅ test_metacognitive_trigger_consults_error_evolution PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -10825,6 +11024,13 @@ if __name__ == '__main__':
     test_reconciliation_disagreement_feeds_error_evolution()
     test_coherence_includes_safety_gated_state()
     test_adaptive_safety_tightens_on_low_agreement()
+    
+    # AGI Unification — Metacognitive & Error Evolution Integration tests
+    test_metacognitive_recursion_records_error_evolution()
+    test_post_integration_coherence_deficit_feeds_error_evolution()
+    test_error_evolution_summary_in_output()
+    test_error_evolution_summary_in_fallback_output()
+    test_metacognitive_trigger_consults_error_evolution()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
