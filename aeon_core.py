@@ -2467,6 +2467,7 @@ class AEONConfig:
     lambda_reg: float = 0.01
     lambda_safety: float = 0.1
     lambda_lipschitz: float = 0.05
+    lambda_coherence: float = 0.05
     kl_weight: float = 0.1
     sparsity_target: float = 0.95
     
@@ -11792,6 +11793,30 @@ class TemporalCausalTraceBuffer:
                 "next_id": self._next_id,
             }
 
+    def trace_root_cause(self, entry_id: str) -> Dict[str, Any]:
+        """Trace backward from a decision to its root cause(s).
+
+        Walks the causal chain from ``entry_id`` back to the earliest
+        ancestor(s) that have no causal prerequisites, effectively
+        answering: "what original event(s) caused this outcome?"
+
+        Returns:
+            Dict with:
+                - root_causes: list of entry dicts with no prerequisites.
+                - chain_length: total number of entries in the causal chain.
+                - chain: full causal chain from root to ``entry_id``.
+        """
+        chain = self.get_causal_chain(entry_id)
+        root_causes = [
+            e for e in chain
+            if not e.get("causal_prerequisites")
+        ]
+        return {
+            "root_causes": root_causes,
+            "chain_length": len(chain),
+            "chain": chain,
+        }
+
 
 class CrossValidationReconciler(nn.Module):
     """
@@ -12130,11 +12155,13 @@ class ModuleCoherenceVerifier(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors four independent signals:
+    Monitors five independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
     4. ``coherence_deficit`` — low cross-module coherence score.
+    5. ``memory_staleness`` — memory retrieval returned empty or low-relevance
+       results, indicating lack of grounding context.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -12174,6 +12201,7 @@ class MetaCognitiveRecursionTrigger:
         is_diverging: bool = False,
         topology_catastrophe: bool = False,
         coherence_deficit: bool = False,
+        memory_staleness: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -12182,6 +12210,9 @@ class MetaCognitiveRecursionTrigger:
             is_diverging: True if ConvergenceMonitor detected divergence.
             topology_catastrophe: True if topology analyzer flagged catastrophe.
             coherence_deficit: True if ModuleCoherenceVerifier found low coherence.
+            memory_staleness: True if memory retrieval returned empty or
+                low-relevance results, indicating the system lacks grounding
+                context and should reason more deeply.
 
         Returns:
             Dict with:
@@ -12191,12 +12222,13 @@ class MetaCognitiveRecursionTrigger:
                 - extra_iterations: int — additional iterations to grant.
                 - triggers_active: list of signal names that fired.
         """
-        # Weight each signal equally (0.25 each, sum = 1.0 when all fire)
+        # Weight each signal equally (0.20 each, sum = 1.0 when all fire)
         signal_weights = {
-            "uncertainty": 0.25 * float(uncertainty > 0.5),
-            "diverging": 0.25 * float(is_diverging),
-            "topology_catastrophe": 0.25 * float(topology_catastrophe),
-            "coherence_deficit": 0.25 * float(coherence_deficit),
+            "uncertainty": 0.20 * float(uncertainty > 0.5),
+            "diverging": 0.20 * float(is_diverging),
+            "topology_catastrophe": 0.20 * float(topology_catastrophe),
+            "coherence_deficit": 0.20 * float(coherence_deficit),
+            "memory_staleness": 0.20 * float(memory_staleness),
         }
         trigger_score = sum(signal_weights.values())
         triggers_active = [k for k, v in signal_weights.items() if v > 0]
@@ -12811,6 +12843,12 @@ class AEONDeltaV3(nn.Module):
             'safety_scores': deque(maxlen=10000)
         }
         
+        # Memory staleness flag — tracks whether the previous forward
+        # pass had empty/missing memory retrieval.  Fed into the meta-
+        # cognitive recursion trigger on the next pass so that memory
+        # gaps drive deeper reasoning.
+        self._memory_stale: bool = False
+        
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
         self.state_validator = StateConsistencyValidator(
@@ -13068,6 +13106,18 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception:
                     pass  # Recovery learner itself failed; use default fallback
+            # Record error recovery into causal trace so root-cause
+            # analysis can link recovery decisions to their antecedents.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "error_recovery", error_class,
+                    causal_prerequisites=[],
+                    metadata={
+                        "detail": detail,
+                        "recovery_success": recovery_success,
+                    },
+                    severity="error",
+                )
             # CausalErrorEvolutionTracker: record error episode
             if self.error_evolution is not None:
                 strategy_name = "fallback"
@@ -13411,15 +13461,27 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("safety", C_star)
         
         # 5a-ii. Update cognitive feedback bus — aggregate current step's
-        # safety, convergence, and uncertainty into a feedback vector that
-        # will condition the *next* forward pass's meta-loop iteration.
+        # safety, convergence, uncertainty, and error recovery health into
+        # a feedback vector that will condition the *next* forward pass's
+        # meta-loop iteration.  Including recovery health ensures the
+        # meta-loop adapts its trajectory when past errors are frequent.
         with torch.no_grad():
+            _recovery_stats = self.error_recovery.get_recovery_stats()
+            _total_recoveries = _recovery_stats.get("total", 0)
+            # Compute health as a decaying signal: more recovery events
+            # → lower health score.  The sigmoid maps total into [0, 1]
+            # with health=1.0 when no recoveries have occurred.
+            _recovery_health_scalar = 1.0 / (1.0 + _total_recoveries * 0.1)
+            _recovery_health = torch.full(
+                (B, 1), _recovery_health_scalar, device=device,
+            )
             self._cached_feedback = self.feedback_bus(
                 batch_size=B,
                 device=device,
                 safety_score=safety_score,
                 convergence_quality=convergence_quality_scalar,
                 uncertainty=uncertainty,
+                subsystem_health=_recovery_health,
             ).detach()
         
         # 5a-iii. Module coherence verification — cross-validate key
@@ -13452,6 +13514,7 @@ class AEONDeltaV3(nn.Module):
                 is_diverging=is_diverging,
                 topology_catastrophe=_topo_catastrophe_flag,
                 coherence_deficit=_coherence_deficit,
+                memory_staleness=self._memory_stale,
             )
             if metacognitive_info.get("should_trigger", False):
                 logger.info(
@@ -13504,11 +13567,15 @@ class AEONDeltaV3(nn.Module):
         
         # 5b. World model — surprise-driven integration
         # Gated by complexity estimator gate[0] when available.
+        # Override: high uncertainty forces world model activation regardless
+        # of complexity gates, ensuring uncertain states always get grounded
+        # through the world model's predictive verification.
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
         _world_model_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 0].any().item()
+            and not high_uncertainty
         )
         self.provenance_tracker.record_before("world_model", C_star)
         if self.world_model is not None and not fast and not _world_model_should_skip:
@@ -13551,6 +13618,7 @@ class AEONDeltaV3(nn.Module):
         
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
+        _memory_empty_count = 0
         self.provenance_tracker.record_before("memory", C_star)
         if self.hierarchical_memory is not None:
             # Retrieve relevant memories using z_in as query
@@ -13565,6 +13633,7 @@ class AEONDeltaV3(nn.Module):
                         retrieved_memories.append(vecs.mean(dim=0))
                     else:
                         retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
+                        _memory_empty_count += 1
                 memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
                 # Fuse via projection
                 C_star = C_star + self.memory_projection(memory_context)
@@ -13573,6 +13642,14 @@ class AEONDeltaV3(nn.Module):
             importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
             for i in range(B):
                 self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
+        
+        # Update memory staleness flag for next forward pass — if the
+        # majority of samples had empty retrieval, signal staleness to
+        # the metacognitive trigger on the next step.
+        self._memory_stale = (
+            self.hierarchical_memory is not None
+            and _memory_empty_count > B // 2
+        )
         
         # 5c2. Neurogenic memory — consolidate important states
         if self.neurogenic_memory is not None and not fast:
@@ -14125,16 +14202,31 @@ class AEONDeltaV3(nn.Module):
         else:
             sparsity_loss = torch.tensor(0.0, device=self.device)
         
+        # ===== 8. COHERENCE LOSS =====
+        # When ModuleCoherenceVerifier is enabled, penalize low inter-module
+        # coherence to incentivize consistent representations across
+        # subsystems.  The coherence_score is differentiable (cosine
+        # similarity through a linear projection), so gradients drive the
+        # system toward self-consistent internal states.
+        coherence_loss = torch.tensor(0.0, device=self.device)
+        coherence_results = outputs.get('coherence_results', {})
+        if coherence_results and 'coherence_score' in coherence_results:
+            _coh_score = coherence_results['coherence_score']
+            if _coh_score.requires_grad:
+                coherence_loss = (1.0 - _coh_score.mean())
+        
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
         # returned in the dict for monitoring purposes.
+        _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         total_loss = (
             lm_loss +
             vq_loss +
             self.config.lambda_lipschitz * lipschitz_loss +
             self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
+            _coherence_weight * coherence_loss +
             reg_loss
         )
         
@@ -14154,6 +14246,7 @@ class AEONDeltaV3(nn.Module):
             'lipschitz_loss': lipschitz_loss,
             'safety_loss': safety_loss,
             'sparsity_loss': sparsity_loss,
+            'coherence_loss': coherence_loss,
             'reg_loss': reg_loss,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
         }
