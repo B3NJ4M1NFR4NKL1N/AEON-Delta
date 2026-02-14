@@ -5419,28 +5419,41 @@ class CausalProvenanceTracker:
     
     This is a lightweight, non-nn.Module utility that adds zero
     parameters and negligible overhead (a few tensor norms per step).
+    
+    Memory efficiency: only the *before* state norm is stored until
+    ``record_after`` is called, at which point the L2 delta is computed
+    and the tensor references are released.
     """
     
+    # Epsilon for normalization to prevent division by zero
+    _NORM_EPSILON = 1e-10
+    
     def __init__(self):
-        self._snapshots: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._before_states: Dict[str, torch.Tensor] = {}
+        self._deltas: Dict[str, float] = {}
         self._order: list = []
     
     def reset(self):
         """Clear all recorded snapshots for a new forward pass."""
-        self._snapshots.clear()
+        self._before_states.clear()
+        self._deltas.clear()
         self._order.clear()
     
     def record_before(self, module_name: str, state: torch.Tensor):
         """Record the state before a module's transformation."""
-        self._snapshots[module_name] = (state.detach().clone(), None)
+        self._before_states[module_name] = state.detach().clone()
         if module_name not in self._order:
             self._order.append(module_name)
     
     def record_after(self, module_name: str, state: torch.Tensor):
-        """Record the state after a module's transformation."""
-        if module_name in self._snapshots:
-            before, _ = self._snapshots[module_name]
-            self._snapshots[module_name] = (before, state.detach().clone())
+        """Record the state after a module's transformation.
+        
+        Computes the L2 delta immediately and releases the before-state
+        tensor to avoid accumulating memory.
+        """
+        if module_name in self._before_states:
+            before = self._before_states.pop(module_name)
+            self._deltas[module_name] = (state.detach() - before).norm().item()
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -5453,14 +5466,9 @@ class CausalProvenanceTracker:
         """
         deltas: Dict[str, float] = {}
         for name in self._order:
-            before, after = self._snapshots.get(name, (None, None))
-            if before is not None and after is not None:
-                delta = (after - before).norm().item()
-                deltas[name] = delta
-            else:
-                deltas[name] = 0.0
+            deltas[name] = self._deltas.get(name, 0.0)
         
-        total = sum(deltas.values()) + 1e-10
+        total = sum(deltas.values()) + self._NORM_EPSILON
         contributions = {k: v / total for k, v in deltas.items()}
         
         return {
@@ -12794,10 +12802,12 @@ class AEONDeltaV3(nn.Module):
         # trajectory, closing the cognitive feedback loop.
         prev_feedback = self._cached_feedback
         if prev_feedback is not None:
-            # Reshape/broadcast to current batch size if needed
+            # Invalidate cache on batch size mismatch to avoid losing
+            # per-sample feedback specificity.
             if prev_feedback.shape[0] != B:
-                prev_feedback = prev_feedback[:1].expand(B, -1)
-            prev_feedback = prev_feedback.to(device)
+                prev_feedback = None
+            else:
+                prev_feedback = prev_feedback.to(device)
         
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_in)
