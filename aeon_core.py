@@ -13663,6 +13663,13 @@ class AEONDeltaV3(nn.Module):
         diversity_results = self._compute_diversity(factors, B, device, fast)
         topo_results = self._compute_topology(factors, iterations, B, device, fast)
         
+        # 3a. Record diversity health — low diversity indicates thought
+        # collapse, which is a critical architectural failure mode.
+        _diversity_score = float(diversity_results['diversity'].mean().item())
+        self.integrity_monitor.record_health("diversity", _diversity_score, {
+            "mean_diversity": _diversity_score,
+        })
+        
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
             C_star, factors, diversity_results, topo_results, B, device
@@ -14393,6 +14400,7 @@ class AEONDeltaV3(nn.Module):
                 high_uncertainty = uncertainty > 0.5
         
         # 5f. Causal context — retrieve historical context, then store current
+        self.provenance_tracker.record_before("causal_context", C_star)
         if self.causal_context is not None:
             # 5f-i. Retrieve: pull top-k causally-relevant context entries
             # accumulated from prior forward passes and blend as a residual.
@@ -14417,6 +14425,7 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=causal_w,
                 tier="short_term",
             )
+        self.provenance_tracker.record_after("causal_context", C_star)
         
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)

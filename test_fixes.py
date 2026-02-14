@@ -11865,6 +11865,65 @@ def test_late_stage_integrity_feeds_error_evolution():
     print("✅ test_late_stage_integrity_feeds_error_evolution PASSED")
 
 
+def test_diversity_health_recorded():
+    """Verify that the diversity metric score is recorded in the
+    SystemIntegrityMonitor, closing the monitoring gap for thought
+    collapse detection.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    report = model.integrity_monitor.get_integrity_report()
+    subsystem_health = report.get("subsystem_health", {})
+    assert "diversity" in subsystem_health, (
+        f"Expected 'diversity' in subsystem_health but got: {list(subsystem_health.keys())}"
+    )
+
+    print("✅ test_diversity_health_recorded PASSED")
+
+
+def test_causal_context_provenance_tracking():
+    """Verify that the causal context window manager is included in
+    the provenance tracker's attribution computation, providing
+    traceability through the temporal context retrieval step.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_context=True,
+        causal_context_short_cap=8,
+        causal_context_mid_cap=16,
+        causal_context_long_cap=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    provenance = outputs.get("provenance", {})
+    contributions = provenance.get("contributions", {})
+    assert "causal_context" in contributions, (
+        f"Expected 'causal_context' in provenance contributions but got: "
+        f"{list(contributions.keys())}"
+    )
+
+    print("✅ test_causal_context_provenance_tracking PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -12482,6 +12541,8 @@ if __name__ == '__main__':
     # Architecture coherence — comprehensive module listing & integrity feedback
     test_architecture_summary_comprehensive_modules()
     test_late_stage_integrity_feeds_error_evolution()
+    test_diversity_health_recorded()
+    test_causal_context_provenance_tracking()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
