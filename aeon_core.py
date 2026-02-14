@@ -12688,8 +12688,12 @@ class AEONDeltaV3(nn.Module):
                 mid_term_capacity=config.causal_context_mid_cap,
                 long_term_capacity=config.causal_context_long_cap,
             )
+            self.causal_context_proj = nn.Linear(
+                config.hidden_dim, config.hidden_dim,
+            ).to(self.device)
         else:
             self.causal_context = None
+            self.causal_context_proj = None
         
         # Cross-validation reconciler
         if getattr(config, 'enable_cross_validation', False):
@@ -13031,7 +13035,13 @@ class AEONDeltaV3(nn.Module):
             C_star: [B, hidden_dim] converged thought state.
             device: Target device.
             memory_retrieval: Whether to retrieve and fuse memory.
+        
+        Side-effects:
+            Sets ``self._last_trust_score`` to the mean trust score
+            (float) when ExternalDataTrustScorer is active, for
+            downstream uncertainty escalation.
         """
+        self._last_trust_score = 1.0  # default: fully trusted
         if memory_retrieval and self.memory_manager.size > 0:
             memory_contexts = []
             for q in C_star:
@@ -13051,8 +13061,9 @@ class AEONDeltaV3(nn.Module):
                 trust_result = self.trust_scorer(memory_context, C_star)
                 trust_score = trust_result['trust_score']  # [B, 1]
                 memory_context = memory_context * trust_score
+                self._last_trust_score = float(trust_score.mean().item())
                 logger.debug(
-                    f"Memory trust: mean={trust_score.mean().item():.3f}"
+                    f"Memory trust: mean={self._last_trust_score:.3f}"
                 )
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
@@ -13233,6 +13244,7 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary()
                     if self.error_evolution is not None else {}
                 ),
+                'causal_trace_summary': {},
             }
             return z_fallback, fallback_outputs
 
@@ -13403,6 +13415,29 @@ class AEONDeltaV3(nn.Module):
                 self.config.safety_threshold,
                 self.config.safety_threshold * (0.5 + 0.5 * convergence_quality_scalar),
             )
+        
+        # 1a-iii-b. Error-evolution-driven safety adaptation — consult
+        # the historical error summary to tighten safety thresholds when
+        # the system has a pattern of low recovery success.  This feeds
+        # accumulated error learning directly into the same forward pass
+        # rather than only recording it for post-hoc analysis.
+        if self.error_evolution is not None:
+            _err_summary = self.error_evolution.get_error_summary()
+            _err_classes = _err_summary.get("error_classes", {})
+            if _err_classes:
+                _total_success_rate = sum(
+                    v.get("success_rate", 1.0) for v in _err_classes.values()
+                ) / max(len(_err_classes), 1)
+                # Low overall success rate → tighten safety (minimum 50%
+                # of current threshold to avoid overly aggressive clamping)
+                _ERROR_EVOLUTION_SUCCESS_THRESHOLD = 0.8
+                _MIN_EVOLUTION_FACTOR = 0.5
+                if _total_success_rate < _ERROR_EVOLUTION_SUCCESS_THRESHOLD:
+                    _evolution_factor = max(_MIN_EVOLUTION_FACTOR, _total_success_rate)
+                    adaptive_safety_threshold = min(
+                        adaptive_safety_threshold,
+                        adaptive_safety_threshold * _evolution_factor,
+                    )
         
         # 1a-iii. Uncertainty estimation — measure the spread of the
         # converged state relative to the input.  High residual variance
@@ -14073,8 +14108,22 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _hvae_boost)
                 high_uncertainty = uncertainty > 0.5
         
-        # 5f. Causal context — store current state into hierarchical context
+        # 5f. Causal context — retrieve historical context, then store current
         if self.causal_context is not None:
+            # 5f-i. Retrieve: pull top-k causally-relevant context entries
+            # accumulated from prior forward passes and blend as a residual.
+            # This closes the temporal feedback loop so that past reasoning
+            # outcomes influence the current state before memory fusion.
+            _CAUSAL_CONTEXT_RESIDUAL_SCALE = 0.1
+            causal_ctx_tensor = self.causal_context.get_context_tensor(k=5)
+            if (causal_ctx_tensor is not None
+                    and causal_ctx_tensor.shape[0] > 0
+                    and causal_ctx_tensor.shape[-1] == self.config.hidden_dim):
+                causal_ctx_tensor = causal_ctx_tensor.to(device)
+                causal_ctx_mean = causal_ctx_tensor.mean(dim=0)  # [hidden_dim]
+                causal_ctx_residual = self.causal_context_proj(causal_ctx_mean)
+                C_star = C_star + _CAUSAL_CONTEXT_RESIDUAL_SCALE * causal_ctx_residual.unsqueeze(0).expand(B, -1)
+            # 5f-ii. Store: record current state for future retrieval
             agreement = reconciliation_results.get("agreement_score", None)
             causal_w = float(agreement.mean()) if agreement is not None else 0.0
             self.causal_context.add(
@@ -14087,6 +14136,19 @@ class AEONDeltaV3(nn.Module):
         
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
+        
+        # 6a. Trust-score-driven uncertainty escalation — when the
+        # ExternalDataTrustScorer reports low trust in retrieved memory,
+        # escalate uncertainty so that metacognitive cycles activate.
+        # This closes the feedback loop between memory trust and the
+        # downstream reasoning depth decisions.
+        _TRUST_UNCERTAINTY_SCALE = 0.25
+        _TRUST_ESCALATION_THRESHOLD = 0.7
+        _trust_score_val = getattr(self, '_last_trust_score', 1.0)
+        if _trust_score_val < _TRUST_ESCALATION_THRESHOLD and not fast:
+            _trust_boost = (1.0 - _trust_score_val) * _TRUST_UNCERTAINTY_SCALE
+            uncertainty = min(1.0, uncertainty + _trust_boost)
+            high_uncertainty = uncertainty > 0.5
         
         # 7. RSSM dynamics with residual connection and normalization
         self.progress_tracker.begin_phase("integration")
@@ -14325,6 +14387,7 @@ class AEONDeltaV3(nn.Module):
         # 8g. Record aggregated subsystem health in causal trace so that
         # root-cause analysis can link system-wide health degradation
         # back to specific subsystem failures within this forward pass.
+        _causal_trace_summary: Dict[str, Any] = {}
         if self.causal_trace is not None:
             _subsystem_healths = integrity_report.get("subsystem_health", {})
             _degraded = [
@@ -14340,6 +14403,43 @@ class AEONDeltaV3(nn.Module):
                     "overall_healthy": len(_degraded) == 0,
                 },
             )
+            # 8g-ii. Root-cause-driven safety adaptation — when the
+            # causal trace contains recent error-severity entries, trace
+            # them back to root causes.  A high concentration of root
+            # causes in a single subsystem indicates a systemic issue
+            # that warrants tighter safety bounds.  This feeds diagnostic
+            # insights BACK into active decision-making rather than
+            # keeping them purely observational.
+            _recent_entries = self.causal_trace.recent(n=10)
+            _error_entries = [
+                e for e in _recent_entries
+                if e.get("severity") in ("error", "warning")
+            ]
+            if _error_entries:
+                _root_subsystems: List[str] = []
+                for ee in _error_entries[-3:]:  # limit to last 3 for efficiency
+                    rc = self.causal_trace.trace_root_cause(ee["id"])
+                    for rc_entry in rc.get("root_causes", []):
+                        _root_subsystems.append(rc_entry.get("subsystem", "unknown"))
+                # Tighten safety threshold proportionally to the number
+                # of distinct root-cause subsystems (capped at 50% tightening)
+                if _root_subsystems:
+                    _unique_root_count = len(set(_root_subsystems))
+                    _MIN_SAFETY_FACTOR = 0.5
+                    _ROOT_CAUSE_TIGHTENING_RATE = 0.1
+                    _root_tightening = max(
+                        _MIN_SAFETY_FACTOR,
+                        1.0 - _ROOT_CAUSE_TIGHTENING_RATE * _unique_root_count,
+                    )
+                    adaptive_safety_threshold = min(
+                        adaptive_safety_threshold,
+                        adaptive_safety_threshold * _root_tightening,
+                    )
+                _causal_trace_summary = {
+                    "recent_error_count": len(_error_entries),
+                    "root_cause_subsystems": _root_subsystems,
+                    "safety_tightening": _root_tightening if _root_subsystems else 1.0,
+                }
         
         outputs = {
             'core_state': C_star,
@@ -14382,6 +14482,7 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.get_error_summary()
                 if self.error_evolution is not None else {}
             ),
+            'causal_trace_summary': _causal_trace_summary,
         }
         
         return z_out, outputs
@@ -14658,13 +14759,30 @@ class AEONDeltaV3(nn.Module):
         # returned in the dict for monitoring purposes.
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
+        
+        # ===== 11. CONVERGENCE-ADAPTIVE LOSS SCALING =====
+        # When the ConvergenceMonitor detects divergence, increase the
+        # weight of stabilizing losses (Lipschitz, safety, coherence) to
+        # steer the model back toward convergent dynamics.  This closes
+        # the loop between the runtime convergence verdict and the
+        # training objective.
+        _convergence_verdict = outputs.get('convergence_verdict', {})
+        _convergence_status = _convergence_verdict.get('status', 'warmup')
+        _convergence_loss_scale = 1.0
+        if _convergence_status == 'diverging':
+            _convergence_loss_scale = 2.0
+        elif _convergence_status == 'converging':
+            _convergence_loss_scale = 1.0
+        elif _convergence_status == 'converged':
+            _convergence_loss_scale = 0.5
+        
         total_loss = (
             lm_loss +
             vq_loss +
-            self.config.lambda_lipschitz * lipschitz_loss +
-            self.config.lambda_safety * safety_loss +
+            _convergence_loss_scale * self.config.lambda_lipschitz * lipschitz_loss +
+            _convergence_loss_scale * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
-            _coherence_weight * coherence_loss +
+            _convergence_loss_scale * _coherence_weight * coherence_loss +
             _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             reg_loss
@@ -14690,6 +14808,7 @@ class AEONDeltaV3(nn.Module):
             'causal_dag_loss': causal_dag_loss,
             'hvae_kl_loss': hvae_kl_loss,
             'reg_loss': reg_loss,
+            'convergence_loss_scale': _convergence_loss_scale,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
         }
     
