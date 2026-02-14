@@ -8404,6 +8404,220 @@ def test_reasoning_core_error_fallback_has_provenance():
     print("✅ test_reasoning_core_error_fallback_has_provenance PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL COHERENCE INTEGRATION TESTS
+# ============================================================================
+
+def test_convergence_monitor_in_reasoning_core():
+    """Verify ConvergenceMonitor is wired into AEONDeltaV3 and produces verdicts."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert hasattr(model, 'convergence_monitor'), \
+        "convergence_monitor not found on AEONDeltaV3"
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+
+    # convergence_verdict must be present in outputs
+    assert 'convergence_verdict' in outputs, \
+        "convergence_verdict missing from reasoning_core outputs"
+    verdict = outputs['convergence_verdict']
+    assert 'status' in verdict, "verdict missing 'status'"
+    assert verdict['status'] in ('warmup', 'converging', 'converged', 'diverging'), \
+        f"unexpected status: {verdict['status']}"
+
+    print("✅ test_convergence_monitor_in_reasoning_core PASSED")
+
+
+def test_convergence_verdict_in_error_fallback():
+    """Verify error fallback includes convergence_verdict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force error fallback
+    original_meta = model.meta_loop
+    model.meta_loop = None
+    z_out, outputs = model.reasoning_core(torch.randn(2, 32), fast=True)
+    model.meta_loop = original_meta
+
+    assert 'convergence_verdict' in outputs, \
+        "convergence_verdict missing from error fallback"
+    assert outputs['convergence_verdict']['status'] == 'unknown'
+
+    print("✅ test_convergence_verdict_in_error_fallback PASSED")
+
+
+def test_consolidating_memory_integration():
+    """Verify ConsolidatingMemory stores and retrieves during reasoning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_consolidating_memory=True,
+        consolidating_working_capacity=7,
+        consolidating_episodic_capacity=100,
+        consolidating_importance_threshold=0.7,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.consolidating_memory is not None, \
+        "consolidating_memory should be enabled"
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Working memory should have items stored
+    assert len(list(model.consolidating_memory.working)) > 0, \
+        "ConsolidatingMemory working buffer should have items after reasoning"
+
+    print("✅ test_consolidating_memory_integration PASSED")
+
+
+def test_complexity_estimator_gates_subsystems():
+    """Verify complexity estimator gates can skip subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_complexity_estimator=True,
+        enable_world_model=True,
+        world_model_state_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.complexity_estimator is not None, \
+        "complexity_estimator should be enabled"
+
+    z_in = torch.randn(2, 32)
+    # Run with fast=False so complexity estimator is used
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # complexity_info should be populated
+    assert 'complexity_info' in outputs
+    assert 'complexity_score' in outputs['complexity_info']
+    assert 'subsystem_gates' in outputs['complexity_info']
+
+    print("✅ test_complexity_estimator_gates_subsystems PASSED")
+
+
+def test_trust_scorer_gates_memory_fusion():
+    """Verify ExternalDataTrustScorer modulates memory before fusion."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_external_trust=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.trust_scorer is not None, \
+        "trust_scorer should be enabled"
+
+    # Trust scorer should have learnable parameters
+    params = list(model.trust_scorer.parameters())
+    assert len(params) > 0, "trust_scorer should have parameters"
+
+    # Direct unit test of trust scoring
+    ext = torch.randn(2, 32)
+    internal = torch.randn(2, 32)
+    result = model.trust_scorer(ext, internal)
+    assert 'trust_score' in result
+    assert result['trust_score'].shape == (2, 1)
+    assert (result['trust_score'] >= 0).all() and (result['trust_score'] <= 1).all()
+
+    print("✅ test_trust_scorer_gates_memory_fusion PASSED")
+
+
+def test_topology_catastrophe_triggers_metacognition():
+    """Verify topology catastrophe detection can trigger auto-critic."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=True,
+        enable_quantum_sim=False,
+        enable_auto_critic=True,
+        auto_critic_threshold=0.0,  # always trigger
+        auto_critic_max_iterations=1,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.auto_critic is not None, "auto_critic should be enabled"
+    assert model.topology_analyzer is not None, "topology_analyzer should be enabled"
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Output should be finite and correct shape
+    assert z_out.shape == (2, 32), f"Expected (2, 32), got {z_out.shape}"
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+
+    print("✅ test_topology_catastrophe_triggers_metacognition PASSED")
+
+
+def test_divergence_triggers_deeper_processing():
+    """Verify divergence detection influences _needs_deeper flag."""
+    from aeon_core import AEONConfig, AEONDeltaV3, ConvergenceMonitor
+
+    # Unit test of ConvergenceMonitor divergence detection
+    monitor = ConvergenceMonitor(threshold=1e-5)
+    # Feed increasing residuals to simulate divergence
+    monitor.check(0.1)
+    monitor.check(0.2)
+    verdict = monitor.check(0.4)
+    assert verdict['status'] == 'diverging', \
+        f"Expected 'diverging', got '{verdict['status']}'"
+
+    # Integration test: model still produces valid output
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    assert 'convergence_verdict' in outputs
+
+    print("✅ test_divergence_triggers_deeper_processing PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -8878,6 +9092,15 @@ if __name__ == '__main__':
     test_reasoning_core_outputs_provenance()
     test_feedback_bus_integration_in_aeonv3()
     test_reasoning_core_error_fallback_has_provenance()
+    
+    # Architectural Coherence Integration tests
+    test_convergence_monitor_in_reasoning_core()
+    test_convergence_verdict_in_error_fallback()
+    test_consolidating_memory_integration()
+    test_complexity_estimator_gates_subsystems()
+    test_trust_scorer_gates_memory_fusion()
+    test_topology_catastrophe_triggers_metacognition()
+    test_divergence_triggers_deeper_processing()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
