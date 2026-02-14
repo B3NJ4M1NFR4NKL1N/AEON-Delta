@@ -2574,6 +2574,7 @@ class AEONConfig:
     enable_neurogenic_memory: bool = False
     neurogenic_max_capacity: int = 1000
     neurogenic_importance_threshold: float = 0.7
+    neurogenic_retrieval_weight: float = 0.1
     
     # ===== CAUSAL WORLD MODEL =====
     enable_causal_world_model: bool = False
@@ -5414,7 +5415,7 @@ class CognitiveFeedbackBus(nn.Module):
     """
     
     # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 5  # safety, convergence, uncertainty, health_mean, loss_scale
+    NUM_SIGNAL_CHANNELS = 6  # safety, convergence, uncertainty, health_mean, loss_scale, surprise
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5435,6 +5436,7 @@ class CognitiveFeedbackBus(nn.Module):
         uncertainty: float = 0.0,
         subsystem_health: Optional[torch.Tensor] = None,
         convergence_loss_scale: float = 1.0,
+        world_model_surprise: float = 0.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5449,6 +5451,10 @@ class CognitiveFeedbackBus(nn.Module):
                 from ``compute_loss()`` (default: 1.0 = neutral).  Values > 1
                 indicate divergence pressure from training, values < 1 indicate
                 the model has converged and can reduce effort.
+            world_model_surprise: Mean world model prediction error from the
+                previous forward pass (default: 0.0 = no surprise).  High
+                values signal that the internal world model is inaccurate,
+                biasing the meta-loop toward deeper exploration.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -5482,8 +5488,14 @@ class CognitiveFeedbackBus(nn.Module):
         )
         ls = torch.full((batch_size,), _normalized_loss_scale, device=device)
         
+        # World model surprise (clamped to [0, 1] via sigmoid mapping)
+        _normalized_surprise = 1.0 / (
+            1.0 + math.exp(-_SIGMOID_SLOPE * (world_model_surprise - _SIGMOID_CENTER))
+        )
+        ws = torch.full((batch_size,), _normalized_surprise, device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws], dim=-1)
         
         return self.projection(signals)
 
@@ -12971,6 +12983,11 @@ class AEONDeltaV3(nn.Module):
         # gaps drive deeper reasoning.
         self._memory_stale: bool = False
         
+        # World model surprise feedback — stores the mean surprise from
+        # the previous forward pass so the feedback bus can incorporate
+        # prediction-error pressure into the next meta-loop trajectory.
+        self._cached_surprise: float = 0.0
+        
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
         self.state_validator = StateConsistencyValidator(
@@ -13717,6 +13734,7 @@ class AEONDeltaV3(nn.Module):
                 uncertainty=uncertainty,
                 subsystem_health=_recovery_health,
                 convergence_loss_scale=getattr(self, '_last_convergence_loss_scale', 1.0),
+                world_model_surprise=self._cached_surprise,
             ).detach()
         
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
@@ -13914,6 +13932,14 @@ class AEONDeltaV3(nn.Module):
                     # Low surprise or no value_net: blend
                     C_star = C_star + 0.1 * predicted_next
                 world_model_results['surprise'] = surprise
+                # Cache mean surprise for the feedback bus on the next
+                # forward pass, closing the cross-step feedback loop so
+                # that high prediction error drives deeper meta-loop
+                # reasoning in subsequent iterations.
+                if surprise.numel() > 0:
+                    _ms = float(surprise.mean().item())
+                    if math.isfinite(_ms):
+                        self._cached_surprise = _ms
             except Exception as wm_err:
                 _world_model_healthy = False
                 logger.warning(f"World model error (non-fatal): {wm_err}")
@@ -13948,15 +13974,14 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _surprise_boost)
                 high_uncertainty = uncertainty > 0.5
         
-        # 5b2. MCTS planning — gated by complexity gate[1]
+        # 5b2. MCTS planning — moved after memory retrieval (5c) so the
+        # search tree root incorporates memory context.  Placeholder
+        # initialized here; actual search runs after step 5c.
         mcts_results = {}
         _mcts_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
         )
-        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
-            # Run MCTS for first sample (as demonstration)
-            mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
         
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
@@ -14007,11 +14032,25 @@ class AEONDeltaV3(nn.Module):
             and _memory_empty_count > B * _MEMORY_STALENESS_RATIO
         )
         
-        # 5c2. Neurogenic memory — consolidate important states
+        # 5c2. Neurogenic memory — consolidate important states and
+        # retrieve nearest neurons to enrich the current state.  After
+        # consolidation, the most similar stored neurons are blended
+        # back as a residual, closing the loop so that previously
+        # learned patterns actively influence ongoing reasoning.
         if self.neurogenic_memory is not None and not fast:
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.neurogenic_memory.consolidate(C_star[i])
+            # Retrieve and blend neurogenic memories into C_star
+            _neuro_weight = self.config.neurogenic_retrieval_weight
+            for i in range(B):
+                if torch.isfinite(C_star[i]).all():
+                    neuro_retrieved = self.neurogenic_memory.retrieve(C_star[i], k=3)
+                    if neuro_retrieved:
+                        neuro_vecs = torch.stack([v for v, _s in neuro_retrieved])
+                        neuro_blend = neuro_vecs.mean(dim=0).to(device)
+                        if torch.isfinite(neuro_blend).all():
+                            C_star[i] = C_star[i] + _neuro_weight * neuro_blend
         
         # 5c3. Consolidating memory — store current states and retrieve
         # semantic prototypes for context enrichment.  This connects the
@@ -14038,6 +14077,12 @@ class AEONDeltaV3(nn.Module):
             "empty_ratio": _memory_empty_count / max(B, 1),
         })
         self.provenance_tracker.record_after("memory", C_star)
+        
+        # 5b2 (deferred). MCTS planning — runs after memory retrieval so
+        # the search tree root state includes memory context, enabling
+        # memory-aware planning.  Gated by complexity gate[1].
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
+            mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
@@ -14161,6 +14206,16 @@ class AEONDeltaV3(nn.Module):
                     adaptive_safety_threshold,
                     adaptive_safety_threshold * (0.5 + 0.5 * _agreement_val),
                 )
+        
+        # 5d3. Causal-aware planning annotation — when both MCTS planning
+        # and causal model results are available, annotate the MCTS output
+        # with causal adjacency information so downstream analysis can
+        # trace planning decisions back to causal structure.
+        if mcts_results and causal_model_results:
+            mcts_results['causal_adjacency'] = causal_model_results.get('adjacency', None)
+            mcts_results['causal_dag_loss'] = float(
+                causal_model_results.get('dag_loss', torch.tensor(0.0)).item()
+            )
         
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
@@ -14357,12 +14412,28 @@ class AEONDeltaV3(nn.Module):
                 f"State consistency violations: {validation_result['violations']}"
             )
         
-        # 8b2. Neuro-symbolic consistency check
+        # 8b2. Neuro-symbolic consistency check — includes hybrid reasoning
+        # conclusions when available, ensuring that neuro-symbolic derivations
+        # are validated against the same consistency rules as the main output.
         ns_consistency_results: Dict[str, Any] = {}
         if self.ns_consistency_checker is not None and not fast:
             # Use factors as proxy soft rules (they encode learned structure)
             rules_proxy = torch.sigmoid(factors)
             ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
+            # Also validate hybrid reasoning conclusions if available
+            _hr_conclusions = hybrid_reasoning_results.get("conclusions", None)
+            if _hr_conclusions is not None and torch.isfinite(_hr_conclusions).all():
+                hr_consistency = self.ns_consistency_checker(_hr_conclusions, rules_proxy)
+                hr_violations = hr_consistency["num_violations"].sum().item()
+                if hr_violations > 0:
+                    self.audit_log.record("ns_consistency", "hybrid_reasoning_violation", {
+                        "num_violations": int(hr_violations),
+                    }, severity="warning")
+                    # Merge violation counts so downstream auto-critic triggers
+                    ns_consistency_results["num_violations"] = (
+                        ns_consistency_results["num_violations"]
+                        + hr_consistency["num_violations"]
+                    )
             if ns_consistency_results["num_violations"].sum().item() > 0:
                 self.audit_log.record("ns_consistency", "violation", {
                     "num_violations": int(
