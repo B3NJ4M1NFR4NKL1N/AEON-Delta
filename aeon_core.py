@@ -12260,6 +12260,9 @@ class CausalErrorEvolutionTracker:
                 strategy_stats[s] = []
             strategy_stats[s].append(ep["success"])
 
+        if not strategy_stats:
+            return None
+
         best_strategy = max(
             strategy_stats,
             key=lambda s: sum(strategy_stats[s]) / max(len(strategy_stats[s]), 1),
@@ -13407,7 +13410,7 @@ class AEONDeltaV3(nn.Module):
                     orig_max_iter + _extra_iters,
                     orig_max_iter * 2,  # safety cap
                 )
-                C_star_deeper, iter_deeper, meta_deeper = self.meta_loop(
+                C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
                     z_in, use_fixed_point=True, feedback=self._cached_feedback,
                 )
                 # Restore original parameters

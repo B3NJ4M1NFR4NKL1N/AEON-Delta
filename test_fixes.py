@@ -8678,16 +8678,23 @@ def test_module_coherence_verifier_single_state():
 
 
 def test_module_coherence_verifier_identical_states():
-    """Coherence should be high when all states are identical."""
+    """Coherence should be high for near-identical states and low for orthogonal ones."""
     from aeon_core import ModuleCoherenceVerifier
 
     verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
-    same = torch.randn(2, 32)
-    result = verifier({"a": same, "b": same.clone()})
+    base = torch.randn(2, 32)
+    # Near-identical: small perturbation
+    perturbed = base + torch.randn_like(base) * 0.01
+    result_similar = verifier({"a": base, "b": perturbed})
 
-    # Identical inputs → cosine similarity ≈ 1.0 after projection
-    assert result["coherence_score"].mean().item() > 0.9
-    assert result["needs_recheck"] is False
+    # Near-identical inputs → cosine similarity should still be high
+    assert result_similar["coherence_score"].mean().item() > 0.8
+    assert result_similar["needs_recheck"] is False
+
+    # Orthogonal inputs → coherence should be lower
+    orthogonal = torch.randn(2, 32) * 10
+    result_different = verifier({"a": base, "b": orthogonal})
+    assert result_different["coherence_score"].mean().item() < result_similar["coherence_score"].mean().item()
 
     print("✅ test_module_coherence_verifier_identical_states PASSED")
 
