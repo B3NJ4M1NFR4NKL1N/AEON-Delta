@@ -36,6 +36,15 @@ import warnings
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
+__all__ = [
+    "AEONConfigV4", "TrainingMonitor",
+    "GumbelVectorQuantizer", "VectorQuantizerHybridV4",
+    "AEONDeltaV4", "DocumentAwareDataset",
+    "WarmupCosineScheduler",
+    "SafeThoughtAETrainerV4", "ContextualRSSMTrainer",
+    "validate_training_components", "main",
+]
+
 # --- Токенизатор ---
 try:
     from transformers import AutoTokenizer
@@ -256,9 +265,10 @@ class TrainingMonitor:
                   phase: str = "phase_A", log_every: int = 10):
         self.batch_metrics[phase].append(metrics.copy())
         
+        log_every = max(log_every, 1)
         if batch_idx % log_every == 0 or batch_idx == total_batches - 1:
             metrics_str = " | ".join([f"{k}: {v:.6f}" for k, v in metrics.items()])
-            progress = (batch_idx + 1) / total_batches * 100
+            progress = (batch_idx + 1) / max(total_batches, 1) * 100
             self.logger.info(f"   Batch [{batch_idx + 1:5d}/{total_batches}] ({progress:5.1f}%) | {metrics_str}")
             
     def end_epoch(self, epoch: int, total_epochs: int, epoch_metrics: dict, 

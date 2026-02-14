@@ -128,6 +128,67 @@ except ImportError:
 __version__ = "3.1.0"
 __author__ = "AEON Research Team"
 
+__all__ = [
+    # Configuration & utilities
+    "AEONConfig", "set_seed", "DeviceManager",
+    # Tensor safety
+    "NaNPolicy", "TensorGuard", "tensor_safe",
+    # Audit, validation & monitoring
+    "DecisionAuditLog", "StateConsistencyValidator",
+    "SemanticErrorClassifier", "ErrorRecoveryManager",
+    "SystemIntegrityMonitor", "ProgressTracker",
+    "DeterministicExecutionGuard", "ContextWindowManager",
+    # Encoder / decoder
+    "ThoughtEncoder", "ThoughtDecoder",
+    "SSMThoughtEncoder", "SSMThoughtDecoder",
+    "LinearAttentionEncoder",
+    "Mamba2ThoughtEncoder", "Mamba2ThoughtDecoder",
+    "build_encoder", "build_decoder",
+    # SSM & attention
+    "SelectiveSSM", "SelectiveSSMv2", "LinearAttentionBlock",
+    "ChunkedSequenceProcessor", "InferenceCache",
+    "PretrainedBackboneAdapter",
+    # Core modules
+    "RobustVectorQuantizer", "LipschitzConstrainedLambda",
+    "compute_lipschitz_loss",
+    "ProvablyConvergentMetaLoop", "ConvergenceMonitor",
+    "HierarchicalMetaLoop", "RecursiveMetaLoop",
+    "FastHessianComputer",
+    # Analysis & safety
+    "OptimizedTopologyAnalyzer", "DiversityMetric",
+    "SparseFactorization", "CausalFactorExtractor",
+    "MultiLevelSafetySystem", "TransparentSelfReporting",
+    # Memory
+    "MemoryManager", "HierarchicalMemory",
+    "NeuralTuringMachine", "TemporalMemory",
+    "NeurogenicMemorySystem", "ConsolidatingMemory", "UnifiedMemory",
+    # World models & physics
+    "PhysicsGroundedWorldModel", "LatentDynamicsModel",
+    "HierarchicalWorldModel",
+    # Multi-modal & learning
+    "MultiModalGroundingModule", "GroundedMultimodalLearning",
+    "MetaLearner", "Task2VecMetaLearner", "ContinualLearningCore",
+    # Causal reasoning
+    "NeuralCausalModel", "NOTEARSCausalModel",
+    "CausalWorldModel", "CausalProgrammaticModel",
+    "UnifiedCausalSimulator",
+    # Planning
+    "ValueNetwork", "PolicyNetwork", "MCTSNode", "MCTSPlanner",
+    "CuriosityDrivenExploration", "ActiveLearningPlanner",
+    # Advanced architecture
+    "CertifiedMetaLoop", "AdaptiveMetaLoop",
+    "DifferentiableForwardChainer", "NeuroSymbolicReasoner",
+    "HierarchicalVAE", "CompositionalSlotAttention",
+    "SharedWorkspace", "AttentionArbiter", "MetaMonitor",
+    "CognitiveExecutiveFunction",
+    "RecoveryExperienceReplay", "MetaRecoveryLearner",
+    "NeuroSymbolicBridge", "TemporalKnowledgeGraph",
+    "HybridReasoningEngine",
+    "CriticNetwork", "RevisionNetwork", "AutoCriticLoop",
+    # Main model & training
+    "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
+]
+
 # Logging setup
 _log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
@@ -473,11 +534,12 @@ class TensorGuard:
         self.alert_threshold = alert_threshold
         self._max_history_size = max_history_size
         
-        # Tracking statistics
+        # Tracking statistics (protected by _stats_lock for thread safety)
         self._nan_count = 0
         self._inf_count = 0
         self._sanitize_count = 0
         self._context_history = deque(maxlen=max_history_size)
+        self._stats_lock = threading.Lock()
         
         logger.info(f"TensorGuard initialized: policy={policy.name}")
     
@@ -513,37 +575,43 @@ class TensorGuard:
         default = custom_default if custom_default is not None else self.default_value
         
         # Detect problems
-        has_nan = torch.isnan(tensor).any().item()
-        has_inf = torch.isinf(tensor).any().item() if not allow_inf else False
+        nan_mask = torch.isnan(tensor)
+        has_nan = nan_mask.any().item()
+        inf_mask = torch.isinf(tensor) if not allow_inf else None
+        has_inf = inf_mask.any().item() if inf_mask is not None else False
         
         if not (has_nan or has_inf):
             return tensor  # Clean tensor
         
         # Tracking
         if self.enable_tracking:
-            self._nan_count += int(torch.isnan(tensor).sum().item())
-            self._inf_count += int(torch.isinf(tensor).sum().item())
-            self._sanitize_count += 1
-            self._context_history.append({
-                'context': context,
-                'shape': tuple(tensor.shape),
-                'nan_count': int(torch.isnan(tensor).sum().item()),
-                'inf_count': int(torch.isinf(tensor).sum().item()),
-                'stacktrace': (
-                    ''.join(traceback.format_stack()[-3:-1]) 
-                    if self.policy == NaNPolicy.RAISE else None
-                )
-            })
+            nan_count = int(nan_mask.sum().item())
+            inf_count = int(inf_mask.sum().item()) if inf_mask is not None else 0
+            with self._stats_lock:
+                self._nan_count += nan_count
+                self._inf_count += inf_count
+                self._sanitize_count += 1
+                self._context_history.append({
+                    'context': context,
+                    'shape': tuple(tensor.shape),
+                    'nan_count': nan_count,
+                    'inf_count': inf_count,
+                    'stacktrace': (
+                        ''.join(traceback.format_stack()[-3:-1]) 
+                        if self.policy == NaNPolicy.RAISE else None
+                    )
+                })
         
         # Policy enforcement
         if self.policy == NaNPolicy.RAISE:
+            finite_mask = torch.isfinite(tensor)
             error_msg = (
                 f"NaN/Inf detected in {context}:\n"
                 f"  Shape: {tensor.shape}\n"
-                f"  NaN count: {torch.isnan(tensor).sum().item()}\n"
-                f"  Inf count: {torch.isinf(tensor).sum().item()}\n"
-                f"  Min: {tensor[torch.isfinite(tensor)].min().item() if torch.isfinite(tensor).any() else 'N/A'}\n"
-                f"  Max: {tensor[torch.isfinite(tensor)].max().item() if torch.isfinite(tensor).any() else 'N/A'}\n"
+                f"  NaN count: {int(nan_mask.sum().item())}\n"
+                f"  Inf count: {int(inf_mask.sum().item()) if inf_mask is not None else 0}\n"
+                f"  Min: {tensor[finite_mask].min().item() if finite_mask.any() else 'N/A'}\n"
+                f"  Max: {tensor[finite_mask].max().item() if finite_mask.any() else 'N/A'}\n"
             )
             raise ValueError(error_msg)
         
@@ -551,8 +619,8 @@ class TensorGuard:
             if self._sanitize_count % self.alert_threshold == 0:
                 logger.warning(
                     f"⚠️  NaN/Inf sanitization #{self._sanitize_count} in {context}: "
-                    f"shape={tensor.shape}, nan={torch.isnan(tensor).sum().item()}, "
-                    f"inf={torch.isinf(tensor).sum().item()}"
+                    f"shape={tensor.shape}, nan={int(nan_mask.sum().item())}, "
+                    f"inf={int(inf_mask.sum().item()) if inf_mask is not None else 0}"
                 )
         
         elif self.policy == NaNPolicy.RETURN_NONE:
@@ -567,7 +635,7 @@ class TensorGuard:
         # Replace NaN
         if has_nan:
             cleaned = torch.where(
-                torch.isnan(cleaned),
+                nan_mask,
                 torch.full_like(cleaned, default),
                 cleaned
             )
@@ -575,7 +643,7 @@ class TensorGuard:
         # Replace Inf
         if has_inf:
             cleaned = torch.where(
-                torch.isinf(cleaned),
+                inf_mask,
                 torch.sign(cleaned) * self.max_value,
                 cleaned
             )
@@ -672,10 +740,20 @@ class TensorGuard:
     
     def reset_stats(self):
         """Reset statistics."""
-        self._nan_count = 0
-        self._inf_count = 0
-        self._sanitize_count = 0
-        self._context_history = deque(maxlen=self._max_history_size)
+        with self._stats_lock:
+            self._nan_count = 0
+            self._inf_count = 0
+            self._sanitize_count = 0
+            self._context_history = deque(maxlen=self._max_history_size)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['_stats_lock']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._stats_lock = threading.Lock()
 
 
 def tensor_safe(
