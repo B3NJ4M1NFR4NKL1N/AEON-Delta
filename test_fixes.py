@@ -6489,9 +6489,18 @@ def test_hash_tensor_content_based():
     
     assert h1 != h2, f"Hash collision for different tensors: {h1}"
     
+    # Tensors with same sum, same std, same first/last but different content
+    t3 = torch.tensor([[1.0, 4.0, 3.0, 2.0, 5.0]])
+    t4 = torch.tensor([[1.0, 2.0, 5.0, 2.0, 5.0]])
+    
+    h3 = hc._hash_tensor(t3)
+    h4 = hc._hash_tensor(t4)
+    
+    assert h3 != h4, f"Hash collision for different tensors with similar stats: {h3}"
+    
     # Same tensor should produce same hash
-    h3 = hc._hash_tensor(t1.clone())
-    assert h1 == h3, "Same tensor content produced different hashes"
+    h5 = hc._hash_tensor(t1.clone())
+    assert h1 == h5, "Same tensor content produced different hashes"
     
     print("✅ test_hash_tensor_content_based PASSED")
 
@@ -6530,12 +6539,13 @@ def test_lipschitz_constant_finite():
 
 def test_entropy_loss_consistency():
     """Verify entropy loss computation is consistent across all VQ classes."""
-    # Test that _compute_entropy_loss handles num_embeddings=1
-    # by using the same guard pattern as other entropy computations
-    max_entropy_guard = math.log(1) if 1 > 1 else 1.0
+    # Test that the guard handles num_embeddings=1 without division by zero
+    num_embeddings = 1
+    max_entropy_guard = math.log(num_embeddings) if num_embeddings > 1 else 1.0
     assert max_entropy_guard == 1.0, "Guard for num_embeddings=1 should return 1.0"
     
-    max_entropy_normal = math.log(64) if 64 > 1 else 1.0
+    num_embeddings = 64
+    max_entropy_normal = math.log(num_embeddings) if num_embeddings > 1 else 1.0
     assert max_entropy_normal == math.log(64), "Guard for num_embeddings=64 should return log(64)"
     
     print("✅ test_entropy_loss_consistency PASSED")

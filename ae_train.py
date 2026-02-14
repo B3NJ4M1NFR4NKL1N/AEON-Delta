@@ -637,6 +637,7 @@ class VectorQuantizerHybridV4(nn.Module):
         entropy = -(probs * log_probs).sum()
         
         # Нормализуем относительно максимальной энтропии
+        # Fallback to 1.0 when num_embeddings=1 to avoid division by log(1)=0
         max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
         
         # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
