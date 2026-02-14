@@ -2511,6 +2511,9 @@ class AEONConfig:
     hybrid_reasoning_num_predicates: int = 32
     enable_unified_simulator: bool = False
     unified_simulator_num_vars: int = 16
+    unified_simulator_blend: float = 0.1
+    hybrid_reasoning_blend: float = 0.1
+    meta_recovery_error_penalty: float = -1.0
 
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
@@ -12409,7 +12412,7 @@ class AEONDeltaV3(nn.Module):
                     self.meta_recovery.recovery_buffer.push(
                         state=error_ctx.squeeze(0),
                         action=action_idx,
-                        reward=-1.0,  # penalty for pipeline error
+                        reward=self.config.meta_recovery_error_penalty,
                         next_state=next_ctx.squeeze(0),
                     )
                 except Exception:
@@ -12724,7 +12727,7 @@ class AEONDeltaV3(nn.Module):
             # Blend counterfactual signal as residual
             cf_next = unified_simulator_results.get("next_state", None)
             if cf_next is not None and torch.isfinite(cf_next).all():
-                C_star = C_star + 0.1 * cf_next
+                C_star = C_star + self.config.unified_simulator_blend * cf_next
             self.audit_log.record("unified_simulator", "computed", {
                 "interventional": bool(
                     unified_simulator_results.get("interventional", False)
@@ -12737,7 +12740,7 @@ class AEONDeltaV3(nn.Module):
             hybrid_reasoning_results = self.hybrid_reasoning(C_star)
             conclusions = hybrid_reasoning_results.get("conclusions", None)
             if conclusions is not None and torch.isfinite(conclusions).all():
-                C_star = C_star + 0.1 * conclusions
+                C_star = C_star + self.config.hybrid_reasoning_blend * conclusions
             self.audit_log.record("hybrid_reasoning", "computed", {
                 "num_derived": int(
                     hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()

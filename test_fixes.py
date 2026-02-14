@@ -7864,7 +7864,7 @@ def test_meta_recovery_experience_replay():
     model.meta_recovery.recovery_buffer.push(
         state=error_ctx.squeeze(0),
         action=action_idx,
-        reward=-1.0,
+        reward=config.meta_recovery_error_penalty,
         next_state=next_ctx.squeeze(0),
     )
 
@@ -7917,6 +7917,9 @@ def test_new_config_defaults():
     assert config.hybrid_reasoning_num_predicates == 32
     assert config.enable_unified_simulator is False
     assert config.unified_simulator_num_vars == 16
+    assert config.unified_simulator_blend == 0.1
+    assert config.hybrid_reasoning_blend == 0.1
+    assert config.meta_recovery_error_penalty == -1.0
     print("✅ test_new_config_defaults PASSED")
 
 
