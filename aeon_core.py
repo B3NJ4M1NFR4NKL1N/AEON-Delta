@@ -1480,6 +1480,623 @@ class ErrorRecoveryManager:
 
 
 # ============================================================================
+# SECTION 3f-i: SYSTEM INTEGRITY MONITOR
+# ============================================================================
+
+class SystemIntegrityMonitor:
+    """
+    Centralized integrity tracker for the cognitive pipeline.
+
+    Aggregates health signals from all subsystems — meta-loop convergence,
+    safety enforcement, memory operations, error recovery — into a single
+    composite health score with anomaly detection.
+
+    The monitor maintains a sliding window of health observations per
+    subsystem and flags anomalies when the subsystem health drops below
+    a configurable threshold or changes faster than expected (derivative
+    check).
+
+    Thread-safe: all mutations go through a lock.
+
+    Example::
+
+        monitor = SystemIntegrityMonitor(window_size=200)
+        monitor.record_health("meta_loop", 0.95, {"iterations": 7})
+        monitor.record_health("safety", 0.3, {"rollback": True})
+        report = monitor.get_integrity_report()
+        assert report["anomalies"]  # safety score too low
+    """
+
+    def __init__(
+        self,
+        window_size: int = 500,
+        anomaly_threshold: float = 0.3,
+        derivative_threshold: float = 0.4,
+    ):
+        self._window_size = max(1, window_size)
+        self._anomaly_threshold = anomaly_threshold
+        self._derivative_threshold = derivative_threshold
+        self._lock = threading.Lock()
+        self._subsystem_health: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=self._window_size)
+        )
+        self._global_health_history: deque = deque(maxlen=self._window_size)
+        self._anomaly_log: deque = deque(maxlen=self._window_size)
+        self._checksum_registry: Dict[str, str] = {}
+
+    def record_health(
+        self,
+        subsystem: str,
+        score: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Record a health observation for *subsystem*.
+
+        Args:
+            subsystem: Name of the reporting component.
+            score: Health score in ``[0, 1]`` (1 = fully healthy).
+            metadata: Optional context for the observation.
+
+        Returns:
+            An anomaly dict if one was detected, else ``None``.
+        """
+        score = max(0.0, min(1.0, float(score)))
+        entry = {
+            "timestamp": time.monotonic(),
+            "subsystem": subsystem,
+            "score": score,
+            "metadata": metadata or {},
+        }
+
+        anomaly = None
+        with self._lock:
+            history = self._subsystem_health[subsystem]
+            # Derivative check: large sudden drop
+            if len(history) > 0:
+                prev_score = history[-1]["score"]
+                delta = prev_score - score
+                if delta > self._derivative_threshold:
+                    anomaly = {
+                        "type": "rapid_degradation",
+                        "subsystem": subsystem,
+                        "previous_score": prev_score,
+                        "current_score": score,
+                        "delta": delta,
+                        "timestamp": entry["timestamp"],
+                    }
+
+            # Absolute threshold check
+            if score < self._anomaly_threshold and anomaly is None:
+                anomaly = {
+                    "type": "below_threshold",
+                    "subsystem": subsystem,
+                    "score": score,
+                    "threshold": self._anomaly_threshold,
+                    "timestamp": entry["timestamp"],
+                }
+
+            history.append(entry)
+            if anomaly is not None:
+                self._anomaly_log.append(anomaly)
+
+        return anomaly
+
+    def register_checksum(self, component: str, state: torch.Tensor) -> str:
+        """Compute and store a deterministic checksum for *state*.
+
+        Uses a content-based hash (SHA-256 over raw bytes) so that
+        identical tensors always produce the same digest regardless of
+        device or layout.
+
+        Args:
+            component: Label for the component whose state is checksummed.
+            state: Tensor to hash.
+
+        Returns:
+            Hex digest of the checksum.
+        """
+        data = state.detach().cpu().to(torch.float32).contiguous().numpy().tobytes()
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            self._checksum_registry[component] = digest
+        return digest
+
+    def verify_checksum(self, component: str, state: torch.Tensor) -> bool:
+        """Verify that *state* matches the previously registered checksum.
+
+        Args:
+            component: Label for the component.
+            state: Tensor to verify.
+
+        Returns:
+            ``True`` if the checksum matches or no prior checksum exists.
+        """
+        data = state.detach().cpu().to(torch.float32).contiguous().numpy().tobytes()
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            stored = self._checksum_registry.get(component)
+        if stored is None:
+            return True
+        return digest == stored
+
+    def get_subsystem_health(self, subsystem: str) -> float:
+        """Return the mean health score for *subsystem* over the window.
+
+        Returns ``1.0`` if no observations have been recorded.
+        """
+        with self._lock:
+            history = list(self._subsystem_health.get(subsystem, []))
+        if not history:
+            return 1.0
+        return sum(e["score"] for e in history) / len(history)
+
+    def get_global_health(self) -> float:
+        """Return the aggregate health score across all subsystems.
+
+        Each subsystem contributes its current mean equally. Returns
+        ``1.0`` when no observations have been recorded.
+        """
+        with self._lock:
+            subsystems = list(self._subsystem_health.keys())
+        if not subsystems:
+            return 1.0
+        scores = [self.get_subsystem_health(s) for s in subsystems]
+        return sum(scores) / len(scores)
+
+    def get_anomalies(self, n: int = 20) -> List[Dict[str, Any]]:
+        """Return the *n* most recent anomalies (newest last)."""
+        with self._lock:
+            items = list(self._anomaly_log)
+        return items[-n:]
+
+    def get_integrity_report(self) -> Dict[str, Any]:
+        """Produce a comprehensive integrity report.
+
+        Returns:
+            Dict with ``global_health``, per-``subsystem_health``,
+            recent ``anomalies``, and registered ``checksums``.
+        """
+        with self._lock:
+            subsystems = list(self._subsystem_health.keys())
+            anomalies = list(self._anomaly_log)[-10:]
+            checksums = dict(self._checksum_registry)
+        per_sub = {s: self.get_subsystem_health(s) for s in subsystems}
+        return {
+            "global_health": self.get_global_health(),
+            "subsystem_health": per_sub,
+            "anomalies": anomalies,
+            "checksums": checksums,
+            "total_anomalies": len(anomalies),
+        }
+
+    def reset(self) -> None:
+        """Clear all observations, anomalies, and checksums."""
+        with self._lock:
+            self._subsystem_health.clear()
+            self._global_health_history.clear()
+            self._anomaly_log.clear()
+            self._checksum_registry.clear()
+
+
+# ============================================================================
+# SECTION 3f-ii: PROGRESS TRACKER
+# ============================================================================
+
+class ProgressTracker:
+    """
+    Structured progress tracker for the reasoning pipeline.
+
+    Tracks execution phases (encode, meta-loop, factor extraction,
+    safety, memory, integration, decode) with timing, success/failure
+    status, and optional checkpointing of intermediate states.
+
+    The tracker enables rollback to the last successful phase when a
+    downstream phase fails, preserving logical integrity of the pipeline.
+
+    Thread-safe: all mutations go through a lock.
+
+    Example::
+
+        tracker = ProgressTracker()
+        tracker.begin_phase("meta_loop")
+        tracker.checkpoint("meta_loop", C_star)
+        tracker.end_phase("meta_loop", success=True, metadata={"iters": 7})
+        last_good = tracker.get_last_checkpoint()
+    """
+
+    def __init__(self, max_checkpoints: int = 10):
+        self._max_checkpoints = max(1, max_checkpoints)
+        self._lock = threading.Lock()
+        self._phases: OrderedDict = OrderedDict()
+        self._checkpoints: OrderedDict = OrderedDict()
+        self._phase_order: List[str] = []
+        self._current_phase: Optional[str] = None
+        self._run_id: int = 0
+        self._run_history: deque = deque(maxlen=100)
+
+    def begin_phase(self, phase: str) -> None:
+        """Mark the start of a pipeline *phase*.
+
+        Args:
+            phase: Label for the phase (e.g. ``"meta_loop"``).
+        """
+        with self._lock:
+            self._current_phase = phase
+            if phase not in self._phase_order:
+                self._phase_order.append(phase)
+            self._phases[phase] = {
+                "status": "running",
+                "start_time": time.monotonic(),
+                "end_time": None,
+                "duration": None,
+                "metadata": {},
+                "run_id": self._run_id,
+            }
+
+    def end_phase(
+        self,
+        phase: str,
+        success: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mark the end of a pipeline *phase*.
+
+        Args:
+            phase: Label matching a prior :meth:`begin_phase` call.
+            success: Whether the phase completed successfully.
+            metadata: Optional metrics/context for the phase.
+        """
+        with self._lock:
+            if phase in self._phases:
+                end_t = time.monotonic()
+                entry = self._phases[phase]
+                entry["status"] = "success" if success else "failed"
+                entry["end_time"] = end_t
+                entry["duration"] = end_t - entry["start_time"]
+                entry["metadata"] = metadata or {}
+            if phase == self._current_phase:
+                self._current_phase = None
+
+    def checkpoint(self, phase: str, state: torch.Tensor) -> None:
+        """Save a detached copy of *state* as a checkpoint for *phase*.
+
+        Old checkpoints are evicted when ``max_checkpoints`` is exceeded.
+
+        Args:
+            phase: Label for the checkpoint.
+            state: Tensor to checkpoint (will be detached and cloned).
+        """
+        with self._lock:
+            self._checkpoints[phase] = {
+                "state": state.detach().clone(),
+                "timestamp": time.monotonic(),
+                "run_id": self._run_id,
+            }
+            # Evict oldest if over capacity
+            while len(self._checkpoints) > self._max_checkpoints:
+                self._checkpoints.popitem(last=False)
+
+    def get_last_checkpoint(self) -> Optional[torch.Tensor]:
+        """Return the most recently stored checkpoint tensor, or ``None``."""
+        with self._lock:
+            if not self._checkpoints:
+                return None
+            last_key = list(self._checkpoints.keys())[-1]
+            return self._checkpoints[last_key]["state"]
+
+    def get_checkpoint(self, phase: str) -> Optional[torch.Tensor]:
+        """Return the checkpoint for a specific *phase*, or ``None``."""
+        with self._lock:
+            entry = self._checkpoints.get(phase)
+        if entry is None:
+            return None
+        return entry["state"]
+
+    def rollback_to(self, phase: str) -> Optional[torch.Tensor]:
+        """Roll back to the checkpoint at *phase*, discarding later phases.
+
+        Removes all phase records and checkpoints that occurred after
+        *phase* in insertion order.
+
+        Args:
+            phase: Phase to roll back to.
+
+        Returns:
+            The checkpoint tensor if available, else ``None``.
+        """
+        with self._lock:
+            if phase not in self._checkpoints:
+                return None
+            state = self._checkpoints[phase]["state"]
+            # Remove phases after the rollback target
+            if phase in self._phase_order:
+                idx = self._phase_order.index(phase)
+                later_phases = self._phase_order[idx + 1:]
+                for p in later_phases:
+                    self._phases.pop(p, None)
+                    self._checkpoints.pop(p, None)
+                self._phase_order = self._phase_order[:idx + 1]
+            return state
+
+    def finish_run(self) -> Dict[str, Any]:
+        """Finalize the current run and archive its summary.
+
+        Returns:
+            Dict with ``run_id``, per-phase ``phases``, and
+            ``total_duration``.
+        """
+        with self._lock:
+            summary = {
+                "run_id": self._run_id,
+                "phases": dict(self._phases),
+                "total_duration": sum(
+                    p.get("duration", 0) or 0 for p in self._phases.values()
+                ),
+            }
+            self._run_history.append(summary)
+            self._run_id += 1
+            self._phases.clear()
+            self._checkpoints.clear()
+            self._phase_order.clear()
+            self._current_phase = None
+        return summary
+
+    def get_progress(self) -> Dict[str, Any]:
+        """Return a snapshot of current pipeline progress.
+
+        Returns:
+            Dict with ``current_phase``, ``completed_phases``,
+            ``failed_phases``, ``run_id``, and ``phases`` detail.
+        """
+        with self._lock:
+            completed = [
+                p for p, info in self._phases.items()
+                if info["status"] == "success"
+            ]
+            failed = [
+                p for p, info in self._phases.items()
+                if info["status"] == "failed"
+            ]
+            return {
+                "run_id": self._run_id,
+                "current_phase": self._current_phase,
+                "completed_phases": completed,
+                "failed_phases": failed,
+                "phases": dict(self._phases),
+            }
+
+    def get_run_history(self, n: int = 10) -> List[Dict[str, Any]]:
+        """Return the *n* most recent run summaries (newest last)."""
+        with self._lock:
+            items = list(self._run_history)
+        return items[-n:]
+
+    def reset(self) -> None:
+        """Clear all state, checkpoints, and history."""
+        with self._lock:
+            self._phases.clear()
+            self._checkpoints.clear()
+            self._phase_order.clear()
+            self._current_phase = None
+            self._run_id = 0
+            self._run_history.clear()
+
+
+# ============================================================================
+# SECTION 3f-iii: DETERMINISTIC EXECUTION GUARD
+# ============================================================================
+
+class DeterministicExecutionGuard:
+    """
+    Ensures deterministic behaviour under uncertainty.
+
+    Wraps tensor-producing pipeline stages with:
+
+    1. **Input normalization** — clamp and sanitize inputs before each
+       stage to prevent divergence from adversarial or out-of-distribution
+       values.
+    2. **Output validation** — verify that outputs are finite, within
+       expected magnitude bounds, and shape-consistent.
+    3. **Execution fingerprinting** — record a SHA-256 digest of each
+       stage's output so that identical inputs always produce verifiably
+       identical outputs (when the model is in eval mode).
+    4. **Fallback enforcement** — when validation fails, deterministically
+       fall back to the last known-good state or a zero tensor, ensuring
+       the pipeline never propagates corrupt values downstream.
+
+    Thread-safe: fingerprint registry is lock-protected.
+
+    Example::
+
+        guard = DeterministicExecutionGuard(hidden_dim=256)
+        x_safe = guard.normalize_input(x)
+        ok, y_safe = guard.validate_output(y, stage="meta_loop", fallback=x)
+        fp = guard.fingerprint("meta_loop", y_safe)
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        max_activation: float = 1e4,
+        input_clamp: float = 1e3,
+    ):
+        self.hidden_dim = hidden_dim
+        self.max_activation = max_activation
+        self.input_clamp = input_clamp
+        self._lock = threading.Lock()
+        self._fingerprints: Dict[str, str] = {}
+        self._validation_history: deque = deque(maxlen=500)
+
+    def normalize_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Sanitize and clamp *x* to prevent downstream divergence.
+
+        Replaces NaN/Inf with zero and clamps to
+        ``[-input_clamp, input_clamp]``.
+
+        Args:
+            x: Input tensor of any shape.
+
+        Returns:
+            Sanitized tensor (same shape and device as *x*).
+        """
+        if not torch.isfinite(x).all():
+            x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        return x.clamp(-self.input_clamp, self.input_clamp)
+
+    def validate_output(
+        self,
+        output: torch.Tensor,
+        stage: str = "",
+        fallback: Optional[torch.Tensor] = None,
+    ) -> Tuple[bool, torch.Tensor]:
+        """Validate *output* and apply deterministic fallback if invalid.
+
+        Checks:
+        - All values are finite (no NaN/Inf).
+        - Maximum absolute value ≤ ``max_activation``.
+
+        When validation fails, returns the *fallback* (if provided) or
+        a zero tensor of matching shape.
+
+        Args:
+            output: Tensor to validate.
+            stage: Human-readable label for the pipeline stage.
+            fallback: Pre-allocated tensor to use on failure.
+
+        Returns:
+            ``(valid, safe_output)`` — *valid* is ``True`` when the
+            original output passed all checks.
+        """
+        valid = True
+        result = output
+
+        if not torch.isfinite(output).all():
+            valid = False
+        elif output.abs().max().item() > self.max_activation:
+            valid = False
+
+        if not valid:
+            if fallback is not None:
+                result = fallback
+            else:
+                result = torch.zeros_like(output)
+
+        entry = {
+            "timestamp": time.monotonic(),
+            "stage": stage,
+            "valid": valid,
+        }
+        with self._lock:
+            self._validation_history.append(entry)
+
+        return valid, result
+
+    def fingerprint(self, stage: str, tensor: torch.Tensor) -> str:
+        """Compute and store a SHA-256 fingerprint of *tensor*.
+
+        Identical tensors (bit-for-bit in float32) always produce the
+        same digest, enabling reproducibility verification.
+
+        Args:
+            stage: Label for the pipeline stage.
+            tensor: Tensor to fingerprint.
+
+        Returns:
+            Hex digest string.
+        """
+        data = tensor.detach().cpu().to(torch.float32).contiguous().numpy().tobytes()
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            self._fingerprints[stage] = digest
+        return digest
+
+    def verify_fingerprint(self, stage: str, tensor: torch.Tensor) -> bool:
+        """Check whether *tensor* matches the stored fingerprint for *stage*.
+
+        Returns ``True`` if the fingerprint matches or no prior fingerprint
+        exists.
+
+        Args:
+            stage: Label for the pipeline stage.
+            tensor: Tensor to verify.
+
+        Returns:
+            ``True`` on match or missing prior fingerprint; ``False``
+            otherwise.
+        """
+        data = tensor.detach().cpu().to(torch.float32).contiguous().numpy().tobytes()
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            stored = self._fingerprints.get(stage)
+        if stored is None:
+            return True
+        return digest == stored
+
+    def get_validation_summary(self) -> Dict[str, Any]:
+        """Return aggregate validation statistics.
+
+        Returns:
+            Dict with ``total``, ``valid_count``, ``invalid_count``,
+            ``success_rate``, and ``fingerprints``.
+        """
+        with self._lock:
+            history = list(self._validation_history)
+            fps = dict(self._fingerprints)
+        total = len(history)
+        valid_count = sum(1 for e in history if e["valid"])
+        return {
+            "total": total,
+            "valid_count": valid_count,
+            "invalid_count": total - valid_count,
+            "success_rate": valid_count / max(total, 1),
+            "fingerprints": fps,
+        }
+
+    def execute_with_guard(
+        self,
+        fn: Callable[..., torch.Tensor],
+        input_tensor: torch.Tensor,
+        stage: str = "",
+        fallback: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> Tuple[bool, torch.Tensor]:
+        """Execute *fn* with full input normalization and output validation.
+
+        1. Normalize *input_tensor*.
+        2. Call ``fn(normalized_input, **kwargs)``.
+        3. Validate the output.
+        4. Fingerprint the result.
+
+        Args:
+            fn: Callable that takes a tensor and returns a tensor.
+            input_tensor: Input to normalize and pass to *fn*.
+            stage: Label for audit/fingerprinting.
+            fallback: Tensor to use if output validation fails.
+            **kwargs: Extra keyword arguments forwarded to *fn*.
+
+        Returns:
+            ``(valid, safe_output)``.
+        """
+        safe_input = self.normalize_input(input_tensor)
+        try:
+            output = fn(safe_input, **kwargs)
+        except Exception:
+            if fallback is not None:
+                return False, fallback
+            return False, torch.zeros_like(safe_input)
+        valid, safe_output = self.validate_output(output, stage=stage, fallback=fallback)
+        if valid:
+            self.fingerprint(stage, safe_output)
+        return valid, safe_output
+
+    def reset(self) -> None:
+        """Clear all fingerprints and validation history."""
+        with self._lock:
+            self._fingerprints.clear()
+            self._validation_history.clear()
+
+
+# ============================================================================
 # SECTION 3f: CONTEXT WINDOW MANAGER
 # ============================================================================
 
@@ -10860,6 +11477,13 @@ class AEONDeltaV3(nn.Module):
         )
         self.error_classifier = SemanticErrorClassifier()
         
+        # ===== INTEGRITY, PROGRESS & DETERMINISM =====
+        self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
+        self.progress_tracker = ProgressTracker(max_checkpoints=10)
+        self.execution_guard = DeterministicExecutionGuard(
+            hidden_dim=config.hidden_dim,
+        )
+        
         # Apply tensor safety hooks
         SafeTensorProcessor.register_hooks(self)
         
@@ -11104,6 +11728,10 @@ class AEONDeltaV3(nn.Module):
         B = z_in.shape[0]
         device = z_in.device
         
+        # 0. Deterministic input normalization
+        z_in = self.execution_guard.normalize_input(z_in)
+        self.progress_tracker.begin_phase("meta_loop")
+        
         # 1. Meta-loop convergence
         if self.recursive_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.recursive_meta_loop(z_in)
@@ -11120,7 +11748,8 @@ class AEONDeltaV3(nn.Module):
         
         # 1a. Semantic error recovery — if meta-loop produced NaN/Inf,
         # fall back to the input to prevent cascading failures.
-        if not torch.isfinite(C_star).all():
+        meta_loop_valid = torch.isfinite(C_star).all().item()
+        if not meta_loop_valid:
             err_cls = self.error_classifier.classify_tensor_state(
                 C_star, "meta_loop_output"
             )
@@ -11133,6 +11762,19 @@ class AEONDeltaV3(nn.Module):
                 "detail": err_cls[1] if err_cls else "",
             })
             C_star = z_in.clone()
+        
+        # Record meta-loop health and checkpoint
+        convergence_rate = meta_results.get("convergence_rate", 0.0)
+        meta_health = float(convergence_rate) if meta_loop_valid else 0.0
+        self.integrity_monitor.record_health("meta_loop", meta_health, {
+            "iterations": iterations.mean().item(),
+            "convergence_rate": convergence_rate,
+            "finite": meta_loop_valid,
+        })
+        self.progress_tracker.checkpoint("meta_loop", C_star)
+        self.progress_tracker.end_phase("meta_loop", success=meta_loop_valid, metadata={
+            "convergence_rate": convergence_rate,
+        })
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -11153,6 +11795,7 @@ class AEONDeltaV3(nn.Module):
         C_star = C_star * gate
         
         # 3-4. Diversity and topology (delegated to helpers)
+        self.progress_tracker.begin_phase("safety")
         diversity_results = self._compute_diversity(factors, B, device, fast)
         topo_results = self._compute_topology(factors, iterations, B, device, fast)
         
@@ -11162,10 +11805,12 @@ class AEONDeltaV3(nn.Module):
         )
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
+        safety_enforced = False
         if self.safety_system is not None:
             safety_threshold = self.config.safety_threshold
             unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
             if unsafe_mask.any():
+                safety_enforced = True
                 logger.warning(
                     f"Safety enforcement: {unsafe_mask.sum().item()}/{B} samples "
                     f"below threshold {safety_threshold}, applying rollback"
@@ -11185,6 +11830,14 @@ class AEONDeltaV3(nn.Module):
                     c_star_weight * C_star + (1 - c_star_weight) * z_in,
                     C_star
                 )
+        
+        self.integrity_monitor.record_health(
+            "safety",
+            float(safety_score.mean().item()),
+            {"enforced": safety_enforced},
+        )
+        self.progress_tracker.checkpoint("safety", C_star)
+        self.progress_tracker.end_phase("safety", success=True)
         
         # 5b. World model — surprise-driven integration
         world_model_results = {}
@@ -11268,6 +11921,7 @@ class AEONDeltaV3(nn.Module):
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
         
         # 7. RSSM dynamics with residual connection and normalization
+        self.progress_tracker.begin_phase("integration")
         z_rssm_raw = self.rssm_cell(C_fused)
         z_rssm = self.rssm_norm(z_rssm_raw + C_fused)
         
@@ -11303,6 +11957,12 @@ class AEONDeltaV3(nn.Module):
             })
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
         
+        # 8a-ii. Deterministic output validation
+        output_valid, z_out = self.execution_guard.validate_output(
+            z_out, stage="integration", fallback=z_rssm,
+        )
+        self.execution_guard.fingerprint("integration", z_out)
+        
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
             z_out, factors=factors
@@ -11316,8 +11976,19 @@ class AEONDeltaV3(nn.Module):
                 f"State consistency violations: {validation_result['violations']}"
             )
         
+        # 8c. Record integration health and finalize progress
+        integration_healthy = validation_result["valid"] and output_valid
+        self.integrity_monitor.record_health(
+            "integration",
+            1.0 if integration_healthy else 0.0,
+            {"state_valid": validation_result["valid"], "output_valid": output_valid},
+        )
+        self.progress_tracker.end_phase("integration", success=integration_healthy)
+        run_summary = self.progress_tracker.finish_run()
+        
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
+        integrity_report = self.integrity_monitor.get_integrity_report()
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -11335,6 +12006,8 @@ class AEONDeltaV3(nn.Module):
             'causal_world_results': causal_world_results,
             'active_learning_results': active_learning_results,
             'state_validation': validation_result,
+            'integrity_report': integrity_report,
+            'progress_summary': run_summary,
         }
         
         return z_out, outputs
