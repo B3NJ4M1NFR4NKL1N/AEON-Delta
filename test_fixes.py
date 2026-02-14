@@ -7403,9 +7403,9 @@ def test_causal_context_window_tiers():
         mid_term_capacity=3,
         long_term_capacity=4,
     )
-    ctx.add("s", torch.randn(16), relevance=0.5, tier="short_term")
-    ctx.add("m", torch.randn(16), relevance=0.5, tier="mid_term")
-    ctx.add("l", torch.randn(16), relevance=0.5, tier="long_term")
+    ctx.add("s0", torch.randn(16), relevance=0.5, tier="short_term")
+    ctx.add("m0", torch.randn(16), relevance=0.5, tier="mid_term")
+    ctx.add("l0", torch.randn(16), relevance=0.5, tier="long_term")
 
     stats = ctx.stats()
     assert stats["short_term_size"] == 1
@@ -7436,7 +7436,7 @@ def test_causal_context_window_promote():
 
     ctx = CausalContextWindowManager(hidden_dim=8, short_term_capacity=5, mid_term_capacity=5)
     for i in range(3):
-        ctx.add("s", torch.randn(8), relevance=float(i), tier="short_term")
+        ctx.add(f"s{i}", torch.randn(8), relevance=float(i), tier="short_term")
 
     promoted = ctx.promote("short_term", top_n=2)
     assert promoted == 2, f"Expected 2 promoted, got {promoted}"
@@ -7452,8 +7452,8 @@ def test_causal_context_window_get_context_tensor():
     ctx = CausalContextWindowManager(hidden_dim=16)
     assert ctx.get_context_tensor() is None
 
-    ctx.add("s", torch.randn(16), relevance=1.0, tier="short_term")
-    ctx.add("s", torch.randn(16), relevance=0.5, tier="short_term")
+    ctx.add("s0", torch.randn(16), relevance=1.0, tier="short_term")
+    ctx.add("s1", torch.randn(16), relevance=0.5, tier="short_term")
     t = ctx.get_context_tensor(k=2)
     assert t is not None
     assert t.shape == (2, 16), f"Expected (2, 16), got {t.shape}"

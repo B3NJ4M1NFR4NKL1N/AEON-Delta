@@ -11300,6 +11300,8 @@ class CausalContextWindowManager:
             return
         if not torch.isfinite(embedding).all():
             return
+        if tier not in ("short_term", "mid_term", "long_term"):
+            tier = "long_term"
 
         entry = {
             "source": source,
@@ -11349,7 +11351,13 @@ class CausalContextWindowManager:
         top = self.get_top_k(k)
         if not top:
             return None
-        return torch.stack([e["embedding"].squeeze(0) for e in top], dim=0)
+        tensors = []
+        for e in top:
+            emb = e["embedding"]
+            if emb.dim() > 1:
+                emb = emb.squeeze(0)
+            tensors.append(emb)
+        return torch.stack(tensors, dim=0)
 
     def promote(self, source_tier: str = "short_term", top_n: int = 5) -> int:
         """Promote top entries from one tier to the next higher tier."""
@@ -12429,9 +12437,8 @@ class AEONDeltaV3(nn.Module):
         # 0b. Record causal trace for input
         input_trace_id = ""
         if self.causal_trace is not None:
-            input_hash = hashlib.sha256(
-                z_in.detach().cpu().numpy().tobytes()
-            ).hexdigest()[:16]
+            # Use shape + norm as a lightweight fingerprint instead of SHA256
+            input_hash = f"{z_in.shape}_{z_in.detach().norm().item():.6f}"
             input_trace_id = self.causal_trace.record(
                 "input", "received",
                 initial_state_hash=input_hash,
@@ -12654,12 +12661,11 @@ class AEONDeltaV3(nn.Module):
         
         # 5f. Causal context — store current state into hierarchical context
         if self.causal_context is not None:
-            causal_w = float(
-                reconciliation_results.get("agreement_score", torch.tensor(0.0)).mean()
-            )
+            agreement = reconciliation_results.get("agreement_score", None)
+            causal_w = float(agreement.mean()) if agreement is not None else 0.0
             self.causal_context.add(
                 source="reasoning_core",
-                embedding=C_star.mean(dim=0),
+                embedding=C_star.mean(dim=0).detach(),
                 relevance=float(safety_score.mean()),
                 causal_weight=causal_w,
                 tier="short_term",
