@@ -4270,7 +4270,7 @@ def test_weight_tying_scores_empty_guard():
     print("✅ test_weight_tying_scores_empty_guard PASSED")
 
 
-def test_entropy_loss_returns_tensor():
+def test_entropy_loss_returns_tensor_extended():
     """Verify that _compute_entropy_loss always returns a torch.Tensor."""
     from ae_train import VectorQuantizerHybridV4
 
@@ -4289,7 +4289,7 @@ def test_entropy_loss_returns_tensor():
     assert torch.is_tensor(loss_single), f"Expected Tensor, got {type(loss_single)}"
     assert loss_single.item() > 0.5, "Entropy loss should be high for single code usage"
 
-    print("✅ test_entropy_loss_returns_tensor PASSED")
+    print("✅ test_entropy_loss_returns_tensor_extended PASSED")
 
 
 def test_optimizer_step_returns_float():
@@ -12267,7 +12267,7 @@ if __name__ == '__main__':
     # Refactoring fixes tests (division-by-zero guards, type safety, NaN guards)
     test_epoch_metrics_empty_list_guard()
     test_weight_tying_scores_empty_guard()
-    test_entropy_loss_returns_tensor()
+    test_entropy_loss_returns_tensor_extended()
     test_optimizer_step_returns_float()
     test_grad_norm_nan_guard_in_fit()
     
@@ -12438,6 +12438,13 @@ if __name__ == '__main__':
     test_execute_with_guard_logs_exception()
     test_tensor_guard_warn_count_thread_safety()
     test_quantize_int8_scale_detached()
+    
+    # Refactoring fix verification tests
+    test_alpha_zero_rejected()
+    test_adaptive_chunking_nan_input()
+    test_ema_update_nonfinite_cluster_size()
+    test_consistency_computation_nan_guard()
+    test_anderson_solve_nonfinite_fallback()
     
     # AGI Coherence Layer tests
     test_causal_context_window_add_and_retrieve()
