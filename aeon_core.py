@@ -2545,6 +2545,7 @@ class AEONConfig:
     consolidating_working_capacity: int = 7
     consolidating_episodic_capacity: int = 1000
     consolidating_importance_threshold: float = 0.7
+    consolidating_semantic_weight: float = 0.1
     
     # ===== NOTEARS CAUSAL MODEL =====
     enable_notears_causal: bool = False
@@ -12883,7 +12884,7 @@ class AEONDeltaV3(nn.Module):
         # window monitor to detect sustained divergence across forward
         # passes.  A 'diverging' verdict triggers deeper meta-cognitive
         # processing downstream.
-        residual_norm_scalar = meta_results.get("residual_norm", float('inf'))
+        residual_norm_scalar = meta_results.get("residual_norm", 1.0)
         if not math.isfinite(residual_norm_scalar):
             residual_norm_scalar = 1.0  # safe fallback
         convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
@@ -13022,12 +13023,12 @@ class AEONDeltaV3(nn.Module):
         # Gated by complexity estimator gate[0] when available.
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
-        _world_model_gated = (
+        _world_model_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 0].any().item()
         )
         self.provenance_tracker.record_before("world_model", C_star)
-        if self.world_model is not None and not fast and not _world_model_gated:
+        if self.world_model is not None and not fast and not _world_model_should_skip:
             world_model_results = self.world_model(
                 C_star, explore_counterfactuals=planning
             )
@@ -13057,11 +13058,11 @@ class AEONDeltaV3(nn.Module):
         
         # 5b2. MCTS planning — gated by complexity gate[1]
         mcts_results = {}
-        _mcts_gated = (
+        _mcts_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
         )
-        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_gated:
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
             # Run MCTS for first sample (as demonstration)
             mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
         
@@ -13110,17 +13111,17 @@ class AEONDeltaV3(nn.Module):
                 semantic_items = ret.get('semantic', [])
                 if semantic_items:
                     vecs = torch.stack([v for v, _s in semantic_items])
-                    C_star[i] = C_star[i] + 0.1 * vecs.mean(dim=0).to(device)
+                    C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
         
         self.provenance_tracker.record_after("memory", C_star)
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
-        _causal_world_gated = (
+        _causal_world_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 2].any().item()
         )
-        if self.causal_world_model is not None and not fast and not _causal_world_gated:
+        if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             causal_world_results = self.causal_world_model(C_star)
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions
@@ -13160,11 +13161,11 @@ class AEONDeltaV3(nn.Module):
         # 5e2. Unified causal simulator — counterfactual reasoning
         # Gated by complexity gate[3]
         unified_simulator_results: Dict[str, Any] = {}
-        _unified_sim_gated = (
+        _unified_sim_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
         )
-        if self.unified_simulator is not None and not fast and not _unified_sim_gated:
+        if self.unified_simulator is not None and not fast and not _unified_sim_should_skip:
             unified_simulator_results = self.unified_simulator(C_star)
             # Blend counterfactual signal as residual
             cf_next = unified_simulator_results.get("next_state", None)
