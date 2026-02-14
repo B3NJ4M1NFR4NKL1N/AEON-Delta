@@ -36,6 +36,15 @@ import warnings
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
+__all__ = [
+    "AEONConfigV4", "TrainingMonitor",
+    "GumbelVectorQuantizer", "VectorQuantizerHybridV4",
+    "AEONDeltaV4", "DocumentAwareDataset",
+    "WarmupCosineScheduler",
+    "SafeThoughtAETrainerV4", "ContextualRSSMTrainer",
+    "validate_training_components", "main",
+]
+
 # --- Токенизатор ---
 try:
     from transformers import AutoTokenizer

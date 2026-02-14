@@ -128,6 +128,67 @@ except ImportError:
 __version__ = "3.1.0"
 __author__ = "AEON Research Team"
 
+__all__ = [
+    # Configuration & utilities
+    "AEONConfig", "set_seed", "DeviceManager",
+    # Tensor safety
+    "NaNPolicy", "TensorGuard", "tensor_safe",
+    # Audit, validation & monitoring
+    "DecisionAuditLog", "StateConsistencyValidator",
+    "SemanticErrorClassifier", "ErrorRecoveryManager",
+    "SystemIntegrityMonitor", "ProgressTracker",
+    "DeterministicExecutionGuard", "ContextWindowManager",
+    # Encoder / decoder
+    "ThoughtEncoder", "ThoughtDecoder",
+    "SSMThoughtEncoder", "SSMThoughtDecoder",
+    "LinearAttentionEncoder",
+    "Mamba2ThoughtEncoder", "Mamba2ThoughtDecoder",
+    "build_encoder", "build_decoder",
+    # SSM & attention
+    "SelectiveSSM", "SelectiveSSMv2", "LinearAttentionBlock",
+    "ChunkedSequenceProcessor", "InferenceCache",
+    "PretrainedBackboneAdapter",
+    # Core modules
+    "RobustVectorQuantizer", "LipschitzConstrainedLambda",
+    "compute_lipschitz_loss",
+    "ProvablyConvergentMetaLoop", "ConvergenceMonitor",
+    "HierarchicalMetaLoop", "RecursiveMetaLoop",
+    "FastHessianComputer",
+    # Analysis & safety
+    "OptimizedTopologyAnalyzer", "DiversityMetric",
+    "SparseFactorization", "CausalFactorExtractor",
+    "MultiLevelSafetySystem", "TransparentSelfReporting",
+    # Memory
+    "MemoryManager", "HierarchicalMemory",
+    "NeuralTuringMachine", "TemporalMemory",
+    "NeurogenicMemorySystem", "ConsolidatingMemory", "UnifiedMemory",
+    # World models & physics
+    "PhysicsGroundedWorldModel", "LatentDynamicsModel",
+    "HierarchicalWorldModel",
+    # Multi-modal & learning
+    "MultiModalGroundingModule", "GroundedMultimodalLearning",
+    "MetaLearner", "Task2VecMetaLearner", "ContinualLearningCore",
+    # Causal reasoning
+    "NeuralCausalModel", "NOTEARSCausalModel",
+    "CausalWorldModel", "CausalProgrammaticModel",
+    "UnifiedCausalSimulator",
+    # Planning
+    "ValueNetwork", "PolicyNetwork", "MCTSNode", "MCTSPlanner",
+    "CuriosityDrivenExploration", "ActiveLearningPlanner",
+    # Advanced architecture
+    "CertifiedMetaLoop", "AdaptiveMetaLoop",
+    "DifferentiableForwardChainer", "NeuroSymbolicReasoner",
+    "HierarchicalVAE", "CompositionalSlotAttention",
+    "SharedWorkspace", "AttentionArbiter", "MetaMonitor",
+    "CognitiveExecutiveFunction",
+    "RecoveryExperienceReplay", "MetaRecoveryLearner",
+    "NeuroSymbolicBridge", "TemporalKnowledgeGraph",
+    "HybridReasoningEngine",
+    "CriticNetwork", "RevisionNetwork", "AutoCriticLoop",
+    # Main model & training
+    "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
+]
+
 # Logging setup
 _log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
