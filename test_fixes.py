@@ -8717,15 +8717,15 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 0.6 ≥ threshold → should trigger
-    # (5 signals at 0.20 weight each; 3 active = 0.60)
+    # Three signals → score = 3/6 = 0.5 ≥ threshold → should trigger
+    # (6 signals at 1/6 weight each; 3 active = 0.50)
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
         memory_staleness=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 0.6) < 1e-9
+    assert abs(result["trigger_score"] - 0.5) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
@@ -8739,11 +8739,11 @@ def test_metacognitive_recursion_trigger_max_recursions():
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(
-        trigger_threshold=0.20,
+        trigger_threshold=1.0 / 6.0 - 0.01,  # just below one-signal weight
         max_recursions=1,
     )
 
-    # First call → should trigger (one signal = 0.20 ≥ 0.20)
+    # First call → should trigger (one signal = 1/6 ≈ 0.167 ≥ threshold)
     r1 = trigger.evaluate(uncertainty=0.8)
     assert r1["should_trigger"] is True
 
@@ -8772,9 +8772,10 @@ def test_metacognitive_recursion_trigger_all_signals():
         topology_catastrophe=True,
         coherence_deficit=True,
         memory_staleness=True,
+        recovery_pressure=0.5,
     )
     assert abs(result["trigger_score"] - 1.0) < 1e-9
-    assert len(result["triggers_active"]) == 5
+    assert len(result["triggers_active"]) == 6
     assert result["should_trigger"] is True
 
     print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
@@ -9260,16 +9261,17 @@ def test_causal_trace_root_cause():
 
 def test_memory_staleness_feeds_metacognitive_trigger():
     """Gap 4: Memory retrieval staleness feeds into metacognitive recursion
-    trigger as a fifth signal."""
+    trigger as one of six signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.20)
+    _w = 1.0 / 6.0  # per-signal weight with 6 signals
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only memory_staleness active → score = 0.20 ≥ 0.20
+    # Only memory_staleness active → score = 1/6 ≥ threshold
     result = trigger.evaluate(memory_staleness=True)
     assert result["should_trigger"] is True
     assert "memory_staleness" in result["triggers_active"]
-    assert abs(result["trigger_score"] - 0.20) < 1e-9
+    assert abs(result["trigger_score"] - _w) < 1e-9
 
     # Verify backward compat: no memory_staleness kwarg = False
     trigger.reset()
@@ -10926,6 +10928,259 @@ def test_causal_trace_summary_in_fallback():
     print("✅ test_causal_trace_summary_in_fallback PASSED")
 
 
+# ============================================================================
+# AGI COHERENCE INTEGRATION TESTS
+# ============================================================================
+
+def test_recovery_pressure_in_metacognitive_trigger():
+    """Gap 5: recovery_pressure is a 6th signal in MetaCognitiveRecursionTrigger."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    _w = 1.0 / 6.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
+
+    # Only recovery_pressure active (above 0.3 threshold)
+    result = trigger.evaluate(recovery_pressure=0.5)
+    assert result["should_trigger"] is True
+    assert "recovery_pressure" in result["triggers_active"]
+    assert abs(result["trigger_score"] - _w) < 1e-9
+
+    # Below 0.3 → recovery_pressure should NOT fire
+    trigger.reset()
+    result_low = trigger.evaluate(recovery_pressure=0.2)
+    assert "recovery_pressure" not in result_low["triggers_active"]
+
+    print("✅ test_recovery_pressure_in_metacognitive_trigger PASSED")
+
+
+def test_adaptive_weights_from_evolution():
+    """Gap 2: Error evolution history adapts metacognitive trigger weights."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+
+    # Record many failures for convergence_divergence → boosts "diverging" weight
+    for _ in range(10):
+        tracker.record_episode("convergence_divergence", "retry", success=False)
+
+    # Adapt weights
+    trigger.adapt_weights_from_evolution(tracker.get_error_summary())
+
+    # "diverging" should now have a higher weight than "memory_staleness"
+    w = trigger._signal_weights
+    assert w["diverging"] > w["memory_staleness"], (
+        f"Expected diverging weight ({w['diverging']:.4f}) > "
+        f"memory_staleness weight ({w['memory_staleness']:.4f})"
+    )
+
+    # Weights should still approximately sum to 1.0
+    assert abs(sum(w.values()) - 1.0) < 1e-9
+
+    print("✅ test_adaptive_weights_from_evolution PASSED")
+
+
+def test_feedback_bus_convergence_loss_scale():
+    """Gap 4: CognitiveFeedbackBus accepts convergence_loss_scale signal."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Default convergence_loss_scale=1.0
+    out_default = bus(batch_size=2, device=torch.device("cpu"))
+    assert out_default.shape == (2, 32)
+
+    # With diverging loss scale (2.0)
+    out_diverging = bus(
+        batch_size=2, device=torch.device("cpu"),
+        convergence_loss_scale=2.0,
+    )
+    assert out_diverging.shape == (2, 32)
+
+    # With converged loss scale (0.5)
+    out_converged = bus(
+        batch_size=2, device=torch.device("cpu"),
+        convergence_loss_scale=0.5,
+    )
+    assert out_converged.shape == (2, 32)
+
+    # Different loss scales should produce different feedback vectors
+    assert not torch.allclose(out_default, out_diverging, atol=1e-6), (
+        "Default and diverging feedback should differ"
+    )
+    assert not torch.allclose(out_default, out_converged, atol=1e-6), (
+        "Default and converged feedback should differ"
+    )
+
+    print("✅ test_feedback_bus_convergence_loss_scale PASSED")
+
+
+def test_causal_decision_chain_in_output():
+    """Gap 3: reasoning_core output includes causal_decision_chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'causal_decision_chain' in outputs, (
+        "Expected 'causal_decision_chain' in output dict"
+    )
+    chain = outputs['causal_decision_chain']
+    # Verify required keys
+    required_keys = [
+        'input_trace_id', 'provenance', 'convergence_verdict',
+        'metacognitive_triggered', 'metacognitive_phase',
+        'metacognitive_triggers', 'safety_enforced',
+        'adaptive_safety_threshold', 'uncertainty',
+        'recovery_stats', 'error_evolution_summary',
+        'causal_trace_summary', 'coherence_score',
+        'dominant_provenance_module',
+    ]
+    for key in required_keys:
+        assert key in chain, f"Missing key '{key}' in causal_decision_chain"
+
+    print("✅ test_causal_decision_chain_in_output PASSED")
+
+
+def test_causal_decision_chain_in_fallback():
+    """Gap 3: Error fallback path also includes causal_decision_chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Trigger error fallback by corrupting meta_loop
+    original_forward = model.meta_loop.forward
+
+    def _broken_forward(*args, **kwargs):
+        raise RuntimeError("Simulated meta-loop failure")
+
+    model.meta_loop.forward = _broken_forward
+    z_in = torch.randn(2, 32)
+    _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'causal_decision_chain' in outputs, (
+        "Expected 'causal_decision_chain' in error fallback"
+    )
+    chain = outputs['causal_decision_chain']
+    assert chain['metacognitive_phase'] == 'error_fallback'
+
+    # Restore
+    model.meta_loop.forward = original_forward
+
+    print("✅ test_causal_decision_chain_in_fallback PASSED")
+
+
+def test_convergence_loss_scale_stored():
+    """Gap 4: compute_loss stores _last_convergence_loss_scale on model."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, config.vocab_size, (B, L))
+    outputs = model(input_ids, decode_mode='train', fast=True)
+    targets = torch.randint(1, config.vocab_size, (B, L))
+    losses = model.compute_loss(outputs, targets)
+
+    assert hasattr(model, '_last_convergence_loss_scale'), (
+        "compute_loss should store _last_convergence_loss_scale"
+    )
+    assert model._last_convergence_loss_scale in (0.5, 1.0, 2.0), (
+        f"Unexpected convergence_loss_scale: {model._last_convergence_loss_scale}"
+    )
+
+    print("✅ test_convergence_loss_scale_stored PASSED")
+
+
+def test_post_integration_metacognitive_reevaluation():
+    """Gap 1: Post-integration metacognitive re-evaluation fires when
+    uncertainty was escalated after initial trigger evaluation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.15,
+        metacognitive_max_recursions=3,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    _, outputs = model.reasoning_core(z_in, fast=False)
+
+    # The metacognitive_info should be present in outputs
+    assert 'metacognitive_info' in outputs
+    # The causal_decision_chain should track metacognitive decisions
+    chain = outputs.get('causal_decision_chain', {})
+    assert 'metacognitive_triggered' in chain
+
+    print("✅ test_post_integration_metacognitive_reevaluation PASSED")
+
+
+def test_signal_weights_returned_in_evaluate():
+    """Verify MetaCognitiveRecursionTrigger.evaluate returns signal_weights."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    result = trigger.evaluate(uncertainty=0.8)
+
+    assert 'signal_weights' in result, (
+        "Expected 'signal_weights' in evaluate() result"
+    )
+    weights = result['signal_weights']
+    assert len(weights) == 6, f"Expected 6 signal weights, got {len(weights)}"
+    assert abs(sum(weights.values()) - 1.0) < 1e-9, (
+        f"Signal weights should sum to 1.0, got {sum(weights.values())}"
+    )
+
+    print("✅ test_signal_weights_returned_in_evaluate PASSED")
+
+
+def test_adapt_weights_no_data():
+    """adapt_weights_from_evolution is a no-op with empty summary."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    original_weights = dict(trigger._signal_weights)
+
+    # Empty summary should not change weights
+    trigger.adapt_weights_from_evolution({"error_classes": {}})
+    assert trigger._signal_weights == original_weights
+
+    # Completely empty summary
+    trigger.adapt_weights_from_evolution({})
+    assert trigger._signal_weights == original_weights
+
+    print("✅ test_adapt_weights_no_data PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -11507,6 +11762,15 @@ if __name__ == '__main__':
     test_error_evolution_tightens_safety_threshold()
     test_trust_score_escalates_uncertainty()
     test_causal_trace_summary_in_fallback()
+    test_recovery_pressure_in_metacognitive_trigger()
+    test_adaptive_weights_from_evolution()
+    test_feedback_bus_convergence_loss_scale()
+    test_causal_decision_chain_in_output()
+    test_causal_decision_chain_in_fallback()
+    test_convergence_loss_scale_stored()
+    test_post_integration_metacognitive_reevaluation()
+    test_signal_weights_returned_in_evaluate()
+    test_adapt_weights_no_data()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

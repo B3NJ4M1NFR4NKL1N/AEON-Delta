@@ -5414,7 +5414,7 @@ class CognitiveFeedbackBus(nn.Module):
     """
     
     # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 4  # safety, convergence, uncertainty, health_mean
+    NUM_SIGNAL_CHANNELS = 5  # safety, convergence, uncertainty, health_mean, loss_scale
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5434,6 +5434,7 @@ class CognitiveFeedbackBus(nn.Module):
         convergence_quality: float = 1.0,
         uncertainty: float = 0.0,
         subsystem_health: Optional[torch.Tensor] = None,
+        convergence_loss_scale: float = 1.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5444,6 +5445,10 @@ class CognitiveFeedbackBus(nn.Module):
             convergence_quality: Scalar convergence rate (default: 1.0).
             uncertainty: Scalar uncertainty estimate (default: 0.0).
             subsystem_health: [B, K] health scores (default: all 1.0).
+            convergence_loss_scale: Convergence-adaptive loss scaling factor
+                from ``compute_loss()`` (default: 1.0 = neutral).  Values > 1
+                indicate divergence pressure from training, values < 1 indicate
+                the model has converged and can reduce effort.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -5464,8 +5469,13 @@ class CognitiveFeedbackBus(nn.Module):
         else:
             h = torch.ones(batch_size, device=device)
         
+        # Convergence loss scale (normalized to [0, 1] via sigmoid-like mapping)
+        # scale=1 → 0.5 (neutral), scale=2 → ~0.73 (diverging), scale=0.5 → ~0.27 (converged)
+        _normalized_loss_scale = 1.0 / (1.0 + math.exp(-1.0 * (convergence_loss_scale - 1.0)))
+        ls = torch.full((batch_size,), _normalized_loss_scale, device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h], dim=-1)
+        signals = torch.stack([s, c, u, h, ls], dim=-1)
         
         return self.projection(signals)
 
@@ -12170,17 +12180,24 @@ class ModuleCoherenceVerifier(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors five independent signals:
+    Monitors six independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
     4. ``coherence_deficit`` — low cross-module coherence score.
     5. ``memory_staleness`` — memory retrieval returned empty or low-relevance
        results, indicating lack of grounding context.
+    6. ``recovery_pressure`` — high error recovery frequency from
+       ErrorRecoveryManager, indicating the system is under stress and
+       should reason more carefully.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
     (lower convergence threshold, more iterations).
+
+    Signal weights can be adaptively adjusted via
+    :meth:`adapt_weights_from_evolution` using historical error-recovery
+    success rates from ``CausalErrorEvolutionTracker``.
 
     This is a pure-logic utility with no learnable parameters (not an
     ``nn.Module``), so it introduces zero additional model size.
@@ -12192,6 +12209,9 @@ class MetaCognitiveRecursionTrigger:
             threshold when re-reasoning is triggered (< 1 tightens).
         extra_iterations: Additional iterations granted on re-reasoning.
     """
+
+    # Default per-signal weight (6 signals × 1/6 ≈ 0.167 each)
+    _DEFAULT_WEIGHT = 1.0 / 6.0
 
     def __init__(
         self,
@@ -12205,10 +12225,70 @@ class MetaCognitiveRecursionTrigger:
         self.tightening_factor = max(0.01, min(tightening_factor, 1.0))
         self.extra_iterations = max(0, extra_iterations)
         self._recursion_count: int = 0
+        # Adaptive signal weights — initialized uniformly; can be
+        # adjusted by adapt_weights_from_evolution().
+        self._signal_weights: Dict[str, float] = {
+            "uncertainty": self._DEFAULT_WEIGHT,
+            "diverging": self._DEFAULT_WEIGHT,
+            "topology_catastrophe": self._DEFAULT_WEIGHT,
+            "coherence_deficit": self._DEFAULT_WEIGHT,
+            "memory_staleness": self._DEFAULT_WEIGHT,
+            "recovery_pressure": self._DEFAULT_WEIGHT,
+        }
 
     def reset(self) -> None:
         """Reset recursion counter at the start of each forward pass."""
         self._recursion_count = 0
+
+    def adapt_weights_from_evolution(
+        self,
+        error_summary: Dict[str, Any],
+    ) -> None:
+        """Adjust signal weights based on historical error-recovery patterns.
+
+        Error classes with low success rates get higher weights so that
+        their associated trigger signals are more likely to fire,
+        driving the system to reason deeper on historically problematic
+        failure modes.
+
+        Args:
+            error_summary: Output of ``CausalErrorEvolutionTracker.get_error_summary()``.
+        """
+        error_classes = error_summary.get("error_classes", {})
+        if not error_classes:
+            return
+
+        # Map error classes to the trigger signals they most relate to
+        _class_to_signal = {
+            "convergence_divergence": "diverging",
+            "coherence_deficit": "coherence_deficit",
+            "post_integration_coherence_deficit": "coherence_deficit",
+            "metacognitive_rerun": "uncertainty",
+            "numerical": "uncertainty",
+            "safety_rollback": "uncertainty",
+            "reconciliation_disagreement": "coherence_deficit",
+        }
+
+        # Accumulate boost factors for each signal
+        _boosts: Dict[str, float] = {}
+        for cls_name, stats in error_classes.items():
+            signal = _class_to_signal.get(cls_name)
+            if signal is None:
+                continue
+            success_rate = stats.get("success_rate", 1.0)
+            # Low success rate → higher boost (max 2x the default weight)
+            boost = max(0.0, 1.0 - success_rate)
+            _boosts[signal] = _boosts.get(signal, 0.0) + boost
+
+        # Apply boosts and re-normalize so weights still sum to ~1.0
+        raw_weights = dict(self._signal_weights)
+        for signal, boost in _boosts.items():
+            if signal in raw_weights:
+                raw_weights[signal] = self._DEFAULT_WEIGHT * (1.0 + boost)
+
+        total = sum(raw_weights.values())
+        if total > 0:
+            self._signal_weights = {k: v / total for k, v in raw_weights.items()}
 
     def evaluate(
         self,
@@ -12217,6 +12297,7 @@ class MetaCognitiveRecursionTrigger:
         topology_catastrophe: bool = False,
         coherence_deficit: bool = False,
         memory_staleness: bool = False,
+        recovery_pressure: float = 0.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -12228,6 +12309,9 @@ class MetaCognitiveRecursionTrigger:
             memory_staleness: True if memory retrieval returned empty or
                 low-relevance results, indicating the system lacks grounding
                 context and should reason more deeply.
+            recovery_pressure: Scalar ∈ [0, 1] indicating how frequently
+                error recovery has been invoked recently.  Derived from
+                ``ErrorRecoveryManager.get_recovery_stats()``.
 
         Returns:
             Dict with:
@@ -12236,17 +12320,19 @@ class MetaCognitiveRecursionTrigger:
                 - tightened_threshold: float — suggested convergence threshold.
                 - extra_iterations: int — additional iterations to grant.
                 - triggers_active: list of signal names that fired.
+                - signal_weights: current adaptive weights per signal.
         """
-        # Weight each signal equally (0.20 each, sum = 1.0 when all fire)
-        signal_weights = {
-            "uncertainty": 0.20 * float(uncertainty > 0.5),
-            "diverging": 0.20 * float(is_diverging),
-            "topology_catastrophe": 0.20 * float(topology_catastrophe),
-            "coherence_deficit": 0.20 * float(coherence_deficit),
-            "memory_staleness": 0.20 * float(memory_staleness),
+        w = self._signal_weights
+        signal_values = {
+            "uncertainty": w["uncertainty"] * float(uncertainty > 0.5),
+            "diverging": w["diverging"] * float(is_diverging),
+            "topology_catastrophe": w["topology_catastrophe"] * float(topology_catastrophe),
+            "coherence_deficit": w["coherence_deficit"] * float(coherence_deficit),
+            "memory_staleness": w["memory_staleness"] * float(memory_staleness),
+            "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
         }
-        trigger_score = sum(signal_weights.values())
-        triggers_active = [k for k, v in signal_weights.items() if v > 0]
+        trigger_score = sum(signal_values.values())
+        triggers_active = [k for k, v in signal_values.items() if v > 0]
 
         can_recurse = self._recursion_count < self.max_recursions
         should_trigger = trigger_score >= self.trigger_threshold and can_recurse
@@ -12261,6 +12347,7 @@ class MetaCognitiveRecursionTrigger:
             "extra_iterations": self.extra_iterations,
             "triggers_active": triggers_active,
             "recursion_count": self._recursion_count,
+            "signal_weights": dict(w),
         }
 
 
@@ -13245,6 +13332,25 @@ class AEONDeltaV3(nn.Module):
                     if self.error_evolution is not None else {}
                 ),
                 'causal_trace_summary': {},
+                'causal_decision_chain': {
+                    'input_trace_id': '',
+                    'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
+                    'convergence_verdict': {'status': 'unknown', 'certified': False},
+                    'metacognitive_triggered': False,
+                    'metacognitive_phase': 'error_fallback',
+                    'metacognitive_triggers': [],
+                    'safety_enforced': False,
+                    'adaptive_safety_threshold': self.config.safety_threshold,
+                    'uncertainty': 1.0,
+                    'recovery_stats': self.error_recovery.get_recovery_stats(),
+                    'error_evolution_summary': (
+                        self.error_evolution.get_error_summary()
+                        if self.error_evolution is not None else {}
+                    ),
+                    'causal_trace_summary': {},
+                    'coherence_score': None,
+                    'dominant_provenance_module': None,
+                },
             }
             return z_fallback, fallback_outputs
 
@@ -13588,6 +13694,7 @@ class AEONDeltaV3(nn.Module):
                 convergence_quality=convergence_quality_scalar,
                 uncertainty=uncertainty,
                 subsystem_health=_recovery_health,
+                convergence_loss_scale=getattr(self, '_last_convergence_loss_scale', 1.0),
             ).detach()
         
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
@@ -13641,12 +13748,26 @@ class AEONDeltaV3(nn.Module):
             _topo_catastrophe_flag = bool(
                 topo_results.get('catastrophes', torch.zeros(1)).any().item()
             )
+            # Adapt signal weights from error evolution history before
+            # evaluating, so historically problematic failure modes
+            # increase trigger sensitivity.
+            if self.error_evolution is not None:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary()
+                )
+            # Compute recovery pressure from ErrorRecoveryManager stats:
+            # fraction of recent calls that required recovery, clamped [0, 1].
+            _recovery_stats = self.error_recovery.get_recovery_stats()
+            _total_recoveries = _recovery_stats.get("total", 0)
+            _RECOVERY_PRESSURE_RATE = 0.1
+            _recovery_pressure = min(1.0, _total_recoveries * _RECOVERY_PRESSURE_RATE)
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
                 topology_catastrophe=_topo_catastrophe_flag,
                 coherence_deficit=_coherence_deficit,
                 memory_staleness=self._memory_stale,
+                recovery_pressure=_recovery_pressure,
             )
             if metacognitive_info.get("should_trigger", False):
                 # Consult error evolution for historically best strategy
@@ -14384,6 +14505,76 @@ class AEONDeltaV3(nn.Module):
         convergence_quality = meta_results.get('convergence_rate', 0.0)
         integrity_report = self.integrity_monitor.get_integrity_report()
         
+        # 8g-0. Post-integration metacognitive re-evaluation — after all
+        # uncertainty-escalation signals (world model surprise, HVAE KL,
+        # trust score, convergence verdict) have been computed, re-evaluate
+        # the metacognitive trigger.  This ensures that late-stage
+        # uncertainty feeds back into reasoning depth even when the
+        # initial trigger evaluation (step 5a-iv) didn't fire because
+        # its input signals hadn't accumulated yet.
+        _post_metacog_triggered = False
+        if (self.metacognitive_trigger is not None
+                and not fast
+                and not metacognitive_info.get("should_trigger", False)):
+            # Re-compute recovery pressure with up-to-date stats
+            _post_recovery_stats = self.error_recovery.get_recovery_stats()
+            _post_total_recoveries = _post_recovery_stats.get("total", 0)
+            _post_recovery_pressure = min(
+                1.0, _post_total_recoveries * _RECOVERY_PRESSURE_RATE,
+            )
+            _post_topo_catastrophe_flag = bool(
+                topo_results.get('catastrophes', torch.zeros(1)).any().item()
+            )
+            _post_coherence_deficit = coherence_results.get(
+                "needs_recheck", False,
+            ) if coherence_results else False
+            metacognitive_info_post = self.metacognitive_trigger.evaluate(
+                uncertainty=uncertainty,
+                is_diverging=is_diverging,
+                topology_catastrophe=_post_topo_catastrophe_flag,
+                coherence_deficit=_post_coherence_deficit,
+                memory_staleness=self._memory_stale,
+                recovery_pressure=_post_recovery_pressure,
+            )
+            if metacognitive_info_post.get("should_trigger", False):
+                _post_metacog_triggered = True
+                self.audit_log.record(
+                    "metacognitive_recursion_post", "triggered", {
+                        "triggers_active": metacognitive_info_post["triggers_active"],
+                        "trigger_score": metacognitive_info_post["trigger_score"],
+                        "phase": "post_integration",
+                    },
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "metacognitive_recursion_post", "triggered",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "triggers_active": metacognitive_info_post["triggers_active"],
+                            "trigger_score": metacognitive_info_post["trigger_score"],
+                        },
+                    )
+                # Merge post-evaluation info into metacognitive_info
+                metacognitive_info = metacognitive_info_post
+                metacognitive_info["phase"] = "post_integration"
+                # Invoke auto-critic for self-correction on the final output
+                if self.auto_critic is not None:
+                    _post_critic = self.auto_critic(z_out)
+                    _post_revised = _post_critic.get("candidate", None)
+                    if _post_revised is not None and torch.isfinite(_post_revised).all():
+                        z_out = _post_revised
+                    self.audit_log.record("auto_critic", "revised", {
+                        "iterations": _post_critic.get("iterations", 0),
+                        "final_score": _post_critic.get("final_score", 0.0),
+                        "trigger": "post_integration_metacognitive",
+                    })
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="post_integration_metacognitive",
+                        strategy_used="auto_critic",
+                        success=_post_metacog_triggered,
+                    )
+        
         # 8g. Record aggregated subsystem health in causal trace so that
         # root-cause analysis can link system-wide health degradation
         # back to specific subsystem failures within this forward pass.
@@ -14441,6 +14632,41 @@ class AEONDeltaV3(nn.Module):
                     "safety_tightening": _root_tightening if _root_subsystems else 1.0,
                 }
         
+        # 8h. Build unified causal decision chain — a single traceability
+        # record that links the output back to every decision point that
+        # shaped it: meta-loop convergence, safety enforcement, metacognitive
+        # recursion, error recovery, and provenance attribution.  This
+        # satisfies the requirement that all outputs are traceable to
+        # their first causes.
+        _provenance = self.provenance_tracker.compute_attribution()
+        _causal_decision_chain: Dict[str, Any] = {
+            "input_trace_id": input_trace_id,
+            "provenance": _provenance,
+            "convergence_verdict": convergence_verdict,
+            "metacognitive_triggered": metacognitive_info.get("should_trigger", False),
+            "metacognitive_phase": metacognitive_info.get("phase", "pre_integration"),
+            "metacognitive_triggers": metacognitive_info.get("triggers_active", []),
+            "safety_enforced": safety_enforced,
+            "adaptive_safety_threshold": adaptive_safety_threshold,
+            "uncertainty": uncertainty,
+            "recovery_stats": self.error_recovery.get_recovery_stats(),
+            "error_evolution_summary": (
+                self.error_evolution.get_error_summary()
+                if self.error_evolution is not None else {}
+            ),
+            "causal_trace_summary": _causal_trace_summary,
+            "coherence_score": (
+                float(coherence_results["coherence_score"].mean().item())
+                if coherence_results and "coherence_score" in coherence_results
+                else None
+            ),
+            "dominant_provenance_module": (
+                max(_provenance.get("contributions", {}),
+                    key=_provenance.get("contributions", {}).get, default=None)
+                if _provenance.get("contributions") else None
+            ),
+        }
+        
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -14473,7 +14699,7 @@ class AEONDeltaV3(nn.Module):
             'adaptive_safety_threshold': adaptive_safety_threshold,
             'audit_insights': audit_insights,
             'causal_trace_id': input_trace_id,
-            'provenance': self.provenance_tracker.compute_attribution(),
+            'provenance': _provenance,
             'convergence_verdict': convergence_verdict,
             'coherence_results': coherence_results,
             'metacognitive_info': metacognitive_info,
@@ -14483,6 +14709,7 @@ class AEONDeltaV3(nn.Module):
                 if self.error_evolution is not None else {}
             ),
             'causal_trace_summary': _causal_trace_summary,
+            'causal_decision_chain': _causal_decision_chain,
         }
         
         return z_out, outputs
@@ -14775,6 +15002,11 @@ class AEONDeltaV3(nn.Module):
             _convergence_loss_scale = 1.0
         elif _convergence_status == 'converged':
             _convergence_loss_scale = 0.5
+        
+        # Store convergence_loss_scale so the CognitiveFeedbackBus can
+        # condition the next forward pass's meta-loop on training loss
+        # dynamics, closing the training → inference feedback loop.
+        self._last_convergence_loss_scale = _convergence_loss_scale
         
         total_loss = (
             lm_loss +
