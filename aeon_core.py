@@ -12657,9 +12657,16 @@ class AEONDeltaV3(nn.Module):
         # converged state relative to the input.  High residual variance
         # indicates the meta-loop is unsure.  This scalar is used later
         # to trigger deeper processing (auto-critic, world model blend).
+        # The sigmoid steepness (10.0) controls how sharply the
+        # uncertainty transitions from 0→1; the midpoint (0.5) sets
+        # the residual variance at which uncertainty equals 0.5.
+        _UNCERTAINTY_STEEPNESS = 10.0
+        _UNCERTAINTY_MIDPOINT = 0.5
         with torch.no_grad():
             residual_var = (C_star - z_in).var(dim=-1).mean().item()
-            uncertainty = 1.0 / (1.0 + math.exp(-10.0 * (residual_var - 0.5)))
+            uncertainty = 1.0 / (1.0 + math.exp(
+                -_UNCERTAINTY_STEEPNESS * (residual_var - _UNCERTAINTY_MIDPOINT)
+            ))
         high_uncertainty = uncertainty > 0.5
         if high_uncertainty and not fast:
             logger.debug(
@@ -12971,10 +12978,13 @@ class AEONDeltaV3(nn.Module):
         # is high or audit patterns indicate instability, invoke auto-critic
         # even without NS violations.  This ensures that *any* unresolved
         # ambiguity triggers self-reflection, not just symbolic violations.
+        _ns_already_handled = (
+            ns_consistency_results.get("num_violations", torch.zeros(1)).sum().item() > 0
+        )
         if (self.auto_critic is not None
                 and not fast
                 and (high_uncertainty or audit_recommends_deeper)
-                and not ns_consistency_results.get("num_violations", torch.zeros(1)).sum().item() > 0):
+                and not _ns_already_handled):
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
@@ -13000,10 +13010,12 @@ class AEONDeltaV3(nn.Module):
         # MetaRecoveryLearner can learn from success, not only failure.
         if self.meta_recovery is not None and integration_healthy:
             try:
-                success_ctx = torch.zeros(1, 64, device=device)
+                _recovery_dim = self.meta_recovery.state_dim
+                success_ctx = torch.zeros(1, _recovery_dim, device=device)
+                _sanitize_action = 0  # index into MetaRecoveryLearner.STRATEGIES
                 self.meta_recovery.recovery_buffer.push(
                     state=success_ctx.squeeze(0),
-                    action=0,  # "sanitize" (the default successful path)
+                    action=_sanitize_action,
                     reward=1.0,  # positive reinforcement
                     next_state=success_ctx.squeeze(0),
                 )
