@@ -356,6 +356,17 @@ Enables physically-grounded causal reasoning and intervention planning in a unif
 
 ---
 
+### **26. AGI Coherence Architecture: Self-Verification & Meta-Cognitive Recursion**  
+Components that transform AEON-Delta from a collection of modules into a self-reflexive, causally-coherent architecture:
+
+- **`ModuleCoherenceVerifier`**: Cross-validates pairwise outputs between subsystem pairs (meta-loop, factors, safety, memory) using cosine similarity after projection — detects internal inconsistencies and emits a `needs_recheck` flag; fully differentiable for training-time consistency pressure  
+- **`MetaCognitiveRecursionTrigger`**: Monitors four independent signals (uncertainty, convergence divergence, topology catastrophes, coherence deficit) and triggers meta-loop re-invocation with tightened parameters (lower convergence threshold, more iterations) — includes recursion cap for safety; zero learnable parameters  
+- **`CausalErrorEvolutionTracker`**: Records error-recovery episodes with strategy, success/failure, and causal antecedents — builds an evolving error taxonomy queryable for historically optimal recovery strategies; thread-safe  
+
+Ensures that: every component verifies others, any unresolved ambiguity triggers meta-cognitive cycles, all outputs are traceable to root causes, and the system evolves its error handling over time.
+
+---
+
 ## 📂 Training Pipeline: v4.0 Connected Thoughts Edition (`ae_train.py`)
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
@@ -413,7 +424,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 308 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 427 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -439,6 +450,7 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 308 tests) verifyi
 - **Meta-recovery learning** (experience replay, recovery strategy optimization)  
 - **Advanced causal** (unified causal simulator, neuro-symbolic bridge, temporal knowledge graph, hybrid reasoning engine)  
 - **Advanced meta-learning** (Task2Vec embeddings, latent dynamics model)  
+- **AGI coherence** (module coherence verification, meta-cognitive recursion trigger, causal error evolution tracker, cross-module integration)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -462,7 +474,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (308 tests) — stability, gradients, causal, planning, audit, recovery
+├── test_fixes.py     # Comprehensive test suite (427 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore

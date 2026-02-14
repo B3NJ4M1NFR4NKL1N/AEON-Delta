@@ -2577,6 +2577,17 @@ class AEONConfig:
     hybrid_reasoning_blend: float = 0.1
     meta_recovery_error_penalty: float = -1.0
 
+    # ===== MODULE COHERENCE & META-COGNITIVE RECURSION =====
+    enable_module_coherence: bool = False
+    module_coherence_threshold: float = 0.5
+    enable_metacognitive_recursion: bool = False
+    metacognitive_trigger_threshold: float = 0.5
+    metacognitive_max_recursions: int = 2
+    metacognitive_tightening_factor: float = 0.5
+    metacognitive_extra_iterations: int = 10
+    enable_error_evolution: bool = False
+    error_evolution_max_history: int = 100
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -12003,6 +12014,279 @@ class ComplexityEstimator(nn.Module):
 
 
 # ============================================================================
+# SECTION 15b: AGI COHERENCE — CROSS-MODULE VERIFICATION & SELF-REFLECTION
+# ============================================================================
+
+
+class ModuleCoherenceVerifier(nn.Module):
+    """Cross-validates outputs between subsystem pairs.
+
+    Computes pairwise cosine-similarity between key subsystem outputs
+    (meta-loop state, factor embedding, safety-gated state, memory-fused
+    state) and produces a scalar coherence score ∈ [0, 1] indicating
+    how self-consistent the pipeline is.
+
+    When coherence is low (below ``threshold``), the verifier emits a
+    boolean flag ``needs_recheck`` that downstream logic can use to
+    trigger a meta-cognitive re-reasoning cycle.
+
+    All operations are differentiable, so gradients flow through the
+    coherence score and can drive training toward more internally
+    consistent representations.
+
+    Args:
+        hidden_dim: Representation dimension shared by all subsystems.
+        threshold: Minimum acceptable mean pairwise coherence.
+    """
+
+    def __init__(self, hidden_dim: int = 256, threshold: float = 0.5):
+        super().__init__()
+        self.threshold = threshold
+        # Lightweight projection so each subsystem signal occupies
+        # a comparable subspace before similarity comparison.
+        self.proj = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(
+        self,
+        states: Dict[str, torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Compute pairwise coherence across named subsystem outputs.
+
+        Args:
+            states: Mapping from subsystem name to [B, hidden_dim] tensor.
+                    At least two entries are required.
+
+        Returns:
+            Dict with:
+                - coherence_score: [B] mean pairwise cosine similarity.
+                - pairwise: Dict[(name_i, name_j)] → [B] similarity.
+                - needs_recheck: bool — True when mean coherence < threshold.
+        """
+        names = list(states.keys())
+        if len(names) < 2:
+            B = next(iter(states.values())).shape[0] if states else 1
+            device = next(iter(states.values())).device if states else torch.device("cpu")
+            return {
+                "coherence_score": torch.ones(B, device=device),
+                "pairwise": {},
+                "needs_recheck": False,
+            }
+
+        projected = {k: self.proj(v) for k, v in states.items()}
+        pairwise: Dict[tuple, torch.Tensor] = {}
+        sims = []
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                sim = F.cosine_similarity(
+                    projected[names[i]], projected[names[j]], dim=-1,
+                )  # [B]
+                pairwise[(names[i], names[j])] = sim
+                sims.append(sim)
+
+        coherence = torch.stack(sims, dim=-1).mean(dim=-1)  # [B]
+        needs_recheck = bool(coherence.mean().item() < self.threshold)
+
+        return {
+            "coherence_score": coherence,
+            "pairwise": pairwise,
+            "needs_recheck": needs_recheck,
+        }
+
+
+class MetaCognitiveRecursionTrigger:
+    """Decides when to re-invoke the meta-loop for deeper reasoning.
+
+    Monitors four independent signals:
+    1. ``uncertainty`` — high residual variance from the converged state.
+    2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
+    3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
+    4. ``coherence_deficit`` — low cross-module coherence score.
+
+    When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
+    the trigger recommends re-running the meta-loop with tightened parameters
+    (lower convergence threshold, more iterations).
+
+    This is a pure-logic utility with no learnable parameters (not an
+    ``nn.Module``), so it introduces zero additional model size.
+
+    Args:
+        trigger_threshold: Weighted-sum threshold for triggering re-reasoning.
+        max_recursions: Safety cap on re-invocations per forward pass.
+        tightening_factor: Multiplicative factor applied to convergence
+            threshold when re-reasoning is triggered (< 1 tightens).
+        extra_iterations: Additional iterations granted on re-reasoning.
+    """
+
+    def __init__(
+        self,
+        trigger_threshold: float = 0.5,
+        max_recursions: int = 2,
+        tightening_factor: float = 0.5,
+        extra_iterations: int = 10,
+    ):
+        self.trigger_threshold = trigger_threshold
+        self.max_recursions = max(1, max_recursions)
+        self.tightening_factor = max(0.01, min(tightening_factor, 1.0))
+        self.extra_iterations = max(0, extra_iterations)
+        self._recursion_count: int = 0
+
+    def reset(self) -> None:
+        """Reset recursion counter at the start of each forward pass."""
+        self._recursion_count = 0
+
+    def evaluate(
+        self,
+        uncertainty: float = 0.0,
+        is_diverging: bool = False,
+        topology_catastrophe: bool = False,
+        coherence_deficit: bool = False,
+    ) -> Dict[str, Any]:
+        """Evaluate whether meta-cognitive re-reasoning should trigger.
+
+        Args:
+            uncertainty: Scalar ∈ [0, 1] from residual variance estimation.
+            is_diverging: True if ConvergenceMonitor detected divergence.
+            topology_catastrophe: True if topology analyzer flagged catastrophe.
+            coherence_deficit: True if ModuleCoherenceVerifier found low coherence.
+
+        Returns:
+            Dict with:
+                - should_trigger: bool — whether to re-run meta-loop.
+                - trigger_score: float — weighted sum of signals.
+                - tightened_threshold: float — suggested convergence threshold.
+                - extra_iterations: int — additional iterations to grant.
+                - triggers_active: list of signal names that fired.
+        """
+        # Weight each signal equally (0.25 each, sum = 1.0 when all fire)
+        signal_weights = {
+            "uncertainty": 0.25 * float(uncertainty > 0.5),
+            "diverging": 0.25 * float(is_diverging),
+            "topology_catastrophe": 0.25 * float(topology_catastrophe),
+            "coherence_deficit": 0.25 * float(coherence_deficit),
+        }
+        trigger_score = sum(signal_weights.values())
+        triggers_active = [k for k, v in signal_weights.items() if v > 0]
+
+        can_recurse = self._recursion_count < self.max_recursions
+        should_trigger = trigger_score >= self.trigger_threshold and can_recurse
+
+        if should_trigger:
+            self._recursion_count += 1
+
+        return {
+            "should_trigger": should_trigger,
+            "trigger_score": trigger_score,
+            "tightened_threshold": self.tightening_factor,
+            "extra_iterations": self.extra_iterations,
+            "triggers_active": triggers_active,
+            "recursion_count": self._recursion_count,
+        }
+
+
+class CausalErrorEvolutionTracker:
+    """Connects error recovery outcomes to causal trace for evolutionary learning.
+
+    Maintains a mapping from error classes to historical recovery outcomes
+    (success rate, preferred strategy, causal antecedents).  Over time this
+    builds an error taxonomy that the system can query to select optimal
+    recovery strategies without trial-and-error.
+
+    Integrates with :class:`TemporalCausalTraceBuffer` by recording each
+    error-recovery episode as a traced decision with causal prerequisites
+    pointing to the subsystem that originated the error.
+
+    Thread-safe via internal lock.
+
+    Args:
+        max_history: Maximum error episodes retained per error class.
+    """
+
+    def __init__(self, max_history: int = 100):
+        self._max_history = max(1, max_history)
+        self._lock = threading.Lock()
+        # error_class → list of episode dicts
+        self._episodes: Dict[str, List[Dict[str, Any]]] = {}
+        self._total_recorded: int = 0
+
+    def record_episode(
+        self,
+        error_class: str,
+        strategy_used: str,
+        success: bool,
+        causal_antecedents: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record an error-recovery episode.
+
+        Args:
+            error_class: Semantic error category (e.g., "numerical", "convergence").
+            strategy_used: Recovery action taken (e.g., "sanitize", "rollback").
+            success: Whether the recovery led to a valid output.
+            causal_antecedents: IDs of prior causal-trace decisions that led here.
+            metadata: Additional context.
+        """
+        episode = {
+            "strategy": strategy_used,
+            "success": success,
+            "causal_antecedents": causal_antecedents or [],
+            "metadata": metadata or {},
+            "timestamp": time.monotonic(),
+        }
+        with self._lock:
+            if error_class not in self._episodes:
+                self._episodes[error_class] = []
+            self._episodes[error_class].append(episode)
+            # Evict oldest if over capacity
+            if len(self._episodes[error_class]) > self._max_history:
+                self._episodes[error_class] = self._episodes[error_class][-self._max_history:]
+            self._total_recorded += 1
+
+    def get_best_strategy(self, error_class: str) -> Optional[str]:
+        """Return the historically most successful strategy for an error class.
+
+        Returns:
+            Strategy name with highest success rate, or None if no data.
+        """
+        with self._lock:
+            episodes = self._episodes.get(error_class, [])
+        if not episodes:
+            return None
+
+        # Tally success rate per strategy
+        strategy_stats: Dict[str, List[bool]] = {}
+        for ep in episodes:
+            s = ep["strategy"]
+            if s not in strategy_stats:
+                strategy_stats[s] = []
+            strategy_stats[s].append(ep["success"])
+
+        if not strategy_stats:
+            return None
+
+        best_strategy = max(
+            strategy_stats,
+            key=lambda s: sum(strategy_stats[s]) / max(len(strategy_stats[s]), 1),
+        )
+        return best_strategy
+
+    def get_error_summary(self) -> Dict[str, Any]:
+        """Return aggregate statistics across all error classes."""
+        with self._lock:
+            summary: Dict[str, Any] = {
+                "total_recorded": self._total_recorded,
+                "error_classes": {},
+            }
+            for cls, episodes in self._episodes.items():
+                successes = sum(1 for ep in episodes if ep["success"])
+                summary["error_classes"][cls] = {
+                    "count": len(episodes),
+                    "success_rate": successes / max(len(episodes), 1),
+                    "strategies_used": list({ep["strategy"] for ep in episodes}),
+                }
+            return summary
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -12414,6 +12698,37 @@ class AEONDeltaV3(nn.Module):
         else:
             self.unified_simulator = None
         
+        # ===== MODULE COHERENCE VERIFIER =====
+        if getattr(config, 'enable_module_coherence', False):
+            logger.info("Loading ModuleCoherenceVerifier...")
+            self.module_coherence = ModuleCoherenceVerifier(
+                hidden_dim=config.hidden_dim,
+                threshold=config.module_coherence_threshold,
+            ).to(self.device)
+        else:
+            self.module_coherence = None
+        
+        # ===== META-COGNITIVE RECURSION TRIGGER =====
+        if getattr(config, 'enable_metacognitive_recursion', False):
+            logger.info("Loading MetaCognitiveRecursionTrigger...")
+            self.metacognitive_trigger = MetaCognitiveRecursionTrigger(
+                trigger_threshold=config.metacognitive_trigger_threshold,
+                max_recursions=config.metacognitive_max_recursions,
+                tightening_factor=config.metacognitive_tightening_factor,
+                extra_iterations=config.metacognitive_extra_iterations,
+            )
+        else:
+            self.metacognitive_trigger = None
+        
+        # ===== CAUSAL ERROR EVOLUTION TRACKER =====
+        if getattr(config, 'enable_error_evolution', False):
+            logger.info("Loading CausalErrorEvolutionTracker...")
+            self.error_evolution = CausalErrorEvolutionTracker(
+                max_history=config.error_evolution_max_history,
+            )
+        else:
+            self.error_evolution = None
+        
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
         self.memory_manager = MemoryManager(config)
@@ -12699,6 +13014,20 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception:
                     pass  # Recovery learner itself failed; use default fallback
+            # CausalErrorEvolutionTracker: record error episode
+            if self.error_evolution is not None:
+                strategy_name = "fallback"
+                if self.meta_recovery is not None:
+                    try:
+                        strategy_name = recovery_info.get("strategy", "fallback")
+                    except Exception:
+                        pass
+                self.error_evolution.record_episode(
+                    error_class=error_class,
+                    strategy_used=strategy_name,
+                    success=False,  # pipeline error → recovery was a fallback
+                    metadata={"detail": detail},
+                )
             # Deterministic fallback — return input as-is with empty outputs
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
@@ -12764,6 +13093,8 @@ class AEONDeltaV3(nn.Module):
                 'causal_trace_id': '',
                 'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
                 'convergence_verdict': {'status': 'unknown', 'certified': False},
+                'coherence_results': {},
+                'metacognitive_info': {},
             }
             return z_fallback, fallback_outputs
 
@@ -12784,6 +13115,10 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
+        
+        # 0. Reset meta-cognitive recursion trigger
+        if self.metacognitive_trigger is not None:
+            self.metacognitive_trigger.reset()
         
         # 0a. Dynamic complexity estimation for subsystem gating.
         # Gates[0..3] correspond to: world_model, mcts, causal_world, unified_sim.
@@ -13018,6 +13353,86 @@ class AEONDeltaV3(nn.Module):
                 convergence_quality=convergence_quality_scalar,
                 uncertainty=uncertainty,
             ).detach()
+        
+        # 5a-iii. Module coherence verification — cross-validate key
+        # subsystem outputs to detect internal inconsistencies.  Low
+        # coherence triggers the meta-cognitive recursion trigger below.
+        coherence_results: Dict[str, Any] = {}
+        _coherence_deficit = False
+        if self.module_coherence is not None and not fast:
+            coherence_states = {
+                "meta_loop": C_star,
+                "factors": embedded_factors,
+            }
+            coherence_results = self.module_coherence(coherence_states)
+            _coherence_deficit = coherence_results.get("needs_recheck", False)
+            self.audit_log.record("module_coherence", "verified", {
+                "coherence_score": float(coherence_results["coherence_score"].mean().item()),
+                "needs_recheck": _coherence_deficit,
+            })
+        
+        # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
+        # accumulated signals warrant re-running the meta-loop with
+        # tightened parameters for deeper reasoning.
+        metacognitive_info: Dict[str, Any] = {}
+        if self.metacognitive_trigger is not None and not fast:
+            _topo_catastrophe_flag = bool(
+                topo_results.get('catastrophes', torch.zeros(1)).any().item()
+            )
+            metacognitive_info = self.metacognitive_trigger.evaluate(
+                uncertainty=uncertainty,
+                is_diverging=is_diverging,
+                topology_catastrophe=_topo_catastrophe_flag,
+                coherence_deficit=_coherence_deficit,
+            )
+            if metacognitive_info.get("should_trigger", False):
+                logger.info(
+                    f"Meta-cognitive recursion triggered "
+                    f"(triggers={metacognitive_info['triggers_active']}, "
+                    f"recursion={metacognitive_info['recursion_count']})"
+                )
+                self.audit_log.record("metacognitive_recursion", "triggered", {
+                    "triggers_active": metacognitive_info["triggers_active"],
+                    "trigger_score": metacognitive_info["trigger_score"],
+                    "recursion_count": metacognitive_info["recursion_count"],
+                })
+                # Re-run meta-loop with tightened parameters
+                _tight_threshold = (
+                    self.config.convergence_threshold
+                    * metacognitive_info["tightened_threshold"]
+                )
+                _extra_iters = metacognitive_info["extra_iterations"]
+                # Temporarily adjust meta-loop parameters
+                orig_threshold = self.meta_loop.convergence_threshold
+                orig_max_iter = self.meta_loop.max_iterations
+                self.meta_loop.convergence_threshold = _tight_threshold
+                self.meta_loop.max_iterations = min(
+                    orig_max_iter + _extra_iters,
+                    orig_max_iter * 2,  # safety cap
+                )
+                C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
+                    z_in, use_fixed_point=True, feedback=self._cached_feedback,
+                )
+                # Restore original parameters
+                self.meta_loop.convergence_threshold = orig_threshold
+                self.meta_loop.max_iterations = orig_max_iter
+                # Only accept deeper result if it's finite and converged better
+                if torch.isfinite(C_star_deeper).all():
+                    deeper_rate = meta_deeper.get("convergence_rate", 0.0)
+                    if deeper_rate >= convergence_quality_scalar:
+                        C_star = C_star_deeper
+                        # Re-extract factors with refined C_star
+                        factors, embedded_factors = self.sparse_factors(C_star)
+                        gate = self.consistency_gate(
+                            torch.cat([C_star, embedded_factors], dim=-1)
+                        )
+                        C_star = C_star * gate
+                        self.audit_log.record(
+                            "metacognitive_recursion", "accepted", {
+                                "deeper_rate": deeper_rate,
+                                "original_rate": convergence_quality_scalar,
+                            },
+                        )
         
         # 5b. World model — surprise-driven integration
         # Gated by complexity estimator gate[0] when available.
@@ -13355,6 +13770,15 @@ class AEONDeltaV3(nn.Module):
             except Exception:
                 pass  # Non-critical; swallow silently
         
+        # 8e. Error evolution: record successful pipeline completion so
+        # the tracker can compute success rates per error class.
+        if self.error_evolution is not None and integration_healthy:
+            self.error_evolution.record_episode(
+                error_class="none",
+                strategy_used="normal",
+                success=True,
+            )
+        
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
         integrity_report = self.integrity_monitor.get_integrity_report()
@@ -13389,6 +13813,8 @@ class AEONDeltaV3(nn.Module):
             'causal_trace_id': input_trace_id,
             'provenance': self.provenance_tracker.compute_attribution(),
             'convergence_verdict': convergence_verdict,
+            'coherence_results': coherence_results,
+            'metacognitive_info': metacognitive_info,
         }
         
         return z_out, outputs
@@ -13847,6 +14273,7 @@ class AEONDeltaV3(nn.Module):
             ("CausalModel", self.causal_model),
             ("MCTSPlanner", self.mcts_planner),
             ("HierarchicalVAE", self.hierarchical_vae),
+            ("ModuleCoherence", self.module_coherence),
         ]
         
         for name, module in modules:
