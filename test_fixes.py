@@ -8122,6 +8122,288 @@ def test_meta_recovery_positive_reinforcement():
     print("✅ test_meta_recovery_positive_reinforcement PASSED")
 
 
+# ===== Cognitive Feedback Bus & Provenance Tests =====
+
+def test_cognitive_feedback_bus_forward():
+    """Verify CognitiveFeedbackBus produces correct output shape and bounds."""
+    from aeon_core import CognitiveFeedbackBus
+    
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    
+    B = 4
+    device = torch.device("cpu")
+    
+    # With all defaults
+    fb = bus(batch_size=B, device=device)
+    assert fb.shape == (B, 64), f"Expected (4, 64), got {fb.shape}"
+    # Tanh output should be in [-1, 1]
+    assert fb.abs().max() <= 1.0 + 1e-6, "Output exceeds Tanh bounds"
+    
+    # With explicit signals
+    safety = torch.tensor([[0.3], [0.9], [0.5], [0.1]])
+    fb2 = bus(
+        batch_size=B, device=device,
+        safety_score=safety,
+        convergence_quality=0.2,
+        uncertainty=0.8,
+    )
+    assert fb2.shape == (B, 64)
+    
+    print("✅ test_cognitive_feedback_bus_forward PASSED")
+
+
+def test_cognitive_feedback_bus_gradient_flow():
+    """Verify gradients flow through the feedback bus."""
+    from aeon_core import CognitiveFeedbackBus
+    
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    
+    safety = torch.tensor([[0.5], [0.5]], requires_grad=True)
+    fb = bus(batch_size=2, device=torch.device("cpu"), safety_score=safety)
+    loss = fb.sum()
+    loss.backward()
+    
+    # Check that gradients reach the safety input
+    assert safety.grad is not None, "No gradient for safety_score"
+    assert safety.grad.abs().sum() > 0, "Gradient is zero"
+    
+    print("✅ test_cognitive_feedback_bus_gradient_flow PASSED")
+
+
+def test_meta_loop_feedback_conditioning():
+    """Verify meta-loop accepts and uses feedback to change output."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, max_iterations=5,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    meta = ProvablyConvergentMetaLoop(
+        config=config,
+        anderson_memory=3,
+        convergence_threshold=1e-5,
+        max_iterations=5,
+        min_iterations=1,
+    )
+    meta.eval()
+    
+    psi_0 = torch.randn(2, 32)
+    
+    # Without feedback
+    C_no_fb, _, _ = meta(psi_0, use_fixed_point=True, feedback=None)
+    
+    # With feedback
+    feedback = torch.randn(2, 32)
+    C_with_fb, _, _ = meta(psi_0, use_fixed_point=True, feedback=feedback)
+    
+    # Outputs should differ when feedback is provided
+    diff = (C_no_fb - C_with_fb).abs().sum().item()
+    assert diff > 1e-6, f"Feedback had no effect: diff={diff}"
+    
+    # Both should be finite
+    assert torch.isfinite(C_no_fb).all(), "C_no_fb has non-finite values"
+    assert torch.isfinite(C_with_fb).all(), "C_with_fb has non-finite values"
+    
+    print("✅ test_meta_loop_feedback_conditioning PASSED")
+
+
+def test_meta_loop_feedback_none_backward_compat():
+    """Verify meta-loop works identically when feedback=None (backward compat)."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, max_iterations=3,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    meta = ProvablyConvergentMetaLoop(
+        config=config, max_iterations=3, min_iterations=1,
+    )
+    meta.eval()
+    
+    torch.manual_seed(42)
+    psi_0 = torch.randn(1, 32)
+    
+    # Old-style call (no feedback argument)
+    torch.manual_seed(42)
+    C1, it1, m1 = meta(psi_0.clone(), use_fixed_point=True)
+    
+    # Explicit feedback=None
+    torch.manual_seed(42)
+    C2, it2, m2 = meta(psi_0.clone(), use_fixed_point=True, feedback=None)
+    
+    # Should produce identical results
+    assert torch.allclose(C1, C2, atol=1e-5), "feedback=None changed output"
+    
+    print("✅ test_meta_loop_feedback_none_backward_compat PASSED")
+
+
+def test_causal_provenance_tracker():
+    """Verify CausalProvenanceTracker computes correct attributions."""
+    from aeon_core import CausalProvenanceTracker
+    
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+    
+    # Simulate module transformations
+    state0 = torch.randn(2, 32)
+    
+    # Module A: large change
+    tracker.record_before("module_a", state0)
+    state1 = state0 + torch.randn(2, 32) * 5.0  # large delta
+    tracker.record_after("module_a", state1)
+    
+    # Module B: small change
+    tracker.record_before("module_b", state1)
+    state2 = state1 + torch.randn(2, 32) * 0.01  # small delta
+    tracker.record_after("module_b", state2)
+    
+    # Module C: no change
+    tracker.record_before("module_c", state2)
+    tracker.record_after("module_c", state2)
+    
+    attr = tracker.compute_attribution()
+    
+    assert 'contributions' in attr
+    assert 'deltas' in attr
+    assert 'order' in attr
+    assert attr['order'] == ['module_a', 'module_b', 'module_c']
+    
+    # Module A should have the largest contribution
+    assert attr['contributions']['module_a'] > attr['contributions']['module_b']
+    
+    # Module C should have ~0 contribution
+    assert attr['contributions']['module_c'] < 1e-3
+    
+    # Contributions should sum to ~1
+    total = sum(attr['contributions'].values())
+    assert abs(total - 1.0) < 1e-3, f"Contributions sum to {total}, expected 1.0"
+    
+    print("✅ test_causal_provenance_tracker PASSED")
+
+
+def test_provenance_tracker_reset():
+    """Verify CausalProvenanceTracker resets properly."""
+    from aeon_core import CausalProvenanceTracker
+    
+    tracker = CausalProvenanceTracker()
+    
+    # Record something
+    tracker.record_before("x", torch.randn(1, 8))
+    tracker.record_after("x", torch.randn(1, 8))
+    assert len(tracker.compute_attribution()['order']) == 1
+    
+    # Reset
+    tracker.reset()
+    attr = tracker.compute_attribution()
+    assert len(attr['order']) == 0
+    assert len(attr['contributions']) == 0
+    
+    print("✅ test_provenance_tracker_reset PASSED")
+
+
+def test_reasoning_core_outputs_provenance():
+    """Verify reasoning_core outputs include provenance attribution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+    
+    # Provenance must be present
+    assert 'provenance' in outputs, "provenance key missing from outputs"
+    prov = outputs['provenance']
+    assert 'contributions' in prov
+    assert 'deltas' in prov
+    assert 'order' in prov
+    
+    # meta_loop should always be in the provenance order
+    assert 'meta_loop' in prov['order'], "meta_loop missing from provenance"
+    
+    # Contributions should sum to ~1
+    total = sum(prov['contributions'].values())
+    assert abs(total - 1.0) < 0.01, f"Provenance contributions sum to {total}"
+    
+    print("✅ test_reasoning_core_outputs_provenance PASSED")
+
+
+def test_feedback_bus_integration_in_aeonv3():
+    """Verify feedback bus is instantiated and used in AEONDeltaV3."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    # Feedback bus should be present
+    assert hasattr(model, 'feedback_bus'), "feedback_bus not found"
+    assert hasattr(model, '_cached_feedback'), "_cached_feedback not found"
+    assert hasattr(model, 'provenance_tracker'), "provenance_tracker not found"
+    
+    # Initially no cached feedback
+    assert model._cached_feedback is None
+    
+    # Run reasoning core
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=True)
+    
+    # After first pass, cached feedback should be populated
+    assert model._cached_feedback is not None, "Feedback not cached after first pass"
+    assert model._cached_feedback.shape == (2, 32), (
+        f"Expected (2, 32), got {model._cached_feedback.shape}"
+    )
+    
+    # Second pass should use the cached feedback
+    z_out2, outputs2 = model.reasoning_core(z_in, fast=True)
+    assert 'provenance' in outputs2
+    
+    print("✅ test_feedback_bus_integration_in_aeonv3 PASSED")
+
+
+def test_reasoning_core_error_fallback_has_provenance():
+    """Verify error fallback path includes provenance key."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    # Force error path
+    original_meta = model.meta_loop
+    model.meta_loop = None
+    
+    z_out, outputs = model.reasoning_core(torch.randn(2, 32), fast=True)
+    model.meta_loop = original_meta
+    
+    assert 'provenance' in outputs, "provenance missing from error fallback"
+    assert outputs['provenance']['order'] == []
+    
+    print("✅ test_reasoning_core_error_fallback_has_provenance PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -8585,6 +8867,17 @@ if __name__ == '__main__':
     test_reasoning_core_error_fallback_has_new_keys()
     test_adaptive_safety_threshold_tightens_on_low_convergence()
     test_meta_recovery_positive_reinforcement()
+    
+    # Cognitive Feedback Bus & Provenance tests
+    test_cognitive_feedback_bus_forward()
+    test_cognitive_feedback_bus_gradient_flow()
+    test_meta_loop_feedback_conditioning()
+    test_meta_loop_feedback_none_backward_compat()
+    test_causal_provenance_tracker()
+    test_provenance_tracker_reset()
+    test_reasoning_core_outputs_provenance()
+    test_feedback_bus_integration_in_aeonv3()
+    test_reasoning_core_error_fallback_has_provenance()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
