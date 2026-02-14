@@ -14551,6 +14551,16 @@ class AEONDeltaV3(nn.Module):
                         "final_score": critic_result.get("final_score", 0.0),
                         "trigger": "ns_violation",
                     })
+                    # Record NS-violation-triggered auto-critic in error
+                    # evolution so the system learns from self-critique
+                    # outcomes across all trigger paths, not just the
+                    # post-integration metacognitive path.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="ns_violation_auto_critic",
+                            strategy_used="auto_critic",
+                            success=revised is not None and torch.isfinite(revised).all(),
+                        )
         
         # 8b4. Uncertainty-triggered meta-cognitive cycle — when uncertainty
         # is high, audit patterns indicate instability, topology detects
@@ -14591,6 +14601,15 @@ class AEONDeltaV3(nn.Module):
                 "final_score": critic_result.get("final_score", 0.0),
                 "trigger": _trigger,
             })
+            # Record uncertainty-triggered auto-critic in error evolution
+            # so every self-critique path contributes to evolutionary
+            # learning, not just the post-integration metacognitive path.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class=f"uncertainty_auto_critic_{_trigger}",
+                    strategy_used="auto_critic",
+                    success=revised is not None and torch.isfinite(revised).all(),
+                )
         
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
@@ -15266,7 +15285,9 @@ class AEONDeltaV3(nn.Module):
             'ewc_loss': ewc_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
-            'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
+            'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency,
+            'convergence_quality': outputs.get('convergence_quality', 0.0),
+            'uncertainty': outputs.get('uncertainty', 0.0),
         }
     
     def _update_metrics_log(self, outputs, consistency, safety_score):
@@ -15390,6 +15411,14 @@ class AEONDeltaV3(nn.Module):
                 "error_class": error_class,
                 "detail": detail,
             })
+            # Structured error recovery — record the event so error
+            # evolution can learn from generation-time failures and the
+            # system adapts its recovery strategy over time.
+            self.error_recovery.record_event(
+                error_class=error_class,
+                context="generate",
+                success=False,
+            )
             return {
                 'text': '',
                 'status': 'error',
