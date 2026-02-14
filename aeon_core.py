@@ -2480,6 +2480,9 @@ class AEONConfig:
     lambda_lipschitz: float = 0.05
     lambda_coherence: float = 0.05
     lambda_causal_dag: float = 0.01
+    lambda_notears_l1: float = 0.01
+    causal_blend_weight: float = 0.05
+    hvae_blend_weight: float = 0.1
     kl_weight: float = 0.1
     sparsity_target: float = 0.95
     
@@ -13727,7 +13730,7 @@ class AEONDeltaV3(nn.Module):
             }
             # Blend causal signal into factor embedding as a residual
             causal_residual = causal_vars - factors.detach()
-            C_star = C_star + 0.05 * causal_residual.mean(dim=-1, keepdim=True)
+            C_star = C_star + self.config.causal_blend_weight * causal_residual.mean(dim=-1, keepdim=True)
             self.audit_log.record("causal_model", "computed", {
                 "dag_loss": float(causal_model_results['dag_loss'].item()),
             })
@@ -13831,7 +13834,7 @@ class AEONDeltaV3(nn.Module):
             hierarchical_vae_results = vae_out
             selected_level = vae_out.get('selected_level', None)
             if selected_level is not None and torch.isfinite(selected_level).all():
-                C_star = C_star + 0.1 * selected_level
+                C_star = C_star + self.config.hvae_blend_weight * selected_level
             self.audit_log.record("hierarchical_vae", "computed", {
                 "kl_loss": float(vae_out['kl_loss'].item()),
             })
@@ -14320,7 +14323,7 @@ class AEONDeltaV3(nn.Module):
                 causal_dag_loss = causal_dag_loss + _nt_dag
             _nt_l1 = notears_results.get('l1_loss', torch.tensor(0.0, device=self.device))
             if _nt_l1.requires_grad:
-                causal_dag_loss = causal_dag_loss + 0.01 * _nt_l1
+                causal_dag_loss = causal_dag_loss + self.config.lambda_notears_l1 * _nt_l1
         
         # ===== 10. HIERARCHICAL VAE KL LOSS =====
         hvae_kl_loss = torch.tensor(0.0, device=self.device)
