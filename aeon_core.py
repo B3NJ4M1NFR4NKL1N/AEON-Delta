@@ -12819,10 +12819,10 @@ class AEONDeltaV3(nn.Module):
         self.error_classifier = SemanticErrorClassifier()
         
         # ===== ERROR RECOVERY MANAGER =====
-        # Centralised strategy-pattern dispatch for runtime errors.
+        # Centralized strategy-pattern dispatch for runtime errors.
         # Shares audit_log and tensor_guard with the rest of the pipeline
         # so recovery events feed into pattern insights and tensor
-        # sanitisation is consistent.
+        # sanitization is consistent.
         self.error_recovery = ErrorRecoveryManager(
             hidden_dim=config.hidden_dim,
             audit_log=self.audit_log,
