@@ -5469,9 +5469,17 @@ class CognitiveFeedbackBus(nn.Module):
         else:
             h = torch.ones(batch_size, device=device)
         
-        # Convergence loss scale (normalized to [0, 1] via sigmoid-like mapping)
-        # scale=1 → 0.5 (neutral), scale=2 → ~0.73 (diverging), scale=0.5 → ~0.27 (converged)
-        _normalized_loss_scale = 1.0 / (1.0 + math.exp(-1.0 * (convergence_loss_scale - 1.0)))
+        # Convergence loss scale (normalized to [0, 1] via sigmoid mapping)
+        # Sigmoid: σ(x-1) with slope=1.0 centered at scale=1.0 (neutral).
+        # Mapping: scale=0.5 → ~0.38, scale=1.0 → 0.5, scale=2.0 → ~0.73.
+        # The center at 1.0 ensures the neutral training state maps to 0.5,
+        # while diverging states (>1) bias higher and converged states (<1)
+        # bias lower, giving the meta-loop asymmetric feedback.
+        _SIGMOID_SLOPE = 1.0    # Controls steepness of the transition
+        _SIGMOID_CENTER = 1.0   # Neutral point (maps to output 0.5)
+        _normalized_loss_scale = 1.0 / (
+            1.0 + math.exp(-_SIGMOID_SLOPE * (convergence_loss_scale - _SIGMOID_CENTER))
+        )
         ls = torch.full((batch_size,), _normalized_loss_scale, device=device)
         
         # Stack into [B, NUM_SIGNAL_CHANNELS]
@@ -13030,6 +13038,20 @@ class AEONDeltaV3(nn.Module):
         except Exception as e:
             logger.warning(f"Failed to setup invalid tokens: {e}")
     
+    # Recovery pressure scaling: 0.1 means ~10 recoveries reach max pressure
+    _RECOVERY_PRESSURE_RATE = 0.1
+
+    def _compute_recovery_pressure(self) -> float:
+        """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
+
+        Returns a value proportional to the total number of recovery events,
+        capped at 1.0.  A rate of ``_RECOVERY_PRESSURE_RATE`` (0.1) means
+        approximately 10 recovery events saturate the pressure to 1.0.
+        """
+        stats = self.error_recovery.get_recovery_stats()
+        total = stats.get("total", 0)
+        return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
+
     def _compute_diversity(
         self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
@@ -13757,10 +13779,8 @@ class AEONDeltaV3(nn.Module):
                 )
             # Compute recovery pressure from ErrorRecoveryManager stats:
             # fraction of recent calls that required recovery, clamped [0, 1].
-            _recovery_stats = self.error_recovery.get_recovery_stats()
-            _total_recoveries = _recovery_stats.get("total", 0)
-            _RECOVERY_PRESSURE_RATE = 0.1
-            _recovery_pressure = min(1.0, _total_recoveries * _RECOVERY_PRESSURE_RATE)
+            # Rate of 0.1 means ~10 recoveries reach maximum pressure (1.0).
+            _recovery_pressure = self._compute_recovery_pressure()
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -14517,11 +14537,7 @@ class AEONDeltaV3(nn.Module):
                 and not fast
                 and not metacognitive_info.get("should_trigger", False)):
             # Re-compute recovery pressure with up-to-date stats
-            _post_recovery_stats = self.error_recovery.get_recovery_stats()
-            _post_total_recoveries = _post_recovery_stats.get("total", 0)
-            _post_recovery_pressure = min(
-                1.0, _post_total_recoveries * _RECOVERY_PRESSURE_RATE,
-            )
+            _post_recovery_pressure = self._compute_recovery_pressure()
             _post_topo_catastrophe_flag = bool(
                 topo_results.get('catastrophes', torch.zeros(1)).any().item()
             )
@@ -14661,8 +14677,8 @@ class AEONDeltaV3(nn.Module):
                 else None
             ),
             "dominant_provenance_module": (
-                max(_provenance.get("contributions", {}),
-                    key=_provenance.get("contributions", {}).get, default=None)
+                max(_provenance["contributions"],
+                    key=_provenance["contributions"].get)
                 if _provenance.get("contributions") else None
             ),
         }
