@@ -13469,9 +13469,11 @@ class AEONDeltaV3(nn.Module):
             _recovery_stats = self.error_recovery.get_recovery_stats()
             _total_recoveries = _recovery_stats.get("total", 0)
             # Compute health as a decaying signal: more recovery events
-            # → lower health score.  The sigmoid maps total into [0, 1]
-            # with health=1.0 when no recoveries have occurred.
-            _recovery_health_scalar = 1.0 / (1.0 + _total_recoveries * 0.1)
+            # → lower health score.  Uses hyperbolic decay so that
+            # health=1.0 when no recoveries have occurred and smoothly
+            # approaches 0 as recovery count grows.
+            _RECOVERY_DECAY_RATE = 0.1
+            _recovery_health_scalar = 1.0 / (1.0 + _total_recoveries * _RECOVERY_DECAY_RATE)
             _recovery_health = torch.full(
                 (B, 1), _recovery_health_scalar, device=device,
             )
@@ -13646,9 +13648,10 @@ class AEONDeltaV3(nn.Module):
         # Update memory staleness flag for next forward pass — if the
         # majority of samples had empty retrieval, signal staleness to
         # the metacognitive trigger on the next step.
+        _MEMORY_STALENESS_RATIO = 0.5  # fraction of samples with empty retrieval
         self._memory_stale = (
             self.hierarchical_memory is not None
-            and _memory_empty_count > B // 2
+            and _memory_empty_count > B * _MEMORY_STALENESS_RATIO
         )
         
         # 5c2. Neurogenic memory — consolidate important states

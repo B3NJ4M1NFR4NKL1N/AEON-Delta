@@ -9295,7 +9295,7 @@ def test_memory_stale_flag_in_aeonv3():
     model.eval()
 
     # Initially stale flag is False
-    assert model._memory_stale is False or model._memory_stale is True
+    assert isinstance(model._memory_stale, bool)
 
     B, L = 2, 8
     input_ids = torch.randint(1, 100, (B, L))
