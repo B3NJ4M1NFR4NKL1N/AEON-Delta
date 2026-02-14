@@ -5330,6 +5330,146 @@ class LipschitzConstrainedLambda(nn.Module):
         return penalty
 
 
+class CognitiveFeedbackBus(nn.Module):
+    """Aggregates subsystem signals into a feedback vector for meta-loop conditioning.
+    
+    Collects scalar and vector signals from downstream modules (safety score,
+    convergence quality, uncertainty, subsystem health) and projects them into
+    a dense feedback embedding that the meta-loop can consume as a conditioning
+    signal during fixed-point iteration.
+    
+    This closes the feedback loop: downstream module outputs influence
+    upstream reasoning depth and trajectory.
+    
+    Input signals (all optional, defaults to neutral):
+        - safety_score: [B, 1] from MultiLevelSafetySystem
+        - convergence_quality: scalar or [B] from meta-loop convergence rate
+        - uncertainty: scalar or [B] from residual variance estimation
+        - subsystem_health: [B, num_subsystems] from integrity monitor
+    
+    Output:
+        - feedback: [B, hidden_dim] dense conditioning vector
+    """
+    
+    # Number of scalar signal channels aggregated by the bus
+    NUM_SIGNAL_CHANNELS = 4  # safety, convergence, uncertainty, health_mean
+    
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.projection = nn.Sequential(
+            nn.Linear(self.NUM_SIGNAL_CHANNELS, hidden_dim // 4),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 4, hidden_dim),
+            nn.Tanh(),  # Bound output to [-1, 1] for stable conditioning
+        )
+    
+    def forward(
+        self,
+        batch_size: int,
+        device: torch.device,
+        safety_score: Optional[torch.Tensor] = None,
+        convergence_quality: float = 1.0,
+        uncertainty: float = 0.0,
+        subsystem_health: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Aggregate signals into a feedback embedding.
+        
+        Args:
+            batch_size: Batch size B.
+            device: Target device.
+            safety_score: [B, 1] safety scores (default: 1.0 = fully safe).
+            convergence_quality: Scalar convergence rate (default: 1.0).
+            uncertainty: Scalar uncertainty estimate (default: 0.0).
+            subsystem_health: [B, K] health scores (default: all 1.0).
+        
+        Returns:
+            feedback: [B, hidden_dim] conditioning vector.
+        """
+        # Normalize safety to [B] scalar
+        if safety_score is not None:
+            s = safety_score.view(batch_size, -1).mean(dim=-1)  # [B]
+        else:
+            s = torch.ones(batch_size, device=device)
+        
+        # Broadcast scalars to [B]
+        c = torch.full((batch_size,), convergence_quality, device=device)
+        u = torch.full((batch_size,), uncertainty, device=device)
+        
+        # Subsystem health mean
+        if subsystem_health is not None:
+            h = subsystem_health.mean(dim=-1)  # [B]
+        else:
+            h = torch.ones(batch_size, device=device)
+        
+        # Stack into [B, NUM_SIGNAL_CHANNELS]
+        signals = torch.stack([s, c, u, h], dim=-1)
+        
+        return self.projection(signals)
+
+
+class CausalProvenanceTracker:
+    """Tracks per-module contribution to the final output state.
+    
+    Each module that modifies ``C_star`` registers a snapshot before and
+    after its transformation.  The tracker computes the L2 contribution
+    (delta norm) of each module relative to the total change, producing
+    an attribution dict that answers: "which module was most responsible
+    for the output?"
+    
+    This is a lightweight, non-nn.Module utility that adds zero
+    parameters and negligible overhead (a few tensor norms per step).
+    """
+    
+    def __init__(self):
+        self._snapshots: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._order: list = []
+    
+    def reset(self):
+        """Clear all recorded snapshots for a new forward pass."""
+        self._snapshots.clear()
+        self._order.clear()
+    
+    def record_before(self, module_name: str, state: torch.Tensor):
+        """Record the state before a module's transformation."""
+        self._snapshots[module_name] = (state.detach().clone(), None)
+        if module_name not in self._order:
+            self._order.append(module_name)
+    
+    def record_after(self, module_name: str, state: torch.Tensor):
+        """Record the state after a module's transformation."""
+        if module_name in self._snapshots:
+            before, _ = self._snapshots[module_name]
+            self._snapshots[module_name] = (before, state.detach().clone())
+    
+    def compute_attribution(self) -> Dict[str, Any]:
+        """Compute per-module attribution as fraction of total change.
+        
+        Returns:
+            Dict with:
+                - contributions: {module_name: float} normalized [0, 1]
+                - deltas: {module_name: float} raw L2 delta norms
+                - order: list of module names in execution order
+        """
+        deltas: Dict[str, float] = {}
+        for name in self._order:
+            before, after = self._snapshots.get(name, (None, None))
+            if before is not None and after is not None:
+                delta = (after - before).norm().item()
+                deltas[name] = delta
+            else:
+                deltas[name] = 0.0
+        
+        total = sum(deltas.values()) + 1e-10
+        contributions = {k: v / total for k, v in deltas.items()}
+        
+        return {
+            'contributions': contributions,
+            'deltas': deltas,
+            'order': list(self._order),
+        }
+
+
 class ProvablyConvergentMetaLoop(nn.Module):
     """
     Meta-loop with convergence mechanisms inspired by fixed-point theory.
@@ -5391,6 +5531,15 @@ class ProvablyConvergentMetaLoop(nn.Module):
         # Stabilization
         self.input_stabilizer = nn.LayerNorm(input_dim)
         self.output_stabilizer = nn.LayerNorm(config.hidden_dim)
+        
+        # Feedback conditioning gate — modulates the iteration state C
+        # using an external feedback vector from CognitiveFeedbackBus.
+        # The gate output is in [0, 1] (sigmoid), so feedback can only
+        # attenuate or preserve dimensions, never amplify beyond input.
+        self.feedback_gate = nn.Sequential(
+            nn.Linear(config.hidden_dim * 2, config.hidden_dim),
+            nn.Sigmoid(),
+        )
         
         # Monitoring
         self.register_buffer('avg_iterations', torch.tensor(0.0))
@@ -5475,10 +5624,20 @@ class ProvablyConvergentMetaLoop(nn.Module):
     def compute_fixed_point(
         self,
         psi_0: torch.Tensor,
-        return_certificate: bool = False
+        return_certificate: bool = False,
+        feedback: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
         """
         Provably convergent fixed-point solver.
+        
+        Args:
+            psi_0: [B, hidden_dim] initial thought state.
+            return_certificate: Whether to include convergence certificate.
+            feedback: Optional [B, hidden_dim] conditioning vector from
+                CognitiveFeedbackBus.  When provided, each iteration's
+                output is gated by a learned function of (C_new, feedback),
+                allowing downstream signals (safety, uncertainty) to
+                modulate the reasoning trajectory.
         
         Returns:
             C_star: Fixed point solution [B, hidden_dim]
@@ -5514,6 +5673,13 @@ class ProvablyConvergentMetaLoop(nn.Module):
             # Lambda application
             C_new = self.lambda_op(input_tensor)
             C_new = self.output_stabilizer(C_new)
+            
+            # Feedback conditioning — gate C_new using downstream signals
+            if feedback is not None:
+                fb_gate = self.feedback_gate(
+                    torch.cat([C_new, feedback], dim=-1)
+                )  # [B, hidden_dim] in [0, 1]
+                C_new = C_new * fb_gate
             
             # Residual
             residual = C_new - C
@@ -5676,10 +5842,24 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'warnings': warnings_list,
         }
     
-    def forward(self, psi_0: torch.Tensor, use_fixed_point: bool = True):
-        """Wrapper for compatibility."""
+    def forward(
+        self,
+        psi_0: torch.Tensor,
+        use_fixed_point: bool = True,
+        feedback: Optional[torch.Tensor] = None,
+    ):
+        """Wrapper for compatibility.
+        
+        Args:
+            psi_0: [B, hidden_dim] initial thought state.
+            use_fixed_point: Use full fixed-point iteration vs single step.
+            feedback: Optional [B, hidden_dim] conditioning vector from
+                CognitiveFeedbackBus.
+        """
         if use_fixed_point:
-            return self.compute_fixed_point(psi_0, return_certificate=False)
+            return self.compute_fixed_point(
+                psi_0, return_certificate=False, feedback=feedback,
+            )
         else:
             # Fast path: single iteration
             input_tensor = torch.cat([psi_0, torch.zeros_like(psi_0)], dim=-1)
@@ -11915,6 +12095,19 @@ class AEONDeltaV3(nn.Module):
             enable_certification=True
         ).to(self.device)
         
+        # ===== COGNITIVE FEEDBACK BUS =====
+        # Aggregates downstream signals (safety, convergence, uncertainty)
+        # into a feedback vector fed back into the meta-loop on subsequent
+        # forward passes, closing the reasoning feedback loop.
+        logger.info("Loading CognitiveFeedbackBus...")
+        self.feedback_bus = CognitiveFeedbackBus(
+            hidden_dim=config.hidden_dim,
+        ).to(self.device)
+        # Cache for previous-step feedback (used to condition current meta-loop)
+        self._cached_feedback: Optional[torch.Tensor] = None
+        # Provenance tracker for output-to-input attribution
+        self.provenance_tracker = CausalProvenanceTracker()
+        
         # ===== RECURSIVE META-LOOP =====
         if getattr(config, 'enable_recursive_meta_loop', False):
             logger.info("Loading RecursiveMetaLoop...")
@@ -12541,6 +12734,7 @@ class AEONDeltaV3(nn.Module):
                     'recommend_deeper_reasoning': False,
                 },
                 'causal_trace_id': '',
+                'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
             }
             return z_fallback, fallback_outputs
 
@@ -12558,6 +12752,9 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Deterministic input normalization
         z_in = self.execution_guard.normalize_input(z_in)
+        
+        # 0. Reset provenance tracker for this forward pass
+        self.provenance_tracker.reset()
         
         # 0a. Dynamic complexity estimation for subsystem gating
         complexity_info: Dict[str, Any] = {}
@@ -12591,13 +12788,26 @@ class AEONDeltaV3(nn.Module):
         
         self.progress_tracker.begin_phase("meta_loop")
         
+        # 1. Retrieve cached feedback from previous forward pass.
+        # This allows downstream signals (safety, uncertainty) computed
+        # in the *previous* step to influence the *current* meta-loop
+        # trajectory, closing the cognitive feedback loop.
+        prev_feedback = self._cached_feedback
+        if prev_feedback is not None:
+            # Reshape/broadcast to current batch size if needed
+            if prev_feedback.shape[0] != B:
+                prev_feedback = prev_feedback[:1].expand(B, -1)
+            prev_feedback = prev_feedback.to(device)
+        
         # 1. Meta-loop convergence
+        self.provenance_tracker.record_before("meta_loop", z_in)
         if self.recursive_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.recursive_meta_loop(z_in)
         else:
             C_star, iterations, meta_results = self.meta_loop(
-                z_in, use_fixed_point=not fast
+                z_in, use_fixed_point=not fast, feedback=prev_feedback,
             )
+        self.provenance_tracker.record_after("meta_loop", C_star)
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         self.audit_log.record("meta_loop", "completed", {
             "avg_iterations": iterations.mean().item(),
@@ -12711,6 +12921,7 @@ class AEONDeltaV3(nn.Module):
         # Uses adaptive_safety_threshold which is tightened when convergence
         # is weak or audit patterns indicate instability.
         safety_enforced = False
+        self.provenance_tracker.record_before("safety", C_star)
         if self.safety_system is not None:
             safety_threshold = adaptive_safety_threshold
             unsafe_mask = (safety_score < safety_threshold).squeeze(-1)  # [B]
@@ -12743,10 +12954,24 @@ class AEONDeltaV3(nn.Module):
         )
         self.progress_tracker.checkpoint("safety", C_star)
         self.progress_tracker.end_phase("safety", success=True)
+        self.provenance_tracker.record_after("safety", C_star)
+        
+        # 5a-ii. Update cognitive feedback bus — aggregate current step's
+        # safety, convergence, and uncertainty into a feedback vector that
+        # will condition the *next* forward pass's meta-loop iteration.
+        with torch.no_grad():
+            self._cached_feedback = self.feedback_bus(
+                batch_size=B,
+                device=device,
+                safety_score=safety_score,
+                convergence_quality=convergence_quality_scalar,
+                uncertainty=uncertainty,
+            ).detach()
         
         # 5b. World model — surprise-driven integration
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
+        self.provenance_tracker.record_before("world_model", C_star)
         if self.world_model is not None and not fast:
             world_model_results = self.world_model(
                 C_star, explore_counterfactuals=planning
@@ -12773,6 +12998,7 @@ class AEONDeltaV3(nn.Module):
                 # Low surprise or no value_net: blend
                 C_star = C_star + 0.1 * predicted_next
             world_model_results['surprise'] = surprise
+        self.provenance_tracker.record_after("world_model", C_star)
         
         # 5b2. MCTS planning
         mcts_results = {}
@@ -12782,6 +13008,7 @@ class AEONDeltaV3(nn.Module):
         
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
+        self.provenance_tracker.record_before("memory", C_star)
         if self.hierarchical_memory is not None:
             # Retrieve relevant memories using z_in as query
             if not fast:
@@ -12809,6 +13036,7 @@ class AEONDeltaV3(nn.Module):
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.neurogenic_memory.consolidate(C_star[i])
+        self.provenance_tracker.record_after("memory", C_star)
         
         # 5d. Causal world model (if enabled)
         causal_world_results = {}
@@ -13054,6 +13282,7 @@ class AEONDeltaV3(nn.Module):
             'adaptive_safety_threshold': adaptive_safety_threshold,
             'audit_insights': audit_insights,
             'causal_trace_id': input_trace_id,
+            'provenance': self.provenance_tracker.compute_attribution(),
         }
         
         return z_out, outputs
@@ -13500,6 +13729,7 @@ class AEONDeltaV3(nn.Module):
             ("BackboneAdapter", self.backbone_adapter),
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
+            ("FeedbackBus", self.feedback_bus),
             ("SparseFactorization", self.sparse_factors),
             ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
