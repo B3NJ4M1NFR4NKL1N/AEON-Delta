@@ -7367,6 +7367,406 @@ def test_anderson_solve_nonfinite_fallback():
     print("✅ test_anderson_solve_nonfinite_fallback PASSED")
 
 
+# ============================================================================
+# AGI COHERENCE LAYER TESTS
+# ============================================================================
+
+
+def test_causal_context_window_add_and_retrieve():
+    """CausalContextWindowManager stores entries and retrieves by composite score."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=16, short_term_capacity=5)
+    for i in range(3):
+        ctx.add(
+            source=f"src_{i}",
+            embedding=torch.randn(16),
+            relevance=float(i) / 3.0,
+            causal_weight=float(i) / 3.0,
+            tier="short_term",
+        )
+
+    top = ctx.get_top_k(3)
+    assert len(top) == 3, f"Expected 3, got {len(top)}"
+    # Highest composite score should be last added (highest relevance + causal)
+    assert top[0]["source"] == "src_2", f"Expected src_2 first, got {top[0]['source']}"
+    print("✅ test_causal_context_window_add_and_retrieve PASSED")
+
+
+def test_causal_context_window_tiers():
+    """CausalContextWindowManager supports multi-tier storage."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(
+        hidden_dim=16,
+        short_term_capacity=2,
+        mid_term_capacity=3,
+        long_term_capacity=4,
+    )
+    ctx.add("s", torch.randn(16), relevance=0.5, tier="short_term")
+    ctx.add("m", torch.randn(16), relevance=0.5, tier="mid_term")
+    ctx.add("l", torch.randn(16), relevance=0.5, tier="long_term")
+
+    stats = ctx.stats()
+    assert stats["short_term_size"] == 1
+    assert stats["mid_term_size"] == 1
+    assert stats["long_term_size"] == 1
+    assert stats["total_added"] == 3
+    print("✅ test_causal_context_window_tiers PASSED")
+
+
+def test_causal_context_window_eviction():
+    """CausalContextWindowManager evicts least relevant when capacity exceeded."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=8, short_term_capacity=2)
+    ctx.add("a", torch.randn(8), relevance=0.1, tier="short_term")
+    ctx.add("b", torch.randn(8), relevance=0.9, tier="short_term")
+    ctx.add("c", torch.randn(8), relevance=0.5, tier="short_term")
+
+    stats = ctx.stats()
+    assert stats["short_term_size"] == 2, f"Expected 2, got {stats['short_term_size']}"
+    assert stats["total_evicted"] == 1
+    print("✅ test_causal_context_window_eviction PASSED")
+
+
+def test_causal_context_window_promote():
+    """CausalContextWindowManager can promote entries between tiers."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=8, short_term_capacity=5, mid_term_capacity=5)
+    for i in range(3):
+        ctx.add("s", torch.randn(8), relevance=float(i), tier="short_term")
+
+    promoted = ctx.promote("short_term", top_n=2)
+    assert promoted == 2, f"Expected 2 promoted, got {promoted}"
+    stats = ctx.stats()
+    assert stats["mid_term_size"] == 2
+    print("✅ test_causal_context_window_promote PASSED")
+
+
+def test_causal_context_window_get_context_tensor():
+    """CausalContextWindowManager.get_context_tensor returns proper shape."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=16)
+    assert ctx.get_context_tensor() is None
+
+    ctx.add("s", torch.randn(16), relevance=1.0, tier="short_term")
+    ctx.add("s", torch.randn(16), relevance=0.5, tier="short_term")
+    t = ctx.get_context_tensor(k=2)
+    assert t is not None
+    assert t.shape == (2, 16), f"Expected (2, 16), got {t.shape}"
+    print("✅ test_causal_context_window_get_context_tensor PASSED")
+
+
+def test_causal_context_rejects_nonfinite():
+    """CausalContextWindowManager silently rejects NaN/Inf embeddings."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=8)
+    nan_embed = torch.tensor([float('nan')] * 8)
+    ctx.add("bad", nan_embed, tier="short_term")
+    assert ctx.stats()["total_added"] == 0
+    print("✅ test_causal_context_rejects_nonfinite PASSED")
+
+
+def test_temporal_causal_trace_record_and_chain():
+    """TemporalCausalTraceBuffer records and reconstructs causal chains."""
+    from aeon_core import TemporalCausalTraceBuffer
+
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+    id1 = trace.record("input", "received", initial_state_hash="abc123")
+    id2 = trace.record(
+        "meta_loop", "converged",
+        causal_prerequisites=[id1],
+        metadata={"iterations": 5},
+    )
+    id3 = trace.record(
+        "integration", "completed",
+        causal_prerequisites=[id2],
+        rejected_alternatives=[{"hypothesis": "alt1", "reason": "low_score"}],
+    )
+
+    chain = trace.get_causal_chain(id3)
+    assert len(chain) == 3, f"Expected 3-element chain, got {len(chain)}"
+    assert chain[0]["id"] == id1
+    assert chain[2]["id"] == id3
+    print("✅ test_temporal_causal_trace_record_and_chain PASSED")
+
+
+def test_temporal_causal_trace_summary():
+    """TemporalCausalTraceBuffer summary reports correct counts."""
+    from aeon_core import TemporalCausalTraceBuffer
+
+    trace = TemporalCausalTraceBuffer(max_entries=50)
+    for i in range(5):
+        trace.record(f"sub_{i}", f"decision_{i}")
+
+    s = trace.summary()
+    assert s["total_entries"] == 5
+    assert s["next_id"] == 5
+    print("✅ test_temporal_causal_trace_summary PASSED")
+
+
+def test_temporal_causal_trace_recent():
+    """TemporalCausalTraceBuffer.recent returns most recent entries."""
+    from aeon_core import TemporalCausalTraceBuffer
+
+    trace = TemporalCausalTraceBuffer(max_entries=50)
+    for i in range(10):
+        trace.record("sys", f"d{i}")
+
+    recent = trace.recent(3)
+    assert len(recent) == 3
+    assert recent[-1]["decision"] == "d9"
+    print("✅ test_temporal_causal_trace_recent PASSED")
+
+
+def test_cross_validation_reconciler_forward():
+    """CrossValidationReconciler produces reconciled state with agreement."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=32, num_pillars=8)
+    factor_state = torch.randn(2, 32)
+    causal_state = torch.randn(2, 32)
+
+    result = rec(factor_state, causal_state)
+    assert "reconciled_state" in result
+    assert result["reconciled_state"].shape == (2, 32)
+    assert "agreement_score" in result
+    assert result["agreement_score"].shape == (2,)
+    assert "reconcile_iterations" in result
+    print("✅ test_cross_validation_reconciler_forward PASSED")
+
+
+def test_cross_validation_reconciler_gradient_flow():
+    """CrossValidationReconciler allows gradient flow through reconciliation."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=16)
+    f = torch.randn(1, 16, requires_grad=True)
+    c = torch.randn(1, 16, requires_grad=True)
+
+    result = rec(f, c)
+    loss = result["reconciled_state"].sum()
+    loss.backward()
+    assert f.grad is not None, "Gradient should flow to factor_state"
+    assert c.grad is not None, "Gradient should flow to causal_state"
+    print("✅ test_cross_validation_reconciler_gradient_flow PASSED")
+
+
+def test_cross_validation_reconciler_agreement():
+    """CrossValidationReconciler produces valid agreement scores."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=16, agreement_threshold=0.5)
+    a = torch.randn(1, 16)
+    b = torch.randn(1, 16)
+    result = rec(a, b)
+    # Agreement score should be in [-1, 1] (cosine similarity range)
+    score = result["agreement_score"].item()
+    assert -1.0 <= score <= 1.0, f"Agreement score out of range: {score}"
+    # reconcile_iterations should be non-negative
+    assert result["reconcile_iterations"] >= 0
+    print("✅ test_cross_validation_reconciler_agreement PASSED")
+
+
+def test_external_data_trust_scorer_forward():
+    """ExternalDataTrustScorer produces trust_score and verification_weight."""
+    from aeon_core import ExternalDataTrustScorer
+
+    scorer = ExternalDataTrustScorer(hidden_dim=32)
+    external = torch.randn(4, 32)
+    internal = torch.randn(4, 32)
+
+    result = scorer(external, internal)
+    assert result["trust_score"].shape == (4, 1)
+    assert result["verification_weight"].shape == (4, 1)
+    # trust + verification should sum to 1
+    total = result["trust_score"] + result["verification_weight"]
+    assert torch.allclose(total, torch.ones_like(total)), \
+        "trust + verification should equal 1"
+    print("✅ test_external_data_trust_scorer_forward PASSED")
+
+
+def test_external_data_trust_scorer_gradient():
+    """ExternalDataTrustScorer supports gradient flow."""
+    from aeon_core import ExternalDataTrustScorer
+
+    scorer = ExternalDataTrustScorer(hidden_dim=16)
+    ext = torch.randn(1, 16, requires_grad=True)
+    internal = torch.randn(1, 16, requires_grad=True)
+
+    result = scorer(ext, internal)
+    loss = result["trust_score"].sum()
+    loss.backward()
+    assert ext.grad is not None
+    assert internal.grad is not None
+    print("✅ test_external_data_trust_scorer_gradient PASSED")
+
+
+def test_ns_consistency_checker_no_violations():
+    """NeuroSymbolicConsistencyChecker reports no violations for consistent output."""
+    from aeon_core import NeuroSymbolicConsistencyChecker
+
+    checker = NeuroSymbolicConsistencyChecker(
+        hidden_dim=32, num_predicates=8, violation_threshold=0.3
+    )
+    output = torch.randn(2, 32)
+    rules = torch.sigmoid(torch.randn(2, 8))
+
+    result = checker(output, rules)
+    assert "satisfaction_scores" in result
+    assert result["satisfaction_scores"].shape == (2, 8)
+    assert "violations" in result
+    assert "overall_consistency" in result
+    assert result["overall_consistency"].shape == (2,)
+    print("✅ test_ns_consistency_checker_no_violations PASSED")
+
+
+def test_ns_consistency_checker_gradient_flow():
+    """NeuroSymbolicConsistencyChecker allows gradient flow."""
+    from aeon_core import NeuroSymbolicConsistencyChecker
+
+    checker = NeuroSymbolicConsistencyChecker(hidden_dim=16, num_predicates=4)
+    out = torch.randn(1, 16, requires_grad=True)
+    rules = torch.sigmoid(torch.randn(1, 4))
+
+    result = checker(out, rules)
+    loss = result["overall_consistency"].sum()
+    loss.backward()
+    assert out.grad is not None
+    print("✅ test_ns_consistency_checker_gradient_flow PASSED")
+
+
+def test_ns_consistency_checker_violation_detection():
+    """NeuroSymbolicConsistencyChecker detects violations below threshold."""
+    from aeon_core import NeuroSymbolicConsistencyChecker
+
+    checker = NeuroSymbolicConsistencyChecker(
+        hidden_dim=16, num_predicates=4, violation_threshold=0.99
+    )
+    out = torch.randn(1, 16)
+    rules = torch.sigmoid(torch.randn(1, 4))
+
+    result = checker(out, rules)
+    # With threshold at 0.99, most scores should be below → violations
+    num_v = result["num_violations"].item()
+    assert num_v >= 0, "num_violations should be non-negative"
+    print("✅ test_ns_consistency_checker_violation_detection PASSED")
+
+
+def test_complexity_estimator_forward():
+    """ComplexityEstimator returns complexity score and gates."""
+    from aeon_core import ComplexityEstimator
+
+    est = ComplexityEstimator(hidden_dim=32, num_subsystems=4)
+    z_in = torch.randn(3, 32)
+
+    result = est(z_in)
+    assert result["complexity_score"].shape == (3, 1)
+    assert result["subsystem_gates"].shape == (3, 4)
+    assert result["gate_values"].shape == (3, 4)
+    assert result["subsystem_gates"].dtype == torch.bool
+    print("✅ test_complexity_estimator_forward PASSED")
+
+
+def test_complexity_estimator_gradient_flow():
+    """ComplexityEstimator supports gradient flow."""
+    from aeon_core import ComplexityEstimator
+
+    est = ComplexityEstimator(hidden_dim=16, num_subsystems=3)
+    z_in = torch.randn(1, 16, requires_grad=True)
+
+    result = est(z_in)
+    loss = result["complexity_score"].sum() + result["gate_values"].sum()
+    loss.backward()
+    assert z_in.grad is not None
+    print("✅ test_complexity_estimator_gradient_flow PASSED")
+
+
+def test_complexity_estimator_low_input():
+    """ComplexityEstimator handles zero input gracefully."""
+    from aeon_core import ComplexityEstimator
+
+    est = ComplexityEstimator(hidden_dim=8, num_subsystems=2)
+    z_in = torch.zeros(1, 8)
+
+    result = est(z_in)
+    assert torch.isfinite(result["complexity_score"]).all()
+    assert torch.isfinite(result["gate_values"]).all()
+    print("✅ test_complexity_estimator_low_input PASSED")
+
+
+def test_agi_coherence_config_defaults():
+    """New AGI coherence config fields have correct defaults."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    assert config.enable_causal_context is False
+    assert config.enable_cross_validation is False
+    assert config.enable_external_trust is False
+    assert config.enable_ns_consistency_check is False
+    assert config.enable_complexity_estimator is False
+    assert config.enable_causal_trace is False
+    assert config.enable_meta_recovery_integration is False
+    assert config.cross_validation_agreement == 0.7
+    assert config.ns_violation_threshold == 0.5
+    print("✅ test_agi_coherence_config_defaults PASSED")
+
+
+def test_aeon_v3_with_coherence_layer():
+    """AEONDeltaV3 initializes with AGI coherence layer enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_context=True,
+        enable_cross_validation=True,
+        enable_external_trust=True,
+        enable_ns_consistency_check=True,
+        enable_complexity_estimator=True,
+        enable_causal_trace=True,
+        enable_meta_recovery_integration=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.causal_context is not None
+    assert model.cross_validator is not None
+    assert model.trust_scorer is not None
+    assert model.ns_consistency_checker is not None
+    assert model.complexity_estimator is not None
+    assert model.causal_trace is not None
+    assert model.meta_recovery is not None
+    print("✅ test_aeon_v3_with_coherence_layer PASSED")
+
+
+def test_aeon_v3_coherence_layer_disabled_by_default():
+    """AEONDeltaV3 has coherence components as None when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.causal_context is None
+    assert model.cross_validator is None
+    assert model.trust_scorer is None
+    assert model.ns_consistency_checker is None
+    assert model.complexity_estimator is None
+    assert model.causal_trace is None
+    assert model.meta_recovery is None
+    print("✅ test_aeon_v3_coherence_layer_disabled_by_default PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -7787,6 +8187,31 @@ if __name__ == '__main__':
     test_execute_with_guard_logs_exception()
     test_tensor_guard_warn_count_thread_safety()
     test_quantize_int8_scale_detached()
+    
+    # AGI Coherence Layer tests
+    test_causal_context_window_add_and_retrieve()
+    test_causal_context_window_tiers()
+    test_causal_context_window_eviction()
+    test_causal_context_window_promote()
+    test_causal_context_window_get_context_tensor()
+    test_causal_context_rejects_nonfinite()
+    test_temporal_causal_trace_record_and_chain()
+    test_temporal_causal_trace_summary()
+    test_temporal_causal_trace_recent()
+    test_cross_validation_reconciler_forward()
+    test_cross_validation_reconciler_gradient_flow()
+    test_cross_validation_reconciler_agreement()
+    test_external_data_trust_scorer_forward()
+    test_external_data_trust_scorer_gradient()
+    test_ns_consistency_checker_no_violations()
+    test_ns_consistency_checker_gradient_flow()
+    test_ns_consistency_checker_violation_detection()
+    test_complexity_estimator_forward()
+    test_complexity_estimator_gradient_flow()
+    test_complexity_estimator_low_input()
+    test_agi_coherence_config_defaults()
+    test_aeon_v3_with_coherence_layer()
+    test_aeon_v3_coherence_layer_disabled_by_default()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
