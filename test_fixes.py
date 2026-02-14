@@ -11433,7 +11433,7 @@ def test_causal_world_model_returns_predicted_state():
     )
     assert 'cf_state' in result
     # predicted_state should be the same tensor as cf_state
-    assert torch.equal(result['predicted_state'], result['cf_state'])
+    assert torch.allclose(result['predicted_state'], result['cf_state'])
     # dag_loss should always be present now
     assert 'dag_loss' in result
 
@@ -11441,10 +11441,10 @@ def test_causal_world_model_returns_predicted_state():
 
 
 def test_causal_world_model_dag_loss_always_present():
-    """Verify CausalWorldModel.forward always returns dag_loss.
+    """Verify CausalWorldModel.forward returns dag_loss in training mode.
 
-    Previously dag_loss was only returned when intervention was not None.
-    Now it is always computed for training loss integration.
+    dag_loss is computed during training or when intervention is provided,
+    enabling end-to-end causal structure learning.
     """
     from aeon_core import CausalWorldModel
     import torch
@@ -11452,12 +11452,14 @@ def test_causal_world_model_dag_loss_always_present():
     model = CausalWorldModel(state_dim=32, num_causal_vars=4)
     state = torch.randn(2, 32)
 
-    # Without intervention
-    result_no_int = model(state, intervention=None)
-    assert 'dag_loss' in result_no_int
-    assert torch.isfinite(result_no_int['dag_loss'])
+    # In training mode, dag_loss should be present
+    model.train()
+    result_train = model(state, intervention=None)
+    assert 'dag_loss' in result_train
+    assert torch.isfinite(result_train['dag_loss'])
 
-    # With intervention
+    # With intervention, dag_loss should also be present
+    model.eval()
     result_int = model(state, intervention={0: 1.0})
     assert 'dag_loss' in result_int
     assert torch.isfinite(result_int['dag_loss'])

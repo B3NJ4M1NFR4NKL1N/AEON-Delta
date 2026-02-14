@@ -9241,8 +9241,12 @@ class CausalWorldModel(nn.Module):
             'cf_state': cf_state,
             'predicted_state': cf_state,
             'physics_output': physics_out,
-            'dag_loss': self.causal_model.dag_loss(),
         }
+
+        # Compute DAG loss when training or when explicitly requested
+        # (lightweight: matrix exponential approximation on small adjacency)
+        if self.training or intervention is not None:
+            result['dag_loss'] = self.causal_model.dag_loss()
 
         return result
 
@@ -14096,9 +14100,11 @@ class AEONDeltaV3(nn.Module):
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
         
         # 5c4. Temporal memory — store current states with importance-based
-        # retention and retrieve temporally-relevant patterns.  This provides
-        # an Ebbinghaus-style forgetting curve so that recent, important
-        # reasoning states persist while stale ones decay naturally.
+        # retention and retrieve temporally-relevant patterns.  Each stored
+        # memory carries a strength that decays as importance * exp(-decay_rate
+        # * age), modeling Ebbinghaus's forgetting curve: memories fade
+        # exponentially unless their importance compensates for temporal
+        # distance.  High-importance states effectively "remember" longer.
         if self.temporal_memory is not None and not fast:
             _temporal_weight = self.config.temporal_memory_retrieval_weight
             _temporal_k = self.config.temporal_memory_retrieval_k
@@ -15165,7 +15171,7 @@ class AEONDeltaV3(nn.Module):
         ewc_loss = torch.tensor(0.0, device=self.device)
         if self.meta_learner is not None and self.training:
             _ewc = self.meta_learner.ewc_loss()
-            if _ewc.requires_grad or _ewc.item() > 0:
+            if torch.is_tensor(_ewc) and (_ewc.requires_grad or float(_ewc.item()) > 0):
                 ewc_loss = _ewc
         
         # ===== TOTAL LOSS =====
