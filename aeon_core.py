@@ -7058,7 +7058,7 @@ class MemoryManager:
             self.fallback_metas.append(meta)
             self.fallback_timestamps.append(time.monotonic())
             self._size += 1
-            # Evict oldest entries when capacity is exceeded (O(1) via slicing)
+            # Evict oldest entries when capacity is exceeded
             if self._size > self._max_capacity:
                 excess = self._size - self._max_capacity
                 self.fallback_vectors = self.fallback_vectors[excess:]

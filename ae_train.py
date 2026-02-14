@@ -1165,6 +1165,9 @@ def load_documents_from_json(json_path: str, tokenizer, max_len: int,
 
 def split_text_into_chunks(text: str, max_chars: int = 256) -> List[str]:
     """Разбивает текст на чанки по границам предложений"""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    
     # Простое разбиение по точкам
     sentences = text.replace('\n', ' ').split('. ')
     
@@ -1267,7 +1270,7 @@ class SafeThoughtAETrainerV4:
         self.best_loss = float('inf')
         self.best_model_state = None
         
-    def train_step(self, tokens: torch.Tensor) -> Dict[str, float]:
+    def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
         
         Args:
