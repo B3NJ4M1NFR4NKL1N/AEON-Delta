@@ -13759,8 +13759,8 @@ class AEONDeltaV3(nn.Module):
         # prediction error from the world model indicates the system's
         # internal model is inaccurate, which should trigger deeper
         # metacognitive processing.  The surprise signal is scaled by
-        # a factor (0.2) to prevent a single noisy prediction from
-        # overwhelming the base uncertainty.
+        # _SURPRISE_UNCERTAINTY_SCALE to prevent a single noisy
+        # prediction from overwhelming the base uncertainty.
         _SURPRISE_UNCERTAINTY_SCALE = 0.2
         if surprise.numel() > 0:
             _mean_surprise = float(surprise.mean().item())

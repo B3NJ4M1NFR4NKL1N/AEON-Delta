@@ -10483,9 +10483,10 @@ def test_convergence_divergence_feeds_error_evolution():
     model = AEONDeltaV3(config)
     model.eval()
 
-    # Force the convergence monitor into a diverging state by feeding
-    # large, growing residual norms right before the forward pass so
-    # that the check() call inside reasoning_core sees avg_ratio >= 1.
+    # Force the convergence monitor into a diverging state by directly
+    # populating its history deque with monotonically increasing values.
+    # Direct manipulation is required because there is no public API to
+    # simulate sustained divergence without running full forward passes.
     # The deque maxlen is 10, so we fill 9 slots with growing values
     # and let the forward pass's check() be the 10th — its residual_norm
     # will be at least as large as earlier entries (typically ~1.0).
@@ -10534,7 +10535,9 @@ def test_world_model_surprise_escalates_uncertainty():
         enable_catastrophe_detection=False,
         enable_quantum_sim=False,
         enable_world_model=True,
-        surprise_threshold=0.01,  # low threshold to trigger surprise
+        surprise_threshold=0.01,  # Very low threshold to ensure world model
+                                  # surprise triggers uncertainty escalation
+                                  # with random input tensors.
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -10634,7 +10637,10 @@ def test_integrity_health_feeds_feedback_bus():
         "Expected cached feedback after first forward pass"
     )
 
-    # Simulate subsystem degradation by recording low health
+    # Simulate subsystem degradation by directly recording low health
+    # values.  Direct manipulation is used because inducing genuine
+    # subsystem failures in a unit test context is unreliable and
+    # fragile; the public record_health() API is the intended interface.
     model.integrity_monitor.record_health("world_model", 0.0, {"error": True})
     model.integrity_monitor.record_health("memory", 0.1, {"stale": True})
 
