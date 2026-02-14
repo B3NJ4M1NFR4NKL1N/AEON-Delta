@@ -14200,7 +14200,7 @@ class AEONDeltaV3(nn.Module):
                         "coherence_score": torch.min(_pre_score, _post_score),
                         "pairwise": {
                             **coherence_results.get("pairwise", {}),
-                            **{("post_" + k[0], "post_" + k[1]): v
+                            **{(f"post_{k[0]}", f"post_{k[1]}"): v
                                for k, v in post_coherence.get("pairwise", {}).items()},
                         },
                         "needs_recheck": (

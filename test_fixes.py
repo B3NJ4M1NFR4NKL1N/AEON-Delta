@@ -10224,7 +10224,7 @@ def test_coherence_includes_safety_gated_state():
 
     assert "coherence_score" in results
     assert results["coherence_score"].shape == (2,)
-    # With 3 states, there should be 3 pairwise comparisons
+    # With 3 states, we expect C(3,2)=3 pairwise comparisons
     assert len(results["pairwise"]) == 3
 
     print("✅ test_coherence_includes_safety_gated_state PASSED")
