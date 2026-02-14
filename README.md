@@ -25,6 +25,9 @@ The system implements a **provably convergent architecture** with certified erro
 - **Global Workspace Theory** (cognitive executive function with attention arbiter and shared workspace)
 - **Self-critique** (auto-critic loop with iterative generate→evaluate→revise cycles)
 - **Audit & recovery** (decision audit logs, semantic error classification, and meta-recovery learning)
+- **Production infrastructure** (system integrity monitoring, progress tracking with rollback, deterministic execution guards)
+- **Cognitive feedback** (closed-loop feedback bus conditioning upstream reasoning from downstream signals, causal provenance attribution)
+- **Trust & consistency verification** (causal context windows, cross-validation reconciliation, external data trust scoring, neuro-symbolic consistency checking, complexity-based subsystem gating)
 
 ---
 
@@ -367,7 +370,53 @@ Ensures that: every component verifies others, any unresolved ambiguity triggers
 
 ---
 
+### **27. Production Infrastructure: Safety Guards & Pipeline Tracking**
+Core infrastructure modules ensuring deterministic, observable, and recoverable pipeline execution:
+- **`SafeTensorProcessor`**: Global forward-hook registration that automatically sanitizes NaN/Inf in every module's output — zero-configuration tensor safety across the entire model
+- **`SystemIntegrityMonitor`**: Centralized health tracker aggregating per-subsystem health scores over a sliding window with anomaly detection (threshold and derivative checks), checksum verification, and thread-safe composite health reporting
+- **`ProgressTracker`**: Structured phase-level progress tracking (encode, meta-loop, factor extraction, safety, memory, integration, decode) with timing, success/failure status, checkpointing of intermediate states, and rollback to last-known-good phase on downstream failure
+- **`DeterministicExecutionGuard`**: Wraps pipeline stages with input normalization (clamp + sanitize), output validation (finite + magnitude bounds + shape), SHA-256 execution fingerprinting for reproducibility verification, and deterministic fallback enforcement to prevent corrupt value propagation
+
+Provides production-grade observability, determinism, and autonomous pipeline recovery.
+
+---
+
+### **28. Cognitive Feedback Bus & Causal Provenance**
+Closed-loop feedback and per-module attribution tracking:
+- **`CognitiveFeedbackBus`**: Aggregates downstream subsystem signals (safety score, convergence quality, uncertainty, subsystem health) into a dense [B, hidden_dim] feedback embedding via learned projection — closes the feedback loop so downstream module outputs condition upstream meta-loop reasoning depth and trajectory
+- **`CausalProvenanceTracker`**: Lightweight (zero parameters) per-module attribution tracker — records L2 state deltas before/after each module transformation and computes normalized contribution fractions answering "which module was most responsible for the output?"
+
+Enables feedback-driven adaptive reasoning and full output provenance attribution.
+
+---
+
+### **29. Causal Infrastructure & Trust Verification**
+Extended causal reasoning, cross-validation, and trust scoring for robust output verification:
+- **`CausalContextWindowManager`**: Hierarchical context system with three tiers (short-term, mid-term, long-term) ranked by causal significance — composite score: α·cosine_sim + β·causal_weight + γ·recency_decay — with thread-safe eviction and tier promotion
+- **`TemporalCausalTraceBuffer`**: Extends audit logging with causal trace information — each decision records initial state fingerprint, causal prerequisites (prior decision IDs), and rejected alternatives with reason strings; supports full causal-chain reconstruction and root-cause analysis
+- **`CrossValidationReconciler`**: Cross-validates SparseFactorization and CausalWorldModel interpretations via cosine similarity in a common projection space — triggers iterative self-critique reconciliation until agreement threshold is met or max iterations reached
+- **`ExternalDataTrustScorer`**: Trust scoring for external data sources — assigns trust ∈ [0, 1] based on internal consistency checks; lower trust triggers heavier internal verification via causal modelling
+- **`NeuroSymbolicConsistencyChecker`**: Verifies outputs against soft-logic rules from NeuroSymbolicReasoner — extracts predicate satisfaction scores, flags violations below threshold, and triggers targeted self-critique with explicit rule-violation context
+- **`ComplexityEstimator`**: Estimates semantic complexity of input ∈ [0, 1] to enable dynamic subsystem gating — simple inputs skip expensive modules (world model, MCTS, causal reasoning) while complex inputs engage the full cognitive pipeline
+
+Ensures causal traceability, cross-module consistency, external data trust verification, and compute-efficient routing.
+
+---
+
 ## 📂 Training Pipeline: v4.0 Connected Thoughts Edition (`ae_train.py`)
+
+### **Architecture Components**
+- **`AEONConfigV4`**: Dedicated training configuration dataclass with entropy regularization, gradient stabilization, and document-aware training parameters
+- **`AEONDeltaV4`**: Training-specific model combining ThoughtEncoder, VectorQuantizerHybridV4, and ThoughtDecoder
+- **`VectorQuantizerHybridV4`**: Hybrid VQ combining `GumbelVectorQuantizer` (Gumbel-softmax differentiable quantization) with entropy regularization for uniform codebook usage
+- **`ContextualRSSM`**: Recurrent State Space Model with attention-weighted context window for multi-step thought dynamics
+- **`DocumentAwareDataset`**: PyTorch Dataset preserving document boundaries for semantically coherent training pairs
+
+### **Training Infrastructure**
+- **`SafeThoughtAETrainerV4`**: Phase A trainer with AMP, gradient accumulation, entropy loss, and aggressive code reset
+- **`ContextualRSSMTrainer`**: Phase B trainer for sequential dynamics within document boundaries
+- **`TrainingMonitor`**: Comprehensive metrics tracker with epoch/batch recording and JSON serialization
+- **`WarmupCosineScheduler`**: Learning rate scheduler with linear warmup and cosine annealing decay
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
 - Document-aware tokenization preserving semantic boundaries  
@@ -424,7 +473,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 427 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 483 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -451,6 +500,9 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 427 tests) verifyi
 - **Advanced causal** (unified causal simulator, neuro-symbolic bridge, temporal knowledge graph, hybrid reasoning engine)  
 - **Advanced meta-learning** (Task2Vec embeddings, latent dynamics model)  
 - **AGI coherence** (module coherence verification, meta-cognitive recursion trigger, causal error evolution tracker, cross-module integration)  
+- **Production infrastructure** (system integrity monitor with anomaly detection, progress tracker with phase lifecycle and rollback, deterministic execution guard)  
+- **Cognitive feedback** (cognitive feedback bus forward/gradient flow, causal provenance tracking and attribution)  
+- **Causal infrastructure** (causal context window with tiers and eviction, temporal causal trace with chain reconstruction, cross-validation reconciliation, external data trust scoring, complexity estimation with subsystem gating, neuro-symbolic consistency checking)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -472,9 +524,9 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py      # Core architecture — all modules, model (AEONDeltaV3), trainer, CLI
-├── ae_train.py       # Training pipeline v4.0 — Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (427 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── aeon_core.py      # Core architecture — 111 classes, all modules, model (AEONDeltaV3), trainer, CLI
+├── ae_train.py       # Training pipeline v4.0 — 12 classes, Phase A (AE+VQ) & Phase B (RSSM)
+├── test_fixes.py     # Comprehensive test suite (483 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
