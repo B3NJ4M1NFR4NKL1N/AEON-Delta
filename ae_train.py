@@ -637,13 +637,10 @@ class VectorQuantizerHybridV4(nn.Module):
         entropy = -(probs * log_probs).sum()
         
         # Нормализуем относительно максимальной энтропии
-        max_entropy = math.log(self.num_embeddings)
+        max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
         
         # Loss = 1 - normalized_entropy (хотим максимизировать энтропию)
-        if max_entropy > 0:
-            entropy_loss = 1.0 - (entropy / max_entropy)
-        else:
-            entropy_loss = torch.tensor(0.0, device=indices.device)
+        entropy_loss = 1.0 - (entropy / max_entropy)
         
         return entropy_loss
     
@@ -709,7 +706,7 @@ class VectorQuantizerHybridV4(nn.Module):
                 probs = self.code_usage / (self.total_count + 1e-10)
                 probs = probs[probs > 0]
                 entropy = -(probs * torch.log(probs + 1e-10)).sum().item()
-                max_entropy = math.log(self.num_embeddings)
+                max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
                 normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
             else:
                 normalized_entropy = 0
@@ -1011,6 +1008,12 @@ class DocumentAwareDataset(Dataset):
                     self.samples.append((doc_idx, i))
         
         self.documents = documents
+        
+        if len(self.samples) == 0:
+            logger.warning(
+                "DocumentAwareDataset: no valid samples created. "
+                "All documents have fewer than context_window + 1 chunks."
+            )
         
     def __len__(self):
         return len(self.samples)
@@ -1560,7 +1563,7 @@ class ContextualRSSMTrainer:
         with torch.no_grad():
             cosine_sim = F.cosine_similarity(pred, z_target, dim=1).mean().item()
             l1_loss = F.l1_loss(pred, z_target).item()
-            rel_error = (torch.norm(pred - z_target, dim=1) / (torch.norm(z_target, dim=1) + 1e-8)).mean().item()
+            rel_error = (torch.norm(pred - z_target, dim=1) / (torch.norm(z_target, dim=1) + 1e-8)).clamp(max=1e4).mean().item()
         
         return {
             "mse_loss": mse_loss.item(), 

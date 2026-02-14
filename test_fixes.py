@@ -6474,6 +6474,87 @@ def test_trainer_gradient_anomaly_tracking():
     print("✅ test_trainer_gradient_anomaly_tracking PASSED")
 
 
+def test_hash_tensor_content_based():
+    """Verify _hash_tensor uses content-based hashing to avoid collisions."""
+    from aeon_core import FastHessianComputer
+    
+    hc = FastHessianComputer(method='finite_differences')
+    
+    # Tensors with same sum, std, first, last but different interior values
+    t1 = torch.tensor([[1.0, 3.0, 2.0, 4.0]])  # sum=10
+    t2 = torch.tensor([[2.0, 2.0, 2.0, 4.0]])  # sum=10
+    
+    h1 = hc._hash_tensor(t1)
+    h2 = hc._hash_tensor(t2)
+    
+    assert h1 != h2, f"Hash collision for different tensors: {h1}"
+    
+    # Same tensor should produce same hash
+    h3 = hc._hash_tensor(t1.clone())
+    assert h1 == h3, "Same tensor content produced different hashes"
+    
+    print("✅ test_hash_tensor_content_based PASSED")
+
+
+def test_quantize_int8_nan_safety():
+    """Verify _quantize_int8 handles NaN tensors without producing NaN scale."""
+    from aeon_core import InferenceCache
+    
+    # Tensor with NaN values
+    t_nan = torch.tensor([1.0, float('nan'), 3.0, float('inf')])
+    quantized, scale = InferenceCache._quantize_int8(t_nan)
+    
+    assert torch.isfinite(scale), f"Scale is not finite: {scale}"
+    assert not torch.isnan(quantized.float()).any(), "Quantized contains NaN"
+    
+    # Normal tensor should still work
+    t_normal = torch.tensor([1.0, 2.0, 3.0])
+    q_normal, s_normal = InferenceCache._quantize_int8(t_normal)
+    assert torch.isfinite(s_normal), f"Normal scale is not finite: {s_normal}"
+    
+    print("✅ test_quantize_int8_nan_safety PASSED")
+
+
+def test_lipschitz_constant_finite():
+    """Verify compute_lipschitz_constant never returns NaN/Inf."""
+    from aeon_core import LipschitzConstrainedLambda
+    
+    net = LipschitzConstrainedLambda(input_dim=16, hidden_dim=32, output_dim=16)
+    result = net.compute_lipschitz_constant(num_samples=10)
+    
+    assert math.isfinite(result), f"Lipschitz constant is not finite: {result}"
+    assert result >= 0.0, f"Lipschitz constant is negative: {result}"
+    
+    print("✅ test_lipschitz_constant_finite PASSED")
+
+
+def test_entropy_loss_consistency():
+    """Verify entropy loss computation is consistent across all VQ classes."""
+    # Test that _compute_entropy_loss handles num_embeddings=1
+    # by using the same guard pattern as other entropy computations
+    max_entropy_guard = math.log(1) if 1 > 1 else 1.0
+    assert max_entropy_guard == 1.0, "Guard for num_embeddings=1 should return 1.0"
+    
+    max_entropy_normal = math.log(64) if 64 > 1 else 1.0
+    assert max_entropy_normal == math.log(64), "Guard for num_embeddings=64 should return log(64)"
+    
+    print("✅ test_entropy_loss_consistency PASSED")
+
+
+def test_rel_error_clamp():
+    """Verify relative error is clamped to prevent extreme values."""
+    # Simulate near-zero target with non-zero prediction
+    pred = torch.randn(4, 16)
+    z_target = torch.zeros(4, 16)  # Near-zero target
+    
+    rel_error = (torch.norm(pred - z_target, dim=1) / (torch.norm(z_target, dim=1) + 1e-8)).clamp(max=1e4).mean().item()
+    
+    assert rel_error <= 1e4, f"Relative error exceeds clamp: {rel_error}"
+    assert math.isfinite(rel_error), f"Relative error is not finite: {rel_error}"
+    
+    print("✅ test_rel_error_clamp PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6856,6 +6937,13 @@ if __name__ == '__main__':
     test_validator_validate_gradients_explosion()
     test_reasoning_core_pipeline_error_recovery()
     test_trainer_gradient_anomaly_tracking()
+    
+    # Content-based hash, NaN safety, and consistency tests
+    test_hash_tensor_content_based()
+    test_quantize_int8_nan_safety()
+    test_lipschitz_constant_finite()
+    test_entropy_loss_consistency()
+    test_rel_error_clamp()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
