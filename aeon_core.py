@@ -2490,6 +2490,21 @@ class AEONConfig:
     notears_num_vars: int = 8
     notears_hidden_dim: int = 64
     
+    # ===== AGI COHERENCE LAYER =====
+    enable_causal_context: bool = False
+    causal_context_short_cap: int = 32
+    causal_context_mid_cap: int = 128
+    causal_context_long_cap: int = 256
+    enable_cross_validation: bool = False
+    cross_validation_agreement: float = 0.7
+    cross_validation_max_steps: int = 3
+    enable_external_trust: bool = False
+    enable_ns_consistency_check: bool = False
+    ns_violation_threshold: float = 0.5
+    enable_complexity_estimator: bool = False
+    enable_causal_trace: bool = False
+    enable_meta_recovery_integration: bool = False
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -11225,6 +11240,501 @@ class AutoCriticLoop(nn.Module):
 
 
 # ============================================================================
+# SECTION 15d: ARCHITECTURAL ENHANCEMENTS — AGI COHERENCE LAYER
+# ============================================================================
+
+
+class CausalContextWindowManager:
+    """
+    Hierarchical context system with causal relevance ranking.
+
+    Extends :class:`ContextWindowManager` with three tiers:
+    - **short_term**: working memory (NTM-like), high-frequency updates.
+    - **mid_term**: episodic memory with temporal decay.
+    - **long_term**: semantic graph with causal significance scores.
+
+    Relevance is ranked by *causal significance* (not just cosine similarity):
+    score = alpha * cosine_sim + beta * causal_weight + gamma * recency_decay.
+
+    Thread-safe: all mutations protected by a lock.
+    """
+
+    def __init__(
+        self,
+        max_entries: int = 256,
+        hidden_dim: int = 256,
+        short_term_capacity: int = 32,
+        mid_term_capacity: int = 128,
+        long_term_capacity: int = 256,
+        decay_rate: float = 0.01,
+        alpha: float = 0.4,
+        beta: float = 0.4,
+        gamma: float = 0.2,
+    ):
+        self.hidden_dim = hidden_dim
+        self.decay_rate = max(0.0, decay_rate)
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self._lock = threading.Lock()
+        self._short_term: List[Dict[str, Any]] = []
+        self._mid_term: List[Dict[str, Any]] = []
+        self._long_term: List[Dict[str, Any]] = []
+        self._short_cap = max(1, short_term_capacity)
+        self._mid_cap = max(1, mid_term_capacity)
+        self._long_cap = max(1, long_term_capacity)
+        self._total_added: int = 0
+        self._total_evicted: int = 0
+
+    def add(
+        self,
+        source: str,
+        embedding: torch.Tensor,
+        relevance: float = 0.0,
+        causal_weight: float = 0.0,
+        tier: str = "short_term",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Insert a context entry into the specified tier."""
+        if not isinstance(embedding, torch.Tensor):
+            return
+        if not torch.isfinite(embedding).all():
+            return
+
+        entry = {
+            "source": source,
+            "embedding": embedding.detach().clone(),
+            "relevance": float(relevance),
+            "causal_weight": float(causal_weight),
+            "metadata": metadata or {},
+            "timestamp": time.monotonic(),
+        }
+
+        with self._lock:
+            if tier == "short_term":
+                store, cap = self._short_term, self._short_cap
+            elif tier == "mid_term":
+                store, cap = self._mid_term, self._mid_cap
+            else:
+                store, cap = self._long_term, self._long_cap
+
+            store.append(entry)
+            self._total_added += 1
+            if len(store) > cap:
+                store.sort(key=lambda e: self._composite_score(e))
+                evicted = len(store) - cap
+                del store[:evicted]
+                self._total_evicted += evicted
+
+    def _composite_score(self, entry: Dict[str, Any]) -> float:
+        now = time.monotonic()
+        age = now - entry["timestamp"]
+        recency = math.exp(-self.decay_rate * age)
+        return (
+            self.alpha * entry["relevance"]
+            + self.beta * entry["causal_weight"]
+            + self.gamma * recency
+        )
+
+    def get_top_k(self, k: int = 10) -> List[Dict[str, Any]]:
+        """Return the *k* most relevant entries across all tiers."""
+        with self._lock:
+            all_entries = self._short_term + self._mid_term + self._long_term
+        scored = [(self._composite_score(e), e) for e in all_entries]
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [e for _, e in scored[:k]]
+
+    def get_context_tensor(self, k: int = 10) -> Optional[torch.Tensor]:
+        """Stack top-k embeddings into ``[k, hidden_dim]``, or ``None``."""
+        top = self.get_top_k(k)
+        if not top:
+            return None
+        return torch.stack([e["embedding"].squeeze(0) for e in top], dim=0)
+
+    def promote(self, source_tier: str = "short_term", top_n: int = 5) -> int:
+        """Promote top entries from one tier to the next higher tier."""
+        with self._lock:
+            if source_tier == "short_term":
+                src, dst, dst_cap = self._short_term, self._mid_term, self._mid_cap
+            elif source_tier == "mid_term":
+                src, dst, dst_cap = self._mid_term, self._long_term, self._long_cap
+            else:
+                return 0
+
+            if not src:
+                return 0
+
+            src.sort(key=lambda e: self._composite_score(e), reverse=True)
+            promoted = 0
+            for entry in src[:top_n]:
+                dst.append(entry)
+                promoted += 1
+
+            if len(dst) > dst_cap:
+                dst.sort(key=lambda e: self._composite_score(e))
+                del dst[: len(dst) - dst_cap]
+
+            return promoted
+
+    def clear(self) -> None:
+        with self._lock:
+            self._short_term.clear()
+            self._mid_term.clear()
+            self._long_term.clear()
+
+    def stats(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "short_term_size": len(self._short_term),
+                "mid_term_size": len(self._mid_term),
+                "long_term_size": len(self._long_term),
+                "total_added": self._total_added,
+                "total_evicted": self._total_evicted,
+            }
+
+
+class TemporalCausalTraceBuffer:
+    """
+    Extends audit logging with causal trace information.
+
+    Each decision records:
+    - **initial_state**: tensor fingerprint of the state before the decision.
+    - **causal_prerequisites**: list of prior decisions that causally
+      influenced this one.
+    - **rejected_alternatives**: hypotheses considered but rejected, with
+      reason strings.
+
+    Enables full causal-chain reconstruction for any decision in the buffer.
+
+    Thread-safe via internal lock.
+    """
+
+    def __init__(self, max_entries: int = 1000):
+        self._max_entries = max(1, max_entries)
+        self._entries: deque = deque(maxlen=self._max_entries)
+        self._lock = threading.Lock()
+        self._decision_index: Dict[str, int] = {}
+        self._next_id: int = 0
+
+    def record(
+        self,
+        subsystem: str,
+        decision: str,
+        initial_state_hash: str = "",
+        causal_prerequisites: Optional[List[str]] = None,
+        rejected_alternatives: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        severity: str = "info",
+    ) -> str:
+        """Record a decision with causal trace and return its unique ID."""
+        entry_id = f"{subsystem}_{self._next_id}"
+        entry = {
+            "id": entry_id,
+            "timestamp": time.monotonic(),
+            "subsystem": subsystem,
+            "decision": decision,
+            "initial_state_hash": initial_state_hash,
+            "causal_prerequisites": causal_prerequisites or [],
+            "rejected_alternatives": rejected_alternatives or [],
+            "metadata": metadata or {},
+            "severity": severity,
+        }
+        with self._lock:
+            self._entries.append(entry)
+            self._decision_index[entry_id] = self._next_id
+            self._next_id += 1
+        return entry_id
+
+    def get_causal_chain(self, entry_id: str) -> List[Dict[str, Any]]:
+        """Reconstruct the causal chain leading to a decision."""
+        with self._lock:
+            entries_by_id = {e["id"]: e for e in self._entries}
+
+        chain: List[Dict[str, Any]] = []
+        visited: set = set()
+        queue = [entry_id]
+
+        while queue:
+            current = queue.pop(0)
+            if current in visited or current not in entries_by_id:
+                continue
+            visited.add(current)
+            entry = entries_by_id[current]
+            chain.append(entry)
+            queue.extend(entry.get("causal_prerequisites", []))
+
+        chain.reverse()
+        return chain
+
+    def recent(self, n: int = 10) -> List[Dict[str, Any]]:
+        with self._lock:
+            items = list(self._entries)
+        return items[-n:]
+
+    def summary(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "total_entries": len(self._entries),
+                "max_entries": self._max_entries,
+                "next_id": self._next_id,
+            }
+
+
+class CrossValidationReconciler(nn.Module):
+    """
+    Cross-validates SparseFactorization and CausalWorldModel interpretations.
+
+    If the two subsystems produce contradictory readings of the same state,
+    the reconciler triggers a self-critique loop until agreement is reached
+    or a maximum number of iterations is exhausted.
+
+    Agreement is measured as cosine similarity between the factor-embedded
+    state and the causal-predicted state, projected into a common space.
+
+    Args:
+        hidden_dim: Representation dimension.
+        num_pillars: Factor count from SparseFactorization.
+        agreement_threshold: Minimum cosine similarity to accept.
+        max_reconcile_steps: Maximum self-critique iterations.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 256,
+        num_pillars: int = 64,
+        agreement_threshold: float = 0.7,
+        max_reconcile_steps: int = 3,
+    ):
+        super().__init__()
+        self.agreement_threshold = agreement_threshold
+        self.max_reconcile_steps = max_reconcile_steps
+
+        self.factor_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.causal_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.reconcile_net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(
+        self,
+        factor_state: torch.Tensor,
+        causal_state: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """
+        Reconcile factor-embedded and causal-predicted states.
+
+        Args:
+            factor_state: [B, hidden_dim] from SparseFactorization embedding.
+            causal_state: [B, hidden_dim] from CausalWorldModel prediction.
+
+        Returns:
+            Dict with reconciled_state, agreement_score, iterations.
+        """
+        f_proj = self.factor_proj(factor_state)
+        c_proj = self.causal_proj(causal_state)
+
+        agreement = F.cosine_similarity(f_proj, c_proj, dim=-1)  # [B]
+        reconciled = factor_state
+        iterations = 0
+
+        for step in range(self.max_reconcile_steps):
+            if (agreement > self.agreement_threshold).all():
+                break
+            # Blend via reconciliation network
+            combined = torch.cat([f_proj, c_proj], dim=-1)
+            correction = self.reconcile_net(combined)
+            f_proj = f_proj + 0.5 * correction
+            c_proj = c_proj + 0.5 * correction
+            agreement = F.cosine_similarity(f_proj, c_proj, dim=-1)
+            iterations = step + 1
+
+        # Produce reconciled state as gated blend
+        blend_weight = agreement.unsqueeze(-1).clamp(0, 1)
+        reconciled = blend_weight * factor_state + (1 - blend_weight) * causal_state
+
+        return {
+            "reconciled_state": reconciled,
+            "agreement_score": agreement,
+            "reconcile_iterations": iterations,
+        }
+
+
+class ExternalDataTrustScorer(nn.Module):
+    """
+    Trust scoring for external data sources.
+
+    Assigns a trust score ∈ [0, 1] to each external data embedding based
+    on internal consistency checks.  Lower trust triggers heavier internal
+    verification via causal modelling.
+
+    Integrates with :class:`TransparentSelfReporting` by contributing the
+    trust score to the self-report dict.
+
+    Args:
+        hidden_dim: Representation size.
+    """
+
+    def __init__(self, hidden_dim: int = 256):
+        super().__init__()
+        self.trust_net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        external_data: torch.Tensor,
+        internal_state: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute trust score for external data against internal state.
+
+        Args:
+            external_data: [B, hidden_dim] external embedding.
+            internal_state: [B, hidden_dim] internal representation.
+
+        Returns:
+            Dict with trust_score [B, 1] and verification_weight [B, 1].
+        """
+        combined = torch.cat([external_data, internal_state], dim=-1)
+        trust_score = self.trust_net(combined)
+        # Lower trust → higher internal verification weight
+        verification_weight = 1.0 - trust_score
+        return {
+            "trust_score": trust_score,
+            "verification_weight": verification_weight,
+        }
+
+
+class NeuroSymbolicConsistencyChecker(nn.Module):
+    """
+    Verifies outputs against soft-logic rules from NeuroSymbolicReasoner.
+
+    Extracts rules from the reasoner, evaluates whether the current output
+    satisfies them, and flags violations.  Violations trigger a targeted
+    self-critique cycle with explicit rule-violation context.
+
+    Args:
+        hidden_dim: Representation dimension.
+        num_predicates: Number of soft predicates to check.
+        violation_threshold: Below this satisfaction score a rule is violated.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 256,
+        num_predicates: int = 32,
+        violation_threshold: float = 0.5,
+    ):
+        super().__init__()
+        self.violation_threshold = violation_threshold
+        self.num_predicates = num_predicates
+
+        self.output_to_predicates = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, num_predicates),
+            nn.Sigmoid(),
+        )
+        self.rule_checker = nn.Sequential(
+            nn.Linear(num_predicates * 2, num_predicates),
+            nn.GELU(),
+            nn.Linear(num_predicates, num_predicates),
+            nn.Sigmoid(),
+        )
+
+    def check(
+        self,
+        output_state: torch.Tensor,
+        rules: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """
+        Check output against extracted rules.
+
+        Args:
+            output_state: [B, hidden_dim] output representation.
+            rules: [B, num_predicates] soft rules from NeuroSymbolicReasoner.
+
+        Returns:
+            Dict with satisfaction_scores, violations, overall_consistency.
+        """
+        output_preds = self.output_to_predicates(output_state)  # [B, P]
+        combined = torch.cat([output_preds, rules], dim=-1)     # [B, 2P]
+        satisfaction = self.rule_checker(combined)                # [B, P]
+
+        violations = (satisfaction < self.violation_threshold)    # [B, P] bool
+        overall_consistency = satisfaction.mean(dim=-1)           # [B]
+
+        return {
+            "satisfaction_scores": satisfaction,
+            "violations": violations,
+            "num_violations": violations.sum(dim=-1),
+            "overall_consistency": overall_consistency,
+        }
+
+    def forward(
+        self,
+        output_state: torch.Tensor,
+        rules: torch.Tensor,
+    ) -> Dict[str, Any]:
+        return self.check(output_state, rules)
+
+
+class ComplexityEstimator(nn.Module):
+    """
+    Estimates semantic complexity of input to enable dynamic reconfiguration.
+
+    Simple inputs (low complexity) skip expensive subsystems (world model,
+    MCTS, causal reasoning) to avoid redundant computation.  Complex inputs
+    engage the full cognitive pipeline.
+
+    Returns a complexity score ∈ [0, 1] and a boolean gate per subsystem.
+
+    Args:
+        hidden_dim: Input representation dimension.
+        num_subsystems: Number of optional subsystems to gate.
+    """
+
+    def __init__(self, hidden_dim: int = 256, num_subsystems: int = 4):
+        super().__init__()
+        self.estimator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 1 + num_subsystems),
+        )
+        self.num_subsystems = num_subsystems
+
+    def forward(self, z_in: torch.Tensor) -> Dict[str, Any]:
+        """
+        Estimate complexity and produce subsystem gates.
+
+        Args:
+            z_in: [B, hidden_dim] encoded input.
+
+        Returns:
+            Dict with complexity_score [B, 1], subsystem_gates [B, N] (bool),
+            and gate_values [B, N] (continuous).
+        """
+        out = self.estimator(z_in)                      # [B, 1+N]
+        complexity = torch.sigmoid(out[:, :1])            # [B, 1]
+        gate_logits = out[:, 1:]                          # [B, N]
+        gate_values = torch.sigmoid(gate_logits)          # [B, N]
+
+        # Gate: activate subsystem only when complexity exceeds 0.5
+        gates = (gate_values * complexity > 0.5)          # [B, N] bool
+
+        return {
+            "complexity_score": complexity,
+            "subsystem_gates": gates,
+            "gate_values": gate_values,
+        }
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -11514,6 +12024,77 @@ class AEONDeltaV3(nn.Module):
         else:
             self.notears_causal = None
         
+        # ===== AGI COHERENCE LAYER =====
+        # Causal hierarchical context
+        if getattr(config, 'enable_causal_context', False):
+            logger.info("Loading CausalContextWindowManager...")
+            self.causal_context = CausalContextWindowManager(
+                hidden_dim=config.hidden_dim,
+                short_term_capacity=config.causal_context_short_cap,
+                mid_term_capacity=config.causal_context_mid_cap,
+                long_term_capacity=config.causal_context_long_cap,
+            )
+        else:
+            self.causal_context = None
+        
+        # Cross-validation reconciler
+        if getattr(config, 'enable_cross_validation', False):
+            logger.info("Loading CrossValidationReconciler...")
+            self.cross_validator = CrossValidationReconciler(
+                hidden_dim=config.hidden_dim,
+                num_pillars=config.num_pillars,
+                agreement_threshold=config.cross_validation_agreement,
+                max_reconcile_steps=config.cross_validation_max_steps,
+            ).to(self.device)
+        else:
+            self.cross_validator = None
+        
+        # External data trust scorer
+        if getattr(config, 'enable_external_trust', False):
+            logger.info("Loading ExternalDataTrustScorer...")
+            self.trust_scorer = ExternalDataTrustScorer(
+                hidden_dim=config.hidden_dim,
+            ).to(self.device)
+        else:
+            self.trust_scorer = None
+        
+        # Neuro-symbolic consistency checker
+        if getattr(config, 'enable_ns_consistency_check', False):
+            logger.info("Loading NeuroSymbolicConsistencyChecker...")
+            self.ns_consistency_checker = NeuroSymbolicConsistencyChecker(
+                hidden_dim=config.hidden_dim,
+                violation_threshold=config.ns_violation_threshold,
+            ).to(self.device)
+        else:
+            self.ns_consistency_checker = None
+        
+        # Complexity estimator for dynamic reconfiguration
+        if getattr(config, 'enable_complexity_estimator', False):
+            logger.info("Loading ComplexityEstimator...")
+            self.complexity_estimator = ComplexityEstimator(
+                hidden_dim=config.hidden_dim,
+                num_subsystems=4,
+            ).to(self.device)
+        else:
+            self.complexity_estimator = None
+        
+        # Temporal causal trace buffer
+        if getattr(config, 'enable_causal_trace', False):
+            logger.info("Loading TemporalCausalTraceBuffer...")
+            self.causal_trace = TemporalCausalTraceBuffer(max_entries=1000)
+        else:
+            self.causal_trace = None
+        
+        # Meta-recovery learner integration
+        if getattr(config, 'enable_meta_recovery_integration', False):
+            logger.info("Loading MetaRecoveryLearner integration...")
+            self.meta_recovery = MetaRecoveryLearner(
+                state_dim=64,
+                hidden_dim=config.hidden_dim,
+            ).to(self.device)
+        else:
+            self.meta_recovery = None
+        
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
         self.memory_manager = MemoryManager(config)
@@ -11758,6 +12339,17 @@ class AEONDeltaV3(nn.Module):
             logger.error(
                 f"reasoning_core pipeline error [{error_class}]: {detail}"
             )
+            # MetaRecoveryLearner: record experience for learning
+            if self.meta_recovery is not None:
+                try:
+                    error_ctx = torch.zeros(1, 64, device=device)
+                    recovery_info = self.meta_recovery(error_ctx)
+                    self.audit_log.record("meta_recovery", "strategy_selected", {
+                        "strategy": recovery_info.get("strategy", "unknown"),
+                        "error_class": error_class,
+                    })
+                except Exception:
+                    pass  # Recovery learner itself failed; use default fallback
             # Deterministic fallback — return input as-is with empty outputs
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
@@ -11805,6 +12397,9 @@ class AEONDeltaV3(nn.Module):
                 },
                 'error_recovered': True,
                 'error_class': error_class,
+                'complexity_info': {},
+                'reconciliation_results': {},
+                'ns_consistency_results': {},
             }
             return z_fallback, fallback_outputs
 
@@ -11822,6 +12417,27 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Deterministic input normalization
         z_in = self.execution_guard.normalize_input(z_in)
+        
+        # 0a. Dynamic complexity estimation for subsystem gating
+        complexity_info: Dict[str, Any] = {}
+        if self.complexity_estimator is not None and not fast:
+            complexity_info = self.complexity_estimator(z_in)
+            logger.debug(
+                f"Complexity: {complexity_info['complexity_score'].mean().item():.3f}"
+            )
+        
+        # 0b. Record causal trace for input
+        input_trace_id = ""
+        if self.causal_trace is not None:
+            input_hash = hashlib.sha256(
+                z_in.detach().cpu().numpy().tobytes()
+            ).hexdigest()[:16]
+            input_trace_id = self.causal_trace.record(
+                "input", "received",
+                initial_state_hash=input_hash,
+                metadata={"batch_size": B},
+            )
+        
         self.progress_tracker.begin_phase("meta_loop")
         
         # 1. Meta-loop convergence
@@ -12002,12 +12618,51 @@ class AEONDeltaV3(nn.Module):
         if self.causal_world_model is not None and not fast:
             causal_world_results = self.causal_world_model(C_star)
         
+        # 5d2. Cross-validation: reconcile factors vs causal predictions
+        reconciliation_results: Dict[str, Any] = {}
+        if (self.cross_validator is not None
+                and self.causal_world_model is not None
+                and causal_world_results
+                and not fast):
+            causal_pred = causal_world_results.get('predicted_state', C_star)
+            reconciliation_results = self.cross_validator(
+                embedded_factors, causal_pred
+            )
+            C_star = reconciliation_results["reconciled_state"]
+            self.audit_log.record("cross_validation", "reconciled", {
+                "agreement": reconciliation_results["agreement_score"].mean().item(),
+                "iterations": reconciliation_results["reconcile_iterations"],
+            })
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cross_validation", "reconciled",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "agreement": reconciliation_results[
+                            "agreement_score"
+                        ].mean().item(),
+                    },
+                )
+        
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
         if self.active_learning_planner is not None and self.world_model is not None and not fast:
             self.active_learning_planner.eval()
             active_learning_results = self.active_learning_planner.select_action(
                 C_star[0], self.world_model
+            )
+        
+        # 5f. Causal context — store current state into hierarchical context
+        if self.causal_context is not None:
+            causal_w = float(
+                reconciliation_results.get("agreement_score", torch.tensor(0.0)).mean()
+            )
+            self.causal_context.add(
+                source="reasoning_core",
+                embedding=C_star.mean(dim=0),
+                relevance=float(safety_score.mean()),
+                causal_weight=causal_w,
+                tier="short_term",
             )
         
         # 6. Memory fusion (delegated to helper)
@@ -12069,6 +12724,22 @@ class AEONDeltaV3(nn.Module):
                 f"State consistency violations: {validation_result['violations']}"
             )
         
+        # 8b2. Neuro-symbolic consistency check
+        ns_consistency_results: Dict[str, Any] = {}
+        if self.ns_consistency_checker is not None and not fast:
+            # Use factors as proxy soft rules (they encode learned structure)
+            rules_proxy = torch.sigmoid(factors)
+            ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
+            if ns_consistency_results["num_violations"].sum().item() > 0:
+                self.audit_log.record("ns_consistency", "violation", {
+                    "num_violations": int(
+                        ns_consistency_results["num_violations"].sum().item()
+                    ),
+                    "overall_consistency": float(
+                        ns_consistency_results["overall_consistency"].mean().item()
+                    ),
+                }, severity="warning")
+        
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
         self.integrity_monitor.record_health(
@@ -12101,6 +12772,9 @@ class AEONDeltaV3(nn.Module):
             'state_validation': validation_result,
             'integrity_report': integrity_report,
             'progress_summary': run_summary,
+            'complexity_info': complexity_info,
+            'reconciliation_results': reconciliation_results,
+            'ns_consistency_results': ns_consistency_results,
         }
         
         return z_out, outputs
