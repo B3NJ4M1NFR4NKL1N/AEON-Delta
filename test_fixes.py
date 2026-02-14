@@ -4270,8 +4270,8 @@ def test_weight_tying_scores_empty_guard():
     print("✅ test_weight_tying_scores_empty_guard PASSED")
 
 
-def test_entropy_loss_returns_tensor_extended():
-    """Verify that _compute_entropy_loss always returns a torch.Tensor."""
+def test_entropy_loss_single_code_usage():
+    """Verify that _compute_entropy_loss returns high loss for single code usage."""
     from ae_train import VectorQuantizerHybridV4
 
     vq = VectorQuantizerHybridV4(num_embeddings=64, embedding_dim=32)
@@ -4289,7 +4289,7 @@ def test_entropy_loss_returns_tensor_extended():
     assert torch.is_tensor(loss_single), f"Expected Tensor, got {type(loss_single)}"
     assert loss_single.item() > 0.5, "Entropy loss should be high for single code usage"
 
-    print("✅ test_entropy_loss_returns_tensor_extended PASSED")
+    print("✅ test_entropy_loss_single_code_usage PASSED")
 
 
 def test_optimizer_step_returns_float():
@@ -12267,7 +12267,7 @@ if __name__ == '__main__':
     # Refactoring fixes tests (division-by-zero guards, type safety, NaN guards)
     test_epoch_metrics_empty_list_guard()
     test_weight_tying_scores_empty_guard()
-    test_entropy_loss_returns_tensor_extended()
+    test_entropy_loss_single_code_usage()
     test_optimizer_step_returns_float()
     test_grad_norm_nan_guard_in_fit()
     

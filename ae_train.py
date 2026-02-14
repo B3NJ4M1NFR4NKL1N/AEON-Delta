@@ -1165,7 +1165,7 @@ def load_documents_from_json(json_path: str, tokenizer, max_len: int,
 
 def split_text_into_chunks(text: str, max_chars: int = 256) -> List[str]:
     """Разбивает текст на чанки по границам предложений"""
-    if not text:
+    if not isinstance(text, str) or not text.strip():
         return []
     
     # Простое разбиение по точкам
