@@ -9406,6 +9406,403 @@ def test_causal_trace_records_error_recovery():
     print("✅ test_causal_trace_records_error_recovery PASSED")
 
 
+# ============================================================================
+# AGI Coherence — Module Integration & Causal Unification Tests
+# ============================================================================
+
+
+def test_error_evolution_feeds_recovery_strategy():
+    """Verify ErrorRecoveryManager consults CausalErrorEvolutionTracker
+    for historically best strategy when error_evolution is provided."""
+    from aeon_core import ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog
+
+    evolution = CausalErrorEvolutionTracker(max_history=50)
+    audit = DecisionAuditLog(max_entries=100)
+    mgr = ErrorRecoveryManager(
+        hidden_dim=32, audit_log=audit, error_evolution=evolution,
+    )
+
+    # ValueError is classified as "semantic" by SemanticErrorClassifier.
+    # Teach evolution that 'numerical' strategy works best for 'semantic' errors.
+    for _ in range(5):
+        evolution.record_episode("semantic", "numerical", success=True)
+    for _ in range(5):
+        evolution.record_episode("semantic", "semantic", success=False)
+
+    best = evolution.get_best_strategy("semantic")
+    assert best == "numerical", f"Expected 'numerical', got {best}"
+
+    # Trigger recovery for a ValueError (classified as 'semantic')
+    last_good = torch.randn(1, 32)
+    fallback = torch.zeros(1, 32)
+    exc = ValueError("test error")
+
+    ok, val = mgr.recover(exc, context="test", fallback=fallback, last_good_state=last_good)
+    assert ok is True
+    assert val is not None
+
+    # Check audit log recorded the evolved strategy name
+    entries = audit.recent(n=5)
+    recovery_entry = [e for e in entries if e["subsystem"] == "error_recovery"
+                      and e["decision"] == "semantic"]
+    assert len(recovery_entry) > 0
+    assert recovery_entry[0]["metadata"].get("evolved_strategy") == "numerical"
+
+    print("✅ test_error_evolution_feeds_recovery_strategy PASSED")
+
+
+def test_error_recovery_manager_without_evolution():
+    """ErrorRecoveryManager works normally when error_evolution is None."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+
+    audit = DecisionAuditLog(max_entries=100)
+    mgr = ErrorRecoveryManager(hidden_dim=32, audit_log=audit)
+
+    assert mgr.error_evolution is None
+
+    fallback = torch.zeros(1, 32)
+    ok, val = mgr.recover(ValueError("test"), context="test", fallback=fallback)
+    assert ok is True
+    assert val is not None
+
+    print("✅ test_error_recovery_manager_without_evolution PASSED")
+
+
+def test_error_evolution_wired_in_aeonv3():
+    """Verify error_evolution is passed to ErrorRecoveryManager in AEONDeltaV3."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is not None
+    assert model.error_recovery.error_evolution is model.error_evolution
+
+    print("✅ test_error_evolution_wired_in_aeonv3 PASSED")
+
+
+def test_error_evolution_none_when_disabled():
+    """Verify error_evolution is None in ErrorRecoveryManager when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is None
+    assert model.error_recovery.error_evolution is None
+
+    print("✅ test_error_evolution_none_when_disabled PASSED")
+
+
+def test_causal_model_integration():
+    """Verify NeuralCausalModel runs in reasoning pipeline and produces results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'causal_model_results' in result
+    cm_res = result['causal_model_results']
+    assert 'causal_vars' in cm_res
+    assert 'adjacency' in cm_res
+    assert 'dag_loss' in cm_res
+    assert cm_res['causal_vars'].shape == (B, 8)
+    assert torch.isfinite(result['logits']).all()
+
+    print("✅ test_causal_model_integration PASSED")
+
+
+def test_causal_model_disabled_returns_empty():
+    """Verify causal_model_results is empty dict when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert result.get('causal_model_results') == {}
+
+    print("✅ test_causal_model_disabled_returns_empty PASSED")
+
+
+def test_notears_integration():
+    """Verify NOTEARSCausalModel runs in reasoning pipeline with projection."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_notears_causal=True,
+        notears_num_vars=4,
+        notears_hidden_dim=16,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # notears_num_vars(4) != num_pillars(8), so projection should exist
+    assert model.notears_proj is not None
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'notears_results' in result
+    nt_res = result['notears_results']
+    assert 'causal_vars' in nt_res
+    assert 'dag_loss' in nt_res
+    assert 'l1_loss' in nt_res
+    assert nt_res['causal_vars'].shape == (B, 4)
+    assert torch.isfinite(result['logits']).all()
+
+    print("✅ test_notears_integration PASSED")
+
+
+def test_notears_no_projection_when_matching_dims():
+    """When notears_num_vars == num_pillars, no projection needed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_notears_causal=True,
+        notears_num_vars=8,
+        notears_hidden_dim=16,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.notears_proj is None
+
+    print("✅ test_notears_no_projection_when_matching_dims PASSED")
+
+
+def test_hierarchical_vae_integration():
+    """Verify HierarchicalVAE runs in reasoning pipeline and produces results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_vae=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'hierarchical_vae_results' in result
+    hvae_res = result['hierarchical_vae_results']
+    assert 'kl_loss' in hvae_res
+    assert 'selected_level' in hvae_res
+    assert 'levels' in hvae_res
+    assert torch.isfinite(result['logits']).all()
+
+    print("✅ test_hierarchical_vae_integration PASSED")
+
+
+def test_hierarchical_vae_disabled_returns_empty():
+    """Verify hierarchical_vae_results is empty dict when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_vae=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert result.get('hierarchical_vae_results') == {}
+
+    print("✅ test_hierarchical_vae_disabled_returns_empty PASSED")
+
+
+def test_causal_dag_loss_in_compute_loss():
+    """Verify causal DAG loss appears in compute_loss when causal_model enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+    result = model(input_ids, decode_mode='train')
+    losses = model.compute_loss(result, input_ids)
+
+    assert 'causal_dag_loss' in losses
+    assert 'hvae_kl_loss' in losses
+    # DAG loss should be non-negative (trace penalty)
+    assert losses['causal_dag_loss'].item() >= 0.0
+
+    print("✅ test_causal_dag_loss_in_compute_loss PASSED")
+
+
+def test_hvae_kl_loss_in_compute_loss():
+    """Verify hierarchical VAE KL loss appears in compute_loss when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_vae=True,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+    result = model(input_ids, decode_mode='train')
+    losses = model.compute_loss(result, input_ids)
+
+    assert 'hvae_kl_loss' in losses
+    assert losses['hvae_kl_loss'].item() >= 0.0
+
+    print("✅ test_hvae_kl_loss_in_compute_loss PASSED")
+
+
+def test_lambda_causal_dag_config():
+    """Verify lambda_causal_dag config default exists."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    assert hasattr(config, 'lambda_causal_dag')
+    assert config.lambda_causal_dag == 0.01
+
+    print("✅ test_lambda_causal_dag_config PASSED")
+
+
+def test_error_fallback_has_new_integration_keys():
+    """Verify error fallback path includes new integration result keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force error in reasoning core to exercise fallback path
+    z_in = torch.randn(2, 32)
+    original_impl = model._reasoning_core_impl
+    def bad_impl(*args, **kwargs):
+        raise RuntimeError("Forced test error")
+    model._reasoning_core_impl = bad_impl
+
+    try:
+        with torch.no_grad():
+            _, outputs = model.reasoning_core(z_in)
+        assert 'causal_model_results' in outputs
+        assert 'notears_results' in outputs
+        assert 'hierarchical_vae_results' in outputs
+        assert outputs['causal_model_results'] == {}
+        assert outputs['notears_results'] == {}
+        assert outputs['hierarchical_vae_results'] == {}
+    finally:
+        model._reasoning_core_impl = original_impl
+
+    print("✅ test_error_fallback_has_new_integration_keys PASSED")
+
+
+def test_aeon_v3_with_all_causal_modules():
+    """Verify AEONDeltaV3 forward works with all causal modules enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+        enable_notears_causal=True,
+        notears_num_vars=4,
+        notears_hidden_dim=16,
+        enable_hierarchical_vae=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'causal_model_results' in result
+    assert 'notears_results' in result
+    assert 'hierarchical_vae_results' in result
+    assert result['causal_model_results'] != {}
+    assert result['notears_results'] != {}
+    assert result['hierarchical_vae_results'] != {}
+    assert torch.isfinite(result['logits']).all()
+
+    print("✅ test_aeon_v3_with_all_causal_modules PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -9927,6 +10324,23 @@ if __name__ == '__main__':
     test_coherence_loss_zero_when_disabled()
     test_lambda_coherence_config()
     test_causal_trace_records_error_recovery()
+    
+    # Module Integration & Causal Unification tests
+    test_error_evolution_feeds_recovery_strategy()
+    test_error_recovery_manager_without_evolution()
+    test_error_evolution_wired_in_aeonv3()
+    test_error_evolution_none_when_disabled()
+    test_causal_model_integration()
+    test_causal_model_disabled_returns_empty()
+    test_notears_integration()
+    test_notears_no_projection_when_matching_dims()
+    test_hierarchical_vae_integration()
+    test_hierarchical_vae_disabled_returns_empty()
+    test_causal_dag_loss_in_compute_loss()
+    test_hvae_kl_loss_in_compute_loss()
+    test_lambda_causal_dag_config()
+    test_error_fallback_has_new_integration_keys()
+    test_aeon_v3_with_all_causal_modules()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
