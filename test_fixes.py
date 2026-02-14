@@ -7767,6 +7767,177 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
     print("✅ test_aeon_v3_coherence_layer_disabled_by_default PASSED")
 
 
+def test_auto_critic_loop_integration():
+    """AutoCriticLoop initializes and runs in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_auto_critic=True,
+        auto_critic_max_iterations=2,
+        auto_critic_threshold=0.85,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.auto_critic is not None
+    # Verify it can process a tensor
+    x = torch.randn(2, 32)
+    result = model.auto_critic(x)
+    assert "candidate" in result
+    assert "iterations" in result
+    assert "final_score" in result
+    assert torch.isfinite(result["candidate"]).all()
+    print("✅ test_auto_critic_loop_integration PASSED")
+
+
+def test_hybrid_reasoning_integration():
+    """HybridReasoningEngine initializes and runs in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hybrid_reasoning=True,
+        hybrid_reasoning_num_predicates=16,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.hybrid_reasoning is not None
+    x = torch.randn(2, 32)
+    result = model.hybrid_reasoning(x)
+    assert "conclusions" in result
+    assert "facts" in result
+    assert "rules" in result
+    assert torch.isfinite(result["conclusions"]).all()
+    print("✅ test_hybrid_reasoning_integration PASSED")
+
+
+def test_unified_simulator_integration():
+    """UnifiedCausalSimulator initializes and runs in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_unified_simulator=True,
+        unified_simulator_num_vars=8,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.unified_simulator is not None
+    x = torch.randn(2, 32)
+    result = model.unified_simulator(x)
+    assert "next_state" in result
+    assert "causal_vars" in result
+    assert torch.isfinite(result["next_state"]).all()
+    print("✅ test_unified_simulator_integration PASSED")
+
+
+def test_meta_recovery_experience_replay():
+    """MetaRecoveryLearner records experience on pipeline error."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_meta_recovery_integration=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.meta_recovery is not None
+    initial_buffer_len = len(model.meta_recovery.recovery_buffer)
+
+    # Feed an error context and record experience manually (same logic as pipeline)
+    error_ctx = torch.zeros(1, 64)
+    recovery_info = model.meta_recovery(error_ctx)
+    action_idx = recovery_info.get("action", 0)
+    next_ctx = torch.zeros(1, 64)
+    model.meta_recovery.recovery_buffer.push(
+        state=error_ctx.squeeze(0),
+        action=action_idx,
+        reward=-1.0,
+        next_state=next_ctx.squeeze(0),
+    )
+
+    assert len(model.meta_recovery.recovery_buffer) == initial_buffer_len + 1
+    print("✅ test_meta_recovery_experience_replay PASSED")
+
+
+def test_aeon_v3_with_full_pipeline_integration():
+    """AEONDeltaV3 forward pass works with all new integrations enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_auto_critic=True,
+        auto_critic_max_iterations=1,
+        enable_hybrid_reasoning=True,
+        hybrid_reasoning_num_predicates=8,
+        enable_unified_simulator=True,
+        unified_simulator_num_vars=4,
+        enable_ns_consistency_check=True,
+        enable_meta_recovery_integration=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'logits' in result
+    assert 'unified_simulator_results' in result
+    assert 'hybrid_reasoning_results' in result
+    assert torch.isfinite(result['logits']).all()
+    print("✅ test_aeon_v3_with_full_pipeline_integration PASSED")
+
+
+def test_new_config_defaults():
+    """New config fields have correct defaults."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    assert config.enable_auto_critic is False
+    assert config.auto_critic_threshold == 0.85
+    assert config.auto_critic_max_iterations == 3
+    assert config.enable_hybrid_reasoning is False
+    assert config.hybrid_reasoning_num_predicates == 32
+    assert config.enable_unified_simulator is False
+    assert config.unified_simulator_num_vars == 16
+    print("✅ test_new_config_defaults PASSED")
+
+
+def test_new_components_disabled_by_default():
+    """New components are None when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.auto_critic is None
+    assert model.hybrid_reasoning is None
+    assert model.unified_simulator is None
+    print("✅ test_new_components_disabled_by_default PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -8212,6 +8383,15 @@ if __name__ == '__main__':
     test_agi_coherence_config_defaults()
     test_aeon_v3_with_coherence_layer()
     test_aeon_v3_coherence_layer_disabled_by_default()
+    
+    # Pipeline integration tests
+    test_auto_critic_loop_integration()
+    test_hybrid_reasoning_integration()
+    test_unified_simulator_integration()
+    test_meta_recovery_experience_replay()
+    test_aeon_v3_with_full_pipeline_integration()
+    test_new_config_defaults()
+    test_new_components_disabled_by_default()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

@@ -2504,6 +2504,13 @@ class AEONConfig:
     enable_complexity_estimator: bool = False
     enable_causal_trace: bool = False
     enable_meta_recovery_integration: bool = False
+    enable_auto_critic: bool = False
+    auto_critic_threshold: float = 0.85
+    auto_critic_max_iterations: int = 3
+    enable_hybrid_reasoning: bool = False
+    hybrid_reasoning_num_predicates: int = 32
+    enable_unified_simulator: bool = False
+    unified_simulator_num_vars: int = 16
 
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
@@ -12103,6 +12110,44 @@ class AEONDeltaV3(nn.Module):
         else:
             self.meta_recovery = None
         
+        # Auto-critic loop — triggers self-critique on NS violations
+        if getattr(config, 'enable_auto_critic', False):
+            logger.info("Loading AutoCriticLoop...")
+            # Use a lightweight generator (identity residual)
+            _critic_generator = nn.Sequential(
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.GELU(),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+            ).to(self.device)
+            self.auto_critic = AutoCriticLoop(
+                base_model=_critic_generator,
+                hidden_dim=config.hidden_dim,
+                max_iterations=config.auto_critic_max_iterations,
+                threshold=config.auto_critic_threshold,
+            ).to(self.device)
+        else:
+            self.auto_critic = None
+        
+        # Hybrid reasoning engine — neuro-symbolic reasoning in pipeline
+        if getattr(config, 'enable_hybrid_reasoning', False):
+            logger.info("Loading HybridReasoningEngine...")
+            self.hybrid_reasoning = HybridReasoningEngine(
+                hidden_dim=config.hidden_dim,
+                num_predicates=config.hybrid_reasoning_num_predicates,
+            ).to(self.device)
+        else:
+            self.hybrid_reasoning = None
+        
+        # Unified causal simulator — unified counterfactual reasoning
+        if getattr(config, 'enable_unified_simulator', False):
+            logger.info("Loading UnifiedCausalSimulator...")
+            self.unified_simulator = UnifiedCausalSimulator(
+                state_dim=config.hidden_dim,
+                num_causal_vars=config.unified_simulator_num_vars,
+            ).to(self.device)
+        else:
+            self.unified_simulator = None
+        
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
         self.memory_manager = MemoryManager(config)
@@ -12352,10 +12397,21 @@ class AEONDeltaV3(nn.Module):
                 try:
                     error_ctx = torch.zeros(1, 64, device=device)
                     recovery_info = self.meta_recovery(error_ctx)
+                    action_idx = recovery_info.get("action", 0)
+                    strategy = recovery_info.get("strategy", "unknown")
                     self.audit_log.record("meta_recovery", "strategy_selected", {
-                        "strategy": recovery_info.get("strategy", "unknown"),
+                        "strategy": strategy,
                         "error_class": error_class,
                     })
+                    # Feed experience into replay buffer so the learner
+                    # can update its recovery policy over time.
+                    next_ctx = torch.zeros(1, 64, device=device)
+                    self.meta_recovery.recovery_buffer.push(
+                        state=error_ctx.squeeze(0),
+                        action=action_idx,
+                        reward=-1.0,  # penalty for pipeline error
+                        next_state=next_ctx.squeeze(0),
+                    )
                 except Exception:
                     pass  # Recovery learner itself failed; use default fallback
             # Deterministic fallback — return input as-is with empty outputs
@@ -12408,6 +12464,8 @@ class AEONDeltaV3(nn.Module):
                 'complexity_info': {},
                 'reconciliation_results': {},
                 'ns_consistency_results': {},
+                'unified_simulator_results': {},
+                'hybrid_reasoning_results': {},
             }
             return z_fallback, fallback_outputs
 
@@ -12659,6 +12717,33 @@ class AEONDeltaV3(nn.Module):
                 C_star[0], self.world_model
             )
         
+        # 5e2. Unified causal simulator — counterfactual reasoning
+        unified_simulator_results: Dict[str, Any] = {}
+        if self.unified_simulator is not None and not fast:
+            unified_simulator_results = self.unified_simulator(C_star)
+            # Blend counterfactual signal as residual
+            cf_next = unified_simulator_results.get("next_state", None)
+            if cf_next is not None and torch.isfinite(cf_next).all():
+                C_star = C_star + 0.1 * cf_next
+            self.audit_log.record("unified_simulator", "computed", {
+                "interventional": bool(
+                    unified_simulator_results.get("interventional", False)
+                ),
+            })
+        
+        # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
+        hybrid_reasoning_results: Dict[str, Any] = {}
+        if self.hybrid_reasoning is not None and not fast:
+            hybrid_reasoning_results = self.hybrid_reasoning(C_star)
+            conclusions = hybrid_reasoning_results.get("conclusions", None)
+            if conclusions is not None and torch.isfinite(conclusions).all():
+                C_star = C_star + 0.1 * conclusions
+            self.audit_log.record("hybrid_reasoning", "computed", {
+                "num_derived": int(
+                    hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
+                ),
+            })
+        
         # 5f. Causal context — store current state into hierarchical context
         if self.causal_context is not None:
             agreement = reconciliation_results.get("agreement_score", None)
@@ -12745,6 +12830,16 @@ class AEONDeltaV3(nn.Module):
                         ns_consistency_results["overall_consistency"].mean().item()
                     ),
                 }, severity="warning")
+                # 8b3. AutoCriticLoop — refine z_out when violations detected
+                if self.auto_critic is not None:
+                    critic_result = self.auto_critic(z_out)
+                    revised = critic_result.get("candidate", None)
+                    if revised is not None and torch.isfinite(revised).all():
+                        z_out = revised
+                    self.audit_log.record("auto_critic", "revised", {
+                        "iterations": critic_result.get("iterations", 0),
+                        "final_score": critic_result.get("final_score", 0.0),
+                    })
         
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
@@ -12781,6 +12876,8 @@ class AEONDeltaV3(nn.Module):
             'complexity_info': complexity_info,
             'reconciliation_results': reconciliation_results,
             'ns_consistency_results': ns_consistency_results,
+            'unified_simulator_results': unified_simulator_results,
+            'hybrid_reasoning_results': hybrid_reasoning_results,
         }
         
         return z_out, outputs
