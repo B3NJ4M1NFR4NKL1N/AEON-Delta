@@ -48,7 +48,7 @@ AEON-Δ v3.1 includes state-of-the-art sequence processing backends that **surpa
 **Available backends** (configured via `AEONConfig.encoder_backend` / `decoder_backend`):
 - **`ssm`** (default): Selective State Space Model inspired by Mamba (Gu & Dao, 2023) — input-dependent state transitions with parallel scan, O(n) training, O(1) cached inference
 - **`mamba2`**: **NEW** — Mamba-2 Structured State Space Duality (Dao & Gu, 2024) — multi-head SSM with per-head scalar decay, chunk-wise SSD for superior hardware utilisation, RMSNorm for training stability
-- **`linear_attention`**: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
+- **`linear_attention`** *(encoder only)*: ELU-based kernel linear attention — O(n) via associativity of matrix multiplication, multi-head support
 - **`lstm`**: Original LSTM backend for backward compatibility
 
 **Additional scalability features:**
@@ -473,7 +473,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 483 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 526 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -526,7 +526,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 AEON-Delta/
 ├── aeon_core.py      # Core architecture — 111 classes, all modules, model (AEONDeltaV3), trainer, CLI
 ├── ae_train.py       # Training pipeline v4.0 — 12 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (483 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py     # Comprehensive test suite (526 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
