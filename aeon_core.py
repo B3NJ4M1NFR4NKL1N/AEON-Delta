@@ -2577,6 +2577,13 @@ class AEONConfig:
     neurogenic_retrieval_weight: float = 0.1
     neurogenic_retrieval_k: int = 3
     
+    # ===== TEMPORAL MEMORY =====
+    enable_temporal_memory: bool = False
+    temporal_memory_capacity: int = 500
+    temporal_memory_decay_rate: float = 0.01
+    temporal_memory_retrieval_weight: float = 0.1
+    temporal_memory_retrieval_k: int = 3
+    
     # ===== CAUSAL WORLD MODEL =====
     enable_causal_world_model: bool = False
     causal_world_num_vars: int = 8
@@ -9232,10 +9239,13 @@ class CausalWorldModel(nn.Module):
             'causal_vars': causal_vars,
             'endogenous': endogenous,
             'cf_state': cf_state,
+            'predicted_state': cf_state,
             'physics_output': physics_out,
         }
 
-        if intervention is not None:
+        # Compute DAG loss when training or when explicitly requested
+        # (lightweight: matrix exponential approximation on small adjacency)
+        if self.training or intervention is not None:
             result['dag_loss'] = self.causal_model.dag_loss()
 
         return result
@@ -12690,6 +12700,17 @@ class AEONDeltaV3(nn.Module):
         else:
             self.neurogenic_memory = None
         
+        # ===== TEMPORAL MEMORY =====
+        if getattr(config, 'enable_temporal_memory', False):
+            logger.info("Loading TemporalMemory...")
+            self.temporal_memory = TemporalMemory(
+                capacity=config.temporal_memory_capacity,
+                dim=config.hidden_dim,
+                decay_rate=config.temporal_memory_decay_rate,
+            ).to(self.device)
+        else:
+            self.temporal_memory = None
+        
         # ===== MULTI-MODAL GROUNDING =====
         if config.enable_multimodal:
             logger.info("Loading Multi-Modal Grounding Module...")
@@ -14078,8 +14099,38 @@ class AEONDeltaV3(nn.Module):
                     vecs = torch.stack([v for v, _s in semantic_items])
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
         
+        # 5c4. Temporal memory — store current states with importance-based
+        # retention and retrieve temporally-relevant patterns.  Each stored
+        # memory carries a strength that decays as importance * exp(-decay_rate
+        # * age), modeling Ebbinghaus's forgetting curve: memories fade
+        # exponentially unless their importance compensates for temporal
+        # distance.  High-importance states effectively "remember" longer.
+        if self.temporal_memory is not None and not fast:
+            _temporal_weight = self.config.temporal_memory_retrieval_weight
+            _temporal_k = self.config.temporal_memory_retrieval_k
+            for i in range(B):
+                if torch.isfinite(C_star[i]).all():
+                    # Importance = mean activation magnitude (higher = more salient)
+                    _importance = float(C_star[i].abs().mean().item())
+                    self.temporal_memory.store(C_star[i].detach(), importance=_importance)
+            # Retrieve temporally-weighted memories and blend as residual
+            for i in range(B):
+                if torch.isfinite(C_star[i]).all():
+                    temporal_retrieved = self.temporal_memory.retrieve(C_star[i].detach(), k=_temporal_k)
+                    if temporal_retrieved:
+                        temporal_vecs = torch.stack([m['vector'] for m in temporal_retrieved]).to(device)
+                        temporal_strengths = torch.tensor(
+                            [m['strength'] for m in temporal_retrieved],
+                            device=device, dtype=temporal_vecs.dtype,
+                        )
+                        # Strength-weighted blend (softmax for stability)
+                        t_weights = torch.softmax(temporal_strengths, dim=0)
+                        temporal_blend = (t_weights.unsqueeze(-1) * temporal_vecs).sum(dim=0)
+                        if torch.isfinite(temporal_blend).all():
+                            C_star[i] = C_star[i] + _temporal_weight * temporal_blend
+        
         # Record memory subsystem health — covers hierarchical, neurogenic,
-        # and consolidating memory stages.
+        # consolidating, and temporal memory stages.
         _memory_retrieval_quality = 1.0 - (_memory_empty_count / max(B, 1))
         self.integrity_monitor.record_health("memory", _memory_retrieval_quality if _memory_healthy else 0.0, {
             "healthy": _memory_healthy,
@@ -14102,6 +14153,33 @@ class AEONDeltaV3(nn.Module):
         )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             causal_world_results = self.causal_world_model(C_star)
+            # Blend causal world model prediction as a residual to ground
+            # the reasoning state in causal dynamics.  The predicted_state
+            # represents the causal model's expectation of the next state;
+            # blending it reinforces causally consistent trajectories.
+            _cw_pred = causal_world_results.get('predicted_state', None)
+            if _cw_pred is not None and torch.isfinite(_cw_pred).all():
+                C_star = C_star + self.config.causal_blend_weight * _cw_pred
+            # Record causal factor extraction in causal trace for
+            # traceability from CausalWorldModel's internal factor
+            # decomposition back to the reasoning pipeline.
+            if self.causal_trace is not None:
+                _cw_causal_vars = causal_world_results.get('causal_vars', None)
+                self.causal_trace.record(
+                    "causal_world_model", "factor_extraction",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "num_causal_vars": (
+                            _cw_causal_vars.shape[-1]
+                            if _cw_causal_vars is not None else 0
+                        ),
+                        "dag_loss": float(
+                            causal_world_results.get(
+                                'dag_loss', torch.tensor(0.0)
+                            ).item()
+                        ),
+                    },
+                )
         
         # 5d1b. NeuralCausalModel — learn inter-factor causal structure.
         # Uses factors as exogenous inputs to discover causal relationships
@@ -15068,6 +15146,14 @@ class AEONDeltaV3(nn.Module):
             _nt_l1 = notears_results.get('l1_loss', torch.tensor(0.0, device=self.device))
             if _nt_l1.requires_grad:
                 causal_dag_loss = causal_dag_loss + self.config.lambda_notears_l1 * _nt_l1
+        # Include CausalWorldModel DAG loss when available — this connects
+        # the causal world model's internal structure learning to the
+        # training objective for end-to-end causal coherence.
+        causal_world_results = outputs.get('causal_world_results', {})
+        if causal_world_results and 'dag_loss' in causal_world_results:
+            _cw_dag = causal_world_results['dag_loss']
+            if _cw_dag.requires_grad:
+                causal_dag_loss = causal_dag_loss + _cw_dag
         
         # ===== 10. HIERARCHICAL VAE KL LOSS =====
         hvae_kl_loss = torch.tensor(0.0, device=self.device)
@@ -15076,6 +15162,17 @@ class AEONDeltaV3(nn.Module):
             _kl = hvae_results['kl_loss']
             if _kl.requires_grad:
                 hvae_kl_loss = self.config.kl_weight * _kl
+        
+        # ===== 11. META-LEARNER EWC LOSS =====
+        # When MetaLearner is initialized and has computed Fisher information,
+        # add its EWC penalty to prevent catastrophic forgetting of previously
+        # learned tasks.  This closes the loop between the meta-learning
+        # module and the training objective.
+        ewc_loss = torch.tensor(0.0, device=self.device)
+        if self.meta_learner is not None and self.training:
+            _ewc = self.meta_learner.ewc_loss()
+            if torch.is_tensor(_ewc) and (_ewc.requires_grad or float(_ewc.item()) > 0):
+                ewc_loss = _ewc
         
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
@@ -15114,6 +15211,7 @@ class AEONDeltaV3(nn.Module):
             _convergence_loss_scale * _coherence_weight * coherence_loss +
             _causal_weight * causal_dag_loss +
             hvae_kl_loss +
+            ewc_loss +
             reg_loss
         )
         
@@ -15136,6 +15234,7 @@ class AEONDeltaV3(nn.Module):
             'coherence_loss': coherence_loss,
             'causal_dag_loss': causal_dag_loss,
             'hvae_kl_loss': hvae_kl_loss,
+            'ewc_loss': ewc_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
@@ -15337,6 +15436,8 @@ class AEONDeltaV3(nn.Module):
             ("MCTSPlanner", self.mcts_planner),
             ("HierarchicalVAE", self.hierarchical_vae),
             ("ModuleCoherence", self.module_coherence),
+            ("TemporalMemory", self.temporal_memory),
+            ("CausalWorldModel", self.causal_world_model),
         ]
         
         for name, module in modules:
