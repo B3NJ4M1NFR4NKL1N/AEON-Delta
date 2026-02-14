@@ -13430,8 +13430,10 @@ class AEONDeltaV3(nn.Module):
                 ) / max(len(_err_classes), 1)
                 # Low overall success rate → tighten safety (minimum 50%
                 # of current threshold to avoid overly aggressive clamping)
-                if _total_success_rate < 0.8:
-                    _evolution_factor = max(0.5, _total_success_rate)
+                _ERROR_EVOLUTION_SUCCESS_THRESHOLD = 0.8
+                _MIN_EVOLUTION_FACTOR = 0.5
+                if _total_success_rate < _ERROR_EVOLUTION_SUCCESS_THRESHOLD:
+                    _evolution_factor = max(_MIN_EVOLUTION_FACTOR, _total_success_rate)
                     adaptive_safety_threshold = min(
                         adaptive_safety_threshold,
                         adaptive_safety_threshold * _evolution_factor,
@@ -14112,11 +14114,15 @@ class AEONDeltaV3(nn.Module):
             # accumulated from prior forward passes and blend as a residual.
             # This closes the temporal feedback loop so that past reasoning
             # outcomes influence the current state before memory fusion.
+            _CAUSAL_CONTEXT_RESIDUAL_SCALE = 0.1
             causal_ctx_tensor = self.causal_context.get_context_tensor(k=5)
-            if causal_ctx_tensor is not None and causal_ctx_tensor.shape[-1] == self.config.hidden_dim:
-                causal_ctx_mean = causal_ctx_tensor.mean(dim=0).to(device)  # [hidden_dim]
+            if (causal_ctx_tensor is not None
+                    and causal_ctx_tensor.shape[0] > 0
+                    and causal_ctx_tensor.shape[-1] == self.config.hidden_dim):
+                causal_ctx_tensor = causal_ctx_tensor.to(device)
+                causal_ctx_mean = causal_ctx_tensor.mean(dim=0)  # [hidden_dim]
                 causal_ctx_residual = self.causal_context_proj(causal_ctx_mean)
-                C_star = C_star + 0.1 * causal_ctx_residual.unsqueeze(0).expand(B, -1)
+                C_star = C_star + _CAUSAL_CONTEXT_RESIDUAL_SCALE * causal_ctx_residual.unsqueeze(0).expand(B, -1)
             # 5f-ii. Store: record current state for future retrieval
             agreement = reconciliation_results.get("agreement_score", None)
             causal_w = float(agreement.mean()) if agreement is not None else 0.0
@@ -14137,8 +14143,9 @@ class AEONDeltaV3(nn.Module):
         # This closes the feedback loop between memory trust and the
         # downstream reasoning depth decisions.
         _TRUST_UNCERTAINTY_SCALE = 0.25
+        _TRUST_ESCALATION_THRESHOLD = 0.7
         _trust_score_val = getattr(self, '_last_trust_score', 1.0)
-        if _trust_score_val < 0.7 and not fast:
+        if _trust_score_val < _TRUST_ESCALATION_THRESHOLD and not fast:
             _trust_boost = (1.0 - _trust_score_val) * _TRUST_UNCERTAINTY_SCALE
             uncertainty = min(1.0, uncertainty + _trust_boost)
             high_uncertainty = uncertainty > 0.5
@@ -14418,7 +14425,12 @@ class AEONDeltaV3(nn.Module):
                 # of distinct root-cause subsystems (capped at 50% tightening)
                 if _root_subsystems:
                     _unique_root_count = len(set(_root_subsystems))
-                    _root_tightening = max(0.5, 1.0 - 0.1 * _unique_root_count)
+                    _MIN_SAFETY_FACTOR = 0.5
+                    _ROOT_CAUSE_TIGHTENING_RATE = 0.1
+                    _root_tightening = max(
+                        _MIN_SAFETY_FACTOR,
+                        1.0 - _ROOT_CAUSE_TIGHTENING_RATE * _unique_root_count,
+                    )
                     adaptive_safety_threshold = min(
                         adaptive_safety_threshold,
                         adaptive_safety_threshold * _root_tightening,
