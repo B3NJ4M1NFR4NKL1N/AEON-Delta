@@ -8618,6 +8618,367 @@ def test_divergence_triggers_deeper_processing():
     print("✅ test_divergence_triggers_deeper_processing PASSED")
 
 
+# ============================================================================
+# Module Coherence, Meta-Cognitive Recursion & Error Evolution Tests
+# ============================================================================
+
+
+def test_module_coherence_verifier_forward():
+    """Verify ModuleCoherenceVerifier computes pairwise coherence."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    states = {
+        "meta_loop": torch.randn(2, 32),
+        "factors": torch.randn(2, 32),
+        "safety": torch.randn(2, 32),
+    }
+    result = verifier(states)
+
+    assert "coherence_score" in result
+    assert result["coherence_score"].shape == (2,)
+    assert "pairwise" in result
+    # 3 states → 3 pairs: (meta_loop, factors), (meta_loop, safety), (factors, safety)
+    assert len(result["pairwise"]) == 3
+    assert isinstance(result["needs_recheck"], bool)
+
+    print("✅ test_module_coherence_verifier_forward PASSED")
+
+
+def test_module_coherence_verifier_gradient_flow():
+    """Verify gradients flow through ModuleCoherenceVerifier."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    a = torch.randn(2, 32, requires_grad=True)
+    b = torch.randn(2, 32, requires_grad=True)
+
+    result = verifier({"a": a, "b": b})
+    loss = result["coherence_score"].sum()
+    loss.backward()
+
+    assert a.grad is not None, "Gradients should flow to input a"
+    assert b.grad is not None, "Gradients should flow to input b"
+
+    print("✅ test_module_coherence_verifier_gradient_flow PASSED")
+
+
+def test_module_coherence_verifier_single_state():
+    """Verify coherence is 1.0 when fewer than 2 states are provided."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    result = verifier({"only_one": torch.randn(2, 32)})
+
+    assert result["coherence_score"].shape == (2,)
+    assert (result["coherence_score"] == 1.0).all()
+    assert result["needs_recheck"] is False
+
+    print("✅ test_module_coherence_verifier_single_state PASSED")
+
+
+def test_module_coherence_verifier_identical_states():
+    """Coherence should be high when all states are identical."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    same = torch.randn(2, 32)
+    result = verifier({"a": same, "b": same.clone()})
+
+    # Identical inputs → cosine similarity ≈ 1.0 after projection
+    assert result["coherence_score"].mean().item() > 0.9
+    assert result["needs_recheck"] is False
+
+    print("✅ test_module_coherence_verifier_identical_states PASSED")
+
+
+def test_metacognitive_recursion_trigger_evaluate():
+    """Verify MetaCognitiveRecursionTrigger correctly evaluates signals."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.5,
+        max_recursions=2,
+        tightening_factor=0.5,
+        extra_iterations=10,
+    )
+
+    # No signals → should not trigger
+    result = trigger.evaluate()
+    assert result["should_trigger"] is False
+    assert result["trigger_score"] == 0.0
+    assert result["triggers_active"] == []
+
+    # Two signals → score = 0.5 ≥ threshold → should trigger
+    result = trigger.evaluate(
+        uncertainty=0.8,
+        is_diverging=True,
+    )
+    assert result["should_trigger"] is True
+    assert result["trigger_score"] == 0.5
+    assert "uncertainty" in result["triggers_active"]
+    assert "diverging" in result["triggers_active"]
+    assert result["recursion_count"] == 1
+
+    print("✅ test_metacognitive_recursion_trigger_evaluate PASSED")
+
+
+def test_metacognitive_recursion_trigger_max_recursions():
+    """Verify recursion cap is respected."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.25,
+        max_recursions=1,
+    )
+
+    # First call → should trigger
+    r1 = trigger.evaluate(uncertainty=0.8)
+    assert r1["should_trigger"] is True
+
+    # Second call → should NOT trigger (recursion cap hit)
+    r2 = trigger.evaluate(uncertainty=0.8)
+    assert r2["should_trigger"] is False
+    assert r2["recursion_count"] == 1
+
+    # Reset → should trigger again
+    trigger.reset()
+    r3 = trigger.evaluate(uncertainty=0.8)
+    assert r3["should_trigger"] is True
+
+    print("✅ test_metacognitive_recursion_trigger_max_recursions PASSED")
+
+
+def test_metacognitive_recursion_trigger_all_signals():
+    """Verify all four signals contribute to trigger score."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
+
+    result = trigger.evaluate(
+        uncertainty=0.8,
+        is_diverging=True,
+        topology_catastrophe=True,
+        coherence_deficit=True,
+    )
+    assert result["trigger_score"] == 1.0
+    assert len(result["triggers_active"]) == 4
+    assert result["should_trigger"] is True
+
+    print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
+
+
+def test_causal_error_evolution_record_and_query():
+    """Verify CausalErrorEvolutionTracker records and queries episodes."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+
+    # Record episodes
+    tracker.record_episode("numerical", "sanitize", success=True)
+    tracker.record_episode("numerical", "rollback", success=False)
+    tracker.record_episode("numerical", "sanitize", success=True)
+    tracker.record_episode("convergence", "retry", success=True)
+
+    # Best strategy for "numerical" should be "sanitize" (2/2 vs 0/1)
+    best = tracker.get_best_strategy("numerical")
+    assert best == "sanitize", f"Expected 'sanitize', got '{best}'"
+
+    # No data for "unknown" class
+    assert tracker.get_best_strategy("unknown") is None
+
+    print("✅ test_causal_error_evolution_record_and_query PASSED")
+
+
+def test_causal_error_evolution_summary():
+    """Verify error summary reports correct statistics."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=10)
+    tracker.record_episode("numerical", "sanitize", success=True)
+    tracker.record_episode("numerical", "sanitize", success=False)
+    tracker.record_episode("shape", "rollback", success=True)
+
+    summary = tracker.get_error_summary()
+    assert summary["total_recorded"] == 3
+    assert "numerical" in summary["error_classes"]
+    assert summary["error_classes"]["numerical"]["count"] == 2
+    assert summary["error_classes"]["numerical"]["success_rate"] == 0.5
+    assert "shape" in summary["error_classes"]
+    assert summary["error_classes"]["shape"]["success_rate"] == 1.0
+
+    print("✅ test_causal_error_evolution_summary PASSED")
+
+
+def test_causal_error_evolution_max_history():
+    """Verify max_history eviction works correctly."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=3)
+    for i in range(5):
+        tracker.record_episode("numerical", "sanitize", success=(i >= 3))
+
+    summary = tracker.get_error_summary()
+    # Only last 3 episodes should remain
+    assert summary["error_classes"]["numerical"]["count"] == 3
+
+    print("✅ test_causal_error_evolution_max_history PASSED")
+
+
+def test_aeon_v3_with_module_coherence():
+    """Integration test: AEONDeltaV3 with module coherence enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.module_coherence is not None
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    assert z_out.shape == (2, 32)
+    assert "coherence_results" in outputs
+    assert "coherence_score" in outputs["coherence_results"]
+
+    print("✅ test_aeon_v3_with_module_coherence PASSED")
+
+
+def test_aeon_v3_with_metacognitive_recursion():
+    """Integration test: AEONDeltaV3 with metacognitive recursion enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.25,  # low threshold to trigger
+        metacognitive_max_recursions=1,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.metacognitive_trigger is not None
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    assert z_out.shape == (2, 32)
+    assert "metacognitive_info" in outputs
+
+    print("✅ test_aeon_v3_with_metacognitive_recursion PASSED")
+
+
+def test_aeon_v3_with_error_evolution():
+    """Integration test: AEONDeltaV3 with error evolution enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.error_evolution is not None
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    # Successful pass should record a "none" episode
+    summary = model.error_evolution.get_error_summary()
+    assert summary["total_recorded"] >= 1
+    assert "none" in summary["error_classes"]
+
+    print("✅ test_aeon_v3_with_error_evolution PASSED")
+
+
+def test_new_components_disabled_by_default_coherence():
+    """Verify new coherence/recursion/evolution components are disabled by default."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.module_coherence is None
+    assert model.metacognitive_trigger is None
+    assert model.error_evolution is None
+
+    print("✅ test_new_components_disabled_by_default_coherence PASSED")
+
+
+def test_error_fallback_has_new_keys():
+    """Verify error fallback outputs include coherence and metacognitive keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Even in normal (non-error) path, keys should be present
+    assert "coherence_results" in outputs
+    assert "metacognitive_info" in outputs
+
+    print("✅ test_error_fallback_has_new_keys PASSED")
+
+
+def test_aeon_v3_all_new_coherence_components():
+    """Full integration: all three new components enabled together."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        metacognitive_trigger_threshold=0.25,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    assert z_out.shape == (2, 32)
+    assert "coherence_results" in outputs
+    assert "metacognitive_info" in outputs
+    assert model.error_evolution.get_error_summary()["total_recorded"] >= 1
+
+    print("✅ test_aeon_v3_all_new_coherence_components PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -9101,6 +9462,24 @@ if __name__ == '__main__':
     test_trust_scorer_gates_memory_fusion()
     test_topology_catastrophe_triggers_metacognition()
     test_divergence_triggers_deeper_processing()
+    
+    # Module Coherence, Meta-Cognitive Recursion & Error Evolution tests
+    test_module_coherence_verifier_forward()
+    test_module_coherence_verifier_gradient_flow()
+    test_module_coherence_verifier_single_state()
+    test_module_coherence_verifier_identical_states()
+    test_metacognitive_recursion_trigger_evaluate()
+    test_metacognitive_recursion_trigger_max_recursions()
+    test_metacognitive_recursion_trigger_all_signals()
+    test_causal_error_evolution_record_and_query()
+    test_causal_error_evolution_summary()
+    test_causal_error_evolution_max_history()
+    test_aeon_v3_with_module_coherence()
+    test_aeon_v3_with_metacognitive_recursion()
+    test_aeon_v3_with_error_evolution()
+    test_new_components_disabled_by_default_coherence()
+    test_error_fallback_has_new_keys()
+    test_aeon_v3_all_new_coherence_components()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
