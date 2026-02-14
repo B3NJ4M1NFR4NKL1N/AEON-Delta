@@ -1448,6 +1448,7 @@ class ErrorRecoveryManager:
         audit_log: Optional[DecisionAuditLog] = None,
         tensor_guard: Optional[TensorGuard] = None,
         max_retries: int = 3,
+        error_evolution: Optional['CausalErrorEvolutionTracker'] = None,
     ):
         self.hidden_dim = hidden_dim
         self.audit_log = audit_log or DecisionAuditLog()
@@ -1456,6 +1457,7 @@ class ErrorRecoveryManager:
         )
         self.error_classifier = SemanticErrorClassifier()
         self.max_retries = max(1, max_retries)
+        self.error_evolution = error_evolution
         self._lock = threading.Lock()
         self._recovery_counts: Dict[str, int] = defaultdict(int)
         self._recovery_history: deque = deque(maxlen=500)
@@ -1497,12 +1499,21 @@ class ErrorRecoveryManager:
         with self._lock:
             self._recovery_counts[error_class] += 1
 
+        # Consult error evolution tracker for historically best strategy
+        evolved_strategy_name: Optional[str] = None
+        if self.error_evolution is not None:
+            evolved_strategy_name = self.error_evolution.get_best_strategy(error_class)
+
         self.audit_log.record("error_recovery", error_class, {
             "context": context,
             "detail": detail,
+            "evolved_strategy": evolved_strategy_name,
         })
 
-        strategy = self._strategies.get(error_class, self._recover_unknown)
+        if evolved_strategy_name and evolved_strategy_name in self._strategies:
+            strategy = self._strategies[evolved_strategy_name]
+        else:
+            strategy = self._strategies.get(error_class, self._recover_unknown)
 
         last_exc: Optional[BaseException] = None
         for attempt in range(self.max_retries):
@@ -2468,6 +2479,7 @@ class AEONConfig:
     lambda_safety: float = 0.1
     lambda_lipschitz: float = 0.05
     lambda_coherence: float = 0.05
+    lambda_causal_dag: float = 0.01
     kl_weight: float = 0.1
     sparsity_target: float = 0.95
     
@@ -12652,8 +12664,16 @@ class AEONDeltaV3(nn.Module):
                 num_vars=config.notears_num_vars,
                 hidden_dim=config.notears_hidden_dim,
             ).to(self.device)
+            # Projection from factor space to NOTEARS variable space
+            if config.num_pillars != config.notears_num_vars:
+                self.notears_proj = nn.Linear(
+                    config.num_pillars, config.notears_num_vars,
+                ).to(self.device)
+            else:
+                self.notears_proj = None
         else:
             self.notears_causal = None
+            self.notears_proj = None
         
         # ===== AGI COHERENCE LAYER =====
         # Causal hierarchical context
@@ -12860,11 +12880,14 @@ class AEONDeltaV3(nn.Module):
         # Centralized strategy-pattern dispatch for runtime errors.
         # Shares audit_log and tensor_guard with the rest of the pipeline
         # so recovery events feed into pattern insights and tensor
-        # sanitization is consistent.
+        # sanitization is consistent.  When error_evolution is enabled,
+        # the manager consults historical recovery outcomes to select
+        # the best strategy for each error class.
         self.error_recovery = ErrorRecoveryManager(
             hidden_dim=config.hidden_dim,
             audit_log=self.audit_log,
             tensor_guard=self.tensor_guard,
+            error_evolution=self.error_evolution,
         )
         
         # ===== CONVERGENCE MONITOR =====
@@ -13184,6 +13207,9 @@ class AEONDeltaV3(nn.Module):
                 'ns_consistency_results': {},
                 'unified_simulator_results': {},
                 'hybrid_reasoning_results': {},
+                'causal_model_results': {},
+                'notears_results': {},
+                'hierarchical_vae_results': {},
                 # --- AGI coherence provenance (defaults for error path) ---
                 'uncertainty': 1.0,
                 'adaptive_safety_threshold': self.config.safety_threshold,
@@ -13687,6 +13713,47 @@ class AEONDeltaV3(nn.Module):
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             causal_world_results = self.causal_world_model(C_star)
         
+        # 5d1b. NeuralCausalModel — learn inter-factor causal structure.
+        # Uses factors as exogenous inputs to discover causal relationships
+        # among the cognitive pillars.  The resulting causal variables are
+        # blended back as a residual to ground the state in causal structure.
+        causal_model_results: Dict[str, Any] = {}
+        if self.causal_model is not None and not fast:
+            causal_vars = self.causal_model(factors)  # [B, num_pillars]
+            causal_model_results = {
+                'causal_vars': causal_vars,
+                'adjacency': self.causal_model.adjacency.detach(),
+                'dag_loss': self.causal_model.dag_loss(),
+            }
+            # Blend causal signal into factor embedding as a residual
+            causal_residual = causal_vars - factors.detach()
+            C_star = C_star + 0.05 * causal_residual.mean(dim=-1, keepdim=True)
+            self.audit_log.record("causal_model", "computed", {
+                "dag_loss": float(causal_model_results['dag_loss'].item()),
+            })
+        
+        # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
+        # Provides a complementary causal analysis with NOTEARS acyclicity
+        # constraint, feeding its DAG loss into the total training loss for
+        # end-to-end causal structure learning.
+        notears_results: Dict[str, Any] = {}
+        if self.notears_causal is not None and not fast:
+            notears_input = factors
+            if self.notears_proj is not None:
+                notears_input = self.notears_proj(factors)
+            notears_vars = self.notears_causal(notears_input)  # [B, notears_num_vars]
+            notears_dag_loss = self.notears_causal.dag_loss()
+            notears_l1 = self.notears_causal.l1_loss()
+            notears_results = {
+                'causal_vars': notears_vars,
+                'dag_loss': notears_dag_loss,
+                'l1_loss': notears_l1,
+            }
+            self.audit_log.record("notears_causal", "computed", {
+                "dag_loss": float(notears_dag_loss.item()),
+                "l1_loss": float(notears_l1.item()),
+            })
+        
         # 5d2. Cross-validation: reconcile factors vs causal predictions
         reconciliation_results: Dict[str, Any] = {}
         if (self.cross_validator is not None
@@ -13751,6 +13818,22 @@ class AEONDeltaV3(nn.Module):
                 "num_derived": int(
                     hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
                 ),
+            })
+        
+        # 5e4. Hierarchical VAE — multi-scale latent enrichment.
+        # Encodes C_star through a ladder VAE to extract representations
+        # at multiple abstraction levels (tokens → concepts → goals).
+        # The auto-selected level is blended as a residual to enrich
+        # the reasoning state with hierarchical structure.
+        hierarchical_vae_results: Dict[str, Any] = {}
+        if self.hierarchical_vae is not None and not fast:
+            vae_out = self.hierarchical_vae(C_star)
+            hierarchical_vae_results = vae_out
+            selected_level = vae_out.get('selected_level', None)
+            if selected_level is not None and torch.isfinite(selected_level).all():
+                C_star = C_star + 0.1 * selected_level
+            self.audit_log.record("hierarchical_vae", "computed", {
+                "kl_loss": float(vae_out['kl_loss'].item()),
             })
         
         # 5f. Causal context — store current state into hierarchical context
@@ -13964,6 +14047,9 @@ class AEONDeltaV3(nn.Module):
             'ns_consistency_results': ns_consistency_results,
             'unified_simulator_results': unified_simulator_results,
             'hybrid_reasoning_results': hybrid_reasoning_results,
+            'causal_model_results': causal_model_results,
+            'notears_results': notears_results,
+            'hierarchical_vae_results': hierarchical_vae_results,
             # --- AGI coherence provenance ---
             'uncertainty': uncertainty,
             'adaptive_safety_threshold': adaptive_safety_threshold,
@@ -14218,11 +14304,38 @@ class AEONDeltaV3(nn.Module):
             if _coh_score.requires_grad:
                 coherence_loss = (1.0 - _coh_score.mean())
         
+        # ===== 9. CAUSAL DAG LOSS =====
+        # When NeuralCausalModel or NOTEARSCausalModel is enabled, add
+        # their DAG-constraint losses to encourage acyclic causal structure.
+        causal_dag_loss = torch.tensor(0.0, device=self.device)
+        causal_model_results = outputs.get('causal_model_results', {})
+        if causal_model_results and 'dag_loss' in causal_model_results:
+            _dag = causal_model_results['dag_loss']
+            if _dag.requires_grad:
+                causal_dag_loss = causal_dag_loss + _dag
+        notears_results = outputs.get('notears_results', {})
+        if notears_results and 'dag_loss' in notears_results:
+            _nt_dag = notears_results['dag_loss']
+            if _nt_dag.requires_grad:
+                causal_dag_loss = causal_dag_loss + _nt_dag
+            _nt_l1 = notears_results.get('l1_loss', torch.tensor(0.0, device=self.device))
+            if _nt_l1.requires_grad:
+                causal_dag_loss = causal_dag_loss + 0.01 * _nt_l1
+        
+        # ===== 10. HIERARCHICAL VAE KL LOSS =====
+        hvae_kl_loss = torch.tensor(0.0, device=self.device)
+        hvae_results = outputs.get('hierarchical_vae_results', {})
+        if hvae_results and 'kl_loss' in hvae_results:
+            _kl = hvae_results['kl_loss']
+            if _kl.requires_grad:
+                hvae_kl_loss = self.config.kl_weight * _kl
+        
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
         # returned in the dict for monitoring purposes.
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
+        _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
         total_loss = (
             lm_loss +
             vq_loss +
@@ -14230,6 +14343,8 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
             _coherence_weight * coherence_loss +
+            _causal_weight * causal_dag_loss +
+            hvae_kl_loss +
             reg_loss
         )
         
@@ -14250,6 +14365,8 @@ class AEONDeltaV3(nn.Module):
             'safety_loss': safety_loss,
             'sparsity_loss': sparsity_loss,
             'coherence_loss': coherence_loss,
+            'causal_dag_loss': causal_dag_loss,
+            'hvae_kl_loss': hvae_kl_loss,
             'reg_loss': reg_loss,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
         }
@@ -14446,6 +14563,7 @@ class AEONDeltaV3(nn.Module):
             ("HierarchicalMemory", self.hierarchical_memory),
             ("MultiModal", self.multimodal),
             ("CausalModel", self.causal_model),
+            ("NOTEARSCausal", self.notears_causal),
             ("MCTSPlanner", self.mcts_planner),
             ("HierarchicalVAE", self.hierarchical_vae),
             ("ModuleCoherence", self.module_coherence),
