@@ -11775,6 +11775,96 @@ def test_architecture_summary_includes_new_modules():
     print("✅ test_architecture_summary_includes_new_modules PASSED")
 
 
+def test_architecture_summary_comprehensive_modules():
+    """Verify print_architecture_summary lists all registered subsystem modules.
+
+    The architecture summary should include every optional module that the
+    AEONDeltaV3 constructor can instantiate, not only the original subset.
+    This ensures that operators and developers can see the complete system
+    topology at a glance.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import io, logging
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_neurogenic_memory=True,
+        enable_consolidating_memory=True,
+        enable_meta_recovery_integration=True,
+        enable_module_coherence=True,
+        enable_complexity_estimator=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Capture the architecture summary output
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setLevel(logging.INFO)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    model.print_architecture_summary()
+    logger.removeHandler(handler)
+    summary_text = buf.getvalue()
+
+    # These modules must appear in the summary now
+    expected_labels = [
+        "RecursiveMetaLoop",
+        "SlotBinder",
+        "NeurogenicMemory",
+        "ConsolidatingMemory",
+        "ActiveLearner",
+        "ComplexityEstimator",
+        "TrustScorer",
+        "NSConsistency",
+        "CrossValidator",
+        "AutoCritic",
+        "HybridReasoning",
+        "UnifiedSimulator",
+        "MetaRecovery",
+    ]
+    for label in expected_labels:
+        assert label in summary_text, (
+            f"Architecture summary should include '{label}' but got:\n{summary_text}"
+        )
+
+    print("✅ test_architecture_summary_comprehensive_modules PASSED")
+
+
+def test_late_stage_integrity_feeds_error_evolution():
+    """Verify that late-stage subsystem health degradation is recorded in
+    the CausalErrorEvolutionTracker, closing the feedback loop between
+    post-pipeline integrity monitoring and evolutionary learning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate a degraded subsystem by recording low health
+    model.integrity_monitor.record_health("test_subsystem", 0.3, {"test": True})
+
+    # Run a forward pass
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # The error evolution tracker should now contain an episode for the
+    # degraded subsystem
+    summary = model.error_evolution.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "subsystem_degraded_test_subsystem" in error_classes, (
+        f"Expected error evolution to record 'subsystem_degraded_test_subsystem' "
+        f"but got classes: {list(error_classes.keys())}"
+    )
+
+    print("✅ test_late_stage_integrity_feeds_error_evolution PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -12388,6 +12478,10 @@ if __name__ == '__main__':
     test_causal_world_dag_loss_in_compute_loss()
     test_causal_trace_records_world_model_factors()
     test_architecture_summary_includes_new_modules()
+    
+    # Architecture coherence — comprehensive module listing & integrity feedback
+    test_architecture_summary_comprehensive_modules()
+    test_late_stage_integrity_feeds_error_evolution()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

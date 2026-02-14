@@ -14619,6 +14619,26 @@ class AEONDeltaV3(nn.Module):
                 success=True,
             )
         
+        # 8e-ii. Late-stage integrity feedback — after all subsystem
+        # health records are finalized, check for degraded subsystems and
+        # feed them into error evolution.  This closes the loop between
+        # *late*-stage health recording (causal, hybrid reasoning,
+        # integration) and evolutionary learning, which otherwise only
+        # saw health captured *before* the feedback bus update.
+        if self.error_evolution is not None and not fast:
+            _final_report = self.integrity_monitor.get_integrity_report()
+            _final_healths = _final_report.get("subsystem_health", {})
+            for _sub_name, _sub_health in _final_healths.items():
+                if (isinstance(_sub_health, (int, float))
+                        and math.isfinite(_sub_health)
+                        and _sub_health < 0.5):
+                    self.error_evolution.record_episode(
+                        error_class=f"subsystem_degraded_{_sub_name}",
+                        strategy_used="integrity_monitor",
+                        success=False,
+                        metadata={"health": _sub_health},
+                    )
+        
         # 8f. Post-integration coherence verification — a second coherence
         # pass that includes all subsystem outputs produced during the
         # forward pass.  This provides a comprehensive cross-validation
@@ -15422,7 +15442,9 @@ class AEONDeltaV3(nn.Module):
             ("BackboneAdapter", self.backbone_adapter),
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
+            ("RecursiveMetaLoop", self.recursive_meta_loop),
             ("FeedbackBus", self.feedback_bus),
+            ("SlotBinder", self.slot_binder),
             ("SparseFactorization", self.sparse_factors),
             ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
@@ -15430,14 +15452,25 @@ class AEONDeltaV3(nn.Module):
             ("SelfReporter", self.self_reporter),
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
+            ("NeurogenicMemory", self.neurogenic_memory),
+            ("ConsolidatingMemory", self.consolidating_memory),
+            ("TemporalMemory", self.temporal_memory),
             ("MultiModal", self.multimodal),
             ("CausalModel", self.causal_model),
             ("NOTEARSCausal", self.notears_causal),
+            ("CausalWorldModel", self.causal_world_model),
             ("MCTSPlanner", self.mcts_planner),
+            ("ActiveLearner", self.active_learning_planner),
             ("HierarchicalVAE", self.hierarchical_vae),
             ("ModuleCoherence", self.module_coherence),
-            ("TemporalMemory", self.temporal_memory),
-            ("CausalWorldModel", self.causal_world_model),
+            ("ComplexityEstimator", self.complexity_estimator),
+            ("TrustScorer", self.trust_scorer),
+            ("NSConsistency", self.ns_consistency_checker),
+            ("CrossValidator", self.cross_validator),
+            ("AutoCritic", self.auto_critic),
+            ("HybridReasoning", self.hybrid_reasoning),
+            ("UnifiedSimulator", self.unified_simulator),
+            ("MetaRecovery", self.meta_recovery),
         ]
         
         for name, module in modules:
