@@ -2575,6 +2575,7 @@ class AEONConfig:
     neurogenic_max_capacity: int = 1000
     neurogenic_importance_threshold: float = 0.7
     neurogenic_retrieval_weight: float = 0.1
+    neurogenic_retrieval_k: int = 3
     
     # ===== CAUSAL WORLD MODEL =====
     enable_causal_world_model: bool = False
@@ -14041,14 +14042,23 @@ class AEONDeltaV3(nn.Module):
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.neurogenic_memory.consolidate(C_star[i])
-            # Retrieve and blend neurogenic memories into C_star
+            # Retrieve and blend neurogenic memories into C_star,
+            # using similarity scores as weights for more semantically
+            # accurate blending.
             _neuro_weight = self.config.neurogenic_retrieval_weight
+            _neuro_k = self.config.neurogenic_retrieval_k
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
-                    neuro_retrieved = self.neurogenic_memory.retrieve(C_star[i], k=3)
+                    neuro_retrieved = self.neurogenic_memory.retrieve(C_star[i], k=_neuro_k)
                     if neuro_retrieved:
                         neuro_vecs = torch.stack([v for v, _s in neuro_retrieved])
-                        neuro_blend = neuro_vecs.mean(dim=0).to(device)
+                        neuro_sims = torch.tensor(
+                            [s for _v, s in neuro_retrieved],
+                            device=device, dtype=neuro_vecs.dtype,
+                        )
+                        # Similarity-weighted average (softmax for stability)
+                        sim_weights = torch.softmax(neuro_sims, dim=0)
+                        neuro_blend = (sim_weights.unsqueeze(-1) * neuro_vecs).sum(dim=0).to(device)
                         if torch.isfinite(neuro_blend).all():
                             C_star[i] = C_star[i] + _neuro_weight * neuro_blend
         
