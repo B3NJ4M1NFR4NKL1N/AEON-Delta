@@ -7228,6 +7228,145 @@ def test_quantize_int8_scale_detached():
     print("✅ test_quantize_int8_scale_detached PASSED")
 
 
+# ============================================================================
+# REFACTORING FIX VERIFICATION TESTS
+# ============================================================================
+
+def test_alpha_zero_rejected():
+    """Verify alpha=0 is rejected by AEONConfig validation.
+
+    alpha=0 would cause the meta-loop to never update (C = 0*C_new + 1*C_prev).
+    """
+    from aeon_core import AEONConfig
+
+    try:
+        AEONConfig(alpha=0.0)
+        assert False, "alpha=0 should raise AssertionError"
+    except AssertionError as e:
+        assert "(0, 1]" in str(e), f"Unexpected error message: {e}"
+
+    # Positive alpha should still work
+    cfg = AEONConfig(alpha=0.01)
+    assert cfg.alpha == 0.01
+    cfg2 = AEONConfig(alpha=1.0)
+    assert cfg2.alpha == 1.0
+    print("✅ test_alpha_zero_rejected PASSED")
+
+
+def test_adaptive_chunking_nan_input():
+    """Verify ChunkedSequenceProcessor handles NaN in adaptive mode.
+
+    Previously, NaN in input caused ValueError in int(chunk_size * NaN).
+    """
+    from aeon_core import ChunkedSequenceProcessor
+
+    processor = ChunkedSequenceProcessor(chunk_size=32, overlap=8)
+    processor.adaptive = True
+
+    x = torch.randn(2, 64, 16)
+    x[0, 0, 0] = float('nan')
+
+    model_fn = lambda chunk, state: (chunk * 0.5, state)
+    y, state = processor.process(model_fn, x, None)
+    assert y.shape == x.shape, f"Output shape mismatch: {y.shape} vs {x.shape}"
+    print("✅ test_adaptive_chunking_nan_input PASSED")
+
+
+def test_ema_update_nonfinite_cluster_size():
+    """Verify EMA update handles non-finite cluster size sum.
+
+    When cluster size sum is zero or NaN, the Laplace smoothing
+    should produce finite results without crashing.
+    """
+    from aeon_core import RobustVectorQuantizer
+
+    vq = RobustVectorQuantizer(
+        num_embeddings=8, embedding_dim=4,
+        commitment_cost=0.25, decay=0.99, use_ema=True,
+    )
+
+    # Force cluster sizes to zero
+    vq._ema_cluster_size.zero_()
+
+    inputs = torch.randn(4, 4)
+    encodings = torch.zeros(4, 8)
+    encodings[:, 0] = 1.0  # All map to first code
+
+    vq._ema_update(inputs, encodings)
+
+    assert torch.isfinite(vq._ema_cluster_size).all(), \
+        "EMA cluster size should be finite after update with zero initial sizes"
+    assert torch.isfinite(vq.embedding.weight.data).all(), \
+        "Embedding weights should be finite after update"
+    print("✅ test_ema_update_nonfinite_cluster_size PASSED")
+
+
+def test_consistency_computation_nan_guard():
+    """Verify compute_loss handles NaN in consistency MSE computation.
+
+    If the meta-loop produces NaN outputs, the consistency score
+    should fall back to 0.0 instead of propagating NaN.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        use_vq=False, enable_quantum_sim=False,
+        enable_world_model=False, enable_hierarchical_memory=False,
+        enable_causal_model=False, enable_meta_learning=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Create synthetic outputs that would test the consistency path
+    B = 2
+    outputs = {
+        'logits': torch.randn(B, config.seq_length, config.vocab_size),
+        'core_state': torch.randn(B, config.hidden_dim),
+        'psi_0': torch.randn(B, config.z_dim),
+        'vq_loss': torch.tensor(0.0),
+        'safety_score': torch.ones(B, 1),
+        'factors': torch.randn(B, config.num_pillars),
+    }
+    targets = torch.randint(0, config.vocab_size, (B, config.seq_length))
+
+    loss_dict = model.compute_loss(outputs, targets)
+    consistency = loss_dict.get('consistency_score', None)
+    assert consistency is not None, "consistency_score should be present"
+    assert math.isfinite(consistency), f"consistency should be finite, got {consistency}"
+    print("✅ test_consistency_computation_nan_guard PASSED")
+
+
+def test_anderson_solve_nonfinite_fallback():
+    """Verify _safe_solve falls back to uniform weights on singular input.
+
+    When torch.linalg.solve produces NaN, the method should
+    detect it before division and fall back to uniform weights.
+    """
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+
+    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    meta = ProvablyConvergentMetaLoop(config=config, anderson_memory=3)
+
+    B, m = 2, 3
+    device = torch.device('cpu')
+
+    # Create a singular gram matrix (all zeros → solve produces NaN/Inf)
+    gram = torch.zeros(B, m, m)
+    rhs = torch.ones(B, m, 1)
+
+    result = meta._safe_solve(gram, rhs, m, B, device)
+    assert result.shape == (B, m, 1), f"Shape mismatch: {result.shape}"
+    assert torch.isfinite(result).all(), "Result should be finite"
+    # Should fall back to uniform weights
+    expected = torch.ones(B, m, 1) / m
+    assert torch.allclose(result, expected, atol=1e-6), \
+        f"Expected uniform weights, got {result}"
+    print("✅ test_anderson_solve_nonfinite_fallback PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()

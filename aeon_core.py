@@ -2506,7 +2506,7 @@ class AEONConfig:
         assert self.num_pillars >= 2, "num_pillars must be >= 2"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
-        assert 0 <= self.alpha <= 1, "alpha must be in [0, 1]"
+        assert 0 < self.alpha <= 1, "alpha must be in (0, 1]"
         assert 0 < self.lipschitz_target < 1, "lipschitz_target must be in (0, 1)"
         assert self.topo_method in ("finite_differences", "forward_ad", "hutchinson")
         assert self.nan_policy in ("RAISE", "WARN", "SILENT", "QUARANTINE", "RETURN_NONE")
@@ -3834,9 +3834,12 @@ class ChunkedSequenceProcessor:
         if self.adaptive:
             # Adaptive chunk size based on content entropy
             content_var = x.var(dim=-1).mean(dim=0)  # [L] variance per position
-            max_var = max(content_var.max().item(), 1e-8)
+            max_var_raw = content_var.max().item()
+            max_var = max(max_var_raw, 1e-8) if math.isfinite(max_var_raw) else 1e-8
             # Higher variance → smaller chunks (more detail needed)
-            adaptive_factor = 1.0 - (content_var.mean().item() / max_var)
+            mean_var_raw = content_var.mean().item()
+            mean_var = mean_var_raw if math.isfinite(mean_var_raw) else 0.0
+            adaptive_factor = 1.0 - (mean_var / max_var)
             chunk_size = max(self.min_chunk_size, 
                              int(self.chunk_size * adaptive_factor))
         else:
@@ -5036,6 +5039,8 @@ class RobustVectorQuantizer(nn.Module):
         
         # Laplace smoothing (in-place to preserve registered buffer)
         n = self._ema_cluster_size.sum()
+        if not torch.isfinite(n) or n.item() < 1e-8:
+            n = torch.tensor(1e-8, device=n.device, dtype=n.dtype)
         self._ema_cluster_size.copy_(
             (self._ema_cluster_size + self.epsilon)
             / (n + self.num_embeddings * self.epsilon)
@@ -5358,10 +5363,11 @@ class ProvablyConvergentMetaLoop(nn.Module):
         # Try on original device first
         try:
             alpha = torch.linalg.solve(gram, rhs)
+            # Check for NaN/Inf before division to avoid NaN propagation
+            if not torch.isfinite(alpha).all():
+                raise RuntimeError("Non-finite values in solve result")
             alpha = alpha / alpha.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            # Check for NaN/Inf
-            if torch.isfinite(alpha).all():
-                return alpha
+            return alpha
         except (RuntimeError, NotImplementedError):
             pass
         
@@ -5370,9 +5376,10 @@ class ProvablyConvergentMetaLoop(nn.Module):
             gram_cpu = gram.cpu()
             rhs_cpu = rhs.cpu()
             alpha_cpu = torch.linalg.solve(gram_cpu, rhs_cpu)
+            if not torch.isfinite(alpha_cpu).all():
+                raise RuntimeError("Non-finite values in CPU solve result")
             alpha_cpu = alpha_cpu / alpha_cpu.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            if torch.isfinite(alpha_cpu).all():
-                return alpha_cpu.to(device)
+            return alpha_cpu.to(device)
         except RuntimeError:
             pass
         
@@ -11987,7 +11994,8 @@ class AEONDeltaV3(nn.Module):
         # 5c2. Neurogenic memory — consolidate important states
         if self.neurogenic_memory is not None and not fast:
             for i in range(B):
-                self.neurogenic_memory.consolidate(C_star[i])
+                if torch.isfinite(C_star[i]).all():
+                    self.neurogenic_memory.consolidate(C_star[i])
         
         # 5d. Causal world model (if enabled)
         causal_world_results = {}
@@ -12279,7 +12287,11 @@ class AEONDeltaV3(nn.Module):
                 consistency_check = self.meta_loop.lambda_op(
                     self.meta_loop.input_stabilizer(input_concat)
                 )
-                consistency = 1.0 / (1.0 + F.mse_loss(consistency_check, C_star))
+                mse = F.mse_loss(consistency_check, C_star)
+                if torch.isfinite(mse):
+                    consistency = 1.0 / (1.0 + mse)
+                else:
+                    consistency = torch.tensor(0.0, device=self.device)
                 self.meta_loop.train(self.training)
             
             consistency_loss = -self.config.lambda_self_consistency * torch.log(
