@@ -7130,6 +7130,104 @@ def test_reasoning_core_deterministic_guard():
     print("✅ test_reasoning_core_deterministic_guard PASSED")
 
 
+def test_temporal_knowledge_graph_retrieve_thread_safety():
+    """Verify TemporalKnowledgeGraph.retrieve_relevant acquires the lock."""
+    import threading
+    from aeon_core import TemporalKnowledgeGraph
+
+    tkg = TemporalKnowledgeGraph(capacity=100)
+    # Pre-populate
+    for _ in range(10):
+        tkg.add_facts(torch.randn(8), confidence=0.9)
+
+    errors = []
+
+    def writer():
+        for _ in range(50):
+            tkg.add_facts(torch.randn(8), confidence=0.5)
+
+    def reader():
+        try:
+            for _ in range(50):
+                result = tkg.retrieve_relevant(torch.randn(8), top_k=3)
+                assert result is not None
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 0, f"Race condition detected: {errors}"
+    print("✅ test_temporal_knowledge_graph_retrieve_thread_safety PASSED")
+
+
+def test_execute_with_guard_logs_exception():
+    """Verify execute_with_guard logs exceptions instead of silently swallowing."""
+    import logging
+    from aeon_core import DeterministicExecutionGuard
+
+    guard = DeterministicExecutionGuard(hidden_dim=256)
+
+    # Capture log output
+    log_records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: log_records.append(record)
+    aeon_logger = logging.getLogger("AEON-Delta")
+    aeon_logger.addHandler(handler)
+
+    def failing_fn(x):
+        raise RuntimeError("test error")
+
+    fallback = torch.zeros(2, 4)
+    valid, result = guard.execute_with_guard(
+        failing_fn, torch.randn(2, 4), stage="test_stage", fallback=fallback
+    )
+
+    aeon_logger.removeHandler(handler)
+
+    assert not valid, "Should return False on exception"
+    assert torch.equal(result, fallback), "Should return fallback"
+
+    # Check that the exception was logged
+    warning_messages = [r.getMessage() for r in log_records if r.levelno >= logging.WARNING]
+    found = any("test error" in msg for msg in warning_messages)
+    assert found, f"Exception should be logged, got messages: {warning_messages}"
+    print("✅ test_execute_with_guard_logs_exception PASSED")
+
+
+def test_tensor_guard_warn_count_thread_safety():
+    """Verify TensorGuard WARN policy reads _sanitize_count under lock."""
+    from aeon_core import TensorGuard, NaNPolicy
+
+    guard = TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True, alert_threshold=1)
+
+    # Create tensor with NaN
+    nan_tensor = torch.tensor([float('nan'), 1.0, 2.0])
+
+    # Sanitize should work without race
+    result = guard.sanitize(nan_tensor, context="thread_test")
+    assert result is not None
+    assert not torch.isnan(result).any(), "Should sanitize NaN"
+    print("✅ test_tensor_guard_warn_count_thread_safety PASSED")
+
+
+def test_quantize_int8_scale_detached():
+    """Verify InferenceCache._quantize_int8 returns detached scale."""
+    from aeon_core import InferenceCache
+
+    tensor = torch.randn(4, 8, requires_grad=True)
+    # Perform an operation that creates a gradient graph
+    processed = tensor * 2.0
+    quantized, scale = InferenceCache._quantize_int8(processed)
+
+    assert not scale.requires_grad, "Scale should be detached from gradient graph"
+    assert quantized.dtype == torch.int8, "Quantized should be int8"
+    print("✅ test_quantize_int8_scale_detached PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -7544,6 +7642,12 @@ if __name__ == '__main__':
     test_reasoning_core_integrity_report()
     test_reasoning_core_progress_tracking()
     test_reasoning_core_deterministic_guard()
+    
+    # Refactoring analysis fix tests (new)
+    test_temporal_knowledge_graph_retrieve_thread_safety()
+    test_execute_with_guard_logs_exception()
+    test_tensor_guard_warn_count_thread_safety()
+    test_quantize_int8_scale_detached()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
