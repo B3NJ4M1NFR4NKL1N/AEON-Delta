@@ -12468,6 +12468,13 @@ class AEONDeltaV3(nn.Module):
         )
         self.error_classifier = SemanticErrorClassifier()
         
+        # ===== CONVERGENCE MONITOR =====
+        # Tracks contraction ratios across forward passes to detect
+        # sustained divergence and trigger meta-cognitive cycles.
+        self.convergence_monitor = ConvergenceMonitor(
+            threshold=config.convergence_threshold,
+        )
+        
         # ===== INTEGRITY, PROGRESS & DETERMINISM =====
         self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
         self.progress_tracker = ProgressTracker(max_checkpoints=10)
@@ -12611,6 +12618,18 @@ class AEONDeltaV3(nn.Module):
                     memory_contexts.append(torch.zeros_like(q))
             
             memory_context = torch.stack(memory_contexts)
+            
+            # Trust-score retrieved memory before fusion — lower trust
+            # dampens the memory contribution to prevent unverified
+            # external knowledge from corrupting the reasoning state.
+            if self.trust_scorer is not None:
+                trust_result = self.trust_scorer(memory_context, C_star)
+                trust_score = trust_result['trust_score']  # [B, 1]
+                memory_context = memory_context * trust_score
+                logger.debug(
+                    f"Memory trust: mean={trust_score.mean().item():.3f}"
+                )
+            
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
             return C_fused
@@ -12743,6 +12762,7 @@ class AEONDeltaV3(nn.Module):
                 },
                 'causal_trace_id': '',
                 'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
+                'convergence_verdict': {'status': 'unknown', 'certified': False},
             }
             return z_fallback, fallback_outputs
 
@@ -12764,10 +12784,14 @@ class AEONDeltaV3(nn.Module):
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
         
-        # 0a. Dynamic complexity estimation for subsystem gating
+        # 0a. Dynamic complexity estimation for subsystem gating.
+        # Gates[0..3] correspond to: world_model, mcts, causal_world, unified_sim.
+        # When complexity is low, expensive subsystems are skipped.
         complexity_info: Dict[str, Any] = {}
+        _complexity_gates: Optional[torch.Tensor] = None
         if self.complexity_estimator is not None and not fast:
             complexity_info = self.complexity_estimator(z_in)
+            _complexity_gates = complexity_info.get('subsystem_gates', None)
             logger.debug(
                 f"Complexity: {complexity_info['complexity_score'].mean().item():.3f}"
             )
@@ -12855,14 +12879,30 @@ class AEONDeltaV3(nn.Module):
             "convergence_rate": convergence_rate,
         })
         
-        # 1a-ii. Convergence-adaptive subsystem gating — when convergence
-        # quality is low (or audit patterns indicate instability), downstream
-        # subsystems should invest more compute.  The scalar ``cq`` ∈ [0, 1]
-        # gates blend weights, safety thresholds, and critic activation.
+        # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
+        # window monitor to detect sustained divergence across forward
+        # passes.  A 'diverging' verdict triggers deeper meta-cognitive
+        # processing downstream.
+        residual_norm_scalar = meta_results.get("residual_norm", float('inf'))
+        if not math.isfinite(residual_norm_scalar):
+            residual_norm_scalar = 1.0  # safe fallback
+        convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
+        is_diverging = convergence_verdict.get('status') == 'diverging'
+        if is_diverging and not fast:
+            self.audit_log.record("convergence_monitor", "diverging", {
+                "residual_norm": residual_norm_scalar,
+                "verdict": convergence_verdict,
+            }, severity="warning")
+        
+        # 1a-iii. Convergence-adaptive subsystem gating — when convergence
+        # quality is low, audit patterns indicate instability, or the
+        # convergence monitor detects divergence, downstream subsystems
+        # should invest more compute.
         convergence_quality_scalar = float(convergence_rate) if meta_loop_valid else 0.0
         _needs_deeper = (
             convergence_quality_scalar < 0.5
             or audit_recommends_deeper
+            or is_diverging
         )
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
@@ -12979,10 +13019,15 @@ class AEONDeltaV3(nn.Module):
             ).detach()
         
         # 5b. World model — surprise-driven integration
+        # Gated by complexity estimator gate[0] when available.
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
+        _world_model_gated = (
+            _complexity_gates is not None
+            and not _complexity_gates[:, 0].any().item()
+        )
         self.provenance_tracker.record_before("world_model", C_star)
-        if self.world_model is not None and not fast:
+        if self.world_model is not None and not fast and not _world_model_gated:
             world_model_results = self.world_model(
                 C_star, explore_counterfactuals=planning
             )
@@ -13010,9 +13055,13 @@ class AEONDeltaV3(nn.Module):
             world_model_results['surprise'] = surprise
         self.provenance_tracker.record_after("world_model", C_star)
         
-        # 5b2. MCTS planning
+        # 5b2. MCTS planning — gated by complexity gate[1]
         mcts_results = {}
-        if self.mcts_planner is not None and self.world_model is not None and planning and not fast:
+        _mcts_gated = (
+            _complexity_gates is not None
+            and not _complexity_gates[:, 1].any().item()
+        )
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_gated:
             # Run MCTS for first sample (as demonstration)
             mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
         
@@ -13046,11 +13095,32 @@ class AEONDeltaV3(nn.Module):
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.neurogenic_memory.consolidate(C_star[i])
+        
+        # 5c3. Consolidating memory — store current states and retrieve
+        # semantic prototypes for context enrichment.  This connects the
+        # three-stage consolidation pipeline (working → episodic → semantic)
+        # into the main reasoning flow.
+        if self.consolidating_memory is not None and not fast:
+            for i in range(B):
+                if torch.isfinite(C_star[i]).all():
+                    self.consolidating_memory.store(C_star[i].detach())
+            # Retrieve semantic prototypes and add as residual context
+            for i in range(B):
+                ret = self.consolidating_memory.retrieve(C_star[i].detach(), k=3)
+                semantic_items = ret.get('semantic', [])
+                if semantic_items:
+                    vecs = torch.stack([v for v, _s in semantic_items])
+                    C_star[i] = C_star[i] + 0.1 * vecs.mean(dim=0).to(device)
+        
         self.provenance_tracker.record_after("memory", C_star)
         
-        # 5d. Causal world model (if enabled)
+        # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
-        if self.causal_world_model is not None and not fast:
+        _causal_world_gated = (
+            _complexity_gates is not None
+            and not _complexity_gates[:, 2].any().item()
+        )
+        if self.causal_world_model is not None and not fast and not _causal_world_gated:
             causal_world_results = self.causal_world_model(C_star)
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions
@@ -13088,8 +13158,13 @@ class AEONDeltaV3(nn.Module):
             )
         
         # 5e2. Unified causal simulator — counterfactual reasoning
+        # Gated by complexity gate[3]
         unified_simulator_results: Dict[str, Any] = {}
-        if self.unified_simulator is not None and not fast:
+        _unified_sim_gated = (
+            _complexity_gates is not None
+            and not _complexity_gates[:, 3].any().item()
+        )
+        if self.unified_simulator is not None and not fast and not _unified_sim_gated:
             unified_simulator_results = self.unified_simulator(C_star)
             # Blend counterfactual signal as residual
             cf_next = unified_simulator_results.get("next_state", None)
@@ -13213,24 +13288,43 @@ class AEONDeltaV3(nn.Module):
                     })
         
         # 8b4. Uncertainty-triggered meta-cognitive cycle — when uncertainty
-        # is high or audit patterns indicate instability, invoke auto-critic
-        # even without NS violations.  This ensures that *any* unresolved
-        # ambiguity triggers self-reflection, not just symbolic violations.
+        # is high, audit patterns indicate instability, topology detects
+        # catastrophes, or convergence monitor flags divergence, invoke
+        # auto-critic even without NS violations.  This ensures that *any*
+        # unresolved ambiguity triggers self-reflection.
         _ns_already_handled = (
             ns_consistency_results.get("num_violations", torch.zeros(1)).sum().item() > 0
         )
+        _topo_catastrophe = bool(
+            topo_results.get('catastrophes', torch.zeros(1)).any().item()
+        )
+        _should_trigger_metacognition = (
+            high_uncertainty
+            or audit_recommends_deeper
+            or is_diverging
+            or _topo_catastrophe
+        )
         if (self.auto_critic is not None
                 and not fast
-                and (high_uncertainty or audit_recommends_deeper)
+                and _should_trigger_metacognition
                 and not _ns_already_handled):
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
+            # Determine which condition triggered the cycle
+            if _topo_catastrophe:
+                _trigger = "topology_catastrophe"
+            elif is_diverging:
+                _trigger = "convergence_diverging"
+            elif high_uncertainty:
+                _trigger = "uncertainty"
+            else:
+                _trigger = "audit_pattern"
             self.audit_log.record("auto_critic", "revised", {
                 "iterations": critic_result.get("iterations", 0),
                 "final_score": critic_result.get("final_score", 0.0),
-                "trigger": "uncertainty" if high_uncertainty else "audit_pattern",
+                "trigger": _trigger,
             })
         
         # 8c. Record integration health and finalize progress
@@ -13293,6 +13387,7 @@ class AEONDeltaV3(nn.Module):
             'audit_insights': audit_insights,
             'causal_trace_id': input_trace_id,
             'provenance': self.provenance_tracker.compute_attribution(),
+            'convergence_verdict': convergence_verdict,
         }
         
         return z_out, outputs
