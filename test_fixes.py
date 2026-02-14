@@ -6565,6 +6565,571 @@ def test_rel_error_clamp():
     print("✅ test_rel_error_clamp PASSED")
 
 
+# ============================================================================
+# SYSTEM INTEGRITY MONITOR TESTS
+# ============================================================================
+
+def test_integrity_monitor_record_and_health():
+    """Verify SystemIntegrityMonitor records health and computes averages."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor(window_size=100)
+    monitor.record_health("meta_loop", 0.9)
+    monitor.record_health("meta_loop", 0.8)
+    monitor.record_health("meta_loop", 1.0)
+    
+    avg = monitor.get_subsystem_health("meta_loop")
+    assert abs(avg - 0.9) < 1e-6, f"Expected 0.9 average, got {avg}"
+    
+    # Unobserved subsystem should return 1.0
+    assert monitor.get_subsystem_health("unknown") == 1.0
+    
+    print("✅ test_integrity_monitor_record_and_health PASSED")
+
+
+def test_integrity_monitor_anomaly_detection():
+    """Verify anomaly detection for below-threshold and rapid degradation."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor(
+        anomaly_threshold=0.3, derivative_threshold=0.4
+    )
+    
+    # Below-threshold anomaly
+    anomaly = monitor.record_health("safety", 0.1)
+    assert anomaly is not None, "Should detect below-threshold anomaly"
+    assert anomaly["type"] == "below_threshold"
+    
+    # Normal score — no anomaly
+    monitor.record_health("safety", 0.9)
+    anomaly = monitor.record_health("safety", 0.85)
+    assert anomaly is None, "Should not detect anomaly for healthy score"
+    
+    # Rapid degradation: drop from 0.85 to 0.3 (delta = 0.55 > 0.4)
+    anomaly = monitor.record_health("safety", 0.3)
+    assert anomaly is not None, "Should detect rapid degradation"
+    assert anomaly["type"] == "rapid_degradation"
+    
+    anomalies = monitor.get_anomalies()
+    assert len(anomalies) == 2, f"Expected 2 anomalies, got {len(anomalies)}"
+    
+    print("✅ test_integrity_monitor_anomaly_detection PASSED")
+
+
+def test_integrity_monitor_checksum():
+    """Verify deterministic checksumming and verification."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor()
+    t1 = torch.tensor([[1.0, 2.0, 3.0]])
+    t2 = torch.tensor([[1.0, 2.0, 3.0]])
+    t3 = torch.tensor([[4.0, 5.0, 6.0]])
+    
+    digest1 = monitor.register_checksum("encoder", t1)
+    assert isinstance(digest1, str) and len(digest1) == 64
+    
+    # Same tensor should verify
+    assert monitor.verify_checksum("encoder", t2), "Identical tensors should verify"
+    
+    # Different tensor should fail
+    assert not monitor.verify_checksum("encoder", t3), "Different tensors should not verify"
+    
+    # Unregistered component should pass
+    assert monitor.verify_checksum("unregistered", t1), "Unregistered should pass"
+    
+    print("✅ test_integrity_monitor_checksum PASSED")
+
+
+def test_integrity_monitor_global_health():
+    """Verify global health aggregation across subsystems."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor()
+    monitor.record_health("meta_loop", 1.0)
+    monitor.record_health("safety", 0.5)
+    
+    global_h = monitor.get_global_health()
+    assert abs(global_h - 0.75) < 1e-6, f"Expected 0.75, got {global_h}"
+    
+    # Empty monitor should return 1.0
+    empty_monitor = SystemIntegrityMonitor()
+    assert empty_monitor.get_global_health() == 1.0
+    
+    print("✅ test_integrity_monitor_global_health PASSED")
+
+
+def test_integrity_monitor_report():
+    """Verify get_integrity_report structure."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor()
+    monitor.record_health("meta_loop", 0.9)
+    monitor.register_checksum("test", torch.zeros(2, 3))
+    
+    report = monitor.get_integrity_report()
+    assert "global_health" in report
+    assert "subsystem_health" in report
+    assert "anomalies" in report
+    assert "checksums" in report
+    assert "meta_loop" in report["subsystem_health"]
+    assert "test" in report["checksums"]
+    
+    print("✅ test_integrity_monitor_report PASSED")
+
+
+def test_integrity_monitor_reset():
+    """Verify reset clears all state."""
+    from aeon_core import SystemIntegrityMonitor
+    
+    monitor = SystemIntegrityMonitor()
+    monitor.record_health("meta_loop", 0.5)
+    monitor.register_checksum("x", torch.ones(1))
+    monitor.reset()
+    
+    assert monitor.get_global_health() == 1.0
+    assert monitor.get_anomalies() == []
+    report = monitor.get_integrity_report()
+    assert report["checksums"] == {}
+    
+    print("✅ test_integrity_monitor_reset PASSED")
+
+
+def test_integrity_monitor_thread_safety():
+    """Verify thread-safe concurrent health recording."""
+    from aeon_core import SystemIntegrityMonitor
+    import threading
+    
+    monitor = SystemIntegrityMonitor(window_size=1000)
+    errors = []
+    
+    def record_many(subsystem, n):
+        try:
+            for i in range(n):
+                monitor.record_health(subsystem, 0.5 + 0.5 * (i % 2))
+        except Exception as e:
+            errors.append(e)
+    
+    threads = [
+        threading.Thread(target=record_many, args=(f"sub_{i}", 100))
+        for i in range(4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    
+    assert not errors, f"Thread errors: {errors}"
+    
+    print("✅ test_integrity_monitor_thread_safety PASSED")
+
+
+# ============================================================================
+# PROGRESS TRACKER TESTS
+# ============================================================================
+
+def test_progress_tracker_phase_lifecycle():
+    """Verify begin/end/checkpoint phase lifecycle."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker()
+    tracker.begin_phase("meta_loop")
+    
+    progress = tracker.get_progress()
+    assert progress["current_phase"] == "meta_loop"
+    assert "meta_loop" not in progress["completed_phases"]
+    
+    state = torch.randn(2, 64)
+    tracker.checkpoint("meta_loop", state)
+    tracker.end_phase("meta_loop", success=True, metadata={"iters": 7})
+    
+    progress = tracker.get_progress()
+    assert progress["current_phase"] is None
+    assert "meta_loop" in progress["completed_phases"]
+    assert progress["phases"]["meta_loop"]["status"] == "success"
+    assert progress["phases"]["meta_loop"]["metadata"]["iters"] == 7
+    
+    print("✅ test_progress_tracker_phase_lifecycle PASSED")
+
+
+def test_progress_tracker_checkpoint_retrieval():
+    """Verify checkpoint storage and retrieval."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker(max_checkpoints=3)
+    
+    t1 = torch.randn(2, 64)
+    t2 = torch.randn(2, 64)
+    
+    tracker.checkpoint("phase_a", t1)
+    tracker.checkpoint("phase_b", t2)
+    
+    # Get specific checkpoint
+    retrieved = tracker.get_checkpoint("phase_a")
+    assert retrieved is not None
+    assert torch.allclose(retrieved, t1)
+    
+    # Get last checkpoint
+    last = tracker.get_last_checkpoint()
+    assert last is not None
+    assert torch.allclose(last, t2)
+    
+    # Missing checkpoint
+    assert tracker.get_checkpoint("nonexistent") is None
+    
+    print("✅ test_progress_tracker_checkpoint_retrieval PASSED")
+
+
+def test_progress_tracker_rollback():
+    """Verify rollback discards later phases and returns checkpoint."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker()
+    t1 = torch.randn(2, 64)
+    t2 = torch.randn(2, 64)
+    t3 = torch.randn(2, 64)
+    
+    tracker.begin_phase("encode")
+    tracker.checkpoint("encode", t1)
+    tracker.end_phase("encode", success=True)
+    
+    tracker.begin_phase("meta_loop")
+    tracker.checkpoint("meta_loop", t2)
+    tracker.end_phase("meta_loop", success=True)
+    
+    tracker.begin_phase("safety")
+    tracker.checkpoint("safety", t3)
+    tracker.end_phase("safety", success=False)
+    
+    # Rollback to meta_loop
+    restored = tracker.rollback_to("meta_loop")
+    assert restored is not None
+    assert torch.allclose(restored, t2)
+    
+    # Safety phase should be gone
+    progress = tracker.get_progress()
+    assert "safety" not in progress["phases"]
+    assert "safety" not in progress["completed_phases"]
+    
+    # Rollback to nonexistent phase returns None
+    assert tracker.rollback_to("nonexistent") is None
+    
+    print("✅ test_progress_tracker_rollback PASSED")
+
+
+def test_progress_tracker_finish_run():
+    """Verify finish_run archives and resets."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker()
+    tracker.begin_phase("a")
+    tracker.end_phase("a", success=True)
+    
+    summary = tracker.finish_run()
+    assert summary["run_id"] == 0
+    assert "a" in summary["phases"]
+    
+    # After finish, state is clean
+    progress = tracker.get_progress()
+    assert progress["run_id"] == 1
+    assert progress["completed_phases"] == []
+    
+    # Run history
+    history = tracker.get_run_history()
+    assert len(history) == 1
+    assert history[0]["run_id"] == 0
+    
+    print("✅ test_progress_tracker_finish_run PASSED")
+
+
+def test_progress_tracker_failed_phases():
+    """Verify failed phases are tracked correctly."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker()
+    tracker.begin_phase("encode")
+    tracker.end_phase("encode", success=True)
+    tracker.begin_phase("meta_loop")
+    tracker.end_phase("meta_loop", success=False)
+    
+    progress = tracker.get_progress()
+    assert "encode" in progress["completed_phases"]
+    assert "meta_loop" in progress["failed_phases"]
+    
+    print("✅ test_progress_tracker_failed_phases PASSED")
+
+
+def test_progress_tracker_max_checkpoints():
+    """Verify checkpoint eviction when max is exceeded."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker(max_checkpoints=2)
+    tracker.checkpoint("a", torch.ones(1))
+    tracker.checkpoint("b", torch.ones(1) * 2)
+    tracker.checkpoint("c", torch.ones(1) * 3)
+    
+    # 'a' should have been evicted
+    assert tracker.get_checkpoint("a") is None
+    assert tracker.get_checkpoint("b") is not None
+    assert tracker.get_checkpoint("c") is not None
+    
+    print("✅ test_progress_tracker_max_checkpoints PASSED")
+
+
+def test_progress_tracker_reset():
+    """Verify reset clears all state."""
+    from aeon_core import ProgressTracker
+    
+    tracker = ProgressTracker()
+    tracker.begin_phase("x")
+    tracker.checkpoint("x", torch.ones(1))
+    tracker.end_phase("x", success=True)
+    tracker.finish_run()
+    
+    tracker.reset()
+    progress = tracker.get_progress()
+    assert progress["run_id"] == 0
+    assert progress["completed_phases"] == []
+    assert tracker.get_run_history() == []
+    assert tracker.get_last_checkpoint() is None
+    
+    print("✅ test_progress_tracker_reset PASSED")
+
+
+# ============================================================================
+# DETERMINISTIC EXECUTION GUARD TESTS
+# ============================================================================
+
+def test_execution_guard_normalize_input():
+    """Verify input normalization sanitizes NaN/Inf and clamps."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64, input_clamp=10.0)
+    
+    # Test NaN/Inf sanitization
+    x = torch.tensor([[float('nan'), float('inf'), -float('inf'), 5.0]])
+    normalized = guard.normalize_input(x)
+    assert torch.isfinite(normalized).all(), "Should remove NaN/Inf"
+    assert normalized.abs().max().item() <= 10.0, "Should clamp"
+    
+    # Normal input should be clamped
+    x_big = torch.tensor([[100.0, -200.0, 3.0]])
+    normalized = guard.normalize_input(x_big)
+    assert normalized.abs().max().item() <= 10.0
+    
+    print("✅ test_execution_guard_normalize_input PASSED")
+
+
+def test_execution_guard_validate_output():
+    """Verify output validation detects invalid tensors and applies fallback."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64, max_activation=100.0)
+    
+    # Valid output
+    valid_t = torch.randn(2, 64)
+    ok, result = guard.validate_output(valid_t, stage="test")
+    assert ok is True
+    assert torch.allclose(result, valid_t)
+    
+    # NaN output — should fallback
+    nan_t = torch.full((2, 64), float('nan'))
+    fallback = torch.zeros(2, 64)
+    ok, result = guard.validate_output(nan_t, stage="test", fallback=fallback)
+    assert ok is False
+    assert torch.allclose(result, fallback)
+    
+    # Excessive magnitude — should fallback
+    big_t = torch.full((2, 64), 1e5)
+    ok, result = guard.validate_output(big_t, stage="test_big")
+    assert ok is False
+    assert result.abs().max().item() == 0.0  # zeros_like fallback
+    
+    print("✅ test_execution_guard_validate_output PASSED")
+
+
+def test_execution_guard_fingerprint():
+    """Verify deterministic fingerprinting and verification."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64)
+    
+    t1 = torch.tensor([[1.0, 2.0, 3.0]])
+    t2 = torch.tensor([[1.0, 2.0, 3.0]])
+    t3 = torch.tensor([[4.0, 5.0, 6.0]])
+    
+    fp1 = guard.fingerprint("stage_a", t1)
+    assert isinstance(fp1, str) and len(fp1) == 64
+    
+    # Same tensor verifies
+    assert guard.verify_fingerprint("stage_a", t2)
+    
+    # Different tensor fails
+    assert not guard.verify_fingerprint("stage_a", t3)
+    
+    # Unregistered stage passes
+    assert guard.verify_fingerprint("unregistered", t1)
+    
+    print("✅ test_execution_guard_fingerprint PASSED")
+
+
+def test_execution_guard_execute_with_guard():
+    """Verify execute_with_guard wraps fn with normalization + validation."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64, input_clamp=10.0)
+    
+    # Simple identity function
+    ok, result = guard.execute_with_guard(
+        fn=lambda x: x * 2,
+        input_tensor=torch.tensor([[5.0, 3.0]]),
+        stage="double",
+    )
+    assert ok is True
+    assert torch.allclose(result, torch.tensor([[10.0, 6.0]]))
+    
+    # Function that produces NaN — should fallback
+    fallback = torch.zeros(1, 2)
+    ok, result = guard.execute_with_guard(
+        fn=lambda x: x * float('nan'),
+        input_tensor=torch.tensor([[5.0, 3.0]]),
+        stage="nan_fn",
+        fallback=fallback,
+    )
+    assert ok is False
+    assert torch.allclose(result, fallback)
+    
+    # Function that raises — should fallback
+    def bad_fn(x):
+        raise RuntimeError("oops")
+    ok, result = guard.execute_with_guard(
+        fn=bad_fn,
+        input_tensor=torch.tensor([[1.0]]),
+        stage="error_fn",
+        fallback=torch.zeros(1, 1),
+    )
+    assert ok is False
+    
+    print("✅ test_execution_guard_execute_with_guard PASSED")
+
+
+def test_execution_guard_validation_summary():
+    """Verify validation summary aggregates correctly."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64)
+    
+    guard.validate_output(torch.randn(2, 64), stage="ok1")
+    guard.validate_output(torch.randn(2, 64), stage="ok2")
+    guard.validate_output(torch.full((2, 64), float('nan')), stage="fail")
+    
+    summary = guard.get_validation_summary()
+    assert summary["total"] == 3
+    assert summary["valid_count"] == 2
+    assert summary["invalid_count"] == 1
+    assert abs(summary["success_rate"] - 2/3) < 1e-6
+    
+    print("✅ test_execution_guard_validation_summary PASSED")
+
+
+def test_execution_guard_reset():
+    """Verify reset clears all state."""
+    from aeon_core import DeterministicExecutionGuard
+    
+    guard = DeterministicExecutionGuard(hidden_dim=64)
+    guard.validate_output(torch.randn(2, 64), stage="test")
+    guard.fingerprint("test", torch.ones(1))
+    guard.reset()
+    
+    summary = guard.get_validation_summary()
+    assert summary["total"] == 0
+    assert summary["fingerprints"] == {}
+    
+    print("✅ test_execution_guard_reset PASSED")
+
+
+# ============================================================================
+# INTEGRATION TESTS — new components in reasoning pipeline
+# ============================================================================
+
+def test_reasoning_core_integrity_report():
+    """Verify reasoning_core produces integrity_report in outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    input_ids = torch.randint(0, config.vocab_size, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    
+    assert 'integrity_report' in result, "Should have integrity_report"
+    report = result['integrity_report']
+    assert 'global_health' in report
+    assert 'subsystem_health' in report
+    
+    assert 'progress_summary' in result, "Should have progress_summary"
+    summary = result['progress_summary']
+    assert 'phases' in summary
+    
+    print("✅ test_reasoning_core_integrity_report PASSED")
+
+
+def test_reasoning_core_progress_tracking():
+    """Verify progress_tracker records phases during reasoning_core."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    input_ids = torch.randint(0, config.vocab_size, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    
+    summary = result['progress_summary']
+    # Should have recorded meta_loop and integration phases
+    assert "meta_loop" in summary["phases"], "meta_loop phase should be tracked"
+    assert "integration" in summary["phases"], "integration phase should be tracked"
+    
+    print("✅ test_reasoning_core_progress_tracking PASSED")
+
+
+def test_reasoning_core_deterministic_guard():
+    """Verify DeterministicExecutionGuard is active in reasoning pipeline."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    
+    input_ids = torch.randint(0, config.vocab_size, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    
+    # Execution guard should have fingerprinted the integration output
+    summary = model.execution_guard.get_validation_summary()
+    assert summary["total"] >= 1, "Should have at least 1 validation"
+    assert "integration" in summary["fingerprints"], "Should fingerprint integration"
+    
+    print("✅ test_reasoning_core_deterministic_guard PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -6954,6 +7519,31 @@ if __name__ == '__main__':
     test_lipschitz_constant_finite()
     test_entropy_loss_consistency()
     test_rel_error_clamp()
+    
+    # System integrity, progress tracking & deterministic execution tests
+    test_integrity_monitor_record_and_health()
+    test_integrity_monitor_anomaly_detection()
+    test_integrity_monitor_checksum()
+    test_integrity_monitor_global_health()
+    test_integrity_monitor_report()
+    test_integrity_monitor_reset()
+    test_integrity_monitor_thread_safety()
+    test_progress_tracker_phase_lifecycle()
+    test_progress_tracker_checkpoint_retrieval()
+    test_progress_tracker_rollback()
+    test_progress_tracker_finish_run()
+    test_progress_tracker_failed_phases()
+    test_progress_tracker_max_checkpoints()
+    test_progress_tracker_reset()
+    test_execution_guard_normalize_input()
+    test_execution_guard_validate_output()
+    test_execution_guard_fingerprint()
+    test_execution_guard_execute_with_guard()
+    test_execution_guard_validation_summary()
+    test_execution_guard_reset()
+    test_reasoning_core_integrity_report()
+    test_reasoning_core_progress_tracking()
+    test_reasoning_core_deterministic_guard()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
