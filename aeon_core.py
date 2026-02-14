@@ -13079,6 +13079,8 @@ class AEONDeltaV3(nn.Module):
     
     # Recovery pressure scaling: 0.1 means ~10 recoveries reach max pressure
     _RECOVERY_PRESSURE_RATE = 0.1
+    # Health threshold below which a subsystem is considered degraded
+    _SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD = 0.5
 
     def _compute_recovery_pressure(self) -> float:
         """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
@@ -13662,6 +13664,13 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.begin_phase("safety")
         diversity_results = self._compute_diversity(factors, B, device, fast)
         topo_results = self._compute_topology(factors, iterations, B, device, fast)
+        
+        # 3a. Record diversity health — low diversity indicates thought
+        # collapse, which is a critical architectural failure mode.
+        _diversity_score = float(diversity_results['diversity'].mean().item())
+        self.integrity_monitor.record_health("diversity", _diversity_score, {
+            "mean_diversity": _diversity_score,
+        })
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -14393,6 +14402,7 @@ class AEONDeltaV3(nn.Module):
                 high_uncertainty = uncertainty > 0.5
         
         # 5f. Causal context — retrieve historical context, then store current
+        self.provenance_tracker.record_before("causal_context", C_star)
         if self.causal_context is not None:
             # 5f-i. Retrieve: pull top-k causally-relevant context entries
             # accumulated from prior forward passes and blend as a residual.
@@ -14417,6 +14427,7 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=causal_w,
                 tier="short_term",
             )
+        self.provenance_tracker.record_after("causal_context", C_star)
         
         # 6. Memory fusion (delegated to helper)
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
@@ -14542,6 +14553,16 @@ class AEONDeltaV3(nn.Module):
                         "final_score": critic_result.get("final_score", 0.0),
                         "trigger": "ns_violation",
                     })
+                    # Record NS-violation-triggered auto-critic in error
+                    # evolution so the system learns from self-critique
+                    # outcomes across all trigger paths, not just the
+                    # post-integration metacognitive path.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="ns_violation_auto_critic",
+                            strategy_used="auto_critic",
+                            success=revised is not None and torch.isfinite(revised).all(),
+                        )
         
         # 8b4. Uncertainty-triggered meta-cognitive cycle — when uncertainty
         # is high, audit patterns indicate instability, topology detects
@@ -14582,6 +14603,15 @@ class AEONDeltaV3(nn.Module):
                 "final_score": critic_result.get("final_score", 0.0),
                 "trigger": _trigger,
             })
+            # Record uncertainty-triggered auto-critic in error evolution
+            # so every self-critique path contributes to evolutionary
+            # learning, not just the post-integration metacognitive path.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class=f"uncertainty_auto_critic_{_trigger}",
+                    strategy_used="auto_critic",
+                    success=revised is not None and torch.isfinite(revised).all(),
+                )
         
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
@@ -14618,6 +14648,26 @@ class AEONDeltaV3(nn.Module):
                 strategy_used="normal",
                 success=True,
             )
+        
+        # 8e-ii. Late-stage integrity feedback — after all subsystem
+        # health records are finalized, check for degraded subsystems and
+        # feed them into error evolution.  This closes the loop between
+        # *late*-stage health recording (causal, hybrid reasoning,
+        # integration) and evolutionary learning, which otherwise only
+        # saw health captured *before* the feedback bus update.
+        if self.error_evolution is not None and not fast:
+            _final_report = self.integrity_monitor.get_integrity_report()
+            _final_healths = _final_report.get("subsystem_health", {})
+            for _sub_name, _sub_health in _final_healths.items():
+                if (isinstance(_sub_health, (int, float))
+                        and math.isfinite(_sub_health)
+                        and _sub_health < self._SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD):
+                    self.error_evolution.record_episode(
+                        error_class=f"subsystem_degraded_{_sub_name}",
+                        strategy_used="integrity_monitor",
+                        success=False,
+                        metadata={"health": _sub_health},
+                    )
         
         # 8f. Post-integration coherence verification — a second coherence
         # pass that includes all subsystem outputs produced during the
@@ -14758,7 +14808,7 @@ class AEONDeltaV3(nn.Module):
             _subsystem_healths = integrity_report.get("subsystem_health", {})
             _degraded = [
                 name for name, h in _subsystem_healths.items()
-                if isinstance(h, (int, float)) and h < 0.5
+                if isinstance(h, (int, float)) and h < self._SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD
             ]
             self.causal_trace.record(
                 "subsystem_health", "aggregated",
@@ -15237,7 +15287,9 @@ class AEONDeltaV3(nn.Module):
             'ewc_loss': ewc_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
-            'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency
+            'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency,
+            'convergence_quality': outputs.get('convergence_quality', 0.0),
+            'uncertainty': outputs.get('uncertainty', 0.0),
         }
     
     def _update_metrics_log(self, outputs, consistency, safety_score):
@@ -15361,6 +15413,14 @@ class AEONDeltaV3(nn.Module):
                 "error_class": error_class,
                 "detail": detail,
             })
+            # Structured error recovery — record the event so error
+            # evolution can learn from generation-time failures and the
+            # system adapts its recovery strategy over time.
+            self.error_recovery.record_event(
+                error_class=error_class,
+                context="generate",
+                success=False,
+            )
             return {
                 'text': '',
                 'status': 'error',
@@ -15422,7 +15482,9 @@ class AEONDeltaV3(nn.Module):
             ("BackboneAdapter", self.backbone_adapter),
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
+            ("RecursiveMetaLoop", self.recursive_meta_loop),
             ("FeedbackBus", self.feedback_bus),
+            ("SlotBinder", self.slot_binder),
             ("SparseFactorization", self.sparse_factors),
             ("DiversityMetric", self.diversity_metric),
             ("TopologyAnalyzer", self.topology_analyzer),
@@ -15430,14 +15492,25 @@ class AEONDeltaV3(nn.Module):
             ("SelfReporter", self.self_reporter),
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
+            ("NeurogenicMemory", self.neurogenic_memory),
+            ("ConsolidatingMemory", self.consolidating_memory),
+            ("TemporalMemory", self.temporal_memory),
             ("MultiModal", self.multimodal),
             ("CausalModel", self.causal_model),
             ("NOTEARSCausal", self.notears_causal),
+            ("CausalWorldModel", self.causal_world_model),
             ("MCTSPlanner", self.mcts_planner),
+            ("ActiveLearner", self.active_learning_planner),
             ("HierarchicalVAE", self.hierarchical_vae),
             ("ModuleCoherence", self.module_coherence),
-            ("TemporalMemory", self.temporal_memory),
-            ("CausalWorldModel", self.causal_world_model),
+            ("ComplexityEstimator", self.complexity_estimator),
+            ("TrustScorer", self.trust_scorer),
+            ("NSConsistency", self.ns_consistency_checker),
+            ("CrossValidator", self.cross_validator),
+            ("AutoCritic", self.auto_critic),
+            ("HybridReasoning", self.hybrid_reasoning),
+            ("UnifiedSimulator", self.unified_simulator),
+            ("MetaRecovery", self.meta_recovery),
         ]
         
         for name, module in modules:
