@@ -15579,6 +15579,10 @@ class AEONDeltaV3(nn.Module):
         # When AutoCriticLoop produces a revised candidate, penalize low
         # critic scores so that the generator learns to produce outputs
         # that satisfy the critic without needing revision.
+        # Note: _critic_score is a Python float (from .item()), so this
+        # loss is non-differentiable through the critic itself — it acts
+        # as a training-level regularization signal that encourages the
+        # overall model to produce outputs the critic accepts.
         auto_critic_loss = torch.tensor(0.0, device=self.device)
         _critic_score = outputs.get('auto_critic_final_score', None)
         if _critic_score is not None and isinstance(_critic_score, (int, float)):
