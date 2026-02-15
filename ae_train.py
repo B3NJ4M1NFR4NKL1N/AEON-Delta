@@ -514,8 +514,9 @@ class GumbelVectorQuantizer(nn.Module):
         with torch.no_grad():
             self.global_step += 1
             self.total_count += indices.size(0)
-            used = indices.unique()
-            self.code_usage[used] += 1
+            self.code_usage.scatter_add_(
+                0, indices, torch.ones_like(indices, dtype=self.code_usage.dtype)
+            )
             self.anneal_temperature()
 
     def anneal_temperature(self):

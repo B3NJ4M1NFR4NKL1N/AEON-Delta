@@ -16833,9 +16833,10 @@ class AEONTrainer:
             for batch in pbar:
                 metrics = self.train_step(batch)
                 
-                # Accumulate
+                # Accumulate (skip NaN/Inf to prevent poisoning epoch averages)
                 for k, v in metrics.items():
-                    epoch_metrics[k].append(v)
+                    if isinstance(v, (int, float)) and not (math.isnan(v) or math.isinf(v)):
+                        epoch_metrics[k].append(v)
                 
                 # Log
                 if self.global_step % self.config.log_interval == 0:
