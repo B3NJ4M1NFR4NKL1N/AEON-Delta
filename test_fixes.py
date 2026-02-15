@@ -15025,6 +15025,11 @@ def test_causal_quality_in_metacognitive_trigger():
     assert "low_causal_quality" in result["triggers_active"]
     assert abs(result["trigger_score"] - _w) < 1e-9
 
+    # Exactly at threshold (0.3) → should NOT trigger (strict <)
+    trigger.reset()
+    result_boundary = trigger.evaluate(causal_quality=0.3)
+    assert "low_causal_quality" not in result_boundary["triggers_active"]
+
     # High causal quality → should NOT trigger
     trigger.reset()
     result_high = trigger.evaluate(causal_quality=0.8)

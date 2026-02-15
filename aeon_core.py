@@ -12380,7 +12380,7 @@ class MetaCognitiveRecursionTrigger:
             "reconciliation_disagreement": "coherence_deficit",
             "world_model_prediction_error": "world_model_surprise",
             "low_causal_quality": "low_causal_quality",
-            "mcts_low_confidence": "low_causal_quality",
+            "mcts_low_confidence": "uncertainty",
         }
 
         # Accumulate boost factors for each signal
@@ -14625,6 +14625,10 @@ class AEONDeltaV3(nn.Module):
             # uncertainty so that metacognitive cycles activate.  This
             # closes the loop between planning confidence and reasoning
             # depth, ensuring that uncertain plans trigger deeper reasoning.
+            # MCTS root_value is bounded [0, 1] by the value network's
+            # tanh output; 0.2 marks the bottom quintile of expected
+            # planning outcomes.  Scale 0.15 keeps maximum boost modest
+            # (≤0.12) relative to the [0, 1] uncertainty range.
             _MCTS_LOW_VALUE_THRESHOLD = 0.2
             _MCTS_UNCERTAINTY_SCALE = 0.15
             _mcts_root_val = mcts_results.get("root_value", 0.0)
@@ -14850,6 +14854,10 @@ class AEONDeltaV3(nn.Module):
             # of state space.  Escalate uncertainty so metacognitive cycles
             # activate when the exploration signal is strong, closing the
             # loop between active learning and reasoning depth.
+            # Intrinsic reward is the prediction variance of the
+            # uncertainty model; 0.5 is the median of typical outputs.
+            # Scale 0.1 limits maximum boost to ~0.1 to avoid
+            # over-triggering from exploration noise.
             _AL_INTRINSIC_THRESHOLD = 0.5
             _AL_UNCERTAINTY_SCALE = 0.1
             _al_intrinsic = active_learning_results.get("intrinsic_reward", 0.0)
@@ -14890,6 +14898,10 @@ class AEONDeltaV3(nn.Module):
             # with the observed state trajectory, warranting deeper
             # reasoning to reconcile the discrepancy.
             if cf_next is not None and torch.isfinite(cf_next).all():
+                # L2 divergence between counterfactual prediction and
+                # current state; 0.5 corresponds to ~1 standard deviation
+                # for unit-normed hidden representations.  Scale 0.1
+                # keeps boost proportional but bounded.
                 _UNIFIED_SIM_DIVERGENCE_THRESHOLD = 0.5
                 _UNIFIED_SIM_UNCERTAINTY_SCALE = 0.1
                 _cf_divergence = float((cf_next - C_star).norm(dim=-1).mean().item())
@@ -15135,6 +15147,8 @@ class AEONDeltaV3(nn.Module):
                     # Escalate uncertainty when hybrid reasoning conclusions
                     # violate neuro-symbolic consistency rules, so that
                     # metacognitive cycles activate on reasoning failures.
+                    # Scale 0.15 per violation; typically 1–3 violations
+                    # occur, yielding a boost of 0.15–0.45.
                     _HR_VIOLATION_UNCERTAINTY_SCALE = 0.15
                     _hr_boost = min(
                         1.0 - uncertainty,
