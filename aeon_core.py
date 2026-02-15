@@ -2658,6 +2658,7 @@ class AEONConfig:
     metacognitive_max_recursions: int = 2
     metacognitive_tightening_factor: float = 0.5
     metacognitive_extra_iterations: int = 10
+    metacognitive_blend_alpha: float = 0.3
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
@@ -14206,12 +14207,18 @@ class AEONDeltaV3(nn.Module):
                 # Restore original parameters
                 self.meta_loop.convergence_threshold = orig_threshold
                 self.meta_loop.max_iterations = orig_max_iter
-                # Only accept deeper result if it's finite and converged better
+                # Accept deeper result if it's finite and converged better;
+                # otherwise partially blend it so deeper reasoning still
+                # contributes proportional to its relative quality, closing
+                # the gap where rejected deeper results were silently
+                # discarded without any benefit to the reasoning state.
                 _metacog_accepted = False
+                _metacog_strategy = "rejected"
                 if torch.isfinite(C_star_deeper).all():
                     deeper_rate = meta_deeper.get("convergence_rate", 0.0)
                     if deeper_rate >= convergence_quality_scalar:
                         _metacog_accepted = True
+                        _metacog_strategy = "full_accept"
                         C_star = C_star_deeper
                         # Re-extract factors with refined C_star
                         factors, embedded_factors = self.sparse_factors(C_star)
@@ -14225,16 +14232,38 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
+                    elif deeper_rate > 0:
+                        # Partial blend: the deeper result didn't converge
+                        # better overall, but may contain useful signal.
+                        # Blend proportionally to relative quality so the
+                        # system still benefits from the deeper pass.
+                        # Note: deeper_rate < convergence_quality_scalar here
+                        # (guarded by the if/elif chain), so the ratio is <1.
+                        _blend_alpha = self.config.metacognitive_blend_alpha * min(
+                            1.0, deeper_rate / max(convergence_quality_scalar, 1e-6)
+                        )
+                        _blend_alpha = min(_blend_alpha, self.config.metacognitive_blend_alpha)
+                        C_star = C_star * (1.0 - _blend_alpha) + C_star_deeper * _blend_alpha
+                        _metacog_strategy = "partial_blend"
+                        self.audit_log.record(
+                            "metacognitive_recursion", "partial_blend", {
+                                "deeper_rate": deeper_rate,
+                                "original_rate": convergence_quality_scalar,
+                                "blend_alpha": _blend_alpha,
+                            },
+                        )
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class="metacognitive_rerun",
-                        strategy_used="deeper_meta_loop",
+                        strategy_used=_metacog_strategy,
                         success=_metacog_accepted,
                         metadata={
                             "triggers": metacognitive_info.get("triggers_active", []),
+                            "strategy": _metacog_strategy,
+                            "partial_blend_applied": _metacog_strategy == "partial_blend",
                         },
                     )
         
@@ -14555,13 +14584,22 @@ class AEONDeltaV3(nn.Module):
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.consolidating_memory.store(C_star[i].detach())
-            # Retrieve semantic prototypes and add as residual context
+            # Retrieve semantic prototypes and add as residual context.
+            # Scale the blend weight by average retrieval similarity so
+            # that high-confidence retrievals contribute more strongly
+            # and low-relevance retrievals are dampened, closing the gap
+            # where consolidating memory used a fixed blend weight
+            # regardless of retrieval quality.
+            _base_consolidating_weight = self.config.consolidating_semantic_weight
             for i in range(B):
                 ret = self.consolidating_memory.retrieve(C_star[i].detach(), k=3)
                 semantic_items = ret.get('semantic', [])
                 if semantic_items:
                     vecs = torch.stack([v for v, _s in semantic_items])
-                    C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
+                    sims = [s for _v, s in semantic_items]
+                    avg_sim = sum(sims) / max(len(sims), 1)
+                    _adaptive_weight = _base_consolidating_weight * max(0.0, min(1.0, avg_sim))
+                    C_star[i] = C_star[i] + _adaptive_weight * vecs.mean(dim=0).to(device)
         
         # 5c4. Temporal memory — store current states with importance-based
         # retention and retrieve temporally-relevant patterns.  Each stored
@@ -15215,9 +15253,28 @@ class AEONDeltaV3(nn.Module):
                 and not _ns_already_handled):
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
-            if revised is not None and torch.isfinite(revised).all():
+            _critic_revision_accepted = revised is not None and torch.isfinite(revised).all()
+            if _critic_revision_accepted:
                 z_out = revised
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
+            # When auto-critic revision fails, consult error evolution
+            # for a historically successful recovery strategy.  This
+            # closes the loop between the error evolution tracker and
+            # the auto-critic retry path, ensuring that accumulated
+            # recovery knowledge is applied rather than passively logged.
+            if not _critic_revision_accepted and self.error_evolution is not None:
+                _evolved_critic_strategy = self.error_evolution.get_best_strategy(
+                    "uncertainty_auto_critic_uncertainty"
+                )
+                if _evolved_critic_strategy == "auto_critic":
+                    # Retry with the same critic — the evolved strategy
+                    # confirms auto-critic as historically effective
+                    _retry_result = self.auto_critic(z_out)
+                    _retry_revised = _retry_result.get("candidate", None)
+                    if _retry_revised is not None and torch.isfinite(_retry_revised).all():
+                        z_out = _retry_revised
+                        _critic_revision_accepted = True
+                        _auto_critic_final_score = _retry_result.get("final_score", 0.0)
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -15239,10 +15296,28 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.record_episode(
                     error_class=f"uncertainty_auto_critic_{_trigger}",
                     strategy_used="auto_critic",
-                    success=revised is not None and torch.isfinite(revised).all(),
+                    success=_critic_revision_accepted,
                 )
         
         # 8c. Record integration health and finalize progress
+        # 8c-0. Auto-critic-score-driven safety adaptation — when the
+        # auto-critic produced a low confidence score, tighten the safety
+        # threshold proportionally.  This closes the gap where the
+        # auto-critic score was stored in the output dict but never fed
+        # back into active safety decisions within the same forward pass.
+        if _auto_critic_final_score is not None and not fast:
+            _critic_quality = float(_auto_critic_final_score)
+            if math.isfinite(_critic_quality) and _critic_quality < self.config.auto_critic_threshold:
+                _critic_safety_factor = max(0.5, _critic_quality / max(self.config.auto_critic_threshold, 1e-6))
+                adaptive_safety_threshold = min(
+                    adaptive_safety_threshold,
+                    adaptive_safety_threshold * _critic_safety_factor,
+                )
+                self.audit_log.record("auto_critic", "safety_tightened", {
+                    "critic_score": _critic_quality,
+                    "safety_factor": _critic_safety_factor,
+                    "new_threshold": adaptive_safety_threshold,
+                })
         integration_healthy = validation_result["valid"] and output_valid
         self.integrity_monitor.record_health(
             "integration",
@@ -15625,6 +15700,7 @@ class AEONDeltaV3(nn.Module):
                 if _provenance.get("contributions") else None
             ),
             "uncertainty_sources": uncertainty_sources,
+            "auto_critic_score": _auto_critic_final_score,
         }
         
         outputs = {
