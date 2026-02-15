@@ -265,7 +265,9 @@ class TrainingMonitor:
         
     def start_training(self, phase: str, total_epochs: int, total_samples: int):
         self.start_time = time.time()
-        self.batch_metrics[phase] = []
+        # Only reset known phase keys; the phase argument is used for display
+        if phase in self.batch_metrics:
+            self.batch_metrics[phase] = []
         self.logger.info("=" * 75)
         self.logger.info(f"🚀 НАЧАЛО ОБУЧЕНИЯ - {phase}")
         self.logger.info(f"   Всего эпох: {total_epochs}")
@@ -1433,7 +1435,11 @@ class SafeThoughtAETrainerV4:
         )
         
         total_batches = len(loader)
-        total_steps = epochs * total_batches // self.config.gradient_accumulation_steps
+        # Ceiling division to ensure at least 1 total step
+        total_steps = max(
+            (epochs * total_batches + self.config.gradient_accumulation_steps - 1) // self.config.gradient_accumulation_steps,
+            1
+        )
         
         warmup_steps = min(self.config.warmup_steps, total_steps // 10)
         self.scheduler = WarmupCosineScheduler(
@@ -1464,6 +1470,7 @@ class SafeThoughtAETrainerV4:
             
             accumulated_loss = 0.0
             num_accumulated = 0
+            outputs = None
             
             for batch_idx, (batch,) in enumerate(loader):
                 outputs = self.train_step(batch)
@@ -1502,7 +1509,7 @@ class SafeThoughtAETrainerV4:
                         "cb%": outputs.get('codebook_usage_%', 0)
                     }, log_every=log_every_batch)
             
-            if num_accumulated > 0:
+            if num_accumulated > 0 and outputs is not None:
                 avg_loss = accumulated_loss / max(num_accumulated, 1)
                 epoch_metrics["total"] += avg_loss
                 if not (math.isnan(outputs['recon_loss']) or math.isinf(outputs['recon_loss'])):
