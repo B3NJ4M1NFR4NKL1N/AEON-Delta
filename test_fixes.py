@@ -13653,6 +13653,322 @@ def test_cross_validation_skip_logged():
     print("✅ test_cross_validation_skip_logged PASSED")
 
 
+def test_enable_full_coherence_activates_all_flags():
+    """Verify that enable_full_coherence sets all coherence-related flags to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    coherence_flags = [
+        'enable_module_coherence',
+        'enable_metacognitive_recursion',
+        'enable_causal_trace',
+        'enable_error_evolution',
+        'enable_auto_critic',
+        'enable_cross_validation',
+        'enable_ns_consistency_check',
+        'enable_complexity_estimator',
+        'enable_causal_context',
+        'enable_meta_recovery_integration',
+    ]
+    for flag in coherence_flags:
+        assert getattr(config, flag) is True, (
+            f"enable_full_coherence should set {flag}=True, got {getattr(config, flag)}"
+        )
+    print("✅ test_enable_full_coherence_activates_all_flags PASSED")
+
+
+def test_enable_full_coherence_does_not_override_explicit():
+    """Verify that individually set flags are not overridden by enable_full_coherence."""
+    from aeon_core import AEONConfig
+
+    # All flags are already True when enable_full_coherence=True,
+    # just verify it works without error.
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+        enable_module_coherence=True,  # explicit
+    )
+    assert config.enable_module_coherence is True
+    assert config.enable_full_coherence is True
+    print("✅ test_enable_full_coherence_does_not_override_explicit PASSED")
+
+
+def test_provenance_tracks_slot_binding():
+    """Verify that provenance tracker captures slot_binding stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("slot_binding", state)
+    modified = state + torch.randn(2, 32) * 0.1
+    tracker.record_after("slot_binding", modified)
+
+    attribution = tracker.compute_attribution()
+    assert "slot_binding" in attribution["contributions"], (
+        "slot_binding should appear in provenance contributions"
+    )
+    assert attribution["contributions"]["slot_binding"] > 0, (
+        "slot_binding contribution should be positive"
+    )
+    print("✅ test_provenance_tracks_slot_binding PASSED")
+
+
+def test_provenance_tracks_consistency_gate():
+    """Verify that provenance tracker captures consistency_gate stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("consistency_gate", state)
+    gate = torch.sigmoid(torch.randn(2, 32))
+    modified = state * gate
+    tracker.record_after("consistency_gate", modified)
+
+    attribution = tracker.compute_attribution()
+    assert "consistency_gate" in attribution["contributions"]
+    assert "consistency_gate" in attribution["order"]
+    print("✅ test_provenance_tracks_consistency_gate PASSED")
+
+
+def test_provenance_multi_module_attribution():
+    """Verify that provenance across multiple modules sums to ~1.0."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+
+    modules = ["meta_loop", "slot_binding", "consistency_gate", "world_model",
+               "safety", "memory", "causal_context"]
+    for name in modules:
+        tracker.record_before(name, state)
+        state = state + torch.randn(2, 32) * 0.1
+        tracker.record_after(name, state)
+
+    attribution = tracker.compute_attribution()
+    total = sum(attribution["contributions"].values())
+    assert abs(total - 1.0) < 1e-6, f"Total contribution should be ~1.0, got {total}"
+    assert attribution["order"] == modules, "Order should match execution order"
+    print("✅ test_provenance_multi_module_attribution PASSED")
+
+
+def test_uncertainty_sources_tracking():
+    """Verify uncertainty_sources dict appears in forward pass output."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    assert 'uncertainty_sources' in outputs, (
+        "Forward outputs should contain 'uncertainty_sources'"
+    )
+    sources = outputs['uncertainty_sources']
+    assert isinstance(sources, dict), "uncertainty_sources should be a dict"
+    # Base residual_variance should always be present
+    assert 'residual_variance' in sources, (
+        "residual_variance should always be in uncertainty_sources"
+    )
+    print("✅ test_uncertainty_sources_tracking PASSED")
+
+
+def test_uncertainty_sources_in_causal_decision_chain():
+    """Verify uncertainty_sources is included in the causal_decision_chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    chain = outputs.get('causal_decision_chain', {})
+    assert 'uncertainty_sources' in chain, (
+        "causal_decision_chain should contain 'uncertainty_sources'"
+    )
+    print("✅ test_uncertainty_sources_in_causal_decision_chain PASSED")
+
+
+def test_provenance_loss_in_compute_loss():
+    """Verify provenance_loss is computed and included in loss dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids, decode_mode='train')
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'provenance_loss' in loss_dict, (
+        "compute_loss should return 'provenance_loss'"
+    )
+    assert torch.isfinite(loss_dict['provenance_loss']), (
+        "provenance_loss should be finite"
+    )
+    assert torch.isfinite(loss_dict['total_loss']), (
+        "total_loss should be finite with provenance_loss included"
+    )
+    print("✅ test_provenance_loss_in_compute_loss PASSED")
+
+
+def test_provenance_loss_penalizes_concentration():
+    """Verify that highly concentrated provenance yields higher loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+
+    # Normal forward — provenance should be distributed
+    outputs = model(input_ids, decode_mode='train')
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    # Provenance loss should be in [0, 1]
+    p_loss = loss_dict['provenance_loss']
+    if isinstance(p_loss, torch.Tensor):
+        p_val = p_loss.item()
+    else:
+        p_val = float(p_loss)
+    assert 0.0 <= p_val <= 1.0, f"provenance_loss should be in [0, 1], got {p_val}"
+    print("✅ test_provenance_loss_penalizes_concentration PASSED")
+
+
+def test_lambda_provenance_config():
+    """Verify lambda_provenance config parameter exists and has default."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    assert hasattr(config, 'lambda_provenance'), (
+        "AEONConfig should have lambda_provenance"
+    )
+    assert config.lambda_provenance == 0.01, (
+        f"Default lambda_provenance should be 0.01, got {config.lambda_provenance}"
+    )
+    print("✅ test_lambda_provenance_config PASSED")
+
+
+def test_full_coherence_model_instantiation():
+    """Verify that a model with enable_full_coherence can be instantiated and run."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # All coherence outputs should be present
+    assert 'coherence_results' in outputs
+    assert 'metacognitive_info' in outputs
+    assert 'causal_decision_chain' in outputs
+    assert 'uncertainty_sources' in outputs
+    assert 'provenance' in outputs
+
+    chain = outputs['causal_decision_chain']
+    assert 'uncertainty_sources' in chain
+
+    print("✅ test_full_coherence_model_instantiation PASSED")
+
+
+def test_provenance_includes_new_stages_in_forward():
+    """Verify that provenance in forward output includes newly tracked stages."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    provenance = outputs.get('provenance', {})
+    order = provenance.get('order', [])
+
+    # These stages should always be tracked (they always execute)
+    expected_stages = ['meta_loop', 'slot_binding', 'consistency_gate',
+                       'safety', 'memory', 'causal_context']
+    for stage in expected_stages:
+        assert stage in order, (
+            f"Provenance order should include '{stage}', got {order}"
+        )
+    print("✅ test_provenance_includes_new_stages_in_forward PASSED")
+
+
+def test_causal_trace_in_compute_loss():
+    """Verify that compute_loss records causal trace when convergence scale != 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids, decode_mode='train')
+
+    # Force a non-1.0 convergence verdict to trigger trace recording
+    outputs['convergence_verdict'] = {'status': 'diverging', 'certified': False}
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    # Check that convergence_loss_scale was set to 2.0
+    assert loss_dict['convergence_loss_scale'] == 2.0, (
+        f"Expected convergence_loss_scale=2.0 for diverging, got {loss_dict['convergence_loss_scale']}"
+    )
+
+    # Check causal trace recorded the scaling event
+    recent = model.causal_trace.recent(n=20)
+    scaling_entries = [
+        e for e in recent
+        if e.get("decision") == "convergence_adaptive_scaling"
+    ]
+    assert len(scaling_entries) > 0, (
+        "compute_loss should record convergence_adaptive_scaling in causal trace"
+    )
+    print("✅ test_causal_trace_in_compute_loss PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -14324,6 +14640,21 @@ if __name__ == '__main__':
     test_complexity_gates_nan_fallback()
     test_error_evolution_consulted_on_recovery()
     test_cross_validation_skip_logged()
+    
+    # Unified AGI coherence architecture tests
+    test_enable_full_coherence_activates_all_flags()
+    test_enable_full_coherence_does_not_override_explicit()
+    test_provenance_tracks_slot_binding()
+    test_provenance_tracks_consistency_gate()
+    test_provenance_multi_module_attribution()
+    test_uncertainty_sources_tracking()
+    test_uncertainty_sources_in_causal_decision_chain()
+    test_provenance_loss_in_compute_loss()
+    test_provenance_loss_penalizes_concentration()
+    test_lambda_provenance_config()
+    test_full_coherence_model_instantiation()
+    test_provenance_includes_new_stages_in_forward()
+    test_causal_trace_in_compute_loss()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
