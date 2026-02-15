@@ -2494,6 +2494,12 @@ class AEONConfig:
     lambda_cross_validation: float = 0.05
     lambda_auto_critic: float = 0.02
     
+    # ===== AGI COHERENCE FEEDBACK THRESHOLDS =====
+    provenance_dominance_threshold: float = 0.6
+    provenance_dampen_factor: float = 0.15
+    intra_pass_feedback_threshold: float = 0.3
+    intra_pass_feedback_scale: float = 0.05
+    
     # ===== LORA =====
     lora_rank: int = 8
     lora_alpha: int = 16
@@ -14055,8 +14061,8 @@ class AEONDeltaV3(nn.Module):
         # only caching feedback for the next pass.  The 0.3 threshold
         # triggers at a lower bar than the metacognitive recursion (0.5+)
         # to provide a lightweight correction path.
-        _INTRA_PASS_FEEDBACK_THRESHOLD = 0.3
-        _INTRA_PASS_FEEDBACK_SCALE = 0.05
+        _INTRA_PASS_FEEDBACK_THRESHOLD = self.config.intra_pass_feedback_threshold
+        _INTRA_PASS_FEEDBACK_SCALE = self.config.intra_pass_feedback_scale
         if (uncertainty > _INTRA_PASS_FEEDBACK_THRESHOLD
                 and not fast
                 and self._cached_feedback is not None):
@@ -14429,7 +14435,7 @@ class AEONDeltaV3(nn.Module):
                             "empty_ratio": _memory_empty_count / max(B, 1),
                         })
                 except Exception as _consol_err:
-                    logger.debug(f"Consolidation during staleness failed: {_consol_err}")
+                    logger.warning(f"HierarchicalMemory consolidation during staleness failed: {_consol_err}")
             # Also consolidate ConsolidatingMemory if available — promotes
             # working memory items to episodic/semantic tiers, increasing
             # the pool of retrievable knowledge for subsequent queries.
@@ -14437,7 +14443,7 @@ class AEONDeltaV3(nn.Module):
                 try:
                     self.consolidating_memory.consolidate()
                 except Exception as _consol_err2:
-                    logger.debug(f"ConsolidatingMemory consolidation failed: {_consol_err2}")
+                    logger.warning(f"ConsolidatingMemory consolidation during staleness failed: {_consol_err2}")
             if high_uncertainty:
                 uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
                 uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
@@ -15391,13 +15397,13 @@ class AEONDeltaV3(nn.Module):
         _provenance = self.provenance_tracker.compute_attribution()
         
         # 8h-0. Provenance-driven dominance dampening — when a single module
-        # contributes >60% of the total state change, dampen the output
+        # contributes >threshold of the total state change, dampen the output
         # toward the pre-dominant baseline (z_in) to prevent module
         # monoculture.  This makes provenance an *active* architectural
         # signal rather than a passive log, ensuring that the system's
         # conclusions reflect balanced multi-module cooperation.
-        _PROVENANCE_DOMINANCE_THRESHOLD = 0.6
-        _PROVENANCE_DAMPEN_FACTOR = 0.15
+        _PROVENANCE_DOMINANCE_THRESHOLD = self.config.provenance_dominance_threshold
+        _PROVENANCE_DAMPEN_FACTOR = self.config.provenance_dampen_factor
         _contributions = _provenance.get('contributions', {})
         if _contributions and len(_contributions) >= 2:
             _max_contrib = max(_contributions.values())
