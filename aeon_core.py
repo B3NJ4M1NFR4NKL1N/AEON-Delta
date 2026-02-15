@@ -15478,6 +15478,7 @@ class AEONDeltaV3(nn.Module):
         # balanced cooperation; low entropy indicates one module dominates.
         # Uses the negative entropy of provenance contributions as a loss.
         provenance_loss = torch.tensor(0.0, device=self.device)
+        _PROVENANCE_ENTROPY_EPS = 1e-10
         _provenance_data = outputs.get('provenance', {})
         _contributions = _provenance_data.get('contributions', {})
         if _contributions and len(_contributions) >= 2:
@@ -15486,9 +15487,9 @@ class AEONDeltaV3(nn.Module):
                 _contrib_t = torch.tensor(
                     _contrib_vals, device=self.device, dtype=torch.float32,
                 )
-                _contrib_t = _contrib_t / (_contrib_t.sum() + 1e-10)
+                _contrib_t = _contrib_t / (_contrib_t.sum() + _PROVENANCE_ENTROPY_EPS)
                 _entropy = -(
-                    _contrib_t * torch.log(_contrib_t + 1e-10)
+                    _contrib_t * torch.log(_contrib_t + _PROVENANCE_ENTROPY_EPS)
                 ).sum()
                 _max_entropy = math.log(len(_contrib_vals))
                 if _max_entropy > 0:

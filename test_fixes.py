@@ -13681,18 +13681,22 @@ def test_enable_full_coherence_activates_all_flags():
 
 
 def test_enable_full_coherence_does_not_override_explicit():
-    """Verify that individually set flags are not overridden by enable_full_coherence."""
+    """Verify that enable_full_coherence works alongside explicit flag settings."""
     from aeon_core import AEONConfig
 
-    # All flags are already True when enable_full_coherence=True,
-    # just verify it works without error.
+    # When enable_full_coherence=True and a flag is already explicitly True,
+    # the flag should remain True.
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
         enable_full_coherence=True,
-        enable_module_coherence=True,  # explicit
+        enable_module_coherence=True,  # explicitly set
     )
     assert config.enable_module_coherence is True
     assert config.enable_full_coherence is True
+    # All other flags should also be True from the preset
+    assert config.enable_metacognitive_recursion is True
+    assert config.enable_causal_trace is True
+    assert config.enable_error_evolution is True
     print("✅ test_enable_full_coherence_does_not_override_explicit PASSED")
 
 
@@ -13832,7 +13836,7 @@ def test_provenance_loss_in_compute_loss():
 
 
 def test_provenance_loss_penalizes_concentration():
-    """Verify that highly concentrated provenance yields higher loss."""
+    """Verify that concentrated provenance yields higher loss than distributed."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -13843,19 +13847,52 @@ def test_provenance_loss_penalizes_concentration():
 
     B, L = 2, 16
     input_ids = torch.randint(1, 1000, (B, L))
-
-    # Normal forward — provenance should be distributed
-    outputs = model(input_ids, decode_mode='train')
     targets = torch.randint(1, 1000, (B, L))
-    loss_dict = model.compute_loss(outputs, targets)
 
-    # Provenance loss should be in [0, 1]
-    p_loss = loss_dict['provenance_loss']
-    if isinstance(p_loss, torch.Tensor):
-        p_val = p_loss.item()
+    # Normal forward — get provenance loss
+    outputs = model(input_ids, decode_mode='train')
+    normal_loss = model.compute_loss(outputs, targets)
+    normal_p = normal_loss['provenance_loss']
+
+    # Artificially concentrate provenance — one module dominates
+    concentrated_outputs = dict(outputs)
+    concentrated_outputs['provenance'] = {
+        'contributions': {'meta_loop': 0.99, 'safety': 0.01},
+        'deltas': {'meta_loop': 9.9, 'safety': 0.1},
+        'order': ['meta_loop', 'safety'],
+    }
+    concentrated_loss = model.compute_loss(concentrated_outputs, targets)
+    concentrated_p = concentrated_loss['provenance_loss']
+
+    # Concentrated provenance should yield higher loss
+    if isinstance(concentrated_p, torch.Tensor):
+        cp_val = concentrated_p.item()
     else:
-        p_val = float(p_loss)
-    assert 0.0 <= p_val <= 1.0, f"provenance_loss should be in [0, 1], got {p_val}"
+        cp_val = float(concentrated_p)
+    assert 0.0 <= cp_val <= 1.0, f"provenance_loss should be in [0, 1], got {cp_val}"
+
+    # Artificially distribute provenance — uniform across modules
+    uniform_outputs = dict(outputs)
+    uniform_outputs['provenance'] = {
+        'contributions': {'meta_loop': 0.2, 'safety': 0.2, 'memory': 0.2,
+                          'world_model': 0.2, 'slot_binding': 0.2},
+        'deltas': {'meta_loop': 2.0, 'safety': 2.0, 'memory': 2.0,
+                   'world_model': 2.0, 'slot_binding': 2.0},
+        'order': ['meta_loop', 'safety', 'memory', 'world_model', 'slot_binding'],
+    }
+    uniform_loss = model.compute_loss(uniform_outputs, targets)
+    uniform_p = uniform_loss['provenance_loss']
+
+    if isinstance(uniform_p, torch.Tensor):
+        up_val = uniform_p.item()
+    else:
+        up_val = float(uniform_p)
+
+    # Concentrated should have HIGHER loss than uniform (more penalized)
+    assert cp_val > up_val, (
+        f"Concentrated provenance loss ({cp_val:.4f}) should be higher "
+        f"than uniform provenance loss ({up_val:.4f})"
+    )
     print("✅ test_provenance_loss_penalizes_concentration PASSED")
 
 
