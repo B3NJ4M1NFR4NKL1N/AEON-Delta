@@ -12253,13 +12253,17 @@ class MetaCognitiveRecursionTrigger:
         max_recursions: int = 2,
         tightening_factor: float = 0.5,
         extra_iterations: int = 10,
+        surprise_threshold: float = 0.5,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
         self.tightening_factor = max(0.01, min(tightening_factor, 1.0))
         self.extra_iterations = max(0, extra_iterations)
         self._recursion_count: int = 0
-        self._surprise_threshold = 0.5
+        # Threshold above which world_model_surprise activates the
+        # metacognitive trigger signal.  Configurable so callers can
+        # tune sensitivity to prediction errors.
+        self._surprise_threshold = max(0.0, surprise_threshold)
         # Adaptive signal weights — initialized uniformly; can be
         # adjusted by adapt_weights_from_evolution().
         self._signal_weights: Dict[str, float] = {
@@ -13104,6 +13108,22 @@ class AEONDeltaV3(nn.Module):
         total = stats.get("total", 0)
         return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
 
+    @staticmethod
+    def _encode_state_for_recovery(
+        tensor: torch.Tensor, target_dim: int, device: torch.device,
+    ) -> torch.Tensor:
+        """Encode a tensor into a fixed-size vector for MetaRecoveryLearner.
+
+        Flattens the tensor and either truncates or zero-pads to ``target_dim``,
+        then wraps in a batch dimension ``[1, target_dim]``.
+        """
+        flat = tensor.detach().reshape(-1)
+        if flat.numel() >= target_dim:
+            flat = flat[:target_dim]
+        else:
+            flat = F.pad(flat, (0, target_dim - flat.numel()))
+        return flat.unsqueeze(0).to(device)
+
     def _compute_diversity(
         self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
@@ -13288,17 +13308,9 @@ class AEONDeltaV3(nn.Module):
             if self.meta_recovery is not None:
                 try:
                     _recovery_dim = self.meta_recovery.state_dim
-                    # Encode meaningful error context from the input state
-                    # rather than passing zeros, so the learner can
-                    # differentiate between error conditions.
-                    if z_in.numel() >= _recovery_dim:
-                        _z_flat = z_in.detach().reshape(-1)[:_recovery_dim]
-                    else:
-                        _z_flat = F.pad(
-                            z_in.detach().reshape(-1),
-                            (0, _recovery_dim - z_in.numel()),
-                        )
-                    error_ctx = _z_flat.unsqueeze(0).to(device)
+                    error_ctx = self._encode_state_for_recovery(
+                        z_in, _recovery_dim, device,
+                    )
                     recovery_info = self.meta_recovery(error_ctx)
                     action_idx = recovery_info.get("action", 0)
                     strategy = recovery_info.get("strategy", "unknown")
@@ -13310,11 +13322,12 @@ class AEONDeltaV3(nn.Module):
                     # can update its recovery policy over time.
                     # Use the recovered state as next_state for temporal
                     # difference learning.
-                    if recovered_value is not None and recovered_value.numel() >= _recovery_dim:
-                        _next_flat = recovered_value.detach().reshape(-1)[:_recovery_dim]
+                    if recovered_value is not None:
+                        next_ctx = self._encode_state_for_recovery(
+                            recovered_value, _recovery_dim, device,
+                        )
                     else:
-                        _next_flat = _z_flat
-                    next_ctx = _next_flat.unsqueeze(0).to(device)
+                        next_ctx = error_ctx
                     self.meta_recovery.recovery_buffer.push(
                         state=error_ctx.squeeze(0),
                         action=action_idx,
@@ -14710,14 +14723,9 @@ class AEONDeltaV3(nn.Module):
         if self.meta_recovery is not None and integration_healthy:
             try:
                 _recovery_dim = self.meta_recovery.state_dim
-                if z_out.numel() >= _recovery_dim:
-                    _success_flat = z_out.detach().reshape(-1)[:_recovery_dim]
-                else:
-                    _success_flat = F.pad(
-                        z_out.detach().reshape(-1),
-                        (0, _recovery_dim - z_out.numel()),
-                    )
-                success_ctx = _success_flat.unsqueeze(0).to(device)
+                success_ctx = self._encode_state_for_recovery(
+                    z_out, _recovery_dim, device,
+                )
                 _sanitize_action = 0  # index into MetaRecoveryLearner.STRATEGIES
                 self.meta_recovery.recovery_buffer.push(
                     state=success_ctx.squeeze(0),

@@ -13056,10 +13056,14 @@ def test_world_model_surprise_adapt_weights():
     for _ in range(10):
         tracker.record_episode("world_model_prediction_error", "uncertainty_escalation", success=False)
 
+    summary = tracker.get_error_summary()
+    assert "world_model_prediction_error" in summary["error_classes"]
+    assert summary["error_classes"]["world_model_prediction_error"]["count"] == 10
+
     original_w = trigger._signal_weights["world_model_surprise"]
 
     # Adapt weights
-    trigger.adapt_weights_from_evolution(tracker.get_error_summary())
+    trigger.adapt_weights_from_evolution(summary)
 
     # world_model_surprise should now have a higher weight
     new_w = trigger._signal_weights["world_model_surprise"]
@@ -13074,9 +13078,10 @@ def test_meta_recovery_learner_encodes_real_state():
     """Gap 2: MetaRecoveryLearner receives actual input state encoding
     rather than zero tensors, enabling differentiation between error
     conditions for strategy selection."""
-    from aeon_core import MetaRecoveryLearner
+    from aeon_core import MetaRecoveryLearner, set_seed
     import torch
 
+    set_seed(42)
     learner = MetaRecoveryLearner(state_dim=64, hidden_dim=128)
     learner.eval()
 
@@ -13091,9 +13096,14 @@ def test_meta_recovery_learner_encodes_real_state():
     val_a = result_a["value"]
     val_b = result_b["value"]
 
-    # With random initialization, different inputs should produce different outputs
-    # (not guaranteed to be hugely different, but should not be identical)
     assert val_a.shape == val_b.shape
+    assert torch.isfinite(val_a).all()
+    assert torch.isfinite(val_b).all()
+    # With fixed seed and non-trivial weight initialization, distinct
+    # inputs must produce distinct value estimates.
+    assert not torch.allclose(val_a, val_b), (
+        "Expected different value estimates for different inputs"
+    )
     assert torch.isfinite(val_a).all()
     assert torch.isfinite(val_b).all()
 
