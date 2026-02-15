@@ -521,9 +521,10 @@ class GumbelVectorQuantizer(nn.Module):
 
     def anneal_temperature(self):
         """Anneal temperature towards min_temperature. Call after each training step."""
+        # Clamp exponent to prevent overflow when anneal_rate is very large
         self.temperature = max(
             self.min_temperature,
-            self.temperature * math.exp(-self.anneal_rate),
+            self.temperature * math.exp(max(-self.anneal_rate, -20.0)),
         )
 
     def _compute_stats(self, indices: torch.Tensor) -> dict:
@@ -1342,8 +1343,8 @@ class SafeThoughtAETrainerV4:
                         RuntimeError("NaN/Inf loss in training step")
                     )
                     _error_detail = f"{_err_cls}: {_err_detail}"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Error classifier failed: %s", exc)
             # Identify the dominant provenance module at the point of
             # failure so the error is traceable to its root cause.
             _provenance = outputs.get('provenance', {})
