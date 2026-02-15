@@ -12094,7 +12094,8 @@ def test_inference_cache_performance_benefit():
         quantized, scale = InferenceCache._quantize_int8(test_tensor)
         recovered = InferenceCache._dequantize_int8(quantized, scale)
 
-        # INT8 has 256 levels; for range [-15,15] that's ~0.12 per level
+        # INT8 has 256 levels; for range [-15,15] that's ~0.12 per step.
+        # Tolerance 0.15 allows ~1.25 quantization steps of error.
         max_error = (test_tensor - recovered).abs().max().item()
         assert max_error < 0.15, (
             f"INT8 round-trip error {max_error:.4f} exceeds acceptable threshold 0.15"
@@ -12239,6 +12240,8 @@ def test_set_seed_reproducibility_multi_seed():
             b_torch = torch.randn(100)
             b_np = np.random.randn(100)
 
+            # Exact (atol=0, rtol=0) equality is intentional: same seed on same
+            # platform must produce bit-identical RNG output.
             assert torch.allclose(a_torch, b_torch, atol=0.0, rtol=0.0), (
                 f"set_seed({seed}) did not produce identical torch outputs"
             )
@@ -12316,7 +12319,8 @@ def test_loss_values_meaningful():
         if lm_loss is not None and isinstance(lm_loss, torch.Tensor):
             assert torch.isfinite(lm_loss), f"LM loss not finite: {lm_loss.item()}"
             assert lm_loss.item() >= 0, f"LM/CE loss must be >= 0: {lm_loss.item()}"
-            # For random weights, CE loss should be ~ log(vocab_size)
+            # For random weights, CE loss ≈ log(vocab_size). Allow up to 3×
+            # as headroom for weight initialization variance and auxiliary losses.
             expected_random_ce = math.log(config.vocab_size)
             assert lm_loss.item() < expected_random_ce * 3, (
                 f"LM loss {lm_loss.item():.2f} unreasonably high "
@@ -12414,9 +12418,8 @@ def test_gradient_flow_magnitude_and_direction():
         # 4. Gradient norms should be in a reasonable range
         all_norms = list(grad_stats.values())
         max_norm = max(all_norms)
-        min_nonzero_norm = min(n for n in all_norms if n > 0) if any(n > 0 for n in all_norms) else 0
 
-        # Gradients shouldn't explode (norm > 1000 suggests instability)
+        # Gradients shouldn't explode
         assert max_norm < 1000, (
             f"Max gradient norm {max_norm:.4f} suggests exploding gradients"
         )
@@ -12533,9 +12536,10 @@ def test_feedback_bus_modulation_effect():
         )
         assert torch.isfinite(feedback_neutral).all(), "Feedback has NaN/Inf"
 
-        # 2. Output should be bounded in [-1, 1] (Tanh output)
+        # 2. Output should be bounded in [-1, 1] (Tanh output);
+        # allow ±0.01 for floating-point rounding.
         assert (feedback_neutral >= -1.01).all() and (feedback_neutral <= 1.01).all(), (
-            f"Feedback should be bounded by Tanh: "
+            f"Feedback should be bounded by Tanh [-1, 1] (±0.01 tolerance): "
             f"min={feedback_neutral.min():.3f}, max={feedback_neutral.max():.3f}"
         )
 
@@ -12779,10 +12783,10 @@ def test_safety_system_threshold_behavior():
             "Safety score is not finite"
         )
 
-        # 2. Safety score should be in [0, 1] range
+        # 2. Safety score should be in [0, 1] range (±0.01 for float rounding)
         ss = output_low['safety_score']
         assert (ss >= -0.01).all() and (ss <= 1.01).all(), (
-            f"Safety score out of [0,1] range: min={ss.min():.3f}, max={ss.max():.3f}"
+            f"Safety score out of [0,1] range (±0.01): min={ss.min():.3f}, max={ss.max():.3f}"
         )
 
         # 3. Core state should be present and finite
@@ -12855,8 +12859,9 @@ def test_end_to_end_forward_backward_isolation():
 
         grad_coverage = params_with_grad / max(total_params, 1) * 100
         assert params_with_grad > 0, "No parameters received gradients"
-        # At least 10% of parameters should have gradients
-        # (some may be unused in this config)
+        # At least 10% of parameters should have gradients — threshold is
+        # intentionally low because many optional sub-modules are disabled
+        # in the minimal config used here (world model, memory, etc.)
         assert grad_coverage > 10, (
             f"Only {grad_coverage:.1f}% of parameters got gradients — "
             f"possible broken computational graph"
@@ -12988,7 +12993,9 @@ def test_encoder_decoder_reconstruction_quality():
                     f"[{backend}] Decoder produced NaN/Inf"
                 )
 
-                # Logits should not be uniform (model should have some preferences)
+                # Logits should not be uniform (model should have some preferences).
+                # Threshold 1e-6 detects collapsed distributions; any reasonable
+                # weight initialization produces variance >> 1e-6.
                 logit_var = logits.var(dim=-1).mean().item()
                 assert logit_var > 1e-6, (
                     f"[{backend}] Logit variance too low ({logit_var:.6f}) — "
