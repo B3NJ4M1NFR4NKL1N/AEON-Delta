@@ -5242,11 +5242,11 @@ class RobustVectorQuantizer(nn.Module):
             alpha=1 - self.decay
         )
         
-        # Laplace smoothing (in-place to preserve registered buffer)
+        # Laplace smoothing into a temporary (do NOT overwrite raw EMA counts)
         n = self._ema_cluster_size.sum()
         if not torch.isfinite(n) or n.item() < 1e-8:
             n = torch.tensor(1e-8, device=n.device, dtype=n.dtype)
-        self._ema_cluster_size.copy_(
+        smoothed_cluster_size = (
             (self._ema_cluster_size + self.epsilon)
             / (n + self.num_embeddings * self.epsilon)
             * n
@@ -5256,9 +5256,9 @@ class RobustVectorQuantizer(nn.Module):
         dw = torch.matmul(encodings.t(), inputs)
         self._ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
         
-        # Update embedding
+        # Update embedding using smoothed counts
         self.embedding.weight.data.copy_(
-            self._ema_w / self._ema_cluster_size.clamp(min=self.epsilon).unsqueeze(1)
+            self._ema_w / smoothed_cluster_size.clamp(min=self.epsilon).unsqueeze(1)
         )
     
     def _maintain_codebook(self, recent_inputs: torch.Tensor):
@@ -5873,8 +5873,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
             # Adaptive alpha
             alpha_base = self.config.alpha
             if lip_const < 1.0:
-                alpha_scale = torch.sigmoid(
-                    self.alpha_net(torch.cat([C_new, C], dim=-1))
+                # alpha_net already ends with Sigmoid, no need to apply again
+                alpha_scale = self.alpha_net(
+                    torch.cat([C_new, C], dim=-1)
                 ).squeeze(-1)
                 alpha = alpha_base * (0.5 + 0.5 * alpha_scale)
             else:
@@ -16687,6 +16688,8 @@ class AEONTrainer:
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             logger.warning(f"⚠️ NaN/Inf loss at step {self.global_step}, skipping update")
             metrics = {k: float('nan') for k in loss_dict}
+            metrics['lr'] = float(self.scheduler.get_last_lr()[0])
+            metrics['grad_norm'] = 0.0
             return metrics
         
         # Backward
