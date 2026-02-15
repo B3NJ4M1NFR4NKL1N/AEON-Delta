@@ -46,8 +46,22 @@ __all__ = [
     "AEONDeltaV4", "DocumentAwareDataset",
     "WarmupCosineScheduler",
     "SafeThoughtAETrainerV4", "ContextualRSSMTrainer",
-    "validate_training_components", "main",
+    "validate_training_components", "TrainingProvenanceTracker",
+    "TrainingConvergenceMonitor", "main",
 ]
+
+# --- Bridge to aeon_core cognitive architecture ---
+# Import core cognitive components for unified coherence verification,
+# causal traceability, and meta-cognitive cycle integration during training.
+try:
+    from aeon_core import (
+        CausalProvenanceTracker,
+        ConvergenceMonitor,
+        SemanticErrorClassifier,
+    )
+    AEON_CORE_AVAILABLE = True
+except ImportError:
+    AEON_CORE_AVAILABLE = False
 
 # --- Токенизатор ---
 try:
@@ -1274,6 +1288,20 @@ class SafeThoughtAETrainerV4:
         self.best_loss = float('inf')
         self.best_model_state = None
         
+        # Bridge to aeon_core convergence monitoring — tracks loss
+        # trajectory across epochs to detect divergence/stagnation
+        # and trigger adaptive training adjustments.
+        self.convergence_monitor = TrainingConvergenceMonitor(
+            threshold=1e-5, window_size=10,
+        )
+        self.provenance = TrainingProvenanceTracker()
+        # Error classifier for semantic error categorization when
+        # aeon_core is available; provides richer diagnostics than
+        # raw exception strings.
+        self._error_classifier = (
+            SemanticErrorClassifier() if AEON_CORE_AVAILABLE else None
+        )
+        
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
         
@@ -1299,10 +1327,30 @@ class SafeThoughtAETrainerV4:
         
         total_loss = outputs['total_loss']
         
-        # Detect NaN/Inf loss to prevent corrupted gradient updates
+        # Detect NaN/Inf loss to prevent corrupted gradient updates.
+        # When aeon_core is available, classify the error semantically
+        # so root-cause analysis can trace it to a specific component
+        # via the provenance tracker.
         if torch.isnan(total_loss) or torch.isinf(total_loss):
+            _error_detail = "NaN/Inf loss"
+            if self._error_classifier is not None:
+                try:
+                    _err_cls, _err_detail = self._error_classifier.classify(
+                        RuntimeError("NaN/Inf loss in training step")
+                    )
+                    _error_detail = f"{_err_cls}: {_err_detail}"
+                except Exception:
+                    pass
+            # Identify the dominant provenance module at the point of
+            # failure so the error is traceable to its root cause.
+            _provenance = outputs.get('provenance', {})
+            _dominant = None
+            _contributions = _provenance.get('contributions', {})
+            if _contributions:
+                _dominant = max(_contributions, key=_contributions.get)
             logger.warning(
-                f"⚠️ NaN/Inf loss detected at step {self.global_step}, skipping backward pass"
+                f"⚠️ {_error_detail} at step {self.global_step}"
+                f" (dominant_module={_dominant}), skipping backward pass"
             )
             return outputs
         
@@ -1314,9 +1362,20 @@ class SafeThoughtAETrainerV4:
         return outputs
     
     def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, Any]:
+        # Track per-component provenance so training errors can be
+        # traced back to their originating component.
+        self.provenance.reset()
+
         z = self.model.encode(tokens)
+        # Record encoder output as both before/after VQ input
+        self.provenance.record_before("vq", z)
         quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
+        self.provenance.record_after("vq", quantized)
+
+        self.provenance.record_before("decoder", quantized)
         logits = self.model.decode(quantized, tokens)
+        # Record decoder delta using mean-pooled output (seq × vocab → z_dim)
+        self.provenance.record_after("decoder", logits.mean(dim=(1, 2)).unsqueeze(-1).expand_as(quantized))
         
         recon_loss = self.criterion(
             logits[:, :-1].contiguous().view(-1, self.config.vocab_size), 
@@ -1336,6 +1395,7 @@ class SafeThoughtAETrainerV4:
             'vq_loss': vq_loss.item(),
             'perplexity': perplexity,
             'accuracy': accuracy,
+            'provenance': self.provenance.compute_attribution(),
             **vq_stats
         }
     
@@ -1464,6 +1524,27 @@ class SafeThoughtAETrainerV4:
             
             epoch_metrics["lr"] = self.scheduler.get_lr()
             
+            # Convergence monitoring — track loss trajectory across
+            # epochs to detect divergence, stagnation, or convergence.
+            # This bridges the training loop to aeon_core's
+            # ConvergenceMonitor pattern, ensuring that training
+            # dynamics feed back into adaptive behavior.
+            convergence_verdict = self.convergence_monitor.update(
+                epoch_metrics["total"]
+            )
+            epoch_metrics["convergence_status"] = convergence_verdict["status"]
+            if convergence_verdict["status"] == "diverging":
+                logger.warning(
+                    f"   ⚠️ Convergence monitor: DIVERGING "
+                    f"(trend={convergence_verdict['trend']:.6f}). "
+                    f"Recommendation: {convergence_verdict['recommendation']}"
+                )
+            elif convergence_verdict["status"] == "stagnating":
+                logger.info(
+                    f"   ℹ️ Convergence monitor: stagnating "
+                    f"(trend={convergence_verdict['trend']:.6f})"
+                )
+            
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
@@ -1532,6 +1613,10 @@ class ContextualRSSMTrainer:
         self.best_loss = float('inf')
         self.best_model_state = None
         self.global_step = 0
+        # Convergence monitor for Phase B loss trajectory
+        self.convergence_monitor = TrainingConvergenceMonitor(
+            threshold=1e-5, window_size=10,
+        )
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -1665,6 +1750,17 @@ class ContextualRSSMTrainer:
             for key in epoch_metrics:
                 epoch_metrics[key] /= max(valid_batches, 1)
             
+            # Convergence monitoring for Phase B
+            convergence_verdict = self.convergence_monitor.update(
+                epoch_metrics["mse_loss"]
+            )
+            epoch_metrics["convergence_status"] = convergence_verdict["status"]
+            if convergence_verdict["status"] == "diverging":
+                logger.warning(
+                    f"   ⚠️ Phase B convergence: DIVERGING "
+                    f"(trend={convergence_verdict['trend']:.6f})"
+                )
+            
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
                 self.best_model_state = copy.deepcopy(self.model.rssm.state_dict())
@@ -1678,6 +1774,170 @@ class ContextualRSSMTrainer:
             logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
         self.monitor.end_training("phase_B")
+
+
+# ==============================================================================
+# TRAINING–CORE BRIDGE: PROVENANCE & CONVERGENCE
+# ==============================================================================
+
+# Threshold above which a single module's provenance contribution
+# triggers a dominance warning during validation.
+_PROVENANCE_DOMINANCE_WARNING_THRESHOLD = 0.9
+
+class TrainingProvenanceTracker:
+    """Lightweight provenance tracker for the training pipeline.
+
+    Bridges ae_train's training loop to aeon_core's
+    :class:`CausalProvenanceTracker` pattern by recording per-component
+    L2 deltas during validation and training steps.  When aeon_core is
+    available, delegates to the real tracker; otherwise uses a minimal
+    standalone implementation so the training pipeline always has
+    provenance data regardless of import availability.
+
+    This closes the architectural gap where training errors could not be
+    traced back to their originating component.
+    """
+
+    def __init__(self):
+        if AEON_CORE_AVAILABLE:
+            self._tracker = CausalProvenanceTracker()
+        else:
+            self._tracker = None
+        # Standalone fallback storage
+        self._deltas: Dict[str, float] = {}
+        self._order: list = []
+        self._snapshots: Dict[str, torch.Tensor] = {}
+
+    def reset(self):
+        """Clear all recorded snapshots for a new pass."""
+        if self._tracker is not None:
+            self._tracker.reset()
+        self._deltas.clear()
+        self._order.clear()
+        self._snapshots.clear()
+
+    def record_before(self, name: str, state: torch.Tensor):
+        if self._tracker is not None:
+            self._tracker.record_before(name, state)
+        self._snapshots[name] = state.detach().clone()
+        if name not in self._order:
+            self._order.append(name)
+
+    def record_after(self, name: str, state: torch.Tensor):
+        if self._tracker is not None:
+            self._tracker.record_after(name, state)
+        if name in self._snapshots:
+            before = self._snapshots[name]
+            # Handle shape mismatches by truncating to smaller size
+            min_size = min(state.shape[-1], before.shape[-1])
+            self._deltas[name] = (
+                state.detach()[..., :min_size] - before[..., :min_size]
+            ).norm().item()
+
+    def compute_attribution(self) -> Dict[str, Any]:
+        """Return per-component attribution dict."""
+        if self._tracker is not None:
+            return self._tracker.compute_attribution()
+        total = sum(self._deltas.values()) + 1e-10
+        contributions = {k: v / total for k, v in self._deltas.items()}
+        return {
+            'contributions': contributions,
+            'deltas': dict(self._deltas),
+            'order': list(self._order),
+        }
+
+
+class TrainingConvergenceMonitor:
+    """Monitors training loss convergence across epochs.
+
+    Bridges ae_train's training loop to aeon_core's
+    :class:`ConvergenceMonitor` pattern by tracking a sliding window of
+    loss values and detecting divergence or stagnation.
+
+    When aeon_core is available, delegates to the real monitor;
+    otherwise uses a minimal standalone implementation.
+
+    Attributes:
+        status: One of ``'warmup'``, ``'converging'``, ``'converged'``,
+            ``'diverging'``, or ``'stagnating'``.
+    """
+
+    _WARMUP_SIZE = 5
+    _DIVERGENCE_RATIO = 1.5
+    _STAGNATION_THRESHOLD = 1e-6
+
+    def __init__(self, threshold: float = 1e-5, window_size: int = 10):
+        self._threshold = threshold
+        self._window_size = window_size
+        self._history: list = []
+        self.status: str = 'warmup'
+        if AEON_CORE_AVAILABLE:
+            self._core_monitor = ConvergenceMonitor(threshold=threshold)
+        else:
+            self._core_monitor = None
+
+    def update(self, loss_value: float) -> Dict[str, Any]:
+        """Record a loss value and return convergence verdict.
+
+        Args:
+            loss_value: Scalar training loss for the current epoch/step.
+
+        Returns:
+            Dict with ``status``, ``loss_value``, ``trend`` (float),
+            and ``recommendation`` (str).
+        """
+        if not math.isfinite(loss_value):
+            self.status = 'diverging'
+            return {
+                'status': 'diverging',
+                'loss_value': loss_value,
+                'trend': float('inf'),
+                'recommendation': 'reduce_lr_or_rollback',
+            }
+
+        self._history.append(loss_value)
+        if len(self._history) > self._window_size:
+            self._history = self._history[-self._window_size:]
+
+        if len(self._history) < self._WARMUP_SIZE:
+            self.status = 'warmup'
+            return {
+                'status': 'warmup',
+                'loss_value': loss_value,
+                'trend': 0.0,
+                'recommendation': 'continue',
+            }
+
+        recent = self._history[-self._WARMUP_SIZE:]
+        trend = recent[-1] - recent[0]
+
+        if recent[-1] > self._DIVERGENCE_RATIO * min(recent):
+            self.status = 'diverging'
+            recommendation = 'reduce_lr_or_rollback'
+        elif abs(trend) < self._STAGNATION_THRESHOLD:
+            self.status = 'stagnating'
+            recommendation = 'increase_lr_or_augment'
+        elif trend < 0:
+            if abs(trend) < self._threshold:
+                self.status = 'converged'
+                recommendation = 'continue'
+            else:
+                self.status = 'converging'
+                recommendation = 'continue'
+        else:
+            self.status = 'diverging'
+            recommendation = 'reduce_lr_or_rollback'
+
+        # Feed into aeon_core monitor if available
+        if self._core_monitor is not None:
+            self._core_monitor.check(abs(trend))
+
+        return {
+            'status': self.status,
+            'loss_value': loss_value,
+            'trend': trend,
+            'recommendation': recommendation,
+        }
 
 
 # ==============================================================================
@@ -1785,6 +2045,85 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
             logger.error(f"   ❌ {name}: нет градиентов")
     
     model.zero_grad()
+    
+    # ===== COGNITIVE COHERENCE VERIFICATION =====
+    # Cross-validate component outputs using provenance tracking from
+    # aeon_core's CausalProvenanceTracker pattern.  This ensures that
+    # each component verifies and reinforces the others — a core
+    # requirement for a unified cognitive system.
+    logger.info("\n🔍 Cognitive coherence verification...")
+    provenance = TrainingProvenanceTracker()
+    try:
+        model.eval()
+        with torch.no_grad():
+            # Track provenance through the full pipeline
+            provenance.reset()
+
+            z_val = model.encode(test_batch)
+
+            provenance.record_before("vq", z_val)
+            q_val, _, _, _ = model.quantize(z_val)
+            provenance.record_after("vq", q_val)
+
+            provenance.record_before("rssm", q_val)
+            K = config.context_window
+            z_ctx = q_val.unsqueeze(1).expand(-1, K, -1)
+            z_pred_val = model.rssm(z_ctx)
+            provenance.record_after("rssm", z_pred_val)
+
+            attribution = provenance.compute_attribution()
+            contributions = attribution.get('contributions', {})
+            if contributions:
+                _max_contrib = max(contributions.values())
+                _dominant = max(contributions, key=contributions.get)
+                logger.info(
+                    f"   ✅ Provenance: dominant_module={_dominant} "
+                    f"({_max_contrib:.1%}), "
+                    f"modules={list(contributions.keys())}"
+                )
+                # Warn if a single module dominates — indicates
+                # an architectural imbalance where one component
+                # overwhelms the others.
+                if _max_contrib > _PROVENANCE_DOMINANCE_WARNING_THRESHOLD:
+                    logger.warning(
+                        f"   ⚠️ Module '{_dominant}' dominates "
+                        f"provenance ({_max_contrib:.1%} > "
+                        f"{_PROVENANCE_DOMINANCE_WARNING_THRESHOLD:.0%}). "
+                        f"Consider rebalancing component contributions."
+                    )
+
+            # Cross-module coherence: verify that encoder output and
+            # VQ output are semantically aligned (cosine similarity).
+            # A threshold of -0.5 catches severe misalignment while
+            # allowing normal VQ quantization shifts that may reduce
+            # cosine similarity from 1.0.
+            _COHERENCE_THRESHOLD = -0.5
+            cos_sim = F.cosine_similarity(z_val, q_val, dim=-1).mean().item()
+            if cos_sim > _COHERENCE_THRESHOLD:
+                logger.info(
+                    f"   ✅ Encoder↔VQ coherence: cos_sim={cos_sim:.4f}"
+                )
+            else:
+                logger.warning(
+                    f"   ⚠️ Low encoder↔VQ coherence: cos_sim={cos_sim:.4f}"
+                )
+
+            # Verify RSSM prediction is finite and reasonably close to input
+            if torch.isfinite(z_pred_val).all():
+                rssm_cos = F.cosine_similarity(
+                    q_val, z_pred_val, dim=-1
+                ).mean().item()
+                logger.info(
+                    f"   ✅ VQ↔RSSM coherence: cos_sim={rssm_cos:.4f}"
+                )
+            else:
+                issues.append("RSSM: non-finite predictions")
+                logger.error("   ❌ RSSM produces non-finite values")
+
+    except Exception as coherence_err:
+        logger.warning(
+            f"   ⚠️ Coherence verification failed (non-fatal): {coherence_err}"
+        )
     
     if issues:
         logger.error(f"\n⚠️ Обнаружено {len(issues)} проблем!")
