@@ -2715,6 +2715,9 @@ class AEONConfig:
                 'enable_complexity_estimator',
                 'enable_causal_context',
                 'enable_meta_recovery_integration',
+                'enable_external_trust',
+                'enable_hybrid_reasoning',
+                'enable_world_model',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -13993,6 +13996,36 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _COHERENCE_UNCERTAINTY_BOOST)
                 uncertainty_sources["coherence_deficit"] = _COHERENCE_UNCERTAINTY_BOOST
                 high_uncertainty = uncertainty > 0.5
+                # 5a-iii-c. Causal-trace-directed root-cause query — when
+                # coherence deficit is detected, query the causal trace for
+                # recent error/warning entries and trace them to root causes.
+                # This links the coherence detection to specific subsystem
+                # failures, enabling targeted corrective action instead of
+                # uniform uncertainty escalation alone.
+                if self.causal_trace is not None:
+                    _coherence_recent = self.causal_trace.recent(n=5)
+                    _coherence_errors = [
+                        e for e in _coherence_recent
+                        if e.get("severity") in ("error", "warning")
+                    ]
+                    _coherence_root_subsystems: List[str] = []
+                    for _ce in _coherence_errors[-2:]:
+                        _ce_rc = self.causal_trace.trace_root_cause(_ce["id"])
+                        for _rc_entry in _ce_rc.get("root_causes", []):
+                            _coherence_root_subsystems.append(
+                                _rc_entry.get("subsystem", "unknown")
+                            )
+                    self.causal_trace.record(
+                        "coherence_deficit", "root_cause_query",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "root_cause_subsystems": _coherence_root_subsystems,
+                            "num_root_causes": len(_coherence_root_subsystems),
+                            "coherence_score": float(
+                                coherence_results["coherence_score"].mean().item()
+                            ),
+                        },
+                    )
         
         # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
         # accumulated signals warrant re-running the meta-loop with
@@ -14219,6 +14252,56 @@ class AEONDeltaV3(nn.Module):
                         success=True,
                         metadata={"mean_surprise": _mean_surprise},
                     )
+                # 5b1b-ii. Surprise-driven causal cross-check — when the
+                # world model prediction error exceeds the threshold, record
+                # it in the causal trace so that root-cause analysis can
+                # link high surprise back to specific upstream modules that
+                # contributed to the inaccurate prediction.  This makes
+                # world model surprise an active diagnostic signal rather
+                # than a passive uncertainty scalar.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "world_model_surprise", "high_surprise_detected",
+                        causal_prerequisites=[input_trace_id],
+                        severity="warning",
+                        metadata={
+                            "mean_surprise": _mean_surprise,
+                            "surprise_threshold": self.config.surprise_threshold,
+                            "uncertainty_after_boost": uncertainty,
+                        },
+                    )
+        
+        # 5b1c. Critical uncertainty gate — when accumulated uncertainty
+        # from multiple independent sources exceeds a critical threshold
+        # AND an auto-critic is available, trigger immediate self-correction
+        # within the current pass.  This prevents high-uncertainty states
+        # from propagating unchecked through the rest of the pipeline.
+        # The threshold of 0.8 requires strong multi-source agreement
+        # before triggering, and at least 2 independent sources must
+        # contribute to avoid single-source false positives.
+        _CRITICAL_UNCERTAINTY_THRESHOLD = 0.8
+        _MIN_UNCERTAINTY_SOURCES = 2
+        if (uncertainty >= _CRITICAL_UNCERTAINTY_THRESHOLD
+                and len(uncertainty_sources) >= _MIN_UNCERTAINTY_SOURCES
+                and self.auto_critic is not None
+                and not fast):
+            _critical_critic = self.auto_critic(C_star)
+            _critical_revised = _critical_critic.get("candidate", None)
+            if _critical_revised is not None and torch.isfinite(_critical_revised).all():
+                C_star = _critical_revised
+            self.audit_log.record("auto_critic", "critical_uncertainty", {
+                "uncertainty": uncertainty,
+                "num_sources": len(uncertainty_sources),
+                "sources": list(uncertainty_sources.keys()),
+                "revised": _critical_revised is not None,
+            })
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="critical_uncertainty",
+                    strategy_used="immediate_auto_critic",
+                    success=_critical_revised is not None and torch.isfinite(_critical_revised).all(),
+                    metadata={"uncertainty": uncertainty, "sources": list(uncertainty_sources.keys())},
+                )
         
         # 5b2. MCTS planning — moved after memory retrieval (5c) so the
         # search tree root incorporates memory context.  Placeholder
@@ -14280,6 +14363,25 @@ class AEONDeltaV3(nn.Module):
             self.hierarchical_memory is not None
             and _memory_empty_count > B * _MEMORY_STALENESS_RATIO
         )
+        
+        # 5c1b. Memory-staleness-driven uncertainty escalation — when the
+        # current pass detects stale memory (majority of retrievals empty),
+        # immediately escalate uncertainty within this pass rather than
+        # deferring to the next pass's metacognitive trigger.  This closes
+        # the feedback loop so that memory gaps trigger corrective depth
+        # in the same reasoning cycle that discovered them.
+        _STALENESS_UNCERTAINTY_BOOST = 0.15
+        if self._memory_stale and high_uncertainty and not fast:
+            uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
+            uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
+            high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="memory_staleness",
+                    strategy_used="uncertainty_escalation",
+                    success=True,
+                    metadata={"empty_ratio": _memory_empty_count / max(B, 1)},
+                )
         
         # 5c2. Neurogenic memory — consolidate important states and
         # retrieve nearest neurons to enrich the current state.  After
@@ -15027,6 +15129,53 @@ class AEONDeltaV3(nn.Module):
                                 post_coherence["coherence_score"].mean().item()
                             ),
                         },
+                    )
+                # 8f-i. Post-integration causal trace root-cause query —
+                # when post-integration coherence verification detects a
+                # deficit, query the causal trace for root causes so that
+                # the final output's causal_decision_chain includes
+                # specific subsystem attribution for the inconsistency.
+                # This enables downstream analysis to trace post-pipeline
+                # disagreements back to their originating modules.
+                if post_coherence.get("needs_recheck", False) and self.causal_trace is not None:
+                    _post_recent = self.causal_trace.recent(n=5)
+                    _post_errors = [
+                        e for e in _post_recent
+                        if e.get("severity") in ("error", "warning")
+                    ]
+                    _post_root_subsystems: List[str] = []
+                    for _pe in _post_errors[-2:]:
+                        _pe_rc = self.causal_trace.trace_root_cause(_pe["id"])
+                        for _rc_entry in _pe_rc.get("root_causes", []):
+                            _post_root_subsystems.append(
+                                _rc_entry.get("subsystem", "unknown")
+                            )
+                    self.causal_trace.record(
+                        "post_coherence_deficit", "root_cause_query",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "root_cause_subsystems": _post_root_subsystems,
+                            "post_coherence_score": float(
+                                post_coherence["coherence_score"].mean().item()
+                            ),
+                        },
+                    )
+                # 8f-ii. Update cached coherence deficit from post-integration
+                # verification so the NEXT forward pass's feedback bus uses
+                # the most comprehensive coherence assessment (which includes
+                # world model, hybrid reasoning, and integration outputs).
+                # This ensures the cross-pass feedback loop reflects full
+                # pipeline coherence, not just the early meta-loop/factor pair.
+                _post_cs = post_coherence.get("coherence_score", None)
+                if _post_cs is not None:
+                    _post_cs_val = (
+                        _post_cs.mean().item()
+                        if isinstance(_post_cs, torch.Tensor)
+                        else float(_post_cs)
+                    )
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit,
+                        float(1.0 - _post_cs_val),
                     )
         
         # Package outputs
