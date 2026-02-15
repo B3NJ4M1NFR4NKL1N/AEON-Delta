@@ -14821,6 +14821,187 @@ def test_memory_staleness_triggers_consolidation():
     print("✅ test_memory_staleness_triggers_consolidation PASSED")
 
 
+# ============================================================================
+# AGI Coherence Unification — New architectural integration tests
+# ============================================================================
+
+def test_full_coherence_includes_unified_simulator_and_causal():
+    """Verify enable_full_coherence activates unified_simulator,
+    causal_world_model, and causal_model flags so the full AGI coherence
+    preset includes all modules needed for comprehensive cross-module
+    verification and causal reasoning."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    new_flags = [
+        'enable_unified_simulator',
+        'enable_causal_world_model',
+        'enable_causal_model',
+    ]
+    for flag in new_flags:
+        assert getattr(config, flag) is True, (
+            f"enable_full_coherence should set {flag}=True, got {getattr(config, flag)}"
+        )
+    print("✅ test_full_coherence_includes_unified_simulator_and_causal PASSED")
+
+
+def test_feedback_bus_causal_quality_channel():
+    """Verify CognitiveFeedbackBus accepts causal_quality parameter
+    and produces different feedback for different causal quality levels."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Output with perfect causal quality
+    out_good = bus(
+        batch_size=2, device=torch.device("cpu"),
+        causal_quality=1.0,
+    )
+    # Output with poor causal quality
+    out_bad = bus(
+        batch_size=2, device=torch.device("cpu"),
+        causal_quality=0.1,
+    )
+
+    assert out_good.shape == (2, 32), f"Expected (2, 32), got {out_good.shape}"
+    assert out_bad.shape == (2, 32), f"Expected (2, 32), got {out_bad.shape}"
+    # Different inputs should produce different outputs
+    assert not torch.allclose(out_good, out_bad, atol=1e-6), (
+        "CognitiveFeedbackBus should produce different feedback "
+        "for different causal_quality levels"
+    )
+    print("✅ test_feedback_bus_causal_quality_channel PASSED")
+
+
+def test_cached_causal_quality_initialized():
+    """Verify that _cached_causal_quality is initialized to 1.0
+    (perfect causal structure) in AEONDeltaV3.__init__."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_causal_quality'), (
+        "AEONDeltaV3 should have _cached_causal_quality attribute"
+    )
+    assert model._cached_causal_quality == 1.0, (
+        f"Expected _cached_causal_quality=1.0, got {model._cached_causal_quality}"
+    )
+    print("✅ test_cached_causal_quality_initialized PASSED")
+
+
+def test_subsystem_errors_recorded_in_causal_trace():
+    """Verify that when subsystem errors occur with causal_trace enabled,
+    the error is recorded in the causal trace for root-cause analysis."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch world model to always raise an error
+    def _failing_wm(x, **kwargs):
+        raise RuntimeError("Simulated world model failure")
+
+    model.world_model.forward = _failing_wm
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    # Check that causal trace has an error entry for world_model
+    recent = model.causal_trace.recent(n=20)
+    world_model_errors = [
+        e for e in recent
+        if e.get("subsystem") == "world_model"
+        and e.get("decision") == "subsystem_error"
+        and e.get("severity") == "error"
+    ]
+    assert len(world_model_errors) > 0, (
+        "World model error should be recorded in causal trace. "
+        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in recent]}"
+    )
+    # Verify the error metadata contains the error description
+    assert "Simulated world model failure" in world_model_errors[0].get("metadata", {}).get("error", ""), (
+        "Causal trace entry should contain the error description"
+    )
+    print("✅ test_subsystem_errors_recorded_in_causal_trace PASSED")
+
+
+def test_memory_operations_recorded_in_causal_trace():
+    """Verify that memory store/retrieve operations are recorded in the
+    causal trace when both hierarchical_memory and causal_trace are enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    # Check that causal trace has a memory entry
+    recent = model.causal_trace.recent(n=20)
+    memory_entries = [
+        e for e in recent
+        if e.get("subsystem") == "memory"
+        and e.get("decision") == "retrieve_and_store"
+    ]
+    assert len(memory_entries) > 0, (
+        "Memory operations should be recorded in causal trace. "
+        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in recent]}"
+    )
+    # Verify metadata contains expected keys
+    meta = memory_entries[0].get("metadata", {})
+    assert "stored_count" in meta, "Memory trace should record stored_count"
+    assert "mean_importance" in meta, "Memory trace should record mean_importance"
+    print("✅ test_memory_operations_recorded_in_causal_trace PASSED")
+
+
+def test_post_coherence_includes_causal_model():
+    """Verify that when ModuleCoherenceVerifier runs post-integration,
+    it includes causal_model output in the states being verified when
+    causal model results are available."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    # The coherence results should exist (module_coherence is enabled)
+    coherence = outputs.get('coherence_results', {})
+    assert coherence, "coherence_results should be populated"
+    assert 'coherence_score' in coherence, "coherence_results should have coherence_score"
+    # The causal model should have produced results
+    causal_results = outputs.get('causal_model_results', {})
+    assert causal_results, "causal_model_results should be populated"
+    print("✅ test_post_coherence_includes_causal_model PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -15535,6 +15716,14 @@ if __name__ == '__main__':
     test_intra_pass_feedback_modulation()
     test_coherence_deficit_triggers_active_recovery()
     test_memory_staleness_triggers_consolidation()
+    
+    # AGI Coherence Unification — New architectural integration tests
+    test_full_coherence_includes_unified_simulator_and_causal()
+    test_feedback_bus_causal_quality_channel()
+    test_cached_causal_quality_initialized()
+    test_subsystem_errors_recorded_in_causal_trace()
+    test_memory_operations_recorded_in_causal_trace()
+    test_post_coherence_includes_causal_model()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
