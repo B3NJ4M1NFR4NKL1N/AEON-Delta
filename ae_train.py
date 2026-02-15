@@ -24,7 +24,11 @@ import numpy as np
 from typing import List, Tuple, Dict, Optional, Union, Any
 from dataclasses import dataclass, field, asdict
 import math
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
 import logging
 import os
 import time
