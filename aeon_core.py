@@ -13888,9 +13888,11 @@ class AEONDeltaV3(nn.Module):
             # Cache coherence deficit for feedback bus on next forward pass
             _coherence_score = coherence_results.get("coherence_score", None)
             if _coherence_score is not None:
-                self._cached_coherence_deficit = float(
-                    1.0 - _coherence_score.mean().item()
-                )
+                if isinstance(_coherence_score, torch.Tensor):
+                    _cs_val = _coherence_score.mean().item()
+                else:
+                    _cs_val = float(_coherence_score)
+                self._cached_coherence_deficit = float(1.0 - _cs_val)
             else:
                 self._cached_coherence_deficit = 1.0 if _coherence_deficit else 0.0
             # Record coherence deficit in error evolution tracker so the
