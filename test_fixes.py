@@ -8717,10 +8717,10 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 3/7 ≈ 0.4286 < 0.5 threshold → should NOT trigger
+    # Three signals → score = 3/8 = 0.375 < 0.5 threshold → should NOT trigger
     # with default weights; activate four to cross threshold.
-    # Four signals → score = 4/7 ≈ 0.5714 ≥ threshold → should trigger
-    # (7 signals at 1/7 weight each; 4 active ≈ 0.571)
+    # Four signals → score = 4/8 = 0.5 ≥ threshold → should trigger
+    # (8 signals at 1/8 weight each; 4 active = 0.5)
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
@@ -8728,7 +8728,7 @@ def test_metacognitive_recursion_trigger_evaluate():
         topology_catastrophe=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 4.0 / 7.0) < 1e-9
+    assert abs(result["trigger_score"] - 4.0 / 8.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
@@ -8743,11 +8743,11 @@ def test_metacognitive_recursion_trigger_max_recursions():
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(
-        trigger_threshold=1.0 / 7.0 - 0.01,  # just below one-signal weight
+        trigger_threshold=1.0 / 8.0 - 0.01,  # just below one-signal weight
         max_recursions=1,
     )
 
-    # First call → should trigger (one signal = 1/7 ≈ 0.143 ≥ threshold)
+    # First call → should trigger (one signal = 1/8 = 0.125 ≥ threshold)
     r1 = trigger.evaluate(uncertainty=0.8)
     assert r1["should_trigger"] is True
 
@@ -8765,7 +8765,7 @@ def test_metacognitive_recursion_trigger_max_recursions():
 
 
 def test_metacognitive_recursion_trigger_all_signals():
-    """Verify all seven signals contribute to trigger score."""
+    """Verify all eight signals contribute to trigger score."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
@@ -8778,9 +8778,10 @@ def test_metacognitive_recursion_trigger_all_signals():
         memory_staleness=True,
         recovery_pressure=0.5,
         world_model_surprise=1.0,
+        causal_quality=0.1,
     )
     assert abs(result["trigger_score"] - 1.0) < 1e-9
-    assert len(result["triggers_active"]) == 7
+    assert len(result["triggers_active"]) == 8
     assert result["should_trigger"] is True
 
     print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
@@ -9269,10 +9270,10 @@ def test_memory_staleness_feeds_metacognitive_trigger():
     trigger as one of six signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 7.0  # per-signal weight with 7 signals
+    _w = 1.0 / 8.0  # per-signal weight with 8 signals
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only memory_staleness active → score = 1/7 ≥ threshold
+    # Only memory_staleness active → score = 1/8 ≥ threshold
     result = trigger.evaluate(memory_staleness=True)
     assert result["should_trigger"] is True
     assert "memory_staleness" in result["triggers_active"]
@@ -10938,10 +10939,10 @@ def test_causal_trace_summary_in_fallback():
 # ============================================================================
 
 def test_recovery_pressure_in_metacognitive_trigger():
-    """Gap 5: recovery_pressure is one of 7 signals in MetaCognitiveRecursionTrigger."""
+    """Gap 5: recovery_pressure is one of 8 signals in MetaCognitiveRecursionTrigger."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 7.0
+    _w = 1.0 / 8.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # Only recovery_pressure active (above 0.3 threshold)
@@ -11160,7 +11161,7 @@ def test_signal_weights_returned_in_evaluate():
         "Expected 'signal_weights' in evaluate() result"
     )
     weights = result['signal_weights']
-    assert len(weights) == 7, f"Expected 7 signal weights, got {len(weights)}"
+    assert len(weights) == 8, f"Expected 8 signal weights, got {len(weights)}"
     assert abs(sum(weights.values()) - 1.0) < 1e-9, (
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
