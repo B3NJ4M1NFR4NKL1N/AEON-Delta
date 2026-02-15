@@ -2491,6 +2491,8 @@ class AEONConfig:
     kl_weight: float = 0.1
     sparsity_target: float = 0.95
     lambda_provenance: float = 0.01
+    lambda_cross_validation: float = 0.05
+    lambda_auto_critic: float = 0.02
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -13508,6 +13510,7 @@ class AEONDeltaV3(nn.Module):
                     'uncertainty_sources': {'pipeline_error': 1.0},
                 },
                 'uncertainty_sources': {'pipeline_error': 1.0},
+                'auto_critic_final_score': None,
             }
             return z_fallback, fallback_outputs
 
@@ -13966,6 +13969,20 @@ class AEONDeltaV3(nn.Module):
                 "coherence_score": float(coherence_results["coherence_score"].mean().item()),
                 "needs_recheck": _coherence_deficit,
             })
+            # 5a-iii-a2. Pairwise coherence diagnostics — identify which
+            # specific subsystem pairs disagree so that error evolution
+            # can learn targeted recovery strategies per subsystem pair
+            # rather than treating all coherence deficits identically.
+            _pairwise = coherence_results.get("pairwise", {})
+            if _coherence_deficit and _pairwise and self.error_evolution is not None:
+                for (name_i, name_j), sim in _pairwise.items():
+                    _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
+                    if _pair_sim < self.module_coherence.threshold:
+                        self.error_evolution.record_episode(
+                            error_class=f"coherence_deficit_{name_i}_vs_{name_j}",
+                            strategy_used="pairwise_diagnostic",
+                            success=False,
+                        )
             # 5a-iii-b. Coherence-driven corrective action — when coherence
             # deficit is detected, escalate uncertainty to ensure downstream
             # meta-cognitive cycles activate.  This closes the loop between
@@ -14051,8 +14068,25 @@ class AEONDeltaV3(nn.Module):
                     orig_max_iter + _extra_iters,
                     orig_max_iter * 2,  # safety cap
                 )
+                # Recompute feedback with the latest accumulated signals
+                # (uncertainty, surprise, coherence deficit) so the deeper
+                # meta-loop benefits from the full context that triggered
+                # re-reasoning, rather than the stale pre-trigger feedback.
+                _refreshed_feedback = self.feedback_bus(
+                    batch_size=B,
+                    device=device,
+                    safety_score=safety_score,
+                    convergence_quality=convergence_quality_scalar,
+                    uncertainty=uncertainty,
+                    subsystem_health=_recovery_health,
+                    convergence_loss_scale=getattr(
+                        self, '_last_convergence_loss_scale', 1.0,
+                    ),
+                    world_model_surprise=self._cached_surprise,
+                    coherence_deficit=self._cached_coherence_deficit,
+                ).detach()
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
-                    z_in, use_fixed_point=True, feedback=self._cached_feedback,
+                    z_in, use_fixed_point=True, feedback=_refreshed_feedback,
                 )
                 # Restore original parameters
                 self.meta_loop.convergence_threshold = orig_threshold
@@ -14331,6 +14365,21 @@ class AEONDeltaV3(nn.Module):
             "empty_ratio": _memory_empty_count / max(B, 1),
         })
         self.provenance_tracker.record_after("memory", C_star)
+        
+        # 5c5. Cross-populate CausalContextWindowManager with memory-enriched
+        # state so that memory retrievals contribute to the causal context
+        # pool.  This closes the gap between the memory subsystems
+        # (NTM, neurogenic, consolidating, temporal) and the causal
+        # context hierarchy, ensuring that cross-temporal reasoning
+        # benefits from memory outcomes.
+        if self.causal_context is not None and _memory_retrieval_quality > 0:
+            self.causal_context.add(
+                source="memory_enriched",
+                embedding=C_star.mean(dim=0).detach(),
+                relevance=_memory_retrieval_quality,
+                causal_weight=_memory_retrieval_quality,
+                tier="mid_term",
+            )
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
@@ -14731,6 +14780,9 @@ class AEONDeltaV3(nn.Module):
         )
         self.execution_guard.fingerprint("integration", z_out)
         
+        # Track auto-critic score for loss computation
+        _auto_critic_final_score = None
+        
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
             z_out, factors=factors
@@ -14781,6 +14833,7 @@ class AEONDeltaV3(nn.Module):
                     revised = critic_result.get("candidate", None)
                     if revised is not None and torch.isfinite(revised).all():
                         z_out = revised
+                    _auto_critic_final_score = critic_result.get("final_score", 0.0)
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
@@ -14822,6 +14875,7 @@ class AEONDeltaV3(nn.Module):
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
+            _auto_critic_final_score = critic_result.get("final_score", 0.0)
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -14884,6 +14938,15 @@ class AEONDeltaV3(nn.Module):
                 strategy_used="normal",
                 success=True,
             )
+        
+        # 8e-i. Causal context promotion — when reasoning succeeds,
+        # promote short-term causal context entries to mid-term, and
+        # mid-term to long-term.  This ensures that successful reasoning
+        # patterns are retained across longer time horizons, closing the
+        # temporal learning loop between immediate and long-term memory.
+        if self.causal_context is not None and integration_healthy:
+            self.causal_context.promote("short_term", top_n=3)
+            self.causal_context.promote("mid_term", top_n=2)
         
         # 8e-ii. Late-stage integrity feedback — after all subsystem
         # health records are finalized, check for degraded subsystems and
@@ -15183,6 +15246,7 @@ class AEONDeltaV3(nn.Module):
             'causal_trace_summary': _causal_trace_summary,
             'causal_decision_chain': _causal_decision_chain,
             'uncertainty_sources': uncertainty_sources,
+            'auto_critic_final_score': _auto_critic_final_score,
         }
         
         return z_out, outputs
@@ -15498,6 +15562,30 @@ class AEONDeltaV3(nn.Module):
 
         _provenance_weight = getattr(self.config, 'lambda_provenance', 0.01)
 
+        # ===== 13. CROSS-VALIDATION AGREEMENT LOSS =====
+        # When CrossValidationReconciler is enabled, penalize low agreement
+        # between factor-embedded and causal-predicted states.  The
+        # agreement_score is differentiable (cosine similarity through
+        # learned projections), so gradients drive the system toward
+        # internally consistent factor/causal representations.
+        cross_validation_loss = torch.tensor(0.0, device=self.device)
+        _reconciliation = outputs.get('reconciliation_results', {})
+        if _reconciliation and 'agreement_score' in _reconciliation:
+            _agree = _reconciliation['agreement_score']
+            if torch.is_tensor(_agree) and _agree.requires_grad:
+                cross_validation_loss = (1.0 - _agree.mean())
+
+        # ===== 14. AUTO-CRITIC QUALITY LOSS =====
+        # When AutoCriticLoop produces a revised candidate, penalize low
+        # critic scores so that the generator learns to produce outputs
+        # that satisfy the critic without needing revision.
+        auto_critic_loss = torch.tensor(0.0, device=self.device)
+        _critic_score = outputs.get('auto_critic_final_score', None)
+        if _critic_score is not None and isinstance(_critic_score, (int, float)):
+            auto_critic_loss = torch.tensor(
+                max(0.0, 1.0 - _critic_score), device=self.device,
+            )
+
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
@@ -15548,6 +15636,8 @@ class AEONDeltaV3(nn.Module):
             hvae_kl_loss +
             ewc_loss +
             _provenance_weight * provenance_loss +
+            self.config.lambda_cross_validation * cross_validation_loss +
+            self.config.lambda_auto_critic * auto_critic_loss +
             reg_loss
         )
         
@@ -15572,6 +15662,8 @@ class AEONDeltaV3(nn.Module):
             'hvae_kl_loss': hvae_kl_loss,
             'ewc_loss': ewc_loss,
             'provenance_loss': provenance_loss,
+            'cross_validation_loss': cross_validation_loss,
+            'auto_critic_loss': auto_critic_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency,

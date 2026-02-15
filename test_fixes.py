@@ -14006,6 +14006,255 @@ def test_causal_trace_in_compute_loss():
     print("✅ test_causal_trace_in_compute_loss PASSED")
 
 
+# ============================================================================
+# AGI Architecture Unification — Cross-module coherence integration tests
+# ============================================================================
+
+
+def test_cross_validation_loss_in_compute_loss():
+    """Verify cross_validation_loss is computed and included in loss dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids, decode_mode='train')
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'cross_validation_loss' in loss_dict, (
+        "compute_loss should return 'cross_validation_loss'"
+    )
+    assert torch.isfinite(loss_dict['cross_validation_loss']), (
+        "cross_validation_loss should be finite"
+    )
+    assert torch.isfinite(loss_dict['total_loss']), (
+        "total_loss should be finite with cross_validation_loss included"
+    )
+    print("✅ test_cross_validation_loss_in_compute_loss PASSED")
+
+
+def test_auto_critic_loss_in_compute_loss():
+    """Verify auto_critic_loss is computed and included in loss dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids, decode_mode='train')
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'auto_critic_loss' in loss_dict, (
+        "compute_loss should return 'auto_critic_loss'"
+    )
+    assert torch.isfinite(loss_dict['auto_critic_loss']), (
+        "auto_critic_loss should be finite"
+    )
+    assert torch.isfinite(loss_dict['total_loss']), (
+        "total_loss should be finite with auto_critic_loss included"
+    )
+    print("✅ test_auto_critic_loss_in_compute_loss PASSED")
+
+
+def test_cross_validation_agreement_drives_loss():
+    """Verify that low cross-validation agreement produces nonzero loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids, decode_mode='train')
+    targets = torch.randint(1, 1000, (B, L))
+
+    # Inject a reconciliation result with low agreement (requires_grad for loss)
+    low_agreement = torch.tensor([0.3, 0.2], requires_grad=True)
+    outputs['reconciliation_results'] = {
+        'agreement_score': low_agreement,
+        'reconciled_state': torch.randn(B, 32),
+        'reconcile_iterations': 2,
+    }
+    loss_dict = model.compute_loss(outputs, targets)
+
+    cv_loss = loss_dict['cross_validation_loss']
+    assert cv_loss.item() > 0.0, (
+        f"Low agreement should produce positive cross_validation_loss, got {cv_loss.item()}"
+    )
+    print("✅ test_cross_validation_agreement_drives_loss PASSED")
+
+
+def test_auto_critic_final_score_in_outputs():
+    """Verify auto_critic_final_score is present in model outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # auto_critic_final_score should be in outputs (None when critic disabled)
+    assert 'auto_critic_final_score' in outputs, (
+        "Forward outputs should include 'auto_critic_final_score'"
+    )
+    print("✅ test_auto_critic_final_score_in_outputs PASSED")
+
+
+def test_lambda_cross_validation_config():
+    """Verify lambda_cross_validation config field exists and has default."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    assert hasattr(config, 'lambda_cross_validation'), (
+        "AEONConfig should have lambda_cross_validation field"
+    )
+    assert config.lambda_cross_validation == 0.05, (
+        f"Default lambda_cross_validation should be 0.05, got {config.lambda_cross_validation}"
+    )
+    assert hasattr(config, 'lambda_auto_critic'), (
+        "AEONConfig should have lambda_auto_critic field"
+    )
+    assert config.lambda_auto_critic == 0.02, (
+        f"Default lambda_auto_critic should be 0.02, got {config.lambda_auto_critic}"
+    )
+    print("✅ test_lambda_cross_validation_config PASSED")
+
+
+def test_causal_context_memory_cross_population():
+    """Verify CausalContextWindowManager receives memory-enriched state."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(
+        hidden_dim=32, short_term_capacity=10,
+        mid_term_capacity=10, long_term_capacity=10,
+    )
+    # Simulate memory-enriched state storage
+    embedding = torch.randn(32)
+    ctx.add(
+        source="memory_enriched",
+        embedding=embedding,
+        relevance=0.8,
+        causal_weight=0.8,
+        tier="mid_term",
+    )
+    stats = ctx.stats()
+    assert stats["mid_term_size"] == 1, (
+        "Memory-enriched state should be stored in mid_term tier"
+    )
+    assert stats["total_added"] == 1
+    print("✅ test_causal_context_memory_cross_population PASSED")
+
+
+def test_causal_context_promotion_on_success():
+    """Verify promote() moves entries from short_term to mid_term."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(
+        hidden_dim=32, short_term_capacity=10,
+        mid_term_capacity=10, long_term_capacity=10,
+    )
+    # Add entries to short_term
+    for i in range(5):
+        ctx.add(
+            source=f"test_{i}",
+            embedding=torch.randn(32),
+            relevance=float(i) / 5.0,
+            causal_weight=0.5,
+            tier="short_term",
+        )
+    before = ctx.stats()
+    assert before["short_term_size"] == 5
+
+    # Promote top 3 from short_term to mid_term
+    promoted = ctx.promote("short_term", top_n=3)
+    assert promoted == 3, f"Expected 3 promoted, got {promoted}"
+    after = ctx.stats()
+    assert after["mid_term_size"] == 3, (
+        f"Mid-term should have 3 promoted entries, got {after['mid_term_size']}"
+    )
+    print("✅ test_causal_context_promotion_on_success PASSED")
+
+
+def test_pairwise_coherence_diagnostics():
+    """Verify ModuleCoherenceVerifier returns per-pair similarity scores."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.9)
+    states = {
+        "meta_loop": torch.randn(2, 32),
+        "factors": torch.randn(2, 32),
+        "input": torch.randn(2, 32),
+    }
+    result = verifier(states)
+    # Should have 3 pairwise scores (3 choose 2)
+    assert len(result["pairwise"]) == 3, (
+        f"Expected 3 pairwise scores, got {len(result['pairwise'])}"
+    )
+    for (name_i, name_j), sim in result["pairwise"].items():
+        assert sim.shape == (2,), f"Pairwise sim for ({name_i}, {name_j}) should be [B]"
+    print("✅ test_pairwise_coherence_diagnostics PASSED")
+
+
+def test_refreshed_feedback_uses_latest_signals():
+    """Verify CognitiveFeedbackBus produces different output for different uncertainty."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    B, device = 2, torch.device("cpu")
+
+    # Low uncertainty
+    fb_low = bus(
+        batch_size=B, device=device,
+        safety_score=torch.ones(B, 1),
+        convergence_quality=0.9,
+        uncertainty=0.1,
+        subsystem_health=torch.ones(B, 1),
+        convergence_loss_scale=1.0,
+        world_model_surprise=0.0,
+        coherence_deficit=0.0,
+    )
+
+    # High uncertainty
+    fb_high = bus(
+        batch_size=B, device=device,
+        safety_score=torch.ones(B, 1),
+        convergence_quality=0.1,
+        uncertainty=0.9,
+        subsystem_health=torch.zeros(B, 1),
+        convergence_loss_scale=2.0,
+        world_model_surprise=0.8,
+        coherence_deficit=0.9,
+    )
+
+    # Feedback vectors should be different for different signals
+    assert not torch.allclose(fb_low, fb_high), (
+        "CognitiveFeedbackBus should produce different feedback for different signals"
+    )
+    print("✅ test_refreshed_feedback_uses_latest_signals PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -14692,6 +14941,17 @@ if __name__ == '__main__':
     test_full_coherence_model_instantiation()
     test_provenance_includes_new_stages_in_forward()
     test_causal_trace_in_compute_loss()
+    
+    # AGI Architecture Unification — Cross-module coherence integration tests
+    test_cross_validation_loss_in_compute_loss()
+    test_auto_critic_loss_in_compute_loss()
+    test_cross_validation_agreement_drives_loss()
+    test_auto_critic_final_score_in_outputs()
+    test_lambda_cross_validation_config()
+    test_causal_context_memory_cross_population()
+    test_causal_context_promotion_on_success()
+    test_pairwise_coherence_diagnostics()
+    test_refreshed_feedback_uses_latest_signals()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
