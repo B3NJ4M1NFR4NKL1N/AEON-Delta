@@ -14908,10 +14908,10 @@ def test_subsystem_errors_recorded_in_causal_trace():
     model.eval()
 
     # Monkey-patch world model to always raise an error
-    def _failing_wm(x, **kwargs):
+    def _failing_world_model(x, **kwargs):
         raise RuntimeError("Simulated world model failure")
 
-    model.world_model.forward = _failing_wm
+    model.world_model.forward = _failing_world_model
 
     B, L = 2, 16
     input_ids = torch.randint(1, 1000, (B, L))

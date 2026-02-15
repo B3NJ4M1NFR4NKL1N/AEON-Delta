@@ -14664,7 +14664,10 @@ class AEONDeltaV3(nn.Module):
                     "dag_loss": float(causal_model_results['dag_loss'].item()),
                 })
                 # Cache causal quality for feedback bus on next forward pass.
-                # Quality = 1/(1+dag_loss): high dag_loss → low quality.
+                # Quality = 1/(1+dag_loss) maps dag_loss ∈ [0, ∞) → quality ∈ (0, 1].
+                # At dag_loss=0 (perfect DAG), quality=1.0; as dag_loss grows,
+                # quality decays hyperbolically toward 0, smoothly penalizing
+                # poor causal structure without hard thresholds.
                 _dag_val = float(causal_model_results['dag_loss'].item())
                 if math.isfinite(_dag_val):
                     self._cached_causal_quality = 1.0 / (1.0 + _dag_val)
@@ -15223,13 +15226,14 @@ class AEONDeltaV3(nn.Module):
             _hr_conc = hybrid_reasoning_results.get("conclusions", None)
             if _hr_conc is not None and _hr_conc.shape[-1] == z_out.shape[-1]:
                 post_states["hybrid_reasoning"] = _hr_conc
-            # Include causal model output if available
+            # Include causal model output if available.
+            # Causal vars have shape [B, num_pillars] (≠ hidden_dim), so
+            # we mean-pool across the pillar dimension and broadcast to
+            # [B, hidden_dim] for shape-compatible coherence comparison.
             _cm_vars = causal_model_results.get("causal_vars", None)
-            if _cm_vars is not None and _cm_vars.shape[-1] == factors.shape[-1]:
-                # Project causal vars to hidden_dim for comparable coherence check
+            if _cm_vars is not None:
                 _cm_expanded = _cm_vars.mean(dim=-1, keepdim=True).expand_as(z_out)
-                if _cm_expanded.shape[-1] == z_out.shape[-1]:
-                    post_states["causal_model"] = _cm_expanded
+                post_states["causal_model"] = _cm_expanded
             # Include unified simulator output if available
             _us_next = unified_simulator_results.get("next_state", None)
             if _us_next is not None and _us_next.shape[-1] == z_out.shape[-1]:
