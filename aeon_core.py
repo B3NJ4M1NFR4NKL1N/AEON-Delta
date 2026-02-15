@@ -2724,6 +2724,9 @@ class AEONConfig:
                 'enable_external_trust',
                 'enable_hybrid_reasoning',
                 'enable_world_model',
+                'enable_unified_simulator',
+                'enable_causal_world_model',
+                'enable_causal_model',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -5466,7 +5469,7 @@ class CognitiveFeedbackBus(nn.Module):
     """
     
     # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 7  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence
+    NUM_SIGNAL_CHANNELS = 8  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence, causal_quality
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5489,6 +5492,7 @@ class CognitiveFeedbackBus(nn.Module):
         convergence_loss_scale: float = 1.0,
         world_model_surprise: float = 0.0,
         coherence_deficit: float = 0.0,
+        causal_quality: float = 1.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5511,6 +5515,10 @@ class CognitiveFeedbackBus(nn.Module):
                 cross-module coherence failure (default: 0.0 = fully coherent).
                 High values signal that subsystem outputs are internally
                 inconsistent, biasing the meta-loop toward deeper reasoning.
+            causal_quality: Scalar ∈ [0, 1] indicating the quality of
+                causal structure learning (default: 1.0 = perfect).  Derived
+                from DAG loss; low values indicate the causal model has poor
+                acyclicity, biasing the meta-loop toward deeper reasoning.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -5553,8 +5561,11 @@ class CognitiveFeedbackBus(nn.Module):
         # Coherence deficit (already in [0, 1])
         cd = torch.full((batch_size,), float(coherence_deficit), device=device)
         
+        # Causal quality (already in [0, 1]; 1.0 = perfect DAG structure)
+        cq = torch.full((batch_size,), float(causal_quality), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd, cq], dim=-1)
         
         return self.projection(signals)
 
@@ -13076,6 +13087,7 @@ class AEONDeltaV3(nn.Module):
         # prediction-error pressure into the next meta-loop trajectory.
         self._cached_surprise: float = 0.0
         self._cached_coherence_deficit: float = 0.0
+        self._cached_causal_quality: float = 1.0
         
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
@@ -13922,6 +13934,7 @@ class AEONDeltaV3(nn.Module):
                 convergence_loss_scale=getattr(self, '_last_convergence_loss_scale', 1.0),
                 world_model_surprise=self._cached_surprise,
                 coherence_deficit=self._cached_coherence_deficit,
+                causal_quality=self._cached_causal_quality,
             ).detach()
         
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
@@ -14164,6 +14177,7 @@ class AEONDeltaV3(nn.Module):
                     ),
                     world_model_surprise=self._cached_surprise,
                     coherence_deficit=self._cached_coherence_deficit,
+                    causal_quality=self._cached_causal_quality,
                 ).detach()
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
                     z_in, use_fixed_point=True, feedback=_refreshed_feedback,
@@ -14266,6 +14280,13 @@ class AEONDeltaV3(nn.Module):
                 self.audit_log.record("world_model", "error_recovered", {
                     "error": str(wm_err)[:200],
                 }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "world_model", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(wm_err)[:200]},
+                    )
         self.integrity_monitor.record_health("world_model", 1.0 if _world_model_healthy else 0.0, {
             "executed": self.world_model is not None and not fast and not _world_model_should_skip,
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
@@ -14387,6 +14408,20 @@ class AEONDeltaV3(nn.Module):
                 importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
                 for i in range(B):
                     self.hierarchical_memory.store(C_star[i], meta={'importance': importance_scores[i].item()})
+                # Record memory operations in causal trace so that
+                # memory retrieval/store decisions are traceable to
+                # their causal antecedents and root causes.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "memory", "retrieve_and_store",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "retrieved_count": B - _memory_empty_count,
+                            "empty_count": _memory_empty_count,
+                            "stored_count": B,
+                            "mean_importance": float(importance_scores.mean().item()),
+                        },
+                    )
             except Exception as mem_err:
                 _memory_healthy = False
                 logger.warning(f"Memory subsystem error (non-fatal): {mem_err}")
@@ -14401,6 +14436,13 @@ class AEONDeltaV3(nn.Module):
                 self.audit_log.record("memory", "error_recovered", {
                     "error": str(mem_err)[:200],
                 }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "memory", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(mem_err)[:200]},
+                    )
         
         # Update memory staleness flag for next forward pass — if the
         # majority of samples had empty retrieval, signal staleness to
@@ -14621,6 +14663,14 @@ class AEONDeltaV3(nn.Module):
                 self.audit_log.record("causal_model", "computed", {
                     "dag_loss": float(causal_model_results['dag_loss'].item()),
                 })
+                # Cache causal quality for feedback bus on next forward pass.
+                # Quality = 1/(1+dag_loss) maps dag_loss ∈ [0, ∞) → quality ∈ (0, 1].
+                # At dag_loss=0 (perfect DAG), quality=1.0; as dag_loss grows,
+                # quality decays hyperbolically toward 0, smoothly penalizing
+                # poor causal structure without hard thresholds.
+                _dag_val = float(causal_model_results['dag_loss'].item())
+                if math.isfinite(_dag_val):
+                    self._cached_causal_quality = 1.0 / (1.0 + _dag_val)
                 # Record causal provenance for traceability
                 if self.causal_trace is not None:
                     self.causal_trace.record(
@@ -14645,6 +14695,13 @@ class AEONDeltaV3(nn.Module):
                 self.audit_log.record("causal_model", "error_recovered", {
                     "error": str(causal_err)[:200],
                 }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "causal_model", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(causal_err)[:200]},
+                    )
             self.provenance_tracker.record_after("causal_model", C_star)
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
@@ -14812,6 +14869,13 @@ class AEONDeltaV3(nn.Module):
                 self.audit_log.record("hybrid_reasoning", "error_recovered", {
                     "error": str(hr_err)[:200],
                 }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "hybrid_reasoning", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(hr_err)[:200]},
+                    )
             self.provenance_tracker.record_after("hybrid_reasoning", C_star)
         self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
             "executed": self.hybrid_reasoning is not None and not fast,
@@ -15162,6 +15226,18 @@ class AEONDeltaV3(nn.Module):
             _hr_conc = hybrid_reasoning_results.get("conclusions", None)
             if _hr_conc is not None and _hr_conc.shape[-1] == z_out.shape[-1]:
                 post_states["hybrid_reasoning"] = _hr_conc
+            # Include causal model output if available.
+            # Causal vars have shape [B, num_pillars] (≠ hidden_dim), so
+            # we mean-pool across the pillar dimension and broadcast to
+            # [B, hidden_dim] for shape-compatible coherence comparison.
+            _cm_vars = causal_model_results.get("causal_vars", None)
+            if _cm_vars is not None:
+                _cm_expanded = _cm_vars.mean(dim=-1, keepdim=True).expand_as(z_out)
+                post_states["causal_model"] = _cm_expanded
+            # Include unified simulator output if available
+            _us_next = unified_simulator_results.get("next_state", None)
+            if _us_next is not None and _us_next.shape[-1] == z_out.shape[-1]:
+                post_states["unified_simulator"] = _us_next
             if len(post_states) >= 2:
                 post_coherence = self.module_coherence(post_states)
                 # Merge into coherence_results: use the lower of pre/post
