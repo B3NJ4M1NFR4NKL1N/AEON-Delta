@@ -3456,6 +3456,8 @@ class _SSMBlock(nn.Module):
         """
         log_a = torch.log(coeffs.clamp(min=1e-8))  # [B, L, D, N]
         log_cumsum = torch.cumsum(log_a, dim=1)     # S[t] = cumulative log-coefficients
+        # Clamp to prevent exp overflow/underflow on long sequences
+        log_cumsum = log_cumsum.clamp(min=-30.0, max=30.0)
         # h[t] = exp(S[t]) * cumsum(values * exp(-S))[t]
         scaled_values = values * torch.exp(-log_cumsum)
         h = torch.exp(log_cumsum) * torch.cumsum(scaled_values, dim=1)
@@ -3710,7 +3712,8 @@ class _SSDBlock(nn.Module):
             C_t  = C[:, t]              # [B, N]
 
             # Discretize: A_bar = exp(dt * A)  — scalar per head
-            A_bar = torch.exp(dt_t * A.unsqueeze(0))            # [B, H]
+            # Clamp exponent to prevent overflow/underflow
+            A_bar = torch.exp((dt_t * A.unsqueeze(0)).clamp(min=-20.0, max=0.0))  # [B, H]
 
             # h = A_bar * h + dt * x ⊗ B
             A_bar_exp = A_bar.unsqueeze(-1).unsqueeze(-1)       # [B, H, 1, 1]
@@ -13426,8 +13429,8 @@ class AEONDeltaV3(nn.Module):
                         reward=self.config.meta_recovery_error_penalty,
                         next_state=next_ctx.squeeze(0),
                     )
-                except Exception:
-                    pass  # Recovery learner itself failed; use default fallback
+                except Exception as exc:
+                    logger.debug("Meta-recovery learner failed: %s", exc)
             # Record error recovery into causal trace so root-cause
             # analysis can link recovery decisions to their antecedents.
             if self.causal_trace is not None:
@@ -15266,8 +15269,8 @@ class AEONDeltaV3(nn.Module):
                     reward=1.0,  # positive reinforcement
                     next_state=success_ctx.squeeze(0),
                 )
-            except Exception:
-                pass  # Non-critical; swallow silently
+            except Exception as exc:
+                logger.debug("Positive recovery reinforcement failed: %s", exc)
         
         # 8e. Error evolution: record successful pipeline completion so
         # the tracker can compute success rates per error class.
