@@ -2490,6 +2490,7 @@ class AEONConfig:
     hvae_blend_weight: float = 0.1
     kl_weight: float = 0.1
     sparsity_target: float = 0.95
+    lambda_provenance: float = 0.01
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -2652,6 +2653,12 @@ class AEONConfig:
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
+    # ===== UNIFIED COHERENCE PRESET =====
+    # When True, activates all AGI coherence features as a group so that
+    # every component verifies and reinforces the others, uncertainty
+    # triggers meta-cognitive cycles, and all conclusions are traceable.
+    enable_full_coherence: bool = False
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -2691,6 +2698,26 @@ class AEONConfig:
         assert self.chunk_overlap < self.chunk_size, "chunk_overlap must be < chunk_size"
         assert self.max_sequence_length > 0, "max_sequence_length must be positive"
         
+        # Unified coherence preset — activate all AGI coherence features
+        # as a group.  Individual flags can still override when set
+        # explicitly by the caller (they take priority if already True).
+        if self.enable_full_coherence:
+            _coherence_flags = [
+                'enable_module_coherence',
+                'enable_metacognitive_recursion',
+                'enable_causal_trace',
+                'enable_error_evolution',
+                'enable_auto_critic',
+                'enable_cross_validation',
+                'enable_ns_consistency_check',
+                'enable_complexity_estimator',
+                'enable_causal_context',
+                'enable_meta_recovery_integration',
+            ]
+            for flag in _coherence_flags:
+                if not getattr(self, flag, False):
+                    object.__setattr__(self, flag, True)
+
         # Device initialization
         if self.device_str == "auto":
             self.device_manager = DeviceManager.auto_select(
@@ -13478,7 +13505,9 @@ class AEONDeltaV3(nn.Module):
                     'causal_trace_summary': {},
                     'coherence_score': None,
                     'dominant_provenance_module': None,
+                    'uncertainty_sources': {'pipeline_error': 1.0},
                 },
+                'uncertainty_sources': {'pipeline_error': 1.0},
             }
             return z_fallback, fallback_outputs
 
@@ -13552,6 +13581,8 @@ class AEONDeltaV3(nn.Module):
         # convergence at step 1a-iii below.
         uncertainty: float = 0.0
         high_uncertainty: bool = False
+        # Track individual uncertainty contributions for traceability
+        uncertainty_sources: Dict[str, float] = {}
         
         # 1. Retrieve cached feedback from previous forward pass.
         # This allows downstream signals (safety, uncertainty) computed
@@ -13603,6 +13634,7 @@ class AEONDeltaV3(nn.Module):
                 success=False,
             )
             uncertainty = min(1.0, uncertainty + 0.3)
+            uncertainty_sources["meta_loop_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
             C_star = z_in.clone()
         
@@ -13715,6 +13747,7 @@ class AEONDeltaV3(nn.Module):
             uncertainty = 1.0 / (1.0 + math.exp(
                 -_UNCERTAINTY_STEEPNESS * (residual_var - _UNCERTAINTY_MIDPOINT)
             ))
+        uncertainty_sources["residual_variance"] = uncertainty
         high_uncertainty = uncertainty > 0.5
         if high_uncertainty and not fast:
             logger.debug(
@@ -13731,8 +13764,10 @@ class AEONDeltaV3(nn.Module):
         # then mean-pooled back into hidden_dim as a residual.  Mean
         # pooling preserves permutation invariance across slots and
         # avoids introducing additional learnable parameters.
+        self.provenance_tracker.record_before("slot_binding", C_star)
         slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, 7, hidden_dim]
         C_star = C_star + slot_assignments.mean(dim=1)
+        self.provenance_tracker.record_after("slot_binding", C_star)
         
         # 2. Extract factors
         factors, embedded_factors = self.sparse_factors(C_star)
@@ -13748,10 +13783,12 @@ class AEONDeltaV3(nn.Module):
         
         # 2b. Cognitive consistency gate — cross-validate C_star against
         # factor-embedded reconstruction to dampen inconsistent dimensions
+        self.provenance_tracker.record_before("consistency_gate", C_star)
         gate = self.consistency_gate(
             torch.cat([C_star, embedded_factors], dim=-1)
         )  # [B, hidden_dim]
         C_star = C_star * gate
+        self.provenance_tracker.record_after("consistency_gate", C_star)
         
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
@@ -13888,6 +13925,7 @@ class AEONDeltaV3(nn.Module):
         if _recovery_health_scalar < 1.0:
             _feedback_uncertainty_boost = (1.0 - _recovery_health_scalar) * _FEEDBACK_UNCERTAINTY_SCALE
             uncertainty = min(1.0, uncertainty + _feedback_uncertainty_boost)
+            uncertainty_sources["recovery_pressure"] = _feedback_uncertainty_boost
             high_uncertainty = uncertainty > 0.5
         
         # 5a-iii. Module coherence verification — cross-validate key
@@ -13936,6 +13974,7 @@ class AEONDeltaV3(nn.Module):
             if _coherence_deficit:
                 _COHERENCE_UNCERTAINTY_BOOST = 0.2
                 uncertainty = min(1.0, uncertainty + _COHERENCE_UNCERTAINTY_BOOST)
+                uncertainty_sources["coherence_deficit"] = _COHERENCE_UNCERTAINTY_BOOST
                 high_uncertainty = uncertainty > 0.5
         
         # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
@@ -14108,6 +14147,7 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["world_model_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("world_model", "error_recovered", {
                     "error": str(wm_err)[:200],
@@ -14133,6 +14173,7 @@ class AEONDeltaV3(nn.Module):
                     _mean_surprise * _SURPRISE_UNCERTAINTY_SCALE,
                 )
                 uncertainty = min(1.0, uncertainty + _surprise_boost)
+                uncertainty_sources["world_model_surprise"] = _surprise_boost
                 high_uncertainty = uncertainty > 0.5
                 # Record high surprise in error evolution so the system
                 # can learn from world model prediction errors and adapt
@@ -14191,6 +14232,7 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["memory_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("memory", "error_recovered", {
                     "error": str(mem_err)[:200],
@@ -14303,6 +14345,7 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 2].any().item()
         )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
+            self.provenance_tracker.record_before("causal_world_model", C_star)
             causal_world_results = self.causal_world_model(C_star)
             # Blend causal world model prediction as a residual to ground
             # the reasoning state in causal dynamics.  The predicted_state
@@ -14331,6 +14374,7 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            self.provenance_tracker.record_after("causal_world_model", C_star)
         
         # 5d1b. NeuralCausalModel — learn inter-factor causal structure.
         # Uses factors as exogenous inputs to discover causal relationships
@@ -14339,6 +14383,7 @@ class AEONDeltaV3(nn.Module):
         causal_model_results: Dict[str, Any] = {}
         _causal_healthy = True
         if self.causal_model is not None and not fast:
+            self.provenance_tracker.record_before("causal_model", C_star)
             try:
                 causal_vars = self.causal_model(factors)  # [B, num_pillars]
                 causal_model_results = {
@@ -14371,10 +14416,12 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["causal_model_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("causal_model", "error_recovered", {
                     "error": str(causal_err)[:200],
                 }, severity="warning")
+            self.provenance_tracker.record_after("causal_model", C_star)
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
         # Provides a complementary causal analysis with NOTEARS acyclicity
@@ -14486,11 +14533,13 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 3].any().item()
         )
         if self.unified_simulator is not None and not fast and not _unified_sim_should_skip:
+            self.provenance_tracker.record_before("unified_simulator", C_star)
             unified_simulator_results = self.unified_simulator(C_star)
             # Blend counterfactual signal as residual
             cf_next = unified_simulator_results.get("next_state", None)
             if cf_next is not None and torch.isfinite(cf_next).all():
                 C_star = C_star + self.config.unified_simulator_blend * cf_next
+            self.provenance_tracker.record_after("unified_simulator", C_star)
             self.audit_log.record("unified_simulator", "computed", {
                 "interventional": bool(
                     unified_simulator_results.get("interventional", False)
@@ -14501,6 +14550,7 @@ class AEONDeltaV3(nn.Module):
         hybrid_reasoning_results: Dict[str, Any] = {}
         _hybrid_healthy = True
         if self.hybrid_reasoning is not None and not fast:
+            self.provenance_tracker.record_before("hybrid_reasoning", C_star)
             try:
                 hybrid_reasoning_results = self.hybrid_reasoning(C_star)
                 conclusions = hybrid_reasoning_results.get("conclusions", None)
@@ -14533,10 +14583,12 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["hybrid_reasoning_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("hybrid_reasoning", "error_recovered", {
                     "error": str(hr_err)[:200],
                 }, severity="warning")
+            self.provenance_tracker.record_after("hybrid_reasoning", C_star)
         self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
             "executed": self.hybrid_reasoning is not None and not fast,
         })
@@ -14548,6 +14600,7 @@ class AEONDeltaV3(nn.Module):
         # the reasoning state with hierarchical structure.
         hierarchical_vae_results: Dict[str, Any] = {}
         if self.hierarchical_vae is not None and not fast:
+            self.provenance_tracker.record_before("hierarchical_vae", C_star)
             vae_out = self.hierarchical_vae(C_star)
             hierarchical_vae_results = vae_out
             selected_level = vae_out.get('selected_level', None)
@@ -14570,7 +14623,9 @@ class AEONDeltaV3(nn.Module):
                     (_hvae_kl_val - _HVAE_KL_THRESHOLD) * _HVAE_UNCERTAINTY_SCALE,
                 )
                 uncertainty = min(1.0, uncertainty + _hvae_boost)
+                uncertainty_sources["hvae_kl_divergence"] = _hvae_boost
                 high_uncertainty = uncertainty > 0.5
+            self.provenance_tracker.record_after("hierarchical_vae", C_star)
         
         # 5f. Causal context — retrieve historical context, then store current
         self.provenance_tracker.record_before("causal_context", C_star)
@@ -14614,6 +14669,7 @@ class AEONDeltaV3(nn.Module):
         if _trust_score_val < _TRUST_ESCALATION_THRESHOLD and not fast:
             _trust_boost = (1.0 - _trust_score_val) * _TRUST_UNCERTAINTY_SCALE
             uncertainty = min(1.0, uncertainty + _trust_boost)
+            uncertainty_sources["low_memory_trust"] = _trust_boost
             high_uncertainty = uncertainty > 0.5
         
         # 7. RSSM dynamics with residual connection and normalization
@@ -14635,6 +14691,7 @@ class AEONDeltaV3(nn.Module):
                 success=False,
             )
             uncertainty = min(1.0, uncertainty + 0.3)
+            uncertainty_sources["rssm_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
             z_rssm = C_fused
         
@@ -14664,6 +14721,7 @@ class AEONDeltaV3(nn.Module):
                 success=False,
             )
             uncertainty = min(1.0, uncertainty + 0.3)
+            uncertainty_sources["integration_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
         
@@ -15078,6 +15136,7 @@ class AEONDeltaV3(nn.Module):
                     key=_provenance["contributions"].get)
                 if _provenance.get("contributions") else None
             ),
+            "uncertainty_sources": uncertainty_sources,
         }
         
         outputs = {
@@ -15123,6 +15182,7 @@ class AEONDeltaV3(nn.Module):
             ),
             'causal_trace_summary': _causal_trace_summary,
             'causal_decision_chain': _causal_decision_chain,
+            'uncertainty_sources': uncertainty_sources,
         }
         
         return z_out, outputs
@@ -15412,6 +15472,32 @@ class AEONDeltaV3(nn.Module):
             if torch.is_tensor(_ewc) and (_ewc.requires_grad or float(_ewc.item()) > 0):
                 ewc_loss = _ewc
         
+        # ===== 12. PROVENANCE CONCENTRATION LOSS =====
+        # Penalize excessive concentration of provenance in a single
+        # module.  High entropy across module contributions indicates
+        # balanced cooperation; low entropy indicates one module dominates.
+        # Uses the negative entropy of provenance contributions as a loss.
+        provenance_loss = torch.tensor(0.0, device=self.device)
+        _PROVENANCE_ENTROPY_EPS = 1e-10
+        _provenance_data = outputs.get('provenance', {})
+        _contributions = _provenance_data.get('contributions', {})
+        if _contributions and len(_contributions) >= 2:
+            _contrib_vals = [v for v in _contributions.values() if v > 0]
+            if len(_contrib_vals) >= 2:
+                _contrib_t = torch.tensor(
+                    _contrib_vals, device=self.device, dtype=torch.float32,
+                )
+                _contrib_t = _contrib_t / (_contrib_t.sum() + _PROVENANCE_ENTROPY_EPS)
+                _entropy = -(
+                    _contrib_t * torch.log(_contrib_t + _PROVENANCE_ENTROPY_EPS)
+                ).sum()
+                _max_entropy = math.log(len(_contrib_vals))
+                if _max_entropy > 0:
+                    # Normalized inverse entropy: 0 when uniform, 1 when collapsed
+                    provenance_loss = 1.0 - (_entropy / _max_entropy)
+
+        _provenance_weight = getattr(self.config, 'lambda_provenance', 0.01)
+
         # ===== TOTAL LOSS =====
         # Note: consistency_loss is excluded because it is computed under
         # torch.no_grad() and would contribute zero gradient.  It is still
@@ -15440,6 +15526,17 @@ class AEONDeltaV3(nn.Module):
         # dynamics, closing the training → inference feedback loop.
         self._last_convergence_loss_scale = _convergence_loss_scale
         
+        # Record convergence-adaptive loss scaling in causal trace so
+        # that training dynamics are traceable alongside inference.
+        if self.causal_trace is not None and _convergence_loss_scale != 1.0:
+            self.causal_trace.record(
+                "compute_loss", "convergence_adaptive_scaling",
+                metadata={
+                    "convergence_status": _convergence_status,
+                    "loss_scale": _convergence_loss_scale,
+                },
+            )
+        
         total_loss = (
             lm_loss +
             vq_loss +
@@ -15450,6 +15547,7 @@ class AEONDeltaV3(nn.Module):
             _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             ewc_loss +
+            _provenance_weight * provenance_loss +
             reg_loss
         )
         
@@ -15473,6 +15571,7 @@ class AEONDeltaV3(nn.Module):
             'causal_dag_loss': causal_dag_loss,
             'hvae_kl_loss': hvae_kl_loss,
             'ewc_loss': ewc_loss,
+            'provenance_loss': provenance_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency,
