@@ -14420,7 +14420,7 @@ class AEONDeltaV3(nn.Module):
             # memory management signal: the system responds to retrieval
             # gaps by making stored knowledge more accessible immediately,
             # rather than only escalating uncertainty.
-            if self.hierarchical_memory is not None:
+            if self.hierarchical_memory is not None and hasattr(self.hierarchical_memory, 'consolidate'):
                 try:
                     _consolidated_count = self.hierarchical_memory.consolidate()
                     if _consolidated_count > 0:
@@ -14430,6 +14430,14 @@ class AEONDeltaV3(nn.Module):
                         })
                 except Exception as _consol_err:
                     logger.debug(f"Consolidation during staleness failed: {_consol_err}")
+            # Also consolidate ConsolidatingMemory if available — promotes
+            # working memory items to episodic/semantic tiers, increasing
+            # the pool of retrievable knowledge for subsequent queries.
+            if self.consolidating_memory is not None and hasattr(self.consolidating_memory, 'consolidate'):
+                try:
+                    self.consolidating_memory.consolidate()
+                except Exception as _consol_err2:
+                    logger.debug(f"ConsolidatingMemory consolidation failed: {_consol_err2}")
             if high_uncertainty:
                 uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
                 uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
@@ -15654,15 +15662,17 @@ class AEONDeltaV3(nn.Module):
         vq_loss = outputs.get('vq_loss', torch.tensor(0.0, device=self.device))
         
         # ===== 3. SELF-CONSISTENCY =====
-        # Computed WITH gradients so that consistency_loss is differentiable
-        # and actively drives the meta-loop toward self-consistent fixed
-        # points during training.
+        # Computed WITH gradients through the lambda_op parameters so that
+        # consistency_loss actively drives the meta-loop toward self-consistent
+        # fixed points.  Inputs are detached (to avoid in-place modification
+        # conflicts from spectral normalization), but the lambda_op forward
+        # pass creates fresh computation graph nodes through its parameters.
         if 'core_state' in outputs and 'psi_0' in outputs:
-            psi_0 = outputs['psi_0']
-            C_star = outputs['core_state']
+            psi_0 = outputs['psi_0'].detach()
+            C_star = outputs['core_state'].detach()
             
             was_training = self.meta_loop.training
-            self.meta_loop.eval()
+            self.meta_loop.train()
             input_concat = torch.cat([psi_0, C_star], dim=-1)
             consistency_check = self.meta_loop.lambda_op(
                 self.meta_loop.input_stabilizer(input_concat)
