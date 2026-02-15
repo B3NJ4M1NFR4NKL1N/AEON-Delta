@@ -4137,7 +4137,8 @@ class InferenceCache:
 
     def get_ssm_state(self) -> Optional[List[torch.Tensor]]:
         with self._lock:
-            return self._ssm_states
+            # Shallow copy: prevents list mutation; tensors are shared references
+            return list(self._ssm_states) if self._ssm_states is not None else None
 
     def set_ssm_state(self, states: List[torch.Tensor]):
         with self._lock:
@@ -4153,7 +4154,8 @@ class InferenceCache:
 
     def get_attn_state(self) -> Optional[List[Tuple[torch.Tensor, torch.Tensor]]]:
         with self._lock:
-            return self._attn_states
+            # Shallow copy: prevents list mutation; tensors are shared references
+            return list(self._attn_states) if self._attn_states is not None else None
 
     def set_attn_state(self, states: List[Tuple[torch.Tensor, torch.Tensor]]):
         with self._lock:
@@ -5240,11 +5242,11 @@ class RobustVectorQuantizer(nn.Module):
             alpha=1 - self.decay
         )
         
-        # Laplace smoothing (in-place to preserve registered buffer)
+        # Laplace smoothing into a temporary (do NOT overwrite raw EMA counts)
         n = self._ema_cluster_size.sum()
         if not torch.isfinite(n) or n.item() < 1e-8:
             n = torch.tensor(1e-8, device=n.device, dtype=n.dtype)
-        self._ema_cluster_size.copy_(
+        smoothed_cluster_size = (
             (self._ema_cluster_size + self.epsilon)
             / (n + self.num_embeddings * self.epsilon)
             * n
@@ -5254,9 +5256,9 @@ class RobustVectorQuantizer(nn.Module):
         dw = torch.matmul(encodings.t(), inputs)
         self._ema_w.mul_(self.decay).add_(dw, alpha=1 - self.decay)
         
-        # Update embedding
+        # Update embedding using smoothed counts
         self.embedding.weight.data.copy_(
-            self._ema_w / self._ema_cluster_size.clamp(min=self.epsilon).unsqueeze(1)
+            self._ema_w / smoothed_cluster_size.clamp(min=self.epsilon).unsqueeze(1)
         )
     
     def _maintain_codebook(self, recent_inputs: torch.Tensor):
@@ -5871,8 +5873,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
             # Adaptive alpha
             alpha_base = self.config.alpha
             if lip_const < 1.0:
-                alpha_scale = torch.sigmoid(
-                    self.alpha_net(torch.cat([C_new, C], dim=-1))
+                # alpha_net already ends with Sigmoid, no need to apply again
+                alpha_scale = self.alpha_net(
+                    torch.cat([C_new, C], dim=-1)
                 ).squeeze(-1)
                 alpha = alpha_base * (0.5 + 0.5 * alpha_scale)
             else:
@@ -11859,19 +11862,19 @@ class TemporalCausalTraceBuffer:
         severity: str = "info",
     ) -> str:
         """Record a decision with causal trace and return its unique ID."""
-        entry_id = f"{subsystem}_{self._next_id}"
-        entry = {
-            "id": entry_id,
-            "timestamp": time.monotonic(),
-            "subsystem": subsystem,
-            "decision": decision,
-            "initial_state_hash": initial_state_hash,
-            "causal_prerequisites": causal_prerequisites or [],
-            "rejected_alternatives": rejected_alternatives or [],
-            "metadata": metadata or {},
-            "severity": severity,
-        }
         with self._lock:
+            entry_id = f"{subsystem}_{self._next_id}"
+            entry = {
+                "id": entry_id,
+                "timestamp": time.monotonic(),
+                "subsystem": subsystem,
+                "decision": decision,
+                "initial_state_hash": initial_state_hash,
+                "causal_prerequisites": causal_prerequisites or [],
+                "rejected_alternatives": rejected_alternatives or [],
+                "metadata": metadata or {},
+                "severity": severity,
+            }
             self._entries.append(entry)
             self._decision_index[entry_id] = self._next_id
             self._next_id += 1
@@ -13393,6 +13396,7 @@ class AEONDeltaV3(nn.Module):
             # MetaRecoveryLearner: encode actual error context and select
             # recovery strategy based on learned policy, then record the
             # experience so the learner can improve over time.
+            recovery_info: Optional[Dict[str, Any]] = None
             if self.meta_recovery is not None:
                 try:
                     _recovery_dim = self.meta_recovery.state_dim
@@ -13439,11 +13443,8 @@ class AEONDeltaV3(nn.Module):
             # CausalErrorEvolutionTracker: record error episode
             if self.error_evolution is not None:
                 strategy_name = "fallback"
-                if self.meta_recovery is not None:
-                    try:
-                        strategy_name = recovery_info.get("strategy", "fallback")
-                    except Exception:
-                        pass
+                if self.meta_recovery is not None and recovery_info is not None:
+                    strategy_name = recovery_info.get("strategy", "fallback")
                 self.error_evolution.record_episode(
                     error_class=error_class,
                     strategy_used=strategy_name,
@@ -14503,10 +14504,9 @@ class AEONDeltaV3(nn.Module):
                     self.consolidating_memory.consolidate()
                 except Exception as _consol_err2:
                     logger.warning(f"ConsolidatingMemory consolidation during staleness failed: {_consol_err2}")
-            if high_uncertainty:
-                uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
-                uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
-                high_uncertainty = uncertainty > 0.5
+            uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
+            uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
+            high_uncertainty = uncertainty > 0.5
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class="memory_staleness",
@@ -16687,6 +16687,8 @@ class AEONTrainer:
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             logger.warning(f"⚠️ NaN/Inf loss at step {self.global_step}, skipping update")
             metrics = {k: float('nan') for k in loss_dict}
+            metrics['lr'] = float(self.scheduler.get_last_lr()[0])
+            metrics['grad_norm'] = 0.0
             return metrics
         
         # Backward
@@ -16830,9 +16832,10 @@ class AEONTrainer:
             for batch in pbar:
                 metrics = self.train_step(batch)
                 
-                # Accumulate
+                # Accumulate (skip NaN/Inf to prevent poisoning epoch averages)
                 for k, v in metrics.items():
-                    epoch_metrics[k].append(v)
+                    if isinstance(v, (int, float)) and not (math.isnan(v) or math.isinf(v)):
+                        epoch_metrics[k].append(v)
                 
                 # Log
                 if self.global_step % self.config.log_interval == 0:

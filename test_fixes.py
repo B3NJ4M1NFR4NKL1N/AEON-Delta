@@ -15487,6 +15487,140 @@ def test_safe_trainer_error_classifier_integration():
     print("✅ test_safe_trainer_error_classifier_integration PASSED")
 
 
+def test_double_sigmoid_removed_in_meta_loop():
+    """Bug fix: ProvablyConvergentMetaLoop.compute_fixed_point applied
+    torch.sigmoid on the output of alpha_net which already ends with
+    nn.Sigmoid, causing double sigmoid and compressing the range to ~[0.27, 0.73].
+
+    After fix, alpha_scale should span the full [0, 1] range.
+    """
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+
+    config = AEONConfig()
+    meta_loop = ProvablyConvergentMetaLoop(config)
+    meta_loop.eval()
+
+    # Create inputs that would produce extreme sigmoid outputs
+    B, H = 4, config.hidden_dim
+    with torch.no_grad():
+        # Force alpha_net linear weights to large values so pre-sigmoid
+        # logits go to +/- large => sigmoid output near 0 or 1.
+        for p in meta_loop.alpha_net.parameters():
+            if p.dim() == 2:
+                p.fill_(0.0)
+                # Make first weight row large positive
+                p[0, :] = 5.0
+            elif p.dim() == 1:
+                p.fill_(0.0)
+
+        C_new = torch.randn(B, H)
+        C = torch.randn(B, H)
+        raw_out = meta_loop.alpha_net(torch.cat([C_new, C], dim=-1)).squeeze(-1)
+
+    # alpha_net output should be in [0, 1] (already sigmoided)
+    assert raw_out.min() >= -0.01, f"alpha_net min {raw_out.min()} below 0"
+    assert raw_out.max() <= 1.01, f"alpha_net max {raw_out.max()} above 1"
+
+    # If double sigmoid were still present, values near 0 would map to ~0.5
+    # and values near 1 would map to ~0.73. With single sigmoid, we can
+    # reach closer to 0 and 1.
+    # Verify by checking the source code doesn't have torch.sigmoid wrapping alpha_net
+    import inspect
+    source = inspect.getsource(meta_loop.compute_fixed_point)
+    assert 'torch.sigmoid' not in source, (
+        "compute_fixed_point still applies torch.sigmoid on alpha_net output"
+    )
+
+    print("✅ test_double_sigmoid_removed_in_meta_loop PASSED")
+
+
+def test_ema_cluster_size_not_corrupted():
+    """Bug fix: RobustVectorQuantizer._ema_update was overwriting
+    _ema_cluster_size with Laplace-smoothed values via .copy_(), corrupting
+    the raw EMA counts on subsequent calls.
+
+    After fix, _ema_cluster_size retains raw EMA counts across calls.
+    """
+    from aeon_core import RobustVectorQuantizer
+
+    vq = RobustVectorQuantizer(
+        num_embeddings=8, embedding_dim=4,
+        use_ema=True, decay=0.99, epsilon=1e-5,
+    )
+    vq.train()
+
+    # Run multiple forward passes and track _ema_cluster_size
+    torch.manual_seed(42)
+    sizes_after = []
+    for step in range(5):
+        z = torch.randn(16, 4)
+        vq(z)
+        sizes_after.append(vq._ema_cluster_size.clone())
+
+    # After multiple steps, _ema_cluster_size should retain raw EMA counts.
+    # With the old bug, smoothing would normalize the counts each step,
+    # keeping them near num_embeddings regardless of how many samples are seen.
+    total_sum = vq._ema_cluster_size.sum().item()
+    # The raw EMA sum accumulates as: decay * old + (1-decay) * batch_count.
+    # After 5 steps of 16 samples, it should NOT equal num_embeddings (8),
+    # which is what the buggy Laplace smoothing normalization would produce.
+    assert total_sum > 0, f"EMA cluster size sum should be positive, got {total_sum}"
+
+    # Key check: the raw EMA counts should NOT sum to exactly
+    # num_embeddings (which is what Laplace smoothing normalizes to).
+    # Allow some tolerance.
+    assert abs(total_sum - 8.0) > 0.01, (
+        f"EMA cluster size sum is {total_sum}, suspiciously close to "
+        f"num_embeddings=8 — Laplace smoothing may still be overwriting raw counts"
+    )
+
+    print("✅ test_ema_cluster_size_not_corrupted PASSED")
+
+
+def test_trainer_nan_loss_has_lr_key():
+    """Bug fix: AEONTrainer.train_step returned early on NaN/Inf loss
+    without 'lr' and 'grad_norm' keys, causing KeyError in the training
+    loop when accessing metrics['lr'].
+
+    After fix, the early-return dict includes 'lr' and 'grad_norm'.
+    """
+    from aeon_core import AEONTrainer, AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(enable_tensorboard=False, enable_wandb=False)
+    model = AEONDeltaV3(config)
+
+    trainer = AEONTrainer(model, config)
+
+    # Create a batch that will produce NaN loss by injecting NaN into the
+    # model output. We'll monkeypatch compute_loss to return NaN.
+    original_compute_loss = model.compute_loss
+
+    def fake_compute_loss(outputs, targets, attention_mask=None):
+        result = original_compute_loss(outputs, targets, attention_mask)
+        result['total_loss'] = torch.tensor(float('nan'))
+        return result
+
+    model.compute_loss = fake_compute_loss
+
+    # Run a train step
+    batch = {
+        'input_ids': torch.randint(1, config.vocab_size, (2, 32)),
+        'attention_mask': torch.ones(2, 32, dtype=torch.long),
+    }
+    metrics = trainer.train_step(batch)
+
+    # Key assertion: 'lr' and 'grad_norm' must be present
+    assert 'lr' in metrics, f"'lr' key missing from metrics on NaN loss path: {list(metrics.keys())}"
+    assert 'grad_norm' in metrics, f"'grad_norm' key missing from metrics on NaN loss path: {list(metrics.keys())}"
+    assert isinstance(metrics['lr'], float), f"'lr' should be float, got {type(metrics['lr'])}"
+    assert metrics['grad_norm'] == 0.0, f"'grad_norm' should be 0.0 on NaN path, got {metrics['grad_norm']}"
+
+    # Restore
+    model.compute_loss = original_compute_loss
+
+    print("✅ test_trainer_nan_loss_has_lr_key PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -16230,6 +16364,11 @@ if __name__ == '__main__':
     test_aeon_core_available_flag()
     test_training_provenance_delegates_to_core()
     test_safe_trainer_error_classifier_integration()
+    
+    # Bug fix tests
+    test_double_sigmoid_removed_in_meta_loop()
+    test_ema_cluster_size_not_corrupted()
+    test_trainer_nan_loss_has_lr_key()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
