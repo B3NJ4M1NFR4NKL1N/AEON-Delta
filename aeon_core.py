@@ -12211,7 +12211,7 @@ class ModuleCoherenceVerifier(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors six independent signals:
+    Monitors seven independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -12221,6 +12221,9 @@ class MetaCognitiveRecursionTrigger:
     6. ``recovery_pressure`` — high error recovery frequency from
        ErrorRecoveryManager, indicating the system is under stress and
        should reason more carefully.
+    7. ``world_model_surprise`` — high prediction error from the world model,
+       indicating the system's internal model is inaccurate and deeper
+       reasoning is needed to reconcile the discrepancy.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -12241,8 +12244,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (6 signals × 1/6 ≈ 0.167 each)
-    _DEFAULT_WEIGHT = 1.0 / 6.0
+    # Default per-signal weight (7 signals × 1/7 ≈ 0.143 each)
+    _DEFAULT_WEIGHT = 1.0 / 7.0
 
     def __init__(
         self,
@@ -12250,12 +12253,17 @@ class MetaCognitiveRecursionTrigger:
         max_recursions: int = 2,
         tightening_factor: float = 0.5,
         extra_iterations: int = 10,
+        surprise_threshold: float = 0.5,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
         self.tightening_factor = max(0.01, min(tightening_factor, 1.0))
         self.extra_iterations = max(0, extra_iterations)
         self._recursion_count: int = 0
+        # Threshold above which world_model_surprise activates the
+        # metacognitive trigger signal.  Configurable so callers can
+        # tune sensitivity to prediction errors.
+        self._surprise_threshold = max(0.0, surprise_threshold)
         # Adaptive signal weights — initialized uniformly; can be
         # adjusted by adapt_weights_from_evolution().
         self._signal_weights: Dict[str, float] = {
@@ -12265,6 +12273,7 @@ class MetaCognitiveRecursionTrigger:
             "coherence_deficit": self._DEFAULT_WEIGHT,
             "memory_staleness": self._DEFAULT_WEIGHT,
             "recovery_pressure": self._DEFAULT_WEIGHT,
+            "world_model_surprise": self._DEFAULT_WEIGHT,
         }
 
     def reset(self) -> None:
@@ -12298,6 +12307,7 @@ class MetaCognitiveRecursionTrigger:
             "numerical": "uncertainty",
             "safety_rollback": "uncertainty",
             "reconciliation_disagreement": "coherence_deficit",
+            "world_model_prediction_error": "world_model_surprise",
         }
 
         # Accumulate boost factors for each signal
@@ -12329,6 +12339,7 @@ class MetaCognitiveRecursionTrigger:
         coherence_deficit: bool = False,
         memory_staleness: bool = False,
         recovery_pressure: float = 0.0,
+        world_model_surprise: float = 0.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -12343,6 +12354,9 @@ class MetaCognitiveRecursionTrigger:
             recovery_pressure: Scalar ∈ [0, 1] indicating how frequently
                 error recovery has been invoked recently.  Derived from
                 ``ErrorRecoveryManager.get_recovery_stats()``.
+            world_model_surprise: Scalar ≥ 0 representing the mean prediction
+                error from the world model.  High surprise indicates the
+                internal model is inaccurate, warranting deeper reasoning.
 
         Returns:
             Dict with:
@@ -12361,6 +12375,7 @@ class MetaCognitiveRecursionTrigger:
             "coherence_deficit": w["coherence_deficit"] * float(coherence_deficit),
             "memory_staleness": w["memory_staleness"] * float(memory_staleness),
             "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
+            "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -13093,6 +13108,22 @@ class AEONDeltaV3(nn.Module):
         total = stats.get("total", 0)
         return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
 
+    @staticmethod
+    def _encode_state_for_recovery(
+        tensor: torch.Tensor, target_dim: int, device: torch.device,
+    ) -> torch.Tensor:
+        """Encode a tensor into a fixed-size vector for MetaRecoveryLearner.
+
+        Flattens the tensor and either truncates or zero-pads to ``target_dim``,
+        then wraps in a batch dimension ``[1, target_dim]``.
+        """
+        flat = tensor.detach().reshape(-1)
+        if flat.numel() >= target_dim:
+            flat = flat[:target_dim]
+        else:
+            flat = F.pad(flat, (0, target_dim - flat.numel()))
+        return flat.unsqueeze(0).to(device)
+
     def _compute_diversity(
         self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
@@ -13271,10 +13302,15 @@ class AEONDeltaV3(nn.Module):
             )
             if recovery_success and recovered_value is not None:
                 recovered_value = recovered_value.to(device)
-            # MetaRecoveryLearner: record experience for learning
+            # MetaRecoveryLearner: encode actual error context and select
+            # recovery strategy based on learned policy, then record the
+            # experience so the learner can improve over time.
             if self.meta_recovery is not None:
                 try:
-                    error_ctx = torch.zeros(1, 64, device=device)
+                    _recovery_dim = self.meta_recovery.state_dim
+                    error_ctx = self._encode_state_for_recovery(
+                        z_in, _recovery_dim, device,
+                    )
                     recovery_info = self.meta_recovery(error_ctx)
                     action_idx = recovery_info.get("action", 0)
                     strategy = recovery_info.get("strategy", "unknown")
@@ -13284,7 +13320,14 @@ class AEONDeltaV3(nn.Module):
                     })
                     # Feed experience into replay buffer so the learner
                     # can update its recovery policy over time.
-                    next_ctx = torch.zeros(1, 64, device=device)
+                    # Use the recovered state as next_state for temporal
+                    # difference learning.
+                    if recovered_value is not None:
+                        next_ctx = self._encode_state_for_recovery(
+                            recovered_value, _recovery_dim, device,
+                        )
+                    else:
+                        next_ctx = error_ctx
                     self.meta_recovery.recovery_buffer.push(
                         state=error_ctx.squeeze(0),
                         action=action_idx,
@@ -13538,6 +13581,19 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.end_phase("meta_loop", success=meta_loop_valid, metadata={
             "convergence_rate": convergence_rate,
         })
+        # Record meta-loop convergence in causal trace so that all
+        # downstream decisions can be traced back to this convergence
+        # point as a causal prerequisite.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "meta_loop", "converged" if meta_loop_valid else "fallback",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "convergence_rate": convergence_rate,
+                    "avg_iterations": float(iterations.mean().item()),
+                    "finite": meta_loop_valid,
+                },
+            )
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
         # window monitor to detect sustained divergence across forward
@@ -13723,6 +13779,19 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.checkpoint("safety", C_star)
         self.progress_tracker.end_phase("safety", success=True)
         self.provenance_tracker.record_after("safety", C_star)
+        # Record safety enforcement in causal trace so that output
+        # provenance includes whether safety rollback influenced the
+        # final state, linking safety decisions to their consequences.
+        if self.causal_trace is not None and safety_enforced:
+            self.causal_trace.record(
+                "safety", "rollback_applied",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "unsafe_count": int(unsafe_mask.sum().item()) if safety_enforced else 0,
+                    "min_safety_score": float(safety_score.min().item()),
+                    "threshold": adaptive_safety_threshold,
+                },
+            )
         
         # 5a-ii. Update cognitive feedback bus — aggregate current step's
         # safety, convergence, uncertainty, and error recovery health into
@@ -13837,6 +13906,7 @@ class AEONDeltaV3(nn.Module):
                 coherence_deficit=_coherence_deficit,
                 memory_staleness=self._memory_stale,
                 recovery_pressure=_recovery_pressure,
+                world_model_surprise=self._cached_surprise,
             )
             if metacognitive_info.get("should_trigger", False):
                 # Consult error evolution for historically best strategy
@@ -14004,6 +14074,16 @@ class AEONDeltaV3(nn.Module):
                 )
                 uncertainty = min(1.0, uncertainty + _surprise_boost)
                 high_uncertainty = uncertainty > 0.5
+                # Record high surprise in error evolution so the system
+                # can learn from world model prediction errors and adapt
+                # the metacognitive trigger sensitivity accordingly.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="world_model_prediction_error",
+                        strategy_used="uncertainty_escalation",
+                        success=True,
+                        metadata={"mean_surprise": _mean_surprise},
+                    )
         
         # 5b2. MCTS planning — moved after memory retrieval (5c) so the
         # search tree root incorporates memory context.  Placeholder
@@ -14355,6 +14435,19 @@ class AEONDeltaV3(nn.Module):
                         hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
                     ),
                 })
+                # Record hybrid reasoning in causal trace so that
+                # conclusions can be traced back to their derivation.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "hybrid_reasoning", "computed",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "num_derived": int(
+                                hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
+                            ),
+                            "conclusions_valid": conclusions is not None and torch.isfinite(conclusions).all(),
+                        },
+                    )
             except Exception as hr_err:
                 _hybrid_healthy = False
                 logger.warning(f"Hybrid reasoning error (non-fatal): {hr_err}")
@@ -14626,10 +14719,13 @@ class AEONDeltaV3(nn.Module):
         # 8d. Positive recovery reinforcement — when the pipeline
         # completes successfully, record a positive reward so that
         # MetaRecoveryLearner can learn from success, not only failure.
+        # Encode real output state for meaningful representation learning.
         if self.meta_recovery is not None and integration_healthy:
             try:
                 _recovery_dim = self.meta_recovery.state_dim
-                success_ctx = torch.zeros(1, _recovery_dim, device=device)
+                success_ctx = self._encode_state_for_recovery(
+                    z_out, _recovery_dim, device,
+                )
                 _sanitize_action = 0  # index into MetaRecoveryLearner.STRATEGIES
                 self.meta_recovery.recovery_buffer.push(
                     state=success_ctx.squeeze(0),
@@ -14753,6 +14849,15 @@ class AEONDeltaV3(nn.Module):
             _post_coherence_deficit = coherence_results.get(
                 "needs_recheck", False,
             ) if coherence_results else False
+            # Escalate coherence deficit when NS violations were detected,
+            # so that neuro-symbolic reasoning failures feed back into the
+            # metacognitive trigger evaluation for deeper re-reasoning.
+            _ns_violations_count = (
+                ns_consistency_results.get("num_violations", torch.zeros(1)).sum().item()
+                if ns_consistency_results else 0
+            )
+            if _ns_violations_count > 0:
+                _post_coherence_deficit = True
             metacognitive_info_post = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -14760,6 +14865,7 @@ class AEONDeltaV3(nn.Module):
                 coherence_deficit=_post_coherence_deficit,
                 memory_staleness=self._memory_stale,
                 recovery_pressure=_post_recovery_pressure,
+                world_model_surprise=self._cached_surprise,
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
