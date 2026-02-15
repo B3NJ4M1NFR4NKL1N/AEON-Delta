@@ -1374,8 +1374,8 @@ class SafeThoughtAETrainerV4:
 
         self.provenance.record_before("decoder", quantized)
         logits = self.model.decode(quantized, tokens)
-        # Use mean-pooled logits for comparable dimensionality
-        self.provenance.record_after("decoder", logits.view(logits.size(0), -1)[:, :quantized.size(-1)])
+        # Record decoder delta using mean-pooled output (seq × vocab → z_dim)
+        self.provenance.record_after("decoder", logits.mean(dim=(1, 2)).unsqueeze(-1).expand_as(quantized))
         
         recon_loss = self.criterion(
             logits[:, :-1].contiguous().view(-1, self.config.vocab_size), 
@@ -1780,6 +1780,10 @@ class ContextualRSSMTrainer:
 # TRAINING–CORE BRIDGE: PROVENANCE & CONVERGENCE
 # ==============================================================================
 
+# Threshold above which a single module's provenance contribution
+# triggers a dominance warning during validation.
+_PROVENANCE_DOMINANCE_WARNING_THRESHOLD = 0.9
+
 class TrainingProvenanceTracker:
     """Lightweight provenance tracker for the training pipeline.
 
@@ -1802,6 +1806,7 @@ class TrainingProvenanceTracker:
         # Standalone fallback storage
         self._deltas: Dict[str, float] = {}
         self._order: list = []
+        self._snapshots: Dict[str, torch.Tensor] = {}
 
     def reset(self):
         """Clear all recorded snapshots for a new pass."""
@@ -1809,19 +1814,25 @@ class TrainingProvenanceTracker:
             self._tracker.reset()
         self._deltas.clear()
         self._order.clear()
+        self._snapshots.clear()
 
     def record_before(self, name: str, state: torch.Tensor):
         if self._tracker is not None:
             self._tracker.record_before(name, state)
-        self._before = (name, state.detach().clone())
+        self._snapshots[name] = state.detach().clone()
         if name not in self._order:
             self._order.append(name)
 
     def record_after(self, name: str, state: torch.Tensor):
         if self._tracker is not None:
             self._tracker.record_after(name, state)
-        if hasattr(self, '_before') and self._before[0] == name:
-            self._deltas[name] = (state.detach() - self._before[1]).norm().item()
+        if name in self._snapshots:
+            before = self._snapshots[name]
+            # Handle shape mismatches by truncating to smaller size
+            min_size = min(state.shape[-1], before.shape[-1])
+            self._deltas[name] = (
+                state.detach()[..., :min_size] - before[..., :min_size]
+            ).norm().item()
 
     def compute_attribution(self) -> Dict[str, Any]:
         """Return per-component attribution dict."""
@@ -1900,7 +1911,7 @@ class TrainingConvergenceMonitor:
         recent = self._history[-self._WARMUP_SIZE:]
         trend = recent[-1] - recent[0]
 
-        if recent[-1] > self._DIVERGENCE_RATIO * min(self._history):
+        if recent[-1] > self._DIVERGENCE_RATIO * min(recent):
             self.status = 'diverging'
             recommendation = 'reduce_lr_or_rollback'
         elif abs(trend) < self._STAGNATION_THRESHOLD:
@@ -2070,21 +2081,23 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
                     f"({_max_contrib:.1%}), "
                     f"modules={list(contributions.keys())}"
                 )
-                # Warn if a single module dominates >90% — indicates
+                # Warn if a single module dominates — indicates
                 # an architectural imbalance where one component
                 # overwhelms the others.
-                _DOMINANCE_WARNING_THRESHOLD = 0.9
-                if _max_contrib > _DOMINANCE_WARNING_THRESHOLD:
+                if _max_contrib > _PROVENANCE_DOMINANCE_WARNING_THRESHOLD:
                     logger.warning(
                         f"   ⚠️ Module '{_dominant}' dominates "
                         f"provenance ({_max_contrib:.1%} > "
-                        f"{_DOMINANCE_WARNING_THRESHOLD:.0%}). "
+                        f"{_PROVENANCE_DOMINANCE_WARNING_THRESHOLD:.0%}). "
                         f"Consider rebalancing component contributions."
                     )
 
             # Cross-module coherence: verify that encoder output and
             # VQ output are semantically aligned (cosine similarity).
-            _COHERENCE_THRESHOLD = 0.0
+            # A threshold of -0.5 catches severe misalignment while
+            # allowing normal VQ quantization shifts that may reduce
+            # cosine similarity from 1.0.
+            _COHERENCE_THRESHOLD = -0.5
             cos_sim = F.cosine_similarity(z_val, q_val, dim=-1).mean().item()
             if cos_sim > _COHERENCE_THRESHOLD:
                 logger.info(

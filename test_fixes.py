@@ -15255,8 +15255,9 @@ def test_training_provenance_tracker():
     assert attribution['deltas']['decoder'] > attribution['deltas']['vq']
 
     # Contributions should sum to ~1.0
+    _CONTRIBUTION_SUM_TOLERANCE = 1e-6
     total = sum(attribution['contributions'].values())
-    assert abs(total - 1.0) < 1e-6, f"Contributions sum to {total}, expected ~1.0"
+    assert abs(total - 1.0) < _CONTRIBUTION_SUM_TOLERANCE, f"Contributions sum to {total}, expected ~1.0"
 
     print("✅ test_training_provenance_tracker PASSED")
 
@@ -15344,14 +15345,16 @@ def test_safe_trainer_provenance_in_outputs():
     from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
     import torch
     import logging
+    import tempfile
 
     config = AEONConfigV4()
     model = AEONDeltaV4(config)
     test_logger = logging.getLogger("test_provenance")
     test_logger.setLevel(logging.WARNING)
-    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_prov_ckpt")
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
 
-    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_prov_out")
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
 
     # Run a single forward pass
     tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
@@ -15374,14 +15377,16 @@ def test_safe_trainer_convergence_monitor_integration():
     """Verify SafeThoughtAETrainerV4 has convergence monitor integrated."""
     from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
     import logging
+    import tempfile
 
     config = AEONConfigV4()
     model = AEONDeltaV4(config)
     test_logger = logging.getLogger("test_conv_monitor")
     test_logger.setLevel(logging.WARNING)
-    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_conv_ckpt")
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
 
-    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_conv_out")
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
 
     # Verify convergence monitor exists
     assert hasattr(trainer, 'convergence_monitor')
@@ -15398,12 +15403,14 @@ def test_rssm_trainer_convergence_monitor():
     """Verify ContextualRSSMTrainer has convergence monitor integrated."""
     from ae_train import AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor
     import logging
+    import tempfile
 
     config = AEONConfigV4()
     model = AEONDeltaV4(config)
     test_logger = logging.getLogger("test_rssm_conv")
     test_logger.setLevel(logging.WARNING)
-    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_rssm_conv_ckpt")
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
 
     trainer = ContextualRSSMTrainer(model, config, monitor)
 
@@ -15459,14 +15466,16 @@ def test_safe_trainer_error_classifier_integration():
         TrainingMonitor, AEON_CORE_AVAILABLE,
     )
     import logging
+    import tempfile
 
     config = AEONConfigV4()
     model = AEONDeltaV4(config)
     test_logger = logging.getLogger("test_err_cls")
     test_logger.setLevel(logging.WARNING)
-    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_err_cls_ckpt")
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
 
-    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_err_cls_out")
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
 
     if AEON_CORE_AVAILABLE:
         assert trainer._error_classifier is not None, (
