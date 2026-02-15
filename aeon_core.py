@@ -13307,7 +13307,15 @@ class AEONDeltaV3(nn.Module):
             logger.error(
                 f"reasoning_core pipeline error [{error_class}]: {detail}"
             )
-            # ErrorRecoveryManager: strategy-pattern dispatch with retry
+            # ErrorRecoveryManager: strategy-pattern dispatch with retry.
+            # Consult error evolution for historically best recovery strategy
+            # so the system evolves through past errors rather than always
+            # using the same fallback.
+            _evolved_strategy: Optional[str] = None
+            if self.error_evolution is not None:
+                _evolved_strategy = self.error_evolution.get_best_strategy(
+                    error_class
+                )
             recovery_success, recovered_value = self.error_recovery.recover(
                 error=pipeline_error,
                 context="reasoning_core",
@@ -13504,6 +13512,12 @@ class AEONDeltaV3(nn.Module):
         if self.complexity_estimator is not None and not fast:
             complexity_info = self.complexity_estimator(z_in)
             _complexity_gates = complexity_info.get('subsystem_gates', None)
+            # Validate complexity gates — NaN/Inf gates would silently
+            # degrade all gated subsystems.  Replace non-finite gates with
+            # ones (fully enabled) so subsystems run rather than fail.
+            if _complexity_gates is not None and not torch.isfinite(_complexity_gates).all():
+                logger.warning("Non-finite complexity gates detected; resetting to 1.0")
+                _complexity_gates = torch.ones_like(_complexity_gates)
             logger.debug(
                 f"Complexity: {complexity_info['complexity_score'].mean().item():.3f}"
             )
@@ -13531,6 +13545,13 @@ class AEONDeltaV3(nn.Module):
             )
         
         self.progress_tracker.begin_phase("meta_loop")
+        
+        # Initialize uncertainty tracking before meta-loop so that
+        # NaN fallback paths can safely reference these variables.
+        # They will be recomputed with proper values after meta-loop
+        # convergence at step 1a-iii below.
+        uncertainty: float = 0.0
+        high_uncertainty: bool = False
         
         # 1. Retrieve cached feedback from previous forward pass.
         # This allows downstream signals (safety, uncertainty) computed
@@ -13907,6 +13928,15 @@ class AEONDeltaV3(nn.Module):
                 "coherence_score": float(coherence_results["coherence_score"].mean().item()),
                 "needs_recheck": _coherence_deficit,
             })
+            # 5a-iii-b. Coherence-driven corrective action — when coherence
+            # deficit is detected, escalate uncertainty to ensure downstream
+            # meta-cognitive cycles activate.  This closes the loop between
+            # coherence detection and corrective behavior, rather than
+            # merely recording the deficit for post-hoc analysis.
+            if _coherence_deficit:
+                _COHERENCE_UNCERTAINTY_BOOST = 0.2
+                uncertainty = min(1.0, uncertainty + _COHERENCE_UNCERTAINTY_BOOST)
+                high_uncertainty = uncertainty > 0.5
         
         # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
         # accumulated signals warrant re-running the meta-loop with
@@ -14417,6 +14447,18 @@ class AEONDeltaV3(nn.Module):
                     adaptive_safety_threshold,
                     adaptive_safety_threshold * (0.5 + 0.5 * _agreement_val),
                 )
+        elif self.cross_validator is not None and not fast:
+            # Cross-validation was enabled but skipped because causal world
+            # model results were unavailable.  Record this so the audit log
+            # reflects when reconciliation is missing.
+            _skip_reason = (
+                "causal_world_model_disabled"
+                if self.causal_world_model is None
+                else "no_causal_world_results"
+            )
+            self.audit_log.record("cross_validation", "skipped", {
+                "reason": _skip_reason,
+            })
         
         # 5d3. Causal-aware planning annotation — when both MCTS planning
         # and causal model results are available, annotate the MCTS output
