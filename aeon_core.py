@@ -14237,8 +14237,10 @@ class AEONDeltaV3(nn.Module):
                         # better overall, but may contain useful signal.
                         # Blend proportionally to relative quality so the
                         # system still benefits from the deeper pass.
-                        _blend_alpha = self.config.metacognitive_blend_alpha * (
-                            deeper_rate / max(convergence_quality_scalar, 1e-6)
+                        # Note: deeper_rate < convergence_quality_scalar here
+                        # (guarded by the if/elif chain), so the ratio is <1.
+                        _blend_alpha = self.config.metacognitive_blend_alpha * min(
+                            1.0, deeper_rate / max(convergence_quality_scalar, 1e-6)
                         )
                         _blend_alpha = min(_blend_alpha, self.config.metacognitive_blend_alpha)
                         C_star = C_star * (1.0 - _blend_alpha) + C_star_deeper * _blend_alpha
@@ -14257,10 +14259,11 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.record_episode(
                         error_class="metacognitive_rerun",
                         strategy_used=_metacog_strategy,
-                        success=_metacog_accepted or _metacog_strategy == "partial_blend",
+                        success=_metacog_accepted,
                         metadata={
                             "triggers": metacognitive_info.get("triggers_active", []),
                             "strategy": _metacog_strategy,
+                            "partial_blend_applied": _metacog_strategy == "partial_blend",
                         },
                     )
         

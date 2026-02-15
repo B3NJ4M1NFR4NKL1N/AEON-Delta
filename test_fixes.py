@@ -15652,8 +15652,8 @@ def test_metacognitive_partial_blend():
     convergence_quality_scalar = 0.8
     deeper_rate = 0.4  # Less than convergence_quality_scalar but > 0
 
-    blend_alpha = config.metacognitive_blend_alpha * (
-        deeper_rate / max(convergence_quality_scalar, 1e-6)
+    blend_alpha = config.metacognitive_blend_alpha * min(
+        1.0, deeper_rate / max(convergence_quality_scalar, 1e-6)
     )
     blend_alpha = min(blend_alpha, config.metacognitive_blend_alpha)
     C_blended = C_star * (1.0 - blend_alpha) + C_star_deeper * blend_alpha
@@ -15770,10 +15770,10 @@ def test_error_evolution_metacog_strategy_recorded():
         success=False,
     )
 
-    # Get best strategy — should prefer one of the successful strategies
+    # Get best strategy — should prefer the successful strategy
     best = tracker.get_best_strategy("metacognitive_rerun")
-    assert best in ("full_accept", "partial_blend"), (
-        f"Best strategy should be a successful one, got {best}"
+    assert best == "full_accept", (
+        f"Best strategy should be 'full_accept' (only successful one), got {best}"
     )
 
     # Summary should show all strategies
