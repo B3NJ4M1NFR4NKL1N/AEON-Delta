@@ -15217,6 +15217,267 @@ def test_mcts_error_evolution_records_low_confidence():
     print("✅ test_mcts_error_evolution_records_low_confidence PASSED")
 
 
+# ==============================================================================
+# TRAINING–CORE BRIDGE INTEGRATION TESTS
+# ==============================================================================
+
+def test_training_provenance_tracker():
+    """Verify TrainingProvenanceTracker records per-component attribution."""
+    from ae_train import TrainingProvenanceTracker
+    import torch
+
+    tracker = TrainingProvenanceTracker()
+    tracker.reset()
+
+    # Simulate a 3-component pipeline
+    x = torch.randn(2, 16)
+    tracker.record_before("encoder", x)
+    z = x * 2 + 1  # Significant transformation
+    tracker.record_after("encoder", z)
+
+    tracker.record_before("vq", z)
+    q = z + 0.01  # Minor transformation
+    tracker.record_after("vq", q)
+
+    tracker.record_before("decoder", q)
+    out = q * 3  # Significant transformation
+    tracker.record_after("decoder", out)
+
+    attribution = tracker.compute_attribution()
+    assert 'contributions' in attribution
+    assert 'deltas' in attribution
+    assert 'order' in attribution
+    assert len(attribution['contributions']) == 3
+    assert len(attribution['order']) == 3
+
+    # Encoder and decoder should have larger deltas than VQ
+    assert attribution['deltas']['encoder'] > attribution['deltas']['vq']
+    assert attribution['deltas']['decoder'] > attribution['deltas']['vq']
+
+    # Contributions should sum to ~1.0
+    total = sum(attribution['contributions'].values())
+    assert abs(total - 1.0) < 1e-6, f"Contributions sum to {total}, expected ~1.0"
+
+    print("✅ test_training_provenance_tracker PASSED")
+
+
+def test_training_convergence_monitor():
+    """Verify TrainingConvergenceMonitor detects convergence and divergence."""
+    from ae_train import TrainingConvergenceMonitor
+
+    monitor = TrainingConvergenceMonitor(threshold=1e-5, window_size=10)
+
+    # Warmup phase
+    for loss in [1.0, 0.9, 0.8, 0.7]:
+        verdict = monitor.update(loss)
+        assert verdict['status'] == 'warmup'
+
+    # Converging phase (loss decreasing)
+    for loss in [0.6, 0.5, 0.4, 0.3, 0.2, 0.1]:
+        verdict = monitor.update(loss)
+    assert verdict['status'] in ('converging', 'converged')
+
+    # Diverging phase (loss spikes)
+    monitor_div = TrainingConvergenceMonitor(threshold=1e-5, window_size=5)
+    losses = [1.0, 0.5, 0.3, 0.2, 0.1, 0.5, 0.8, 1.2, 1.5, 2.0]
+    for loss in losses:
+        verdict = monitor_div.update(loss)
+    assert verdict['status'] == 'diverging'
+    assert verdict['recommendation'] == 'reduce_lr_or_rollback'
+
+    # NaN detection
+    verdict_nan = monitor.update(float('nan'))
+    assert verdict_nan['status'] == 'diverging'
+
+    print("✅ test_training_convergence_monitor PASSED")
+
+
+def test_training_convergence_monitor_stagnation():
+    """Verify TrainingConvergenceMonitor detects stagnation."""
+    from ae_train import TrainingConvergenceMonitor
+
+    monitor = TrainingConvergenceMonitor(threshold=1e-5, window_size=10)
+
+    # Feed identical losses to trigger stagnation
+    for _ in range(15):
+        verdict = monitor.update(0.5)
+
+    assert verdict['status'] == 'stagnating'
+    assert verdict['recommendation'] == 'increase_lr_or_augment'
+
+    print("✅ test_training_convergence_monitor_stagnation PASSED")
+
+
+def test_validate_training_components_coherence():
+    """Verify validate_training_components includes cognitive coherence checks."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, validate_training_components
+    import torch
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_coherence")
+    test_logger.setLevel(logging.DEBUG)
+
+    # Capture log output
+    import io
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    test_logger.addHandler(handler)
+
+    result = validate_training_components(model, config, test_logger)
+    log_output = handler.stream.getvalue()
+
+    # Should pass validation
+    assert result is True, "validate_training_components should pass"
+
+    # Should contain coherence verification logs
+    assert "Cognitive coherence verification" in log_output or "Provenance" in log_output, (
+        "Validation should include cognitive coherence verification"
+    )
+
+    print("✅ test_validate_training_components_coherence PASSED")
+
+
+def test_safe_trainer_provenance_in_outputs():
+    """Verify SafeThoughtAETrainerV4 includes provenance in forward pass outputs."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
+    import torch
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_provenance")
+    test_logger.setLevel(logging.WARNING)
+    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_prov_ckpt")
+
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_prov_out")
+
+    # Run a single forward pass
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    outputs = trainer._forward_pass(tokens)
+
+    assert 'provenance' in outputs, "Forward pass should include provenance attribution"
+    provenance = outputs['provenance']
+    assert 'contributions' in provenance
+    assert 'deltas' in provenance
+    assert 'order' in provenance
+    # Should have tracked vq and decoder
+    assert len(provenance['order']) == 2
+    assert 'vq' in provenance['contributions']
+    assert 'decoder' in provenance['contributions']
+
+    print("✅ test_safe_trainer_provenance_in_outputs PASSED")
+
+
+def test_safe_trainer_convergence_monitor_integration():
+    """Verify SafeThoughtAETrainerV4 has convergence monitor integrated."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_conv_monitor")
+    test_logger.setLevel(logging.WARNING)
+    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_conv_ckpt")
+
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_conv_out")
+
+    # Verify convergence monitor exists
+    assert hasattr(trainer, 'convergence_monitor')
+    assert trainer.convergence_monitor.status == 'warmup'
+
+    # Feed some losses
+    verdict1 = trainer.convergence_monitor.update(1.0)
+    assert verdict1['status'] == 'warmup'
+
+    print("✅ test_safe_trainer_convergence_monitor_integration PASSED")
+
+
+def test_rssm_trainer_convergence_monitor():
+    """Verify ContextualRSSMTrainer has convergence monitor integrated."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_rssm_conv")
+    test_logger.setLevel(logging.WARNING)
+    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_rssm_conv_ckpt")
+
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    assert hasattr(trainer, 'convergence_monitor')
+    assert trainer.convergence_monitor.status == 'warmup'
+
+    print("✅ test_rssm_trainer_convergence_monitor PASSED")
+
+
+def test_aeon_core_available_flag():
+    """Verify AEON_CORE_AVAILABLE flag is set correctly."""
+    from ae_train import AEON_CORE_AVAILABLE
+
+    # Since we're in the same repo, aeon_core should be importable
+    assert AEON_CORE_AVAILABLE is True, (
+        "AEON_CORE_AVAILABLE should be True when aeon_core is importable"
+    )
+
+    print("✅ test_aeon_core_available_flag PASSED")
+
+
+def test_training_provenance_delegates_to_core():
+    """When aeon_core is available, TrainingProvenanceTracker delegates
+    to CausalProvenanceTracker."""
+    from ae_train import TrainingProvenanceTracker, AEON_CORE_AVAILABLE
+    import torch
+
+    tracker = TrainingProvenanceTracker()
+
+    if AEON_CORE_AVAILABLE:
+        assert tracker._tracker is not None, (
+            "Should delegate to CausalProvenanceTracker when aeon_core available"
+        )
+    else:
+        assert tracker._tracker is None
+
+    # Should work regardless
+    tracker.reset()
+    x = torch.randn(2, 8)
+    tracker.record_before("test", x)
+    y = x + 1
+    tracker.record_after("test", y)
+    attr = tracker.compute_attribution()
+    assert 'contributions' in attr
+
+    print("✅ test_training_provenance_delegates_to_core PASSED")
+
+
+def test_safe_trainer_error_classifier_integration():
+    """Verify SafeThoughtAETrainerV4 uses SemanticErrorClassifier when available."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4,
+        TrainingMonitor, AEON_CORE_AVAILABLE,
+    )
+    import logging
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_err_cls")
+    test_logger.setLevel(logging.WARNING)
+    monitor = TrainingMonitor(test_logger, save_dir="/tmp/test_err_cls_ckpt")
+
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_err_cls_out")
+
+    if AEON_CORE_AVAILABLE:
+        assert trainer._error_classifier is not None, (
+            "Should have SemanticErrorClassifier when aeon_core available"
+        )
+    else:
+        assert trainer._error_classifier is None
+
+    print("✅ test_safe_trainer_error_classifier_integration PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -15948,6 +16209,18 @@ if __name__ == '__main__':
     test_hybrid_reasoning_ns_violation_escalates_uncertainty()
     test_causal_quality_passed_to_trigger_evaluate()
     test_mcts_error_evolution_records_low_confidence()
+    
+    # Training–Core Bridge Integration Tests
+    test_training_provenance_tracker()
+    test_training_convergence_monitor()
+    test_training_convergence_monitor_stagnation()
+    test_validate_training_components_coherence()
+    test_safe_trainer_provenance_in_outputs()
+    test_safe_trainer_convergence_monitor_integration()
+    test_rssm_trainer_convergence_monitor()
+    test_aeon_core_available_flag()
+    test_training_provenance_delegates_to_core()
+    test_safe_trainer_error_classifier_integration()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
