@@ -5423,7 +5423,7 @@ class CognitiveFeedbackBus(nn.Module):
     """
     
     # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 6  # safety, convergence, uncertainty, health_mean, loss_scale, surprise
+    NUM_SIGNAL_CHANNELS = 7  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5445,6 +5445,7 @@ class CognitiveFeedbackBus(nn.Module):
         subsystem_health: Optional[torch.Tensor] = None,
         convergence_loss_scale: float = 1.0,
         world_model_surprise: float = 0.0,
+        coherence_deficit: float = 0.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5463,6 +5464,10 @@ class CognitiveFeedbackBus(nn.Module):
                 previous forward pass (default: 0.0 = no surprise).  High
                 values signal that the internal world model is inaccurate,
                 biasing the meta-loop toward deeper exploration.
+            coherence_deficit: Scalar ∈ [0, 1] indicating the severity of
+                cross-module coherence failure (default: 0.0 = fully coherent).
+                High values signal that subsystem outputs are internally
+                inconsistent, biasing the meta-loop toward deeper reasoning.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -5502,8 +5507,11 @@ class CognitiveFeedbackBus(nn.Module):
         )
         ws = torch.full((batch_size,), _normalized_surprise, device=device)
         
+        # Coherence deficit (already in [0, 1])
+        cd = torch.full((batch_size,), float(coherence_deficit), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd], dim=-1)
         
         return self.projection(signals)
 
@@ -13024,6 +13032,7 @@ class AEONDeltaV3(nn.Module):
         # the previous forward pass so the feedback bus can incorporate
         # prediction-error pressure into the next meta-loop trajectory.
         self._cached_surprise: float = 0.0
+        self._cached_coherence_deficit: float = 0.0
         
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
@@ -13565,8 +13574,10 @@ class AEONDeltaV3(nn.Module):
             self.error_recovery.record_event(
                 error_class="numerical",
                 context="meta_loop_nan_fallback",
-                success=True,
+                success=False,
             )
+            uncertainty = min(1.0, uncertainty + 0.3)
+            high_uncertainty = uncertainty > 0.5
             C_star = z_in.clone()
         
         # Record meta-loop health and checkpoint
@@ -13835,6 +13846,7 @@ class AEONDeltaV3(nn.Module):
                 subsystem_health=_recovery_health,
                 convergence_loss_scale=getattr(self, '_last_convergence_loss_scale', 1.0),
                 world_model_surprise=self._cached_surprise,
+                coherence_deficit=self._cached_coherence_deficit,
             ).detach()
         
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
@@ -13861,12 +13873,21 @@ class AEONDeltaV3(nn.Module):
             coherence_states = {
                 "meta_loop": C_star,
                 "factors": embedded_factors,
+                "input": z_in,
             }
             # Include safety-gated state if safety enforcement modified C_star
             if safety_enforced:
                 coherence_states["safety_gated"] = C_star.detach().clone()
             coherence_results = self.module_coherence(coherence_states)
             _coherence_deficit = coherence_results.get("needs_recheck", False)
+            # Cache coherence deficit for feedback bus on next forward pass
+            _coherence_score = coherence_results.get("coherence_score", None)
+            if _coherence_score is not None:
+                self._cached_coherence_deficit = float(
+                    1.0 - _coherence_score.mean().item()
+                )
+            else:
+                self._cached_coherence_deficit = 1.0 if _coherence_deficit else 0.0
             # Record coherence deficit in error evolution tracker so the
             # system can learn from coherence failures over time.
             if _coherence_deficit and self.error_evolution is not None:
@@ -14047,8 +14068,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_recovery.record_event(
                     error_class="subsystem",
                     context="world_model_forward",
-                    success=True,
+                    success=False,
                 )
+                uncertainty = min(1.0, uncertainty + 0.2)
+                high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("world_model", "error_recovered", {
                     "error": str(wm_err)[:200],
                 }, severity="warning")
@@ -14128,8 +14151,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_recovery.record_event(
                     error_class="subsystem",
                     context="hierarchical_memory",
-                    success=True,
+                    success=False,
                 )
+                uncertainty = min(1.0, uncertainty + 0.2)
+                high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("memory", "error_recovered", {
                     "error": str(mem_err)[:200],
                 }, severity="warning")
@@ -14306,8 +14331,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_recovery.record_event(
                     error_class="subsystem",
                     context="causal_model_forward",
-                    success=True,
+                    success=False,
                 )
+                uncertainty = min(1.0, uncertainty + 0.2)
+                high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("causal_model", "error_recovered", {
                     "error": str(causal_err)[:200],
                 }, severity="warning")
@@ -14454,8 +14481,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_recovery.record_event(
                     error_class="subsystem",
                     context="hybrid_reasoning_forward",
-                    success=True,
+                    success=False,
                 )
+                uncertainty = min(1.0, uncertainty + 0.2)
+                high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("hybrid_reasoning", "error_recovered", {
                     "error": str(hr_err)[:200],
                 }, severity="warning")
@@ -14554,8 +14583,10 @@ class AEONDeltaV3(nn.Module):
             self.error_recovery.record_event(
                 error_class="numerical",
                 context="rssm_nan_fallback",
-                success=True,
+                success=False,
             )
+            uncertainty = min(1.0, uncertainty + 0.3)
+            high_uncertainty = uncertainty > 0.5
             z_rssm = C_fused
         
         # 7b. Multimodal grounding (if available)
@@ -14581,8 +14612,10 @@ class AEONDeltaV3(nn.Module):
             self.error_recovery.record_event(
                 error_class="numerical",
                 context="integration_nan_fallback",
-                success=True,
+                success=False,
             )
+            uncertainty = min(1.0, uncertainty + 0.3)
+            high_uncertainty = uncertainty > 0.5
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
         
         # 8a-ii. Deterministic output validation
@@ -15571,16 +15604,17 @@ class AEONDeltaV3(nn.Module):
             logger.info("✅ MetaLearner initialized")
     
     def print_architecture_summary(self):
-        """Print architecture summary."""
-        logger.info("="*70)
-        logger.info("Architecture Summary")
-        logger.info("="*70)
-        logger.info(f"{'Encoder Backend':20s}: {self.config.encoder_backend}")
-        logger.info(f"{'Decoder Backend':20s}: {self.config.decoder_backend}")
-        logger.info(f"{'Max Sequence Len':20s}: {self.config.max_sequence_length}")
-        logger.info(f"{'Chunk Size':20s}: {self.config.chunk_size}")
-        logger.info(f"{'Inference Cache':20s}: {'Enabled' if self.inference_cache else 'Disabled'}")
-        logger.info("-"*70)
+        """Print architecture summary and return it as a string."""
+        lines = []
+        lines.append("="*70)
+        lines.append("Architecture Summary")
+        lines.append("="*70)
+        lines.append(f"{'Encoder Backend':20s}: {self.config.encoder_backend}")
+        lines.append(f"{'Decoder Backend':20s}: {self.config.decoder_backend}")
+        lines.append(f"{'Max Sequence Len':20s}: {self.config.max_sequence_length}")
+        lines.append(f"{'Chunk Size':20s}: {self.config.chunk_size}")
+        lines.append(f"{'Inference Cache':20s}: {'Enabled' if self.inference_cache else 'Disabled'}")
+        lines.append("-"*70)
         
         modules = [
             ("Encoder", self.encoder),
@@ -15622,14 +15656,19 @@ class AEONDeltaV3(nn.Module):
         for name, module in modules:
             if module is not None:
                 params = sum(p.numel() for p in module.parameters())
-                logger.info(f"{name:20s}: {params:>12,} params")
+                lines.append(f"{name:20s}: {params:>12,} params")
             else:
-                logger.info(f"{name:20s}: {'Disabled':>12}")
+                lines.append(f"{name:20s}: {'Disabled':>12}")
         
-        logger.info("-"*70)
-        logger.info(f"{'Total':20s}: {self.count_parameters():>12,} params")
-        logger.info(f"{'Trainable':20s}: {self.count_trainable_parameters():>12,} params")
-        logger.info("="*70)
+        lines.append("-"*70)
+        lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")
+        lines.append(f"{'Trainable':20s}: {self.count_trainable_parameters():>12,} params")
+        lines.append("="*70)
+        
+        summary_text = "\n".join(lines)
+        for line in lines:
+            logger.info(line)
+        return summary_text
     
     def save_state(self, save_dir: Union[str, Path] = "aeon_state"):
         """

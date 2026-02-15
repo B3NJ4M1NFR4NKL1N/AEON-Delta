@@ -11379,19 +11379,19 @@ def test_hybrid_reasoning_consistency_check():
 
 
 def test_feedback_bus_num_channels():
-    """Verify CognitiveFeedbackBus has 6 signal channels after adding
-    world_model_surprise."""
+    """Verify CognitiveFeedbackBus has 7 signal channels after adding
+    world_model_surprise and coherence_deficit."""
     from aeon_core import CognitiveFeedbackBus
 
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 6, (
-        f"Expected 6 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 7, (
+        f"Expected 7 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
 
     bus = CognitiveFeedbackBus(hidden_dim=32)
     # Projection input should match NUM_SIGNAL_CHANNELS
     first_layer = bus.projection[0]
-    assert first_layer.in_features == 6, (
-        f"First layer input features should be 6, got {first_layer.in_features}"
+    assert first_layer.in_features == 7, (
+        f"First layer input features should be 7, got {first_layer.in_features}"
     )
 
     print("✅ test_feedback_bus_num_channels PASSED")
@@ -11789,7 +11789,6 @@ def test_architecture_summary_comprehensive_modules():
     topology at a glance.
     """
     from aeon_core import AEONConfig, AEONDeltaV3
-    import io, logging
 
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
@@ -11801,17 +11800,8 @@ def test_architecture_summary_comprehensive_modules():
     )
     model = AEONDeltaV3(config)
 
-    # Capture the architecture summary output
-    buf = io.StringIO()
-    handler = logging.StreamHandler(buf)
-    handler.setLevel(logging.INFO)
-    logger = logging.getLogger("AEON-Delta")
-    logger.addHandler(handler)
-    try:
-        model.print_architecture_summary()
-    finally:
-        logger.removeHandler(handler)
-    summary_text = buf.getvalue()
+    # print_architecture_summary returns the summary text directly
+    summary_text = model.print_architecture_summary()
 
     # These modules must appear in the summary now
     expected_labels = [
