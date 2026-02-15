@@ -14343,6 +14343,24 @@ class AEONDeltaV3(nn.Module):
         })
         self.provenance_tracker.record_after("world_model", C_star)
         
+        # 5b1a-ii. Store world model surprise in causal context so that
+        # prediction-error signals contribute to the cross-temporal
+        # context hierarchy.  High surprise entries receive proportionally
+        # higher causal weight, ensuring that surprising reasoning steps
+        # are preferentially retrieved in future forward passes.
+        if (self.causal_context is not None
+                and surprise.numel() > 0
+                and _world_model_healthy):
+            _wm_surprise_val = float(surprise.mean().item())
+            if math.isfinite(_wm_surprise_val) and _wm_surprise_val > 0:
+                self.causal_context.add(
+                    source="world_model_surprise",
+                    embedding=C_star.mean(dim=0).detach(),
+                    relevance=min(1.0, _wm_surprise_val),
+                    causal_weight=min(1.0, _wm_surprise_val),
+                    tier="short_term",
+                )
+        
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
         # internal model is inaccurate, which should trigger deeper
@@ -14810,6 +14828,16 @@ class AEONDeltaV3(nn.Module):
                 "dag_loss": float(notears_dag_loss.item()),
                 "l1_loss": float(notears_l1.item()),
             })
+            # Feed NOTEARS DAG quality into _cached_causal_quality so the
+            # feedback bus reflects both NeuralCausalModel AND NOTEARS
+            # structure learning, closing the gap where only
+            # NeuralCausalModel contributed to the causal quality signal.
+            _nt_dag_val = float(notears_dag_loss.item())
+            if math.isfinite(_nt_dag_val):
+                _nt_quality = 1.0 / (1.0 + _nt_dag_val)
+                self._cached_causal_quality = min(
+                    self._cached_causal_quality, _nt_quality
+                )
         
         self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
             "causal_model_executed": self.causal_model is not None and not fast,
@@ -15569,21 +15597,24 @@ class AEONDeltaV3(nn.Module):
                 metacognitive_info = metacognitive_info_post
                 metacognitive_info["phase"] = "post_integration"
                 # Invoke auto-critic for self-correction on the final output
+                _post_critic_accepted = False
                 if self.auto_critic is not None:
                     _post_critic = self.auto_critic(z_out)
                     _post_revised = _post_critic.get("candidate", None)
                     if _post_revised is not None and torch.isfinite(_post_revised).all():
                         z_out = _post_revised
+                        _post_critic_accepted = True
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": _post_critic.get("iterations", 0),
                         "final_score": _post_critic.get("final_score", 0.0),
                         "trigger": "post_integration_metacognitive",
+                        "revision_accepted": _post_critic_accepted,
                     })
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class="post_integration_metacognitive",
                         strategy_used="auto_critic",
-                        success=_post_metacog_triggered,
+                        success=_post_critic_accepted,
                     )
         
         # 8g. Record aggregated subsystem health in causal trace so that
