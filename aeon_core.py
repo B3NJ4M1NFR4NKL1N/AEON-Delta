@@ -14504,10 +14504,9 @@ class AEONDeltaV3(nn.Module):
                     self.consolidating_memory.consolidate()
                 except Exception as _consol_err2:
                     logger.warning(f"ConsolidatingMemory consolidation during staleness failed: {_consol_err2}")
-            if high_uncertainty:
-                uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
-                uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
-                high_uncertainty = uncertainty > 0.5
+            uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
+            uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
+            high_uncertainty = uncertainty > 0.5
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class="memory_staleness",
