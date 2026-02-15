@@ -12273,7 +12273,7 @@ class ModuleCoherenceVerifier(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors seven independent signals:
+    Monitors eight independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -12286,6 +12286,9 @@ class MetaCognitiveRecursionTrigger:
     7. ``world_model_surprise`` — high prediction error from the world model,
        indicating the system's internal model is inaccurate and deeper
        reasoning is needed to reconcile the discrepancy.
+    8. ``low_causal_quality`` — poor causal DAG quality (high DAG loss),
+       indicating the causal model's structural constraints are violated
+       and deeper reasoning may resolve the acyclicity issues.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -12306,8 +12309,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (7 signals × 1/7 ≈ 0.143 each)
-    _DEFAULT_WEIGHT = 1.0 / 7.0
+    # Default per-signal weight (8 signals × 1/8 = 0.125 each)
+    _DEFAULT_WEIGHT = 1.0 / 8.0
 
     def __init__(
         self,
@@ -12316,6 +12319,7 @@ class MetaCognitiveRecursionTrigger:
         tightening_factor: float = 0.5,
         extra_iterations: int = 10,
         surprise_threshold: float = 0.5,
+        causal_quality_threshold: float = 0.3,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
@@ -12326,6 +12330,10 @@ class MetaCognitiveRecursionTrigger:
         # metacognitive trigger signal.  Configurable so callers can
         # tune sensitivity to prediction errors.
         self._surprise_threshold = max(0.0, surprise_threshold)
+        # Threshold below which causal_quality activates the trigger.
+        # Low causal quality (high DAG loss) indicates structural issues
+        # in the causal model that deeper reasoning may resolve.
+        self._causal_quality_threshold = max(0.0, causal_quality_threshold)
         # Adaptive signal weights — initialized uniformly; can be
         # adjusted by adapt_weights_from_evolution().
         self._signal_weights: Dict[str, float] = {
@@ -12336,6 +12344,7 @@ class MetaCognitiveRecursionTrigger:
             "memory_staleness": self._DEFAULT_WEIGHT,
             "recovery_pressure": self._DEFAULT_WEIGHT,
             "world_model_surprise": self._DEFAULT_WEIGHT,
+            "low_causal_quality": self._DEFAULT_WEIGHT,
         }
 
     def reset(self) -> None:
@@ -12370,6 +12379,8 @@ class MetaCognitiveRecursionTrigger:
             "safety_rollback": "uncertainty",
             "reconciliation_disagreement": "coherence_deficit",
             "world_model_prediction_error": "world_model_surprise",
+            "low_causal_quality": "low_causal_quality",
+            "mcts_low_confidence": "uncertainty",
         }
 
         # Accumulate boost factors for each signal
@@ -12402,6 +12413,7 @@ class MetaCognitiveRecursionTrigger:
         memory_staleness: bool = False,
         recovery_pressure: float = 0.0,
         world_model_surprise: float = 0.0,
+        causal_quality: float = 1.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -12419,6 +12431,9 @@ class MetaCognitiveRecursionTrigger:
             world_model_surprise: Scalar ≥ 0 representing the mean prediction
                 error from the world model.  High surprise indicates the
                 internal model is inaccurate, warranting deeper reasoning.
+            causal_quality: Scalar ∈ [0, 1] representing causal DAG quality.
+                Low values (high DAG loss) indicate structural issues that
+                deeper reasoning may resolve.
 
         Returns:
             Dict with:
@@ -12438,6 +12453,7 @@ class MetaCognitiveRecursionTrigger:
             "memory_staleness": w["memory_staleness"] * float(memory_staleness),
             "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
             "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
+            "low_causal_quality": w["low_causal_quality"] * float(causal_quality < self._causal_quality_threshold),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -14114,6 +14130,7 @@ class AEONDeltaV3(nn.Module):
                 memory_staleness=self._memory_stale,
                 recovery_pressure=_recovery_pressure,
                 world_model_surprise=self._cached_surprise,
+                causal_quality=self._cached_causal_quality,
             )
             if metacognitive_info.get("should_trigger", False):
                 # Consult error evolution for historically best strategy
@@ -14603,6 +14620,33 @@ class AEONDeltaV3(nn.Module):
         # memory-aware planning.  Gated by complexity gate[1].
         if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
             mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
+            # 5b2-i. MCTS confidence feedback — when the planning search
+            # yields low root value (poor expected outcome), escalate
+            # uncertainty so that metacognitive cycles activate.  This
+            # closes the loop between planning confidence and reasoning
+            # depth, ensuring that uncertain plans trigger deeper reasoning.
+            # MCTS root_value is bounded [0, 1] by the value network's
+            # tanh output; 0.2 marks the bottom quintile of expected
+            # planning outcomes.  Scale 0.15 keeps maximum boost modest
+            # (≤0.12) relative to the [0, 1] uncertainty range.
+            _MCTS_LOW_VALUE_THRESHOLD = 0.2
+            _MCTS_UNCERTAINTY_SCALE = 0.15
+            _mcts_root_val = mcts_results.get("root_value", 0.0)
+            if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val):
+                if _mcts_root_val < _MCTS_LOW_VALUE_THRESHOLD:
+                    _mcts_boost = min(
+                        1.0 - uncertainty,
+                        (1.0 - _mcts_root_val) * _MCTS_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _mcts_boost)
+                    uncertainty_sources["mcts_low_confidence"] = _mcts_boost
+                    high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="mcts_low_confidence",
+                            strategy_used="uncertainty_escalation",
+                            success=False,
+                        )
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
@@ -14805,6 +14849,27 @@ class AEONDeltaV3(nn.Module):
             active_learning_results = self.active_learning_planner.select_action(
                 C_star[0], self.world_model
             )
+            # 5e-i. Active learning uncertainty feedback — high intrinsic
+            # reward indicates the system is in a highly uncertain region
+            # of state space.  Escalate uncertainty so metacognitive cycles
+            # activate when the exploration signal is strong, closing the
+            # loop between active learning and reasoning depth.
+            # Intrinsic reward is the prediction variance of the
+            # uncertainty model; 0.5 is the median of typical outputs.
+            # Scale 0.1 limits maximum boost to ~0.1 to avoid
+            # over-triggering from exploration noise.
+            _AL_INTRINSIC_THRESHOLD = 0.5
+            _AL_UNCERTAINTY_SCALE = 0.1
+            _al_intrinsic = active_learning_results.get("intrinsic_reward", 0.0)
+            if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
+                if _al_intrinsic > _AL_INTRINSIC_THRESHOLD:
+                    _al_boost = min(
+                        1.0 - uncertainty,
+                        _al_intrinsic * _AL_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _al_boost)
+                    uncertainty_sources["active_learning_curiosity"] = _al_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 5e2. Unified causal simulator — counterfactual reasoning
         # Gated by complexity gate[3]
@@ -14826,6 +14891,28 @@ class AEONDeltaV3(nn.Module):
                     unified_simulator_results.get("interventional", False)
                 ),
             })
+            # 5e2-i. Unified simulator divergence feedback — when the
+            # counterfactual next_state diverges significantly from the
+            # current C_star, escalate uncertainty.  Large counterfactual
+            # divergence indicates the system's causal model disagrees
+            # with the observed state trajectory, warranting deeper
+            # reasoning to reconcile the discrepancy.
+            if cf_next is not None and torch.isfinite(cf_next).all():
+                # L2 divergence between counterfactual prediction and
+                # current state; 0.5 corresponds to ~1 standard deviation
+                # for unit-normed hidden representations.  Scale 0.1
+                # keeps boost proportional but bounded.
+                _UNIFIED_SIM_DIVERGENCE_THRESHOLD = 0.5
+                _UNIFIED_SIM_UNCERTAINTY_SCALE = 0.1
+                _cf_divergence = float((cf_next - C_star).norm(dim=-1).mean().item())
+                if math.isfinite(_cf_divergence) and _cf_divergence > _UNIFIED_SIM_DIVERGENCE_THRESHOLD:
+                    _usim_boost = min(
+                        1.0 - uncertainty,
+                        _cf_divergence * _UNIFIED_SIM_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _usim_boost)
+                    uncertainty_sources["unified_simulator_divergence"] = _usim_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
@@ -15057,6 +15144,19 @@ class AEONDeltaV3(nn.Module):
                         ns_consistency_results["num_violations"]
                         + hr_consistency["num_violations"]
                     )
+                    # Escalate uncertainty when hybrid reasoning conclusions
+                    # violate neuro-symbolic consistency rules, so that
+                    # metacognitive cycles activate on reasoning failures.
+                    # Scale 0.15 per violation; typically 1–3 violations
+                    # occur, yielding a boost of 0.15–0.45.
+                    _HR_VIOLATION_UNCERTAINTY_SCALE = 0.15
+                    _hr_boost = min(
+                        1.0 - uncertainty,
+                        hr_violations * _HR_VIOLATION_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _hr_boost)
+                    uncertainty_sources["hybrid_reasoning_ns_violation"] = _hr_boost
+                    high_uncertainty = uncertainty > 0.5
             if ns_consistency_results["num_violations"].sum().item() > 0:
                 self.audit_log.record("ns_consistency", "violation", {
                     "num_violations": int(
@@ -15367,6 +15467,7 @@ class AEONDeltaV3(nn.Module):
                 memory_staleness=self._memory_stale,
                 recovery_pressure=_post_recovery_pressure,
                 world_model_surprise=self._cached_surprise,
+                causal_quality=self._cached_causal_quality,
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
