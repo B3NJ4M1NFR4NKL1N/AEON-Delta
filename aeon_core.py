@@ -15608,6 +15608,7 @@ class AEONDeltaV3(nn.Module):
                         "iterations": _post_critic.get("iterations", 0),
                         "final_score": _post_critic.get("final_score", 0.0),
                         "trigger": "post_integration_metacognitive",
+                        # True when the revised candidate passed torch.isfinite()
                         "revision_accepted": _post_critic_accepted,
                     })
                 if self.error_evolution is not None:
