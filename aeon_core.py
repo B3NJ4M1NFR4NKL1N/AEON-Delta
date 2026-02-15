@@ -4137,7 +4137,8 @@ class InferenceCache:
 
     def get_ssm_state(self) -> Optional[List[torch.Tensor]]:
         with self._lock:
-            return self._ssm_states
+            # Shallow copy: prevents list mutation; tensors are shared references
+            return list(self._ssm_states) if self._ssm_states is not None else None
 
     def set_ssm_state(self, states: List[torch.Tensor]):
         with self._lock:
@@ -4153,7 +4154,8 @@ class InferenceCache:
 
     def get_attn_state(self) -> Optional[List[Tuple[torch.Tensor, torch.Tensor]]]:
         with self._lock:
-            return self._attn_states
+            # Shallow copy: prevents list mutation; tensors are shared references
+            return list(self._attn_states) if self._attn_states is not None else None
 
     def set_attn_state(self, states: List[Tuple[torch.Tensor, torch.Tensor]]):
         with self._lock:
@@ -11859,19 +11861,19 @@ class TemporalCausalTraceBuffer:
         severity: str = "info",
     ) -> str:
         """Record a decision with causal trace and return its unique ID."""
-        entry_id = f"{subsystem}_{self._next_id}"
-        entry = {
-            "id": entry_id,
-            "timestamp": time.monotonic(),
-            "subsystem": subsystem,
-            "decision": decision,
-            "initial_state_hash": initial_state_hash,
-            "causal_prerequisites": causal_prerequisites or [],
-            "rejected_alternatives": rejected_alternatives or [],
-            "metadata": metadata or {},
-            "severity": severity,
-        }
         with self._lock:
+            entry_id = f"{subsystem}_{self._next_id}"
+            entry = {
+                "id": entry_id,
+                "timestamp": time.monotonic(),
+                "subsystem": subsystem,
+                "decision": decision,
+                "initial_state_hash": initial_state_hash,
+                "causal_prerequisites": causal_prerequisites or [],
+                "rejected_alternatives": rejected_alternatives or [],
+                "metadata": metadata or {},
+                "severity": severity,
+            }
             self._entries.append(entry)
             self._decision_index[entry_id] = self._next_id
             self._next_id += 1
@@ -13393,6 +13395,7 @@ class AEONDeltaV3(nn.Module):
             # MetaRecoveryLearner: encode actual error context and select
             # recovery strategy based on learned policy, then record the
             # experience so the learner can improve over time.
+            recovery_info: Optional[Dict[str, Any]] = None
             if self.meta_recovery is not None:
                 try:
                     _recovery_dim = self.meta_recovery.state_dim
@@ -13439,11 +13442,8 @@ class AEONDeltaV3(nn.Module):
             # CausalErrorEvolutionTracker: record error episode
             if self.error_evolution is not None:
                 strategy_name = "fallback"
-                if self.meta_recovery is not None:
-                    try:
-                        strategy_name = recovery_info.get("strategy", "fallback")
-                    except Exception:
-                        pass
+                if self.meta_recovery is not None and recovery_info is not None:
+                    strategy_name = recovery_info.get("strategy", "fallback")
                 self.error_evolution.record_episode(
                     error_class=error_class,
                     strategy_used=strategy_name,
