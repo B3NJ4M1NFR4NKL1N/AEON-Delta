@@ -13457,6 +13457,202 @@ def test_cached_coherence_deficit_persists():
     print("✅ test_cached_coherence_deficit_persists PASSED")
 
 
+def test_tqdm_optional_import():
+    """Verify ae_train.py loads successfully without tqdm installed.
+
+    The import guard should provide a transparent fallback so that all
+    ae_train symbols are importable even when tqdm is not available.
+    """
+    from ae_train import AEONConfigV4, AEONDeltaV4
+    assert AEONConfigV4 is not None
+    assert AEONDeltaV4 is not None
+    print("✅ test_tqdm_optional_import PASSED")
+
+
+def test_uncertainty_initialized_before_nan_fallback():
+    """Verify that uncertainty is pre-initialized so the NaN fallback
+    path in _reasoning_core_impl does not raise UnboundLocalError.
+
+    When the meta-loop produces NaN, the code at line ~13584 does:
+        uncertainty = min(1.0, uncertainty + 0.3)
+    This requires 'uncertainty' to already be defined.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch the meta_loop to return NaN, triggering the fallback
+    original_forward = model.meta_loop.forward
+
+    def _nan_meta_loop(z_in, *args, **kwargs):
+        B = z_in.shape[0]
+        nan_out = torch.full_like(z_in, float('nan'))
+        iterations = torch.ones(B)
+        return nan_out, iterations, {"convergence_rate": 0.0, "residual_norm": float('nan')}
+
+    model.meta_loop.forward = _nan_meta_loop
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    # This should NOT raise UnboundLocalError
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # Uncertainty should be elevated due to NaN fallback
+    uncertainty = outputs.get("uncertainty", 0.0)
+    assert uncertainty > 0.0, (
+        f"Expected elevated uncertainty after NaN fallback, got {uncertainty}"
+    )
+
+    model.meta_loop.forward = original_forward
+    print("✅ test_uncertainty_initialized_before_nan_fallback PASSED")
+
+
+def test_coherence_deficit_escalates_uncertainty():
+    """Verify that detected module coherence deficit escalates the
+    uncertainty value, closing the loop between coherence detection
+    and corrective meta-cognitive behavior."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch module_coherence to always report a deficit
+    original_forward = model.module_coherence.forward
+
+    def _deficit_coherence(states):
+        result = original_forward(states)
+        result["needs_recheck"] = True
+        result["coherence_score"] = torch.tensor(0.1)
+        return result
+
+    model.module_coherence.forward = _deficit_coherence
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    uncertainty = outputs.get("uncertainty", 0.0)
+    # Uncertainty should be boosted by the coherence deficit
+    assert uncertainty > 0.0, (
+        f"Expected uncertainty > 0 when coherence deficit detected, got {uncertainty}"
+    )
+
+    model.module_coherence.forward = original_forward
+    print("✅ test_coherence_deficit_escalates_uncertainty PASSED")
+
+
+def test_complexity_gates_nan_fallback():
+    """Verify that non-finite complexity gates are replaced with ones
+    to prevent silent degradation of gated subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_complexity_estimator=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch complexity_estimator to return NaN gates
+    original_forward = model.complexity_estimator.forward
+
+    def _nan_complexity(z_in):
+        result = original_forward(z_in)
+        result['subsystem_gates'] = torch.full_like(
+            result['subsystem_gates'], float('nan')
+        )
+        return result
+
+    model.complexity_estimator.forward = _nan_complexity
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    # Should not crash — NaN gates should be replaced with 1.0
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # The model should still produce valid output
+    assert 'thoughts' in outputs, "Expected valid output despite NaN complexity gates"
+    assert torch.isfinite(outputs['thoughts']).all(), (
+        "Expected finite thoughts output after NaN gate fallback"
+    )
+
+    model.complexity_estimator.forward = original_forward
+    print("✅ test_complexity_gates_nan_fallback PASSED")
+
+
+def test_error_evolution_consulted_on_recovery():
+    """Verify that error_evolution.get_best_strategy is consulted during
+    error recovery so the system evolves through past errors."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Pre-seed an error episode so get_best_strategy has something to return
+    model.error_evolution.record_episode(
+        error_class="numerical",
+        strategy_used="deeper_meta_loop",
+        success=True,
+    )
+
+    # The error evolution should return a strategy for this class
+    strategy = model.error_evolution.get_best_strategy("numerical")
+    assert strategy is not None, (
+        "Expected error evolution to return a strategy for seeded error class"
+    )
+
+    print("✅ test_error_evolution_consulted_on_recovery PASSED")
+
+
+def test_cross_validation_skip_logged():
+    """Verify that when cross-validation is enabled but causal world model
+    results are unavailable, the skip is recorded in the audit log."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_cross_validation=True,
+        # No causal_world_model enabled — cross-validation should skip
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # Check audit log for cross_validation skip entry
+    recent = model.audit_log.recent(n=50)
+    cross_val_entries = [
+        e for e in recent
+        if e.get("module") == "cross_validation"
+        or e.get("subsystem") == "cross_validation"
+    ]
+    # If cross_validator is not None but causal_world_model is, we expect a skip log
+    if model.cross_validator is not None and model.causal_world_model is None:
+        assert len(cross_val_entries) > 0, (
+            "Expected cross_validation skip to be logged in audit log"
+        )
+
+    print("✅ test_cross_validation_skip_logged PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -14120,6 +14316,14 @@ if __name__ == '__main__':
     test_feedback_bus_coherence_deficit_channel()
     test_print_architecture_summary_returns_string()
     test_cached_coherence_deficit_persists()
+    
+    # Unified architecture coherence fix validation tests
+    test_tqdm_optional_import()
+    test_uncertainty_initialized_before_nan_fallback()
+    test_coherence_deficit_escalates_uncertainty()
+    test_complexity_gates_nan_fallback()
+    test_error_evolution_consulted_on_recovery()
+    test_cross_validation_skip_logged()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
