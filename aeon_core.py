@@ -14026,6 +14026,47 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                # 5a-iii-d. Active coherence recovery — re-run the consistency
+                # gate with refreshed factors to actively re-align dimensions
+                # where subsystems disagree, rather than deferring all
+                # correction to the training loss.  This makes coherence
+                # detection an immediate corrective mechanism: the gate
+                # dampens dimensions where C_star and embedded_factors diverge,
+                # effectively forcing the state toward cross-module agreement
+                # within the same forward pass.
+                factors, embedded_factors = self.sparse_factors(C_star)
+                gate = self.consistency_gate(
+                    torch.cat([C_star, embedded_factors], dim=-1)
+                )
+                C_star = C_star * gate
+                self.audit_log.record("coherence_recovery", "consistency_gate_rerun", {
+                    "coherence_score_before": float(
+                        coherence_results["coherence_score"].mean().item()
+                    ),
+                })
+        
+        # 5a-iii-e. Intra-pass feedback re-conditioning — when accumulated
+        # uncertainty (from coherence deficit, recovery pressure, or
+        # convergence quality) exceeds a moderate threshold, refresh the
+        # feedback bus with current-pass signals and use it to modulate
+        # C_star as a residual correction.  This closes the feedback loop
+        # *within* the current forward pass: downstream signals (coherence,
+        # safety, recovery) actively refine the reasoning state rather than
+        # only caching feedback for the next pass.  The 0.3 threshold
+        # triggers at a lower bar than the metacognitive recursion (0.5+)
+        # to provide a lightweight correction path.
+        _INTRA_PASS_FEEDBACK_THRESHOLD = 0.3
+        _INTRA_PASS_FEEDBACK_SCALE = 0.05
+        if (uncertainty > _INTRA_PASS_FEEDBACK_THRESHOLD
+                and not fast
+                and self._cached_feedback is not None):
+            _intra_feedback = self._cached_feedback.to(device)
+            if _intra_feedback.shape[0] == B:
+                C_star = C_star + _INTRA_PASS_FEEDBACK_SCALE * _intra_feedback
+                self.audit_log.record("feedback_bus", "intra_pass_modulation", {
+                    "uncertainty": uncertainty,
+                    "feedback_norm": float(_intra_feedback.norm().item()),
+                })
         
         # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
         # accumulated signals warrant re-running the meta-loop with
@@ -14371,10 +14412,28 @@ class AEONDeltaV3(nn.Module):
         # the feedback loop so that memory gaps trigger corrective depth
         # in the same reasoning cycle that discovered them.
         _STALENESS_UNCERTAINTY_BOOST = 0.15
-        if self._memory_stale and high_uncertainty and not fast:
-            uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
-            uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
-            high_uncertainty = uncertainty > 0.5
+        if self._memory_stale and not fast:
+            # 5c1b-0. Active memory consolidation — when staleness is
+            # detected, explicitly trigger consolidation to promote
+            # important items from the replay buffer into episodic memory.
+            # This turns staleness from a passive flag into an active
+            # memory management signal: the system responds to retrieval
+            # gaps by making stored knowledge more accessible immediately,
+            # rather than only escalating uncertainty.
+            if self.hierarchical_memory is not None:
+                try:
+                    _consolidated_count = self.hierarchical_memory.consolidate()
+                    if _consolidated_count > 0:
+                        self.audit_log.record("memory", "staleness_consolidation", {
+                            "consolidated_count": _consolidated_count,
+                            "empty_ratio": _memory_empty_count / max(B, 1),
+                        })
+                except Exception as _consol_err:
+                    logger.debug(f"Consolidation during staleness failed: {_consol_err}")
+            if high_uncertainty:
+                uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
+                uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
+                high_uncertainty = uncertainty > 0.5
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class="memory_staleness",
@@ -15322,6 +15381,29 @@ class AEONDeltaV3(nn.Module):
         # satisfies the requirement that all outputs are traceable to
         # their first causes.
         _provenance = self.provenance_tracker.compute_attribution()
+        
+        # 8h-0. Provenance-driven dominance dampening — when a single module
+        # contributes >60% of the total state change, dampen the output
+        # toward the pre-dominant baseline (z_in) to prevent module
+        # monoculture.  This makes provenance an *active* architectural
+        # signal rather than a passive log, ensuring that the system's
+        # conclusions reflect balanced multi-module cooperation.
+        _PROVENANCE_DOMINANCE_THRESHOLD = 0.6
+        _PROVENANCE_DAMPEN_FACTOR = 0.15
+        _contributions = _provenance.get('contributions', {})
+        if _contributions and len(_contributions) >= 2:
+            _max_contrib = max(_contributions.values())
+            if _max_contrib > _PROVENANCE_DOMINANCE_THRESHOLD:
+                _dampen_alpha = _PROVENANCE_DAMPEN_FACTOR * (
+                    _max_contrib - _PROVENANCE_DOMINANCE_THRESHOLD
+                )
+                z_out = z_out * (1.0 - _dampen_alpha) + z_in.detach() * _dampen_alpha
+                self.audit_log.record("provenance", "dominance_dampened", {
+                    "dominant_module": max(_contributions, key=_contributions.get),
+                    "dominance_ratio": _max_contrib,
+                    "dampen_alpha": _dampen_alpha,
+                })
+        
         _causal_decision_chain: Dict[str, Any] = {
             "input_trace_id": input_trace_id,
             "provenance": _provenance,
@@ -15572,22 +15654,25 @@ class AEONDeltaV3(nn.Module):
         vq_loss = outputs.get('vq_loss', torch.tensor(0.0, device=self.device))
         
         # ===== 3. SELF-CONSISTENCY =====
+        # Computed WITH gradients so that consistency_loss is differentiable
+        # and actively drives the meta-loop toward self-consistent fixed
+        # points during training.
         if 'core_state' in outputs and 'psi_0' in outputs:
             psi_0 = outputs['psi_0']
             C_star = outputs['core_state']
             
-            with torch.no_grad():
-                self.meta_loop.eval()
-                input_concat = torch.cat([psi_0, C_star], dim=-1)
-                consistency_check = self.meta_loop.lambda_op(
-                    self.meta_loop.input_stabilizer(input_concat)
-                )
-                mse = F.mse_loss(consistency_check, C_star)
-                if torch.isfinite(mse):
-                    consistency = 1.0 / (1.0 + mse)
-                else:
-                    consistency = torch.tensor(0.0, device=self.device)
-                self.meta_loop.train(self.training)
+            was_training = self.meta_loop.training
+            self.meta_loop.eval()
+            input_concat = torch.cat([psi_0, C_star], dim=-1)
+            consistency_check = self.meta_loop.lambda_op(
+                self.meta_loop.input_stabilizer(input_concat)
+            )
+            mse = F.mse_loss(consistency_check, C_star)
+            if torch.isfinite(mse):
+                consistency = 1.0 / (1.0 + mse)
+            else:
+                consistency = torch.tensor(0.0, device=self.device)
+            self.meta_loop.train(was_training)
             
             consistency_loss = -self.config.lambda_self_consistency * torch.log(
                 consistency + 1e-10
@@ -15740,9 +15825,6 @@ class AEONDeltaV3(nn.Module):
             )
 
         # ===== TOTAL LOSS =====
-        # Note: consistency_loss is excluded because it is computed under
-        # torch.no_grad() and would contribute zero gradient.  It is still
-        # returned in the dict for monitoring purposes.
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
         
@@ -15781,6 +15863,7 @@ class AEONDeltaV3(nn.Module):
         total_loss = (
             lm_loss +
             vq_loss +
+            consistency_loss +
             _convergence_loss_scale * self.config.lambda_lipschitz * lipschitz_loss +
             _convergence_loss_scale * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
