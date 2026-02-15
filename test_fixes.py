@@ -13275,6 +13275,188 @@ def test_world_model_surprise_error_evolution_recording():
     print("✅ test_world_model_surprise_error_evolution_recording PASSED")
 
 
+def test_error_recovery_records_failure_on_subsystem_error():
+    """Verify that subsystem errors are recorded with success=False,
+    not success=True, so recovery metrics accurately reflect failures."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force a world model error by breaking its forward method
+    original_forward = model.world_model.forward
+    def _failing_forward(*a, **kw):
+        raise RuntimeError("simulated failure")
+    model.world_model.forward = _failing_forward
+
+    model.error_recovery.reset_stats()
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    stats = model.error_recovery.get_recovery_stats()
+    # The failure should be recorded as a failure, not a success
+    assert stats.get("total", 0) > 0, "Expected at least one recovery event"
+    assert stats.get("failures", 0) > 0, (
+        f"Expected at least one failure, but got stats: {stats}"
+    )
+    model.world_model.forward = original_forward
+
+    print("✅ test_error_recovery_records_failure_on_subsystem_error PASSED")
+
+
+def test_subsystem_error_escalates_uncertainty():
+    """Verify that subsystem failures escalate the uncertainty scalar
+    so downstream metacognitive cycles can respond."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force a world model error
+    def _failing_forward(*a, **kw):
+        raise RuntimeError("simulated failure")
+    original_forward = model.world_model.forward
+    model.world_model.forward = _failing_forward
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # The uncertainty in the output should be elevated
+    uncertainty = outputs.get("uncertainty", 0.0)
+    assert uncertainty > 0.0, (
+        f"Expected elevated uncertainty after subsystem failure, got {uncertainty}"
+    )
+    model.world_model.forward = original_forward
+
+    print("✅ test_subsystem_error_escalates_uncertainty PASSED")
+
+
+def test_coherence_check_includes_input_baseline():
+    """Verify pre-integration coherence check includes z_in as a baseline
+    reference alongside meta_loop and factors states."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass and check the coherence audit entry
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # The coherence results should exist because module_coherence is enabled
+    coherence = outputs.get("coherence_results", {})
+    assert coherence, "Expected coherence_results in output"
+    # Coherence score should be computed with >= 3 states (input, meta_loop, factors)
+    pairwise = coherence.get("pairwise", {})
+    # At minimum, input-meta_loop and input-factors pairs should be present
+    pair_names = set()
+    for k in pairwise:
+        pair_names.update(k)
+    assert "input" in pair_names, (
+        f"Expected 'input' in coherence pairwise keys but got: {pair_names}"
+    )
+
+    print("✅ test_coherence_check_includes_input_baseline PASSED")
+
+
+def test_feedback_bus_coherence_deficit_channel():
+    """Verify CognitiveFeedbackBus accepts coherence_deficit parameter
+    and produces a different output when coherence is degraded."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    bus.eval()
+
+    with torch.no_grad():
+        # Coherent state
+        fb_coherent = bus(
+            batch_size=2, device=torch.device("cpu"),
+            coherence_deficit=0.0,
+        )
+        # Incoherent state
+        fb_incoherent = bus(
+            batch_size=2, device=torch.device("cpu"),
+            coherence_deficit=1.0,
+        )
+
+    # The two outputs should differ because coherence_deficit changed
+    diff = (fb_coherent - fb_incoherent).abs().sum().item()
+    assert diff > 0.0, (
+        "Feedback bus should produce different output for different coherence_deficit"
+    )
+
+    print("✅ test_feedback_bus_coherence_deficit_channel PASSED")
+
+
+def test_print_architecture_summary_returns_string():
+    """Verify print_architecture_summary returns the summary as a string,
+    enabling programmatic access without logger capture."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    result = model.print_architecture_summary()
+    assert isinstance(result, str), f"Expected str, got {type(result)}"
+    assert len(result) > 0, "Summary should not be empty"
+    assert "Architecture Summary" in result
+    assert "Encoder" in result
+    assert "Total" in result
+
+    print("✅ test_print_architecture_summary_returns_string PASSED")
+
+
+def test_cached_coherence_deficit_persists():
+    """Verify that coherence deficit is cached across forward passes
+    so the feedback bus on the next pass receives coherence information."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initially, cached coherence deficit should be 0
+    assert model._cached_coherence_deficit == 0.0
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # After a forward pass with coherence enabled, the cache should be updated
+    # (may or may not be 0 depending on model state, but should be a valid float)
+    assert isinstance(model._cached_coherence_deficit, float)
+    assert 0.0 <= model._cached_coherence_deficit <= 1.0, (
+        f"Cached coherence deficit should be in [0, 1], got {model._cached_coherence_deficit}"
+    )
+
+    print("✅ test_cached_coherence_deficit_persists PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -13930,6 +14112,14 @@ if __name__ == '__main__':
     test_causal_trace_records_hybrid_reasoning()
     test_ns_violations_escalate_post_metacognitive()
     test_world_model_surprise_error_evolution_recording()
+    
+    # Architectural gap fix validation tests
+    test_error_recovery_records_failure_on_subsystem_error()
+    test_subsystem_error_escalates_uncertainty()
+    test_coherence_check_includes_input_baseline()
+    test_feedback_bus_coherence_deficit_channel()
+    test_print_architecture_summary_returns_string()
+    test_cached_coherence_deficit_persists()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

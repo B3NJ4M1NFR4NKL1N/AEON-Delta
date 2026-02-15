@@ -1569,9 +1569,14 @@ class ErrorRecoveryManager:
     def get_recovery_stats(self) -> Dict[str, Any]:
         """Return a snapshot of recovery counters."""
         with self._lock:
+            history = list(self._recovery_history)
+            failures = sum(1 for e in history if not e.get("success", True))
+            successes = sum(1 for e in history if e.get("success", True))
             return {
                 "total": sum(self._recovery_counts.values()),
                 "by_class": dict(self._recovery_counts),
+                "failures": failures,
+                "successes": successes,
             }
 
     def reset_stats(self) -> None:
