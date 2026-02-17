@@ -2658,7 +2658,6 @@ class AEONConfig:
     metacognitive_max_recursions: int = 2
     metacognitive_tightening_factor: float = 0.5
     metacognitive_extra_iterations: int = 10
-    metacognitive_blend_alpha: float = 0.3
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
@@ -2684,6 +2683,24 @@ class AEONConfig:
         assert self.num_pillars >= 2, "num_pillars must be >= 2"
         assert self.vq_embedding_dim == self.z_dim, \
             f"vq_embedding_dim ({self.vq_embedding_dim}) must equal z_dim ({self.z_dim})"
+        # ── Shape-consistency guarantee ──────────────────────────────────────
+        # All meta-loop operators concatenate psi_0 (shape [B, z_dim]) with the
+        # iteration state C (shape [B, hidden_dim]).  The resulting tensor must
+        # have exactly hidden_dim * 2 features so that the pre-built
+        # input_stabilizer (LayerNorm(hidden_dim * 2)) and W1
+        # (Linear(hidden_dim * 2, meta_dim)) remain correctly sized.
+        # Allowing z_dim != hidden_dim silently produces a tensor of shape
+        # [B, z_dim + hidden_dim] which diverges from the expected
+        # [B, hidden_dim * 2] and causes the runtime error:
+        #   "linear(): input and weight.T shapes cannot be multiplied
+        #    (1x<z_dim+hidden_dim> and <hidden_dim*2>x<meta_dim>)"
+        assert self.z_dim == self.hidden_dim, (
+            f"z_dim ({self.z_dim}) must equal hidden_dim ({self.hidden_dim}). "
+            "All meta-loop operators concatenate the encoded latent "
+            "[B, z_dim] with iteration state [B, hidden_dim]; they must be "
+            "identical so the input has shape [B, 2*hidden_dim] as expected "
+            "by input_stabilizer and lambda_op."
+        )
         assert 0 < self.alpha <= 1, "alpha must be in (0, 1]"
         assert 0 < self.lipschitz_target < 1, "lipschitz_target must be in (0, 1)"
         assert self.topo_method in ("finite_differences", "forward_ad", "hutchinson")
@@ -5696,6 +5713,26 @@ class ProvablyConvergentMetaLoop(nn.Module):
             dropout=config.dropout_rate
         )
         
+        # ── psi_0 projection ────────────────────────────────────────────────
+        # The meta-loop expects psi_0 with exactly hidden_dim features so that
+        # cat([psi_0, C]) yields [B, hidden_dim * 2].  AEONConfig now asserts
+        # z_dim == hidden_dim, but the projection is retained as a safety net
+        # for any callers that bypass the config (e.g. unit tests, checkpoints
+        # loaded from older versions, or sub-classed configs).
+        # When z_dim == hidden_dim this is nn.Identity() with zero cost.
+        if config.z_dim != config.hidden_dim:
+            self.psi_proj: nn.Module = nn.Linear(
+                config.z_dim, config.hidden_dim, bias=False
+            )
+            logger.warning(
+                f"ProvablyConvergentMetaLoop: z_dim ({config.z_dim}) != "
+                f"hidden_dim ({config.hidden_dim}).  A Linear projection has "
+                "been inserted to align dimensions.  For best performance "
+                "set z_dim == hidden_dim in AEONConfig."
+            )
+        else:
+            self.psi_proj = nn.Identity()
+        
         # Adaptive alpha network
         self.alpha_net = nn.Sequential(
             nn.Linear(config.hidden_dim * 2, config.hidden_dim // 4),
@@ -5823,6 +5860,11 @@ class ProvablyConvergentMetaLoop(nn.Module):
         B = psi_0.shape[0]
         H = self.config.hidden_dim
         device = psi_0.device
+        
+        # ── Project psi_0 to hidden_dim if z_dim differs ────────────────────
+        # cat([psi_0, C]) must produce [B, hidden_dim * 2].  If the caller
+        # passes z with z_dim != hidden_dim the psi_proj linear aligns dims.
+        psi_0 = self.psi_proj(psi_0)  # [B, hidden_dim] (no-op when equal)
         
         # Initialize
         C = torch.zeros(B, H, device=device)
@@ -6039,7 +6081,11 @@ class ProvablyConvergentMetaLoop(nn.Module):
             )
         else:
             # Fast path: single iteration
-            input_tensor = torch.cat([psi_0, torch.zeros_like(psi_0)], dim=-1)
+            # Project psi_0 to hidden_dim before building the zero-state so
+            # that cat([psi_0_proj, zeros_like(psi_0_proj)]) has the correct
+            # shape [B, hidden_dim * 2] expected by input_stabilizer and W1.
+            psi_0_proj = self.psi_proj(psi_0)  # [B, hidden_dim]
+            input_tensor = torch.cat([psi_0_proj, torch.zeros_like(psi_0_proj)], dim=-1)
             C = self.lambda_op(self.input_stabilizer(input_tensor))
             return C, torch.ones(psi_0.shape[0], device=psi_0.device), {}
     
@@ -10376,6 +10422,17 @@ class AdaptiveMetaLoop(nn.Module):
         self.input_stabilizer = nn.LayerNorm(input_dim)
         self.output_stabilizer = nn.LayerNorm(config.hidden_dim)
 
+        # ── psi_0 / z_in projection ─────────────────────────────────────────
+        # Mirrors ProvablyConvergentMetaLoop: z_in is projected to hidden_dim
+        # before concatenation so the AdaptiveMetaLoop is robust to callers
+        # that pass a latent with z_dim != hidden_dim.
+        if config.z_dim != config.hidden_dim:
+            self.psi_proj: nn.Module = nn.Linear(
+                config.z_dim, config.hidden_dim, bias=False
+            )
+        else:
+            self.psi_proj = nn.Identity()
+
         # Halting network: predicts probability of halting at each step
         self.halting_net = nn.Sequential(
             nn.Linear(config.hidden_dim, 64),
@@ -10400,6 +10457,9 @@ class AdaptiveMetaLoop(nn.Module):
         B, H = z_in.shape[0], self.config.hidden_dim
         device = z_in.device
 
+        # ── Project input to hidden_dim (no-op when z_dim == hidden_dim) ────
+        z_proj = self.psi_proj(z_in)  # [B, hidden_dim]
+
         C = torch.zeros(B, H, device=device)
         halted = torch.zeros(B, dtype=torch.bool, device=device)
         p_halted = torch.zeros(B, device=device)
@@ -10407,7 +10467,7 @@ class AdaptiveMetaLoop(nn.Module):
         n_updates = torch.zeros(B, device=device)
 
         for step in range(self.max_steps):
-            inp = torch.cat([z_in, C], dim=-1)
+            inp = torch.cat([z_proj, C], dim=-1)
             inp = self.input_stabilizer(inp)
             C_new = self.lambda_op(inp)
             C_new = self.output_stabilizer(C_new)
@@ -14207,18 +14267,12 @@ class AEONDeltaV3(nn.Module):
                 # Restore original parameters
                 self.meta_loop.convergence_threshold = orig_threshold
                 self.meta_loop.max_iterations = orig_max_iter
-                # Accept deeper result if it's finite and converged better;
-                # otherwise partially blend it so deeper reasoning still
-                # contributes proportional to its relative quality, closing
-                # the gap where rejected deeper results were silently
-                # discarded without any benefit to the reasoning state.
+                # Only accept deeper result if it's finite and converged better
                 _metacog_accepted = False
-                _metacog_strategy = "rejected"
                 if torch.isfinite(C_star_deeper).all():
                     deeper_rate = meta_deeper.get("convergence_rate", 0.0)
                     if deeper_rate >= convergence_quality_scalar:
                         _metacog_accepted = True
-                        _metacog_strategy = "full_accept"
                         C_star = C_star_deeper
                         # Re-extract factors with refined C_star
                         factors, embedded_factors = self.sparse_factors(C_star)
@@ -14232,38 +14286,16 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
-                    elif deeper_rate > 0:
-                        # Partial blend: the deeper result didn't converge
-                        # better overall, but may contain useful signal.
-                        # Blend proportionally to relative quality so the
-                        # system still benefits from the deeper pass.
-                        # Note: deeper_rate < convergence_quality_scalar here
-                        # (guarded by the if/elif chain), so the ratio is <1.
-                        _blend_alpha = self.config.metacognitive_blend_alpha * min(
-                            1.0, deeper_rate / max(convergence_quality_scalar, 1e-6)
-                        )
-                        _blend_alpha = min(_blend_alpha, self.config.metacognitive_blend_alpha)
-                        C_star = C_star * (1.0 - _blend_alpha) + C_star_deeper * _blend_alpha
-                        _metacog_strategy = "partial_blend"
-                        self.audit_log.record(
-                            "metacognitive_recursion", "partial_blend", {
-                                "deeper_rate": deeper_rate,
-                                "original_rate": convergence_quality_scalar,
-                                "blend_alpha": _blend_alpha,
-                            },
-                        )
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class="metacognitive_rerun",
-                        strategy_used=_metacog_strategy,
+                        strategy_used="deeper_meta_loop",
                         success=_metacog_accepted,
                         metadata={
                             "triggers": metacognitive_info.get("triggers_active", []),
-                            "strategy": _metacog_strategy,
-                            "partial_blend_applied": _metacog_strategy == "partial_blend",
                         },
                     )
         
@@ -14342,24 +14374,6 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
-        
-        # 5b1a-ii. Store world model surprise in causal context so that
-        # prediction-error signals contribute to the cross-temporal
-        # context hierarchy.  High surprise entries receive proportionally
-        # higher causal weight, ensuring that surprising reasoning steps
-        # are preferentially retrieved in future forward passes.
-        if (self.causal_context is not None
-                and surprise.numel() > 0
-                and _world_model_healthy):
-            _wm_surprise_val = float(surprise.mean().item())
-            if math.isfinite(_wm_surprise_val) and _wm_surprise_val > 0:
-                self.causal_context.add(
-                    source="world_model_surprise",
-                    embedding=C_star.mean(dim=0).detach(),
-                    relevance=min(1.0, _wm_surprise_val),
-                    causal_weight=min(1.0, _wm_surprise_val),
-                    tier="short_term",
-                )
         
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
@@ -14602,22 +14616,13 @@ class AEONDeltaV3(nn.Module):
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.consolidating_memory.store(C_star[i].detach())
-            # Retrieve semantic prototypes and add as residual context.
-            # Scale the blend weight by average retrieval similarity so
-            # that high-confidence retrievals contribute more strongly
-            # and low-relevance retrievals are dampened, closing the gap
-            # where consolidating memory used a fixed blend weight
-            # regardless of retrieval quality.
-            _base_consolidating_weight = self.config.consolidating_semantic_weight
+            # Retrieve semantic prototypes and add as residual context
             for i in range(B):
                 ret = self.consolidating_memory.retrieve(C_star[i].detach(), k=3)
                 semantic_items = ret.get('semantic', [])
                 if semantic_items:
                     vecs = torch.stack([v for v, _s in semantic_items])
-                    sims = [s for _v, s in semantic_items]
-                    avg_sim = sum(sims) / max(len(sims), 1)
-                    _adaptive_weight = _base_consolidating_weight * max(0.0, min(1.0, avg_sim))
-                    C_star[i] = C_star[i] + _adaptive_weight * vecs.mean(dim=0).to(device)
+                    C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
         
         # 5c4. Temporal memory — store current states with importance-based
         # retention and retrieve temporally-relevant patterns.  Each stored
@@ -14828,16 +14833,6 @@ class AEONDeltaV3(nn.Module):
                 "dag_loss": float(notears_dag_loss.item()),
                 "l1_loss": float(notears_l1.item()),
             })
-            # Feed NOTEARS DAG quality into _cached_causal_quality so the
-            # feedback bus reflects both NeuralCausalModel AND NOTEARS
-            # structure learning, closing the gap where only
-            # NeuralCausalModel contributed to the causal quality signal.
-            _nt_dag_val = float(notears_dag_loss.item())
-            if math.isfinite(_nt_dag_val):
-                _nt_quality = 1.0 / (1.0 + _nt_dag_val)
-                self._cached_causal_quality = min(
-                    self._cached_causal_quality, _nt_quality
-                )
         
         self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
             "causal_model_executed": self.causal_model is not None and not fast,
@@ -15281,28 +15276,9 @@ class AEONDeltaV3(nn.Module):
                 and not _ns_already_handled):
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
-            _critic_revision_accepted = revised is not None and torch.isfinite(revised).all()
-            if _critic_revision_accepted:
+            if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
-            # When auto-critic revision fails, consult error evolution
-            # for a historically successful recovery strategy.  This
-            # closes the loop between the error evolution tracker and
-            # the auto-critic retry path, ensuring that accumulated
-            # recovery knowledge is applied rather than passively logged.
-            if not _critic_revision_accepted and self.error_evolution is not None:
-                _evolved_critic_strategy = self.error_evolution.get_best_strategy(
-                    "uncertainty_auto_critic_uncertainty"
-                )
-                if _evolved_critic_strategy == "auto_critic":
-                    # Retry with the same critic — the evolved strategy
-                    # confirms auto-critic as historically effective
-                    _retry_result = self.auto_critic(z_out)
-                    _retry_revised = _retry_result.get("candidate", None)
-                    if _retry_revised is not None and torch.isfinite(_retry_revised).all():
-                        z_out = _retry_revised
-                        _critic_revision_accepted = True
-                        _auto_critic_final_score = _retry_result.get("final_score", 0.0)
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -15324,28 +15300,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.record_episode(
                     error_class=f"uncertainty_auto_critic_{_trigger}",
                     strategy_used="auto_critic",
-                    success=_critic_revision_accepted,
+                    success=revised is not None and torch.isfinite(revised).all(),
                 )
         
         # 8c. Record integration health and finalize progress
-        # 8c-0. Auto-critic-score-driven safety adaptation — when the
-        # auto-critic produced a low confidence score, tighten the safety
-        # threshold proportionally.  This closes the gap where the
-        # auto-critic score was stored in the output dict but never fed
-        # back into active safety decisions within the same forward pass.
-        if _auto_critic_final_score is not None and not fast:
-            _critic_quality = float(_auto_critic_final_score)
-            if math.isfinite(_critic_quality) and _critic_quality < self.config.auto_critic_threshold:
-                _critic_safety_factor = max(0.5, _critic_quality / max(self.config.auto_critic_threshold, 1e-6))
-                adaptive_safety_threshold = min(
-                    adaptive_safety_threshold,
-                    adaptive_safety_threshold * _critic_safety_factor,
-                )
-                self.audit_log.record("auto_critic", "safety_tightened", {
-                    "critic_score": _critic_quality,
-                    "safety_factor": _critic_safety_factor,
-                    "new_threshold": adaptive_safety_threshold,
-                })
         integration_healthy = validation_result["valid"] and output_valid
         self.integrity_monitor.record_health(
             "integration",
@@ -15597,25 +15555,21 @@ class AEONDeltaV3(nn.Module):
                 metacognitive_info = metacognitive_info_post
                 metacognitive_info["phase"] = "post_integration"
                 # Invoke auto-critic for self-correction on the final output
-                _post_critic_accepted = False
                 if self.auto_critic is not None:
                     _post_critic = self.auto_critic(z_out)
                     _post_revised = _post_critic.get("candidate", None)
                     if _post_revised is not None and torch.isfinite(_post_revised).all():
                         z_out = _post_revised
-                        _post_critic_accepted = True
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": _post_critic.get("iterations", 0),
                         "final_score": _post_critic.get("final_score", 0.0),
                         "trigger": "post_integration_metacognitive",
-                        # True when the revised candidate passed torch.isfinite()
-                        "revision_accepted": _post_critic_accepted,
                     })
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class="post_integration_metacognitive",
                         strategy_used="auto_critic",
-                        success=_post_critic_accepted,
+                        success=_post_metacog_triggered,
                     )
         
         # 8g. Record aggregated subsystem health in causal trace so that
@@ -15732,7 +15686,6 @@ class AEONDeltaV3(nn.Module):
                 if _provenance.get("contributions") else None
             ),
             "uncertainty_sources": uncertainty_sources,
-            "auto_critic_score": _auto_critic_final_score,
         }
         
         outputs = {
