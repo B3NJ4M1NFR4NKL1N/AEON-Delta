@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.2.0 — Production  ║
+║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.3.0 — Production  ║
 ║  FastAPI + WebSocket + SSE · Full integration with core.py              ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  NEW IN v3.2.0:                                                         ║
@@ -15,6 +15,16 @@
 ║  · /api/session/import — Restore session from JSON                      ║
 ║  · Enhanced training loop with per-step gradient norm streaming         ║
 ║  · SSE log streaming with per-level filtering                           ║
+║  NEW IN v3.3.0:                                                         ║
+║  · /api/tests/catalogue  — 642 tests × 49 sections, metadata           ║
+║  · /api/tests/run        — run all/section/named, background thread    ║
+║  · /api/tests/stop       — graceful cancellation                       ║
+║  · /api/tests/progress   — live counters: passed/failed/error/total   ║
+║  · /api/tests/results    — full+brief output, filter by status         ║
+║  · /api/tests/stream     — SSE per-test events + progress pings        ║
+║  · /api/tests/run_single — run one test synchronously                  ║
+║  · WS type=test_event broadcast per test completion                    ║
+║  · WS type=test_progress broadcast every 2s during run                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 Запуск:
@@ -30,6 +40,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 from contextlib import asynccontextmanager
 import statistics
+import io
+from contextlib import redirect_stdout, redirect_stderr
+import importlib.util
 
 import torch
 
@@ -40,8 +53,10 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
     import uvicorn
+    # File upload support
+    from fastapi import UploadFile, File, Form
 except ImportError:
-    print("ERROR: pip install fastapi uvicorn pydantic")
+    print("ERROR: pip install fastapi uvicorn pydantic python-multipart")
     sys.exit(1)
 
 # ─── Optional psutil for system stats ────────────────────────────────────────
@@ -73,6 +88,98 @@ except Exception as e:
     print(f"⚠ core.py import error: {e}")
 
 
+# ─── AEON ae_train v4 ─────────────────────────────────────────────────────────
+AE_TRAIN_PATH = Path(__file__).parent / "ae_train.py"
+if not AE_TRAIN_PATH.exists():
+    AE_TRAIN_PATH = Path("/mnt/user-data/uploads/ae_train.py")
+
+AE_TRAIN_LOADED = False
+AE_TRAIN_ERROR = ""
+_ae_module = None
+
+try:
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("ae_train", str(AE_TRAIN_PATH))
+    _ae_module = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_ae_module)
+    AE_TRAIN_LOADED = True
+    print("✅ ae_train.py loaded successfully")
+except Exception as _e:
+    AE_TRAIN_ERROR = str(_e)
+    print(f"⚠ ae_train.py import error: {_e}")
+
+
+class _V4WSLogHandler(logging.Handler):
+    """Routes ae_train logs into the dashboard's v4 log buffer."""
+    def emit(self, record: logging.LogRecord):
+        entry = {
+            "time":  time.strftime("%H:%M:%S", time.localtime(record.created)),
+            "level": record.levelname,
+            "subsys": "ae_train",
+            "msg":   self.format(record) if record.exc_info else record.getMessage(),
+            "ts":    record.created,
+        }
+        APP.v4_log_buffer.append(entry)
+        if len(APP.v4_log_buffer) > 8000:
+            APP.v4_log_buffer = APP.v4_log_buffer[-8000:]
+        # Mirror to main log history + queue
+        APP.log_history.append(entry)
+        if len(APP.log_history) > 4000:
+            APP.log_history = APP.log_history[-4000:]
+        try:
+            APP.log_queue.put_nowait(entry)
+        except queue.Full:
+            pass
+
+_v4_ws_handler = _V4WSLogHandler()
+_v4_ws_handler.setLevel(logging.DEBUG)
+_v4_ws_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s"))
+# Attach to the ae_train logger namespace
+for _lname in ("AEON-Training-v4", "ae_train", "root"):
+    logging.getLogger(_lname).addHandler(_v4_ws_handler)
+
+
+class _DashboardMonitor:
+    """
+    Drop-in replacement for ae_train.TrainingMonitor that also pushes
+    structured progress into APP.v4_progress so the dashboard can poll it.
+    Delegates all logging to the standard ae_train logger.
+    """
+    def __init__(self, delegate_monitor, phase_metrics_ref: dict):
+        self._d = delegate_monitor
+        self._ref = phase_metrics_ref
+
+    def __getattr__(self, name):
+        return getattr(self._d, name)
+
+    def log_batch(self, batch_idx, total_batches, metrics, phase="phase_A", log_every=10):
+        self._d.log_batch(batch_idx, total_batches, metrics, phase, log_every)
+        APP.v4_progress.update({
+            "batch": batch_idx + 1,
+            "total_batches": total_batches,
+            "batch_metrics": {k: round(float(v), 6) for k, v in metrics.items()},
+        })
+
+    def end_epoch(self, epoch, total_epochs, epoch_metrics, phase="phase_A"):
+        result = self._d.end_epoch(epoch, total_epochs, epoch_metrics, phase)
+        safe_m = {k: round(float(v), 6) if isinstance(v, float) else v
+                  for k, v in epoch_metrics.items()}
+        # Push to history
+        self._ref.setdefault(phase, []).append(safe_m)
+        APP.v4_metrics_history = self._ref
+
+        loss_key = "total" if "total" in epoch_metrics else "mse_loss"
+        APP.v4_progress.update({
+            "epoch": epoch + 1,
+            "total_epochs": total_epochs,
+            "phase": phase,
+            "epoch_metrics": safe_m,
+            "current_loss": round(float(epoch_metrics.get(loss_key, 0)), 6),
+            "best_loss": round(float(self._d.best_loss), 6),
+        })
+        return result
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GLOBAL STATE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -92,6 +199,21 @@ class AppState:
     log_queue: queue.Queue     = queue.Queue(maxsize=4000)
     log_history: List[dict]    = []
     session_meta: dict         = {"init_time": None, "init_count": 0}
+    # ── Test-runner state ──────────────────────────────────────────
+    test_run_active: bool        = False
+    test_run_stop_event          = None       # threading.Event
+    test_run_results: List[dict] = []
+    test_run_progress: dict      = {}
+    test_run_summary: dict       = {}
+    test_catalogue_cache: list   = []
+    # ── AEON v4 Training state ─────────────────────────────────────
+    v4_active: bool              = False
+    v4_stop: bool                = False
+    v4_thread: Optional[threading.Thread] = None
+    v4_progress: dict            = {}
+    v4_log_buffer: List[dict]    = []   # dedicated log ring for v4 training
+    v4_metrics_history: dict     = {"phase_A": [], "phase_B": []}
+    v4_upload_dir: str           = "./training_data"
 
 APP = AppState()
 
@@ -256,6 +378,32 @@ class LoadRequest(BaseModel):
 class ValidateConfigRequest(BaseModel):
     config: dict
 
+class V4TrainRequest(BaseModel):
+    """Configuration for AEON v4 two-phase training pipeline."""
+    # Data
+    json_path: str       = Field("./training_data/data.json", description="Path to training JSON/JSONL/TXT file")
+    output_dir: str      = Field("./processed_v4/",           description="Output directory for checkpoints and artifacts")
+    resume_from: str     = Field("",                           description="Path to checkpoint to resume from (empty = fresh start)")
+    # Training schedule
+    epochs_A: int        = Field(30,    ge=1,    le=1000,  description="Phase A epochs: AutoEncoder + VQ")
+    epochs_B: int        = Field(10,    ge=1,    le=1000,  description="Phase B epochs: Contextual RSSM")
+    # Architecture
+    z_dim: int           = Field(256,   ge=64,   le=2048,  description="Latent dimension")
+    hidden_dim: int      = Field(256,   ge=64,   le=2048,  description="Hidden dimension")
+    vq_num_embeddings: int = Field(2048, ge=64,  le=65536, description="VQ codebook size")
+    context_window: int  = Field(3,     ge=1,    le=16,    description="RSSM context window (K previous states)")
+    # Optimiser
+    learning_rate: float = Field(3e-5,  gt=0,    description="Peak learning rate")
+    batch_size: int      = Field(16,    ge=1,    le=512,   description="Batch size")
+    grad_clip: float     = Field(0.5,   gt=0,    description="Gradient clip norm")
+    warmup_steps: int    = Field(1000,  ge=0,    description="LR warmup steps")
+    entropy_weight: float = Field(0.1,  ge=0.0,  description="VQ codebook entropy regularisation weight")
+    # Flags
+    document_aware: bool = Field(True,  description="Build RSSM pairs within document boundaries")
+    use_amp: bool        = Field(True,  description="Use automatic mixed precision (requires CUDA)")
+    # Misc
+    seed: int            = Field(42,    description="Random seed")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  App Lifespan
@@ -263,15 +411,18 @@ class ValidateConfigRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
-    logging.info("AEON Dashboard server v3.2.0 starting")
+    logging.info("AEON Dashboard server v3.3.0 starting")
     asyncio.create_task(_log_forwarder())
     asyncio.create_task(_heartbeat())
+    asyncio.create_task(_test_progress_broadcaster())
+    # Pre-parse test catalogue
+    _warmup_test_catalogue()
     yield
     logging.info("AEON Dashboard server shutting down")
 
 app = FastAPI(
     title="AEON-Delta Dashboard API",
-    version="3.2.0",
+    version="3.3.0",
     description="Production dashboard API for AEON-Delta RMT v3.1",
     lifespan=lifespan,
 )
@@ -652,64 +803,527 @@ async def get_benchmark_result():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TEST SUITE
+#  LEGACY TEST SUITE (AEONTestSuite from core.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/test/run")
 async def run_test_suite(background_tasks: BackgroundTasks):
+    """Legacy AEONTestSuite (requires initialized model). For test_fixes.py use /api/tests/run."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     APP.test_results = {"running": True, "progress": "starting"}
-    logging.info("🧪 Starting AEON Test Suite")
-
+    logging.info("🧪 Starting AEON Test Suite (legacy)")
     def _run_tests():
         try:
-            APP.test_results["progress"] = "test_stability"
             suite = AEONTestSuite(APP.model, APP.config)
-
             results = {}
-            test_names = [
+            for name, fn in [
                 ("stability", suite.test_stability),
                 ("weight_tying", suite.test_weight_tying),
                 ("gradient_flow", suite.test_gradient_flow),
                 ("vq_codebook", suite.test_vq_codebook),
-            ]
-            for name, fn in test_names:
+            ]:
                 APP.test_results["progress"] = name
                 try:
                     results[name] = fn()
-                    logging.info(f"✅ Test '{name}' complete")
                 except Exception as e:
                     results[name] = {"error": str(e), "score": 0.0}
-                    logging.warning(f"⚠ Test '{name}' failed: {e}")
-
-            # Compute overall
-            scores = []
-            for name, r in results.items():
-                if isinstance(r, dict):
-                    primary = next((v for k, v in r.items() if isinstance(v, float) and k not in ("error",)), None)
-                    if primary is not None:
-                        scores.append(primary)
+            scores = [v for r in results.values() if isinstance(r, dict)
+                      for k, v in r.items() if isinstance(v, float) and k != "error"]
             overall = sum(scores) / max(len(scores), 1)
-            APP.test_results = {
-                "running": False,
-                "progress": "done",
-                "results": results,
-                "overall_score": round(overall, 4),
-                "errors": suite.errors,
-                "timestamp": time.time(),
-            }
-            logging.info(f"🧪 Test Suite complete · overall={overall:.4f}")
+            APP.test_results = {"running": False, "results": results,
+                                "overall_score": round(overall, 4), "timestamp": time.time()}
         except Exception as e:
             APP.test_results = {"running": False, "error": str(e)}
-            logging.error(f"Test suite error: {e}\n{traceback.format_exc()}")
-
     background_tasks.add_task(_run_tests)
     return {"ok": True, "message": "Test suite started"}
-
 
 @app.get("/api/test/result")
 async def get_test_result():
     return {"ok": True, "result": APP.test_results or {}}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEST RUNNER — test_fixes.py  (642 tests, 49 sections)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Locate test_fixes.py ─────────────────────────────────────────────────────
+def _find_test_file() -> Optional[Path]:
+    candidates = [
+        Path(__file__).parent / "test_fixes.py",
+        Path("/mnt/user-data/uploads/test_fixes.py"),
+        Path("./test_fixes.py"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+TEST_FILE: Optional[Path] = _find_test_file()
+
+
+# ── Parse catalogue ──────────────────────────────────────────────────────────
+def _parse_test_catalogue(path: Path) -> list:
+    """Return [{section, tests:[{name,line,doc}]}] from test_fixes.py."""
+    import re
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    groups, cur_section, cur_tests = [], "Core Tests", []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if re.match(r"^# [=\-]{3,}", s):
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if nxt.startswith("#") and not re.match(r"^# [=\-]{3,}", nxt) and len(nxt) > 2:
+                if cur_tests:
+                    groups.append({"section": cur_section, "tests": cur_tests})
+                    cur_tests = []
+                cur_section = nxt.lstrip("# ").strip()
+        elif s.startswith("def test_"):
+            m = re.match(r"def (test_\w+)\(", s)
+            if m:
+                doc = ""
+                for j in range(i + 1, min(i + 6, len(lines))):
+                    dl = lines[j].strip()
+                    if dl.startswith('"""') or dl.startswith("'''"):
+                        doc = dl.strip('"\' ').strip()[:120]
+                        break
+                    elif dl and not dl.startswith("#"):
+                        break
+                cur_tests.append({"name": m.group(1), "line": i + 1, "doc": doc})
+    if cur_tests:
+        groups.append({"section": cur_section, "tests": cur_tests})
+    return groups
+
+
+def _warmup_test_catalogue():
+    if TEST_FILE is None:
+        logging.warning("test_fixes.py not found — test runner unavailable")
+        return
+    try:
+        cat = _parse_test_catalogue(TEST_FILE)
+        APP.test_catalogue_cache = cat
+        total = sum(len(g["tests"]) for g in cat)
+        logging.info(f"✅ Test catalogue: {len(cat)} sections · {total} tests · {TEST_FILE}")
+    except Exception as e:
+        logging.warning(f"Test catalogue parse error: {e}")
+
+
+def _get_meta_map() -> dict:
+    """Return {name: {section, line, doc}} from catalogue."""
+    cat = APP.test_catalogue_cache or (_parse_test_catalogue(TEST_FILE) if TEST_FILE else [])
+    out = {}
+    for g in cat:
+        for t in g["tests"]:
+            out[t["name"]] = {"section": g["section"], **t}
+    return out
+
+
+# ── Dynamic test importer ────────────────────────────────────────────────────
+_test_module_cache = {}
+_test_module_lock = threading.Lock()
+
+def _load_test_module(force_reload=False):
+    """Import test_fixes.py dynamically, cache result."""
+    if TEST_FILE is None:
+        raise RuntimeError("test_fixes.py not found")
+    key = str(TEST_FILE)
+    with _test_module_lock:
+        if force_reload and key in _test_module_cache:
+            del _test_module_cache[key]
+        if key not in _test_module_cache:
+            spec = importlib.util.spec_from_file_location("_aeon_test_fixes", str(TEST_FILE))
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+            except SystemExit:
+                pass
+            except Exception as e:
+                logging.debug(f"test_fixes module-level side-effect: {e}")
+            _test_module_cache[key] = mod
+    return _test_module_cache[key]
+
+
+# ── Single test executor ─────────────────────────────────────────────────────
+def _run_single_test(name: str, meta_map: dict) -> dict:
+    """Run one test function, capture ALL output. Return result dict."""
+    meta = meta_map.get(name, {"section": "Unknown", "line": 0, "doc": ""})
+    result = {
+        "name": name,
+        "section": meta.get("section", ""),
+        "line": meta.get("line", 0),
+        "doc": meta.get("doc", ""),
+        "status": "running",
+        "elapsed_ms": 0.0,
+        "stdout": "",
+        "stderr": "",
+        "traceback": "",
+        "error_msg": "",
+    }
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    t0 = time.perf_counter()
+    try:
+        mod = _load_test_module()
+        fn = getattr(mod, name, None)
+        if fn is None:
+            result["status"] = "error"
+            result["error_msg"] = f"Function '{name}' not found in test_fixes.py"
+            return result
+        with redirect_stdout(buf_out), redirect_stderr(buf_err):
+            fn()
+        result["status"] = "passed"
+    except AssertionError as e:
+        result["status"] = "failed"
+        result["error_msg"] = str(e) or "AssertionError (no message)"
+        result["traceback"] = traceback.format_exc()
+    except (ImportError, ModuleNotFoundError) as e:
+        result["status"] = "skipped"
+        result["error_msg"] = f"Import error: {e}"
+    except Exception as e:
+        result["status"] = "error"
+        result["error_msg"] = f"{type(e).__name__}: {e}"
+        result["traceback"] = traceback.format_exc()
+    finally:
+        result["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        result["stdout"] = buf_out.getvalue()
+        result["stderr"] = buf_err.getvalue()
+
+    # Build log lines (both formats)
+    icon = {"passed":"✅","failed":"❌","error":"💥","skipped":"⏭","running":"⏳"}.get(result["status"],"?")
+    result["log_brief"] = f'{icon} [{result["elapsed_ms"]:6.0f}ms] {name}'
+    if result["error_msg"]:
+        result["log_brief"] += f"  — {result['error_msg'][:100]}"
+
+    full_lines = [
+        "═"*62,
+        f"TEST    : {name}",
+        f"SECTION : {result['section']}",
+        f"LINE    : {result['line']}",
+        f"DOC     : {result['doc']}",
+        f"TIME    : {result['elapsed_ms']:.1f} ms",
+        f"STATUS  : {result['status'].upper()}",
+    ]
+    if result["stdout"].strip():
+        full_lines += ["", "── stdout ──────────────────────────────", result["stdout"].rstrip()]
+    if result["stderr"].strip():
+        full_lines += ["", "── stderr ──────────────────────────────", result["stderr"].rstrip()]
+    if result["error_msg"]:
+        full_lines += ["", "── error ───────────────────────────────", result["error_msg"]]
+    if result["traceback"]:
+        full_lines += ["", "── traceback ───────────────────────────", result["traceback"].rstrip()]
+    full_lines.append("═"*62)
+    result["log_full"] = "\n".join(full_lines)
+
+    return result
+
+
+# ── Build summary ─────────────────────────────────────────────────────────────
+def _build_summary(results: list) -> dict:
+    total = len(results)
+    by_status = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    by_section: dict = {}
+    times = []
+    fail_names = []
+    for r in results:
+        s = r.get("status", "error")
+        by_status[s] = by_status.get(s, 0) + 1
+        sec = r.get("section", "?")
+        if sec not in by_section:
+            by_section[sec] = {"passed": 0, "failed": 0, "error": 0, "skipped": 0, "total": 0}
+        by_section[sec][s] = by_section[sec].get(s, 0) + 1
+        by_section[sec]["total"] += 1
+        if r.get("elapsed_ms", 0) > 0:
+            times.append(r["elapsed_ms"])
+        if s in ("failed", "error"):
+            fail_names.append(r["name"])
+    return {
+        "total": total, **by_status,
+        "pass_rate": round(by_status["passed"] / max(total, 1) * 100, 1),
+        "total_time_ms": round(sum(times), 1),
+        "avg_time_ms": round(sum(times) / max(len(times), 1), 1),
+        "by_section": by_section,
+        "failed_names": fail_names,
+        "slowest": sorted(
+            [{"name": r["name"], "ms": r["elapsed_ms"]} for r in results],
+            key=lambda x: x["ms"], reverse=True
+        )[:10],
+    }
+
+
+# ── Background test loop ──────────────────────────────────────────────────────
+def _test_run_loop(names: list, meta_map: dict, log_format: str, stop_on_failure: bool):
+    """Background thread: run tests, emit WS events, write to logging."""
+    import asyncio
+
+    def _emit(data: dict):
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                asyncio.run_coroutine_threadsafe(broadcast({"type": "test_event", "data": data}), loop)
+        except Exception:
+            pass
+
+    try:
+        for i, name in enumerate(names):
+            if APP.test_run_stop_event and APP.test_run_stop_event.is_set():
+                break
+
+            APP.test_run_progress["current"] = i + 1
+            APP.test_run_progress["current_test"] = name
+
+            r = _run_single_test(name, meta_map)
+            if log_format != "full":
+                r_stored = {k: v for k, v in r.items() if k != "log_full"}
+            else:
+                r_stored = r
+            APP.test_run_results.append(r_stored)
+
+            # Increment counters
+            APP.test_run_progress[r["status"]] = APP.test_run_progress.get(r["status"], 0) + 1
+
+            # Log to server log stream
+            if r["status"] == "passed":
+                logging.info(f"✅ PASS  [{r['elapsed_ms']:6.0f}ms] {name}")
+            elif r["status"] == "failed":
+                logging.warning(f"❌ FAIL  [{r['elapsed_ms']:6.0f}ms] {name} — {r['error_msg'][:100]}")
+                if log_format == "full" and r.get("traceback"):
+                    for line in r["traceback"].splitlines()[-8:]:
+                        logging.debug(f"  TB: {line}")
+            elif r["status"] == "error":
+                logging.error(f"💥 ERROR [{r['elapsed_ms']:6.0f}ms] {name} — {r['error_msg'][:100]}")
+            elif r["status"] == "skipped":
+                logging.info(f"⏭  SKIP  [{r['elapsed_ms']:6.0f}ms] {name}")
+
+            # Log stdout if full mode
+            if log_format == "full" and r.get("stdout", "").strip():
+                for line in r["stdout"].strip().splitlines()[:20]:
+                    logging.debug(f"  [out/{name}] {line}")
+
+            # Broadcast per-test
+            _emit(r_stored)
+
+            if stop_on_failure and r["status"] in ("failed", "error"):
+                logging.warning(f"stop_on_failure → stopping after {name}")
+                break
+
+        # Final summary
+        summary = _build_summary(APP.test_run_results)
+        APP.test_run_summary = summary
+        APP.test_run_progress.update({"active": False, "done": True, "summary": summary})
+        p = APP.test_run_progress
+        logging.info(
+            f"🎉 Test run complete · "
+            f"{p.get('passed',0)} passed · {p.get('failed',0)} failed · "
+            f"{p.get('error',0)} errors · {p.get('skipped',0)} skipped · "
+            f"{summary['total_time_ms']:.0f}ms total"
+        )
+        _emit({"type": "run_complete", "summary": summary})
+
+    except Exception as e:
+        logging.error(f"Test run loop fatal: {e}\n{traceback.format_exc()}")
+    finally:
+        APP.test_run_active = False
+        APP.test_run_progress["active"] = False
+
+
+# ── Progress broadcaster ──────────────────────────────────────────────────────
+async def _test_progress_broadcaster():
+    import asyncio
+    while True:
+        if APP.test_run_active and APP.ws_clients:
+            await broadcast({"type": "test_progress", "data": APP.test_run_progress})
+        await asyncio.sleep(1.5)
+
+
+# ── Pydantic model ────────────────────────────────────────────────────────────
+class TestRunRequest(BaseModel):
+    names: Optional[List[str]] = None     # None = run all
+    section: Optional[str] = None         # run one section
+    log_format: str = "full"              # "full" | "brief"
+    stop_on_failure: bool = False
+    reload_module: bool = False
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/tests/catalogue")
+async def api_tests_catalogue():
+    """Return full test catalogue: 49 sections, 642 tests with docstrings."""
+    if TEST_FILE is None:
+        return {"ok": False, "error": "test_fixes.py not found", "sections": [], "total_tests": 0}
+    cat = APP.test_catalogue_cache or _parse_test_catalogue(TEST_FILE)
+    APP.test_catalogue_cache = cat
+    total = sum(len(g["tests"]) for g in cat)
+    return {"ok": True, "sections": cat, "total_tests": total, "total_sections": len(cat)}
+
+
+@app.post("/api/tests/run")
+async def api_tests_run(req: TestRunRequest, background_tasks: BackgroundTasks):
+    """Start a test run. Pass names=null+section=null to run all 642 tests."""
+    if TEST_FILE is None:
+        raise HTTPException(404, "test_fixes.py not found next to aeon_server.py")
+    if APP.test_run_active:
+        raise HTTPException(409, "A test run is already in progress. POST /api/tests/stop first.")
+
+    if req.reload_module:
+        _load_test_module(force_reload=True)
+        logging.info("test_fixes.py module reloaded")
+
+    meta_map = _get_meta_map()
+    cat = APP.test_catalogue_cache
+
+    # Resolve names
+    if req.names is not None:
+        names = [n for n in req.names if n in meta_map]
+    elif req.section is not None:
+        names = []
+        for g in cat:
+            if g["section"] == req.section:
+                names = [t["name"] for t in g["tests"]]
+                break
+        if not names:
+            raise HTTPException(404, f"Section \'{req.section}\' not found")
+    else:
+        names = [t["name"] for g in cat for t in g["tests"]]
+
+    APP.test_run_active = True
+    APP.test_run_stop_event = threading.Event()
+    APP.test_run_results = []
+    APP.test_run_summary = {}
+    APP.test_run_progress = {
+        "active": True, "done": False,
+        "total": len(names), "current": 0,
+        "current_test": None,
+        "passed": 0, "failed": 0, "error": 0, "skipped": 0,
+        "log_format": req.log_format,
+        "started_at": time.time(),
+    }
+
+    logging.info(f"🧪 Test run started · {len(names)} tests · format={req.log_format}")
+    background_tasks.add_task(
+        _test_run_loop, names, meta_map, req.log_format, req.stop_on_failure
+    )
+    return {"ok": True, "total": len(names), "log_format": req.log_format}
+
+
+@app.post("/api/tests/stop")
+async def api_tests_stop():
+    """Gracefully cancel the running test loop."""
+    if APP.test_run_stop_event:
+        APP.test_run_stop_event.set()
+        logging.info("Test run cancellation requested")
+    return {"ok": True}
+
+
+@app.get("/api/tests/progress")
+async def api_tests_progress():
+    return {"ok": True, "progress": APP.test_run_progress}
+
+
+@app.get("/api/tests/results")
+async def api_tests_results(
+    format: str = "full",
+    status: str = "",
+    limit: int = 0,
+    section: str = "",
+):
+    """
+    Return test results.
+    ?format=full → includes log_full (stdout + traceback)
+    ?format=brief → only log_brief, name, status, elapsed_ms
+    ?status=failed → filter
+    ?section=... → filter by section name
+    ?limit=N → last N results
+    """
+    results = list(APP.test_run_results)
+    if status:
+        results = [r for r in results if r.get("status") == status]
+    if section:
+        results = [r for r in results if r.get("section") == section]
+    if limit and limit > 0:
+        results = results[-limit:]
+    if format == "brief":
+        results = [
+            {k: v for k, v in r.items() if k not in ("log_full", "stdout", "stderr", "traceback")}
+            for r in results
+        ]
+    return {
+        "ok": True,
+        "results": results,
+        "total_returned": len(results),
+        "total_run": len(APP.test_run_results),
+        "progress": APP.test_run_progress,
+        "summary": APP.test_run_summary,
+    }
+
+
+@app.get("/api/tests/results/{test_name}")
+async def api_test_single_result(test_name: str):
+    """Return most recent result for a specific test."""
+    for r in reversed(APP.test_run_results):
+        if r.get("name") == test_name:
+            return {"ok": True, "result": r}
+    raise HTTPException(404, f"No result for \'{test_name}\'")
+
+
+@app.post("/api/tests/run_single")
+async def api_tests_run_single(body: dict):
+    """Run exactly one test synchronously, return result immediately."""
+    if TEST_FILE is None:
+        raise HTTPException(404, "test_fixes.py not found")
+    name = body.get("name", "")
+    fmt = body.get("log_format", "full")
+    meta_map = _get_meta_map()
+    if name not in meta_map:
+        raise HTTPException(404, f"Test \'{name}\' not found")
+    r = _run_single_test(name, meta_map)
+    if r["status"] == "passed":
+        logging.info(f"✅ PASS  [{r['elapsed_ms']:.0f}ms] {name}")
+    elif r["status"] == "failed":
+        logging.warning(f"❌ FAIL  [{r['elapsed_ms']:.0f}ms] {name} — {r['error_msg'][:100]}")
+    else:
+        logging.error(f"💥 {r['status'].upper()} [{r['elapsed_ms']:.0f}ms] {name}")
+    if fmt == "brief":
+        r = {k: v for k, v in r.items() if k not in ("log_full", "stdout", "stderr", "traceback")}
+    await broadcast({"type": "test_event", "data": r})
+    return {"ok": True, "result": r}
+
+
+@app.get("/api/tests/stream")
+async def api_tests_stream():
+    """SSE stream: one event per completed test + progress pings."""
+    async def gen():
+        import asyncio
+        # Replay already-completed results
+        sent = 0
+        for r in APP.test_run_results:
+            yield f"data: {json.dumps({'type':'test_event','data':r})}\n\n"
+            sent += 1
+        # Live feed
+        while APP.test_run_active or len(APP.test_run_results) > sent:
+            new = APP.test_run_results[sent:]
+            for r in new:
+                yield f"data: {json.dumps({'type':'test_event','data':r})}\n\n"
+            sent = len(APP.test_run_results)
+            yield f"data: {json.dumps({'type':'progress','data':APP.test_run_progress})}\n\n"
+            await asyncio.sleep(0.4)
+        yield f"data: {json.dumps({'type':'summary','data':APP.test_run_summary})}\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.post("/api/tests/reload")
+async def api_tests_reload():
+    """Force re-import of test_fixes.py (useful after patching)."""
+    if TEST_FILE is None:
+        raise HTTPException(404, "test_fixes.py not found")
+    try:
+        _load_test_module(force_reload=True)
+        logging.info("test_fixes.py reloaded")
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1109,10 +1723,587 @@ def _training_loop(req: TrainRequest):
         logging.info(f"🎓 Training complete · {step} total steps")
     except Exception as e:
         logging.error(f"Training error: {e}\n{traceback.format_exc()}")
-        APP.training_progress["error"] = str(e)
+        APP.training_progress.update({"error": str(e), "active": False})
     finally:
         APP.training_active = False
         APP.training_progress["active"] = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AEON v4 TRAINING PIPELINE  (ae_train.py integration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_upload_dir():
+    p = Path(APP.v4_upload_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _convert_txt_to_jsonl(txt_path: str, out_path: str):
+    """Convert a plain-text file to JSONL: one JSON object per paragraph."""
+    with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+    with open(out_path, "w", encoding="utf-8") as f:
+        for p in paragraphs:
+            f.write(json.dumps({"text": p}, ensure_ascii=False) + "\n")
+    logging.info(f"Converted TXT → JSONL: {len(paragraphs)} paragraphs → {out_path}")
+
+
+# ── File management ────────────────────────────────────────────────────────────
+@app.get("/api/train/v4/files")
+async def v4_list_files():
+    """List files available for v4 training."""
+    d = _ensure_upload_dir()
+    files = []
+    for f in sorted(d.iterdir()):
+        if f.suffix.lower() in (".json", ".jsonl", ".txt"):
+            try:
+                stat = f.stat()
+                files.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size_kb": round(stat.st_size / 1024, 1),
+                    "modified": stat.st_mtime,
+                    "type": f.suffix.lower().lstrip("."),
+                })
+            except Exception:
+                pass
+    return {"ok": True, "files": files, "upload_dir": str(d)}
+
+
+@app.post("/api/train/v4/upload")
+async def v4_upload_file(file: UploadFile = File(...)):
+    """Upload a training data file (.json / .jsonl / .txt)."""
+    d = _ensure_upload_dir()
+    fname = Path(file.filename).name
+    if not any(fname.endswith(e) for e in (".json", ".jsonl", ".txt")):
+        raise HTTPException(400, "Only .json, .jsonl, and .txt files are accepted")
+    dest = d / fname
+    content = await file.read()
+    dest.write_bytes(content)
+    size_kb = round(len(content) / 1024, 1)
+    # Auto-convert .txt to .jsonl
+    jsonl_path = str(dest)
+    if fname.endswith(".txt"):
+        jsonl_name = fname[:-4] + ".jsonl"
+        jsonl_path = str(d / jsonl_name)
+        _convert_txt_to_jsonl(str(dest), jsonl_path)
+    logging.info(f"📁 Training file uploaded: {fname} ({size_kb} KB)")
+    return {"ok": True, "name": fname, "path": jsonl_path, "size_kb": size_kb}
+
+
+@app.delete("/api/train/v4/files/{filename}")
+async def v4_delete_file(filename: str):
+    d = _ensure_upload_dir()
+    target = d / filename
+    if not target.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+    target.unlink()
+    logging.info(f"🗑️ Training file deleted: {filename}")
+    return {"ok": True}
+
+
+# ── Training runner ────────────────────────────────────────────────────────────
+def _v4_training_loop(req: V4TrainRequest):
+    """Full AEON v4 two-phase training, running in a background thread."""
+    APP.v4_active = True
+    APP.v4_stop = False
+    APP.v4_log_buffer.clear()
+    APP.v4_metrics_history = {"phase_A": [], "phase_B": []}
+    APP.v4_progress = {
+        "active": True,
+        "done": False,
+        "phase": "init",
+        "epoch": 0,
+        "total_epochs": req.epochs_A + req.epochs_B,
+        "epochs_A": req.epochs_A,
+        "epochs_B": req.epochs_B,
+        "current_loss": None,
+        "best_loss": None,
+        "batch": 0,
+        "total_batches": 0,
+        "codebook_usage": None,
+        "started_at": time.time(),
+        "error": None,
+    }
+
+    if not AE_TRAIN_LOADED:
+        msg = f"ae_train.py not available: {AE_TRAIN_ERROR}"
+        logging.error(msg)
+        APP.v4_progress.update({"active": False, "done": True, "error": msg})
+        APP.v4_active = False
+        return
+
+    try:
+        ae = _ae_module  # already imported
+
+        # Resolve json_path — auto-detect plain txt
+        json_path = req.json_path
+        if json_path.endswith(".txt") and Path(json_path).exists():
+            jsonl_path = json_path[:-4] + ".jsonl"
+            _convert_txt_to_jsonl(json_path, jsonl_path)
+            json_path = jsonl_path
+
+        if not Path(json_path).exists():
+            raise FileNotFoundError(f"Training data not found: {json_path}")
+
+        # Build config
+        config = ae.AEONConfigV4()
+        config.z_dim              = req.z_dim
+        config.hidden_dim         = req.hidden_dim
+        config.vq_embedding_dim   = req.z_dim          # must match z_dim
+        config.vq_num_embeddings  = req.vq_num_embeddings
+        config.context_window     = req.context_window
+        config.learning_rate      = req.learning_rate
+        config.batch_size         = req.batch_size
+        config.grad_clip_norm     = req.grad_clip
+        config.warmup_steps       = req.warmup_steps
+        config.entropy_weight     = req.entropy_weight
+        config.document_aware     = req.document_aware
+        config.use_amp            = req.use_amp
+        config.seed               = req.seed
+
+        import torch, numpy as np
+        torch.manual_seed(req.seed)
+        np.random.seed(req.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(req.seed)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        out_dir = req.output_dir
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        # ── Tokeniser ────────────────────────────────────────────
+        tokenizer = None
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+            config.vocab_size = tokenizer.vocab_size
+        except Exception as _te:
+            logging.warning(f"Tokenizer not available ({_te}). Using ASCII fallback.")
+
+        logging.info("🔷 AEON Training Pipeline v4.0 — Dashboard Edition")
+        logging.info(f"   json_path:      {json_path}")
+        logging.info(f"   output_dir:     {out_dir}")
+        logging.info(f"   device:         {device}")
+        logging.info(f"   epochs A/B:     {req.epochs_A} / {req.epochs_B}")
+        logging.info(f"   document_aware: {req.document_aware}")
+
+        # ── Load data ─────────────────────────────────────────────
+        APP.v4_progress["phase"] = "data_loading"
+        if req.document_aware:
+            documents = ae.load_documents_from_json(
+                json_path, tokenizer, config.seq_length,
+                min_chunks=config.min_doc_chunks, logger=logging.getLogger("AEON-Training-v4")
+            )
+            all_tokens = []
+            for doc in documents:
+                all_tokens.extend(doc)
+            if not all_tokens:
+                raise ValueError("No valid token chunks found in input data.")
+            tokens = torch.stack(all_tokens).to(device)
+        else:
+            import json as _json
+            texts = []
+            with open(json_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = _json.loads(line)
+                        text = data.get("text", "") if isinstance(data, dict) else str(data)
+                        if text and len(text.strip()) > 10:
+                            texts.append(text)
+                    except Exception:
+                        pass
+            if not texts:
+                raise ValueError("No valid text found in input data.")
+            tokens = ae.tokenize_batch(texts, tokenizer, config.seq_length, device)
+            documents = None
+
+        logging.info(f"   tokens shape:   {list(tokens.shape)}")
+        APP.v4_progress["n_samples"] = tokens.shape[0]
+
+        # ── Build model ───────────────────────────────────────────
+        APP.v4_progress["phase"] = "model_init"
+        model = ae.AEONDeltaV4(config).to(device)
+
+        if req.resume_from and Path(req.resume_from).exists():
+            logging.info(f"📂 Resuming from checkpoint: {req.resume_from}")
+            try:
+                ckpt = torch.load(req.resume_from, map_location=device, weights_only=True)
+                model.load_state_dict(ckpt["model_state_dict"])
+                logging.info("   ✅ Checkpoint loaded")
+            except Exception as e:
+                logging.warning(f"   ⚠️ Checkpoint load failed: {e}")
+
+        if not ae.validate_training_components(model, config, logging.getLogger("AEON-Training-v4")):
+            raise RuntimeError("Component validation failed — aborting training.")
+
+        # ── Base monitor (delegates to our AppState wrapper) ──────
+        base_monitor = ae.TrainingMonitor(
+            logging.getLogger("AEON-Training-v4"),
+            save_dir=str(Path(out_dir) / "checkpoints")
+        )
+        monitor = _DashboardMonitor(base_monitor, APP.v4_metrics_history)
+
+        # ── PHASE A ───────────────────────────────────────────────
+        APP.v4_progress["phase"] = "phase_A"
+        APP.v4_progress["total_epochs"] = req.epochs_A
+        APP.v4_progress["epoch"] = 0
+        logging.info("\n▶▶ PHASE A: AutoEncoder + VQ v4 ◀◀")
+
+        # Intercept stop signal
+        original_fit_a = ae.SafeThoughtAETrainerV4.fit
+        def _patched_fit_a(self_t, tokenized_tensor, epochs=30, log_every_batch=10):
+            from torch.utils.data import DataLoader, TensorDataset
+            loader = DataLoader(TensorDataset(tokenized_tensor), batch_size=self_t.config.batch_size,
+                                shuffle=True, drop_last=True, num_workers=0)
+            total_batches = len(loader)
+            import math as _math
+            total_steps = max((epochs * total_batches + self_t.config.gradient_accumulation_steps - 1)
+                              // self_t.config.gradient_accumulation_steps, 1)
+            warmup_steps = min(self_t.config.warmup_steps, total_steps // 10)
+            self_t.scheduler = ae.WarmupCosineScheduler(
+                self_t.optimizer, warmup_steps=warmup_steps,
+                total_steps=total_steps, min_lr=self_t.config.min_learning_rate)
+            monitor.start_training("Phase A (AutoEncoder + VQ v4)", epochs, len(tokenized_tensor))
+            monitor.log_model_stats(self_t.model, "AEON-Delta-v4")
+            self_t.optimizer.zero_grad()
+            import copy as _copy
+            for epoch in range(epochs):
+                if APP.v4_stop:
+                    logging.info("Training stopped by user at Phase A epoch %d", epoch)
+                    break
+                monitor.start_epoch(epoch, epochs)
+                epoch_metrics = {"recon": 0.0, "vq": 0.0, "total": 0.0,
+                                 "perplexity": 0.0, "accuracy_%": 0.0,
+                                 "codebook_%": 0.0, "grad_norm": 0.0}
+                accumulated_loss = 0.0
+                num_accumulated = 0
+                outputs = None
+                for batch_idx, (batch,) in enumerate(loader):
+                    if APP.v4_stop:
+                        break
+                    outputs = self_t.train_step(batch)
+                    step_loss = outputs["total_loss"].item()
+                    if not (_math.isnan(step_loss) or _math.isinf(step_loss)):
+                        accumulated_loss += step_loss
+                        num_accumulated += 1
+                    if (batch_idx + 1) % self_t.config.gradient_accumulation_steps == 0:
+                        if num_accumulated > 0:
+                            grad_norm = self_t._optimizer_step()
+                            self_t.scheduler.step()
+                        else:
+                            self_t.optimizer.zero_grad()
+                            grad_norm = 0.0
+                        avg_loss = accumulated_loss / max(num_accumulated, 1)
+                        accumulated_loss = 0.0; num_accumulated = 0
+                        epoch_metrics["total"] += avg_loss
+                        if not (_math.isnan(outputs["recon_loss"]) or _math.isinf(outputs["recon_loss"])):
+                            epoch_metrics["recon"] += outputs["recon_loss"]
+                            epoch_metrics["vq"] += outputs["vq_loss"]
+                            epoch_metrics["perplexity"] += outputs["perplexity"]
+                            epoch_metrics["accuracy_%"] += outputs["accuracy"]
+                            epoch_metrics["codebook_%"] += outputs.get("codebook_usage_%", 0)
+                        epoch_metrics["grad_norm"] += grad_norm if (grad_norm is not None and _math.isfinite(grad_norm)) else 0
+                    if batch_idx % log_every_batch == 0:
+                        monitor.log_batch(batch_idx, total_batches, {
+                            "loss": outputs["recon_loss"] + self_t.config.vq_loss_weight * outputs["vq_loss"],
+                            "recon": outputs["recon_loss"], "ppl": outputs["perplexity"],
+                            "acc": outputs["accuracy"], "cb%": outputs.get("codebook_usage_%", 0),
+                        }, log_every=log_every_batch)
+                if num_accumulated > 0 and outputs is not None:
+                    avg_loss = accumulated_loss / max(num_accumulated, 1)
+                    epoch_metrics["total"] += avg_loss
+                    self_t._optimizer_step()
+                    self_t.scheduler.step()
+                num_steps = max((total_batches + self_t.config.gradient_accumulation_steps - 1)
+                                // self_t.config.gradient_accumulation_steps, 1)
+                for key in epoch_metrics:
+                    epoch_metrics[key] /= num_steps
+                epoch_metrics["lr"] = self_t.scheduler.get_lr()
+                APP.v4_progress.update({
+                    "epoch": epoch + 1,
+                    "total_epochs": epochs,
+                    "codebook_usage": round(float(epoch_metrics.get("codebook_%", 0)), 2),
+                })
+                if epoch_metrics["total"] < self_t.best_loss:
+                    self_t.best_loss = epoch_metrics["total"]
+                    self_t.best_model_state = _copy.deepcopy(self_t.model.state_dict())
+                monitor.end_epoch(epoch, epochs, epoch_metrics, "phase_A")
+                if (epoch + 1) % self_t.config.save_every_n_epochs == 0:
+                    self_t._save_checkpoint(epoch, epoch_metrics)
+            if self_t.best_model_state is not None:
+                self_t.model.load_state_dict(self_t.best_model_state)
+            monitor.end_training("phase_A")
+
+        trainer_A = ae.SafeThoughtAETrainerV4(model, config, base_monitor, out_dir)
+        _patched_fit_a(trainer_A, tokens, epochs=req.epochs_A)
+        best_loss_A = trainer_A.best_loss
+        del trainer_A
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        if APP.v4_stop:
+            logging.info("🛑 Training stopped after Phase A.")
+            APP.v4_progress.update({"active": False, "done": True, "stopped": True})
+            APP.v4_active = False
+            return
+
+        # ── Build z_sequences ─────────────────────────────────────
+        APP.v4_progress["phase"] = "encoding"
+        logging.info("🔧 Building z_sequences for Phase B...")
+        model.eval()
+        from torch.utils.data import DataLoader, TensorDataset
+        with torch.no_grad():
+            if req.document_aware and documents:
+                z_sequences = []
+                skipped = 0
+                for doc_chunks in documents:
+                    if len(doc_chunks) < config.context_window + 1:
+                        skipped += 1
+                        continue
+                    chunks_batch = torch.stack(doc_chunks).to(device)
+                    z_batch = model.encode(chunks_batch)
+                    quantized_batch, _, _, _ = model.quantize(z_batch)
+                    z_sequences.append(quantized_batch.cpu())
+                logging.info(f"✅ {len(z_sequences)} z_sequences (skipped {skipped})")
+            else:
+                z_list = []
+                for (batch,) in DataLoader(TensorDataset(tokens), batch_size=256):
+                    z = model.encode(batch.to(device))
+                    q, _, _, _ = model.quantize(z)
+                    z_list.append(q.cpu())
+                z_sequences = [torch.cat(z_list)]
+
+        if not z_sequences:
+            raise RuntimeError("No z_sequences created — check data / context_window settings.")
+
+        # ── PHASE B ───────────────────────────────────────────────
+        APP.v4_progress["phase"] = "phase_B"
+        APP.v4_progress["epoch"] = 0
+        APP.v4_progress["total_epochs"] = req.epochs_B
+        logging.info("\n▶▶ PHASE B: Contextual RSSM ◀◀")
+
+        z_sequences_gpu = [seq.to(device) for seq in z_sequences]
+
+        trainer_B = ae.ContextualRSSMTrainer(model, config, base_monitor)
+
+        # Patch RSSM fit with stop support
+        original_fit_b = ae.ContextualRSSMTrainer.fit
+        def _patched_fit_b(self_t, z_seqs, epochs=10, batch_size=32, log_every_batch=5):
+            import copy as _copy, math as _math
+            K = self_t.config.context_window
+            all_contexts, all_targets = [], []
+            for seq in z_seqs:
+                if seq.size(0) < K + 1:
+                    continue
+                for i in range(K, seq.size(0)):
+                    all_contexts.append(seq[i-K:i])
+                    all_targets.append(seq[i])
+            if not all_contexts:
+                logging.warning("⚠️ No training pairs for Phase B — skipping.")
+                return
+            from torch.utils.data import DataLoader, TensorDataset
+            ctx_t = torch.stack(all_contexts)
+            tgt_t = torch.stack(all_targets)
+            dataset = TensorDataset(ctx_t, tgt_t)
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+            total_batches = len(loader)
+            monitor.start_training(f"Phase B (Contextual RSSM, K={K})", epochs, len(dataset))
+            for epoch in range(epochs):
+                if APP.v4_stop:
+                    logging.info("Training stopped by user at Phase B epoch %d", epoch)
+                    break
+                monitor.start_epoch(epoch, epochs)
+                epoch_metrics = {"mse_loss": 0.0, "cosine_sim": 0.0,
+                                 "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0}
+                valid_batches = 0
+                for batch_idx, (ctx_b, tgt_b) in enumerate(loader):
+                    if APP.v4_stop:
+                        break
+                    metrics = self_t.train_step(ctx_b.to(self_t.device), tgt_b.to(self_t.device))
+                    batch_valid = False
+                    for k in epoch_metrics:
+                        if k in metrics and not (_math.isnan(metrics[k]) or _math.isinf(metrics[k])):
+                            epoch_metrics[k] += metrics[k]
+                            batch_valid = True
+                    if batch_valid:
+                        valid_batches += 1
+                    if batch_idx % log_every_batch == 0:
+                        monitor.log_batch(batch_idx, total_batches, {
+                            "mse": metrics["mse_loss"], "cos": metrics["cosine_sim"],
+                            "rel_err": metrics["rel_error"],
+                        }, phase="phase_B", log_every=log_every_batch)
+                for k in epoch_metrics:
+                    epoch_metrics[k] /= max(valid_batches, 1)
+                APP.v4_progress.update({"epoch": epoch + 1, "total_epochs": epochs})
+                if epoch_metrics["mse_loss"] < self_t.best_loss:
+                    self_t.best_loss = epoch_metrics["mse_loss"]
+                    self_t.best_model_state = _copy.deepcopy(self_t.model.rssm.state_dict())
+                monitor.end_epoch(epoch, epochs, epoch_metrics, "phase_B")
+            if self_t.best_model_state is not None:
+                self_t.model.rssm.load_state_dict(self_t.best_model_state)
+            monitor.end_training("phase_B")
+
+        _patched_fit_b(trainer_B, z_sequences_gpu, epochs=req.epochs_B, batch_size=config.batch_size)
+
+        # ── Save final model ──────────────────────────────────────
+        APP.v4_progress["phase"] = "saving"
+        import dataclasses
+        final_path = str(Path(out_dir) / "aeon_v4_final.pt")
+        for p in model.parameters():
+            p.requires_grad = True
+        torch.save({
+            "model_state_dict": model.state_dict(),
+            "config": dataclasses.asdict(config),
+            "metrics_history": APP.v4_metrics_history,
+            "training_info": {
+                "epochs_A": req.epochs_A, "epochs_B": req.epochs_B,
+                "final_loss_A": best_loss_A,
+                "final_loss_B": trainer_B.best_loss,
+                "document_aware": req.document_aware,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "version": "4.0.0",
+            }
+        }, final_path)
+        logging.info(f"💾 Final model saved: {final_path}")
+
+        codebook_pct = model.vq.get_codebook_usage()
+        APP.v4_progress.update({
+            "active": False, "done": True, "stopped": False,
+            "phase": "complete",
+            "final_model_path": final_path,
+            "codebook_usage": round(codebook_pct, 2),
+            "final_loss_A": round(float(best_loss_A), 6),
+            "final_loss_B": round(float(trainer_B.best_loss), 6),
+            "elapsed_s": round(time.time() - APP.v4_progress["started_at"], 1),
+        })
+        logging.info("🎉 AEON v4 Training COMPLETE!")
+
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logging.error(f"❌ v4 Training error: {exc}\n{tb}")
+        APP.v4_progress.update({
+            "active": False, "done": True,
+            "error": str(exc),
+            "phase": "error",
+        })
+    finally:
+        APP.v4_active = False
+
+
+@app.post("/api/train/v4/start")
+async def v4_start_training(req: V4TrainRequest, background_tasks: BackgroundTasks):
+    """Start AEON v4 two-phase training pipeline."""
+    if APP.v4_active:
+        raise HTTPException(409, "v4 training already running — stop it first")
+    if not AE_TRAIN_LOADED:
+        raise HTTPException(503, f"ae_train.py not loaded: {AE_TRAIN_ERROR}")
+    # Reset state
+    APP.v4_stop = False
+    APP.v4_log_buffer.clear()
+    APP.v4_metrics_history = {"phase_A": [], "phase_B": []}
+    APP.v4_progress = {
+        "active": True, "done": False, "phase": "starting",
+        "epoch": 0, "total_epochs": req.epochs_A + req.epochs_B,
+        "epochs_A": req.epochs_A, "epochs_B": req.epochs_B,
+        "current_loss": None, "best_loss": None, "error": None,
+        "started_at": time.time(),
+    }
+    logging.info(f"🚀 v4 Training starting · epochs_A={req.epochs_A} · epochs_B={req.epochs_B} · file={req.json_path}")
+    background_tasks.add_task(_v4_training_loop, req)
+    return {"ok": True, "message": "v4 training started"}
+
+
+@app.post("/api/train/v4/stop")
+async def v4_stop_training():
+    """Gracefully stop v4 training after the current batch."""
+    APP.v4_stop = True
+    logging.info("🛑 v4 Training stop requested")
+    return {"ok": True, "message": "Stop signal sent — training will halt after current batch"}
+
+
+@app.get("/api/train/v4/progress")
+async def v4_get_progress():
+    """Current v4 training progress and metrics."""
+    return {
+        "ok": True,
+        "active": APP.v4_active,
+        "progress": APP.v4_progress,
+        "metrics_history": APP.v4_metrics_history,
+        "ae_train_available": AE_TRAIN_LOADED,
+        "ae_train_error": AE_TRAIN_ERROR if not AE_TRAIN_LOADED else None,
+    }
+
+
+@app.get("/api/train/v4/logs")
+async def v4_get_logs(limit: int = 500, level: str = ""):
+    """Recent logs from the v4 training run."""
+    logs = APP.v4_log_buffer
+    if level:
+        logs = [l for l in logs if l.get("level") == level.upper()]
+    return {"ok": True, "logs": logs[-limit:], "total": len(APP.v4_log_buffer)}
+
+
+@app.get("/api/train/v4/stream")
+async def v4_stream():
+    """
+    SSE stream delivering:
+    - {"type": "log",      "data": {level, msg, time}}
+    - {"type": "progress", "data": {phase, epoch, ...}}
+    - {"type": "metrics",  "data": {phase_A: [...], phase_B: [...]}}
+    - {"type": "done",     "data": {final_loss_A, final_loss_B, ...}}
+    """
+    import asyncio
+
+    async def gen():
+        sent_logs = 0
+        sent_epochs_A = 0
+        sent_epochs_B = 0
+        last_phase = None
+        # Replay existing logs
+        for entry in APP.v4_log_buffer[-200:]:
+            yield f"data: {json.dumps({'type': 'log', 'data': entry})}\n\n"
+            sent_logs += 1
+
+        while APP.v4_active or APP.v4_progress.get("done"):
+            # New log lines
+            new_logs = APP.v4_log_buffer[sent_logs:]
+            for entry in new_logs:
+                yield f"data: {json.dumps({'type': 'log', 'data': entry})}\n\n"
+            sent_logs = len(APP.v4_log_buffer)
+
+            # Progress heartbeat
+            prog = dict(APP.v4_progress)
+            yield f"data: {json.dumps({'type': 'progress', 'data': prog})}\n\n"
+
+            # New epoch metrics
+            hist = APP.v4_metrics_history
+            new_A = hist.get("phase_A", [])[sent_epochs_A:]
+            new_B = hist.get("phase_B", [])[sent_epochs_B:]
+            if new_A or new_B:
+                yield f"data: {json.dumps({'type': 'metrics', 'data': {'new_A': new_A, 'new_B': new_B}})}\n\n"
+            sent_epochs_A = len(hist.get("phase_A", []))
+            sent_epochs_B = len(hist.get("phase_B", []))
+
+            if APP.v4_progress.get("done"):
+                yield f"data: {json.dumps({'type': 'done', 'data': APP.v4_progress})}\n\n"
+                break
+
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+# ── Legacy training error cleanup ─────────────────────────────────────────────
+# (handled inside _training_loop)
 
 
 @app.post("/api/train/stop")
@@ -1302,9 +2493,12 @@ async def _heartbeat():
                 "ts": time.time(),
                 "model_ready": APP.model is not None,
                 "training": APP.training_active,
+                "v4_training": APP.v4_active,
             }
             if APP.training_active:
                 payload["training_progress"] = APP.training_progress
+            if APP.v4_active or APP.v4_progress.get("done"):
+                payload["v4_progress"] = APP.v4_progress
             await broadcast(payload)
         await asyncio.sleep(2.0)
 
@@ -1314,7 +2508,7 @@ async def _heartbeat():
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.2.0")
+    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.3.0")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
@@ -1323,7 +2517,7 @@ if __name__ == "__main__":
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Server v3.2.0 (Production)            ║
+║  AEON-Delta Dashboard Server v3.4.0 (Production + v4)       ║
 ║  Dashboard  →  http://localhost:{args.port}                     ║
 ║  API Docs   →  http://localhost:{args.port}/docs                ║
 ║  WebSocket  →  ws://localhost:{args.port}/ws                    ║
