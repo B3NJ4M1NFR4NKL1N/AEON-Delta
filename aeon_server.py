@@ -2419,48 +2419,175 @@ async def export_session():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  WEBSOCKET
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Disconnect exception set  ──────────────────────────────────────────────────
+# Starlette raises WebSocketDisconnect on clean closes; uvicorn/websockets can
+# raise ClientDisconnected (a RuntimeError subclass) on abrupt 1006 closures.
+# We catch BOTH so no disconnect path can leak as an unhandled ASGI exception.
+try:
+    from uvicorn.protocols.utils import ClientDisconnected as _ClientDisconnected
+except ImportError:
+    _ClientDisconnected = None
+
+_WS_DISCONNECT_EXCS: tuple = (
+    WebSocketDisconnect,
+    *([_ClientDisconnected] if _ClientDisconnected else []),
+)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    """
+    Robust WebSocket endpoint.
+
+    Root-cause of the previous 'connection closed' crash:
+    ─────────────────────────────────────────────────────
+    The backlog-flush loop (up to 150 log entries produced by model init)
+    was executed **outside** the try/except block.  When the dashboard
+    reconnects immediately after /api/init returns, the log_history already
+    contains the full parameter table (~100 lines).  A 150-frame burst with
+    no asyncio.sleep(0) yields:
+      • never yields to the event loop → TCP send-buffer can stall
+      • if the client tab is still loading, it may close before the flush
+        completes → send_json raises WebSocketDisconnect
+      • that exception propagates uncaught through the ASGI stack →
+        uvicorn logs the full traceback and marks the connection as an error
+        instead of a normal close.
+
+    Fix:
+    ─────
+    1. Everything after ws.accept() lives inside ONE try/except block.
+    2. A _safe_send() helper wraps every outbound send — returns False on any
+       disconnect variant so callers can exit cleanly without re-raising.
+    3. asyncio.sleep(0) is called every BACKLOG_YIELD_EVERY frames during bulk
+       sends so the event loop can service keep-alives and other coroutines.
+    4. receive_text() + manual json.loads() replaces receive_json() so a
+       binary frame or malformed JSON does NOT kill the loop.
+    """
+    import asyncio
+
+    BACKLOG_YIELD_EVERY = 10   # yield to event loop every N frames during bulk send
+
     await ws.accept()
     APP.ws_clients.append(ws)
     logging.info(f"WebSocket client connected · {len(APP.ws_clients)} total")
-    # Send backlog
-    for entry in APP.log_history[-150:]:
-        await ws.send_json({"type": "log", "data": entry})
-    # Send current status
-    await ws.send_json({
-        "type": "status",
-        "model_ready": APP.model is not None,
-        "training": APP.training_active,
-        "training_progress": APP.training_progress,
-    })
+
+    # ── Shared safe-send helper ──────────────────────────────────────────────
+    async def _safe_send(payload: dict) -> bool:
+        """
+        Send one JSON frame.  Returns True on success, False on any disconnect.
+        Never raises — all disconnect/send errors are swallowed here so callers
+        can branch on the return value without nested try/except boilerplate.
+        """
+        try:
+            await ws.send_json(payload)
+            return True
+        except _WS_DISCONNECT_EXCS:                    # type: ignore[misc]
+            return False
+        except RuntimeError as exc:
+            # Starlette wraps ClientDisconnected as RuntimeError in some versions
+            if "disconnect" in str(exc).lower() or "close" in str(exc).lower():
+                return False
+            return False
+        except Exception:
+            return False
+
+    # ────────────────────────────────────────────────────────────────────────
+    # CRITICAL: from this point on, EVERYTHING is inside the try/except.
+    # Previously the backlog flush was outside → the crash you saw in logs.
+    # ────────────────────────────────────────────────────────────────────────
     try:
+        # ── 1. Backlog flush ─────────────────────────────────────────────────
+        # Take a snapshot so the list doesn't change while we iterate.
+        backlog = list(APP.log_history[-150:])
+        for i, entry in enumerate(backlog):
+            if not await _safe_send({"type": "log", "data": entry}):
+                return   # client gone — exit the coroutine cleanly
+            # Yield to the event loop every BACKLOG_YIELD_EVERY frames.
+            # Without this, a 150-entry burst blocks the loop and can stall
+            # TCP, causing the client to time out and disconnect.
+            if (i + 1) % BACKLOG_YIELD_EVERY == 0:
+                await asyncio.sleep(0)
+
+        # ── 2. Initial status frame ──────────────────────────────────────────
+        if not await _safe_send({
+            "type": "status",
+            "model_ready": APP.model is not None,
+            "training":    APP.training_active,
+            "training_progress": APP.training_progress,
+            "v4_training": APP.v4_active,
+            "core_loaded": CORE_LOADED,
+        }):
+            return
+
+        # ── 3. Main receive loop ─────────────────────────────────────────────
         while True:
-            msg = await ws.receive_json()
+            # Use receive_text() + manual JSON parse so a malformed or binary
+            # frame does NOT raise JSONDecodeError and silently kill the loop.
+            try:
+                raw = await ws.receive_text()
+            except _WS_DISCONNECT_EXCS:                # type: ignore[misc]
+                break
+            except RuntimeError as exc:
+                if "disconnect" in str(exc).lower() or "close" in str(exc).lower():
+                    break
+                break
+
+            # Ignore non-JSON frames (e.g. browser native ping text)
+            try:
+                msg = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            if not isinstance(msg, dict):
+                continue
+
             mtype = msg.get("type")
+
+            # ── ping / pong ──────────────────────────────────────────────────
             if mtype == "ping":
-                await ws.send_json({
+                if not await _safe_send({
                     "type": "pong",
-                    "ts": time.time(),
+                    "ts":          time.time(),
                     "model_ready": APP.model is not None,
-                    "training": APP.training_active,
+                    "training":    APP.training_active,
+                    "v4_training": APP.v4_active,
                     "training_progress": APP.training_progress,
-                })
+                }):
+                    break
+
+            # ── bulk log replay ──────────────────────────────────────────────
             elif mtype == "get_logs":
-                limit = msg.get("limit", 200)
-                for entry in APP.log_history[-limit:]:
-                    await ws.send_json({"type": "log", "data": entry})
+                limit    = int(msg.get("limit", 200))
+                log_snap = list(APP.log_history[-limit:])
+                for i, entry in enumerate(log_snap):
+                    if not await _safe_send({"type": "log", "data": entry}):
+                        return
+                    if (i + 1) % BACKLOG_YIELD_EVERY == 0:
+                        await asyncio.sleep(0)
+
+            # ── status query ─────────────────────────────────────────────────
             elif mtype == "get_status":
-                await ws.send_json({
-                    "type": "status",
-                    "model_ready": APP.model is not None,
-                    "training": APP.training_active,
+                if not await _safe_send({
+                    "type":          "status",
+                    "model_ready":   APP.model is not None,
+                    "training":      APP.training_active,
+                    "v4_training":   APP.v4_active,
+                    "core_loaded":   CORE_LOADED,
                     "training_progress": APP.training_progress,
-                })
-    except WebSocketDisconnect:
+                }):
+                    break
+
+    except _WS_DISCONNECT_EXCS:           # type: ignore[misc]
+        # Normal / expected disconnect — not an error
         pass
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        if "disconnect" not in str(exc).lower() and "close" not in str(exc).lower():
+            logging.debug(f"WebSocket RuntimeError (non-disconnect): {exc}")
+    except Exception as exc:
+        # Unexpected error — log at DEBUG so the operator can investigate
+        # without flooding the console on every browser tab close.
+        logging.debug(f"WebSocket unexpected error: {type(exc).__name__}: {exc}")
     finally:
         if ws in APP.ws_clients:
             APP.ws_clients.remove(ws)
@@ -2468,39 +2595,67 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ─── Background tasks ────────────────────────────────────────────────────────
+
 async def _log_forwarder():
+    """
+    Drain APP.log_queue and broadcast entries to all connected WS clients.
+
+    Improvements vs original:
+    • asyncio.sleep(0) between individual broadcasts so a large burst does not
+      monopolise the event loop and cause downstream clients to time out.
+    • Increased batch ceiling to 50 (was 30) while keeping inter-frame yields.
+    • Guard against empty ws_clients list before touching the queue at all.
+    """
     import asyncio
     while True:
-        if not APP.log_queue.empty() and APP.ws_clients:
-            batch = []
-            while not APP.log_queue.empty() and len(batch) < 30:
-                try:
-                    batch.append(APP.log_queue.get_nowait())
-                except queue.Empty:
-                    break
-            for entry in batch:
-                await broadcast({"type": "log", "data": entry})
         await asyncio.sleep(0.15)
+        if APP.log_queue.empty() or not APP.ws_clients:
+            continue
+        batch: list = []
+        while not APP.log_queue.empty() and len(batch) < 50:
+            try:
+                batch.append(APP.log_queue.get_nowait())
+            except queue.Empty:
+                break
+        for i, entry in enumerate(batch):
+            await broadcast({"type": "log", "data": entry})
+            # Yield every 10 frames during burst so other coroutines are not starved
+            if (i + 1) % 10 == 0:
+                await asyncio.sleep(0)
 
 
 async def _heartbeat():
-    """Broadcast training progress and system pulse to all WS clients every 2s."""
+    """
+    Broadcast a structured heartbeat to every connected WS client every 2 s.
+
+    Improvements vs original:
+    • Always sends model_ready, core_loaded and v4_training regardless of
+      training state — the dashboard needs these to update its status bar.
+    • Includes v4_progress snapshot only when v4 is active OR just completed
+      (was already correct, kept).
+    • Uses asyncio.sleep(0) before the broadcast so the coroutine yields
+      even when there are no clients, preventing theoretical starvation.
+    """
     import asyncio
     while True:
-        if APP.ws_clients:
-            payload = {
-                "type": "heartbeat",
-                "ts": time.time(),
-                "model_ready": APP.model is not None,
-                "training": APP.training_active,
-                "v4_training": APP.v4_active,
-            }
-            if APP.training_active:
-                payload["training_progress"] = APP.training_progress
-            if APP.v4_active or APP.v4_progress.get("done"):
-                payload["v4_progress"] = APP.v4_progress
-            await broadcast(payload)
         await asyncio.sleep(2.0)
+        if not APP.ws_clients:
+            continue
+        payload: dict = {
+            "type":        "heartbeat",
+            "ts":          time.time(),
+            "model_ready": APP.model is not None,
+            "core_loaded": CORE_LOADED,
+            "training":    APP.training_active,
+            "v4_training": APP.v4_active,
+        }
+        if APP.training_active:
+            payload["training_progress"] = APP.training_progress
+        if APP.v4_active or APP.v4_progress.get("done"):
+            payload["v4_progress"] = APP.v4_progress
+        if APP.test_run_active:
+            payload["test_progress"] = APP.test_run_progress
+        await broadcast(payload)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
