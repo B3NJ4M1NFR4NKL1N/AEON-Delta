@@ -268,6 +268,57 @@ canvas{display:block;width:100%;}
 .vq-cell:hover{transform:scale(2);z-index:5;outline:1px solid var(--accent);}
 
 hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
+
+  /* ─── Test Suite v3.3 ─────────────────────────────────────────── */
+  .ts-tab { background:none; border:none; border-bottom:2px solid transparent;
+    padding:7px 14px; font-size:12px; color:var(--text3); cursor:pointer; transition:.15s; }
+  .ts-tab:hover { color:var(--text); }
+  .ts-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .ts-section-hdr { display:flex; align-items:center; gap:8px;
+    padding:8px 10px; cursor:pointer; border-radius:6px; transition:.1s;
+    border:1px solid transparent; margin-bottom:3px; }
+  .ts-section-hdr:hover { background:var(--surface2); border-color:var(--bord); }
+  .ts-section-hdr.ts-has-failures { border-color:var(--danger)!important; background:rgba(239,68,68,.06)!important; }
+  .ts-section-body { display:none; padding:4px 0 8px 22px; }
+  .ts-section-body.open { display:block; }
+  .ts-test-row { display:flex; align-items:center; gap:8px;
+    padding:4px 8px; border-radius:4px; cursor:pointer; font-size:11px;
+    transition:.1s; margin-bottom:2px; }
+  .ts-test-row:hover { background:var(--surface2); }
+  .ts-test-row .ts-status { width:14px; text-align:center; font-size:12px; }
+  .ts-test-row .ts-name { flex:1; color:var(--text); font-family:var(--mono); }
+  .ts-test-row .ts-ms { color:var(--text3); font-size:10px; min-width:50px; text-align:right; }
+  .ts-result-card { background:var(--surface2); border:1px solid var(--bord);
+    border-radius:6px; padding:10px 12px; margin-bottom:6px; cursor:pointer; transition:.1s; }
+  .ts-result-card:hover { border-color:var(--accent); }
+  .ts-result-card.passed { border-left:3px solid var(--green); }
+  .ts-result-card.failed { border-left:3px solid var(--danger); }
+  .ts-result-card.error { border-left:3px solid var(--warn); }
+  .ts-result-card.skipped { border-left:3px solid var(--text3); }
+  .ts-result-card .ts-rc-hdr { display:flex; align-items:center; gap:8px; }
+  .ts-result-card .ts-rc-name { font-family:var(--mono); font-size:11px; flex:1; color:var(--text); }
+  .ts-result-card .ts-rc-ms { font-size:10px; color:var(--text3); }
+  .ts-result-card .ts-rc-sec { font-size:10px; color:var(--text3); }
+  .ts-result-card .ts-rc-err { font-size:11px; color:var(--danger); margin-top:5px;
+    font-family:var(--mono); background:rgba(239,68,68,.08); padding:4px 8px;
+    border-radius:4px; overflow-x:auto; }
+  .ts-result-card .ts-rc-detail { display:none; margin-top:8px; }
+  .ts-result-card.expanded .ts-rc-detail { display:block; }
+  .ts-log-block { background:var(--bg); border:1px solid var(--bord); border-radius:4px;
+    padding:8px; font-size:10px; font-family:var(--mono); color:var(--text);
+    white-space:pre; overflow-x:auto; max-height:200px; overflow-y:auto; margin-top:6px; }
+  .ts-failure-card { background:var(--surface2); border:1px solid var(--danger);
+    border-radius:6px; padding:10px 12px; margin-bottom:8px; }
+  .ts-failure-card .ts-fc-name { font-family:var(--mono); font-size:12px; color:var(--text); margin-bottom:4px; }
+  .ts-failure-card .ts-fc-sec { font-size:10px; color:var(--text3); margin-bottom:6px; }
+  .ts-failure-card .ts-fc-msg { font-size:11px; color:var(--danger); font-family:var(--mono);
+    background:rgba(239,68,68,.08); padding:6px 8px; border-radius:4px; }
+  .ts-failure-card .ts-fc-tb { font-size:10px; color:var(--text3); font-family:var(--mono);
+    margin-top:6px; white-space:pre; overflow-x:auto; max-height:160px; overflow-y:auto; }
+  .ts-run-btn-sec { background:var(--surface2); border:1px solid var(--bord);
+    border-radius:4px; padding:2px 8px; font-size:10px; color:var(--text3);
+    cursor:pointer; transition:.1s; margin-left:auto; }
+  .ts-run-btn-sec:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -303,7 +354,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
   <div class="nav-group">
     <div class="nav-label">Diagnostics</div>
-    <div class="nav-item" onclick="go('testsuite')"><span class="nav-icon">🧪</span> Test Suite</div>
+    <div class="nav-item" onclick="go('testsuite')"><span class="nav-icon">🧪</span> Test Suite<span style="font-size:9px;color:var(--text3);margin-left:4px">642</span></div>
     <div class="nav-item" onclick="go('benchmark')"><span class="nav-icon">⚡</span> Benchmark</div>
     <div class="nav-item" onclick="go('vq')"><span class="nav-icon">◈</span> VQ Codebook</div>
   </div>
@@ -735,101 +786,395 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ TRAINING ══ -->
 <div class="panel" id="panel-training">
   <div class="ph">
-    <div><div class="ph-title">Training</div><div class="ph-sub">AEONTrainer · real gradient descent on synthetic data</div></div>
+    <div>
+      <div class="ph-title">⚡ AEON v4 Training Pipeline</div>
+      <div class="ph-sub" id="v4-sub">Two-phase: AutoEncoder+VQ (Phase A) → Contextual RSSM (Phase B)</div>
+    </div>
     <div class="btns">
-      <button class="btn btn-danger" id="stop-btn" onclick="stopTrain()" style="display:none">■ Stop</button>
-      <button class="btn btn-primary" id="start-btn" onclick="startTrain()">◉ Start Training</button>
+      <button class="btn btn-danger"  id="v4-stop-btn"  onclick="v4Stop()"  style="display:none">■ Stop</button>
+      <button class="btn btn-primary" id="v4-start-btn" onclick="v4Start()">◉ Start v4 Training</button>
     </div>
   </div>
-  <div class="g2" style="margin-bottom:16px">
-    <div class="card">
-      <div class="ct">⚙ Training Parameters</div>
-      <div class="fr" style="margin-top:8px">
-        <div class="fg"><div class="fl">Epochs</div><input type="number" id="t-ep" value="10" min="1" max="1000"></div>
-        <div class="fg"><div class="fl">Learning Rate</div><select id="t-lr"><option value="1e-5">1e-5</option><option value="3e-5" selected>3e-5</option><option value="1e-4">1e-4</option><option value="3e-4">3e-4</option></select></div>
-      </div>
-      <div class="fr">
-        <div class="fg"><div class="fl">Batch Size</div><select id="t-bs"><option value="4">4</option><option value="8">8</option><option value="16" selected>16</option><option value="32">32</option></select></div>
-        <div class="fg"><div class="fl">grad_clip</div><div class="rr"><input type="range" id="t-gc" min="0.1" max="5" step="0.1" value="1.0" oninput="rv('t-gc-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="t-gc-v">1.0</span></div></div>
-      </div>
-      <div class="fr">
-        <div class="fg"><div class="fl">warmup_steps</div><input type="number" id="t-ws" value="100" min="0"></div>
-        <div class="fg"><div class="fl">synthetic_samples</div><input type="number" id="t-synth" value="256" min="32" max="4096" step="32"></div>
-      </div>
-      <div class="fr">
-        <div class="fg"><div class="fl">checkpoint_dir</div><input type="text" id="t-ckpt" value="./checkpoints"></div>
-        <div class="tog-row" style="border:none;padding:0"><div class="tog-info"><div class="tog-name" style="font-size:11px">log_grad_norms</div></div><label class="tog"><input type="checkbox" id="t-lgn" checked><div class="tog-track"></div></label></div>
-      </div>
-      <div class="fg"><div class="fl">CLI equivalent</div><div class="cb" style="padding:8px;font-size:11px;color:var(--green)" id="t-cli">python core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5</div></div>
+
+  <!-- ── File Management ─────────────────────────────────────────────── -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span>📁 Training Data</span>
+      <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px" onclick="v4RefreshFiles()">⟳ Refresh</button>
     </div>
-    <div>
-      <div class="card" style="margin-bottom:12px">
-        <div class="ct">◉ Status</div>
-        <div id="t-idle" style="font-size:12px;color:var(--text3);margin-top:8px">No active training run.</div>
-        <div id="t-active" style="display:none">
-          <div style="display:flex;justify-content:space-between;margin:8px 0 4px">
-            <span style="font-size:11px;color:var(--text2)" id="t-epoch-lbl">Epoch 0/0</span>
-            <span style="font-size:11px;color:var(--accent)" id="t-pct">0%</span>
-          </div>
-          <div class="prog-track" style="height:6px"><div class="prog-fill" id="t-prog" style="width:0%"></div></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:12px">
-            <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Train Loss</div><div style="font-family:var(--display);font-size:18px;color:var(--accent)" id="t-loss">—</div></div>
-            <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Val Loss</div><div style="font-family:var(--display);font-size:18px;color:var(--purple)" id="t-vloss">—</div></div>
-            <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">LR</div><div style="font-family:var(--display);font-size:16px;color:var(--green)" id="t-lr-cur">—</div></div>
-            <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Grad Norm</div><div style="font-family:var(--display);font-size:18px;color:var(--warn)" id="t-gnorm">—</div></div>
-          </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start;margin-top:10px">
+      <!-- Drop zone -->
+      <div id="v4-drop" style="border:2px dashed var(--border);border-radius:8px;padding:18px;text-align:center;cursor:pointer;transition:border-color 0.2s"
+           onclick="document.getElementById('v4-file-input').click()"
+           ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+           ondragleave="this.style.borderColor='var(--border)'"
+           ondrop="v4HandleDrop(event)">
+        <div style="font-size:24px;margin-bottom:4px">📤</div>
+        <div style="font-size:12px;color:var(--text2)">Drop .json / .jsonl / .txt here</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">or click to browse</div>
+        <input type="file" id="v4-file-input" accept=".json,.jsonl,.txt" style="display:none" onchange="v4UploadFile(this.files[0])">
+      </div>
+      <!-- File list -->
+      <div id="v4-file-list" style="min-width:220px;max-height:120px;overflow-y:auto;font-size:12px">
+        <div style="color:var(--text3);font-size:11px">No files uploaded yet.</div>
+      </div>
+    </div>
+    <div class="fr" style="margin-top:10px">
+      <div class="fg" style="flex:3">
+        <div class="fl">Selected file path</div>
+        <input type="text" id="v4-json-path" value="./training_data/data.json" placeholder="./training_data/data.json">
+      </div>
+      <div class="fg" style="flex:2">
+        <div class="fl">Output directory</div>
+        <input type="text" id="v4-out-dir" value="./processed_v4/">
+      </div>
+      <div class="fg" style="flex:2">
+        <div class="fl">Resume from checkpoint</div>
+        <input type="text" id="v4-resume" placeholder="(optional path)">
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Configuration ──────────────────────────────────────────────── -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">⚙ Phase Configuration</div>
+      <div class="fr" style="margin-top:8px">
+        <div class="fg"><div class="fl">Phase A Epochs (AE+VQ)</div><input type="number" id="v4-ep-a" value="30" min="1" max="1000"></div>
+        <div class="fg"><div class="fl">Phase B Epochs (RSSM)</div><input type="number" id="v4-ep-b" value="10" min="1" max="1000"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">Learning Rate</div>
+          <select id="v4-lr">
+            <option value="1e-5">1e-5</option>
+            <option value="3e-5" selected>3e-5</option>
+            <option value="1e-4">1e-4</option>
+            <option value="3e-4">3e-4</option>
+          </select>
+        </div>
+        <div class="fg"><div class="fl">Batch Size</div>
+          <select id="v4-bs">
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="16" selected>16</option>
+            <option value="32">32</option>
+            <option value="64">64</option>
+          </select>
         </div>
       </div>
-      <div class="card">
-        <div class="ct">Save / Load Checkpoint</div>
-        <div class="fr" style="margin-top:8px">
-          <div class="fg"><div class="fl">Path</div><input type="text" id="ck-path" value="./checkpoints/aeon_state"></div>
-          <div style="display:flex;gap:6px;align-items:flex-end">
-            <button class="btn btn-secondary" onclick="saveModel()">↑ Save</button>
-            <button class="btn btn-ghost" onclick="loadModel()">↓ Load</button>
-          </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">Grad Clip</div>
+          <div class="rr"><input type="range" id="v4-gc" min="0.1" max="5" step="0.1" value="0.5" oninput="rv('v4-gc-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="v4-gc-v">0.5</span></div>
         </div>
-        <div id="ck-result" style="font-size:11px;margin-top:6px;color:var(--text3)"></div>
+        <div class="fg"><div class="fl">Warmup Steps</div><input type="number" id="v4-ws" value="1000" min="0"></div>
       </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">Entropy Weight</div>
+          <div class="rr"><input type="range" id="v4-ew" min="0" max="1" step="0.01" value="0.1" oninput="rv('v4-ew-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="v4-ew-v">0.10</span></div>
+        </div>
+        <div class="fg"><div class="fl">Context Window K</div><input type="number" id="v4-cw" value="3" min="1" max="16"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">🏗 Architecture & Flags</div>
+      <div class="fr" style="margin-top:8px">
+        <div class="fg"><div class="fl">z_dim</div><input type="number" id="v4-zdim" value="256" min="64" max="2048" step="64"></div>
+        <div class="fg"><div class="fl">VQ Embeddings</div>
+          <select id="v4-vqn">
+            <option value="512">512</option>
+            <option value="1024">1024</option>
+            <option value="2048" selected>2048</option>
+            <option value="4096">4096</option>
+            <option value="8192">8192</option>
+          </select>
+        </div>
+      </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">Seed</div><input type="number" id="v4-seed" value="42"></div>
+      </div>
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+        <div class="tog-row" style="border:none;padding:0">
+          <div class="tog-info"><div class="tog-name" style="font-size:12px">document_aware</div><div class="tog-desc" style="font-size:10px">Build RSSM pairs within document boundaries</div></div>
+          <label class="tog"><input type="checkbox" id="v4-docaware" checked><div class="tog-track"></div></label>
+        </div>
+        <div class="tog-row" style="border:none;padding:0">
+          <div class="tog-info"><div class="tog-name" style="font-size:12px">use_amp</div><div class="tog-desc" style="font-size:10px">Automatic Mixed Precision (requires CUDA)</div></div>
+          <label class="tog"><input type="checkbox" id="v4-amp" checked><div class="tog-track"></div></label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Live Status ─────────────────────────────────────────────────── -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">◉ Training Status</div>
+      <div id="v4-idle" style="font-size:12px;color:var(--text3);margin-top:8px">Ready to train. Select a file and press Start.</div>
+      <div id="v4-active" style="display:none">
+        <!-- Phase indicator -->
+        <div style="display:flex;gap:8px;margin:10px 0 8px;align-items:center">
+          <div id="v4-ph-a" style="padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;background:var(--accent);color:#000">Phase A: AE+VQ</div>
+          <div style="color:var(--text3);font-size:11px">→</div>
+          <div id="v4-ph-b" style="padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text2)">Phase B: RSSM</div>
+          <div style="flex:1"></div>
+          <div id="v4-phase-lbl" style="font-size:11px;color:var(--text3)">Initialising…</div>
+        </div>
+        <!-- Epoch progress -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="font-size:11px;color:var(--text2)" id="v4-epoch-lbl">Epoch 0/0</span>
+          <span style="font-size:11px;color:var(--accent)" id="v4-pct">0%</span>
+        </div>
+        <div class="prog-track" style="height:6px"><div class="prog-fill" id="v4-prog" style="width:0%"></div></div>
+        <!-- Metrics grid -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:14px">
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Loss</div><div style="font-family:var(--display);font-size:18px;color:var(--accent)" id="v4-loss">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Best</div><div style="font-family:var(--display);font-size:18px;color:var(--green)" id="v4-best">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Codebook %</div><div style="font-family:var(--display);font-size:18px;color:var(--purple)" id="v4-cb">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Elapsed</div><div style="font-family:var(--display);font-size:16px;color:var(--warn)" id="v4-elapsed">—</div></div>
+        </div>
+      </div>
+      <!-- Completion summary -->
+      <div id="v4-done" style="display:none;margin-top:12px;padding:12px;background:rgba(0,212,100,0.08);border-radius:8px;border:1px solid rgba(0,212,100,0.2)">
+        <div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:8px">🎉 Training Complete</div>
+        <div style="font-size:12px;color:var(--text2)" id="v4-done-detail"></div>
+      </div>
+    </div>
+
+    <!-- Save/Load -->
+    <div class="card">
+      <div class="ct">💾 Save / Load Checkpoint</div>
+      <div class="fr" style="margin-top:8px">
+        <div class="fg"><div class="fl">Path</div><input type="text" id="ck-path" value="./checkpoints/aeon_state"></div>
+        <div style="display:flex;gap:6px;align-items:flex-end">
+          <button class="btn btn-secondary" onclick="saveModel()">↑ Save</button>
+          <button class="btn btn-ghost" onclick="loadModel()">↓ Load</button>
+        </div>
+      </div>
+      <div id="ck-result" style="font-size:11px;margin-top:6px;color:var(--text3)"></div>
+      <div style="margin-top:14px">
+        <div class="ct" style="margin-bottom:8px">ae_train.py Status</div>
+        <div id="v4-ae-status" style="font-size:11px;padding:8px;background:var(--surface2);border-radius:6px;color:var(--text2)">Checking…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Live Charts ─────────────────────────────────────────────────── -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Phase A · Loss per Epoch</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--accent)">── total</span>
+          <span style="color:var(--purple)">── recon</span>
+          <span style="color:var(--green)">── vq</span>
+        </div>
+      </div>
+      <canvas id="v4-loss-chart-a" height="140"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Phase B · MSE + Cosine Sim</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--accent)">── mse</span>
+          <span style="color:var(--green)">── cos_sim</span>
+        </div>
+      </div>
+      <canvas id="v4-loss-chart-b" height="140"></canvas>
     </div>
   </div>
   <div class="g2" style="margin-bottom:14px">
     <div class="chart-wrap">
-      <div class="chart-head"><div class="chart-title">Training Loss (per epoch)</div></div>
-      <canvas id="loss-chart" height="150"></canvas>
+      <div class="chart-head"><div class="chart-title">Codebook Utilisation % (Phase A)</div></div>
+      <canvas id="v4-cb-chart" height="110"></canvas>
     </div>
     <div class="chart-wrap">
-      <div class="chart-head"><div class="chart-title">Gradient Norm (per step)</div></div>
-      <canvas id="grad-chart" height="150"></canvas>
+      <div class="chart-head"><div class="chart-title">Accuracy % (Phase A)</div></div>
+      <canvas id="v4-acc-chart" height="110"></canvas>
     </div>
   </div>
-  <div class="chart-wrap">
-    <div class="chart-head"><div class="chart-title">Step Loss (live)</div></div>
-    <canvas id="step-loss-chart" height="100"></canvas>
+
+  <!-- ── Live Log Console ───────────────────────────────────────────── -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--surface2)">
+      <span class="ct" style="margin:0;flex:1">📋 Training Log Console</span>
+      <select id="v4-log-lvl" style="font-size:11px;padding:2px 6px;margin-right:8px;background:var(--surface1);border:1px solid var(--border);color:var(--text1);border-radius:4px"
+              onchange="v4FilterLogs()">
+        <option value="">ALL</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARN</option>
+        <option value="ERROR">ERROR</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+      <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px" onclick="v4ClearLogs()">Clear</button>
+      <label style="font-size:11px;color:var(--text3);margin-left:10px;cursor:pointer">
+        <input type="checkbox" id="v4-autoscroll" checked style="margin-right:4px">Auto-scroll
+      </label>
+    </div>
+    <div id="v4-log-console" style="height:260px;overflow-y:auto;padding:10px 14px;font-family:monospace;font-size:11px;line-height:1.7;background:var(--bg)">
+      <div style="color:var(--text3)">Training logs will appear here when training starts…</div>
+    </div>
   </div>
+
+  <!-- Legacy training (core.py AEONTrainer) ───────────────────────── -->
+  <details style="margin-top:14px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--text3);padding:8px;background:var(--surface2);border-radius:6px">▶ Legacy Core.py Trainer (synthetic data)</summary>
+    <div style="padding:14px;border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px">
+      <div class="g2" style="margin-bottom:12px">
+        <div class="card">
+          <div class="ct">⚙ Parameters</div>
+          <div class="fr" style="margin-top:8px">
+            <div class="fg"><div class="fl">Epochs</div><input type="number" id="t-ep" value="10" min="1" max="1000"></div>
+            <div class="fg"><div class="fl">Learning Rate</div><select id="t-lr"><option value="1e-5">1e-5</option><option value="3e-5" selected>3e-5</option><option value="1e-4">1e-4</option><option value="3e-4">3e-4</option></select></div>
+          </div>
+          <div class="fr">
+            <div class="fg"><div class="fl">Batch Size</div><select id="t-bs"><option value="4">4</option><option value="8">8</option><option value="16" selected>16</option><option value="32">32</option></select></div>
+            <div class="fg"><div class="fl">grad_clip</div><div class="rr"><input type="range" id="t-gc" min="0.1" max="5" step="0.1" value="1.0" oninput="rv('t-gc-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="t-gc-v">1.0</span></div></div>
+          </div>
+          <div class="fr">
+            <div class="fg"><div class="fl">warmup_steps</div><input type="number" id="t-ws" value="100" min="0"></div>
+            <div class="fg"><div class="fl">synthetic_samples</div><input type="number" id="t-synth" value="256" min="32" max="4096" step="32"></div>
+          </div>
+          <div class="fg"><div class="fl">CLI equivalent</div><div class="cb" style="padding:8px;font-size:11px;color:var(--green)" id="t-cli">python core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5</div></div>
+        </div>
+        <div class="card">
+          <div class="ct">◉ Status</div>
+          <div id="t-idle" style="font-size:12px;color:var(--text3);margin-top:8px">No active training run.</div>
+          <div id="t-active" style="display:none">
+            <div style="display:flex;justify-content:space-between;margin:8px 0 4px">
+              <span style="font-size:11px;color:var(--text2)" id="t-epoch-lbl">Epoch 0/0</span>
+              <span style="font-size:11px;color:var(--accent)" id="t-pct">0%</span>
+            </div>
+            <div class="prog-track" style="height:6px"><div class="prog-fill" id="t-prog" style="width:0%"></div></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:12px">
+              <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Train Loss</div><div style="font-family:var(--display);font-size:18px;color:var(--accent)" id="t-loss">—</div></div>
+              <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Val Loss</div><div style="font-family:var(--display);font-size:18px;color:var(--purple)" id="t-vloss">—</div></div>
+              <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">LR</div><div style="font-family:var(--display);font-size:16px;color:var(--green)" id="t-lr-cur">—</div></div>
+              <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Grad Norm</div><div style="font-family:var(--display);font-size:18px;color:var(--warn)" id="t-gnorm">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-danger" id="stop-btn" onclick="stopTrain()" style="display:none">■ Stop</button>
+        <button class="btn btn-primary" id="start-btn" onclick="startTrain()">◉ Start Legacy Training</button>
+      </div>
+      <div class="g2" style="margin-top:12px">
+        <div class="chart-wrap">
+          <div class="chart-head"><div class="chart-title">Training Loss (per epoch)</div></div>
+          <canvas id="loss-chart" height="150"></canvas>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-head"><div class="chart-title">Gradient Norm (per step)</div></div>
+          <canvas id="grad-chart" height="150"></canvas>
+        </div>
+      </div>
+      <div class="chart-wrap" style="margin-top:12px">
+        <div class="chart-head"><div class="chart-title">Step Loss (live)</div></div>
+        <canvas id="step-loss-chart" height="100"></canvas>
+      </div>
+    </div>
+  </details>
 </div>
 
 <!-- ══ TEST SUITE ══ -->
 <div class="panel" id="panel-testsuite">
   <div class="ph">
-    <div><div class="ph-title">Test Suite</div><div class="ph-sub">AEONTestSuite · stability · weight_tying · gradient_flow · vq_codebook</div></div>
+    <div>
+      <div class="ph-title">🧪 Test Suite — test_fixes.py</div>
+      <div class="ph-sub" id="ts-sub">642 tests · 49 sections · click ▶ to run</div>
+    </div>
     <div class="btns">
-      <button class="btn btn-secondary" id="test-refresh-btn" onclick="refreshTests()">↻ Refresh</button>
-      <button class="btn btn-primary" id="test-run-btn" onclick="runTests()">🧪 Run All Tests</button>
+      <button class="btn btn-secondary" id="ts-fmt-btn" onclick="tsToggleFormat()" title="Toggle log format">📋 Full Log</button>
+      <button class="btn btn-secondary" id="ts-stop-btn" onclick="tsStop()" style="display:none">⏹ Stop</button>
+      <button class="btn btn-secondary" onclick="tsRefreshCatalogue()">⟳ Catalogue</button>
+      <button class="btn btn-primary" id="test-run-btn" onclick="tsRunAll()">▶ Run All</button>
     </div>
   </div>
+
+  <!-- KPI row -->
   <div class="g4" style="margin-bottom:14px">
-    <div class="card ca"><div class="ct">Overall Score</div><div class="cv ca" id="ts-overall">—</div><div class="cm-t" id="ts-overall-m">not run</div></div>
-    <div class="card cg"><div class="ct">Passed</div><div class="cv cg" id="ts-pass">—</div></div>
-    <div class="card cd"><div class="ct">Failed</div><div class="cv" style="color:var(--danger)" id="ts-fail">—</div></div>
-    <div class="card cw"><div class="ct">Errors</div><div class="cv cw" id="ts-errors">—</div></div>
+    <div class="card ca"><div class="ct">Total</div><div class="cv ca" id="ts-total">—</div><div class="cm-t" id="ts-total-m">not run</div></div>
+    <div class="card cg"><div class="ct">Passed</div><div class="cv cg" id="ts-pass">—</div><div class="cm-t" id="ts-pass-rate">—</div></div>
+    <div class="card cd"><div class="ct">Failed</div><div class="cv" style="color:var(--danger)" id="ts-fail">—</div><div class="cm-t" id="ts-fail-m">—</div></div>
+    <div class="card cw"><div class="ct">Errors/Skip</div><div class="cv cw" id="ts-errors">—</div><div class="cm-t" id="ts-time">—</div></div>
   </div>
+
+  <!-- Progress bar -->
   <div id="ts-prog-wrap" style="display:none;margin-bottom:14px">
-    <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Running: <span id="ts-prog-lbl">—</span></div>
-    <div class="prog-track"><div class="prog-fill" id="ts-prog-fill" style="width:0%"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:6px">
+      <span id="ts-prog-lbl">Initialising…</span>
+      <span id="ts-prog-pct">0%</span>
+    </div>
+    <div class="prog-track" style="height:10px">
+      <div class="prog-fill" id="ts-prog-fill" style="width:0%;transition:width 0.3s"></div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:6px;font-size:10px;color:var(--text3)">
+      <span>✅ <span id="ts-live-pass">0</span></span>
+      <span>❌ <span id="ts-live-fail">0</span></span>
+      <span>💥 <span id="ts-live-err">0</span></span>
+      <span>⏭ <span id="ts-live-skip">0</span></span>
+      <span style="margin-left:auto" id="ts-live-cur"></span>
+    </div>
   </div>
-  <div id="ts-results">
-    <div style="color:var(--text3);font-size:12px">Initialize model and run tests to see results</div>
+
+  <!-- Tabs: Sections | Results | Log -->
+  <div style="display:flex;gap:0;border-bottom:1px solid var(--bord);margin-bottom:12px" id="ts-tabs">
+    <button class="ts-tab active" onclick="tsTab('sections')" id="ts-tab-sections">📂 Sections (49)</button>
+    <button class="ts-tab" onclick="tsTab('results')" id="ts-tab-results">📊 Results</button>
+    <button class="ts-tab" onclick="tsTab('log')" id="ts-tab-log">📄 Log</button>
+    <button class="ts-tab" onclick="tsTab('failures')" id="ts-tab-failures">❌ Failures</button>
+    <select id="ts-filter-section" onchange="tsFilterSection()" style="margin-left:auto;font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:2px 6px">
+      <option value="">All sections</option>
+    </select>
+  </div>
+
+  <!-- SECTIONS tab -->
+  <div id="ts-pane-sections">
+    <div id="ts-catalogue" style="max-height:520px;overflow-y:auto">
+      <div style="color:var(--text3);font-size:12px">Click ⟳ Catalogue to load test tree</div>
+    </div>
+  </div>
+
+  <!-- RESULTS tab -->
+  <div id="ts-pane-results" style="display:none">
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <input type="text" id="ts-search" placeholder="Search tests…" oninput="tsFilterResults()" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px">
+      <select id="ts-filter-status" onchange="tsFilterResults()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+        <option value="">All status</option>
+        <option value="passed">✅ Passed</option>
+        <option value="failed">❌ Failed</option>
+        <option value="error">💥 Error</option>
+        <option value="skipped">⏭ Skipped</option>
+      </select>
+    </div>
+    <div id="ts-results-list" style="max-height:500px;overflow-y:auto;font-size:11px"></div>
+  </div>
+
+  <!-- LOG tab -->
+  <div id="ts-pane-log" style="display:none">
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+      <label style="font-size:11px;color:var(--text3)">Format:</label>
+      <select id="ts-log-display-fmt" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
+        <option value="full">Full (stdout + traceback)</option>
+        <option value="brief">Brief (one-liner)</option>
+      </select>
+      <label style="font-size:11px;color:var(--text3);margin-left:auto">Show:</label>
+      <select id="ts-log-show" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
+        <option value="all">All</option>
+        <option value="passed">Passed only</option>
+        <option value="failed">Failed only</option>
+        <option value="error">Errors only</option>
+      </select>
+      <button class="btn btn-secondary" onclick="tsCopyLog()" style="font-size:10px;padding:3px 8px">📋 Copy</button>
+    </div>
+    <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--bord);border-radius:6px;padding:12px;max-height:500px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
+  </div>
+
+  <!-- FAILURES tab -->
+  <div id="ts-pane-failures" style="display:none">
+    <div id="ts-failures-list" style="max-height:520px;overflow-y:auto">
+      <div style="color:var(--text3);font-size:12px">No failures yet</div>
+    </div>
   </div>
 </div>
 
@@ -1134,7 +1479,7 @@ function go(panel) {
   if(panel === 'testsuite') refreshTests();
   if(panel === 'benchmark') refreshBenchmark();
   if(panel === 'codegen') genCode();
-  if(panel === 'training') { updateTrainCLI(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); }, 100); }
+  if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); }, 100); }
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -1175,6 +1520,9 @@ function connectWS() {
         S.modelReady = msg.model_ready;
         updateModelState(msg.model_ready);
         if(msg.training_progress) onTrainProgress(msg.training_progress);
+      }
+      else if(msg.type === 'test_event' || msg.type === 'test_progress') {
+        tsHandleWsEvent(msg);
       }
     };
     S.ws.onclose = () => {
@@ -1900,6 +2248,424 @@ function clearInfer() {
   document.getElementById('fwd-out').style.display = 'none';
 }
 
+// ─── AEON v4 TRAINING ─────────────────────────────────────────────────────────
+const V4 = {
+  sse: null,
+  pollTimer: null,
+  metricsA: { total: [], recon: [], vq: [], codebook: [], accuracy: [] },
+  metricsB: { mse: [], cosine: [] },
+  logs: [],
+  filterLevel: '',
+};
+
+async function v4Init() {
+  try {
+    const d = await api('GET', '/api/train/v4/progress');
+    const aeEl = document.getElementById('v4-ae-status');
+    if (aeEl) {
+      if (d.ae_train_available) {
+        aeEl.innerHTML = '<span style="color:var(--green)">✅ ae_train.py loaded — v4 training available</span>';
+      } else {
+        aeEl.innerHTML = `<span style="color:var(--warn)">⚠️ ae_train.py not loaded: ${d.ae_train_error||'unknown error'}</span>`;
+      }
+    }
+    if (d.active) { v4ShowActive(); v4StartSSE(); }
+    else if (d.progress?.done) { v4ShowDone(d.progress); }
+  } catch(e) {}
+  v4RefreshFiles();
+}
+
+async function v4RefreshFiles() {
+  try {
+    const d = await api('GET', '/api/train/v4/files');
+    const el = document.getElementById('v4-file-list');
+    if (!el) return;
+    if (!d.files || !d.files.length) {
+      el.innerHTML = '<div style="color:var(--text3);font-size:11px">No files uploaded yet.</div>';
+      return;
+    }
+    el.innerHTML = d.files.map(f => `
+      <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span style="flex:1;cursor:pointer;color:var(--accent)" onclick="v4SelectFile('${f.path}')" title="Click to select">${f.name}</span>
+        <span style="color:var(--text3);font-size:10px">${f.size_kb}KB</span>
+        <button onclick="v4DeleteFile('${f.name}')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:12px;padding:0 2px">✕</button>
+      </div>`).join('');
+  } catch(e) {}
+}
+
+function v4SelectFile(path) {
+  const el = document.getElementById('v4-json-path');
+  if (el) el.value = path;
+  log('INFO', 'v4', `Training file selected: ${path}`);
+}
+
+async function v4DeleteFile(name) {
+  if (!confirm(`Delete training file: ${name}?`)) return;
+  try {
+    await api('DELETE', `/api/train/v4/files/${encodeURIComponent(name)}`);
+    v4RefreshFiles();
+    log('INFO', 'v4', `File deleted: ${name}`);
+  } catch(e) { log('ERROR', 'v4', `Delete failed: ${e.message}`); }
+}
+
+async function v4HandleDrop(e) {
+  e.preventDefault();
+  document.getElementById('v4-drop').style.borderColor = 'var(--border)';
+  const file = e.dataTransfer.files[0];
+  if (file) await v4UploadFile(file);
+}
+
+async function v4UploadFile(file) {
+  if (!file) return;
+  log('INFO', 'v4', `Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)…`);
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const resp = await fetch('/api/train/v4/upload', { method: 'POST', body: fd });
+    const d = await resp.json();
+    if (d.ok) {
+      log('INFO', 'v4', `✅ Uploaded: ${d.name} → ${d.path}`);
+      document.getElementById('v4-json-path').value = d.path;
+      v4RefreshFiles();
+    } else {
+      log('ERROR', 'v4', `Upload failed: ${JSON.stringify(d)}`);
+    }
+  } catch(e) { log('ERROR', 'v4', `Upload error: ${e.message}`); }
+}
+
+async function v4Start() {
+  const jsonPath = document.getElementById('v4-json-path').value.trim();
+  if (!jsonPath) { log('WARN', 'v4', 'Select a training file first'); return; }
+
+  const req = {
+    json_path:         jsonPath,
+    output_dir:        document.getElementById('v4-out-dir').value || './processed_v4/',
+    resume_from:       document.getElementById('v4-resume').value.trim() || '',
+    epochs_A:          parseInt(document.getElementById('v4-ep-a').value) || 30,
+    epochs_B:          parseInt(document.getElementById('v4-ep-b').value) || 10,
+    learning_rate:     parseFloat(document.getElementById('v4-lr').value),
+    batch_size:        parseInt(document.getElementById('v4-bs').value),
+    grad_clip:         parseFloat(document.getElementById('v4-gc').value),
+    warmup_steps:      parseInt(document.getElementById('v4-ws').value),
+    entropy_weight:    parseFloat(document.getElementById('v4-ew').value),
+    context_window:    parseInt(document.getElementById('v4-cw').value),
+    z_dim:             parseInt(document.getElementById('v4-zdim').value),
+    vq_num_embeddings: parseInt(document.getElementById('v4-vqn').value),
+    document_aware:    document.getElementById('v4-docaware').checked,
+    use_amp:           document.getElementById('v4-amp').checked,
+    seed:              parseInt(document.getElementById('v4-seed').value),
+  };
+
+  // Reset chart data
+  V4.metricsA = { total: [], recon: [], vq: [], codebook: [], accuracy: [] };
+  V4.metricsB = { mse: [], cosine: [] };
+  V4.logs = [];
+  v4ClearLogs();
+
+  try {
+    await api('POST', '/api/train/v4/start', req);
+    log('INFO', 'v4', `🚀 v4 Training started · epochsA=${req.epochs_A} · epochsB=${req.epochs_B}`);
+    v4ShowActive();
+    v4StartSSE();
+  } catch(e) {
+    log('ERROR', 'v4', `Start failed: ${e.message}`);
+  }
+}
+
+async function v4Stop() {
+  try {
+    await api('POST', '/api/train/v4/stop');
+    log('INFO', 'v4', '🛑 Stop signal sent');
+  } catch(e) {}
+}
+
+function v4ShowActive() {
+  document.getElementById('v4-start-btn').style.display = 'none';
+  document.getElementById('v4-stop-btn').style.display = '';
+  document.getElementById('v4-idle').style.display = 'none';
+  document.getElementById('v4-active').style.display = 'block';
+  document.getElementById('v4-done').style.display = 'none';
+}
+
+function v4ShowIdle() {
+  document.getElementById('v4-start-btn').style.display = '';
+  document.getElementById('v4-stop-btn').style.display = 'none';
+  document.getElementById('v4-idle').style.display = 'block';
+  document.getElementById('v4-active').style.display = 'none';
+}
+
+function v4ShowDone(prog) {
+  v4ShowIdle();
+  document.getElementById('v4-done').style.display = 'block';
+  const elapsed = prog.elapsed_s ? `${Math.floor(prog.elapsed_s/60)}m ${Math.round(prog.elapsed_s%60)}s` : '—';
+  document.getElementById('v4-done-detail').innerHTML =
+    `Phase A best loss: <b>${(prog.final_loss_A??'—')}</b> &nbsp;|&nbsp; ` +
+    `Phase B best MSE: <b>${(prog.final_loss_B??'—')}</b> &nbsp;|&nbsp; ` +
+    `Codebook: <b>${(prog.codebook_usage??'—')}%</b> &nbsp;|&nbsp; ` +
+    `Total time: <b>${elapsed}</b><br>` +
+    (prog.final_model_path ? `Model saved: <code style="color:var(--green)">${prog.final_model_path}</code>` : '');
+}
+
+function v4StartSSE() {
+  if (V4.sse) { V4.sse.close(); }
+  V4.sse = new EventSource('/api/train/v4/stream');
+  V4.sse.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'log')      v4HandleLog(msg.data);
+      if (msg.type === 'progress') v4HandleProgress(msg.data);
+      if (msg.type === 'metrics')  v4HandleMetrics(msg.data);
+      if (msg.type === 'done')     { v4ShowDone(msg.data); V4.sse.close(); }
+    } catch(_) {}
+  };
+  V4.sse.onerror = () => {};
+}
+
+function v4HandleLog(entry) {
+  V4.logs.push(entry);
+  if (V4.logs.length > 5000) V4.logs.shift();
+  const lvl = entry.level || 'INFO';
+  if (V4.filterLevel && lvl !== V4.filterLevel) return;
+  const colors = { INFO: 'var(--text2)', WARNING: 'var(--warn)', ERROR: 'var(--danger)', DEBUG: 'var(--text3)' };
+  const c = document.getElementById('v4-log-console');
+  if (!c) return;
+  const div = document.createElement('div');
+  div.style.cssText = `color:${colors[lvl]||'var(--text2)'}`;
+  div.textContent = `[${entry.time}] ${lvl.padEnd(7)} ${entry.msg}`;
+  // Remove placeholder
+  const ph = c.querySelector('div[style*="var(--text3)"]');
+  if (ph && ph.textContent.includes('Training logs')) ph.remove();
+  c.appendChild(div);
+  if (document.getElementById('v4-autoscroll')?.checked) c.scrollTop = c.scrollHeight;
+}
+
+function v4HandleProgress(prog) {
+  if (!prog) return;
+  const phase = prog.phase || 'init';
+  const epoch = prog.epoch || 0;
+  const total = prog.total_epochs || 1;
+  const pct = total > 0 ? Math.round(Math.min(epoch / total, 1) * 100) : 0;
+
+  // Phase indicator
+  const phA = document.getElementById('v4-ph-a');
+  const phB = document.getElementById('v4-ph-b');
+  if (phA && phB) {
+    const isA = phase === 'phase_A' || phase === 'init' || phase === 'data_loading' || phase === 'model_init' || phase === 'encoding';
+    phA.style.background = isA ? 'var(--accent)' : 'var(--surface3)';
+    phA.style.color = isA ? '#000' : 'var(--text2)';
+    phB.style.background = phase === 'phase_B' ? 'var(--purple)' : 'var(--surface3)';
+    phB.style.color = phase === 'phase_B' ? '#fff' : 'var(--text2)';
+  }
+
+  const phLabel = { init:'Initialising…', data_loading:'Loading data…', model_init:'Building model…',
+    encoding:'Encoding z_sequences…', phase_A:'Phase A running…', phase_B:'Phase B running…',
+    saving:'Saving model…', complete:'Complete', error:'Error', starting:'Starting…' };
+  const lbl = document.getElementById('v4-phase-lbl');
+  if (lbl) lbl.textContent = phLabel[phase] || phase;
+
+  const epochLbl = document.getElementById('v4-epoch-lbl');
+  if (epochLbl) epochLbl.textContent = `Epoch ${epoch}/${total}`;
+  const pctEl = document.getElementById('v4-pct');
+  if (pctEl) pctEl.textContent = pct + '%';
+  const progFill = document.getElementById('v4-prog');
+  if (progFill) progFill.style.width = pct + '%';
+
+  if (prog.current_loss !== null && prog.current_loss !== undefined) {
+    const lossEl = document.getElementById('v4-loss');
+    if (lossEl) lossEl.textContent = typeof prog.current_loss === 'number' ? prog.current_loss.toFixed(5) : prog.current_loss;
+  }
+  if (prog.best_loss !== null && prog.best_loss !== undefined) {
+    const bestEl = document.getElementById('v4-best');
+    if (bestEl) bestEl.textContent = typeof prog.best_loss === 'number' ? prog.best_loss.toFixed(5) : prog.best_loss;
+  }
+  if (prog.codebook_usage !== null && prog.codebook_usage !== undefined) {
+    const cbEl = document.getElementById('v4-cb');
+    if (cbEl) cbEl.textContent = prog.codebook_usage.toFixed(1) + '%';
+  }
+  // Elapsed
+  if (prog.started_at) {
+    const secs = Math.floor(Date.now()/1000 - prog.started_at);
+    const elapsed = secs < 60 ? secs+'s' : Math.floor(secs/60)+'m '+( secs%60)+'s';
+    const elEl = document.getElementById('v4-elapsed');
+    if (elEl) elEl.textContent = elapsed;
+  }
+
+  if (prog.done && !prog.active) {
+    v4ShowDone(prog);
+    if (V4.sse) V4.sse.close();
+  }
+}
+
+function v4HandleMetrics(data) {
+  // data = { new_A: [{total, recon, vq, codebook_%, accuracy_%},...], new_B: [{mse_loss, cosine_sim},...] }
+  const newA = data.new_A || [];
+  const newB = data.new_B || [];
+  for (const m of newA) {
+    if (m.total    !== undefined) V4.metricsA.total.push(m.total);
+    if (m.recon    !== undefined) V4.metricsA.recon.push(m.recon);
+    if (m.vq       !== undefined) V4.metricsA.vq.push(m.vq);
+    if (m['codebook_%'] !== undefined) V4.metricsA.codebook.push(m['codebook_%']);
+    if (m['accuracy_%'] !== undefined) V4.metricsA.accuracy.push(m['accuracy_%']);
+  }
+  for (const m of newB) {
+    if (m.mse_loss    !== undefined) V4.metricsB.mse.push(m.mse_loss);
+    if (m.cosine_sim  !== undefined) V4.metricsB.cosine.push(m.cosine_sim);
+  }
+  v4DrawCharts();
+}
+
+function v4DrawCharts() {
+  v4DrawMultiLine('v4-loss-chart-a',
+    [V4.metricsA.total, V4.metricsA.recon, V4.metricsA.vq],
+    ['var(--accent)', 'var(--purple)', 'var(--green)'],
+    'Phase A Loss',
+    ['Total', 'Recon', 'VQ']
+  );
+  v4DrawMultiLine('v4-loss-chart-b',
+    [V4.metricsB.mse, V4.metricsB.cosine],
+    ['var(--accent)', 'var(--green)'],
+    'Phase B',
+    ['MSE', 'Cos Sim']
+  );
+  v4DrawSingleLine('v4-cb-chart', V4.metricsA.codebook, 'var(--purple)', 'Codebook %', 0, 100);
+  v4DrawSingleLine('v4-acc-chart', V4.metricsA.accuracy, 'var(--green)', 'Accuracy %', 0, 100);
+}
+
+function v4DrawMultiLine(canvasId, seriesArr, colors, title, labels) {
+  const c = document.getElementById(canvasId);
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = c.offsetWidth || c.width;
+  const H = c.height || 140;
+  c.width = W; c.height = H;
+  ctx.fillStyle = 'var(--bg)';
+  ctx.fillRect(0, 0, W, H);
+  if (seriesArr.every(s => !s.length)) {
+    ctx.fillStyle = '#475569';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('No data yet — training will populate this chart', W/2, H/2);
+    return;
+  }
+  const allVals = seriesArr.flat().filter(v => isFinite(v));
+  if (!allVals.length) return;
+  const mn = Math.min(...allVals);
+  const mx = Math.max(...allVals);
+  const rng = mx - mn || 1;
+  const pad = { t: 10, b: 20, l: 45, r: 10 };
+  const iW = W - pad.l - pad.r;
+  const iH = H - pad.t - pad.b;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(71,85,105,0.4)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + iH * i / 4;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    const val = mx - rng * i / 4;
+    ctx.fillStyle = '#94a3b8'; ctx.font = '9px monospace'; ctx.textAlign = 'right';
+    ctx.fillText(val < 1 ? val.toFixed(4) : val.toFixed(2), pad.l - 3, y + 3);
+  }
+  // Series
+  seriesArr.forEach((series, si) => {
+    if (!series.length) return;
+    const maxLen = Math.max(...seriesArr.map(s => s.length), 1);
+    ctx.strokeStyle = colors[si]; ctx.lineWidth = 2;
+    ctx.beginPath();
+    series.forEach((v, i) => {
+      const x = pad.l + i / Math.max(maxLen - 1, 1) * iW;
+      const y = pad.t + iH - (v - mn) / rng * iH;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    // Last value dot
+    const last = series[series.length - 1];
+    const x = pad.l + (series.length - 1) / Math.max(maxLen - 1, 1) * iW;
+    const y = pad.t + iH - (last - mn) / rng * iH;
+    ctx.fillStyle = colors[si];
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+  });
+  // X axis
+  ctx.fillStyle = '#94a3b8'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  const maxLen2 = Math.max(...seriesArr.map(s => s.length), 1);
+  [0, Math.floor(maxLen2/2), maxLen2-1].forEach(i => {
+    const x = pad.l + i / Math.max(maxLen2-1,1) * iW;
+    ctx.fillText(`ep${i+1}`, x, H - 4);
+  });
+}
+
+function v4DrawSingleLine(canvasId, series, color, label, yMin, yMax) {
+  const c = document.getElementById(canvasId);
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const W = c.offsetWidth || c.width;
+  const H = c.height || 110;
+  c.width = W; c.height = H;
+  ctx.fillStyle = 'var(--bg)';
+  ctx.fillRect(0, 0, W, H);
+  if (!series.length) {
+    ctx.fillStyle = '#475569'; ctx.font = '11px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('Waiting for data…', W/2, H/2);
+    return;
+  }
+  const mn = yMin !== undefined ? yMin : Math.min(...series);
+  const mx = yMax !== undefined ? yMax : Math.max(...series);
+  const rng = mx - mn || 1;
+  const pad = { t: 8, b: 18, l: 40, r: 8 };
+  const iW = W - pad.l - pad.r;
+  const iH = H - pad.t - pad.b;
+  ctx.strokeStyle = 'rgba(71,85,105,0.3)'; ctx.lineWidth = 0.5;
+  [0, 0.5, 1].forEach(f => {
+    const y = pad.t + iH * f;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    ctx.fillStyle = '#94a3b8'; ctx.font = '9px monospace'; ctx.textAlign = 'right';
+    ctx.fillText((mx - rng * f).toFixed(1), pad.l - 2, y + 3);
+  });
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath();
+  series.forEach((v, i) => {
+    const x = pad.l + i / Math.max(series.length - 1, 1) * iW;
+    const y = pad.t + iH - (Math.min(Math.max(v, mn), mx) - mn) / rng * iH;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  if (series.length) {
+    const last = series[series.length-1];
+    ctx.fillStyle = color;
+    ctx.font = '10px monospace'; ctx.textAlign = 'left';
+    ctx.fillText(last.toFixed(2)+'%', pad.l + iW + 2, pad.t + 10);
+  }
+}
+
+function v4FilterLogs() {
+  V4.filterLevel = document.getElementById('v4-log-lvl').value;
+  const c = document.getElementById('v4-log-console');
+  if (!c) return;
+  c.innerHTML = '';
+  const colors = { INFO: 'var(--text2)', WARNING: 'var(--warn)', ERROR: 'var(--danger)', DEBUG: 'var(--text3)' };
+  const filtered = V4.filterLevel ? V4.logs.filter(l => l.level === V4.filterLevel) : V4.logs;
+  for (const entry of filtered) {
+    const div = document.createElement('div');
+    div.style.color = colors[entry.level] || 'var(--text2)';
+    div.textContent = `[${entry.time}] ${(entry.level||'').padEnd(7)} ${entry.msg}`;
+    c.appendChild(div);
+  }
+  if (!c.children.length) c.innerHTML = '<div style="color:var(--text3)">No logs match filter.</div>';
+  c.scrollTop = c.scrollHeight;
+}
+
+function v4ClearLogs() {
+  V4.logs = [];
+  const c = document.getElementById('v4-log-console');
+  if (c) c.innerHTML = '<div style="color:var(--text3)">Log cleared.</div>';
+}
+
+// Initialise v4 state when training panel is opened
+function _v4OnPanelOpen() {
+  v4Init();
+  setTimeout(v4DrawCharts, 100);
+}
+
 // ─── TRAINING ─────────────────────────────────────────────────────────────────
 async function startTrain() {
   if(!S.modelReady) { log('WARN','train','Model not initialized'); return; }
@@ -2170,74 +2936,374 @@ function drawVQCharts() {
 }
 
 // ─── TEST SUITE ───────────────────────────────────────────────────────────────
-async function runTests() {
-  if(!S.modelReady) { log('WARN','test','Model not initialized'); return; }
+async 
+// ═══════════════════════════════════════════════════════════════
+// TEST RUNNER v3.3 — test_fixes.py integration
+// ═══════════════════════════════════════════════════════════════
+
+const TS = {
+  catalogue: [],      // [{section, tests:[{name,line,doc}]}]
+  results: [],        // all test result dicts
+  summary: {},        // summary dict
+  logFormat: 'full',  // 'full' | 'brief'
+  activeTab: 'sections',
+  pollTimer: null,
+  streaming: false,
+  filterSection: '',
+  filterStatus: '',
+  filterSearch: '',
+};
+
+// ── Format toggle ──────────────────────────────────────────────
+function tsToggleFormat() {
+  TS.logFormat = TS.logFormat === 'full' ? 'brief' : 'full';
+  document.getElementById('ts-fmt-btn').textContent =
+    TS.logFormat === 'full' ? '📋 Full Log' : '📄 Brief Log';
+}
+
+// ── Tab navigation ─────────────────────────────────────────────
+function tsTab(name) {
+  TS.activeTab = name;
+  ['sections','results','log','failures'].forEach(t => {
+    document.getElementById(`ts-pane-${t}`).style.display = t === name ? '' : 'none';
+    document.getElementById(`ts-tab-${t}`).classList.toggle('active', t === name);
+  });
+  if (name === 'results') tsFilterResults();
+  if (name === 'log')     tsRenderLog();
+  if (name === 'failures') tsRenderFailures();
+}
+
+// ── Load catalogue ─────────────────────────────────────────────
+async function tsRefreshCatalogue() {
+  try {
+    const d = await api('GET', '/api/tests/catalogue');
+    if (d.sections) {
+      TS.catalogue = d.sections;
+      tsBuildCatalogueUI();
+      document.getElementById('ts-sub').textContent =
+        `${d.total_tests} tests · ${d.total_sections} sections`;
+      // Populate section filter dropdown
+      const sel = document.getElementById('ts-filter-section');
+      sel.innerHTML = '<option value="">All sections</option>';
+      d.sections.forEach(g => {
+        const opt = document.createElement('option');
+        opt.value = g.section; opt.textContent = g.section.slice(0,50);
+        sel.appendChild(opt);
+      });
+    }
+  } catch(e) { log('ERROR','tests', e.message); }
+}
+
+function tsBuildCatalogueUI() {
+  const cat = TS.catalogue;
+  if (!cat.length) {
+    document.getElementById('ts-catalogue').innerHTML =
+      '<div style="color:var(--text3);font-size:12px">No catalogue data</div>';
+    return;
+  }
+  // Build status map from existing results
+  const statusMap = {};
+  TS.results.forEach(r => { statusMap[r.name] = r; });
+
+  let out = '';
+  cat.forEach((g, gi) => {
+    const secId = `ts-sec-${gi}`;
+    const tests = g.tests || [];
+    let secPass = 0, secFail = 0, secErr = 0, secSkip = 0;
+    tests.forEach(t => {
+      const rs = statusMap[t.name];
+      if (!rs) return;
+      if (rs.status === 'passed') secPass++;
+      else if (rs.status === 'failed') secFail++;
+      else if (rs.status === 'error') secErr++;
+      else if (rs.status === 'skipped') secSkip++;
+    });
+    const total = tests.length;
+    const hasFail = secFail + secErr > 0;
+    const allPass = secPass === total && total > 0;
+
+    const badge = secPass + secFail + secErr + secSkip > 0
+      ? `<span style="font-size:10px;margin-left:6px">`
+        + (secPass > 0 ? `<span style="color:var(--green)">✅${secPass}</span> ` : '')
+        + (secFail > 0 ? `<span style="color:var(--danger)">❌${secFail}</span> ` : '')
+        + (secErr > 0 ? `<span style="color:var(--warn)">💥${secErr}</span> ` : '')
+        + `</span>` : '';
+
+    out += `<div class="ts-section-hdr ${hasFail ? 'ts-has-failures' : ''}" onclick="tsToggleSec('${secId}')">
+      <span style="font-size:10px;color:var(--text3)">${allPass ? '✅' : (hasFail ? '❌' : '○')}</span>
+      <span style="font-size:12px;font-weight:600;flex:1">${g.section}</span>
+      ${badge}
+      <span style="font-size:10px;color:var(--text3)">${total} tests</span>
+      <button class="ts-run-btn-sec" onclick="event.stopPropagation();tsRunSection('${g.section.replace(/'/g,"\\'")}')">▶ Run</button>
+    </div>
+    <div class="ts-section-body" id="${secId}">`;
+
+    tests.forEach(t => {
+      const rs = statusMap[t.name];
+      const icon = rs ? {passed:'✅',failed:'❌',error:'💥',skipped:'⏭',running:'⏳'}[rs.status]||'?' : '○';
+      const ms = rs ? `${rs.elapsed_ms?.toFixed(0)}ms` : '';
+      out += `<div class="ts-test-row" onclick="tsShowTestDetail('${t.name}')">
+        <span class="ts-status">${icon}</span>
+        <span class="ts-name">${t.name}</span>
+        <span style="flex:1;font-size:10px;color:var(--text3);padding:0 4px" title="${t.doc}">${t.doc?.slice(0,60) || ''}</span>
+        <span class="ts-ms">${ms}</span>
+        <button class="ts-run-btn-sec" onclick="event.stopPropagation();tsRunOne('${t.name}')">▶</button>
+      </div>`;
+    });
+    out += '</div>';
+  });
+  document.getElementById('ts-catalogue').innerHTML = out;
+}
+
+function tsToggleSec(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+}
+
+// ── Run controls ───────────────────────────────────────────────
+async function tsRunAll() {
+  await tsStartRun({ names: null, section: null });
+}
+async function tsRunSection(section) {
+  await tsStartRun({ names: null, section });
+}
+async function tsRunOne(name) {
+  try {
+    log('INFO','tests', `Running single test: ${name}`);
+    const d = await api('POST', '/api/tests/run_single', { name, log_format: TS.logFormat });
+    if (d.result) {
+      // Upsert into TS.results
+      const idx = TS.results.findIndex(r => r.name === name);
+      if (idx >= 0) TS.results[idx] = d.result;
+      else TS.results.push(d.result);
+      tsBuildCatalogueUI();
+      tsUpdateKPIs();
+      if (TS.activeTab === 'results') tsFilterResults();
+      if (TS.activeTab === 'log') tsRenderLog();
+    }
+  } catch(e) { log('ERROR','tests', e.message); }
+}
+
+async function tsStartRun(opts) {
   const btn = document.getElementById('test-run-btn');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Running...';
-  document.getElementById('ts-prog-wrap').style.display = 'block';
+  const stopBtn = document.getElementById('ts-stop-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Running…';
+  stopBtn.style.display = '';
+  document.getElementById('ts-prog-wrap').style.display = '';
   document.getElementById('ts-prog-fill').style.width = '0%';
-  document.getElementById('ts-prog-lbl').textContent = 'starting...';
+  document.getElementById('ts-prog-lbl').textContent = 'Starting…';
+
+  TS.results = [];
+  TS.summary = {};
+  tsUpdateKPIs();
+
   try {
-    await api('POST', '/api/test/run');
-    if(S.testPollInterval) clearInterval(S.testPollInterval);
-    const testNames = ['test_stability','test_weight_tying','test_gradient_flow','test_vq_codebook','done'];
-    let ti = 0;
-    S.testPollInterval = setInterval(async () => {
-      try {
-        const d = await api('GET', '/api/test/result');
-        const r = d.result || {};
-        document.getElementById('ts-prog-lbl').textContent = r.progress || '—';
-        document.getElementById('ts-prog-fill').style.width = `${Math.min(90, ti * 25)}%`;
-        ti++;
-        if(!r.running && r.results) {
-          clearInterval(S.testPollInterval);
-          document.getElementById('ts-prog-fill').style.width = '100%';
-          setTimeout(() => { document.getElementById('ts-prog-wrap').style.display = 'none'; }, 1000);
-          renderTestResults(r);
-        }
-      } catch(e) {}
-    }, 1000);
-  } catch(e) { log('ERROR','test',e.message); }
-  finally { btn.disabled = false; btn.innerHTML = '🧪 Run All Tests'; }
+    const resp = await api('POST', '/api/tests/run', {
+      names: opts.names,
+      section: opts.section,
+      log_format: TS.logFormat,
+      stop_on_failure: false,
+    });
+    if (!resp.ok) { log('ERROR','tests', resp.error||'Failed to start'); return; }
+    log('INFO','tests', `Test run started · ${resp.total} tests · format=${resp.log_format}`);
+    tsStartPolling(resp.total);
+  } catch(e) {
+    log('ERROR','tests', e.message);
+    btn.disabled = false;
+    btn.innerHTML = '▶ Run All';
+    stopBtn.style.display = 'none';
+  }
 }
 
-async function refreshTests() {
-  try {
-    const d = await api('GET', '/api/test/result');
-    if(d.result?.results) renderTestResults(d.result);
-  } catch(e) {}
+async function tsStop() {
+  try { await api('POST', '/api/tests/stop'); log('INFO','tests','Stop requested'); }
+  catch(e) {}
 }
 
-function renderTestResults(r) {
-  const overall = r.overall_score || 0;
-  document.getElementById('ts-overall').textContent = (overall*100).toFixed(1) + '%';
-  document.getElementById('ts-overall').style.color = overall >= 0.8 ? 'var(--green)' : overall >= 0.5 ? 'var(--warn)' : 'var(--danger)';
-  document.getElementById('ts-overall-m').textContent = overall >= 0.8 ? 'all tests passing' : overall >= 0.5 ? 'some tests degraded' : 'critical failures';
-  const results = r.results || {};
-  let passed = 0, failed = 0;
-  const html = Object.entries(results).map(([name, res]) => {
-    if(!res || typeof res !== 'object') return '';
-    const score = Object.values(res).find(v => typeof v === 'number') || 0;
-    const pass = score >= 0.8;
-    if(pass) passed++; else failed++;
-    const icon = pass ? '✅' : score >= 0.5 ? '⚠️' : '❌';
-    const clr = pass ? 'var(--green)' : score >= 0.5 ? 'var(--warn)' : 'var(--danger)';
-    const details = Object.entries(res).filter(([k,v]) => typeof v === 'number' && k !== 'error').map(([k,v]) => `${k}: ${v.toFixed(3)}`).join(' · ');
-    return `<div class="test-row">
-      <span class="test-icon">${icon}</span>
-      <div style="flex:1">
-        <div class="test-name">${name}</div>
-        <div class="test-detail">${res.error||details||''}</div>
+// ── Polling ────────────────────────────────────────────────────
+function tsStartPolling(total) {
+  if (TS.pollTimer) clearInterval(TS.pollTimer);
+  TS.pollTimer = setInterval(async () => {
+    try {
+      const d = await api('GET', `/api/tests/results?format=${TS.logFormat}&limit=0`);
+      if (!d.ok) return;
+      TS.results = d.results || [];
+      TS.summary = d.summary || {};
+      const p = d.progress || {};
+      const cur = p.current || 0;
+      const tot = p.total || total;
+      const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
+      document.getElementById('ts-prog-fill').style.width = `${pct}%`;
+      document.getElementById('ts-prog-pct').textContent = `${pct}%`;
+      document.getElementById('ts-prog-lbl').textContent = p.current_test || '…';
+      document.getElementById('ts-live-pass').textContent = p.passed || 0;
+      document.getElementById('ts-live-fail').textContent = p.failed || 0;
+      document.getElementById('ts-live-err').textContent = p.error || 0;
+      document.getElementById('ts-live-skip').textContent = p.skipped || 0;
+      document.getElementById('ts-live-cur').textContent = `${cur}/${tot}`;
+
+      tsUpdateKPIs();
+      tsBuildCatalogueUI();
+      if (TS.activeTab === 'results') tsFilterResults();
+      if (TS.activeTab === 'failures') tsRenderFailures();
+
+      if (!p.active && p.done) {
+        clearInterval(TS.pollTimer);
+        TS.pollTimer = null;
+        document.getElementById('ts-prog-fill').style.width = '100%';
+        document.getElementById('ts-prog-pct').textContent = '100%';
+        document.getElementById('ts-prog-lbl').textContent = 'Complete';
+        setTimeout(() => { document.getElementById('ts-prog-wrap').style.display = 'none'; }, 2000);
+        const btn = document.getElementById('test-run-btn');
+        btn.disabled = false; btn.innerHTML = '▶ Run All';
+        document.getElementById('ts-stop-btn').style.display = 'none';
+        tsRenderLog();
+        tsRenderFailures();
+        log('INFO','tests', `✅ Run complete · ${TS.summary.passed||0} passed · ${TS.summary.failed||0} failed`);
+      }
+    } catch(e) {}
+  }, 900);
+}
+
+// ── KPIs ───────────────────────────────────────────────────────
+function tsUpdateKPIs() {
+  const s = TS.summary;
+  const run = TS.results.length;
+  if (!run) return;
+  const pass = s.passed ?? TS.results.filter(r=>r.status==='passed').length;
+  const fail = s.failed ?? TS.results.filter(r=>r.status==='failed').length;
+  const err = (s.error ?? TS.results.filter(r=>r.status==='error').length)
+             + (s.skipped ?? TS.results.filter(r=>r.status==='skipped').length);
+  const rate = s.pass_rate ?? (run > 0 ? (pass/run*100).toFixed(1) : 0);
+  const ms = s.total_time_ms ?? 0;
+  document.getElementById('ts-total').textContent = run;
+  document.getElementById('ts-total-m').textContent = `${s.total||run} scheduled`;
+  document.getElementById('ts-pass').textContent = pass;
+  document.getElementById('ts-pass-rate').textContent = `${rate}% pass rate`;
+  const failEl = document.getElementById('ts-fail');
+  failEl.textContent = fail;
+  failEl.style.color = fail > 0 ? 'var(--danger)' : 'var(--green)';
+  document.getElementById('ts-fail-m').textContent = fail > 0 ? `${fail} failures` : 'all pass';
+  document.getElementById('ts-errors').textContent = err;
+  document.getElementById('ts-time').textContent = ms > 0 ? `${(ms/1000).toFixed(1)}s total` : '—';
+}
+
+// ── Results list ───────────────────────────────────────────────
+function tsFilterResults() {
+  const q = (document.getElementById('ts-search')?.value || '').toLowerCase();
+  const st = document.getElementById('ts-filter-status')?.value || '';
+  const sec = TS.filterSection;
+  let rs = TS.results.filter(r => {
+    if (st && r.status !== st) return false;
+    if (sec && r.section !== sec) return false;
+    if (q && !r.name.toLowerCase().includes(q) && !(r.section||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const el = document.getElementById('ts-results-list');
+  if (!rs.length) { el.innerHTML = '<div style="color:var(--text3);font-size:12px">No results match filter</div>'; return; }
+  el.innerHTML = rs.map(r => {
+    const icon = {passed:'✅',failed:'❌',error:'💥',skipped:'⏭'}[r.status]||'?';
+    const hasDetail = r.error_msg || r.stdout || r.log_full;
+    return `<div class="ts-result-card ${r.status}" onclick="this.classList.toggle('expanded')">
+      <div class="ts-rc-hdr">
+        <span>${icon}</span>
+        <span class="ts-rc-name">${r.name}</span>
+        <span class="ts-rc-ms">${r.elapsed_ms?.toFixed(0)||0}ms</span>
+        ${hasDetail ? '<span style="font-size:10px;color:var(--text3)">▾</span>' : ''}
       </div>
-      <div class="test-bar-wrap"><div class="prog-track"><div class="prog-fill" style="width:${score*100}%"></div></div></div>
-      <div class="test-score" style="color:${clr}">${(score*100).toFixed(0)}%</div>
+      <div class="ts-rc-sec">${r.section||''} · line ${r.line||0}</div>
+      ${r.doc ? `<div style="font-size:10px;color:var(--text3);margin-top:3px">${r.doc}</div>` : ''}
+      ${r.error_msg ? `<div class="ts-rc-err">${escHtml(r.error_msg)}</div>` : ''}
+      <div class="ts-rc-detail">
+        ${r.log_full ? `<div class="ts-log-block">${escHtml(r.log_full)}</div>` :
+          r.log_brief ? `<div class="ts-log-block">${escHtml(r.log_brief)}</div>` : ''}
+        ${r.traceback ? `<div class="ts-log-block" style="color:var(--warn)">${escHtml(r.traceback)}</div>` : ''}
+      </div>
     </div>`;
   }).join('');
-  document.getElementById('ts-results').innerHTML = html || '<div style="color:var(--text3)">No results</div>';
-  document.getElementById('ts-pass').textContent = passed;
-  document.getElementById('ts-fail').textContent = failed;
-  document.getElementById('ts-errors').textContent = (r.errors||[]).length;
 }
+
+function tsFilterSection() {
+  TS.filterSection = document.getElementById('ts-filter-section')?.value || '';
+  if (TS.activeTab === 'results') tsFilterResults();
+}
+
+// ── Log view ───────────────────────────────────────────────────
+function tsRenderLog() {
+  const fmt = document.getElementById('ts-log-display-fmt')?.value || 'full';
+  const show = document.getElementById('ts-log-show')?.value || 'all';
+  const pre = document.getElementById('ts-log-pre');
+  if (!pre) return;
+  let rs = TS.results;
+  if (show !== 'all') rs = rs.filter(r => r.status === show);
+  if (!rs.length) { pre.textContent = '— No results yet —'; return; }
+  pre.innerHTML = rs.map(r => {
+    const text = fmt === 'full' ? (r.log_full || r.log_brief || r.name) : (r.log_brief || r.name);
+    const color = {passed:'var(--green)',failed:'var(--danger)',error:'var(--warn)',skipped:'var(--text3)'}[r.status]||'var(--text)';
+    return `<span style="color:${color}">${escHtml(text)}</span>`;
+  }).join('\n');
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function tsCopyLog() {
+  const pre = document.getElementById('ts-log-pre');
+  if (pre) { navigator.clipboard.writeText(pre.textContent); log('INFO','tests','Log copied to clipboard'); }
+}
+
+// ── Failures view ──────────────────────────────────────────────
+function tsRenderFailures() {
+  const el = document.getElementById('ts-failures-list');
+  const rs = TS.results.filter(r => r.status === 'failed' || r.status === 'error');
+  if (!rs.length) { el.innerHTML = '<div style="color:var(--green);font-size:12px">✅ No failures</div>'; return; }
+  el.innerHTML = rs.map(r => {
+    const icon = r.status === 'error' ? '💥' : '❌';
+    return `<div class="ts-failure-card">
+      <div class="ts-fc-name">${icon} ${r.name}</div>
+      <div class="ts-fc-sec">${r.section||''} · line ${r.line||0} · ${r.elapsed_ms?.toFixed(0)||0}ms</div>
+      ${r.doc ? `<div style="font-size:10px;color:var(--text3);margin-bottom:6px">${r.doc}</div>` : ''}
+      <div class="ts-fc-msg">${escHtml(r.error_msg||'unknown error')}</div>
+      ${r.traceback ? `<div class="ts-fc-tb">${escHtml(r.traceback)}</div>` : ''}
+      ${r.stdout?.trim() ? `<div style="font-size:10px;color:var(--text3);margin-top:4px;font-family:var(--mono)">${escHtml(r.stdout.slice(0,400))}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Show single test detail (from catalogue click) ─────────────
+async function tsShowTestDetail(name) {
+  const r = TS.results.find(x => x.name === name);
+  if (r) {
+    // Switch to results tab, scroll to it
+    tsTab('results');
+    document.getElementById('ts-search').value = name;
+    tsFilterResults();
+  }
+}
+
+// ── WS handler ─────────────────────────────────────────────────
+function tsHandleWsEvent(msg) {
+  if (msg.type === 'test_event') {
+    const r = msg.data;
+    const idx = TS.results.findIndex(x => x.name === r.name);
+    if (idx >= 0) TS.results[idx] = r; else TS.results.push(r);
+  }
+  if (msg.type === 'test_progress') {
+    const p = msg.data;
+    if (p.current !== undefined) {
+      document.getElementById('ts-live-pass').textContent = p.passed||0;
+      document.getElementById('ts-live-fail').textContent = p.failed||0;
+    }
+  }
+}
+
+function escHtml(str) {
+  return (str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Legacy stubs (keep old API calls working) ──────────────────
+function runTests() { tsRunAll(); }
+async function refreshTests() { await tsRefreshCatalogue(); }
+
 
 // ─── BENCHMARK ────────────────────────────────────────────────────────────────
 async function runBenchmark() {
