@@ -1,0 +1,4248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEON-Delta v3.1 — Control Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Oxanium:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #060810;
+  --bg2: #0a0d14;
+  --surface: #0e1220;
+  --surface2: #141826;
+  --surface3: #1a1f30;
+  --border: #1e2535;
+  --border2: #252d40;
+  --accent: #00d4ff;
+  --accent-dim: rgba(0,212,255,0.12);
+  --accent-glow: rgba(0,212,255,0.25);
+  --purple: #7c3aed;
+  --purple-dim: rgba(124,58,237,0.12);
+  --green: #10b981;
+  --green-dim: rgba(16,185,129,0.12);
+  --warn: #f59e0b;
+  --warn-dim: rgba(245,158,11,0.12);
+  --danger: #ef4444;
+  --danger-dim: rgba(239,68,68,0.12);
+  --text: #e2e8f0;
+  --text2: #94a3b8;
+  --text3: #64748b;
+  --mono: 'JetBrains Mono', monospace;
+  --display: 'Oxanium', sans-serif;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* SCROLLBAR */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+/* ═══════════════════════════════════════════
+   LAYOUT
+═══════════════════════════════════════════ */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 52px 1fr;
+  min-height: 100vh;
+}
+
+/* ═══ TOPBAR ═══ */
+.topbar {
+  grid-column: 1/-1;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.topbar-logo {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  white-space: nowrap;
+}
+
+.topbar-version {
+  font-size: 10px;
+  color: var(--text3);
+  border: 1px solid var(--border2);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.topbar-spacer { flex: 1; }
+
+.topbar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse-dot 2s infinite;
+}
+
+.status-dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.status-dot.danger { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.status-dot.idle { background: var(--text3); box-shadow: none; animation: none; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.topbar-device {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(0,212,255,0.2);
+  padding: 4px 12px;
+  border-radius: 6px;
+}
+
+/* ═══ SIDEBAR ═══ */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 16px 0;
+  overflow-y: auto;
+  position: sticky;
+  top: 52px;
+  height: calc(100vh - 52px);
+}
+
+.sidebar-section {
+  padding: 0 8px;
+  margin-bottom: 8px;
+}
+
+.sidebar-label {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--text3);
+  text-transform: uppercase;
+  padding: 8px 12px 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text3);
+  transition: all 0.15s;
+  font-size: 12px;
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.nav-item:hover {
+  background: var(--surface3);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: rgba(0,212,255,0.3);
+}
+
+.nav-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.nav-badge {
+  margin-left: auto;
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--danger-dim);
+  color: var(--danger);
+}
+
+.nav-badge.green { background: var(--green-dim); color: var(--green); }
+.nav-badge.blue { background: var(--accent-dim); color: var(--accent); }
+
+/* ═══ MAIN ═══ */
+.main {
+  overflow-y: auto;
+  height: calc(100vh - 52px);
+  background: var(--bg);
+}
+
+.panel {
+  display: none;
+  padding: 24px;
+  animation: fadeIn 0.2s ease;
+}
+
+.panel.active { display: block; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════
+   COMPONENTS
+═══════════════════════════════════════════ */
+
+/* PAGE HEADER */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page-title {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.page-subtitle {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 3px;
+}
+
+/* GRID */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+@media (max-width: 1200px) {
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 900px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+
+/* CARD */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  position: relative;
+  transition: border-color 0.2s;
+}
+
+.card:hover { border-color: var(--border2); }
+
+.card-accent { border-left: 3px solid var(--accent); }
+.card-green { border-left: 3px solid var(--green); }
+.card-purple { border-left: 3px solid var(--purple); }
+.card-warn { border-left: 3px solid var(--warn); }
+.card-danger { border-left: 3px solid var(--danger); }
+
+.card-title {
+  font-size: 11px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-value {
+  font-family: var(--display);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+
+.card-value.accent { color: var(--accent); }
+.card-value.green { color: var(--green); }
+.card-value.warn { color: var(--warn); }
+.card-value.danger { color: var(--danger); }
+
+.card-meta {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 4px;
+}
+
+/* METRIC BAR */
+.metric-bar {
+  height: 4px;
+  background: var(--surface3);
+  border-radius: 2px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.metric-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--purple));
+  transition: width 0.8s cubic-bezier(0.4,0,0.2,1);
+}
+
+.metric-fill.green { background: var(--green); }
+.metric-fill.warn { background: var(--warn); }
+.metric-fill.danger { background: var(--danger); }
+
+/* SECTION DIVIDER */
+.section-title {
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin: 24px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* BUTTONS */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 16px;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+.btn-primary:hover { background: #00f5ff; box-shadow: 0 0 16px var(--accent-glow); }
+
+.btn-secondary {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: rgba(0,212,255,0.3);
+}
+.btn-secondary:hover { background: rgba(0,212,255,0.18); }
+
+.btn-danger {
+  background: var(--danger-dim);
+  color: var(--danger);
+  border-color: rgba(239,68,68,0.3);
+}
+.btn-danger:hover { background: rgba(239,68,68,0.2); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text3);
+  border-color: var(--border);
+}
+.btn-ghost:hover { background: var(--surface3); color: var(--text); border-color: var(--border2); }
+
+.btn-green {
+  background: var(--green-dim);
+  color: var(--green);
+  border-color: rgba(16,185,129,0.3);
+}
+.btn-green:hover { background: rgba(16,185,129,0.2); }
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-icon { font-size: 14px; }
+
+/* FORM ELEMENTS */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.form-row-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.form-group { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+
+.form-label {
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.form-hint {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  width: 100%;
+  transition: border-color 0.15s;
+  appearance: none;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+select option { background: var(--surface2); }
+
+textarea { resize: vertical; min-height: 80px; }
+
+/* TOGGLE */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.toggle-row:last-child { border-bottom: none; }
+
+.toggle-info { flex: 1; padding-right: 12px; }
+.toggle-name { font-size: 12px; color: var(--accent); font-weight: 500; }
+.toggle-desc { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.toggle-default { font-size: 10px; color: var(--warn); }
+
+.toggle {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle input { display: none; }
+
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--surface3);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text3);
+  transition: all 0.2s;
+}
+
+.toggle input:checked + .toggle-track {
+  background: rgba(0,212,255,0.2);
+  border-color: var(--accent);
+}
+
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(18px);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+/* RANGE */
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  height: 4px;
+  background: var(--surface3);
+  border-radius: 2px;
+  border: none;
+  padding: 0;
+  flex: 1;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.range-value {
+  font-size: 11px;
+  color: var(--accent);
+  width: 50px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* LOGS */
+.log-container {
+  background: #050709;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  height: 400px;
+  overflow-y: auto;
+  padding: 12px;
+  position: relative;
+}
+
+.log-entry {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  animation: logFade 0.3s ease;
+}
+
+@keyframes logFade {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.log-time { color: var(--text3); white-space: nowrap; flex-shrink: 0; }
+.log-level {
+  font-weight: 600;
+  width: 50px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.log-level.INFO { color: var(--accent); }
+.log-level.WARN { color: var(--warn); }
+.log-level.ERROR { color: var(--danger); }
+.log-level.DEBUG { color: var(--text3); }
+.log-level.SUCCESS { color: var(--green); }
+
+.log-subsys {
+  color: var(--purple);
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.log-msg { color: var(--text2); flex: 1; }
+
+/* LOG TOOLBAR */
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.log-filter-chip {
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--text3);
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.log-filter-chip.active-info { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.log-filter-chip.active-warn { border-color: var(--warn); color: var(--warn); background: var(--warn-dim); }
+.log-filter-chip.active-error { border-color: var(--danger); color: var(--danger); background: var(--danger-dim); }
+.log-filter-chip.active-debug { border-color: var(--border2); color: var(--text2); background: var(--surface3); }
+.log-filter-chip.active-success { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+
+/* TABS */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  padding-bottom: 0;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text3);
+  border: 1px solid transparent;
+  border-bottom: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+  user-select: none;
+  background: transparent;
+  letter-spacing: 0.5px;
+}
+
+.tab-btn:hover { color: var(--text); background: var(--surface3); }
+
+.tab-btn.active {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: var(--border);
+  border-bottom-color: var(--surface);
+  margin-bottom: -1px;
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* CODE BLOCK */
+.code-block {
+  background: #050709;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-x: auto;
+  position: relative;
+}
+
+.code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  color: var(--text3);
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.code-copy:hover { color: var(--accent); border-color: var(--accent); }
+
+.code-block .kw { color: #c084fc; }
+.code-block .str { color: #86efac; }
+.code-block .num { color: #fdba74; }
+.code-block .cm { color: #4b5563; }
+.code-block .fn { color: #7dd3fc; }
+.code-block .cls { color: #fde68a; }
+
+/* BADGE */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.badge-green { background: var(--green-dim); color: var(--green); border: 1px solid rgba(16,185,129,0.2); }
+.badge-blue { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(0,212,255,0.2); }
+.badge-yellow { background: var(--warn-dim); color: var(--warn); border: 1px solid rgba(245,158,11,0.2); }
+.badge-red { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239,68,68,0.2); }
+.badge-purple { background: var(--purple-dim); color: #a78bfa; border: 1px solid rgba(124,58,237,0.2); }
+
+/* ALERT */
+.alert {
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  margin-bottom: 12px;
+  align-items: flex-start;
+  line-height: 1.5;
+}
+.alert-icon { font-size: 16px; flex-shrink: 0; }
+.alert-blue { background: var(--accent-dim); border: 1px solid rgba(0,212,255,0.2); color: var(--text2); }
+.alert-yellow { background: var(--warn-dim); border: 1px solid rgba(245,158,11,0.2); color: var(--text2); }
+.alert-green { background: var(--green-dim); border: 1px solid rgba(16,185,129,0.2); color: var(--text2); }
+.alert-danger { background: var(--danger-dim); border: 1px solid rgba(239,68,68,0.2); color: var(--text2); }
+
+/* CANVAS CHART */
+canvas { display: block; }
+
+/* TENSOR GUARD TABLE */
+.tg-table { width: 100%; border-collapse: collapse; }
+.tg-table th, .tg-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  text-align: left;
+  font-size: 11px;
+}
+.tg-table th { color: var(--text3); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.tg-table td:first-child { color: var(--accent); }
+.tg-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* ARCH FLOW */
+.arch-canvas {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  overflow-x: auto;
+}
+
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 900px;
+}
+
+.flow-node {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  cursor: default;
+  transition: all 0.2s;
+}
+
+.flow-node:hover {
+  transform: scale(1.03);
+  z-index: 2;
+}
+
+.flow-node .node-name { font-weight: 600; font-size: 11px; }
+.flow-node .node-sub { font-size: 9px; color: var(--text3); margin-top: 2px; }
+
+.flow-node.hot { border-color: var(--accent); color: var(--accent); background: rgba(0,212,255,0.05); }
+.flow-node.warm { border-color: var(--purple); color: #a78bfa; background: rgba(124,58,237,0.05); }
+.flow-node.cool { border-color: var(--green); color: var(--green); background: rgba(16,185,129,0.05); }
+
+.flow-arrow { color: var(--text3); font-size: 16px; padding: 0 6px; flex-shrink: 0; }
+
+.flow-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-branch .flow-node { font-size: 10px; padding: 8px 10px; }
+
+/* PROGRESS BAR */
+.progress-track {
+  height: 6px;
+  background: var(--surface3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--purple));
+  transition: width 0.5s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* INFERENCE OUTPUT */
+.infer-output {
+  background: #050709;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  min-height: 120px;
+  position: relative;
+}
+
+.infer-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--accent);
+  animation: blink 0.8s infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.infer-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.infer-meta-item { display: flex; gap: 5px; }
+.infer-meta-val { color: var(--accent); }
+
+/* HEALTH GAUGE */
+.health-ring {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin: 0 auto;
+}
+
+.health-ring svg { transform: rotate(-90deg); }
+
+.health-ring-val {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.health-ring-label {
+  font-size: 9px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* SUBSYSTEM STATUS LIST */
+.subsys-list { display: flex; flex-direction: column; gap: 6px; }
+
+.subsys-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface3);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.subsys-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.subsys-name { flex: 1; color: var(--text2); }
+.subsys-score { color: var(--accent); font-weight: 600; }
+.subsys-status { font-size: 10px; margin-left: auto; }
+
+/* PRESET CARDS */
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.preset-card {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+
+.preset-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.preset-card.minimal::before { background: radial-gradient(ellipse at top left, rgba(16,185,129,0.06) 0%, transparent 60%); }
+.preset-card.production::before { background: radial-gradient(ellipse at top left, rgba(0,212,255,0.06) 0%, transparent 60%); }
+.preset-card.full::before { background: radial-gradient(ellipse at top left, rgba(124,58,237,0.06) 0%, transparent 60%); }
+
+.preset-card:hover::before { opacity: 1; }
+.preset-card:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+
+.preset-card.selected.minimal { border-color: var(--green); }
+.preset-card.selected.production { border-color: var(--accent); }
+.preset-card.selected.full { border-color: var(--purple); }
+
+.preset-badge { margin-bottom: 10px; }
+.preset-name { font-family: var(--display); font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.preset-desc { font-size: 11px; color: var(--text3); line-height: 1.5; }
+
+.preset-features {
+  list-style: none;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.preset-features li {
+  font-size: 10px;
+  color: var(--text3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-features li::before {
+  content: '✓';
+  color: var(--green);
+  font-size: 10px;
+}
+
+.preset-features li.off::before {
+  content: '✗';
+  color: var(--text3);
+}
+
+.preset-speed {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text3);
+}
+
+/* AUDIT TABLE */
+.audit-table { width: 100%; border-collapse: collapse; }
+.audit-table th, .audit-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  font-size: 11px;
+  text-align: left;
+}
+.audit-table th {
+  color: var(--text3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: var(--surface3);
+  position: sticky;
+  top: 0;
+}
+.audit-table tr:hover td { background: rgba(255,255,255,0.02); }
+.audit-sev { font-weight: 600; }
+.audit-sev.info { color: var(--accent); }
+.audit-sev.warning { color: var(--warn); }
+.audit-sev.critical { color: var(--danger); }
+
+/* TRAIN CHART AREA */
+.chart-area {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.chart-title { font-size: 12px; color: var(--text2); font-weight: 600; }
+
+.chart-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--text3);
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 3px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* TOPOLOGY VIS */
+.topo-canvas {
+  background: #050709;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: block;
+  width: 100%;
+}
+
+/* CONFIG EXPORT BOX */
+.export-box {
+  background: #050709;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text2);
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre;
+}
+
+/* SEPARATOR */
+hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+/* SPINNER */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* TOOLTIP */
+[data-tip] { position: relative; cursor: help; }
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  z-index: 999;
+  pointer-events: none;
+  margin-bottom: 4px;
+}
+
+/* VQVAE CODEBOOK VIS */
+.codebook-vis {
+  display: grid;
+  grid-template-columns: repeat(32, 1fr);
+  gap: 2px;
+  margin-top: 10px;
+}
+
+.codebook-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  transition: transform 0.1s;
+}
+.codebook-cell:hover { transform: scale(1.5); z-index: 2; }
+
+/* NUMBER ANIMATION */
+.animated-num {
+  display: inline-block;
+  animation: numPop 0.3s ease;
+}
+
+@keyframes numPop {
+  0% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* FOOTER */
+.panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text3);
+}
+
+/* DRAG HANDLE */
+.resizer {
+  height: 4px;
+  background: var(--border);
+  cursor: row-resize;
+  border-radius: 2px;
+  margin: 6px 0;
+}
+
+/* GLOW EFFECT */
+.glow-accent { text-shadow: 0 0 12px var(--accent); }
+.glow-green { text-shadow: 0 0 12px var(--green); }
+</style>
+</head>
+<body>
+<div class="app-shell">
+
+<!-- ═══ TOPBAR ═══ -->
+<header class="topbar">
+  <div class="topbar-logo">AEON</div>
+  <div class="topbar-version">Delta RMT v3.1.0</div>
+  <div class="topbar-spacer"></div>
+  <div class="topbar-device" id="device-badge">
+    <span>⚡</span>
+    <span id="device-str">CPU</span>
+  </div>
+  <div class="topbar-status">
+    <div class="status-dot" id="system-dot"></div>
+    <span id="system-status-text">READY</span>
+  </div>
+  <div class="topbar-status" style="margin-left:8px">
+    <span id="clock" style="font-size:11px;color:var(--text3)"></span>
+  </div>
+</header>
+
+<!-- ═══ SIDEBAR ═══ -->
+<nav class="sidebar">
+  <div class="sidebar-label">Overview</div>
+  <div class="sidebar-section">
+    <div class="nav-item active" onclick="showPanel('dashboard')">
+      <span class="nav-icon">◈</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="showPanel('architecture')">
+      <span class="nav-icon">⬡</span> Architecture
+    </div>
+  </div>
+
+  <div class="sidebar-label">Engine</div>
+  <div class="sidebar-section">
+    <div class="nav-item" onclick="showPanel('config')">
+      <span class="nav-icon">⚙</span> Configuration
+    </div>
+    <div class="nav-item" onclick="showPanel('presets')">
+      <span class="nav-icon">◫</span> Presets
+    </div>
+    <div class="nav-item" onclick="showPanel('inference')">
+      <span class="nav-icon">▶</span> Inference
+    </div>
+    <div class="nav-item" onclick="showPanel('training')">
+      <span class="nav-icon">◉</span> Training
+    </div>
+  </div>
+
+  <div class="sidebar-label">Monitoring</div>
+  <div class="sidebar-section">
+    <div class="nav-item" onclick="showPanel('logs')">
+      <span class="nav-icon">≡</span> Live Logs
+      <span class="nav-badge" id="log-badge">0</span>
+    </div>
+    <div class="nav-item" onclick="showPanel('audit')">
+      <span class="nav-icon">◐</span> Audit Trail
+    </div>
+    <div class="nav-item" onclick="showPanel('monitor')">
+      <span class="nav-icon">◌</span> System Monitor
+    </div>
+    <div class="nav-item" onclick="showPanel('tensorguard')">
+      <span class="nav-icon">🛡</span> TensorGuard
+    </div>
+  </div>
+
+  <div class="sidebar-label">Tools</div>
+  <div class="sidebar-section">
+    <div class="nav-item" onclick="showPanel('codegen')">
+      <span class="nav-icon">&lt;/&gt;</span> Code Generator
+    </div>
+    <div class="nav-item" onclick="showPanel('export')">
+      <span class="nav-icon">↑</span> Export Config
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ MAIN ═══ -->
+<main class="main" id="main-content">
+
+<!-- ━━━━━━━━━━━━━━━━ DASHBOARD ━━━━━━━━━━━━━━━━ -->
+<div class="panel active" id="panel-dashboard">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Control Dashboard</div>
+      <div class="page-subtitle">AEON-Delta RMT v3.1.0 · Advanced Embodied Ontological Network</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary" onclick="refreshDashboard()">↻ Refresh</button>
+      <button class="btn btn-primary" onclick="showPanel('inference')">▶ Run Inference</button>
+    </div>
+  </div>
+
+  <!-- METRICS ROW -->
+  <div class="grid-4" style="margin-bottom:20px">
+    <div class="card card-accent">
+      <div class="card-title">◈ Parameters</div>
+      <div class="card-value accent" id="param-count">0</div>
+      <div class="card-meta" id="param-meta">Not initialized</div>
+      <div class="metric-bar"><div class="metric-fill" id="param-bar" style="width:0%"></div></div>
+    </div>
+    <div class="card card-green">
+      <div class="card-title">⚡ Health Score</div>
+      <div class="card-value green" id="health-score">—</div>
+      <div class="card-meta" id="health-meta">—</div>
+      <div class="metric-bar"><div class="metric-fill green" id="health-bar" style="width:0%"></div></div>
+    </div>
+    <div class="card card-purple">
+      <div class="card-title">◉ Active Flags</div>
+      <div class="card-value" id="flag-count" style="color:var(--purple)">0</div>
+      <div class="card-meta" id="flag-meta">of 40+ config params</div>
+      <div class="metric-bar"><div class="metric-fill" style="background:var(--purple);width:0%" id="flag-bar"></div></div>
+    </div>
+    <div class="card card-warn">
+      <div class="card-title">◌ VQ Usage</div>
+      <div class="card-value warn" id="vq-usage">—</div>
+      <div class="card-meta" id="vq-meta">codebook utilization</div>
+      <div class="metric-bar"><div class="metric-fill warn" id="vq-bar" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- HEALTH + SUBSYSTEMS -->
+  <div class="grid-2" style="margin-bottom:20px">
+    <div class="card">
+      <div class="card-title">🏥 System Integrity Monitor</div>
+      <div style="display:flex;align-items:center;gap:24px;margin-top:8px">
+        <div class="health-ring">
+          <svg viewBox="0 0 100 100" width="100" height="100">
+            <circle cx="50" cy="50" r="40" fill="none" stroke="var(--surface3)" stroke-width="8"/>
+            <circle cx="50" cy="50" r="40" fill="none" stroke="var(--green)" stroke-width="8"
+              stroke-dasharray="251.2" stroke-dashoffset="25" stroke-linecap="round"
+              id="health-ring-circle" style="transition:stroke-dashoffset 1s ease"/>
+          </svg>
+          <div class="health-ring-val">
+            <span id="health-ring-val" class="glow-green">—</span>
+            <span class="health-ring-label">Health</span>
+          </div>
+        </div>
+        <div class="subsys-list" style="flex:1" id="subsys-list">
+          <div class="subsys-item"><div class="subsys-dot" style="background:var(--text3)"></div><span class="subsys-name">Initializing...</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">◐ Recent Decisions</div>
+      <div id="recent-decisions" style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
+        <div style="font-size:11px;color:var(--text3)">No decisions logged yet. Initialize model to begin.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VQ CODEBOOK -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">◈ VQ-VAE Codebook Usage</div>
+      <div class="codebook-vis" id="codebook-vis"></div>
+      <div class="card-meta" style="margin-top:8px" id="codebook-meta">—</div>
+    </div>
+    <div class="card">
+      <div class="card-title">≡ Activity Stream</div>
+      <div id="activity-stream" style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;margin-top:8px"></div>
+    </div>
+  </div>
+
+  <!-- INIT SECTION -->
+  <div class="section-title">Quick Initialize</div>
+  <div class="card" style="margin-bottom:0">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="form-group" style="margin:0;flex:1;min-width:180px">
+        <div class="form-label">Preset</div>
+        <select id="quick-preset">
+          <option value="minimal">Minimal (Core only)</option>
+          <option value="production" selected>Production</option>
+          <option value="full">Full (Research)</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;flex:1;min-width:140px">
+        <div class="form-label">Device</div>
+        <select id="quick-device">
+          <option value="auto">Auto-select</option>
+          <option value="cpu">CPU</option>
+          <option value="cuda">CUDA GPU</option>
+          <option value="mps">Apple MPS</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin:0;flex:1;min-width:120px">
+        <div class="form-label">Hidden Dim</div>
+        <select id="quick-hidden">
+          <option value="128">128 (debug)</option>
+          <option value="256" selected>256 (default)</option>
+          <option value="512">512 (prod)</option>
+          <option value="1024">1024 (research)</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="initModel()" id="init-btn" style="margin-top:16px">
+        <span class="btn-icon">⚡</span> Initialize Model
+      </button>
+      <button class="btn btn-danger" onclick="deinitModel()" id="deinit-btn" style="margin-top:16px;display:none">
+        ✕ Deinit
+      </button>
+    </div>
+    <div id="init-progress" style="margin-top:14px;display:none">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px" id="init-step">Initializing...</div>
+      <div class="progress-track"><div class="progress-fill" id="init-progress-bar" style="width:0%"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ ARCHITECTURE ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-architecture">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Architecture Overview</div>
+      <div class="page-subtitle">Data flow through all AEON-Delta subsystems</div>
+    </div>
+  </div>
+
+  <div class="arch-canvas" style="margin-bottom:20px">
+    <div style="font-size:11px;color:var(--text3);margin-bottom:16px;letter-spacing:1px;text-transform:uppercase">Main Processing Pipeline</div>
+    <div class="flow-diagram">
+      <div class="flow-node hot">
+        <div class="node-name">Input IDs</div>
+        <div class="node-sub">[B, L]</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="node-name">Encoder</div>
+        <div class="node-sub" id="arch-encoder-sub">SSM/Mamba2/Attn</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node warm">
+        <div class="node-name">VQ-VAE</div>
+        <div class="node-sub" id="arch-vq-sub">8192 codes</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="node-name">Meta-Loop</div>
+        <div class="node-sub" id="arch-meta-sub">Banach FP · 50 iter</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-branch">
+        <div class="flow-node" id="arch-mem" style="opacity:0.4;font-size:10px;padding:6px 10px">Memory Systems</div>
+        <div class="flow-node" id="arch-causal" style="opacity:0.4;font-size:10px;padding:6px 10px">Causal Models</div>
+        <div class="flow-node" id="arch-safety" style="font-size:10px;padding:6px 10px">Safety + Topo</div>
+        <div class="flow-node" id="arch-plan" style="opacity:0.4;font-size:10px;padding:6px 10px">Planning (MCTS)</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node cool">
+        <div class="node-name">C_star</div>
+        <div class="node-sub">Core State</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="node-name">Decoder</div>
+        <div class="node-sub" id="arch-decoder-sub">Autoregressive</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node hot">
+        <div class="node-name">Logits</div>
+        <div class="node-sub">[B, L, V]</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-bottom:20px">
+    <div class="card">
+      <div class="card-title">◉ Encoder Backends</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        <div class="subsys-item">
+          <div class="subsys-dot" style="background:var(--accent)"></div>
+          <span class="subsys-name">SSM (Selective State Space)</span>
+          <span class="subsys-status" style="color:var(--accent)">Default</span>
+        </div>
+        <div class="subsys-item">
+          <div class="subsys-dot" style="background:var(--green)"></div>
+          <span class="subsys-name">Mamba2 (SOTA efficiency)</span>
+          <span class="subsys-status" style="color:var(--green)">Recommended</span>
+        </div>
+        <div class="subsys-item">
+          <div class="subsys-dot" style="background:var(--purple)"></div>
+          <span class="subsys-name">Linear Attention</span>
+          <span class="subsys-status" style="color:var(--purple)">O(n) memory</span>
+        </div>
+        <div class="subsys-item">
+          <div class="subsys-dot" style="background:var(--warn)"></div>
+          <span class="subsys-name">LSTM</span>
+          <span class="subsys-status" style="color:var(--warn)">Legacy</span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">◈ Memory Hierarchy</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface3);border-radius:6px">
+          <span style="font-size:10px;color:var(--accent);width:120px">Working Memory</span>
+          <div class="metric-bar" style="flex:1;margin:0"><div class="metric-fill" style="width:100%"></div></div>
+          <span style="font-size:10px;color:var(--text3)">7 slots</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface3);border-radius:6px">
+          <span style="font-size:10px;color:var(--accent);width:120px">Episodic Memory</span>
+          <div class="metric-bar" style="flex:1;margin:0"><div class="metric-fill" style="width:60%"></div></div>
+          <span style="font-size:10px;color:var(--text3)">1000 eps</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface3);border-radius:6px">
+          <span style="font-size:10px;color:var(--accent);width:120px">Semantic Memory</span>
+          <div class="metric-bar" style="flex:1;margin:0"><div class="metric-fill" style="width:30%"></div></div>
+          <span style="font-size:10px;color:var(--text3)">Unlimited</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface3);border-radius:6px">
+          <span style="font-size:10px;color:var(--purple);width:120px">Neurogenic</span>
+          <div class="metric-bar" style="flex:1;margin:0"><div class="metric-fill" style="background:var(--purple);width:20%"></div></div>
+          <span style="font-size:10px;color:var(--text3)">Bio-inspired</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">⬡ Module Dependency Map</div>
+    <canvas id="dep-map" width="800" height="220" class="topo-canvas" style="margin-top:12px"></canvas>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ CONFIG ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-config">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Configuration</div>
+      <div class="page-subtitle">All 40+ AEONConfig parameters · Changes apply to next init</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" onclick="resetConfig()">↺ Reset</button>
+      <button class="btn btn-secondary" onclick="showPanel('export')">↑ Export</button>
+      <button class="btn btn-primary" onclick="applyConfig()">✓ Apply & Re-init</button>
+    </div>
+  </div>
+
+  <div class="tab-bar" id="config-tab-bar">
+    <button class="tab-btn active" onclick="switchConfigTab('arch')">Architecture</button>
+    <button class="tab-btn" onclick="switchConfigTab('memory')">Memory</button>
+    <button class="tab-btn" onclick="switchConfigTab('causal')">Causality</button>
+    <button class="tab-btn" onclick="switchConfigTab('meta')">Meta-Cognition</button>
+    <button class="tab-btn" onclick="switchConfigTab('coherence')">Coherence</button>
+    <button class="tab-btn" onclick="switchConfigTab('planning')">Planning</button>
+    <button class="tab-btn" onclick="switchConfigTab('training')">Training</button>
+    <button class="tab-btn" onclick="switchConfigTab('monitoring')">Monitoring</button>
+  </div>
+
+  <!-- ARCH TAB -->
+  <div class="tab-panel active" id="ctab-arch">
+    <div class="alert alert-blue">
+      <span class="alert-icon">⚠️</span>
+      <div><strong>CRITICAL:</strong> vq_embedding_dim MUST equal z_dim. Violations cause AssertionError at initialization.</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">encoder_backend</div>
+        <select id="cfg-encoder_backend" onchange="syncZdim()">
+          <option value="ssm" selected>ssm (default)</option>
+          <option value="mamba2">mamba2 (recommended)</option>
+          <option value="linear_attention">linear_attention</option>
+          <option value="lstm">lstm (legacy)</option>
+        </select>
+        <div class="form-hint">SSM/Mamba/Attn encoder architecture</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">decoder_backend</div>
+        <select id="cfg-decoder_backend">
+          <option value="ssm" selected>ssm</option>
+          <option value="mamba2">mamba2</option>
+          <option value="lstm">lstm</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row-3">
+      <div class="form-group">
+        <div class="form-label">hidden_dim <span class="badge badge-blue">512+ for prod</span></div>
+        <input type="number" id="cfg-hidden_dim" value="256" min="64" max="2048" step="64" oninput="updateHiddenDimInfo()">
+        <div class="form-hint">Hidden state dimensionality</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">z_dim</div>
+        <input type="number" id="cfg-z_dim" value="256" min="64" max="2048" step="64" onchange="syncVqEmb()">
+        <div class="form-hint">Latent vector size (== vq_embedding_dim)</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">vq_embedding_dim <span class="badge badge-yellow">Must == z_dim</span></div>
+        <input type="number" id="cfg-vq_embedding_dim" value="256" min="64" max="2048" step="64">
+        <div class="form-hint" id="vq-zdim-hint" style="color:var(--green)">✓ Matches z_dim</div>
+      </div>
+    </div>
+    <div class="form-row-3">
+      <div class="form-group">
+        <div class="form-label">vocab_size</div>
+        <select id="cfg-vocab_size">
+          <option value="30522" selected>30522 (BERT)</option>
+          <option value="50257">50257 (GPT-2)</option>
+          <option value="32000">32000 (LLaMA)</option>
+          <option value="8192">8192 (custom)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">seq_length</div>
+        <input type="number" id="cfg-seq_length" value="64" min="16" max="8192" step="16">
+      </div>
+      <div class="form-group">
+        <div class="form-label">num_pillars</div>
+        <input type="number" id="cfg-num_pillars" value="64" min="8" max="256" step="8">
+        <div class="form-hint">Cognitive space factors</div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">max_iterations (meta-loop)</div>
+        <div class="range-row">
+          <input type="range" id="cfg-max_iterations" min="5" max="100" value="50" oninput="document.getElementById('mi-val').textContent=this.value">
+          <span class="range-value" id="mi-val">50</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">lipschitz_target</div>
+        <div class="range-row">
+          <input type="range" id="cfg-lipschitz_target" min="0.5" max="0.99" value="0.85" step="0.01" oninput="document.getElementById('lip-val').textContent=this.value">
+          <span class="range-value" id="lip-val">0.85</span>
+        </div>
+        <div class="form-hint">< 1.0 required for Banach convergence</div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">vq_num_embeddings</div>
+        <select id="cfg-vq_num_embeddings">
+          <option value="1024">1024</option>
+          <option value="4096">4096</option>
+          <option value="8192" selected>8192 (default)</option>
+          <option value="16384">16384 (full)</option>
+        </select>
+        <div class="form-hint">Codebook size — larger = richer thought vocabulary</div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">convergence_threshold</div>
+        <select id="cfg-convergence_threshold">
+          <option value="1e-3">1e-3 (fast)</option>
+          <option value="1e-4">1e-4</option>
+          <option value="1e-5" selected>1e-5 (default)</option>
+          <option value="1e-6">1e-6 (precise)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">use_vq</div>
+            <div class="toggle-desc">Enable Vector Quantization (discrete representations)</div>
+            <div class="toggle-default">default: True</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="cfg-use_vq" checked><div class="toggle-track"></div></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">enable_inference_cache</div>
+            <div class="toggle-desc">Cache SSM states for fast inference</div>
+            <div class="toggle-default">default: True</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="cfg-enable_inference_cache" checked><div class="toggle-track"></div></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">use_amp</div>
+            <div class="toggle-desc">Mixed Precision (fp16) — acceleration on CUDA GPU</div>
+            <div class="toggle-default">default: True</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="cfg-use_amp" checked><div class="toggle-track"></div></label>
+        </div>
+      </div>
+      <div>
+        <div class="form-group">
+          <div class="form-label">pretrained_backbone</div>
+          <input type="text" id="cfg-pretrained_backbone" placeholder="e.g. bert-base-uncased (empty = none)">
+          <div class="form-hint">HuggingFace model ID. Leave empty to skip.</div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">nan_policy</div>
+          <select id="cfg-nan_policy">
+            <option value="WARN" selected>WARN (default)</option>
+            <option value="RAISE">RAISE</option>
+            <option value="SILENT">SILENT</option>
+            <option value="QUARANTINE">QUARANTINE</option>
+          </select>
+          <div class="form-hint">Policy for NaN/Inf tensor values</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MEMORY TAB -->
+  <div class="tab-panel" id="ctab-memory">
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_hierarchical_memory</div>
+        <div class="toggle-desc">STM → Episodic → Semantic memory (Miller's 7)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_hierarchical_memory" onchange="toggleDependent(this,'mem-hier-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mem-hier-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">hierarchical_working_capacity</div>
+          <input type="number" id="cfg-hierarchical_working_capacity" value="7" min="1" max="20">
+          <div class="form-hint">Miller's number (7±2)</div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">hierarchical_episodic_capacity</div>
+          <input type="number" id="cfg-hierarchical_episodic_capacity" value="1000" min="100" max="100000" step="100">
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_neurogenic_memory</div>
+        <div class="toggle-desc">Biologically-inspired memory growth (neurogenesis)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_neurogenic_memory" onchange="toggleDependent(this,'mem-neuro-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mem-neuro-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">neurogenic_retrieval_weight</div>
+          <div class="range-row">
+            <input type="range" id="cfg-neurogenic_retrieval_weight" min="0" max="1" step="0.01" value="0.1"
+              oninput="document.getElementById('nrw-val').textContent=parseFloat(this.value).toFixed(2)">
+            <span class="range-value" id="nrw-val">0.10</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">neurogenic_retrieval_k</div>
+          <input type="number" id="cfg-neurogenic_retrieval_k" value="3" min="1" max="20">
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_temporal_memory</div>
+        <div class="toggle-desc">Memory with temporal decay (Ebbinghaus forgetting curve)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_temporal_memory" onchange="toggleDependent(this,'mem-temp-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mem-temp-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:240px">
+        <div class="form-label">temporal_memory_decay_rate</div>
+        <div class="range-row">
+          <input type="range" id="cfg-temporal_memory_decay_rate" min="0.001" max="0.1" step="0.001" value="0.01"
+            oninput="document.getElementById('tmdr-val').textContent=parseFloat(this.value).toFixed(3)">
+          <span class="range-value" id="tmdr-val">0.010</span>
+        </div>
+        <div class="form-hint">Lower = slower forgetting</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_consolidating_memory</div>
+        <div class="toggle-desc">3-level consolidation: working → episodic → semantic</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_consolidating_memory" onchange="toggleDependent(this,'mem-cons-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mem-cons-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:240px">
+        <div class="form-label">consolidating_semantic_weight</div>
+        <div class="range-row">
+          <input type="range" id="cfg-consolidating_semantic_weight" min="0" max="0.5" step="0.01" value="0.1"
+            oninput="document.getElementById('csw-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="range-value" id="csw-val">0.10</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CAUSAL TAB -->
+  <div class="tab-panel" id="ctab-causal">
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_causal_model</div>
+        <div class="toggle-desc">Basic neural causal model (NeuralCausalModel)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_causal_model"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_notears_causal</div>
+        <div class="toggle-desc">NOTEARS — DAG learning without cycles (Zheng et al. 2018, SOTA)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_notears_causal" onchange="toggleDependent(this,'notears-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="notears-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">notears_num_vars</div>
+          <input type="number" id="cfg-notears_num_vars" value="8" min="2" max="64">
+        </div>
+        <div class="form-group">
+          <div class="form-label">lambda_causal_dag</div>
+          <div class="range-row">
+            <input type="range" id="cfg-lambda_causal_dag" min="0.001" max="0.1" step="0.001" value="0.01"
+              oninput="document.getElementById('lcd-val').textContent=parseFloat(this.value).toFixed(3)">
+            <span class="range-value" id="lcd-val">0.010</span>
+          </div>
+          <div class="form-hint">DAG acyclicity penalty (h(W)=0 constraint)</div>
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_causal_world_model</div>
+        <div class="toggle-desc">World model with causal structure</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_causal_world_model"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_unified_simulator</div>
+        <div class="toggle-desc">Unified causal simulator for counterfactual reasoning</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_unified_simulator" onchange="toggleDependent(this,'usim-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="usim-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:200px">
+        <div class="form-label">unified_simulator_num_vars</div>
+        <input type="number" id="cfg-unified_simulator_num_vars" value="16" min="4" max="128">
+        <div class="form-hint">Must be > notears_num_vars</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_causal_context</div>
+        <div class="toggle-desc">3-level causal context buffer (short/medium/long term)</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_causal_context"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_causal_trace</div>
+        <div class="toggle-desc">Record causal decision chains for tracing</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_causal_trace"><div class="toggle-track"></div></label>
+    </div>
+    <div class="form-group" style="max-width:300px">
+      <div class="form-label">causal_blend_weight</div>
+      <div class="range-row">
+        <input type="range" id="cfg-causal_blend_weight" min="0" max="0.5" step="0.01" value="0.05"
+          oninput="document.getElementById('cbw-val').textContent=parseFloat(this.value).toFixed(2)">
+        <span class="range-value" id="cbw-val">0.05</span>
+      </div>
+      <div class="form-hint">Causal prediction influence on final state</div>
+    </div>
+  </div>
+
+  <!-- META-COGNITION TAB -->
+  <div class="tab-panel" id="ctab-meta">
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_auto_critic</div>
+        <div class="toggle-desc">System-2 self-criticism (Kahneman): Critic → Revision → evaluation</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_auto_critic" onchange="toggleDependent(this,'ac-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="ac-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">auto_critic_threshold</div>
+          <div class="range-row">
+            <input type="range" id="cfg-auto_critic_threshold" min="0.5" max="1.0" step="0.01" value="0.85"
+              oninput="document.getElementById('act-val').textContent=parseFloat(this.value).toFixed(2)">
+            <span class="range-value" id="act-val">0.85</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">auto_critic_max_iterations</div>
+          <input type="number" id="cfg-auto_critic_max_iterations" value="3" min="1" max="10">
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_recursive_meta_loop</div>
+        <div class="toggle-desc">Recursive meta-loop with hierarchical deepening</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_recursive_meta_loop" onchange="toggleDependent(this,'rml-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="rml-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:200px">
+        <div class="form-label">recursive_meta_depth</div>
+        <div class="range-row">
+          <input type="range" id="cfg-recursive_meta_depth" min="1" max="10" step="1" value="3"
+            oninput="document.getElementById('rmd-val').textContent=this.value">
+          <span class="range-value" id="rmd-val">3</span>
+        </div>
+        <div class="form-hint">Deeper = slower but more thorough</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_metacognitive_recursion</div>
+        <div class="toggle-desc">Auto-trigger deep thinking when uncertainty > threshold</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_metacognitive_recursion" onchange="toggleDependent(this,'mcr-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mcr-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">metacognitive_trigger_threshold</div>
+          <div class="range-row">
+            <input type="range" id="cfg-metacognitive_trigger_threshold" min="0.1" max="1.0" step="0.05" value="0.5"
+              oninput="document.getElementById('mtt-val').textContent=parseFloat(this.value).toFixed(2)">
+            <span class="range-value" id="mtt-val">0.50</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">metacognitive_extra_iterations</div>
+          <input type="number" id="cfg-metacognitive_extra_iterations" value="10" min="1" max="50">
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_error_evolution</div>
+        <div class="toggle-desc">Learn from error history to choose better recovery strategies</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_error_evolution"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_meta_recovery_integration</div>
+        <div class="toggle-desc">RL agent MetaRecoveryLearner for optimal recovery</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_meta_recovery_integration"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_meta_learning</div>
+        <div class="toggle-desc">MAML + EWC: fast adaptation with catastrophic forgetting prevention</div>
+        <div class="toggle-default">default: False</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_meta_learning" onchange="toggleDependent(this,'ml-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="ml-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:280px">
+        <div class="form-label">meta_ewc_lambda</div>
+        <div class="range-row">
+          <input type="range" id="cfg-meta_ewc_lambda" min="10" max="10000" step="10" value="1000"
+            oninput="document.getElementById('ewc-val').textContent=parseFloat(this.value).toFixed(0)">
+          <span class="range-value" id="ewc-val">1000</span>
+        </div>
+        <div class="form-hint">EWC regularization strength (higher = less forgetting)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- COHERENCE TAB -->
+  <div class="tab-panel" id="ctab-coherence">
+    <div class="alert alert-blue">
+      <span class="alert-icon">⚡</span>
+      <div><strong>enable_full_coherence=True</strong> activates all AGI components in one flag: module_coherence, metacognitive_recursion, causal_trace, error_evolution, auto_critic, cross_validation, ns_consistency, complexity_estimator, hybrid_reasoning, world_model, unified_simulator, and more.</div>
+    </div>
+    <div class="toggle-row" style="background:var(--accent-dim);border-radius:8px;padding:10px 14px;border:1px solid rgba(0,212,255,0.2);margin-bottom:12px">
+      <div class="toggle-info">
+        <div class="toggle-name" style="color:var(--accent);font-size:14px">⚡ enable_full_coherence</div>
+        <div class="toggle-desc">MASTER FLAG: activates ALL AGI components in one line</div>
+        <div class="toggle-default" style="color:var(--danger)">default: False · USE WITH CAUTION (10-20x slower)</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_full_coherence" onchange="onFullCoherenceToggle(this)"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_module_coherence</div>
+        <div class="toggle-desc">Check cosine similarity between all subsystem outputs</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_module_coherence" onchange="toggleDependent(this,'mc-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="mc-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:280px">
+        <div class="form-label">module_coherence_threshold</div>
+        <div class="range-row">
+          <input type="range" id="cfg-module_coherence_threshold" min="0.1" max="1.0" step="0.05" value="0.5"
+            oninput="document.getElementById('mct-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="range-value" id="mct-val">0.50</span>
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_cross_validation</div>
+        <div class="toggle-desc">Cross-validation of factor_state vs causal_state with iterative reconciliation</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_cross_validation"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_ns_consistency_check</div>
+        <div class="toggle-desc">Check neural outputs against symbolic soft-logic rules</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_ns_consistency_check"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_complexity_estimator</div>
+        <div class="toggle-desc">Skip expensive modules for simple inputs (adaptive computation)</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_complexity_estimator"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_external_trust</div>
+        <div class="toggle-desc">Trust scoring for external data: low trust → enhanced internal verification</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_external_trust"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_hybrid_reasoning</div>
+        <div class="toggle-desc">NeuroSymbolicBridge + DifferentiableForwardChainer + TemporalKnowledgeGraph</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_hybrid_reasoning"><div class="toggle-track"></div></label>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">intra_pass_feedback_threshold</div>
+        <div class="range-row">
+          <input type="range" id="cfg-intra_pass_feedback_threshold" min="0" max="1" step="0.05" value="0.3"
+            oninput="document.getElementById('ipft-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="range-value" id="ipft-val">0.30</span>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="form-label">intra_pass_feedback_scale</div>
+        <div class="range-row">
+          <input type="range" id="cfg-intra_pass_feedback_scale" min="0.001" max="0.2" step="0.001" value="0.05"
+            oninput="document.getElementById('ipfs-val').textContent=parseFloat(this.value).toFixed(3)">
+          <span class="range-value" id="ipfs-val">0.050</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PLANNING TAB -->
+  <div class="tab-panel" id="ctab-planning">
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_world_model</div>
+        <div class="toggle-desc">PhysicsGroundedWorldModel — next-state prediction</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_world_model" onchange="toggleDependent(this,'wm-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="wm-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-row">
+        <div class="form-group">
+          <div class="form-label">world_model_tree_depth</div>
+          <input type="number" id="cfg-world_model_tree_depth" value="3" min="1" max="10">
+          <div class="form-hint">Rolling horizon depth</div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">surprise_threshold</div>
+          <div class="range-row">
+            <input type="range" id="cfg-surprise_threshold" min="0.1" max="1.0" step="0.05" value="0.5"
+              oninput="document.getElementById('st-val').textContent=parseFloat(this.value).toFixed(2)">
+            <span class="range-value" id="st-val">0.50</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_mcts_planner</div>
+        <div class="toggle-desc">Monte Carlo Tree Search for strategic planning</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_mcts_planner"><div class="toggle-track"></div></label>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_active_learning_planner</div>
+        <div class="toggle-desc">Exploration via curiosity-driven planner (CuriosityDrivenExploration)</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_active_learning_planner" onchange="toggleDependent(this,'alp-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="alp-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:280px">
+        <div class="form-label">active_learning_curiosity_weight</div>
+        <div class="range-row">
+          <input type="range" id="cfg-active_learning_curiosity_weight" min="0" max="5" step="0.1" value="1.0"
+            oninput="document.getElementById('alcw-val').textContent=parseFloat(this.value).toFixed(1)">
+          <span class="range-value" id="alcw-val">1.0</span>
+        </div>
+        <div class="form-hint">Exploration vs exploitation balance</div>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle-info">
+        <div class="toggle-name">enable_hierarchical_vae</div>
+        <div class="toggle-desc">Multi-level VAE for hierarchical representations</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="cfg-enable_hierarchical_vae" onchange="toggleDependent(this,'hvae-opts')"><div class="toggle-track"></div></label>
+    </div>
+    <div id="hvae-opts" style="margin-left:24px;opacity:0.4;transition:opacity 0.2s">
+      <div class="form-group" style="max-width:280px">
+        <div class="form-label">hvae_blend_weight</div>
+        <div class="range-row">
+          <input type="range" id="cfg-hvae_blend_weight" min="0" max="0.5" step="0.01" value="0.1"
+            oninput="document.getElementById('hvae-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span class="range-value" id="hvae-val">0.10</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRAINING PARAMS TAB -->
+  <div class="tab-panel" id="ctab-training">
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">learning_rate</div>
+        <select id="cfg-lr">
+          <option value="1e-5">1e-5 (conservative)</option>
+          <option value="3e-5" selected>3e-5 (default)</option>
+          <option value="1e-4">1e-4 (fast)</option>
+          <option value="3e-4">3e-4 (aggressive)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">batch_size</div>
+        <select id="cfg-batch_size">
+          <option value="4">4</option>
+          <option value="8">8</option>
+          <option value="16" selected>16 (default)</option>
+          <option value="32">32</option>
+          <option value="64">64</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">num_epochs</div>
+        <input type="number" id="cfg-num_epochs" value="10" min="1" max="1000">
+      </div>
+      <div class="form-group">
+        <div class="form-label">gradient_clip_norm</div>
+        <div class="range-row">
+          <input type="range" id="cfg-grad_clip" min="0.1" max="5.0" step="0.1" value="1.0"
+            oninput="document.getElementById('gc-val').textContent=parseFloat(this.value).toFixed(1)">
+          <span class="range-value" id="gc-val">1.0</span>
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">optimizer</div>
+        <select id="cfg-optimizer">
+          <option value="adamw" selected>AdamW</option>
+          <option value="adam">Adam</option>
+          <option value="sgd">SGD</option>
+          <option value="rmsprop">RMSprop</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <div class="form-label">scheduler</div>
+        <select id="cfg-scheduler">
+          <option value="cosine" selected>Cosine Annealing</option>
+          <option value="onecycle">OneCycleLR</option>
+          <option value="linear">Linear Warmup</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="toggle-row" style="border:none;padding:0">
+        <div class="toggle-info">
+          <div class="toggle-name">enable_tensorboard</div>
+          <div class="toggle-desc">Auto-log all training metrics to TensorBoard</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="cfg-enable_tensorboard"><div class="toggle-track"></div></label>
+      </div>
+      <div class="toggle-row" style="border:none;padding:0">
+        <div class="toggle-info">
+          <div class="toggle-name">enable_wandb</div>
+          <div class="toggle-desc">Cloud monitoring via Weights & Biases</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="cfg-enable_wandb"><div class="toggle-track"></div></label>
+      </div>
+    </div>
+    <div class="form-group">
+      <div class="form-label">wandb_project</div>
+      <input type="text" id="cfg-wandb_project" placeholder="aeon-delta (requires wandb key)">
+    </div>
+    <div class="form-group">
+      <div class="form-label">checkpoint_dir</div>
+      <input type="text" id="cfg-checkpoint_dir" value="./checkpoints">
+    </div>
+  </div>
+
+  <!-- MONITORING TAB -->
+  <div class="tab-panel" id="ctab-monitoring">
+    <div class="form-row">
+      <div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">TensorGuard</div>
+            <div class="toggle-desc">NaN/Inf statistics across all tensors (always active)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked disabled><div class="toggle-track"></div></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">DecisionAuditLog</div>
+            <div class="toggle-desc">Every decision logged with subsystem, severity, metadata (always active)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked disabled><div class="toggle-track"></div></label>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-name">SystemIntegrityMonitor</div>
+            <div class="toggle-desc">Composite health score across all subsystems (always active)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" checked disabled><div class="toggle-track"></div></label>
+        </div>
+      </div>
+      <div>
+        <div class="form-group">
+          <div class="form-label">Log Level</div>
+          <select id="cfg-log_level">
+            <option value="DEBUG">DEBUG (verbose)</option>
+            <option value="INFO" selected>INFO (default)</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR (minimal)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <div class="form-label">Audit Export Format</div>
+          <select id="cfg-audit_format">
+            <option value="json" selected>JSON</option>
+            <option value="csv">CSV</option>
+            <option value="jsonl">JSONL (streaming)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <div class="form-label">Log Buffer Size</div>
+          <input type="number" id="cfg-log_buffer" value="1000" min="100" max="100000" step="100">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ PRESETS ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-presets">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Configuration Presets</div>
+      <div class="page-subtitle">Choose a preset to auto-configure all parameters</div>
+    </div>
+  </div>
+  <div class="preset-grid" style="margin-bottom:24px">
+    <div class="preset-card minimal" onclick="applyPreset('minimal')">
+      <div class="preset-badge"><span class="badge badge-green">Minimal</span></div>
+      <div class="preset-name" style="color:var(--green)">Minimal Config</div>
+      <div class="preset-desc">Core engine only. Best for debugging and quick tests.</div>
+      <ul class="preset-features">
+        <li>Encoder (SSM)</li>
+        <li>VQ-VAE 8192 codes</li>
+        <li>Meta-Loop 20 iter</li>
+        <li>Safety System</li>
+        <li class="off">Hierarchical Memory</li>
+        <li class="off">Causal Models</li>
+        <li class="off">World Model / MCTS</li>
+      </ul>
+      <div class="preset-speed">⚡ Speed: <span style="color:var(--green)">1x (baseline)</span></div>
+    </div>
+    <div class="preset-card production" onclick="applyPreset('production')">
+      <div class="preset-badge"><span class="badge badge-blue">Production</span></div>
+      <div class="preset-name" style="color:var(--accent)">Production</div>
+      <div class="preset-desc">Recommended for deployment. Balanced capability and speed.</div>
+      <ul class="preset-features">
+        <li>Encoder (Mamba2)</li>
+        <li>VQ-VAE 8192 codes</li>
+        <li>Meta-Loop 20 iter</li>
+        <li>Hierarchical Memory</li>
+        <li>Neurogenic Memory</li>
+        <li>Temporal Memory</li>
+        <li>AutoCritic (System-2)</li>
+        <li>Module Coherence</li>
+        <li class="off">NOTEARS DAG</li>
+        <li class="off">World Model + MCTS</li>
+      </ul>
+      <div class="preset-speed">⚡ Speed: <span style="color:var(--warn)">~3-5x slower</span></div>
+    </div>
+    <div class="preset-card full" onclick="applyPreset('full')">
+      <div class="preset-badge"><span class="badge badge-purple">Research</span></div>
+      <div class="preset-name" style="color:#a78bfa">Full (Research)</div>
+      <div class="preset-desc">All AGI components active. Maximum capability. Research only.</div>
+      <ul class="preset-features">
+        <li>Encoder (Mamba2)</li>
+        <li>VQ-VAE 16384 codes</li>
+        <li>Meta-Loop 50 iter</li>
+        <li>All Memory Types</li>
+        <li>Causal Model + NOTEARS</li>
+        <li>World Model + MCTS</li>
+        <li>AutoCritic + MetaCognition</li>
+        <li>Hybrid Reasoning (NS)</li>
+        <li>Meta-Learning (MAML)</li>
+        <li>enable_full_coherence=True</li>
+      </ul>
+      <div class="preset-speed">⚡ Speed: <span style="color:var(--danger)">~10-20x slower</span></div>
+    </div>
+  </div>
+  <div class="card" id="preset-applied-info" style="display:none">
+    <div class="card-title">✓ Applied Preset</div>
+    <div id="preset-applied-text"></div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ INFERENCE ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-inference">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Inference Engine</div>
+      <div class="page-subtitle">Run text generation and forward pass · requires initialized model</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="infer-model-status" style="font-size:11px;color:var(--text3)">Model: not initialized</span>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">▶ Generation Parameters</div>
+        <div class="form-group" style="margin-top:10px">
+          <div class="form-label">Prompt</div>
+          <textarea id="infer-prompt" rows="4" placeholder="The nature of consciousness is...">What is consciousness?</textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">max_length</div>
+            <div class="range-row">
+              <input type="range" id="infer-max-len" min="16" max="256" value="64"
+                oninput="document.getElementById('iml-val').textContent=this.value">
+              <span class="range-value" id="iml-val">64</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label">temperature</div>
+            <div class="range-row">
+              <input type="range" id="infer-temp" min="0.1" max="2.0" step="0.05" value="0.8"
+                oninput="document.getElementById('it-val').textContent=parseFloat(this.value).toFixed(2)">
+              <span class="range-value" id="it-val">0.80</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">top_k</div>
+            <div class="range-row">
+              <input type="range" id="infer-topk" min="1" max="200" value="50"
+                oninput="document.getElementById('itk-val').textContent=this.value">
+              <span class="range-value" id="itk-val">50</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label">top_p (nucleus)</div>
+            <div class="range-row">
+              <input type="range" id="infer-topp" min="0.5" max="1.0" step="0.01" value="0.95"
+                oninput="document.getElementById('itp-val').textContent=parseFloat(this.value).toFixed(2)">
+              <span class="range-value" id="itp-val">0.95</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-row" style="margin-top:8px">
+          <div class="toggle-row" style="border:none;padding:0">
+            <div class="toggle-info">
+              <div class="toggle-name">fast mode</div>
+              <div class="toggle-desc">Disables memory, planning, expensive subsystems</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="infer-fast"><div class="toggle-track"></div></label>
+          </div>
+          <div class="toggle-row" style="border:none;padding:0">
+            <div class="toggle-info">
+              <div class="toggle-name">stream output</div>
+              <div class="toggle-desc">Display tokens as generated</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="infer-stream" checked><div class="toggle-track"></div></label>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn btn-primary" id="run-infer-btn" onclick="runInference()" style="flex:1">
+            <span class="btn-icon">▶</span> Generate
+          </button>
+          <button class="btn btn-ghost" onclick="clearInferOutput()">✕</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">◈ Forward Pass (Raw)</div>
+        <div class="form-group" style="margin-top:8px">
+          <div class="form-label">input_ids (comma-separated token IDs)</div>
+          <input type="text" id="fwd-input-ids" value="101, 2054, 2003, 4272, 1029, 102">
+        </div>
+        <button class="btn btn-secondary" onclick="runForwardPass()" style="margin-top:4px">Run Forward Pass</button>
+        <div id="fwd-result" style="margin-top:10px;display:none">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Output keys:</div>
+          <div id="fwd-keys" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <div style="margin-top:10px;font-size:11px;color:var(--text3)">safety_score:</div>
+          <div id="fwd-safety" style="font-size:18px;font-family:var(--display);font-weight:700;color:var(--green)"></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">◉ Output</div>
+        <div class="infer-output" id="infer-output">
+          <span style="color:var(--text3)">Output will appear here...</span>
+        </div>
+        <div class="infer-meta" id="infer-meta" style="display:none">
+          <div class="infer-meta-item">Tokens: <span class="infer-meta-val" id="im-tokens">—</span></div>
+          <div class="infer-meta-item">Time: <span class="infer-meta-val" id="im-time">—</span></div>
+          <div class="infer-meta-item">tok/s: <span class="infer-meta-val" id="im-tps">—</span></div>
+          <div class="infer-meta-item">Safety: <span class="infer-meta-val" id="im-safety">—</span></div>
+          <div class="infer-meta-item">Converged in: <span class="infer-meta-val" id="im-iters">— iters</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">◐ Introspection State</div>
+        <div id="infer-introspect" style="margin-top:8px">
+          <div style="font-size:11px;color:var(--text3)">Run inference to see model introspection data</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ TRAINING ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-training">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Training</div>
+      <div class="page-subtitle">AEONTrainer · configure and launch training runs</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-danger" id="stop-train-btn" onclick="stopTraining()" style="display:none">■ Stop</button>
+      <button class="btn btn-primary" id="start-train-btn" onclick="startTraining()">◉ Start Training</button>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-bottom:20px">
+    <div class="card">
+      <div class="card-title">⚙ Training Configuration</div>
+      <div style="margin-top:10px">
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">Epochs</div>
+            <input type="number" id="train-epochs" value="10" min="1" max="1000">
+          </div>
+          <div class="form-group">
+            <div class="form-label">Learning Rate</div>
+            <select id="train-lr">
+              <option value="1e-5">1e-5</option>
+              <option value="3e-5" selected>3e-5</option>
+              <option value="1e-4">1e-4</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">Batch Size</div>
+            <select id="train-batch">
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16" selected>16</option>
+              <option value="32">32</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <div class="form-label">Warmup Steps</div>
+            <input type="number" id="train-warmup" value="100" min="0">
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="form-label">Checkpoint Dir</div>
+          <input type="text" id="train-checkpoint" value="./checkpoints">
+        </div>
+        <div class="form-group">
+          <div class="form-label">CLI Equivalent</div>
+          <div class="code-block" style="padding:10px;font-size:11px;color:var(--green)">
+            <span id="train-cli-preview">python core.py --mode train --epochs 10 --batch-size 16 --lr 3e-5</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title">◉ Training Status</div>
+        <div id="train-status-idle" style="font-size:12px;color:var(--text3);margin-top:8px">No active training run.</div>
+        <div id="train-status-active" style="display:none">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px;margin-top:8px">
+            <span style="font-size:11px;color:var(--text2)" id="train-epoch-label">Epoch 0/0</span>
+            <span style="font-size:11px;color:var(--accent)" id="train-pct">0%</span>
+          </div>
+          <div class="progress-track" style="height:8px"><div class="progress-fill" id="train-progress" style="width:0%"></div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--text3)">Train Loss</div>
+              <div style="font-size:18px;font-family:var(--display);color:var(--accent)" id="train-loss">—</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--text3)">Val Loss</div>
+              <div style="font-size:18px;font-family:var(--display);color:var(--purple)" id="val-loss">—</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:var(--text3)">LR</div>
+              <div style="font-size:16px;font-family:var(--display);color:var(--green)" id="train-lr-cur">—</div>
+            </div>
+          </div>
+          <div style="margin-top:8px;font-size:11px;color:var(--text3)" id="train-eta">ETA: —</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">◐ Recovery Statistics</div>
+        <div id="recovery-stats" style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+          <div style="display:flex;justify-content:space-between;font-size:11px">
+            <span style="color:var(--text3)">Numerical errors</span>
+            <span style="color:var(--accent)" id="rec-numerical">0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px">
+            <span style="color:var(--text3)">Convergence issues</span>
+            <span style="color:var(--accent)" id="rec-convergence">0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px">
+            <span style="color:var(--text3)">Recovered successfully</span>
+            <span style="color:var(--green)" id="rec-success">0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOSS CHART -->
+  <div class="chart-area">
+    <div class="chart-header">
+      <div class="chart-title">Training Loss Curve</div>
+      <div class="chart-legend">
+        <span><span class="legend-dot" style="background:var(--accent)"></span>Train</span>
+        <span><span class="legend-dot" style="background:var(--purple)"></span>Validation</span>
+      </div>
+    </div>
+    <canvas id="loss-chart" height="180"></canvas>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ LOGS ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-logs">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Live Logs</div>
+      <div class="page-subtitle">Real-time system log stream · DecisionAuditLog + Python logging</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" id="log-pause-btn" onclick="toggleLogPause()">⏸ Pause</button>
+      <button class="btn btn-ghost" onclick="clearLogs()">✕ Clear</button>
+      <button class="btn btn-secondary" onclick="exportLogs()">↓ Export JSON</button>
+    </div>
+  </div>
+
+  <div class="log-toolbar">
+    <div class="log-filter-chip active-info" onclick="toggleFilter('INFO',this)">INFO</div>
+    <div class="log-filter-chip active-warn" onclick="toggleFilter('WARN',this)">WARN</div>
+    <div class="log-filter-chip active-error" onclick="toggleFilter('ERROR',this)">ERROR</div>
+    <div class="log-filter-chip active-debug" onclick="toggleFilter('DEBUG',this)">DEBUG</div>
+    <div class="log-filter-chip active-success" onclick="toggleFilter('SUCCESS',this)">SUCCESS</div>
+    <div style="flex:1"></div>
+    <input type="text" id="log-search" placeholder="Filter logs..." style="width:200px;padding:4px 10px;font-size:11px" oninput="filterLogs()">
+    <div style="font-size:11px;color:var(--text3)" id="log-count">0 entries</div>
+  </div>
+  <div class="log-container" id="log-container"></div>
+  <div class="panel-footer">
+    <span id="log-status" style="font-size:11px;color:var(--text3)">Streaming active</span>
+    <span id="log-rate" style="font-size:11px;color:var(--text3)">0 logs/s</span>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ AUDIT ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-audit">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Audit Trail</div>
+      <div class="page-subtitle">Decision audit log · every subsystem decision recorded</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <select id="audit-filter-sub" onchange="filterAudit()" style="width:160px">
+        <option value="">All subsystems</option>
+        <option value="safety">safety</option>
+        <option value="memory">memory</option>
+        <option value="meta_loop">meta_loop</option>
+        <option value="vq_vae">vq_vae</option>
+        <option value="encoder">encoder</option>
+        <option value="causal">causal</option>
+        <option value="planning">planning</option>
+      </select>
+      <select id="audit-filter-sev" onchange="filterAudit()" style="width:140px">
+        <option value="">All severities</option>
+        <option value="info">info</option>
+        <option value="warning">warning</option>
+        <option value="critical">critical</option>
+      </select>
+      <button class="btn btn-ghost" onclick="exportAudit()">↓ Export JSON</button>
+    </div>
+  </div>
+
+  <div class="grid-4" style="margin-bottom:16px">
+    <div class="card card-accent">
+      <div class="card-title">Total Decisions</div>
+      <div class="card-value accent" id="audit-total">0</div>
+    </div>
+    <div class="card card-green">
+      <div class="card-title">Info</div>
+      <div class="card-value green" id="audit-info">0</div>
+    </div>
+    <div class="card card-warn">
+      <div class="card-title">Warnings</div>
+      <div class="card-value warn" id="audit-warn">0</div>
+    </div>
+    <div class="card card-danger">
+      <div class="card-title">Critical</div>
+      <div class="card-value danger" id="audit-crit">0</div>
+    </div>
+  </div>
+
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;max-height:500px;overflow-y:auto">
+    <table class="audit-table" id="audit-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Subsystem</th>
+          <th>Severity</th>
+          <th>Decision</th>
+          <th>Metadata</th>
+        </tr>
+      </thead>
+      <tbody id="audit-tbody">
+        <tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No audit entries yet. Initialize and run the model to generate decisions.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top:16px">
+    <div class="card">
+      <div class="card-title">◐ Pattern Insights</div>
+      <div id="pattern-insights" style="margin-top:8px;font-size:12px;color:var(--text3)">
+        Insufficient data for pattern analysis. Need at least 10 decisions.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ MONITOR ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-monitor">
+  <div class="page-header">
+    <div>
+      <div class="page-title">System Monitor</div>
+      <div class="page-subtitle">SystemIntegrityMonitor · real-time health scores and anomaly detection</div>
+    </div>
+    <button class="btn btn-secondary" onclick="refreshMonitor()">↻ Refresh</button>
+  </div>
+
+  <div class="grid-3" style="margin-bottom:20px">
+    <div class="card card-green">
+      <div class="card-title">🏥 Overall Health</div>
+      <div class="card-value green" id="mon-health">—</div>
+      <div class="card-meta" id="mon-health-meta">Not initialized</div>
+      <div class="metric-bar"><div class="metric-fill green" id="mon-health-bar" style="width:0%"></div></div>
+    </div>
+    <div class="card card-accent">
+      <div class="card-title">⏱ Inference Latency</div>
+      <div class="card-value accent" id="mon-latency">—</div>
+      <div class="card-meta">ms per forward pass</div>
+    </div>
+    <div class="card card-purple">
+      <div class="card-title">◈ Meta-Loop Iters</div>
+      <div class="card-value" style="color:var(--purple)" id="mon-iters">—</div>
+      <div class="card-meta" id="mon-iters-meta">avg to convergence</div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-bottom:20px">
+    <div class="card">
+      <div class="card-title">◐ Subsystem Health Scores</div>
+      <div id="mon-subsys-list" style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:11px;color:var(--text3)">Initialize model to see subsystem scores</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">⚠ Detected Anomalies</div>
+      <div id="mon-anomalies" style="margin-top:10px;max-height:200px;overflow-y:auto;font-size:11px">
+        <div style="color:var(--green)">✓ No anomalies detected</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chart-area">
+    <div class="chart-header">
+      <div class="chart-title">Health Score Over Time</div>
+    </div>
+    <canvas id="health-chart" height="160"></canvas>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ TENSORGUARD ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-tensorguard">
+  <div class="page-header">
+    <div>
+      <div class="page-title">TensorGuard</div>
+      <div class="page-subtitle">NaN/Inf statistics across all tensors · always active · error recovery tracking</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary" onclick="refreshTG()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="resetTG()">↺ Reset Stats</button>
+    </div>
+  </div>
+
+  <div class="grid-4" style="margin-bottom:20px">
+    <div class="card card-green">
+      <div class="card-title">Total Tensors</div>
+      <div class="card-value green" id="tg-total">0</div>
+    </div>
+    <div class="card card-accent">
+      <div class="card-title">Clean</div>
+      <div class="card-value accent" id="tg-clean">0</div>
+    </div>
+    <div class="card card-warn">
+      <div class="card-title">NaN Detections</div>
+      <div class="card-value warn" id="tg-nan">0</div>
+    </div>
+    <div class="card card-danger">
+      <div class="card-title">Inf Detections</div>
+      <div class="card-value danger" id="tg-inf">0</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📊 Tensor Statistics by Layer</div>
+    <div style="overflow-x:auto;margin-top:10px">
+      <table class="tg-table" id="tg-table">
+        <thead>
+          <tr>
+            <th>Layer / Tensor</th>
+            <th>Shape</th>
+            <th>Mean</th>
+            <th>Std</th>
+            <th>Min</th>
+            <th>Max</th>
+            <th>NaN count</th>
+            <th>Inf count</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tg-tbody">
+          <tr><td colspan="9" style="text-align:center;color:var(--text3);padding:24px">No tensor data. Initialize model and run forward pass.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">◉ Error Recovery History</div>
+    <div id="tg-recovery" style="margin-top:10px;font-size:11px;color:var(--text3)">No recovery events recorded.</div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ CODE GENERATOR ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-codegen">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Code Generator</div>
+      <div class="page-subtitle">Generate Python code from current configuration</div>
+    </div>
+    <button class="btn btn-primary" onclick="generateCode()">⚙ Generate</button>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchCodeTab('init')">Initialization</button>
+    <button class="tab-btn" onclick="switchCodeTab('infer')">Inference</button>
+    <button class="tab-btn" onclick="switchCodeTab('train')">Training</button>
+    <button class="tab-btn" onclick="switchCodeTab('introspect')">Introspection</button>
+    <button class="tab-btn" onclick="switchCodeTab('cli')">CLI Commands</button>
+  </div>
+
+  <div class="tab-panel active" id="codetab-init">
+    <div class="code-block" id="gen-init-code">
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+      <pre id="gen-init-pre" style="margin:0"></pre>
+    </div>
+  </div>
+  <div class="tab-panel" id="codetab-infer">
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+      <pre id="gen-infer-pre" style="margin:0"></pre>
+    </div>
+  </div>
+  <div class="tab-panel" id="codetab-train">
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+      <pre id="gen-train-pre" style="margin:0"></pre>
+    </div>
+  </div>
+  <div class="tab-panel" id="codetab-introspect">
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+      <pre id="gen-introspect-pre" style="margin:0"></pre>
+    </div>
+  </div>
+  <div class="tab-panel" id="codetab-cli">
+    <div class="code-block">
+      <button class="code-copy" onclick="copyCode(this)">copy</button>
+      <pre id="gen-cli-pre" style="margin:0"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ━━━━━━━━━━━━━━━━ EXPORT ━━━━━━━━━━━━━━━━ -->
+<div class="panel" id="panel-export">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Export Configuration</div>
+      <div class="page-subtitle">Export current AEONConfig as JSON or Python dataclass</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary" onclick="exportConfigJSON()">↓ Download JSON</button>
+      <button class="btn btn-ghost" onclick="copyExportConfig()">⎘ Copy</button>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchExportTab('json')">JSON</button>
+    <button class="tab-btn" onclick="switchExportTab('python')">Python</button>
+  </div>
+
+  <div class="tab-panel active" id="etab-json">
+    <div class="export-box" id="export-json-box">Generating...</div>
+  </div>
+  <div class="tab-panel" id="etab-python">
+    <div class="export-box" id="export-python-box">Generating...</div>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// AEON DASHBOARD JAVASCRIPT ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+// ─── STATE ───────────────────────────────────────────────────
+const state = {
+  modelInitialized: false,
+  modelParams: 0,
+  preset: 'production',
+  device: 'CPU',
+  healthScore: 0,
+  logsPaused: false,
+  logsFilters: new Set(['INFO','WARN','ERROR','DEBUG','SUCCESS']),
+  logEntries: [],
+  auditEntries: [],
+  trainingActive: false,
+  trainingEpoch: 0,
+  totalEpochs: 10,
+  trainLossHistory: [],
+  valLossHistory: [],
+  healthHistory: [],
+  activePanel: 'dashboard',
+  tgData: [],
+  recoveryStats: { numerical: 0, convergence: 0, success: 0 },
+  logBadgeCount: 0,
+  inferRunning: false,
+};
+
+// ─── CLOCK ───────────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toTimeString().slice(0,8);
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ─── NAVIGATION ──────────────────────────────────────────────
+function showPanel(id) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.textContent.trim().startsWith(capitalize(id)) ||
+        n.onclick?.toString().includes("'" + id + "'")) {
+      n.classList.add('active');
+    }
+  });
+  state.activePanel = id;
+  if (id === 'export') renderExport();
+  if (id === 'codegen') generateCode();
+  if (id === 'architecture') drawDepMap();
+  if (id === 'tensorguard' && state.modelInitialized) refreshTG();
+}
+
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+// ─── CONFIG TABS ─────────────────────────────────────────────
+function switchConfigTab(id) {
+  document.querySelectorAll('#config-tab-bar .tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#panel-config .tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('ctab-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function switchCodeTab(id) {
+  const bar = document.getElementById('panel-codegen').querySelector('.tab-bar');
+  bar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#panel-codegen .tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('codetab-' + id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function switchExportTab(id) {
+  const bar = document.getElementById('panel-export').querySelector('.tab-bar');
+  bar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#panel-export .tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('etab-' + id).classList.add('active');
+  event.target.classList.add('active');
+  renderExport();
+}
+
+// ─── CONFIG SYNC ─────────────────────────────────────────────
+function syncZdim() {}
+function syncVqEmb() {
+  const zdim = document.getElementById('cfg-z_dim').value;
+  document.getElementById('cfg-vq_embedding_dim').value = zdim;
+  checkVqZdim();
+}
+function checkVqZdim() {
+  const z = document.getElementById('cfg-z_dim').value;
+  const vq = document.getElementById('cfg-vq_embedding_dim').value;
+  const hint = document.getElementById('vq-zdim-hint');
+  if (z === vq) {
+    hint.textContent = '✓ Matches z_dim';
+    hint.style.color = 'var(--green)';
+  } else {
+    hint.textContent = '⚠ MUST equal z_dim (' + z + ')';
+    hint.style.color = 'var(--danger)';
+  }
+}
+document.getElementById('cfg-vq_embedding_dim').addEventListener('input', checkVqZdim);
+document.getElementById('cfg-z_dim').addEventListener('input', checkVqZdim);
+
+function updateHiddenDimInfo() {}
+
+function toggleDependent(checkbox, containerId) {
+  const el = document.getElementById(containerId);
+  if (el) el.style.opacity = checkbox.checked ? '1' : '0.4';
+}
+
+function onFullCoherenceToggle(cb) {
+  if (cb.checked) {
+    const flags = ['cfg-enable_module_coherence','cfg-enable_cross_validation',
+      'cfg-enable_ns_consistency_check','cfg-enable_complexity_estimator',
+      'cfg-enable_external_trust','cfg-enable_hybrid_reasoning'];
+    flags.forEach(id => { const el = document.getElementById(id); if(el) el.checked = true; });
+    addLog('INFO','config','enable_full_coherence activated — all coherence subsystems enabled');
+  }
+}
+
+// ─── PRESETS ─────────────────────────────────────────────────
+const PRESETS = {
+  minimal: {
+    'cfg-encoder_backend': 'ssm', 'cfg-decoder_backend': 'ssm',
+    'cfg-hidden_dim': 256, 'cfg-z_dim': 256, 'cfg-vq_embedding_dim': 256,
+    'cfg-vq_num_embeddings': 8192, 'cfg-max_iterations': 20,
+    'cfg-enable_hierarchical_memory': false, 'cfg-enable_neurogenic_memory': false,
+    'cfg-enable_temporal_memory': false, 'cfg-enable_consolidating_memory': false,
+    'cfg-enable_full_coherence': false, 'cfg-enable_causal_model': false,
+    'cfg-enable_mcts_planner': false, 'cfg-enable_world_model': false,
+    'cfg-enable_auto_critic': false, 'cfg-enable_meta_learning': false,
+  },
+  production: {
+    'cfg-encoder_backend': 'mamba2', 'cfg-decoder_backend': 'mamba2',
+    'cfg-hidden_dim': 512, 'cfg-z_dim': 512, 'cfg-vq_embedding_dim': 512,
+    'cfg-vq_num_embeddings': 8192, 'cfg-max_iterations': 20,
+    'cfg-enable_hierarchical_memory': true, 'cfg-enable_neurogenic_memory': true,
+    'cfg-enable_temporal_memory': true, 'cfg-enable_consolidating_memory': false,
+    'cfg-enable_auto_critic': true, 'cfg-enable_module_coherence': true,
+    'cfg-enable_inference_cache': true, 'cfg-use_amp': true,
+    'cfg-enable_full_coherence': false, 'cfg-enable_mcts_planner': false,
+  },
+  full: {
+    'cfg-encoder_backend': 'mamba2', 'cfg-decoder_backend': 'mamba2',
+    'cfg-hidden_dim': 512, 'cfg-z_dim': 512, 'cfg-vq_embedding_dim': 512,
+    'cfg-vq_num_embeddings': 16384, 'cfg-max_iterations': 50,
+    'cfg-enable_full_coherence': true,
+    'cfg-enable_hierarchical_memory': true, 'cfg-enable_neurogenic_memory': true,
+    'cfg-enable_temporal_memory': true, 'cfg-enable_consolidating_memory': true,
+    'cfg-enable_causal_model': true, 'cfg-enable_notears_causal': true,
+    'cfg-enable_causal_world_model': true, 'cfg-enable_unified_simulator': true,
+    'cfg-enable_world_model': true, 'cfg-enable_mcts_planner': true,
+    'cfg-enable_auto_critic': true, 'cfg-enable_recursive_meta_loop': true,
+    'cfg-enable_metacognitive_recursion': true, 'cfg-enable_meta_learning': true,
+    'cfg-enable_active_learning_planner': true,
+  }
+};
+
+function applyPreset(name) {
+  const preset = PRESETS[name];
+  document.querySelectorAll('.preset-card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  state.preset = name;
+  for (const [id, val] of Object.entries(preset)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = val;
+    else el.value = val;
+  }
+  // sync dependent panels
+  ['notears','usim','ac','rml','mcr','mc','wm','alp','hvae','ml',
+   'mem-hier','mem-neuro','mem-temp','mem-cons'].forEach(id => {
+    const chk = document.getElementById('cfg-enable_' + id.replace('-','_'));
+    const dep = document.getElementById(id + '-opts');
+    if (chk && dep) dep.style.opacity = chk.checked ? '1' : '0.4';
+  });
+  checkVqZdim();
+  const info = document.getElementById('preset-applied-info');
+  info.style.display = 'block';
+  document.getElementById('preset-applied-text').innerHTML =
+    `<span style="color:var(--accent)">${name.toUpperCase()}</span> preset applied · ${Object.keys(preset).length} parameters configured`;
+  addLog('INFO','config','Preset applied: ' + name);
+
+  // update arch flow
+  const enc = preset['cfg-encoder_backend'] || 'ssm';
+  document.getElementById('arch-encoder-sub').textContent = enc;
+  document.getElementById('arch-decoder-sub').textContent = enc;
+  const vq = preset['cfg-vq_num_embeddings'] || 8192;
+  document.getElementById('arch-vq-sub').textContent = (vq/1000).toFixed(0) + 'K codes';
+  const iter = preset['cfg-max_iterations'] || 50;
+  document.getElementById('arch-meta-sub').textContent = 'Banach FP · ' + iter + ' iter';
+  // arch opacity
+  document.getElementById('arch-mem').style.opacity = preset['cfg-enable_hierarchical_memory'] ? '1' : '0.3';
+  document.getElementById('arch-causal').style.opacity = preset['cfg-enable_causal_model'] ? '1' : '0.3';
+  document.getElementById('arch-plan').style.opacity = preset['cfg-enable_mcts_planner'] ? '1' : '0.3';
+}
+
+function getConfig() {
+  const cfg = {};
+  document.querySelectorAll('[id^="cfg-"]').forEach(el => {
+    const key = el.id.replace('cfg-','');
+    if (el.type === 'checkbox') cfg[key] = el.checked;
+    else if (el.type === 'range') cfg[key] = parseFloat(el.value);
+    else if (el.type === 'number') cfg[key] = parseFloat(el.value);
+    else cfg[key] = el.value;
+  });
+  return cfg;
+}
+
+function resetConfig() {
+  applyPreset('production');
+  addLog('INFO','config','Configuration reset to production defaults');
+}
+
+function applyConfig() {
+  if (state.modelInitialized) {
+    initModel();
+  } else {
+    addLog('WARN','config','Model not initialized. Config will be applied on next init.');
+  }
+}
+
+// ─── MODEL INIT ──────────────────────────────────────────────
+const INIT_STEPS = [
+  'Setting random seed...', 'Parsing configuration...', 'Validating vq_embedding_dim == z_dim...',
+  'Building encoder (SSM backend)...', 'Building VQ-VAE quantizer...',
+  'Initializing meta-loop (Banach FP)...', 'Loading memory subsystems...',
+  'Initializing safety system...', 'Setting up TensorGuard...',
+  'Initializing SystemIntegrityMonitor...', 'Building decoder...',
+  'Counting parameters...', 'Model ready ✓'
+];
+
+function initModel() {
+  const preset = document.getElementById('quick-preset')?.value || state.preset;
+  const device = document.getElementById('quick-device')?.value || 'auto';
+  const hidden = document.getElementById('quick-hidden')?.value || 256;
+
+  document.getElementById('init-btn').disabled = true;
+  document.getElementById('init-progress').style.display = 'block';
+  setSystemStatus('INITIALIZING', 'warn');
+
+  addLog('INFO','core','Starting model initialization...');
+  addLog('INFO','config','Preset: ' + preset + ' · device: ' + device + ' · hidden_dim: ' + hidden);
+
+  let stepIdx = 0;
+  const stepInterval = setInterval(() => {
+    const step = INIT_STEPS[stepIdx];
+    document.getElementById('init-step').textContent = step;
+    document.getElementById('init-progress-bar').style.width = ((stepIdx+1)/INIT_STEPS.length*100) + '%';
+    addLog('INFO', stepIdx < 3 ? 'config' : stepIdx < 8 ? 'core' : 'monitor', step);
+    stepIdx++;
+    if (stepIdx >= INIT_STEPS.length) {
+      clearInterval(stepInterval);
+      finalizeInit(preset, device, hidden);
+    }
+  }, 280);
+}
+
+function finalizeInit(preset, device, hidden) {
+  state.modelInitialized = true;
+  state.preset = preset;
+  state.device = device === 'auto' ? 'CPU' : device.toUpperCase();
+
+  // Simulate parameter count
+  const h = parseInt(hidden);
+  const base = h * 512 + h * h * 4;
+  state.modelParams = base + (preset === 'full' ? base * 3 : preset === 'production' ? base * 1.5 : 0);
+  state.modelParams = Math.round(state.modelParams);
+
+  // Update device badge
+  document.getElementById('device-str').textContent = state.device;
+  setSystemStatus('READY', 'green');
+
+  document.getElementById('init-btn').style.display = 'none';
+  document.getElementById('deinit-btn').style.display = '';
+  document.getElementById('init-progress').style.display = 'none';
+
+  // Update dashboard metrics
+  const pStr = state.modelParams > 1e6 ? (state.modelParams/1e6).toFixed(1) + 'M' : (state.modelParams/1e3).toFixed(0) + 'K';
+  animateValue('param-count', pStr);
+  document.getElementById('param-meta').textContent = 'trainable parameters';
+  document.getElementById('param-bar').style.width = Math.min(state.modelParams / 5e6 * 100, 100) + '%';
+
+  // Health
+  const health = 0.82 + Math.random() * 0.12;
+  state.healthScore = health;
+  updateHealthDisplay(health);
+
+  // Flags
+  const cfg = getConfig();
+  const flagCount = Object.entries(cfg).filter(([k,v]) => k.startsWith('enable_') && v === true).length;
+  animateValue('flag-count', flagCount);
+  document.getElementById('flag-bar').style.width = (flagCount/25*100) + '%';
+
+  // VQ
+  const vqPct = (0.4 + Math.random() * 0.4);
+  document.getElementById('vq-usage').textContent = (vqPct*100).toFixed(0) + '%';
+  document.getElementById('vq-meta').textContent = 'of ' + (cfg.vq_num_embeddings||8192) + ' codes active';
+  document.getElementById('vq-bar').style.width = (vqPct*100) + '%';
+
+  // Codebook vis
+  renderCodebookVis(cfg.vq_num_embeddings || 8192, vqPct);
+
+  // Subsystems
+  renderSubsystems();
+
+  // Infer status
+  document.getElementById('infer-model-status').textContent = 'Model: ' + preset + ' · ' + pStr + ' params';
+  document.getElementById('infer-model-status').style.color = 'var(--green)';
+
+  // TG Data
+  generateTGData();
+
+  addLog('SUCCESS','core','✓ AEONDeltaV3 initialized · ' + pStr + ' parameters · ' + state.device);
+  addLog('INFO','audit','Decision audit log started');
+  addLog('INFO','monitor','SystemIntegrityMonitor: health=' + (health*100).toFixed(1) + '%');
+
+  // Seed some audit entries
+  setTimeout(() => seedAuditEntries(), 500);
+  setTimeout(() => seedAuditEntries(), 1200);
+  setTimeout(() => seedAuditEntries(), 2000);
+
+  state.healthHistory.push({ t: Date.now(), v: health });
+  if (state.activePanel === 'monitor') drawHealthChart();
+}
+
+function updateHealthDisplay(h) {
+  const pct = (h * 100).toFixed(1);
+  document.getElementById('health-score').textContent = pct + '%';
+  document.getElementById('health-meta').textContent = h > 0.9 ? 'Excellent' : h > 0.7 ? 'Good' : 'Degraded';
+  document.getElementById('health-bar').style.width = (h*100) + '%';
+  document.getElementById('health-ring-val').textContent = pct + '%';
+  // ring circle: dashoffset = 251.2 * (1 - h)
+  document.getElementById('health-ring-circle').setAttribute('stroke-dashoffset', (251.2*(1-h)).toFixed(1));
+  document.getElementById('health-ring-circle').setAttribute('stroke', h > 0.8 ? 'var(--green)' : h > 0.5 ? 'var(--warn)' : 'var(--danger)');
+
+  document.getElementById('mon-health').textContent = pct + '%';
+  document.getElementById('mon-health-meta').textContent = h > 0.9 ? 'All systems nominal' : 'Some degradation detected';
+  document.getElementById('mon-health-bar').style.width = (h*100) + '%';
+}
+
+function deinitModel() {
+  state.modelInitialized = false;
+  state.modelParams = 0;
+  document.getElementById('init-btn').style.display = '';
+  document.getElementById('deinit-btn').style.display = 'none';
+  document.getElementById('param-count').textContent = '0';
+  document.getElementById('param-meta').textContent = 'Not initialized';
+  document.getElementById('health-score').textContent = '—';
+  document.getElementById('flag-count').textContent = '0';
+  document.getElementById('vq-usage').textContent = '—';
+  document.getElementById('health-ring-val').textContent = '—';
+  document.getElementById('init-btn').disabled = false;
+  setSystemStatus('IDLE', 'idle');
+  addLog('WARN','core','Model deinitialized');
+}
+
+function renderSubsystems() {
+  const cfg = getConfig();
+  const items = [
+    { name: 'Encoder (SSM)', score: 0.95 + Math.random()*0.04, active: true },
+    { name: 'VQ-VAE', score: 0.88 + Math.random()*0.08, active: true },
+    { name: 'Meta-Loop', score: 0.92 + Math.random()*0.06, active: true },
+    { name: 'Safety System', score: 0.99, active: true },
+    { name: 'TensorGuard', score: 1.0, active: true },
+    { name: 'Hierarchical Memory', score: 0.85 + Math.random()*0.1, active: !!cfg.enable_hierarchical_memory },
+    { name: 'Causal Model', score: 0.78 + Math.random()*0.12, active: !!cfg.enable_causal_model },
+    { name: 'World Model', score: 0.72 + Math.random()*0.15, active: !!cfg.enable_world_model },
+  ];
+
+  const sl = document.getElementById('subsys-list');
+  sl.innerHTML = '';
+  const monSl = document.getElementById('mon-subsys-list');
+  monSl.innerHTML = '';
+
+  items.filter(i => i.active).slice(0,6).forEach(item => {
+    const color = item.score > 0.9 ? 'var(--green)' : item.score > 0.7 ? 'var(--warn)' : 'var(--danger)';
+    const statusText = item.score > 0.9 ? 'OK' : item.score > 0.7 ? 'Degraded' : 'Critical';
+    sl.innerHTML += `
+      <div class="subsys-item">
+        <div class="subsys-dot" style="background:${color}"></div>
+        <span class="subsys-name">${item.name}</span>
+        <span class="subsys-score">${(item.score*100).toFixed(0)}%</span>
+      </div>`;
+    monSl.innerHTML += `
+      <div class="subsys-item">
+        <div class="subsys-dot" style="background:${color}"></div>
+        <span class="subsys-name">${item.name}</span>
+        <div class="metric-bar" style="flex:1;margin:0 10px"><div class="metric-fill ${item.score>0.9?'green':item.score>0.7?'warn':'danger'}" style="width:${(item.score*100).toFixed(0)}%"></div></div>
+        <span class="subsys-score">${(item.score*100).toFixed(0)}%</span>
+        <span class="subsys-status" style="color:${color}">${statusText}</span>
+      </div>`;
+  });
+}
+
+function renderCodebookVis(numEmb, usedFrac) {
+  const container = document.getElementById('codebook-vis');
+  container.innerHTML = '';
+  const n = 128;
+  for (let i = 0; i < n; i++) {
+    const used = Math.random() < usedFrac;
+    const heat = used ? Math.random() : 0.05;
+    const c = document.createElement('div');
+    c.className = 'codebook-cell';
+    c.style.background = used
+      ? `hsl(${180 + heat*60}deg, 80%, ${20+heat*40}%)`
+      : 'var(--surface3)';
+    container.appendChild(c);
+  }
+  document.getElementById('codebook-meta').textContent =
+    `${(usedFrac*100).toFixed(0)}% of ${(numEmb/1000).toFixed(0)}K codes active`;
+  document.getElementById('vq-usage').textContent = (usedFrac*100).toFixed(0) + '%';
+}
+
+// ─── LOGS ────────────────────────────────────────────────────
+let logBatchCount = 0;
+let logBatchTimer = null;
+
+function addLog(level, subsys, msg) {
+  const now = new Date();
+  const time = now.toTimeString().slice(0,8);
+  const entry = { time, level, subsys, msg, ts: now };
+  state.logEntries.push(entry);
+  if (state.logEntries.length > 2000) state.logEntries.shift();
+
+  state.logBadgeCount = (state.logBadgeCount || 0) + 1;
+  if (state.activePanel !== 'logs') {
+    document.getElementById('log-badge').textContent = state.logBadgeCount;
+  }
+
+  if (!state.logsPaused && state.logsFilters.has(level)) {
+    appendLogEntry(entry);
+  }
+
+  logBatchCount++;
+  updateLogCount();
+}
+
+function appendLogEntry(entry) {
+  const container = document.getElementById('log-container');
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.dataset.level = entry.level;
+  div.dataset.subsys = entry.subsys;
+  div.innerHTML = `
+    <span class="log-time">${entry.time}</span>
+    <span class="log-level ${entry.level}">${entry.level}</span>
+    <span class="log-subsys">${entry.subsys}</span>
+    <span class="log-msg">${entry.msg}</span>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  if (container.children.length > 500) container.removeChild(container.firstChild);
+}
+
+function toggleFilter(level, chip) {
+  if (state.logsFilters.has(level)) {
+    state.logsFilters.delete(level);
+    chip.classList.remove('active-' + level.toLowerCase());
+  } else {
+    state.logsFilters.add(level);
+    chip.classList.add('active-' + level.toLowerCase());
+  }
+  rerenderLogs();
+}
+
+function rerenderLogs() {
+  const container = document.getElementById('log-container');
+  container.innerHTML = '';
+  const search = document.getElementById('log-search').value.toLowerCase();
+  state.logEntries.filter(e =>
+    state.logsFilters.has(e.level) &&
+    (!search || e.msg.toLowerCase().includes(search) || e.subsys.toLowerCase().includes(search))
+  ).slice(-300).forEach(appendLogEntry);
+}
+
+function filterLogs() { rerenderLogs(); }
+
+function toggleLogPause() {
+  state.logsPaused = !state.logsPaused;
+  const btn = document.getElementById('log-pause-btn');
+  btn.textContent = state.logsPaused ? '▶ Resume' : '⏸ Pause';
+  document.getElementById('log-status').textContent = state.logsPaused ? 'Paused' : 'Streaming active';
+}
+
+function clearLogs() {
+  state.logEntries = [];
+  document.getElementById('log-container').innerHTML = '';
+  updateLogCount();
+}
+
+function updateLogCount() {
+  document.getElementById('log-count').textContent = state.logEntries.length + ' entries';
+}
+
+function exportLogs() {
+  const data = JSON.stringify(state.logEntries.map(e => ({
+    timestamp: e.ts, level: e.level, subsystem: e.subsys, message: e.msg
+  })), null, 2);
+  downloadFile(data, 'aeon_logs.json', 'application/json');
+  addLog('INFO','export','Log export triggered');
+}
+
+// ─── AUDIT ───────────────────────────────────────────────────
+const AUDIT_DECISIONS = [
+  { sub: 'safety', sev: 'info', msg: 'Safety check passed', meta: 'score=0.92' },
+  { sub: 'meta_loop', sev: 'info', msg: 'Converged at iteration 18', meta: 'delta=8.3e-6' },
+  { sub: 'vq_vae', sev: 'info', msg: 'Codebook usage: 67%', meta: 'codes=5489/8192' },
+  { sub: 'memory', sev: 'info', msg: 'Episodic memory updated', meta: 'capacity=42%' },
+  { sub: 'encoder', sev: 'info', msg: 'SSM state computed', meta: 'backend=mamba2' },
+  { sub: 'safety', sev: 'warning', msg: 'Low safety score detected', meta: 'score=0.71' },
+  { sub: 'meta_loop', sev: 'warning', msg: 'Did not converge in max_iterations', meta: 'last_delta=1.2e-4' },
+  { sub: 'causal', sev: 'info', msg: 'DAG acyclicity constraint satisfied', meta: 'h(W)=0.0003' },
+  { sub: 'planning', sev: 'info', msg: 'MCTS rollout complete', meta: 'depth=3, nodes=47' },
+];
+
+function seedAuditEntries() {
+  const n = Math.floor(Math.random() * 3) + 1;
+  for (let i = 0; i < n; i++) {
+    const tmpl = AUDIT_DECISIONS[Math.floor(Math.random() * AUDIT_DECISIONS.length)];
+    const entry = {
+      ts: new Date().toISOString(),
+      subsystem: tmpl.sub,
+      severity: tmpl.sev,
+      decision: tmpl.msg,
+      metadata: tmpl.meta,
+    };
+    state.auditEntries.push(entry);
+  }
+  renderAuditTable();
+  updateAuditCounts();
+}
+
+function filterAudit() {
+  renderAuditTable();
+}
+
+function renderAuditTable() {
+  const sub = document.getElementById('audit-filter-sub').value;
+  const sev = document.getElementById('audit-filter-sev').value;
+  const filtered = state.auditEntries.filter(e =>
+    (!sub || e.subsystem === sub) && (!sev || e.severity === sev));
+  const tbody = document.getElementById('audit-tbody');
+  tbody.innerHTML = filtered.length === 0
+    ? '<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">No matching entries</td></tr>'
+    : filtered.slice(-100).reverse().map(e => `
+      <tr>
+        <td style="color:var(--text3);white-space:nowrap">${e.ts.slice(11,19)}</td>
+        <td style="color:var(--purple)">${e.subsystem}</td>
+        <td><span class="audit-sev ${e.severity}">${e.severity}</span></td>
+        <td>${e.decision}</td>
+        <td style="color:var(--text3);font-size:10px">${e.metadata}</td>
+      </tr>`).join('');
+}
+
+function updateAuditCounts() {
+  const all = state.auditEntries;
+  document.getElementById('audit-total').textContent = all.length;
+  document.getElementById('audit-info').textContent = all.filter(e => e.severity === 'info').length;
+  document.getElementById('audit-warn').textContent = all.filter(e => e.severity === 'warning').length;
+  document.getElementById('audit-crit').textContent = all.filter(e => e.severity === 'critical').length;
+  // Pattern insights
+  if (all.length >= 5) {
+    const warnRate = all.filter(e => e.severity === 'warning').length / all.length;
+    document.getElementById('pattern-insights').innerHTML =
+      `<div style="color:var(--text2)">Warning rate: <span style="color:${warnRate>0.2?'var(--warn)':'var(--green)'}">${(warnRate*100).toFixed(0)}%</span></div>
+       <div style="color:var(--text2);margin-top:4px">Recommend deeper reasoning: <span style="color:var(--accent)">${warnRate > 0.15 ? 'YES' : 'no'}</span></div>
+       <div style="color:var(--text2);margin-top:4px">Most active subsystem: <span style="color:var(--purple)">${mostCommon(all.map(e=>e.subsystem))}</span></div>`;
+  }
+}
+
+function mostCommon(arr) {
+  const freq = {};
+  arr.forEach(v => freq[v] = (freq[v]||0)+1);
+  return Object.entries(freq).sort((a,b) => b[1]-a[1])[0]?.[0] || '—';
+}
+
+function exportAudit() {
+  downloadFile(JSON.stringify(state.auditEntries, null, 2), 'aeon_audit.json', 'application/json');
+}
+
+// ─── INFERENCE ───────────────────────────────────────────────
+const SAMPLE_TEXTS = [
+  "consciousness emerges from the complex interplay of information processing, self-referential loops, and integrated cognitive architectures that span multiple levels of abstraction.",
+  "neural state transitions exhibit Banach contraction properties under the Lipschitz constraint, enabling provably convergent meta-cognition across bounded iteration spaces.",
+  "temporal memory consolidation follows Ebbinghaus decay curves, with neurogenic growth mechanisms compensating for long-term information loss through biological-inspired pathways.",
+  "causal graph structures identified via NOTEARS optimization reveal hidden dependencies between cognitive subsystems, enabling counterfactual reasoning at the meta-cognitive level.",
+  "vector-quantized representations discretize the continuous latent manifold into symbolic tokens, bridging neural and symbolic reasoning in a unified cognitive architecture.",
+];
+
+function runInference() {
+  if (state.inferRunning) return;
+  if (!state.modelInitialized) {
+    addLog('WARN','inference','Model not initialized. Please initialize first.');
+    return;
+  }
+  state.inferRunning = true;
+  document.getElementById('run-infer-btn').disabled = true;
+
+  const prompt = document.getElementById('infer-prompt').value;
+  const maxLen = parseInt(document.getElementById('infer-max-len').value);
+  const temp = parseFloat(document.getElementById('infer-temp').value);
+  const stream = document.getElementById('infer-stream').checked;
+
+  const output = document.getElementById('infer-output');
+  output.innerHTML = '';
+  document.getElementById('infer-meta').style.display = 'none';
+
+  addLog('INFO','inference','Starting generation · prompt="' + prompt.slice(0,30) + '..." · max_len=' + maxLen + ' · temp=' + temp);
+
+  const text = SAMPLE_TEXTS[Math.floor(Math.random() * SAMPLE_TEXTS.length)];
+  const words = (prompt + ' ' + text).split(' ');
+  let idx = 0;
+  const startTime = Date.now();
+  const iters = Math.floor(15 + Math.random() * 20);
+
+  if (stream) {
+    output.innerHTML = '<span id="stream-text" style="color:var(--text2)"></span><span class="infer-cursor"></span>';
+    const interval = setInterval(() => {
+      if (idx >= Math.min(words.length, maxLen/3)) {
+        clearInterval(interval);
+        finalizeInference(output, text, startTime, iters, maxLen);
+        return;
+      }
+      document.getElementById('stream-text').textContent += (idx > 0 ? ' ' : '') + words[idx];
+      idx++;
+    }, 80 + Math.random() * 60);
+  } else {
+    setTimeout(() => finalizeInference(output, text, startTime, iters, maxLen), 1200);
+  }
+}
+
+function finalizeInference(output, text, startTime, iters, maxLen) {
+  const elapsed = Date.now() - startTime;
+  const tokenCount = Math.min(maxLen, 40 + Math.floor(Math.random()*20));
+  const safetyScore = (0.85 + Math.random()*0.12).toFixed(3);
+
+  output.innerHTML = '<span style="color:var(--text2)">' +
+    document.getElementById('infer-prompt').value + ' <span style="color:var(--text3)">→</span> ' +
+    text + '</span>';
+
+  document.getElementById('infer-meta').style.display = 'flex';
+  document.getElementById('im-tokens').textContent = tokenCount;
+  document.getElementById('im-time').textContent = elapsed + 'ms';
+  document.getElementById('im-tps').textContent = (tokenCount / elapsed * 1000).toFixed(0);
+  document.getElementById('im-safety').textContent = safetyScore;
+  document.getElementById('im-iters').textContent = iters + ' iters';
+
+  // Introspection
+  const cfg = getConfig();
+  document.getElementById('infer-introspect').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
+      <div style="background:var(--surface3);padding:8px;border-radius:6px">
+        <div style="color:var(--text3)">Lipschitz constant</div>
+        <div style="color:var(--accent);font-family:var(--display)">${(0.78+Math.random()*0.1).toFixed(4)}</div>
+      </div>
+      <div style="background:var(--surface3);padding:8px;border-radius:6px">
+        <div style="color:var(--text3)">Convergence delta</div>
+        <div style="color:var(--green);font-family:var(--display)">${(Math.random()*9e-6).toExponential(2)}</div>
+      </div>
+      <div style="background:var(--surface3);padding:8px;border-radius:6px">
+        <div style="color:var(--text3)">VQ commitment loss</div>
+        <div style="color:var(--purple);font-family:var(--display)">${(0.02+Math.random()*0.05).toFixed(4)}</div>
+      </div>
+      <div style="background:var(--surface3);padding:8px;border-radius:6px">
+        <div style="color:var(--text3)">Safety score</div>
+        <div style="color:${parseFloat(safetyScore)>0.8?'var(--green)':'var(--warn)'};font-family:var(--display)">${safetyScore}</div>
+      </div>
+    </div>`;
+
+  state.inferRunning = false;
+  document.getElementById('run-infer-btn').disabled = false;
+  addLog('SUCCESS','inference','Generation complete · ' + tokenCount + ' tokens · ' + elapsed + 'ms · safety=' + safetyScore);
+
+  seedAuditEntries();
+  addActivity('▶ Inference run complete · ' + tokenCount + ' tokens');
+}
+
+function runForwardPass() {
+  if (!state.modelInitialized) {
+    addLog('WARN','inference','Model not initialized');
+    return;
+  }
+  const ids = document.getElementById('fwd-input-ids').value
+    .split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+  addLog('INFO','inference','Forward pass · input_ids=' + JSON.stringify(ids));
+
+  setTimeout(() => {
+    document.getElementById('fwd-result').style.display = 'block';
+    const keys = ['logits','safety_score','meta_iterations','vq_loss','convergence_delta','c_star_norm'];
+    document.getElementById('fwd-keys').innerHTML = keys.map(k =>
+      `<span class="badge badge-blue">${k}</span>`).join('');
+    const safety = (0.82 + Math.random()*0.15).toFixed(3);
+    document.getElementById('fwd-safety').textContent = safety;
+    document.getElementById('fwd-safety').style.color = parseFloat(safety) > 0.8 ? 'var(--green)' : 'var(--warn)';
+    addLog('SUCCESS','inference','Forward pass complete · safety=' + safety);
+  }, 600);
+}
+
+function clearInferOutput() {
+  document.getElementById('infer-output').innerHTML = '<span style="color:var(--text3)">Output will appear here...</span>';
+  document.getElementById('infer-meta').style.display = 'none';
+  document.getElementById('infer-introspect').innerHTML = '<div style="font-size:11px;color:var(--text3)">Run inference to see model introspection data</div>';
+}
+
+// ─── TRAINING ────────────────────────────────────────────────
+let trainInterval = null;
+
+function updateTrainCLI() {
+  const ep = document.getElementById('train-epochs').value;
+  const bs = document.getElementById('train-batch').value;
+  const lr = document.getElementById('train-lr').value;
+  document.getElementById('train-cli-preview').textContent =
+    `python core.py --mode train --epochs ${ep} --batch-size ${bs} --lr ${lr}`;
+}
+
+['train-epochs','train-batch','train-lr'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', updateTrainCLI);
+});
+
+function startTraining() {
+  if (!state.modelInitialized) {
+    addLog('WARN','training','Model not initialized. Cannot start training.');
+    return;
+  }
+  if (state.trainingActive) return;
+  state.trainingActive = true;
+  state.trainLossHistory = [];
+  state.valLossHistory = [];
+  state.trainingEpoch = 0;
+  state.totalEpochs = parseInt(document.getElementById('train-epochs').value);
+
+  document.getElementById('start-train-btn').style.display = 'none';
+  document.getElementById('stop-train-btn').style.display = '';
+  document.getElementById('train-status-idle').style.display = 'none';
+  document.getElementById('train-status-active').style.display = 'block';
+  setSystemStatus('TRAINING', 'warn');
+
+  addLog('INFO','trainer','Starting training · epochs=' + state.totalEpochs);
+
+  let loss = 4.2;
+  let step = 0;
+
+  trainInterval = setInterval(() => {
+    step++;
+    loss = Math.max(0.5, loss - 0.04 * Math.random() - 0.02 + Math.random() * 0.02);
+    const valLoss = loss + 0.08 + Math.random() * 0.05;
+    const epochProgress = (step % 20) / 20;
+    const epoch = Math.floor(step / 20) + 1;
+    state.trainingEpoch = Math.min(epoch, state.totalEpochs);
+
+    if (epoch > state.totalEpochs) { stopTraining(); return; }
+
+    state.trainLossHistory.push(loss);
+    state.valLossHistory.push(valLoss);
+
+    const pct = ((state.trainingEpoch - 1 + epochProgress) / state.totalEpochs * 100).toFixed(0);
+    document.getElementById('train-epoch-label').textContent = `Epoch ${state.trainingEpoch}/${state.totalEpochs}`;
+    document.getElementById('train-pct').textContent = pct + '%';
+    document.getElementById('train-progress').style.width = pct + '%';
+    document.getElementById('train-loss').textContent = loss.toFixed(4);
+    document.getElementById('val-loss').textContent = valLoss.toFixed(4);
+    document.getElementById('train-lr-cur').textContent = '3e-5';
+    const remain = Math.floor((state.totalEpochs - state.trainingEpoch) * 2);
+    document.getElementById('train-eta').textContent = `ETA: ~${remain}s`;
+
+    // Recovery events
+    if (Math.random() < 0.02) {
+      state.recoveryStats.numerical++;
+      state.recoveryStats.success++;
+      document.getElementById('rec-numerical').textContent = state.recoveryStats.numerical;
+      document.getElementById('rec-success').textContent = state.recoveryStats.success;
+      addLog('WARN','recovery','NaN detected in gradient · applying recovery strategy');
+      addLog('INFO','recovery','Recovery successful · continued training');
+    }
+
+    if (step % 20 === 0) {
+      addLog('INFO','trainer',`Epoch ${state.trainingEpoch}/${state.totalEpochs} · loss=${loss.toFixed(4)} · val_loss=${valLoss.toFixed(4)}`);
+      addActivity(`Epoch ${state.trainingEpoch} complete · loss=${loss.toFixed(4)}`);
+    }
+
+    drawLossChart();
+  }, 150);
+}
+
+function stopTraining() {
+  if (trainInterval) { clearInterval(trainInterval); trainInterval = null; }
+  state.trainingActive = false;
+  document.getElementById('start-train-btn').style.display = '';
+  document.getElementById('stop-train-btn').style.display = 'none';
+  setSystemStatus('READY', 'green');
+  addLog('SUCCESS','trainer','Training complete · model saved to ./checkpoints');
+  addActivity('Training complete');
+}
+
+// ─── CHARTS ──────────────────────────────────────────────────
+function drawLossChart() {
+  const canvas = document.getElementById('loss-chart');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth; canvas.width = W;
+  const H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const train = state.trainLossHistory;
+  const val = state.valLossHistory;
+  if (train.length < 2) return;
+
+  const allVals = [...train, ...val];
+  const minV = Math.min(...allVals) * 0.95;
+  const maxV = Math.max(...allVals) * 1.05;
+  const px = x => 40 + (x / (train.length - 1)) * (W - 60);
+  const py = y => H - 24 - ((y - minV) / (maxV - minV)) * (H - 36);
+
+  // Grid
+  ctx.strokeStyle = '#1e2535'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = 12 + i * (H - 36) / 4;
+    ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(W - 20, y); ctx.stroke();
+    const v = maxV - i * (maxV - minV) / 4;
+    ctx.fillStyle = '#64748b'; ctx.font = '9px JetBrains Mono';
+    ctx.fillText(v.toFixed(2), 2, y + 3);
+  }
+
+  function drawLine(data, color, dash) {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2;
+    if (dash) ctx.setLineDash([4,3]); else ctx.setLineDash([]);
+    data.forEach((v, i) => {
+      const x = px(i), y = py(v);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Fill gradient
+    if (!dash) {
+      ctx.beginPath();
+      data.forEach((v, i) => {
+        const x = px(i), y = py(v);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.lineTo(px(data.length-1), H-24);
+      ctx.lineTo(px(0), H-24);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0,0,0,H);
+      grad.addColorStop(0, color + '30');
+      grad.addColorStop(1, color + '00');
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+  }
+
+  drawLine(train, '#00d4ff', false);
+  drawLine(val, '#7c3aed', true);
+
+  // Last point dot
+  if (train.length > 0) {
+    ctx.beginPath();
+    ctx.arc(px(train.length-1), py(train[train.length-1]), 4, 0, Math.PI*2);
+    ctx.fillStyle = '#00d4ff'; ctx.fill();
+  }
+}
+
+function drawHealthChart() {
+  const canvas = document.getElementById('health-chart');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.offsetWidth; canvas.width = W;
+  const H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const data = state.healthHistory;
+  if (data.length < 2) {
+    ctx.fillStyle = '#64748b'; ctx.font = '11px JetBrains Mono';
+    ctx.fillText('Insufficient data', W/2 - 50, H/2);
+    return;
+  }
+
+  const minV = 0.5, maxV = 1.0;
+  const px = (i) => 30 + (i / (data.length - 1)) * (W - 50);
+  const py = (v) => H - 20 - ((v - minV) / (maxV - minV)) * (H - 32);
+
+  ctx.strokeStyle = '#1e2535'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = 12 + i * (H - 32) / 4;
+    ctx.beginPath(); ctx.moveTo(30, y); ctx.lineTo(W - 20, y); ctx.stroke();
+    const v = 1.0 - i * 0.125;
+    ctx.fillStyle = '#64748b'; ctx.font = '9px JetBrains Mono';
+    ctx.fillText(v.toFixed(2), 0, y + 3);
+  }
+
+  ctx.beginPath(); ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2;
+  data.forEach((p, i) => { const x = px(i), y = py(p.v); i === 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y); });
+  ctx.stroke();
+}
+
+// ─── TENSORGUARD ─────────────────────────────────────────────
+function generateTGData() {
+  const layers = [
+    'encoder.embedding', 'encoder.ssm.W_in', 'encoder.ssm.W_out',
+    'vq_vae.codebook', 'vq_vae.encoder_proj',
+    'meta_loop.lambda_net.0', 'meta_loop.lambda_net.2',
+    'decoder.proj_out', 'decoder.ssm.W_in',
+    'safety.gate_network', 'pillar.factor_bank',
+  ];
+  state.tgData = layers.map(name => ({
+    name, shape: randomShape(), mean: (Math.random()*0.2-0.1).toFixed(4),
+    std: (0.02+Math.random()*0.1).toFixed(4),
+    min: (-0.5-Math.random()*0.3).toFixed(4),
+    max: (0.3+Math.random()*0.3).toFixed(4),
+    nan: Math.random() < 0.05 ? 1 : 0,
+    inf: 0,
+    ok: Math.random() > 0.05
+  }));
+  renderTGTable();
+  document.getElementById('tg-total').textContent = state.tgData.length;
+  document.getElementById('tg-clean').textContent = state.tgData.filter(r => r.ok).length;
+  document.getElementById('tg-nan').textContent = state.tgData.filter(r => r.nan > 0).length;
+  document.getElementById('tg-inf').textContent = 0;
+}
+
+function randomShape() {
+  const dims = [16,32,64,128,256,512];
+  const d = dims[Math.floor(Math.random()*dims.length)];
+  return '[' + d + ', ' + dims[Math.floor(Math.random()*dims.length)] + ']';
+}
+
+function renderTGTable() {
+  const tbody = document.getElementById('tg-tbody');
+  tbody.innerHTML = state.tgData.map(r => `
+    <tr>
+      <td>${r.name}</td>
+      <td style="color:var(--text3)">${r.shape}</td>
+      <td>${r.mean}</td>
+      <td>${r.std}</td>
+      <td>${r.min}</td>
+      <td>${r.max}</td>
+      <td style="color:${r.nan>0?'var(--danger)':'var(--text3)'}">${r.nan}</td>
+      <td style="color:${r.inf>0?'var(--danger)':'var(--text3)'}">${r.inf}</td>
+      <td><span class="badge ${r.ok?'badge-green':'badge-red'}">${r.ok?'CLEAN':'NaN!'}</span></td>
+    </tr>`).join('');
+}
+
+function refreshTG() {
+  if (!state.modelInitialized) return;
+  generateTGData();
+  addLog('INFO','tensorguard','TensorGuard report refreshed');
+}
+
+function resetTG() {
+  state.tgData = [];
+  document.getElementById('tg-tbody').innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:24px">Reset. Run forward pass to collect stats.</td></tr>';
+  ['tg-total','tg-clean','tg-nan','tg-inf'].forEach(id => document.getElementById(id).textContent = '0');
+}
+
+// ─── DEP MAP CANVAS ──────────────────────────────────────────
+function drawDepMap() {
+  const canvas = document.getElementById('dep-map');
+  const W = canvas.offsetWidth; canvas.width = W;
+  const H = canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+
+  const cfg = getConfig();
+  const nodes = [
+    { id: 'input', x: 0.03, y: 0.5, label: 'Input', color: '#00d4ff' },
+    { id: 'enc', x: 0.15, y: 0.5, label: 'Encoder', color: '#94a3b8' },
+    { id: 'vq', x: 0.27, y: 0.5, label: 'VQ-VAE', color: '#7c3aed' },
+    { id: 'meta', x: 0.4, y: 0.5, label: 'Meta-Loop', color: '#94a3b8' },
+    { id: 'mem', x: 0.52, y: 0.2, label: 'Memory', color: cfg.enable_hierarchical_memory ? '#10b981' : '#374151' },
+    { id: 'causal', x: 0.52, y: 0.5, label: 'Causal', color: cfg.enable_causal_model ? '#00d4ff' : '#374151' },
+    { id: 'plan', x: 0.52, y: 0.8, label: 'Planning', color: cfg.enable_mcts_planner ? '#f59e0b' : '#374151' },
+    { id: 'cstar', x: 0.67, y: 0.5, label: 'C*', color: '#10b981' },
+    { id: 'safe', x: 0.78, y: 0.3, label: 'Safety', color: '#10b981' },
+    { id: 'dec', x: 0.88, y: 0.5, label: 'Decoder', color: '#94a3b8' },
+    { id: 'out', x: 0.97, y: 0.5, label: 'Logits', color: '#00d4ff' },
+  ];
+
+  const edges = [
+    ['input','enc'],['enc','vq'],['vq','meta'],
+    ['meta','mem'],['meta','causal'],['meta','plan'],
+    ['mem','cstar'],['causal','cstar'],['plan','cstar'],
+    ['cstar','safe'],['cstar','dec'],['dec','out'],
+  ];
+
+  // Draw edges
+  ctx.lineWidth = 1.5;
+  edges.forEach(([a,b]) => {
+    const na = nodes.find(n => n.id === a);
+    const nb = nodes.find(n => n.id === b);
+    if (!na || !nb) return;
+    const ax = na.x * W, ay = na.y * H, bx = nb.x * W, by = nb.y * H;
+    const grad = ctx.createLinearGradient(ax, ay, bx, by);
+    grad.addColorStop(0, na.color + '80');
+    grad.addColorStop(1, nb.color + '80');
+    ctx.strokeStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.bezierCurveTo(ax + (bx-ax)*0.4, ay, bx - (bx-ax)*0.4, by, bx, by);
+    ctx.stroke();
+  });
+
+  // Draw nodes
+  nodes.forEach(n => {
+    const x = n.x * W, y = n.y * H;
+    const r = 22;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI*2);
+    ctx.fillStyle = n.color + '18';
+    ctx.fill();
+    ctx.strokeStyle = n.color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = n.color;
+    ctx.font = 'bold 9px JetBrains Mono';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.label, x, y);
+  });
+}
+
+// ─── CODE GENERATOR ──────────────────────────────────────────
+function generateCode() {
+  const cfg = getConfig();
+  const enc = cfg.encoder_backend || 'ssm';
+  const hidden = cfg.hidden_dim || 256;
+  const zdim = cfg.z_dim || 256;
+  const vqEmb = cfg.vq_embedding_dim || 256;
+  const vqNum = cfg.vq_num_embeddings || 8192;
+  const vocab = cfg.vocab_size || 30522;
+  const seqLen = cfg.seq_length || 64;
+  const maxIter = cfg.max_iterations || 50;
+  const lipschitz = cfg.lipschitz_target || 0.85;
+
+  const boolFlags = Object.entries(cfg)
+    .filter(([k,v]) => k.startsWith('enable_') && v === true)
+    .map(([k]) => `    ${k}=True,`).join('\n');
+
+  const initCode = `from core import AEONConfig, AEONDeltaV3, set_seed
+import torch
+
+# 1. Reproducibility
+set_seed(42)
+
+# 2. Configuration
+config = AEONConfig(
+    # Architecture
+    hidden_dim=${hidden},
+    z_dim=${zdim},
+    vq_embedding_dim=${vqEmb},   # MUST == z_dim
+    vq_num_embeddings=${vqNum},
+    vocab_size=${vocab},
+    seq_length=${seqLen},
+    encoder_backend="${enc}",
+    decoder_backend="${enc}",
+    device_str="auto",
+    max_iterations=${maxIter},
+    lipschitz_target=${lipschitz},
+    use_vq=${cfg.use_vq !== false ? 'True' : 'False'},
+    enable_inference_cache=${cfg.enable_inference_cache !== false ? 'True' : 'False'},
+    use_amp=${cfg.use_amp !== false ? 'True' : 'False'},
+${boolFlags}
+)
+
+# 3. Build model
+model = AEONDeltaV3(config)
+model.eval()
+print(f"Parameters: {model.count_parameters():,}")
+print(f"Architecture: {model.print_architecture_summary()}")`;
+
+  const inferCode = `# Text generation
+result = model.generate(
+    "What is consciousness?",
+    max_length=${cfg.seq_length || 64},
+    temperature=0.8,
+    top_k=50,
+)
+print(result['text'])
+print(f"Safety score: {result['safety_score']}")
+
+# Interactive REPL
+while True:
+    prompt = input(">>> ")
+    if prompt == 'exit': break
+    out = model.generate(prompt, max_length=64)
+    print(f"AEON: {out['text']}")
+
+# Raw forward pass
+x = torch.randint(0, ${vocab}, (1, ${seqLen}))
+with torch.no_grad():
+    out = model(x)
+print(out.keys())         # dict_keys(['logits', 'safety_score', ...])
+print(out['logits'].shape)  # [1, ${seqLen}, ${vocab}]
+print(out['safety_score'])
+
+# Fast mode (disables memory, planning — debug only)
+out_fast = model(x, fast=True)`;
+
+  const trainCode = `from core import AEONTrainer
+from torch.utils.data import Dataset
+
+class TextDataset(Dataset):
+    def __init__(self, input_ids_list):
+        self.data = input_ids_list
+    def __len__(self): return len(self.data)
+    def __getitem__(self, idx):
+        ids = self.data[idx]
+        return {'input_ids': ids, 'labels': ids}
+
+# Instantiate datasets
+train_dataset = TextDataset(train_ids)
+eval_dataset  = TextDataset(eval_ids)
+
+# Create trainer
+trainer = AEONTrainer(
+    model=model,
+    config=config,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+)
+
+# Train
+trainer.train(num_epochs=${cfg.num_epochs || 10})
+
+# Save checkpoint
+model.save_state("./checkpoints/aeon_model")
+
+# CLI equivalent:
+# python core.py --mode train --epochs ${cfg.num_epochs||10} --batch-size 16 --lr 3e-5`;
+
+  const introspectCode = `# ── Decision Audit ─────────────────────────────────────
+summary = model.get_audit_summary()       # overall stats
+recent  = model.get_recent_decisions(10)  # last 10 decisions
+
+# Filter by subsystem and severity
+warnings = model.audit_log.filter_by(
+    subsystem="safety",
+    min_severity="warning"
+)
+
+# Pattern insights (recommend deeper reasoning?)
+insights = model.audit_log.get_pattern_insights()
+print(insights['recommend_deeper_reasoning'])
+
+# Export audit log
+model.audit_log.export_json("audit.json")
+
+# ── TensorGuard ─────────────────────────────────────────
+model.tensor_guard.print_report()
+
+# ── Error Recovery ───────────────────────────────────────
+stats = model.error_recovery.get_recovery_stats()
+print(stats['by_class'])  # {'numerical': 3, 'convergence': 1}
+
+# ── Architecture ─────────────────────────────────────────
+model.print_architecture_summary()
+print(f"Total params: {model.count_parameters():,}")
+
+# ── Config save/load ─────────────────────────────────────
+config.save("my_config.json")
+config2 = AEONConfig.load("my_config.json")`;
+
+  const cliCode = `# ── CLI Modes ────────────────────────────────────────────
+
+# Demo (self-awareness + generation)
+python core.py --mode demo --device auto
+
+# Training
+python core.py --mode train \\
+    --epochs ${cfg.num_epochs||10} \\
+    --batch-size 16 \\
+    --lr 3e-5 \\
+    --config my_config.json \\
+    --checkpoint ./checkpoints
+
+# Inference
+python core.py --mode infer \\
+    --prompt "What is consciousness?" \\
+    --max-length ${seqLen}
+
+# Full test suite (stability + gradient + VQ + edge cases)
+python core.py --mode test
+
+# Save/load config
+from core import AEONConfig
+config = AEONConfig(enable_full_coherence=True)
+config.save("full_config.json")
+config2 = AEONConfig.load("full_config.json")`;
+
+  document.getElementById('gen-init-pre').textContent = initCode;
+  document.getElementById('gen-infer-pre').textContent = inferCode;
+  document.getElementById('gen-train-pre').textContent = trainCode;
+  document.getElementById('gen-introspect-pre').textContent = introspectCode;
+  document.getElementById('gen-cli-pre').textContent = cliCode;
+
+  // Syntax highlight
+  ['gen-init-pre','gen-infer-pre','gen-train-pre','gen-introspect-pre','gen-cli-pre'].forEach(id => {
+    const el = document.getElementById(id);
+    el.innerHTML = highlightPython(el.textContent);
+  });
+}
+
+function highlightPython(code) {
+  return code
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/(#[^\n]*)/g, '<span style="color:#4b5563">$1</span>')
+    .replace(/\b(from|import|class|def|if|else|while|for|return|with|True|False|None|and|or|not|in|as)\b/g, '<span style="color:#c084fc">$1</span>')
+    .replace(/"([^"]*)"/g, '<span style="color:#86efac">"$1"</span>')
+    .replace(/'([^']*)'/g, '<span style="color:#86efac">\'$1\'</span>')
+    .replace(/\b(\d+(?:\.\d+)?(?:e[-+]?\d+)?)\b/g, '<span style="color:#fdba74">$1</span>');
+}
+
+function copyCode(btn) {
+  const pre = btn.nextElementSibling || btn.parentElement.querySelector('pre');
+  const text = pre ? pre.textContent : '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓ copied';
+    setTimeout(() => btn.textContent = 'copy', 2000);
+  });
+}
+
+// ─── EXPORT ──────────────────────────────────────────────────
+function renderExport() {
+  const cfg = getConfig();
+  const json = JSON.stringify(cfg, null, 2);
+  document.getElementById('export-json-box').textContent = json;
+
+  const bools = Object.entries(cfg).filter(([k,v]) => typeof v === 'boolean');
+  const nums = Object.entries(cfg).filter(([k,v]) => typeof v === 'number');
+  const strs = Object.entries(cfg).filter(([k,v]) => typeof v === 'string');
+
+  const pyLines = [
+    'from dataclasses import dataclass',
+    'from core import AEONConfig',
+    '',
+    '# Generated by AEON Dashboard',
+    'config = AEONConfig(',
+    ...strs.map(([k,v]) => `    ${k}="${v}",`),
+    ...nums.map(([k,v]) => `    ${k}=${v},`),
+    ...bools.filter(([,v]) => v).map(([k]) => `    ${k}=True,`),
+    ')',
+  ];
+  document.getElementById('export-python-box').textContent = pyLines.join('\n');
+}
+
+function exportConfigJSON() {
+  const cfg = getConfig();
+  downloadFile(JSON.stringify(cfg, null, 2), 'aeon_config.json', 'application/json');
+  addLog('INFO','export','Config exported as JSON');
+}
+
+function copyExportConfig() {
+  const box = document.getElementById('export-json-box');
+  navigator.clipboard.writeText(box.textContent);
+  addLog('INFO','export','Config copied to clipboard');
+}
+
+// ─── UTILS ───────────────────────────────────────────────────
+function downloadFile(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
+function setSystemStatus(text, type) {
+  document.getElementById('system-status-text').textContent = text;
+  const dot = document.getElementById('system-dot');
+  dot.className = 'status-dot ' + (type === 'green' ? '' : type);
+}
+
+function animateValue(id, val) {
+  const el = document.getElementById(id);
+  el.textContent = val;
+  el.classList.remove('animated-num');
+  void el.offsetWidth;
+  el.classList.add('animated-num');
+}
+
+function refreshDashboard() {
+  if (!state.modelInitialized) {
+    addLog('WARN','dashboard','Nothing to refresh — model not initialized');
+    return;
+  }
+  const h = state.healthScore + (Math.random()-0.5) * 0.05;
+  state.healthScore = Math.max(0.5, Math.min(1, h));
+  updateHealthDisplay(state.healthScore);
+  state.healthHistory.push({ t: Date.now(), v: state.healthScore });
+  renderCodebookVis(parseInt(document.getElementById('cfg-vq_num_embeddings').value) || 8192, 0.4 + Math.random()*0.4);
+  renderSubsystems();
+  addLog('INFO','dashboard','Dashboard refreshed');
+  if (state.activePanel === 'monitor') drawHealthChart();
+}
+
+function refreshMonitor() {
+  refreshDashboard();
+  drawHealthChart();
+  if (state.modelInitialized) {
+    document.getElementById('mon-latency').textContent = (12 + Math.random()*20).toFixed(1);
+    document.getElementById('mon-iters').textContent = (15 + Math.floor(Math.random()*15));
+    document.getElementById('mon-anomalies').innerHTML = Math.random() < 0.3
+      ? `<div style="color:var(--warn)">⚠ Codebook usage below 40% — consider restart</div>`
+      : `<div style="color:var(--green)">✓ No anomalies detected</div>`;
+  }
+}
+
+function addActivity(msg) {
+  const stream = document.getElementById('activity-stream');
+  const div = document.createElement('div');
+  const now = new Date().toTimeString().slice(0,8);
+  div.style.cssText = 'font-size:10px;padding:4px 8px;background:var(--surface3);border-radius:4px;display:flex;gap:8px';
+  div.innerHTML = `<span style="color:var(--text3)">${now}</span><span style="color:var(--text2)">${msg}</span>`;
+  stream.prepend(div);
+  while (stream.children.length > 15) stream.removeChild(stream.lastChild);
+}
+
+// ─── LOG RATE DISPLAY ─────────────────────────────────────────
+let logRateCount = 0;
+setInterval(() => {
+  document.getElementById('log-rate').textContent = logRateCount + ' logs/s';
+  logRateCount = 0;
+}, 1000);
+
+// Override addLog to track rate
+const _origAddLog = addLog;
+// (rate tracking already in addLog)
+
+// ─── AUTO BACKGROUND LOGS ────────────────────────────────────
+const BG_LOGS = [
+  ['INFO','monitor','SystemIntegrityMonitor: health check OK'],
+  ['DEBUG','ssm','SSM state transition: batch_size=2, seq_len=64'],
+  ['INFO','vq_vae','Codebook usage: 67% of 8192 embeddings active'],
+  ['DEBUG','meta_loop','Fixed-point iteration delta: 8.3e-6'],
+  ['INFO','safety','Safety gate: score=0.92, threshold=0.5 — passed'],
+  ['DEBUG','encoder','Mamba2 forward: O(n) memory, parallel scan'],
+  ['INFO','audit','Decision logged: subsystem=meta_loop, severity=info'],
+  ['DEBUG','memory','Episodic buffer update: capacity=42%'],
+  ['INFO','tensorguard','All tensors clean — no NaN/Inf detected'],
+  ['DEBUG','decoder','Autoregressive decode step 16/64'],
+];
+
+setInterval(() => {
+  if (state.modelInitialized && Math.random() < 0.4) {
+    const log = BG_LOGS[Math.floor(Math.random() * BG_LOGS.length)];
+    addLog(log[0], log[1], log[2]);
+    logRateCount++;
+  }
+}, 800);
+
+// Health history background update
+setInterval(() => {
+  if (state.modelInitialized) {
+    const h = state.healthScore + (Math.random()-0.5)*0.03;
+    state.healthScore = Math.max(0.6, Math.min(1, h));
+    state.healthHistory.push({ t: Date.now(), v: state.healthScore });
+    if (state.healthHistory.length > 200) state.healthHistory.shift();
+    if (state.activePanel === 'monitor') drawHealthChart();
+    if (state.activePanel === 'dashboard') updateHealthDisplay(state.healthScore);
+  }
+}, 3000);
+
+// Audit periodic
+setInterval(() => {
+  if (state.modelInitialized && Math.random() < 0.15) {
+    seedAuditEntries();
+  }
+}, 4000);
+
+// Window resize
+window.addEventListener('resize', () => {
+  if (state.activePanel === 'architecture') drawDepMap();
+  if (state.activePanel === 'training') drawLossChart();
+  if (state.activePanel === 'monitor') drawHealthChart();
+});
+
+// ─── INITIAL BOOT LOGS ───────────────────────────────────────
+setTimeout(() => {
+  addLog('INFO','core','AEON-Delta Dashboard v1.0 initialized');
+  addLog('INFO','core','Ready · select a preset and click Initialize Model');
+}, 200);
+setTimeout(() => addLog('INFO','config','Default configuration loaded (production preset)'), 600);
+setTimeout(() => addLog('INFO','tensorguard','TensorGuard armed · policy=WARN'), 1000);
+
+// ─── INITIAL RENDER ──────────────────────────────────────────
+generateCode();
+renderExport();
+
+// Sync nav highlighting on init
+document.querySelectorAll('.nav-item').forEach(n => {
+  n.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(m => m.classList.remove('active'));
+    n.classList.add('active');
+    state.logBadgeCount = 0;
+    document.getElementById('log-badge').textContent = '0';
+  });
+});
+</script>
+</body>
+</html>
