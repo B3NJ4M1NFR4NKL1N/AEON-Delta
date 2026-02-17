@@ -852,6 +852,22 @@ class ContextualRSSM(nn.Module):
         """
         B, K, D = z_context.shape
         
+        # ── Runtime dimension guard ──────────────────────────────────────────
+        # context_proj was built for Linear(hidden_dim * context_window, …).
+        # Mismatched K or D (e.g. when z_dim differs from hidden_dim, or
+        # context_window changed after construction) produces the cryptic
+        # "input and weight.T shapes cannot be multiplied" error.
+        expected_flat = self.hidden_dim * self.context_window
+        actual_flat = K * D
+        if actual_flat != expected_flat:
+            raise ValueError(
+                f"ContextualRSSM.forward: z_context shape [{B}, {K}, {D}] "
+                f"gives flat dim {actual_flat} but context_proj expects "
+                f"{expected_flat} (hidden_dim={self.hidden_dim} × "
+                f"context_window={self.context_window}).  "
+                "Ensure z_dim == hidden_dim and K == context_window."
+            )
+        
         if hx is None:
             hx = torch.zeros(B, self.rssm_hidden, device=z_context.device)
         
@@ -872,6 +888,8 @@ class ContextualRSSM(nn.Module):
         z_pred = self.out_proj(hx_new)
         
         # Residual: last z + attention-weighted context
+        # Both z_last and weighted_context have dim D which equals hidden_dim
+        # (enforced by the guard above), so addition to z_pred is safe.
         z_last = z_context[:, -1, :]
         z_pred = z_pred + self.residual_weight * z_last + weighted_context
         
