@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEON Unified Training Dashboard v5.0</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#04060c; --bg2:#070a12; --surface:#0b0f1a; --surface2:#111624; --surface3:#161c2e;
+  --border:#1a2035; --border2:#222d45;
+  --cyan:#00e5ff; --cyan-d:rgba(0,229,255,.09); --cyan-g:rgba(0,229,255,.2);
+  --amber:#ffab00; --amber-d:rgba(255,171,0,.1);
+  --green:#00e676; --green-d:rgba(0,230,118,.09);
+  --red:#ff1744; --red-d:rgba(255,23,68,.1);
+  --violet:#d500f9; --violet-d:rgba(213,0,249,.1);
+  --blue:#2979ff; --blue-d:rgba(41,121,255,.1);
+  --text:#dde4f0; --text2:#8896b0; --text3:#4a5875;
+  --mono:'IBM Plex Mono',monospace; --display:'Syne',sans-serif;
+  --r:8px; --rl:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;line-height:1.5;overflow:hidden}
+
+/* ── scrollbars ─────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+
+/* ── layout ──────────────────────────────────────────────────────── */
+.shell{display:grid;grid-template-columns:210px 1fr;grid-template-rows:52px 1fr;height:100vh}
+.topbar{grid-column:1/-1;background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 18px;gap:14px;z-index:100}
+.logo{font-family:var(--display);font-weight:800;font-size:18px;letter-spacing:3px;
+  background:linear-gradient(90deg,var(--cyan),var(--violet));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.ver-badge{font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border2);color:var(--text3)}
+.spacer{flex:1}
+.status-pill{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:6px;
+  border:1px solid;font-size:11px;cursor:pointer;transition:.2s}
+.status-pill.ok{background:var(--green-d);border-color:rgba(0,230,118,.3);color:var(--green)}
+.status-pill.bad{background:var(--red-d);border-color:rgba(255,23,68,.3);color:var(--red)}
+.status-pill.warn{background:var(--amber-d);border-color:rgba(255,171,0,.3);color:var(--amber)}
+.status-pill.info{background:var(--cyan-d);border-color:rgba(0,229,255,.2);color:var(--cyan)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.dot.pulse{animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+#clock{font-size:11px;color:var(--text3);letter-spacing:1px}
+
+/* ── sidebar ─────────────────────────────────────────────────────── */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);
+  padding:14px 0;overflow-y:auto;position:sticky;top:52px;height:calc(100vh - 52px)}
+.nav-group{margin-bottom:4px}
+.nav-label{font-size:9px;letter-spacing:2.5px;color:var(--text3);
+  text-transform:uppercase;padding:10px 14px 4px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 12px;margin:1px 6px;
+  border-radius:var(--r);cursor:pointer;color:var(--text3);font-size:11.5px;
+  transition:all .12s;border:1px solid transparent;user-select:none}
+.nav-item:hover{background:var(--surface3);color:var(--text);border-color:var(--border)}
+.nav-item.active{background:var(--cyan-d);color:var(--cyan);border-color:rgba(0,229,255,.22)}
+.nav-icon{width:15px;text-align:center;font-size:13px;flex-shrink:0}
+.nav-badge{margin-left:auto;font-size:9px;padding:1px 6px;border-radius:10px}
+.nav-badge.run{background:var(--amber-d);color:var(--amber);animation:pulse 1.4s infinite}
+.nav-badge.done{background:var(--green-d);color:var(--green)}
+
+/* ── main area ───────────────────────────────────────────────────── */
+.main{overflow-y:auto;height:calc(100vh - 52px)}
+.panel{display:none;padding:22px;animation:fadeIn .15s ease}
+.panel.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── common components ───────────────────────────────────────────── */
+.ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:22px;flex-wrap:wrap;gap:10px}
+.ph-title{font-family:var(--display);font-size:21px;font-weight:700}
+.ph-sub{font-size:11px;color:var(--text3);margin-top:3px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 15px;border-radius:var(--r);
+  font-family:var(--mono);font-size:12px;cursor:pointer;border:1px solid transparent;
+  transition:all .12s;white-space:nowrap;outline:none}
+.btn-primary{background:var(--cyan);color:#000;border-color:var(--cyan);font-weight:700}
+.btn-primary:hover{background:#33ebff;box-shadow:0 0 18px var(--cyan-g)}
+.btn-secondary{background:var(--cyan-d);color:var(--cyan);border-color:rgba(0,229,255,.25)}
+.btn-secondary:hover{background:rgba(0,229,255,.15)}
+.btn-danger{background:var(--red-d);color:var(--red);border-color:rgba(255,23,68,.25)}
+.btn-danger:hover{background:rgba(255,23,68,.2)}
+.btn-ghost{background:transparent;color:var(--text3);border-color:var(--border)}
+.btn-ghost:hover{background:var(--surface3);color:var(--text)}
+.btn-amber{background:var(--amber-d);color:var(--amber);border-color:rgba(255,171,0,.25)}
+.btn-green{background:var(--green-d);color:var(--green);border-color:rgba(0,230,118,.25)}
+.btn-violet{background:var(--violet-d);color:var(--violet);border-color:rgba(213,0,249,.25)}
+.btn:disabled{opacity:.3;cursor:not-allowed;pointer-events:none}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.15);
+  border-top-color:currentColor;border-radius:50%;animation:spin .65s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+@media(max-width:1300px){.g4{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.g3,.g4{grid-template-columns:1fr 1fr}}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rl);padding:16px}
+.card:hover{border-color:var(--border2)}
+.card.ca{border-left:3px solid var(--cyan)}
+.card.cg{border-left:3px solid var(--green)}
+.card.cv{border-left:3px solid var(--violet)}
+.card.cw{border-left:3px solid var(--amber)}
+.card.cd{border-left:3px solid var(--red)}
+.ct{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px}
+.cv-val{font-family:var(--display);font-size:26px;font-weight:700;line-height:1}
+.cv-val.ca{color:var(--cyan)}.cv-val.cg{color:var(--green)}.cv-val.cw{color:var(--amber)}.cv-val.cd{color:var(--red)}.cv-val.cv2{color:var(--violet)}
+.cm-t{font-size:10px;color:var(--text3);margin-top:3px}
+.mbar{height:3px;background:var(--surface3);border-radius:2px;margin-top:8px;overflow:hidden}
+.mfill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--violet));transition:width .8s cubic-bezier(.4,0,.2,1)}
+.mfill.g{background:var(--green)}.mfill.w{background:var(--amber)}.mfill.d{background:var(--red)}
+
+.sec-title{font-family:var(--display);font-size:11px;font-weight:700;color:var(--text2);
+  letter-spacing:1.5px;text-transform:uppercase;margin:22px 0 10px;
+  display:flex;align-items:center;gap:10px}
+.sec-title::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── forms ───────────────────────────────────────────────────────── */
+.fg{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.fl{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.8px}
+.fh{font-size:10px;color:var(--text3);margin-top:2px;line-height:1.4}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.fr3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px}
+.fr4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px}
+input[type=text],input[type=number],select,textarea{
+  background:var(--surface3);border:1px solid var(--border);border-radius:var(--r);
+  padding:7px 10px;color:var(--text);font-family:var(--mono);font-size:12px;
+  width:100%;transition:border-color .12s;-webkit-appearance:none}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 0 2px var(--cyan-d)}
+textarea{resize:vertical;min-height:70px}
+.tog-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.03)}
+.tog-row:last-child{border-bottom:none}
+.tog-info{flex:1;padding-right:10px}
+.tog-name{font-size:12px;color:var(--cyan)}
+.tog-desc{font-size:10px;color:var(--text3);margin-top:1px}
+.tog{position:relative;width:36px;height:19px;flex-shrink:0}
+.tog input{display:none}
+.tog-track{position:absolute;inset:0;background:var(--surface3);border:1px solid var(--border2);border-radius:10px;cursor:pointer;transition:all .2s}
+.tog-track::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--text3);transition:all .2s}
+.tog input:checked+.tog-track{background:rgba(0,229,255,.15);border-color:var(--cyan)}
+.tog input:checked+.tog-track::after{transform:translateX(17px);background:var(--cyan);box-shadow:0 0 6px var(--cyan)}
+
+/* ── tabs ─────────────────────────────────────────────────────────── */
+.tbar{display:flex;gap:3px;border-bottom:1px solid var(--border);margin-bottom:18px;overflow-x:auto}
+.tbtn{padding:7px 14px;border-radius:var(--r) var(--r) 0 0;cursor:pointer;font-family:var(--mono);
+  font-size:11px;color:var(--text3);border:1px solid transparent;border-bottom:none;
+  transition:all .12s;white-space:nowrap;background:transparent}
+.tbtn:hover{color:var(--text);background:var(--surface3)}
+.tbtn.active{background:var(--surface);color:var(--cyan);border-color:var(--border);border-bottom-color:var(--surface);margin-bottom:-1px}
+.tpanel{display:none}.tpanel.active{display:block}
+
+/* ── log console ─────────────────────────────────────────────────── */
+.log-wrap{background:#02040a;border:1px solid var(--border);border-radius:var(--rl);
+  height:500px;overflow-y:auto;padding:10px;font-size:11px;font-family:var(--mono)}
+.log-e{display:flex;gap:8px;padding:2.5px 0;border-bottom:1px solid rgba(255,255,255,.02);animation:lf .18s}
+@keyframes lf{from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:none}}
+.log-ts{color:var(--text3);flex-shrink:0;width:62px}
+.log-lv{flex-shrink:0;width:52px;font-weight:600;font-size:10px}
+.log-sub{flex-shrink:0;width:130px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-msg{color:var(--text);word-break:break-all}
+.lv-INFO .log-lv{color:var(--cyan)}
+.lv-DEBUG .log-lv{color:var(--text3)}
+.lv-WARNING .log-lv{color:var(--amber)}
+.lv-ERROR .log-lv{color:var(--red)}
+.lv-CRITICAL .log-lv{color:var(--red);text-decoration:underline}
+
+/* ── drop zone ────────────────────────────────────────────────────── */
+.drop-zone{border:2px dashed var(--border2);border-radius:var(--rl);padding:32px 20px;
+  text-align:center;transition:all .2s;cursor:pointer;position:relative}
+.drop-zone:hover,.drop-zone.drag-over{border-color:var(--cyan);background:var(--cyan-d)}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:36px;margin-bottom:10px;opacity:.6}
+.drop-title{font-size:14px;color:var(--text);margin-bottom:6px}
+.drop-sub{font-size:11px;color:var(--text3)}
+
+/* ── file list ────────────────────────────────────────────────────── */
+.file-list{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.file-item{display:flex;align-items:center;gap:10px;padding:8px 12px;
+  background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);
+  cursor:pointer;transition:all .12s}
+.file-item:hover{border-color:var(--border2)}
+.file-item.selected{border-color:var(--cyan);background:var(--cyan-d)}
+.file-icon{font-size:15px;flex-shrink:0}
+.file-name{flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-size{font-size:10px;color:var(--text3);flex-shrink:0}
+.file-del{background:none;border:none;cursor:pointer;color:var(--text3);font-size:13px;padding:2px;border-radius:3px}
+.file-del:hover{color:var(--red)}
+
+/* ── charts canvas ────────────────────────────────────────────────── */
+.chart-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);padding:14px;position:relative}
+.chart-title{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px}
+canvas.chart{width:100%!important;height:180px!important}
+
+/* ── phase badge ──────────────────────────────────────────────────── */
+.phase-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600}
+.phase-badge.idle{background:var(--surface3);color:var(--text3);border:1px solid var(--border)}
+.phase-badge.starting,.phase-badge.loading_data,.phase-badge.building_model,.phase-badge.validating{background:var(--amber-d);color:var(--amber);border:1px solid rgba(255,171,0,.3)}
+.phase-badge.phase_A{background:var(--blue-d);color:var(--blue);border:1px solid rgba(41,121,255,.3)}
+.phase-badge.building_z{background:var(--violet-d);color:var(--violet);border:1px solid rgba(213,0,249,.3)}
+.phase-badge.phase_B{background:var(--cyan-d);color:var(--cyan);border:1px solid rgba(0,229,255,.25)}
+.phase-badge.done{background:var(--green-d);color:var(--green);border:1px solid rgba(0,230,118,.3)}
+.phase-badge.error{background:var(--red-d);color:var(--red);border:1px solid rgba(255,23,68,.3)}
+
+/* ── progress bar ─────────────────────────────────────────────────── */
+.prog-bar-wrap{background:var(--surface3);border-radius:3px;height:8px;overflow:hidden;margin:6px 0}
+.prog-bar-fill{height:100%;border-radius:3px;transition:width .6s ease;
+  background:linear-gradient(90deg,var(--cyan),var(--violet))}
+
+/* ── metric table ─────────────────────────────────────────────────── */
+.mtable{width:100%;border-collapse:collapse;font-size:11px}
+.mtable th{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;
+  padding:4px 8px;border-bottom:1px solid var(--border);text-align:left}
+.mtable td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
+.mtable tr:last-child td{border-bottom:none}
+.mtable tr:hover td{background:rgba(255,255,255,.02)}
+.val-good{color:var(--green)}.val-warn{color:var(--amber)}.val-bad{color:var(--red)}.val-neutral{color:var(--cyan)}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- TOPBAR -->
+<header class="topbar">
+  <div class="logo">AEON</div>
+  <span class="ver-badge">v5.0 Unified</span>
+  <div class="spacer"></div>
+  <div id="train-phase-top" class="phase-badge idle"><span class="dot"></span>idle</div>
+  <div id="ws-badge" class="status-pill bad" onclick="connectWS()">
+    <span class="dot pulse"></span><span id="ws-txt">connecting</span>
+  </div>
+  <div id="clock">00:00:00</div>
+</header>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="nav-group">
+    <div class="nav-label">Overview</div>
+    <div class="nav-item active" onclick="nav('overview')"><span class="nav-icon">⬡</span>Dashboard</div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Training</div>
+    <div class="nav-item" onclick="nav('data')"><span class="nav-icon">📂</span>Data</div>
+    <div class="nav-item" onclick="nav('config')"><span class="nav-icon">⚙</span>Config</div>
+    <div class="nav-item" onclick="nav('run')"><span class="nav-icon">▶</span>Run <span id="run-badge" class="nav-badge" style="display:none"></span></div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Monitoring</div>
+    <div class="nav-item" onclick="nav('metrics')"><span class="nav-icon">📈</span>Metrics</div>
+    <div class="nav-item" onclick="nav('logs')"><span class="nav-icon">📋</span>Logs</div>
+    <div class="nav-item" onclick="nav('system')"><span class="nav-icon">🖥</span>System</div>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Model</div>
+    <div class="nav-item" onclick="nav('model')"><span class="nav-icon">🧠</span>Inspector</div>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="main">
+
+<!-- ─── OVERVIEW PANEL ─────────────────────────────────────────────── -->
+<div id="panel-overview" class="panel active">
+  <div class="ph">
+    <div><div class="ph-title">Dashboard</div><div class="ph-sub">AEON Unified Training System v5.0 · Real-time monitoring</div></div>
+    <div class="btns">
+      <button class="btn btn-ghost" onclick="refreshAll()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="g4" style="margin-bottom:16px">
+    <div class="card ca">
+      <div class="ct">Training Phase</div>
+      <div id="ov-phase" class="cv-val ca">idle</div>
+      <div class="cm-t" id="ov-phase-sub">waiting for input</div>
+    </div>
+    <div class="card cg">
+      <div class="ct">Phase A Best Loss</div>
+      <div id="ov-loss-a" class="cv-val cg">—</div>
+      <div class="cm-t">AutoEncoder + VQ</div>
+    </div>
+    <div class="card cv">
+      <div class="ct">Phase B Best MSE</div>
+      <div id="ov-loss-b" class="cv-val cv2">—</div>
+      <div class="cm-t">Contextual RSSM</div>
+    </div>
+    <div class="card cw">
+      <div class="ct">Log Entries</div>
+      <div id="ov-logs" class="cv-val cw">0</div>
+      <div class="cm-t" id="ov-ae-loaded">ae_train: checking...</div>
+    </div>
+  </div>
+
+  <div class="g2">
+    <div>
+      <div class="sec-title">Phase A Progress</div>
+      <div class="chart-wrap"><div class="chart-title">Loss over epochs</div>
+        <canvas id="chart-a-ov" class="chart"></canvas></div>
+    </div>
+    <div>
+      <div class="sec-title">Phase B Progress</div>
+      <div class="chart-wrap"><div class="chart-title">MSE over epochs</div>
+        <canvas id="chart-b-ov" class="chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="sec-title">System Snapshot</div>
+  <div id="ov-sys" class="g3">
+    <div class="card"><div class="ct">CPU</div><div id="ov-cpu" class="cv-val ca">—</div></div>
+    <div class="card"><div class="ct">RAM</div><div id="ov-ram" class="cv-val ca">—</div></div>
+    <div class="card"><div class="ct">GPU VRAM</div><div id="ov-gpu" class="cv-val ca">—</div></div>
+  </div>
+</div>
+
+<!-- ─── DATA PANEL ─────────────────────────────────────────────────── -->
+<div id="panel-data" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Training Data</div><div class="ph-sub">Upload .txt .json .jsonl files for training</div></div>
+  </div>
+
+  <div class="drop-zone" id="drop-zone" ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dropFile(event)">
+    <input type="file" id="file-input" accept=".txt,.json,.jsonl" multiple onchange="filesSelected(event)">
+    <div class="drop-icon">📄</div>
+    <div class="drop-title">Drop files here or click to browse</div>
+    <div class="drop-sub">Supports: .txt .json .jsonl · Each file is a training corpus</div>
+  </div>
+
+  <div id="file-list" class="file-list"></div>
+  <div id="file-info" style="margin-top:12px;font-size:11px;color:var(--text3)"></div>
+
+  <div class="sec-title" style="margin-top:20px">Format Guide</div>
+  <div class="g2">
+    <div class="card">
+      <div class="ct" style="color:var(--amber)">Plain Text (.txt)</div>
+      <div style="font-size:11px;color:var(--text2);line-height:1.7">
+        Any plain text file. Paragraphs (separated by blank lines) become
+        individual training segments. Great for books, articles, wiki dumps.
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct" style="color:var(--cyan)">JSON Lines (.jsonl / .json)</div>
+      <div style="font-size:11px;color:var(--text2);line-height:1.7">
+        One JSON object per line: <code style="color:var(--cyan)">{"text":"..."}</code><br>
+        Array format also supported: <code style="color:var(--cyan)">[{"text":"..."},...]</code>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── CONFIG PANEL ───────────────────────────────────────────────── -->
+<div id="panel-config" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Training Config</div><div class="ph-sub">AEONConfigV4 — tweak before starting</div></div>
+    <div class="btns">
+      <button class="btn btn-ghost" onclick="resetConfig()">↺ Defaults</button>
+    </div>
+  </div>
+
+  <div class="tbar" id="cfg-tbar">
+    <div class="tbtn active" onclick="cfgTab('arch')">Architecture</div>
+    <div class="tbtn" onclick="cfgTab('train')">Training</div>
+    <div class="tbtn" onclick="cfgTab('vq')">VQ-VAE</div>
+    <div class="tbtn" onclick="cfgTab('rssm')">RSSM</div>
+  </div>
+
+  <div id="ctab-arch" class="tpanel active">
+    <div class="fr3">
+      <div class="fg"><label class="fl">z_dim</label>
+        <input type="number" id="cfg-z_dim" value="256" min="32" max="2048" step="32">
+        <div class="fh">Latent dimension. Must equal vq_embedding_dim.</div></div>
+      <div class="fg"><label class="fl">hidden_dim</label>
+        <input type="number" id="cfg-hidden_dim" value="256" min="64" max="4096" step="64">
+        <div class="fh">Encoder/Decoder hidden size.</div></div>
+      <div class="fg"><label class="fl">seq_length</label>
+        <input type="number" id="cfg-seq_length" value="64" min="16" max="512" step="16">
+        <div class="fh">Token sequence length per chunk.</div></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label class="fl">dropout_rate</label>
+        <input type="number" id="cfg-dropout_rate" value="0.1" min="0" max="0.5" step="0.01">
+        <div class="fh">Dropout for regularization.</div></div>
+      <div class="fg"><label class="fl">seed</label>
+        <input type="number" id="cfg-seed" value="42" min="0">
+        <div class="fh">Random seed for reproducibility.</div></div>
+    </div>
+  </div>
+
+  <div id="ctab-train" class="tpanel">
+    <div class="fr4">
+      <div class="fg"><label class="fl">learning_rate</label>
+        <input type="number" id="cfg-lr" value="3e-5" step="1e-5" min="1e-7" max="1e-2">
+        <div class="fh">Initial LR for Phase A.</div></div>
+      <div class="fg"><label class="fl">batch_size</label>
+        <input type="number" id="cfg-batch_size" value="16" min="1" max="512" step="1">
+        <div class="fh">Samples per forward pass.</div></div>
+      <div class="fg"><label class="fl">grad_clip_norm</label>
+        <input type="number" id="cfg-grad_clip" value="0.5" min="0.1" max="10" step="0.1">
+        <div class="fh">Gradient clipping. 0.5 recommended.</div></div>
+      <div class="fg"><label class="fl">label_smoothing</label>
+        <input type="number" id="cfg-label_smoothing" value="0.1" min="0" max="0.5" step="0.01">
+        <div class="fh">Cross-entropy label smoothing.</div></div>
+    </div>
+    <div class="fr3">
+      <div class="fg"><label class="fl">warmup_steps</label>
+        <input type="number" id="cfg-warmup_steps" value="1000" min="0" max="10000" step="100">
+        <div class="fh">LR warmup steps before cosine decay.</div></div>
+      <div class="fg"><label class="fl">epochs_A</label>
+        <input type="number" id="cfg-epochs_a" value="30" min="1" max="500" step="1">
+        <div class="fh">Phase A (AutoEncoder) epochs.</div></div>
+      <div class="fg"><label class="fl">epochs_B</label>
+        <input type="number" id="cfg-epochs_b" value="10" min="1" max="200" step="1">
+        <div class="fh">Phase B (RSSM) epochs.</div></div>
+    </div>
+    <div class="tog-row">
+      <div class="tog-info">
+        <div class="tog-name">document_aware</div>
+        <div class="tog-desc">Build RSSM pairs only within document boundaries (recommended)</div>
+      </div>
+      <label class="tog"><input type="checkbox" id="cfg-doc-aware" checked><span class="tog-track"></span></label>
+    </div>
+    <div class="tog-row">
+      <div class="tog-info">
+        <div class="tog-name">use_amp</div>
+        <div class="tog-desc">Mixed precision (FP16) training — requires CUDA</div>
+      </div>
+      <label class="tog"><input type="checkbox" id="cfg-amp"><span class="tog-track"></span></label>
+    </div>
+  </div>
+
+  <div id="ctab-vq" class="tpanel">
+    <div class="fr3">
+      <div class="fg"><label class="fl">vq_num_embeddings</label>
+        <input type="number" id="cfg-vq_codes" value="2048" min="64" max="32768" step="64">
+        <div class="fh">Codebook size. More codes → more expressivity.</div></div>
+      <div class="fg"><label class="fl">vq_commitment_cost</label>
+        <input type="number" id="cfg-vq_commit" value="0.25" min="0.01" max="5" step="0.01">
+        <div class="fh">Commitment loss weight β.</div></div>
+      <div class="fg"><label class="fl">vq_loss_weight</label>
+        <input type="number" id="cfg-vq_wt" value="0.5" min="0" max="5" step="0.1">
+        <div class="fh">Total VQ loss scaling in Phase A.</div></div>
+    </div>
+    <div class="fr3">
+      <div class="fg"><label class="fl">entropy_weight</label>
+        <input type="number" id="cfg-entropy" value="0.1" min="0" max="2" step="0.01">
+        <div class="fh">Codebook entropy regularization (uniform usage).</div></div>
+      <div class="fg"><label class="fl">vq_ema_decay</label>
+        <input type="number" id="cfg-vq_ema" value="0.99" min="0.8" max="0.9999" step="0.001">
+        <div class="fh">EMA decay for VQ codebook update.</div></div>
+      <div class="fg"><label class="fl">vq_reset_threshold</label>
+        <input type="number" id="cfg-vq_reset" value="30" min="1" max="200">
+        <div class="fh">Dead code revival threshold.</div></div>
+    </div>
+  </div>
+
+  <div id="ctab-rssm" class="tpanel">
+    <div class="fr3">
+      <div class="fg"><label class="fl">context_window</label>
+        <input type="number" id="cfg-ctx_win" value="3" min="1" max="20">
+        <div class="fh">K previous z states used to predict z_{t+1}.</div></div>
+      <div class="fg"><label class="fl">rssm_hidden_dim</label>
+        <input type="number" id="cfg-rssm_hid" value="512" min="64" max="4096" step="64">
+        <div class="fh">RSSM hidden state dimension.</div></div>
+      <div class="fg"><label class="fl">min_doc_chunks</label>
+        <input type="number" id="cfg-min_chunks" value="2" min="1" max="20">
+        <div class="fh">Min chunks per document (doc-aware mode).</div></div>
+    </div>
+  </div>
+
+  <div class="sec-title">Resume from Checkpoint</div>
+  <div class="fg">
+    <label class="fl">Checkpoint Path (optional)</label>
+    <input type="text" id="cfg-resume" placeholder="./aeon_training_output/aeon_v4_final.pt">
+    <div class="fh">Leave empty to start fresh. Path to a .pt file saved by a previous run.</div>
+  </div>
+</div>
+
+<!-- ─── RUN PANEL ──────────────────────────────────────────────────── -->
+<div id="panel-run" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Training Control</div><div class="ph-sub">Start, monitor, and stop the pipeline</div></div>
+    <div class="btns">
+      <button id="btn-start" class="btn btn-primary" onclick="startTraining()">▶ Start Training</button>
+      <button id="btn-stop" class="btn btn-danger" onclick="stopTraining()" disabled>⏹ Stop</button>
+    </div>
+  </div>
+
+  <!-- Status row -->
+  <div class="g4" style="margin-bottom:18px" id="run-stat-cards">
+    <div class="card ca">
+      <div class="ct">Current Phase</div>
+      <div id="run-phase" class="cv-val ca">—</div>
+      <div class="cm-t" id="run-phase-sub"></div>
+    </div>
+    <div class="card cg">
+      <div class="ct">Epoch Progress</div>
+      <div id="run-epoch" class="cv-val cg">—</div>
+      <div class="cm-t" id="run-epoch-sub"></div>
+    </div>
+    <div class="card cw">
+      <div class="ct">Current Loss</div>
+      <div id="run-loss" class="cv-val cw">—</div>
+      <div class="cm-t" id="run-loss-key"></div>
+    </div>
+    <div class="card cv">
+      <div class="ct">Convergence</div>
+      <div id="run-conv" class="cv-val cv2">—</div>
+      <div class="cm-t" id="run-conv-sub"></div>
+    </div>
+  </div>
+
+  <!-- Epoch progress bar -->
+  <div class="sec-title">Epoch Progress</div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+    <div style="flex:1">
+      <div class="prog-bar-wrap"><div id="prog-bar" class="prog-bar-fill" style="width:0%"></div></div>
+    </div>
+    <div id="prog-txt" style="font-size:11px;color:var(--text3);flex-shrink:0">0 / 0</div>
+  </div>
+
+  <!-- Phase A / Phase B cards side by side -->
+  <div class="g2">
+    <div>
+      <div class="sec-title">Phase A — AutoEncoder + VQ</div>
+      <div class="card ca" style="min-height:140px">
+        <div class="ct">METRICS</div>
+        <table class="mtable" id="pa-table">
+          <tr><td colspan="2" style="color:var(--text3);font-size:11px">Waiting for Phase A...</td></tr>
+        </table>
+      </div>
+    </div>
+    <div>
+      <div class="sec-title">Phase B — Contextual RSSM</div>
+      <div class="card cv" style="min-height:140px">
+        <div class="ct">METRICS</div>
+        <table class="mtable" id="pb-table">
+          <tr><td colspan="2" style="color:var(--text3);font-size:11px">Waiting for Phase B...</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Inline log tail -->
+  <div class="sec-title">Live Log Tail</div>
+  <div class="log-wrap" id="run-log" style="height:280px"></div>
+
+  <!-- Error display -->
+  <div id="run-error" style="display:none;margin-top:14px;padding:12px;background:var(--red-d);
+    border:1px solid rgba(255,23,68,.3);border-radius:var(--r);color:var(--red);font-size:11px"></div>
+</div>
+
+<!-- ─── METRICS PANEL ──────────────────────────────────────────────── -->
+<div id="panel-metrics" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Training Metrics</div><div class="ph-sub">Full history for Phase A and Phase B</div></div>
+    <div class="btns">
+      <button class="btn btn-ghost" onclick="refreshMetrics()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="sec-title">Phase A — AutoEncoder + VQ-VAE</div>
+  <div class="g2" style="margin-bottom:20px">
+    <div class="chart-wrap"><div class="chart-title">Reconstruction Loss</div>
+      <canvas id="chart-a-loss" class="chart"></canvas></div>
+    <div class="chart-wrap"><div class="chart-title">Perplexity</div>
+      <canvas id="chart-a-ppl" class="chart"></canvas></div>
+  </div>
+  <div class="g2" style="margin-bottom:20px">
+    <div class="chart-wrap"><div class="chart-title">Accuracy (%)</div>
+      <canvas id="chart-a-acc" class="chart"></canvas></div>
+    <div class="chart-wrap"><div class="chart-title">Codebook Usage (%)</div>
+      <canvas id="chart-a-cb" class="chart"></canvas></div>
+  </div>
+
+  <div class="sec-title">Phase B — Contextual RSSM</div>
+  <div class="g2">
+    <div class="chart-wrap"><div class="chart-title">MSE Loss</div>
+      <canvas id="chart-b-mse" class="chart"></canvas></div>
+    <div class="chart-wrap"><div class="chart-title">Cosine Similarity</div>
+      <canvas id="chart-b-cos" class="chart"></canvas></div>
+  </div>
+
+  <div class="sec-title">Epoch History Table</div>
+  <div class="tbar">
+    <div class="tbtn active" onclick="metTab('a')">Phase A</div>
+    <div class="tbtn" onclick="metTab('b')">Phase B</div>
+  </div>
+  <div id="met-tab-a" class="tpanel active">
+    <div style="overflow-x:auto">
+      <table class="mtable" id="met-table-a">
+        <thead><tr><th>Epoch</th><th>Total Loss</th><th>Recon</th><th>VQ</th><th>Perplexity</th><th>Accuracy</th><th>Codebook%</th><th>Grad Norm</th><th>LR</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="met-tab-b" class="tpanel">
+    <div style="overflow-x:auto">
+      <table class="mtable" id="met-table-b">
+        <thead><tr><th>Epoch</th><th>MSE Loss</th><th>Smooth L1</th><th>Cosine Sim</th><th>L1 Loss</th><th>Rel Error</th><th>Grad Norm</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ─── LOGS PANEL ─────────────────────────────────────────────────── -->
+<div id="panel-logs" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Log Console</div><div class="ph-sub">Real-time output from all AEON subsystems</div></div>
+    <div class="btns">
+      <select id="log-filter-level" onchange="applyLogFilter()" style="width:auto">
+        <option value="">All levels</option>
+        <option value="DEBUG">DEBUG</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <input type="text" id="log-filter-text" placeholder="Filter text..." style="width:180px" oninput="applyLogFilter()">
+      <button class="btn btn-ghost" onclick="clearLogs()">🗑 Clear</button>
+      <button class="btn btn-secondary" onclick="exportLogs()">⬇ Export</button>
+      <label class="tog" title="Auto-scroll"><input type="checkbox" id="log-autoscroll" checked><span class="tog-track"></span></label>
+      <span style="font-size:10px;color:var(--text3)">auto-scroll</span>
+    </div>
+  </div>
+  <div class="log-wrap" id="main-log" style="height:calc(100vh - 220px)"></div>
+</div>
+
+<!-- ─── SYSTEM PANEL ───────────────────────────────────────────────── -->
+<div id="panel-system" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">System</div><div class="ph-sub">Hardware resources and environment</div></div>
+    <div class="btns"><button class="btn btn-ghost" onclick="refreshSystem()">↻ Refresh</button></div>
+  </div>
+
+  <div class="g3" id="sys-cards">
+    <div class="card ca"><div class="ct">CPU Usage</div><div id="sys-cpu" class="cv-val ca">—</div>
+      <div class="mbar"><div id="sys-cpu-bar" class="mfill g" style="width:0%"></div></div></div>
+    <div class="card cg"><div class="ct">RAM Usage</div><div id="sys-ram" class="cv-val cg">—</div>
+      <div class="mbar"><div id="sys-ram-bar" class="mfill" style="width:0%"></div></div></div>
+    <div class="card cw"><div class="ct">Proc RAM</div><div id="sys-pram" class="cv-val cw">—</div>
+      <div class="cm-t">Current process</div></div>
+  </div>
+
+  <div class="sec-title" style="margin-top:18px">GPU Devices</div>
+  <div id="gpu-cards" class="g2"></div>
+
+  <div class="sec-title" style="margin-top:18px">Environment</div>
+  <div id="env-info" class="card" style="font-size:11px;color:var(--text2);line-height:2"></div>
+</div>
+
+<!-- ─── MODEL PANEL ────────────────────────────────────────────────── -->
+<div id="panel-model" class="panel">
+  <div class="ph">
+    <div><div class="ph-title">Model Inspector</div><div class="ph-sub">AEONDeltaV4 loaded model information</div></div>
+    <div class="btns">
+      <button class="btn btn-ghost" onclick="refreshModel()">↻ Refresh</button>
+      <button id="btn-dl" class="btn btn-secondary" onclick="downloadCheckpoint()" disabled>⬇ Download Checkpoint</button>
+    </div>
+  </div>
+  <div id="model-content">
+    <div style="color:var(--text3);font-size:12px;padding:30px 0">
+      No model loaded yet. Start training to build the model.
+    </div>
+  </div>
+</div>
+
+</main>
+</div><!-- .shell -->
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════════════════════
+const S = {
+  ws: null, wsRetry: 0,
+  logEntries: [],
+  activePanel: 'overview',
+  trainingActive: false,
+  trainingPhase: 'idle',
+  phaseAMetrics: [],
+  phaseBMetrics: [],
+  bestLossA: null,
+  bestLossB: null,
+  uploadedFiles: [],
+  selectedFile: null,
+  filterLevel: '', filterText: '',
+  sysTimer: null,
+};
+
+const API = '';  // same origin
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  NAV
+// ══════════════════════════════════════════════════════════════════════════════
+function nav(panel) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  const clicked = Array.from(document.querySelectorAll('.nav-item'))
+    .find(el => el.getAttribute('onclick')?.includes(`'${panel}'`));
+  if (clicked) clicked.classList.add('active');
+
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  const target = document.getElementById('panel-' + panel);
+  if (target) target.classList.add('active');
+  S.activePanel = panel;
+
+  if (panel === 'system') refreshSystem();
+  if (panel === 'metrics') refreshMetrics();
+  if (panel === 'model') refreshModel();
+  if (panel === 'data') refreshFileList();
+  if (panel === 'logs') renderAllLogs();
+  if (panel === 'overview') { refreshSystem(); drawOverviewCharts(); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CLOCK
+// ══════════════════════════════════════════════════════════════════════════════
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    String(d.getHours()).padStart(2,'0') + ':' +
+    String(d.getMinutes()).padStart(2,'0') + ':' +
+    String(d.getSeconds()).padStart(2,'0');
+}, 1000);
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  API HELPER
+// ══════════════════════════════════════════════════════════════════════════════
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  WEBSOCKET
+// ══════════════════════════════════════════════════════════════════════════════
+function connectWS() {
+  const badge = document.getElementById('ws-badge');
+  const txt   = document.getElementById('ws-txt');
+  badge.className = 'status-pill warn';
+  txt.textContent = 'connecting';
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  S.ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  S.ws.onopen = () => {
+    S.wsRetry = 0;
+    badge.className = 'status-pill ok';
+    txt.textContent = 'connected';
+    log('INFO','ws','WebSocket connected');
+  };
+
+  S.ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'log') {
+      appendLog(msg.data);
+    } else if (msg.type === 'heartbeat' || msg.type === 'status') {
+      updateTrainingState(msg);
+    } else if (msg.type === 'metrics') {
+      S.phaseAMetrics = msg.phase_a || [];
+      S.phaseBMetrics = msg.phase_b || [];
+      drawMetricsCharts();
+    }
+  };
+
+  S.ws.onerror = () => {
+    badge.className = 'status-pill bad';
+    txt.textContent = 'error';
+  };
+
+  S.ws.onclose = () => {
+    badge.className = 'status-pill bad';
+    txt.textContent = 'disconnected';
+    S.wsRetry++;
+    const delay = Math.min(2000 * S.wsRetry, 20000);
+    setTimeout(connectWS, delay);
+  };
+}
+
+function sendWS(msg) {
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(msg));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRAINING STATE UPDATE
+// ══════════════════════════════════════════════════════════════════════════════
+function updateTrainingState(msg) {
+  S.trainingActive = msg.training_active || false;
+  S.trainingPhase  = msg.training_phase  || 'idle';
+
+  if (msg.best_loss_a !== undefined) S.bestLossA = msg.best_loss_a;
+  if (msg.best_loss_b !== undefined) S.bestLossB = msg.best_loss_b;
+
+  // Top badge
+  const topBadge = document.getElementById('train-phase-top');
+  topBadge.className = `phase-badge ${S.trainingPhase}`;
+  topBadge.innerHTML = `<span class="dot${S.trainingActive ? ' pulse':''}"></span>${S.trainingPhase}`;
+
+  // Run badge in sidebar
+  const runBadge = document.getElementById('run-badge');
+  if (S.trainingActive) {
+    runBadge.style.display = '';
+    runBadge.textContent = 'live';
+    runBadge.className = 'nav-badge run';
+  } else if (S.trainingPhase === 'done') {
+    runBadge.style.display = '';
+    runBadge.textContent = 'done';
+    runBadge.className = 'nav-badge done';
+  } else {
+    runBadge.style.display = 'none';
+  }
+
+  // Overview cards
+  document.getElementById('ov-phase').textContent = S.trainingPhase;
+  document.getElementById('ov-phase-sub').textContent = S.trainingActive ? 'running' : (S.trainingPhase === 'done' ? 'complete' : 'idle');
+  if (S.bestLossA !== null && S.bestLossA !== Infinity)
+    document.getElementById('ov-loss-a').textContent = S.bestLossA.toFixed(4);
+  if (S.bestLossB !== null && S.bestLossB !== Infinity)
+    document.getElementById('ov-loss-b').textContent = S.bestLossB.toFixed(4);
+
+  // Buttons
+  const btnStart = document.getElementById('btn-start');
+  const btnStop  = document.getElementById('btn-stop');
+  if (S.trainingActive) {
+    btnStart.disabled = true;
+    btnStop.disabled  = false;
+  } else {
+    btnStart.disabled = false;
+    btnStop.disabled  = true;
+  }
+
+  // Run panel
+  if (msg.progress) updateRunPanel(msg.progress);
+
+  // Metrics if sent
+  if (msg.phase_a_len !== undefined && S.activePanel === 'metrics') {
+    refreshMetrics();
+  }
+
+  // Draw overview charts periodically
+  if (S.activePanel === 'overview') drawOverviewCharts();
+}
+
+function updateRunPanel(progress) {
+  const phase   = progress.phase   || '—';
+  const epoch   = progress.epoch   || 0;
+  const total   = progress.total_epochs || 0;
+  const metrics = progress.metrics || {};
+
+  document.getElementById('run-phase').textContent = phase;
+  document.getElementById('run-epoch').textContent = `${epoch} / ${total}`;
+
+  const pct = total > 0 ? (epoch / total * 100) : 0;
+  document.getElementById('prog-bar').style.width = pct + '%';
+  document.getElementById('prog-txt').textContent = `${epoch} / ${total}`;
+
+  // Current loss
+  const lossKey = phase === 'phase_A' ? 'total' : 'mse_loss';
+  const lossVal = metrics[lossKey] ?? metrics['total_loss'] ?? null;
+  if (lossVal !== null) {
+    document.getElementById('run-loss').textContent = lossVal.toFixed(5);
+    document.getElementById('run-loss-key').textContent = lossKey;
+  }
+
+  // Convergence
+  const conv = metrics.convergence_status || '—';
+  document.getElementById('run-conv').textContent = conv;
+
+  // Phase metric tables
+  if (phase === 'phase_A') {
+    renderPhaseTable('pa-table', metrics, [
+      ['recon','Recon'],['vq','VQ'],['perplexity','PPL'],
+      ['accuracy_%','Acc%'],['codebook_%','CB%'],['grad_norm','Grad']
+    ]);
+  } else if (phase === 'phase_B') {
+    renderPhaseTable('pb-table', metrics, [
+      ['mse_loss','MSE'],['cosine_sim','Cos'],['l1_loss','L1'],
+      ['rel_error','RelErr'],['grad_norm','Grad']
+    ]);
+  }
+}
+
+function renderPhaseTable(id, metrics, fields) {
+  const rows = fields.map(([k, label]) => {
+    const v = metrics[k];
+    if (v === undefined) return '';
+    const fv = typeof v === 'number' ? v.toFixed(5) : v;
+    return `<tr><td style="color:var(--text3)">${label}</td><td class="val-neutral">${fv}</td></tr>`;
+  }).join('');
+  const table = document.getElementById(id);
+  if (table) table.innerHTML = rows || '<tr><td colspan="2" style="color:var(--text3)">No metrics yet</td></tr>';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LOGGING
+// ══════════════════════════════════════════════════════════════════════════════
+function log(level, subsys, msg) {
+  const now = new Date();
+  const ts = String(now.getHours()).padStart(2,'0') + ':' +
+             String(now.getMinutes()).padStart(2,'0') + ':' +
+             String(now.getSeconds()).padStart(2,'0');
+  appendLog({time: ts, level, subsys, msg, ts: now.getTime()/1000});
+}
+
+function appendLog(entry) {
+  S.logEntries.push(entry);
+  if (S.logEntries.length > 5000) S.logEntries.shift();
+  document.getElementById('ov-logs').textContent = S.logEntries.length;
+
+  const row = makeLogRow(entry);
+
+  // Main log panel
+  const mainLog = document.getElementById('main-log');
+  if (passFilter(entry)) {
+    mainLog.appendChild(row.cloneNode(true));
+    if (document.getElementById('log-autoscroll').checked) mainLog.scrollTop = mainLog.scrollHeight;
+  }
+
+  // Run log tail (always)
+  const runLog = document.getElementById('run-log');
+  runLog.appendChild(row.cloneNode(true));
+  runLog.scrollTop = runLog.scrollHeight;
+  while (runLog.children.length > 200) runLog.removeChild(runLog.firstChild);
+}
+
+function makeLogRow(entry) {
+  const el = document.createElement('div');
+  el.className = `log-e lv-${entry.level || 'INFO'}`;
+  el.innerHTML = `
+    <span class="log-ts">${entry.time || ''}</span>
+    <span class="log-lv">${entry.level || ''}</span>
+    <span class="log-sub">${(entry.subsys || '').slice(0,22)}</span>
+    <span class="log-msg">${escHtml(entry.msg || '')}</span>`;
+  return el;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+function passFilter(e) {
+  if (S.filterLevel && e.level !== S.filterLevel) return false;
+  if (S.filterText && !e.msg.toLowerCase().includes(S.filterText.toLowerCase())) return false;
+  return true;
+}
+
+function applyLogFilter() {
+  S.filterLevel = document.getElementById('log-filter-level').value;
+  S.filterText  = document.getElementById('log-filter-text').value;
+  renderAllLogs();
+}
+
+function renderAllLogs() {
+  const mainLog = document.getElementById('main-log');
+  mainLog.innerHTML = '';
+  const filtered = S.logEntries.filter(passFilter);
+  const frag = document.createDocumentFragment();
+  filtered.forEach(e => frag.appendChild(makeLogRow(e)));
+  mainLog.appendChild(frag);
+  if (document.getElementById('log-autoscroll').checked) mainLog.scrollTop = mainLog.scrollHeight;
+}
+
+async function clearLogs() {
+  await api('DELETE', '/api/logs');
+  S.logEntries = [];
+  document.getElementById('main-log').innerHTML = '';
+  document.getElementById('run-log').innerHTML = '';
+  document.getElementById('ov-logs').textContent = '0';
+}
+
+function exportLogs() {
+  const text = S.logEntries.map(e => `${e.time} [${e.level}] ${e.subsys}: ${e.msg}`).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type:'text/plain'}));
+  a.download = 'aeon_training_logs.txt';
+  a.click();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FILE UPLOAD
+// ══════════════════════════════════════════════════════════════════════════════
+function dragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('drag-over'); }
+function dragLeave() { document.getElementById('drop-zone').classList.remove('drag-over'); }
+
+function dropFile(e) {
+  e.preventDefault();
+  dragLeave();
+  const files = e.dataTransfer.files;
+  if (files.length) uploadFiles(Array.from(files));
+}
+
+function filesSelected(e) {
+  const files = Array.from(e.target.files);
+  if (files.length) uploadFiles(files);
+  e.target.value = '';
+}
+
+async function uploadFiles(files) {
+  const info = document.getElementById('file-info');
+  for (const file of files) {
+    info.textContent = `Uploading ${file.name}...`;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/files/upload', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (d.ok) {
+        log('INFO','upload',`✅ Uploaded: ${d.filename} (${d.size_kb}KB)`);
+      } else {
+        log('ERROR','upload',`❌ Upload failed: ${JSON.stringify(d)}`);
+      }
+    } catch(e) {
+      log('ERROR','upload',`Upload error: ${e}`);
+    }
+  }
+  info.textContent = '';
+  await refreshFileList();
+}
+
+async function refreshFileList() {
+  const d = await api('GET', '/api/files');
+  S.uploadedFiles = d.files || [];
+  renderFileList();
+}
+
+function renderFileList() {
+  const el = document.getElementById('file-list');
+  if (!S.uploadedFiles.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:11px;padding:10px 0">No files uploaded yet</div>';
+    return;
+  }
+  el.innerHTML = S.uploadedFiles.map(f => `
+    <div class="file-item${S.selectedFile === f.name ? ' selected' : ''}" onclick="selectFile('${escHtml(f.name)}')">
+      <span class="file-icon">${f.name.endsWith('.txt') ? '📝' : '📊'}</span>
+      <span class="file-name">${escHtml(f.name)}</span>
+      <span class="file-size">${f.size_kb}KB</span>
+      <button class="file-del" onclick="event.stopPropagation();deleteFile('${escHtml(f.name)}')" title="Delete">✕</button>
+    </div>`).join('');
+}
+
+function selectFile(name) {
+  S.selectedFile = (S.selectedFile === name) ? null : name;
+  renderFileList();
+  log('INFO','dashboard',`Selected file: ${name}`);
+}
+
+async function deleteFile(name) {
+  if (!confirm(`Delete ${name}?`)) return;
+  await api('DELETE', `/api/files/${encodeURIComponent(name)}`);
+  if (S.selectedFile === name) S.selectedFile = null;
+  await refreshFileList();
+  log('INFO','dashboard',`Deleted file: ${name}`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TRAINING CONTROL
+// ══════════════════════════════════════════════════════════════════════════════
+async function startTraining() {
+  await refreshFileList();
+  const fileName = S.selectedFile ||
+    (S.uploadedFiles.length === 1 ? S.uploadedFiles[0].name : '');
+
+  if (!fileName && S.uploadedFiles.length === 0) {
+    alert('Please upload a training file first (Data tab).');
+    nav('data');
+    return;
+  }
+
+  if (!fileName && S.uploadedFiles.length > 1) {
+    alert('Multiple files uploaded — please select one in the Data tab.');
+    nav('data');
+    return;
+  }
+
+  // Gather config
+  const body = {
+    file_name:        fileName,
+    epochs_a:         parseInt(document.getElementById('cfg-epochs_a')?.value || 30),
+    epochs_b:         parseInt(document.getElementById('cfg-epochs_b')?.value || 10),
+    document_aware:   document.getElementById('cfg-doc-aware')?.checked ?? true,
+    resume_from:      document.getElementById('cfg-resume')?.value?.trim() || '',
+    z_dim:            parseInt(document.getElementById('cfg-z_dim')?.value || 256),
+    hidden_dim:       parseInt(document.getElementById('cfg-hidden_dim')?.value || 256),
+    vq_num_embeddings: parseInt(document.getElementById('cfg-vq_codes')?.value || 2048),
+    batch_size:       parseInt(document.getElementById('cfg-batch_size')?.value || 16),
+    learning_rate:    parseFloat(document.getElementById('cfg-lr')?.value || '3e-5'),
+    context_window:   parseInt(document.getElementById('cfg-ctx_win')?.value || 3),
+    entropy_weight:   parseFloat(document.getElementById('cfg-entropy')?.value || '0.1'),
+    grad_clip_norm:   parseFloat(document.getElementById('cfg-grad_clip')?.value || '0.5'),
+    dropout_rate:     parseFloat(document.getElementById('cfg-dropout_rate')?.value || '0.1'),
+    seq_length:       parseInt(document.getElementById('cfg-seq_length')?.value || 64),
+  };
+
+  const btn = document.getElementById('btn-start');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting...';
+
+  try {
+    const d = await api('POST', '/api/v4/train/start', body);
+    if (d.ok) {
+      log('INFO','dashboard',`🚀 Training started: file=${d.file} A=${d.epochs_a} B=${d.epochs_b}`);
+      nav('run');
+    } else {
+      log('ERROR','dashboard',`❌ Start failed: ${d.detail || JSON.stringify(d)}`);
+      alert('Start failed: ' + (d.detail || JSON.stringify(d)));
+    }
+  } catch(e) {
+    log('ERROR','dashboard',`Start error: ${e}`);
+    alert('Start error: ' + e);
+  } finally {
+    btn.innerHTML = '▶ Start Training';
+    btn.disabled = false;
+  }
+}
+
+async function stopTraining() {
+  const d = await api('POST', '/api/v4/train/stop');
+  log('INFO','dashboard', d.message || 'Stop signal sent');
+}
+
+function cfgTab(name) {
+  document.querySelectorAll('#cfg-tbar .tbtn').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('onclick')?.includes(`'${name}'`));
+  });
+  document.querySelectorAll('[id^="ctab-"]').forEach(p => p.classList.remove('active'));
+  const t = document.getElementById(`ctab-${name}`);
+  if (t) t.classList.add('active');
+}
+
+function resetConfig() {
+  const defaults = {
+    'cfg-z_dim':256,'cfg-hidden_dim':256,'cfg-seq_length':64,
+    'cfg-dropout_rate':0.1,'cfg-seed':42,
+    'cfg-lr':'3e-5','cfg-batch_size':16,'cfg-grad_clip':0.5,'cfg-label_smoothing':0.1,
+    'cfg-warmup_steps':1000,'cfg-epochs_a':30,'cfg-epochs_b':10,
+    'cfg-vq_codes':2048,'cfg-vq_commit':0.25,'cfg-vq_wt':0.5,
+    'cfg-entropy':0.1,'cfg-vq_ema':0.99,'cfg-vq_reset':30,
+    'cfg-ctx_win':3,'cfg-rssm_hid':512,'cfg-min_chunks':2,
+  };
+  for (const [id,val] of Object.entries(defaults)) {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  }
+  log('INFO','dashboard','Config reset to defaults');
+}
+
+function metTab(name) {
+  document.querySelectorAll('.tbar .tbtn').forEach(b => {
+    if (b.getAttribute('onclick')?.includes(`'${name}'`)) b.classList.add('active');
+    else if (b.getAttribute('onclick')?.includes('metTab')) b.classList.remove('active');
+  });
+  document.getElementById('met-tab-a').classList.toggle('active', name === 'a');
+  document.getElementById('met-tab-b').classList.toggle('active', name === 'b');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  METRICS REFRESH
+// ══════════════════════════════════════════════════════════════════════════════
+async function refreshMetrics() {
+  const d = await api('GET', '/api/v4/train/metrics');
+  if (!d.ok) return;
+  S.phaseAMetrics = d.phase_a || [];
+  S.phaseBMetrics = d.phase_b || [];
+  if (d.best_loss_a !== undefined) S.bestLossA = d.best_loss_a;
+  if (d.best_loss_b !== undefined) S.bestLossB = d.best_loss_b;
+  drawMetricsCharts();
+  fillMetricsTables();
+}
+
+function fillMetricsTables() {
+  // Phase A table
+  const tbA = document.getElementById('met-table-a').querySelector('tbody');
+  tbA.innerHTML = S.phaseAMetrics.map(m => `<tr>
+    <td>${m.epoch||''}</td>
+    <td class="val-neutral">${fmt(m.total)}</td>
+    <td>${fmt(m.recon)}</td>
+    <td>${fmt(m.vq)}</td>
+    <td>${fmt(m.perplexity)}</td>
+    <td class="${(m['accuracy_%']||0)>80?'val-good':'val-warn'}">${fmt(m['accuracy_%'])}%</td>
+    <td class="${(m['codebook_%']||0)>50?'val-good':'val-bad'}">${fmt(m['codebook_%'])}%</td>
+    <td>${fmt(m.grad_norm)}</td>
+    <td>${fmtE(m.lr)}</td>
+  </tr>`).join('');
+
+  // Phase B table
+  const tbB = document.getElementById('met-table-b').querySelector('tbody');
+  tbB.innerHTML = S.phaseBMetrics.map(m => `<tr>
+    <td>${m.epoch||''}</td>
+    <td class="val-neutral">${fmt(m.mse_loss)}</td>
+    <td>${fmt(m.smooth_l1)}</td>
+    <td class="${(m.cosine_sim||0)>0.7?'val-good':'val-warn'}">${fmt(m.cosine_sim)}</td>
+    <td>${fmt(m.l1_loss)}</td>
+    <td>${fmt(m.rel_error)}</td>
+    <td>${fmt(m.grad_norm)}</td>
+  </tr>`).join('');
+}
+
+function fmt(v) { return (typeof v==='number' && isFinite(v)) ? v.toFixed(5) : (v!==undefined?String(v):'—'); }
+function fmtE(v) { return (typeof v==='number' && isFinite(v)) ? v.toExponential(2) : '—'; }
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CHARTS (lightweight canvas)
+// ══════════════════════════════════════════════════════════════════════════════
+function drawLine(canvas, data, color, label) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  if (!data || data.length < 2) {
+    ctx.fillStyle='rgba(255,255,255,.06)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#4a5875'; ctx.font='11px IBM Plex Mono';
+    ctx.fillText('No data yet',W/2-36,H/2+4); return;
+  }
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const pad = {l:40,r:10,t:10,b:30};
+  const w = W-pad.l-pad.r, h = H-pad.t-pad.b;
+
+  // Grid
+  ctx.strokeStyle='rgba(255,255,255,.04)';
+  for(let i=0;i<=4;i++){const y=pad.t+h*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+w,y);ctx.stroke();}
+
+  // Y labels
+  ctx.fillStyle='#4a5875'; ctx.font='9px IBM Plex Mono';
+  for(let i=0;i<=4;i++){const v=max-range*i/4;ctx.fillText(v.toFixed(3),2,pad.t+h*i/4+3);}
+
+  // Line
+  ctx.beginPath();
+  ctx.strokeStyle=color; ctx.lineWidth=1.5;
+  data.forEach((v,i)=>{
+    const x=pad.l+w*i/(data.length-1), y=pad.t+h*(1-(v-min)/range);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+
+  // Area
+  const grad = ctx.createLinearGradient(0,pad.t,0,pad.t+h);
+  grad.addColorStop(0, color.replace(')',',0.25)').replace('rgb','rgba'));
+  grad.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.lineTo(pad.l+w,pad.t+h); ctx.lineTo(pad.l,pad.t+h); ctx.closePath();
+  ctx.fillStyle=grad; ctx.fill();
+
+  // X axis
+  ctx.fillStyle='#4a5875'; ctx.font='9px IBM Plex Mono';
+  ctx.fillText('1',pad.l,H-6); ctx.fillText(String(data.length),pad.l+w-8,H-6);
+}
+
+function resizeCanvas(id) {
+  const c = document.getElementById(id);
+  if (!c) return c;
+  c.width  = c.parentElement.clientWidth - 28;
+  c.height = 180;
+  return c;
+}
+
+function drawMetricsCharts() {
+  const a = S.phaseAMetrics, b = S.phaseBMetrics;
+  const pluck = (arr,k) => arr.map(m=>m[k]||0).filter(v=>isFinite(v));
+  // Phase A
+  const ca = resizeCanvas('chart-a-loss');
+  if(ca) drawLine(ca, pluck(a,'total'), '#00e5ff', 'Loss');
+  const cp = resizeCanvas('chart-a-ppl');
+  if(cp) drawLine(cp, pluck(a,'perplexity'), '#ffab00', 'PPL');
+  const cac = resizeCanvas('chart-a-acc');
+  if(cac) drawLine(cac, pluck(a,'accuracy_%'), '#00e676', 'Acc');
+  const ccb = resizeCanvas('chart-a-cb');
+  if(ccb) drawLine(ccb, pluck(a,'codebook_%'), '#d500f9', 'CB%');
+  // Phase B
+  const bm = resizeCanvas('chart-b-mse');
+  if(bm) drawLine(bm, pluck(b,'mse_loss'), '#00e5ff', 'MSE');
+  const bc = resizeCanvas('chart-b-cos');
+  if(bc) drawLine(bc, pluck(b,'cosine_sim'), '#00e676', 'Cos');
+}
+
+function drawOverviewCharts() {
+  const a = S.phaseAMetrics, b = S.phaseBMetrics;
+  const pluck = (arr,k) => arr.map(m=>m[k]||0).filter(v=>isFinite(v));
+  const cao = resizeCanvas('chart-a-ov');
+  if(cao) drawLine(cao, pluck(a,'total'), '#00e5ff', '');
+  const cbo = resizeCanvas('chart-b-ov');
+  if(cbo) drawLine(cbo, pluck(b,'mse_loss'), '#d500f9', '');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SYSTEM
+// ══════════════════════════════════════════════════════════════════════════════
+async function refreshSystem() {
+  const d = await api('GET', '/api/status/system');
+  if (!d.ok) return;
+
+  if (d.cpu_percent !== undefined) {
+    document.getElementById('sys-cpu').textContent = d.cpu_percent.toFixed(1) + '%';
+    document.getElementById('sys-cpu-bar').style.width = d.cpu_percent + '%';
+    document.getElementById('ov-cpu').textContent = d.cpu_percent.toFixed(1) + '%';
+  }
+  if (d.ram_percent !== undefined) {
+    document.getElementById('sys-ram').textContent = `${d.ram_used_gb}/${d.ram_total_gb}GB`;
+    document.getElementById('sys-ram-bar').style.width = d.ram_percent + '%';
+    document.getElementById('ov-ram').textContent = d.ram_percent.toFixed(0) + '%';
+  }
+  if (d.process_ram_mb !== undefined) {
+    document.getElementById('sys-pram').textContent = d.process_ram_mb + 'MB';
+  }
+
+  // GPU
+  const gpuEl = document.getElementById('gpu-cards');
+  const ovGpu = document.getElementById('ov-gpu');
+  if (d.gpu_devices && d.gpu_devices.length) {
+    gpuEl.innerHTML = d.gpu_devices.map(g => `
+      <div class="card cw">
+        <div class="ct">GPU ${g.index}: ${g.name}</div>
+        <div class="cv-val cw">${g.allocated_mb}/<span style="font-size:16px">${g.total_mb}MB</span></div>
+        <div class="mbar"><div class="mfill w" style="width:${(g.allocated_mb/g.total_mb*100).toFixed(0)}%"></div></div>
+        <div class="cm-t">Reserved: ${g.reserved_mb}MB · Free: ${g.free_mb}MB</div>
+      </div>`).join('');
+    ovGpu.textContent = `${d.gpu_devices[0].allocated_mb}MB`;
+  } else {
+    gpuEl.innerHTML = '<div style="color:var(--text3);font-size:12px">No CUDA devices detected</div>';
+    ovGpu.textContent = 'N/A';
+  }
+
+  // Env
+  document.getElementById('env-info').innerHTML = `
+    <div><span style="color:var(--text3)">PyTorch</span>   ${d.torch_version||'?'}</div>
+    <div><span style="color:var(--text3)">CUDA</span>      ${d.cuda_available?'✅ Available':'❌ Not available'}</div>
+    <div><span style="color:var(--text3)">CPU count</span> ${d.cpu_count||'?'}</div>
+    <div><span style="color:var(--text3)">RAM total</span> ${d.ram_total_gb||'?'} GB</div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MODEL INSPECTOR
+// ══════════════════════════════════════════════════════════════════════════════
+async function refreshModel() {
+  const d = await api('GET', '/api/v4/model/info');
+  const el = document.getElementById('model-content');
+  const dlBtn = document.getElementById('btn-dl');
+
+  if (!d.ok) {
+    el.innerHTML = `<div style="color:var(--text3);font-size:12px;padding:20px 0">${d.message || 'No model loaded'}</div>`;
+    dlBtn.disabled = true;
+    return;
+  }
+
+  dlBtn.disabled = false;
+  const cfg = d.config || {};
+  el.innerHTML = `
+    <div class="g4" style="margin-bottom:18px">
+      <div class="card ca"><div class="ct">Parameters</div><div class="cv-val ca">${(d.parameters/1e6).toFixed(2)}M</div></div>
+      <div class="card cg"><div class="ct">Device</div><div class="cv-val cg" style="font-size:16px">${d.device||'?'}</div></div>
+      <div class="card cv"><div class="ct">VQ Usage</div><div class="cv-val cv2">${d.vq_usage_pct!==null?d.vq_usage_pct.toFixed(1)+'%':'—'}</div></div>
+      <div class="card cw"><div class="ct">Codebook</div><div class="cv-val cw">${cfg.vq_num_embeddings||'?'}</div></div>
+    </div>
+    <div class="sec-title">Configuration</div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;font-size:11px">
+        ${Object.entries(cfg).filter(([k])=>!k.startsWith('_')).map(([k,v])=>`
+          <div><span style="color:var(--text3)">${k}</span>: <span style="color:var(--cyan)">${JSON.stringify(v)}</span></div>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+async function downloadCheckpoint() {
+  window.location.href = '/api/v4/checkpoint/download';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FULL REFRESH
+// ══════════════════════════════════════════════════════════════════════════════
+async function refreshAll() {
+  const status = await api('GET', '/api/status');
+  // ae_train badge
+  document.getElementById('ov-ae-loaded').textContent =
+    status.ae_train_loaded ? 'ae_train: ✅ loaded' : `ae_train: ❌ ${status.ae_train_error}`;
+  document.getElementById('ov-logs').textContent = S.logEntries.length;
+
+  // Pull latest metrics from server
+  const m = await api('GET', '/api/v4/train/metrics');
+  if (m.ok) {
+    S.phaseAMetrics = m.phase_a;
+    S.phaseBMetrics = m.phase_b;
+    if (m.best_loss_a !== undefined && m.best_loss_a !== null) S.bestLossA = m.best_loss_a;
+    if (m.best_loss_b !== undefined && m.best_loss_b !== null) S.bestLossB = m.best_loss_b;
+  }
+
+  // Progress
+  const p = await api('GET', '/api/v4/train/progress');
+  if (p.ok) {
+    updateTrainingState({
+      training_active: p.training_active,
+      training_phase:  p.training_phase,
+      progress:        p.progress,
+      best_loss_a:     p.best_loss_a,
+      best_loss_b:     p.best_loss_b,
+    });
+  }
+
+  // Error display
+  const errEl = document.getElementById('run-error');
+  if (p.training_error) {
+    errEl.style.display = '';
+    errEl.textContent = '❌ ' + p.training_error;
+  } else {
+    errEl.style.display = 'none';
+  }
+
+  drawOverviewCharts();
+  if (S.activePanel === 'metrics') { drawMetricsCharts(); fillMetricsTables(); }
+  refreshSystem();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PERIODIC POLL
+// ══════════════════════════════════════════════════════════════════════════════
+setInterval(async () => {
+  if (S.trainingActive) {
+    const m = await api('GET', '/api/v4/train/metrics');
+    if (m.ok) {
+      S.phaseAMetrics = m.phase_a;
+      S.phaseBMetrics = m.phase_b;
+    }
+    const p = await api('GET', '/api/v4/train/progress');
+    if (p.ok) updateTrainingState({
+      training_active: p.training_active,
+      training_phase:  p.training_phase,
+      progress:        p.progress,
+      best_loss_a:     p.best_loss_a,
+      best_loss_b:     p.best_loss_b,
+    });
+    if (S.activePanel === 'metrics') { drawMetricsCharts(); fillMetricsTables(); }
+    if (S.activePanel === 'overview') { drawOverviewCharts(); }
+  }
+}, 3000);
+
+// System stats poll
+setInterval(() => {
+  if (['system','overview'].includes(S.activePanel)) refreshSystem();
+}, 8000);
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BOOT
+// ══════════════════════════════════════════════════════════════════════════════
+connectWS();
+log('INFO','dashboard','AEON Unified Dashboard v5.0 · connecting...');
+refreshFileList();
+refreshAll().then(() => drawOverviewCharts());
+
+// Load log backlog
+setTimeout(async () => {
+  try {
+    const d = await api('GET', '/api/logs?limit=300');
+    (d.logs || []).forEach(e => {
+      if (!S.logEntries.find(x => x.ts === e.ts)) appendLog(e);
+    });
+  } catch(e) {}
+}, 1500);
+</script>
+</body>
+</html>
