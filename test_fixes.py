@@ -17077,6 +17077,42 @@ def test_device_manager_mps_no_fallback_raises():
     print("✅ test_device_manager_mps_no_fallback_raises PASSED")
 
 
+def test_vq_codebook_codeStatus_declaration_order():
+    """Fix: AEON_Dashboard.html - codeStatus used before declaration (TDZ error).
+
+    The variable 'codeStatus' was referenced inside botUsed.map() before its
+    'const' declaration further down, causing:
+        ReferenceError: Cannot access 'codeStatus' before initialization
+    The fix moves the declaration before its first usage.
+    """
+    import re
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'AEON_Dashboard.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        src = f.read()
+
+    # Find all positions of codeStatus in the source
+    decl_pattern = re.compile(r'\bconst\s+codeStatus\b')
+    usage_pattern = re.compile(r'\bcodeStatus\b')
+
+    decl_positions = [m.start() for m in decl_pattern.finditer(src)]
+    all_positions = [m.start() for m in usage_pattern.finditer(src)]
+
+    assert len(decl_positions) == 1, (
+        f"Expected exactly 1 'const codeStatus' declaration, found {len(decl_positions)}"
+    )
+
+    decl_pos = decl_positions[0]
+    for pos in all_positions:
+        if pos == decl_pos:
+            continue
+        assert pos > decl_pos, (
+            "codeStatus is referenced before its declaration — "
+            "Temporal Dead Zone (TDZ) error not fixed"
+        )
+
+    print("✅ test_vq_codebook_codeStatus_declaration_order PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -17899,6 +17935,9 @@ if __name__ == '__main__':
     test_ae_train_select_device()
     test_amp_disabled_on_non_cuda()
     test_device_manager_mps_no_fallback_raises()
+
+    # VQ Codebook Dashboard Fix
+    test_vq_codebook_codeStatus_declaration_order()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
