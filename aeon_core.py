@@ -13695,7 +13695,69 @@ class AEONDeltaV3(nn.Module):
                     success=recovery_success,
                     metadata={"detail": detail},
                 )
-            # Deterministic fallback — return input as-is with empty outputs
+            # Deterministic fallback — return input as-is with partial outputs.
+            # Preserve any provenance the tracker recorded before the exception
+            # so that modules that completed successfully are still attributed.
+            _partial_provenance = self.provenance_tracker.compute_attribution()
+
+            # Preserve convergence monitor state — if the meta-loop completed
+            # before the exception, the monitor already has a meaningful verdict.
+            # Fall back to 'unknown' only when the history is truly empty.
+            if self.convergence_monitor.history:
+                _fallback_verdict = self.convergence_monitor.check(
+                    self.convergence_monitor.history[-1]
+                )
+            else:
+                _fallback_verdict = {'status': 'unknown', 'certified': False}
+
+            # Cache feedback even on error recovery so the next forward pass
+            # benefits from downstream error signals (safety=1.0 fallback,
+            # high uncertainty, degraded recovery health).
+            try:
+                with torch.no_grad():
+                    self._cached_feedback = self.feedback_bus(
+                        batch_size=B,
+                        device=device,
+                        safety_score=torch.ones(B, 1, device=device),
+                        convergence_quality=0.0,
+                        uncertainty=1.0,
+                    ).detach()
+            except Exception:
+                pass  # feedback caching is best-effort
+
+            # Positive recovery reinforcement — when recovery succeeded,
+            # record a positive reward so MetaRecoveryLearner learns from
+            # successful error recovery, not only from pipeline success.
+            if (self.meta_recovery is not None
+                    and recovery_success
+                    and recovered_value is not None):
+                try:
+                    _recovery_dim = self.meta_recovery.state_dim
+                    _success_ctx = self._encode_state_for_recovery(
+                        recovered_value, _recovery_dim, device,
+                    )
+                    self.meta_recovery.recovery_buffer.push(
+                        state=_success_ctx.squeeze(0),
+                        action=0,
+                        reward=1.0,
+                        next_state=_success_ctx.squeeze(0),
+                    )
+                except Exception:
+                    pass  # positive reinforcement is best-effort
+
+            # Store recovered state in ConsolidatingMemory so that the
+            # memory pipeline remains populated even after error recovery.
+            if (self.consolidating_memory is not None
+                    and recovered_value is not None):
+                try:
+                    for i in range(min(B, recovered_value.shape[0])):
+                        if torch.isfinite(recovered_value[i]).all():
+                            self.consolidating_memory.store(
+                                recovered_value[i].detach()
+                            )
+                except Exception:
+                    pass  # memory storage is best-effort
+
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
                 'core_state': z_fallback,
@@ -13750,7 +13812,7 @@ class AEONDeltaV3(nn.Module):
                 'causal_model_results': {},
                 'notears_results': {},
                 'hierarchical_vae_results': {},
-                # --- AGI coherence provenance (defaults for error path) ---
+                # --- AGI coherence provenance (partial state preserved) ---
                 'uncertainty': 1.0,
                 'adaptive_safety_threshold': self.config.safety_threshold,
                 'audit_insights': {
@@ -13761,8 +13823,8 @@ class AEONDeltaV3(nn.Module):
                     'recommend_deeper_reasoning': False,
                 },
                 'causal_trace_id': '',
-                'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
-                'convergence_verdict': {'status': 'unknown', 'certified': False},
+                'provenance': _partial_provenance,
+                'convergence_verdict': _fallback_verdict,
                 'coherence_results': {},
                 'metacognitive_info': {},
                 'error_recovery_stats': self.error_recovery.get_recovery_stats(),
@@ -13773,8 +13835,8 @@ class AEONDeltaV3(nn.Module):
                 'causal_trace_summary': {},
                 'causal_decision_chain': {
                     'input_trace_id': '',
-                    'provenance': {'contributions': {}, 'deltas': {}, 'order': []},
-                    'convergence_verdict': {'status': 'unknown', 'certified': False},
+                    'provenance': _partial_provenance,
+                    'convergence_verdict': _fallback_verdict,
                     'metacognitive_triggered': False,
                     'metacognitive_phase': 'error_fallback',
                     'metacognitive_triggers': [],
