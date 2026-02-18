@@ -14411,6 +14411,39 @@ class AEONDeltaV3(nn.Module):
                     _error_summary
                 )
         
+        # 0e. Proactive evolved-guidance application — when the error
+        # evolution tracker recommends a specific strategy for recurring
+        # error classes with low success rates, pre-configure the
+        # meta-loop parameters *before* the current pass's meta-loop
+        # invocation.  This closes the loop between historical error
+        # learning and proactive reasoning depth: the system reasons
+        # harder on inputs that resemble historically problematic patterns,
+        # rather than only escalating uncertainty post-hoc.
+        _evolved_meta_loop_adjusted = False
+        _evolved_orig_threshold: Optional[float] = None
+        _evolved_orig_max_iter: Optional[int] = None
+        if (_evolved_guidance == "deeper_meta_loop"
+                and _evolved_preemptive_uncertainty > 0):
+            _EVOLVED_TIGHTENING_FACTOR = 0.7
+            _EVOLVED_EXTRA_ITERATIONS = 5
+            _evolved_orig_threshold = self.meta_loop.convergence_threshold
+            _evolved_orig_max_iter = self.meta_loop.max_iterations
+            self.meta_loop.convergence_threshold = (
+                _evolved_orig_threshold * _EVOLVED_TIGHTENING_FACTOR
+            )
+            self.meta_loop.max_iterations = min(
+                _evolved_orig_max_iter + _EVOLVED_EXTRA_ITERATIONS,
+                _evolved_orig_max_iter * 2,
+            )
+            _evolved_meta_loop_adjusted = True
+            self.audit_log.record("error_evolution", "proactive_meta_loop_tightening", {
+                "strategy": _evolved_guidance,
+                "orig_threshold": _evolved_orig_threshold,
+                "new_threshold": self.meta_loop.convergence_threshold,
+                "orig_max_iter": _evolved_orig_max_iter,
+                "new_max_iter": self.meta_loop.max_iterations,
+            })
+        
         self.progress_tracker.begin_phase("meta_loop")
         
         # Initialize uncertainty tracking before meta-loop so that
@@ -14450,6 +14483,13 @@ class AEONDeltaV3(nn.Module):
                 z_in, use_fixed_point=not fast, feedback=prev_feedback,
             )
         self.provenance_tracker.record_after("meta_loop", C_star)
+        # Restore meta-loop parameters if proactively adjusted by evolved
+        # guidance (step 0e) so that subsequent metacognitive re-runs use
+        # the original thresholds as their baseline rather than the
+        # pre-tightened values.
+        if _evolved_meta_loop_adjusted:
+            self.meta_loop.convergence_threshold = _evolved_orig_threshold
+            self.meta_loop.max_iterations = _evolved_orig_max_iter
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         self.audit_log.record("meta_loop", "completed", {
             "avg_iterations": iterations.mean().item(),
@@ -17005,6 +17045,41 @@ class AEONDeltaV3(nn.Module):
                 except Exception as _hm_store_err:
                     logger.debug("Post-critic hierarchical memory store failed: %s", _hm_store_err)
         
+        # 8g-0c. Post-integration coherence re-verification — when
+        # auto-critic or post-metacognitive processing revised z_out,
+        # the coherence score computed in step 5a-iii may be stale
+        # (it was measured on the pre-revision state).  Re-run the
+        # ModuleCoherenceVerifier on the final z_out so that the output
+        # coherence score reflects the actual delivered state.  This
+        # closes the coherence-revision feedback loop: revisions that
+        # improve coherence are captured, and revisions that degrade it
+        # are flagged for the next pass's metacognitive trigger.
+        if (self.module_coherence is not None
+                and (_post_metacog_triggered or _any_auto_critic_revised)
+                and not fast):
+            _post_coherence_states: Dict[str, torch.Tensor] = {
+                "z_out": z_out,
+                "core_state": C_star,
+            }
+            if embedded_factors is not None:
+                _post_coherence_states["factor_embedding"] = embedded_factors
+            _post_coh_results = self.module_coherence(_post_coherence_states)
+            _post_coh_score = float(
+                _post_coh_results["coherence_score"].mean().item()
+            )
+            # Update coherence results with post-revision measurement
+            coherence_results = _post_coh_results
+            _coherence_deficit = _post_coh_results.get("needs_recheck", False)
+            # Update cached coherence deficit for next pass's feedback bus
+            self._cached_coherence_deficit = float(
+                max(0.0, min(1.0, 1.0 - _post_coh_score))
+            )
+            self.audit_log.record("module_coherence", "post_revision_recheck", {
+                "coherence_score": _post_coh_score,
+                "needs_recheck": _coherence_deficit,
+                "trigger": "auto_critic_or_metacognitive_revision",
+            })
+        
         # 8g. Record aggregated subsystem health in causal trace so that
         # root-cause analysis can link system-wide health degradation
         # back to specific subsystem failures within this forward pass.
@@ -17061,6 +17136,23 @@ class AEONDeltaV3(nn.Module):
                     "root_cause_subsystems": _root_subsystems,
                     "safety_tightening": _root_tightening if _root_subsystems else 1.0,
                 }
+                # 8g-iii. Root-cause count as uncertainty source — feed the
+                # number of distinct root-cause subsystems into
+                # uncertainty_sources so the metacognitive trigger (and the
+                # feedback bus on the next pass) is conditioned on root-cause
+                # analysis depth.  Multiple distinct root causes indicate
+                # systemic issues across the architecture, warranting
+                # heightened epistemic caution.
+                if _root_subsystems:
+                    _ROOT_CAUSE_UNCERTAINTY_RATE = 0.05
+                    _root_unc_boost = min(
+                        1.0 - uncertainty,
+                        _ROOT_CAUSE_UNCERTAINTY_RATE * len(set(_root_subsystems)),
+                    )
+                    if _root_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _root_unc_boost)
+                        uncertainty_sources["causal_root_cause_count"] = _root_unc_boost
+                        high_uncertainty = uncertainty > 0.5
         
         # 8h. Build unified causal decision chain — a single traceability
         # record that links the output back to every decision point that
@@ -17085,11 +17177,31 @@ class AEONDeltaV3(nn.Module):
                 _dampen_alpha = _PROVENANCE_DAMPEN_FACTOR * (
                     _max_contrib - _PROVENANCE_DOMINANCE_THRESHOLD
                 )
+                # 8h-0a. Weakest-pair-targeted dampening escalation — when
+                # the coherence verifier identified a specific weakest
+                # subsystem pair AND the dominant provenance module is a
+                # member of that pair, apply stronger dampening.  The
+                # dominant module is not only monopolizing the output, it
+                # is also the source of the worst cross-module disagreement.
+                # Escalating dampening specifically for this case prevents
+                # a failing dominant module from overriding the system's
+                # collective reasoning, linking coherence diagnostics to
+                # provenance-driven correction.
+                _WEAKEST_PAIR_DAMPEN_BOOST = 1.5
+                _weakest_pair_out = coherence_results.get("_weakest_pair", None) if coherence_results else None
+                if _weakest_pair_out is not None:
+                    _dominant_module = max(_contributions, key=_contributions.get)
+                    if _dominant_module in _weakest_pair_out:
+                        _dampen_alpha = _dampen_alpha * _WEAKEST_PAIR_DAMPEN_BOOST
                 z_out = z_out * (1.0 - _dampen_alpha) + z_in.detach() * _dampen_alpha
                 self.audit_log.record("provenance", "dominance_dampened", {
                     "dominant_module": max(_contributions, key=_contributions.get),
                     "dominance_ratio": _max_contrib,
                     "dampen_alpha": _dampen_alpha,
+                    "weakest_pair_escalated": (
+                        _weakest_pair_out is not None
+                        and max(_contributions, key=_contributions.get) in (_weakest_pair_out or "")
+                    ),
                 })
         
         # 8h-1. Provenance-weighted safety adaptation — when a single
@@ -17696,14 +17808,33 @@ class AEONDeltaV3(nn.Module):
                 },
             )
         
+        # ===== 15. UNCERTAINTY-ADAPTIVE STABILIZING LOSS SCALING =====
+        # When the reasoning core reports high uncertainty, increase the
+        # weight of stabilizing losses (consistency, coherence, safety)
+        # so the training objective actively counteracts epistemic
+        # uncertainty.  This closes the loop between runtime uncertainty
+        # estimation and training: uncertain forward passes produce
+        # stronger gradients toward self-consistent, coherent, safe
+        # representations, reducing future uncertainty.
+        _uncertainty_val = outputs.get('uncertainty', 0.0)
+        _UNCERTAINTY_LOSS_THRESHOLD = 0.5
+        _UNCERTAINTY_LOSS_MAX_BOOST = 1.5  # max 1.5x additional scaling
+        _uncertainty_loss_scale = 1.0
+        if isinstance(_uncertainty_val, (int, float)) and _uncertainty_val > _UNCERTAINTY_LOSS_THRESHOLD:
+            _uncertainty_loss_scale = 1.0 + _UNCERTAINTY_LOSS_MAX_BOOST * (
+                (_uncertainty_val - _UNCERTAINTY_LOSS_THRESHOLD)
+                / max(1.0 - _UNCERTAINTY_LOSS_THRESHOLD, 1e-6)
+            )
+            _uncertainty_loss_scale = min(_uncertainty_loss_scale, 1.0 + _UNCERTAINTY_LOSS_MAX_BOOST)
+        
         total_loss = (
             lm_loss +
             vq_loss +
-            consistency_loss +
+            _uncertainty_loss_scale * consistency_loss +
             _convergence_loss_scale * self.config.lambda_lipschitz * lipschitz_loss +
-            _convergence_loss_scale * self.config.lambda_safety * safety_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
-            _convergence_loss_scale * _coherence_weight * coherence_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * _coherence_weight * coherence_loss +
             _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             ewc_loss +
@@ -17738,6 +17869,7 @@ class AEONDeltaV3(nn.Module):
             'auto_critic_loss': auto_critic_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
+            'uncertainty_loss_scale': _uncertainty_loss_scale,
             'consistency_score': consistency.item() if isinstance(consistency, torch.Tensor) else consistency,
             'convergence_quality': outputs.get('convergence_quality', 0.0),
             'uncertainty': outputs.get('uncertainty', 0.0),
