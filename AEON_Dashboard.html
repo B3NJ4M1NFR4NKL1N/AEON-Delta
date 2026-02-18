@@ -3813,9 +3813,10 @@ async function loadVQ() {
     ).join('') || '<span style="color:var(--text3)">—</span>';
 
     const botUsed = d.bottom_k_unused || [];
-    document.getElementById('vq-topk-unused').innerHTML = botUsed.map(t =>
-      `<div class="vq-topk-row"><span style="width:50px;color:${t.usage < 0.1 ? 'var(--danger)' : 'var(--warn)'}">Code ${t.code}</span><div class="tk-bar"><div class="tk-fill" style="width:${Math.max(1,(t.usage/topMax*100)).toFixed(1)}%;background:${t.usage < 0.1 ? 'var(--danger)' : 'var(--warn)'}"></div></div><span style="width:60px;text-align:right;color:var(--text3)">${t.usage.toFixed(2)}</span></div>`
-    ).join('') || '<span style="color:var(--text3)">—</span>';
+    document.getElementById('vq-topk-unused').innerHTML = botUsed.map(t => {
+      const clr = codeStatus[t.code] === 'dead' ? 'var(--danger)' : 'var(--warn)';
+      return `<div class="vq-topk-row"><span style="width:50px;color:${clr}">Code ${t.code}</span><div class="tk-bar"><div class="tk-fill" style="width:${Math.max(1,(t.usage/topMax*100)).toFixed(1)}%;background:${clr}"></div></div><span style="width:60px;text-align:right;color:var(--text3)">${t.usage.toFixed(2)}</span></div>`;
+    }).join('') || '<span style="color:var(--text3)">—</span>';
 
     // Hyperparameters
     const hp = d.hyperparams || {};

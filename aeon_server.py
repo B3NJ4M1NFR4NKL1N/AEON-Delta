@@ -1695,6 +1695,8 @@ async def get_vq_codebook():
             }
 
         # Per-code classification (first 512)
+        # Thresholds based on EMA cluster sizes: <0.1 = never selected (dead),
+        # <1.0 = rarely selected, <5.0 = low frequency, >=5.0 = actively used
         code_status = []
         cap = min(vq.num_embeddings, 512) if hasattr(vq, "num_embeddings") else 512
         for i in range(min(len(counts), cap)):
@@ -1725,7 +1727,8 @@ async def get_vq_codebook():
             bottom_k_unused = [{"code": int(idx), "usage": round(float(val), 2)}
                                for idx, val in zip(bot_idx.tolist(), bot_vals.tolist())]
 
-        # Inter-embedding cosine similarity (sample: first 64 codes for perf)
+        # Inter-embedding cosine similarity (sample first 64 codes to keep
+        # O(n²) cost bounded; 64×64=4096 pairs gives statistically stable estimates)
         cosine_stats = {}
         if emb is not None and emb.shape[0] >= 2:
             sample_n = min(64, emb.shape[0])
@@ -1740,7 +1743,10 @@ async def get_vq_codebook():
                 "std_similarity": round(off_diag.std().item(), 6),
             }
 
-        # Codebook collapse risk assessment
+        # Codebook collapse risk assessment based on normalized entropy.
+        # Thresholds follow VQ-VAE literature (van den Oord et al., 2017):
+        # H/H_max < 0.3 → severe mode collapse, < 0.5 → significant underuse,
+        # < 0.7 → moderate, < 0.85 → mild, >= 0.85 → healthy utilization.
         collapse_risk = "unknown"
         if normalized_entropy is not None:
             if normalized_entropy < 0.3:
