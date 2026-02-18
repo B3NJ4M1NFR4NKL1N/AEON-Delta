@@ -16662,7 +16662,7 @@ class AEONDeltaV3(nn.Module):
         base = self.audit_log.summary()
         # Compute severity-level counts expected by the dashboard.
         severity_counts: Dict[str, int] = defaultdict(int)
-        for entry in self.audit_log.recent(self.audit_log._max_entries):
+        for entry in self.audit_log.filter_by():
             sev = entry.get("severity", "info")
             severity_counts[sev] += 1
         total = base.get("total_decisions", 0)
