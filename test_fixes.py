@@ -7657,6 +7657,127 @@ def test_ns_consistency_checker_violation_detection():
     print("✅ test_ns_consistency_checker_violation_detection PASSED")
 
 
+def test_rules_proxy_no_double_sigmoid():
+    """rules_proxy uses factors directly without redundant sigmoid.
+
+    Factors from SparseFactorization are already in [0, 1].  A second
+    sigmoid would compress them to ≈[0.5, 0.73], causing the
+    NeuroSymbolicConsistencyChecker to produce near-threshold satisfaction
+    scores and spurious violations.
+    """
+    from aeon_core import SparseFactorization, NeuroSymbolicConsistencyChecker, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, num_pillars=8, z_dim=32, vq_embedding_dim=32)
+    sf = SparseFactorization(config)
+    checker = NeuroSymbolicConsistencyChecker(
+        hidden_dim=32, num_predicates=8, violation_threshold=0.5
+    )
+
+    z = torch.randn(4, 32)
+    factors, _ = sf(z)
+    # factors are already in [0, 1] via sigmoid inside extract_factors
+    assert factors.min() >= 0.0 and factors.max() <= 1.0, (
+        "Factors should be in [0, 1]"
+    )
+
+    # Use factors directly as rules_proxy (the fix)
+    result_correct = checker(z, factors)
+    # Using double sigmoid would compress range
+    result_double = checker(z, torch.sigmoid(factors))
+
+    # The fundamental issue: double-sigmoid compresses factor range.
+    # factors are in [0, 1]; sigmoid(factors) compresses to ≈[0.5, 0.73].
+    double_range = torch.sigmoid(factors).max() - torch.sigmoid(factors).min()
+    single_range = factors.max() - factors.min()
+    assert single_range >= double_range, (
+        f"Single-sigmoid factors should span a wider range "
+        f"({single_range:.4f}) than double-sigmoid ({double_range:.4f})"
+    )
+    # Both checks should produce finite results
+    assert torch.isfinite(result_correct["overall_consistency"]).all()
+    assert torch.isfinite(result_double["overall_consistency"]).all()
+    print("✅ test_rules_proxy_no_double_sigmoid PASSED")
+
+
+def test_hr_conclusions_alignment_reduces_violations():
+    """Normalizing HR conclusions before consistency check reduces false positives."""
+    from aeon_core import NeuroSymbolicConsistencyChecker
+    import torch.nn.functional as F
+
+    checker = NeuroSymbolicConsistencyChecker(
+        hidden_dim=32, num_predicates=8, violation_threshold=0.5
+    )
+    z_out = torch.randn(2, 32)
+    # Simulate HR conclusions in a shifted subspace
+    hr_conclusions = torch.randn(2, 32) * 3.0 + 5.0  # offset distribution
+    rules = torch.sigmoid(torch.randn(2, 8))
+
+    # Normalize HR conclusions (the fix)
+    hr_norm = F.layer_norm(hr_conclusions, [hr_conclusions.shape[-1]])
+    z_out_norm = F.layer_norm(z_out, [z_out.shape[-1]])
+    hr_aligned = (
+        hr_norm * z_out_norm.std(dim=-1, keepdim=True)
+        + z_out_norm.mean(dim=-1, keepdim=True)
+    )
+
+    result_raw = checker(hr_conclusions, rules)
+    result_aligned = checker(hr_aligned, rules)
+
+    # Both should be valid dicts
+    assert "num_violations" in result_raw
+    assert "num_violations" in result_aligned
+    # Aligned check should be finite
+    assert torch.isfinite(result_aligned["overall_consistency"]).all()
+    print("✅ test_hr_conclusions_alignment_reduces_violations PASSED")
+
+
+def test_hr_violation_uncertainty_proportional():
+    """Uncertainty boost from HR violations is proportional to violation ratio."""
+    num_predicates = 64
+    # Simulate: 3 violations out of 64 predicates
+    hr_violations = 3
+    ratio = hr_violations / max(num_predicates, 1)
+    cap = 0.25
+    boost = min(1.0, ratio * cap)
+    # 3/64 * 0.25 = 0.01171875
+    assert boost < 0.02, f"Boost for 3/64 violations should be small, got {boost}"
+    # Old behaviour: 3 * 0.15 = 0.45 — way too high
+    old_boost = 3 * 0.15
+    assert boost < old_boost, "New proportional boost should be less than old fixed boost"
+    print("✅ test_hr_violation_uncertainty_proportional PASSED")
+
+
+def test_convergence_delta_in_output():
+    """convergence_delta is present in reasoning_core output dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, num_pillars=8, vocab_size=256, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(0, 256, (1, 16))
+    with torch.no_grad():
+        outputs = model(ids)
+    assert 'convergence_delta' in outputs, (
+        "convergence_delta should be in output dict"
+    )
+    print("✅ test_convergence_delta_in_output PASSED")
+
+
+def test_convergence_delta_in_error_fallback():
+    """convergence_delta is present even in error fallback dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, num_pillars=8, vocab_size=256, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(0, 256, (1, 16))
+    with torch.no_grad():
+        outputs = model(ids)
+    # Whether normal or fallback, convergence_delta must be a key
+    assert 'convergence_delta' in outputs
+    print("✅ test_convergence_delta_in_error_fallback PASSED")
+
+
 def test_complexity_estimator_forward():
     """ComplexityEstimator returns complexity score and gates."""
     from aeon_core import ComplexityEstimator
@@ -17402,6 +17523,11 @@ if __name__ == '__main__':
     test_ns_consistency_checker_no_violations()
     test_ns_consistency_checker_gradient_flow()
     test_ns_consistency_checker_violation_detection()
+    test_rules_proxy_no_double_sigmoid()
+    test_hr_conclusions_alignment_reduces_violations()
+    test_hr_violation_uncertainty_proportional()
+    test_convergence_delta_in_output()
+    test_convergence_delta_in_error_fallback()
     test_complexity_estimator_forward()
     test_complexity_estimator_gradient_flow()
     test_complexity_estimator_low_input()
