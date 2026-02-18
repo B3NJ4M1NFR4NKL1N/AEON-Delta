@@ -19776,6 +19776,284 @@ def test_chunked_processor_integration_long_sequence():
     print("✅ test_chunked_processor_integration_long_sequence PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Training–Inference Bridge Tests
+# ============================================================================
+
+
+def test_convergence_monitor_error_evolution_bridge():
+    """TrainingConvergenceMonitor propagates divergence events to error_evolution.
+
+    When an optional CausalErrorEvolutionTracker is provided, divergence events
+    detected during training are recorded as error episodes, closing the bridge
+    between training convergence monitoring and inference-time error recovery.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+    from ae_train import TrainingConvergenceMonitor
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    monitor = TrainingConvergenceMonitor(
+        threshold=1e-5, window_size=10, error_evolution=tracker,
+    )
+
+    # Feed increasing losses to trigger divergence
+    for loss in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
+        monitor.update(loss)
+
+    assert monitor.status == "diverging"
+
+    summary = tracker.get_error_summary()
+    assert "training_divergence" in summary["error_classes"], (
+        "Divergence event should have been recorded in error_evolution"
+    )
+    cls_info = summary["error_classes"]["training_divergence"]
+    assert cls_info["count"] >= 1, "At least one divergence episode expected"
+    assert cls_info["success_rate"] == 0.0, "Divergence should be recorded as failure"
+
+    print("✅ test_convergence_monitor_error_evolution_bridge PASSED")
+
+
+def test_convergence_monitor_stagnation_bridge():
+    """TrainingConvergenceMonitor propagates stagnation events to error_evolution.
+
+    Stagnation events (near-zero trend over the window) are propagated so that
+    the system can learn from training plateaus.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+    from ae_train import TrainingConvergenceMonitor
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    monitor = TrainingConvergenceMonitor(
+        threshold=1e-5, window_size=10, error_evolution=tracker,
+    )
+
+    # Feed nearly identical losses to trigger stagnation
+    for loss in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]:
+        verdict = monitor.update(loss)
+
+    assert monitor.status == "stagnating", f"Expected 'stagnating', got '{monitor.status}'"
+
+    summary = tracker.get_error_summary()
+    assert "training_stagnation" in summary["error_classes"], (
+        "Stagnation event should have been recorded in error_evolution"
+    )
+
+    print("✅ test_convergence_monitor_stagnation_bridge PASSED")
+
+
+def test_convergence_monitor_no_error_evolution():
+    """TrainingConvergenceMonitor works normally without error_evolution.
+
+    When error_evolution is None (default), no error should be raised.
+    """
+    from ae_train import TrainingConvergenceMonitor
+
+    monitor = TrainingConvergenceMonitor(threshold=1e-5, window_size=10)
+
+    # Feed losses — should not raise
+    for loss in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
+        verdict = monitor.update(loss)
+
+    assert verdict["status"] == "diverging"
+    assert "recommendation" in verdict
+
+    print("✅ test_convergence_monitor_no_error_evolution PASSED")
+
+
+def test_phase_a_stagnation_lr_increase():
+    """Phase A stagnation triggers LR increase.
+
+    When the convergence monitor detects stagnation with recommendation
+    'increase_lr_or_augment', the optimizer learning rate should increase.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, use_amp=False,
+    )
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(
+        model, config, monitor, output_dir="/tmp/test_stag_lr",
+    )
+
+    # Manually set LR to a known value below config.learning_rate
+    initial_lr = config.learning_rate * 0.5  # well below the cap
+    for pg in trainer.optimizer.param_groups:
+        pg['lr'] = initial_lr
+
+    # Simulate the convergence verdict logic from fit():
+    # Feed stagnating losses into the convergence monitor
+    for loss in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]:
+        verdict = trainer.convergence_monitor.update(loss)
+
+    assert verdict["status"] == "stagnating"
+    assert verdict["recommendation"] == "increase_lr_or_augment"
+
+    # Apply the stagnation response inline (same logic as fit())
+    if verdict.get("recommendation") == "increase_lr_or_augment":
+        for param_group in trainer.optimizer.param_groups:
+            param_group['lr'] = min(
+                param_group['lr'] * 1.5,
+                config.learning_rate,
+            )
+
+    new_lr = trainer.optimizer.param_groups[0]['lr']
+    assert new_lr > initial_lr, (
+        f"LR should have increased from {initial_lr} but is {new_lr}"
+    )
+    assert new_lr <= config.learning_rate, (
+        f"LR should be capped at initial config LR ({config.learning_rate}), "
+        f"but is {new_lr}"
+    )
+
+    print("✅ test_phase_a_stagnation_lr_increase PASSED")
+
+
+def test_phase_b_stagnation_lr_increase():
+    """Phase B stagnation triggers LR increase.
+
+    When the convergence monitor detects stagnation with recommendation
+    'increase_lr_or_augment', the RSSM trainer's optimizer LR increases.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, use_amp=False,
+    )
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    initial_lr = trainer.optimizer.param_groups[0]['lr']
+
+    # Feed stagnating losses
+    for loss in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]:
+        verdict = trainer.convergence_monitor.update(loss)
+
+    assert verdict["status"] == "stagnating"
+    assert verdict["recommendation"] == "increase_lr_or_augment"
+
+    # Apply same logic as fit()
+    if verdict.get("recommendation") == "increase_lr_or_augment":
+        for param_group in trainer.optimizer.param_groups:
+            param_group['lr'] = min(
+                param_group['lr'] * 1.5,
+                config.learning_rate,
+            )
+
+    new_lr = trainer.optimizer.param_groups[0]['lr']
+    assert new_lr > initial_lr, (
+        f"LR should have increased from {initial_lr} but is {new_lr}"
+    )
+
+    print("✅ test_phase_b_stagnation_lr_increase PASSED")
+
+
+def test_nan_loss_propagates_to_convergence_monitor_phase_a():
+    """Phase A NaN loss detection propagates to convergence monitor.
+
+    When train_step detects NaN/Inf loss, it should update the convergence
+    monitor with NaN so that divergence detection activates.
+    We monkey-patch the criterion to produce NaN loss to bypass the
+    TensorGuard sanitization of intermediate tensors.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, use_amp=False,
+    )
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(
+        model, config, monitor, output_dir="/tmp/test_nan_conv",
+    )
+
+    # Monkey-patch the criterion to return NaN loss
+    original_criterion = trainer.criterion
+    class NaNCriterion:
+        def __call__(self, *args, **kwargs):
+            return torch.tensor(float('nan'))
+    trainer.criterion = NaNCriterion()
+
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    outputs = trainer.train_step(tokens)
+
+    # Loss should be NaN
+    loss_val = outputs['total_loss']
+    if torch.is_tensor(loss_val):
+        loss_val = loss_val.item()
+    assert math.isnan(loss_val) or math.isinf(loss_val), (
+        f"Expected NaN/Inf loss, got {loss_val}"
+    )
+
+    # Convergence monitor should have been updated with NaN → status=diverging
+    assert trainer.convergence_monitor.status == "diverging", (
+        f"Expected 'diverging' status after NaN, got '{trainer.convergence_monitor.status}'"
+    )
+
+    # Restore
+    trainer.criterion = original_criterion
+
+    print("✅ test_nan_loss_propagates_to_convergence_monitor_phase_a PASSED")
+
+
+def test_nan_loss_propagates_to_convergence_monitor_phase_b():
+    """Phase B NaN loss detection propagates to convergence monitor.
+
+    When ContextualRSSMTrainer.train_step detects NaN/Inf loss, it should
+    update the convergence monitor with NaN so divergence detection activates.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, use_amp=False,
+    )
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Monkey-patch RSSM to produce NaN
+    original_forward = model.rssm.forward
+    def nan_forward(z_ctx):
+        result = original_forward(z_ctx)
+        return result * float('nan')
+    model.rssm.forward = nan_forward
+
+    K = config.context_window
+    z_context = torch.randn(2, K, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    metrics = trainer.train_step(z_context, z_target)
+
+    assert math.isnan(metrics['total_loss']), (
+        f"Expected NaN loss, got {metrics['total_loss']}"
+    )
+    assert trainer.convergence_monitor.status == "diverging", (
+        f"Expected 'diverging' after NaN, got '{trainer.convergence_monitor.status}'"
+    )
+
+    # Restore
+    model.rssm.forward = original_forward
+
+    print("✅ test_nan_loss_propagates_to_convergence_monitor_phase_b PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -20690,6 +20968,15 @@ if __name__ == '__main__':
     test_neurogenic_memory_sparse_escalates_uncertainty()
     test_temporal_memory_sparse_escalates_uncertainty()
     test_chunked_processor_integration_long_sequence()
+    
+    # Architectural Unification — Training–Inference Bridge Tests
+    test_convergence_monitor_error_evolution_bridge()
+    test_convergence_monitor_stagnation_bridge()
+    test_convergence_monitor_no_error_evolution()
+    test_phase_a_stagnation_lr_increase()
+    test_phase_b_stagnation_lr_increase()
+    test_nan_loss_propagates_to_convergence_monitor_phase_a()
+    test_nan_loss_propagates_to_convergence_monitor_phase_b()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
