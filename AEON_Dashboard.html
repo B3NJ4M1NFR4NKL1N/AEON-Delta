@@ -299,6 +299,7 @@ canvas{display:block;width:100%;}
 .arch-pulse.ok{background:var(--green);box-shadow:0 0 4px var(--green);animation:pulse 2s infinite;}
 .arch-pulse.warn{background:var(--warn);box-shadow:0 0 4px var(--warn);animation:pulse 1.2s infinite;}
 .arch-pulse.err{background:var(--danger);box-shadow:0 0 4px var(--danger);animation:pulse 0.8s infinite;}
+.arch-pulse.off{background:var(--text3);box-shadow:none;animation:none;opacity:0.4;}
 .arch-module-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:12px;}
 .arch-mod-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all 0.15s;}
 .arch-mod-card:hover{border-color:var(--accent);box-shadow:0 0 8px var(--accent-dim);}
@@ -555,26 +556,26 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       </div>
     </div>
     <div class="flow" id="arch-flow">
-      <div class="fn hot arch-node" id="arch-n-input"><div class="arch-pulse ok"></div><div class="fn-n">Input IDs</div><div class="fn-s">[B, L]</div></div>
+      <div class="fn hot arch-node" id="arch-n-input"><div class="arch-pulse off"></div><div class="fn-n">Input IDs</div><div class="fn-s">[B, L]</div></div>
       <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-encoder" onclick="archShowDetail('encoder')"><div class="arch-pulse ok"></div><div class="fn-n">Encoder</div><div class="fn-s" id="a-enc">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-enc-p"></div></div>
+      <div class="fn arch-node" id="arch-n-encoder" onclick="archShowDetail('encoder')"><div class="arch-pulse off"></div><div class="fn-n">Encoder</div><div class="fn-s" id="a-enc">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-enc-p"></div></div>
       <div class="fa">→</div>
-      <div class="fn warm arch-node" id="arch-n-vq" onclick="archShowDetail('vector_quantizer')"><div class="arch-pulse ok"></div><div class="fn-n">VQ-VAE</div><div class="fn-s" id="a-vq">8192 codes</div><div class="fn-s" style="color:var(--purple);font-size:8px" id="a-vq-p"></div></div>
+      <div class="fn warm arch-node" id="arch-n-vq" onclick="archShowDetail('vector_quantizer')"><div class="arch-pulse off"></div><div class="fn-n">VQ-VAE</div><div class="fn-s" id="a-vq">8192 codes</div><div class="fn-s" style="color:var(--purple);font-size:8px" id="a-vq-p"></div></div>
       <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-meta" onclick="archShowDetail('meta_loop')"><div class="arch-pulse ok"></div><div class="fn-n">Meta-Loop</div><div class="fn-s" id="a-ml">Banach FP · N iter</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-ml-p"></div></div>
+      <div class="fn arch-node" id="arch-n-meta" onclick="archShowDetail('meta_loop')"><div class="arch-pulse off"></div><div class="fn-n">Meta-Loop</div><div class="fn-s" id="a-ml">Banach FP · N iter</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-ml-p"></div></div>
       <div class="fa">→</div>
       <div class="fb">
-        <div class="fn arch-node" id="arch-n-memory" onclick="archShowDetail('memory_manager')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-mem">Memory Systems</span></div>
-        <div class="fn arch-node" id="arch-n-causal" onclick="archShowDetail('causal_model')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-caus">Causal Models</span></div>
-        <div class="fn arch-node" id="arch-n-safety" onclick="archShowDetail('safety_system')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span>Safety + Topology</span></div>
-        <div class="fn arch-node" id="arch-n-plan" onclick="archShowDetail('planning')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-plan">Planning</span></div>
+        <div class="fn arch-node" id="arch-n-memory" onclick="archShowDetail('memory_manager')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-mem">Memory Systems</span></div>
+        <div class="fn arch-node" id="arch-n-causal" onclick="archShowDetail('causal_model')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-caus">Causal Models</span></div>
+        <div class="fn arch-node" id="arch-n-safety" onclick="archShowDetail('safety_system')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span>Safety + Topology</span></div>
+        <div class="fn arch-node" id="arch-n-plan" onclick="archShowDetail('planning')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-plan">Planning</span></div>
       </div>
       <div class="fa">→</div>
-      <div class="fn cool arch-node" id="arch-n-cstar"><div class="arch-pulse ok"></div><div class="fn-n">C_star</div><div class="fn-s">Core State</div></div>
+      <div class="fn cool arch-node" id="arch-n-cstar"><div class="arch-pulse off"></div><div class="fn-n">C_star</div><div class="fn-s">Core State</div></div>
       <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-decoder" onclick="archShowDetail('decoder')"><div class="arch-pulse ok"></div><div class="fn-n">Decoder</div><div class="fn-s" id="a-dec">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-dec-p"></div></div>
+      <div class="fn arch-node" id="arch-n-decoder" onclick="archShowDetail('decoder')"><div class="arch-pulse off"></div><div class="fn-n">Decoder</div><div class="fn-s" id="a-dec">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-dec-p"></div></div>
       <div class="fa">→</div>
-      <div class="fn hot arch-node" id="arch-n-output"><div class="arch-pulse ok"></div><div class="fn-n">Logits</div><div class="fn-s" id="a-out">[B,L,V]</div></div>
+      <div class="fn hot arch-node" id="arch-n-output"><div class="arch-pulse off"></div><div class="fn-n">Logits</div><div class="fn-s" id="a-out">[B,L,V]</div></div>
     </div>
   </div>
 
@@ -1709,7 +1710,7 @@ function go(panel) {
   });
   S.activePanel = panel;
   // Lazy-load panels
-  if(panel === 'architecture' && S.modelReady) loadArch();
+  if(panel === 'architecture') { if(S.modelReady) loadArch(); else resetArchPipeline(); }
   if(panel === 'monitor') loadHealth();
   if(panel === 'tg' && S.modelReady) loadTG();
   if(panel === 'audit' && S.modelReady) loadAudit();
@@ -2012,6 +2013,24 @@ async function deinitModel() {
   S.modelReady = false;
   updateModelState(false);
   ['d-params','d-health','d-flags','d-vq'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '—'; });
+  document.getElementById('d-vq-bar').style.width = '0%';
+  document.getElementById('d-vq-m').textContent = 'codebook usage';
+  document.getElementById('d-health-bar').style.width = '0%';
+  document.getElementById('d-health-m').textContent = '—';
+  document.getElementById('d-ring-v').textContent = '—';
+  const ring = document.getElementById('d-ring');
+  if(ring) ring.setAttribute('stroke-dashoffset', 220);
+  document.getElementById('d-flags-bar').style.width = '0%';
+  document.getElementById('d-params-bar').style.width = '0%';
+  document.getElementById('d-params-m').textContent = 'not initialized';
+  document.getElementById('d-tg-total').textContent = '0';
+  document.getElementById('d-tg-bar').style.width = '0%';
+  document.getElementById('tg-nan-live').textContent = '0';
+  document.getElementById('tg-inf-live').textContent = '0';
+  document.getElementById('tg-san-live').textContent = '0';
+  document.getElementById('d-subsys').innerHTML = '<div style="font-size:11px;color:var(--text3)">Initialize model first</div>';
+  document.getElementById('d-decisions').innerHTML = '<div style="font-size:11px;color:var(--text3)">No decisions yet</div>';
+  resetArchPipeline();
   log('INFO', 'init', 'Model deinitialized');
 }
 
@@ -2024,30 +2043,162 @@ async function applyAndReinit() {
 const presets = {
   minimal: {
     hidden_dim:128, z_dim:128, vq_embedding_dim:128, vq_num_embeddings:4096,
-    seq_length:32, max_iterations:10, enable_full_coherence:false,
-    enable_hierarchical_memory:false, enable_causal_model:false, enable_world_model:false,
+    seq_length:32, max_iterations:10, num_pillars:16,
+    encoder_backend:'ssm', decoder_backend:'ssm',
+    lipschitz_target:0.95, convergence_threshold:'1e-4',
+    nan_policy:'WARN', device_str:'auto',
+    use_vq:true, use_amp:false, enable_inference_cache:false,
+    // Memory — all off for minimal
+    enable_hierarchical_memory:false, enable_neurogenic_memory:false,
+    enable_temporal_memory:false, enable_consolidating_memory:false,
+    // Causal — off
+    enable_causal_model:false, enable_notears_causal:false,
+    enable_causal_world_model:false, enable_unified_simulator:false,
+    enable_causal_context:false, enable_causal_trace:false,
+    // Meta — off
+    enable_auto_critic:false, enable_recursive_meta_loop:false,
+    enable_metacognitive_recursion:false, enable_meta_learning:false,
+    enable_error_evolution:false, enable_meta_recovery_integration:false,
+    // Coherence — off
+    enable_full_coherence:false, enable_module_coherence:false,
+    enable_cross_validation:false, enable_ns_consistency_check:false,
+    enable_hybrid_reasoning:false, enable_complexity_estimator:false,
+    enable_external_trust:false,
+    // Planning — off
+    enable_world_model:false, enable_mcts_planner:false,
+    enable_active_learning_planner:false, enable_hierarchical_vae:false,
+    // Training
+    learning_rate:'1e-4', batch_size:'8', gradient_clip_norm:1.0,
+    warmup_steps:50, synthetic_samples:128,
+    log_grad_norms:false,
+    // Observability
+    enable_structured_logging:false, enable_academic_mode:false, enable_telemetry:false,
   },
   production: {
     hidden_dim:256, z_dim:256, vq_embedding_dim:256, vq_num_embeddings:8192,
-    seq_length:64, max_iterations:50, use_vq:true, use_amp:true, enable_inference_cache:true,
-    enable_full_coherence:false,
+    seq_length:64, max_iterations:50, num_pillars:64,
+    encoder_backend:'ssm', decoder_backend:'ssm',
+    lipschitz_target:0.85, convergence_threshold:'1e-5',
+    nan_policy:'WARN', device_str:'auto',
+    use_vq:true, use_amp:true, enable_inference_cache:true,
+    // Memory — hierarchical only
+    enable_hierarchical_memory:true, hierarchical_working_capacity:7,
+    hierarchical_episodic_capacity:1000,
+    enable_neurogenic_memory:false, enable_temporal_memory:false,
+    enable_consolidating_memory:false,
+    // Causal — basic only
+    enable_causal_model:true, enable_notears_causal:false,
+    enable_causal_world_model:false, enable_unified_simulator:false,
+    enable_causal_context:false, enable_causal_trace:false,
+    causal_blend_weight:0.05,
+    // Meta — auto-critic only
+    enable_auto_critic:true, auto_critic_threshold:0.85, auto_critic_max_iterations:3,
+    enable_recursive_meta_loop:false, enable_metacognitive_recursion:false,
+    enable_meta_learning:false, enable_error_evolution:false,
+    enable_meta_recovery_integration:false,
+    // Coherence — module coherence only
+    enable_full_coherence:false, enable_module_coherence:true,
+    module_coherence_threshold:0.5,
+    enable_cross_validation:false, enable_ns_consistency_check:false,
+    enable_hybrid_reasoning:false, enable_complexity_estimator:true,
+    enable_external_trust:false,
+    feedback_threshold:0.3, feedback_scale:0.05,
+    // Planning — off
+    enable_world_model:false, enable_mcts_planner:false,
+    enable_active_learning_planner:false, enable_hierarchical_vae:false,
+    // Training
+    learning_rate:'3e-5', batch_size:'16', gradient_clip_norm:1.0,
+    warmup_steps:100, synthetic_samples:256,
+    log_grad_norms:true,
+    // Observability
+    enable_structured_logging:true, enable_academic_mode:false, enable_telemetry:true,
   },
   full: {
     hidden_dim:512, z_dim:512, vq_embedding_dim:512, vq_num_embeddings:16384,
-    seq_length:128, max_iterations:100, use_vq:true, use_amp:true,
-    enable_hierarchical_memory:true, enable_causal_model:true, enable_auto_critic:true,
-    enable_recursive_meta_loop:true, enable_module_coherence:true, enable_world_model:true,
+    seq_length:128, max_iterations:100, num_pillars:128,
+    encoder_backend:'mamba2', decoder_backend:'ssm',
+    lipschitz_target:0.85, convergence_threshold:'1e-5',
+    nan_policy:'QUARANTINE', device_str:'auto',
+    use_vq:true, use_amp:true, enable_inference_cache:true,
+    // Memory — hierarchical + neurogenic
+    enable_hierarchical_memory:true, hierarchical_working_capacity:7,
+    hierarchical_episodic_capacity:5000,
+    enable_neurogenic_memory:true, neurogenic_retrieval_weight:0.1, neurogenic_retrieval_k:5,
+    enable_temporal_memory:true, temporal_memory_decay_rate:0.01,
+    enable_consolidating_memory:false,
+    // Causal — basic + NOTEARS
+    enable_causal_model:true, enable_notears_causal:true,
+    notears_num_vars:8, lambda_causal_dag:0.01,
+    enable_causal_world_model:true, enable_unified_simulator:false,
+    enable_causal_context:true, enable_causal_trace:true,
+    causal_blend_weight:0.05,
+    // Meta — critic + recursive + meta-learning
+    enable_auto_critic:true, auto_critic_threshold:0.85, auto_critic_max_iterations:3,
+    enable_recursive_meta_loop:true, recursive_meta_depth:3,
+    enable_metacognitive_recursion:false, enable_meta_learning:true, meta_ewc_lambda:1000,
+    enable_error_evolution:true, enable_meta_recovery_integration:true,
+    // Coherence — most enabled
+    enable_full_coherence:false, enable_module_coherence:true,
+    module_coherence_threshold:0.5,
+    enable_cross_validation:true, enable_ns_consistency_check:true,
+    enable_hybrid_reasoning:true, enable_complexity_estimator:true,
+    enable_external_trust:false,
+    feedback_threshold:0.3, feedback_scale:0.05,
+    // Planning — world model + MCTS
+    enable_world_model:true, world_model_tree_depth:3, surprise_threshold:0.5,
+    enable_mcts_planner:true, enable_active_learning_planner:false,
+    enable_hierarchical_vae:false,
+    // Training
+    learning_rate:'3e-5', batch_size:'16', gradient_clip_norm:0.5,
+    warmup_steps:200, synthetic_samples:512,
+    log_grad_norms:true,
+    // Observability
+    enable_structured_logging:true, enable_academic_mode:false, enable_telemetry:true,
   },
   agi: {
     hidden_dim:512, z_dim:512, vq_embedding_dim:512, vq_num_embeddings:16384,
-    seq_length:128, max_iterations:100, use_vq:true, use_amp:true,
-    enable_full_coherence:true, enable_hierarchical_memory:true,
-    enable_neurogenic_memory:true, enable_temporal_memory:true, enable_consolidating_memory:true,
-    enable_causal_model:true, enable_notears_causal:true, enable_causal_world_model:true,
-    enable_auto_critic:true, enable_recursive_meta_loop:true, enable_metacognitive_recursion:true,
-    enable_meta_learning:true, enable_error_evolution:true, enable_hybrid_reasoning:true,
-    enable_world_model:true, enable_mcts_planner:true, enable_active_learning_planner:true,
-    enable_hierarchical_vae:true, enable_complexity_estimator:true,
+    seq_length:128, max_iterations:100, num_pillars:128,
+    encoder_backend:'mamba2', decoder_backend:'ssm',
+    lipschitz_target:0.80, convergence_threshold:'1e-6',
+    nan_policy:'QUARANTINE', device_str:'auto',
+    use_vq:true, use_amp:true, enable_inference_cache:true,
+    // Memory — all enabled
+    enable_hierarchical_memory:true, hierarchical_working_capacity:9,
+    hierarchical_episodic_capacity:10000,
+    enable_neurogenic_memory:true, neurogenic_retrieval_weight:0.15, neurogenic_retrieval_k:5,
+    enable_temporal_memory:true, temporal_memory_decay_rate:0.005,
+    enable_consolidating_memory:true, consolidating_semantic_weight:0.1,
+    // Causal — all enabled
+    enable_causal_model:true, enable_notears_causal:true,
+    notears_num_vars:16, lambda_causal_dag:0.01,
+    enable_causal_world_model:true,
+    enable_unified_simulator:true, unified_simulator_num_vars:16,
+    enable_causal_context:true, enable_causal_trace:true,
+    causal_blend_weight:0.1,
+    // Meta — all enabled
+    enable_auto_critic:true, auto_critic_threshold:0.90, auto_critic_max_iterations:5,
+    enable_recursive_meta_loop:true, recursive_meta_depth:5,
+    enable_metacognitive_recursion:true, metacognitive_trigger_threshold:0.5, metacognitive_extra_iterations:10,
+    enable_meta_learning:true, meta_ewc_lambda:2000,
+    enable_error_evolution:true, enable_meta_recovery_integration:true,
+    // Coherence — full coherence
+    enable_full_coherence:true, enable_module_coherence:true,
+    module_coherence_threshold:0.6,
+    enable_cross_validation:true, enable_ns_consistency_check:true,
+    enable_hybrid_reasoning:true, enable_complexity_estimator:true,
+    enable_external_trust:true,
+    feedback_threshold:0.25, feedback_scale:0.05,
+    // Planning — all enabled
+    enable_world_model:true, world_model_tree_depth:5, surprise_threshold:0.4,
+    enable_mcts_planner:true,
+    enable_active_learning_planner:true, active_learning_curiosity_weight:1.0,
+    enable_hierarchical_vae:true, hvae_blend_weight:0.1,
+    // Training
+    learning_rate:'1e-5', batch_size:'8', gradient_clip_norm:0.5,
+    warmup_steps:500, synthetic_samples:512,
+    log_grad_norms:true,
+    // Observability — full
+    enable_structured_logging:true, enable_academic_mode:true, enable_telemetry:true,
   },
 };
 
@@ -2056,31 +2207,95 @@ function applyPreset(name) {
   if(!p) return;
   const setV = (id, v) => { const el = document.getElementById(id); if(el) el.value = v; };
   const setC = (id, v) => { const el = document.getElementById(id); if(el) el.checked = !!v; };
-  if(p.hidden_dim) { setV('c-hidden', p.hidden_dim); setV('c-zdim', p.z_dim||p.hidden_dim); setV('c-vqemb', p.vq_embedding_dim||p.hidden_dim); }
+  const setR = (id, v, rvId) => { const el = document.getElementById(id); if(el) { el.value = v; if(rvId) rv(rvId, typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(v < 0.1 ? 3 : 2)) : v); } };
+  // Architecture core
+  if(p.hidden_dim) { setV('c-hidden', p.hidden_dim); setV('c-zdim', p.z_dim||p.hidden_dim); setV('c-vqemb', p.vq_embedding_dim||p.hidden_dim); checkVq(); }
   if(p.vq_num_embeddings) setV('c-vqnum', p.vq_num_embeddings);
   if(p.seq_length) setV('c-seqlen', p.seq_length);
-  if(p.max_iterations) { const el = document.getElementById('c-maxiter'); if(el){el.value=p.max_iterations; rv('c-maxiter-v',p.max_iterations);} }
+  if(p.max_iterations) setR('c-maxiter', p.max_iterations, 'c-maxiter-v');
+  if(p.num_pillars) setV('c-pillars', p.num_pillars);
+  if(p.encoder_backend) setV('c-enc', p.encoder_backend);
+  if(p.decoder_backend) setV('c-dec', p.decoder_backend);
+  if(p.lipschitz_target) setR('c-lip', p.lipschitz_target, 'c-lip-v');
+  if(p.convergence_threshold) setV('c-convth', p.convergence_threshold);
+  if(p.nan_policy) setV('c-nanpol', p.nan_policy);
+  if(p.device_str) setV('c-device', p.device_str);
+  if(p.vocab_size) setV('c-vocab', p.vocab_size);
+  // Architecture toggles
   if(p.use_vq !== undefined) setC('c-usevq', p.use_vq);
   if(p.use_amp !== undefined) setC('c-amp', p.use_amp);
+  if(p.enable_inference_cache !== undefined) setC('c-infcache', p.enable_inference_cache);
+  // Coherence
   if(p.enable_full_coherence !== undefined) setC('c-fc', p.enable_full_coherence);
+  // Memory
   ['hierarchical_memory','neurogenic_memory','temporal_memory','consolidating_memory'].forEach(k => {
     const key = 'enable_'+k; if(p[key]!==undefined) {
       const el_map = {hierarchical_memory:'c-hier-mem',neurogenic_memory:'c-neuro-mem',temporal_memory:'c-temp-mem',consolidating_memory:'c-cons-mem'};
+      const sub_map = {hierarchical_memory:'mem-hier-sub',neurogenic_memory:'mem-neuro-sub',temporal_memory:'mem-temp-sub',consolidating_memory:'mem-cons-sub'};
       setC(el_map[k], p[key]);
+      const sub = document.getElementById(sub_map[k]); if(sub) sub.style.opacity = p[key] ? '1' : '0.4';
     }
   });
-  ['causal_model','notears_causal','causal_world_model','auto_critic','recursive_meta_loop',
-   'metacognitive_recursion','meta_learning','error_evolution','module_coherence','cross_validation',
-   'ns_consistency_check','hybrid_reasoning','complexity_estimator','world_model','mcts_planner',
-   'active_learning_planner','hierarchical_vae'].forEach(k => {
+  // Memory sub-params
+  if(p.hierarchical_working_capacity) setV('c-wc', p.hierarchical_working_capacity);
+  if(p.hierarchical_episodic_capacity) setV('c-ec', p.hierarchical_episodic_capacity);
+  if(p.neurogenic_retrieval_weight != null) setR('c-nrw', p.neurogenic_retrieval_weight, 'c-nrw-v');
+  if(p.neurogenic_retrieval_k) setV('c-nrk', p.neurogenic_retrieval_k);
+  if(p.temporal_memory_decay_rate != null) setR('c-tmd', p.temporal_memory_decay_rate, 'c-tmd-v');
+  if(p.consolidating_semantic_weight != null) setR('c-consw', p.consolidating_semantic_weight, 'c-consw-v');
+  // Causal & Meta & Coherence & Planning toggles
+  ['causal_model','notears_causal','causal_world_model','unified_simulator','causal_context','causal_trace',
+   'auto_critic','recursive_meta_loop','metacognitive_recursion','meta_learning','error_evolution','meta_recovery_integration',
+   'module_coherence','cross_validation','ns_consistency_check','hybrid_reasoning','complexity_estimator','external_trust',
+   'world_model','mcts_planner','active_learning_planner','hierarchical_vae'].forEach(k => {
     const key = 'enable_'+k;
     const el_map = {causal_model:'c-causal',notears_causal:'c-notears',causal_world_model:'c-cawm',
+      unified_simulator:'c-ucausal',causal_context:'c-cactx',causal_trace:'c-catrace',
       auto_critic:'c-ac',recursive_meta_loop:'c-rml',metacognitive_recursion:'c-mcr',
-      meta_learning:'c-maml',error_evolution:'c-ee',module_coherence:'c-mc',cross_validation:'c-cv',
-      ns_consistency_check:'c-nsc',hybrid_reasoning:'c-hr',complexity_estimator:'c-ce',
+      meta_learning:'c-maml',error_evolution:'c-ee',meta_recovery_integration:'c-mri',
+      module_coherence:'c-mc',cross_validation:'c-cv',
+      ns_consistency_check:'c-nsc',hybrid_reasoning:'c-hr',complexity_estimator:'c-ce',external_trust:'c-et',
       world_model:'c-wm',mcts_planner:'c-mcts',active_learning_planner:'c-alp',hierarchical_vae:'c-hvae'};
-    if(p[key]!==undefined && el_map[k]) setC(el_map[k], p[key]);
+    const sub_map = {notears_causal:'notears-sub',unified_simulator:'ucausal-sub',
+      auto_critic:'ac-sub',recursive_meta_loop:'rml-sub',metacognitive_recursion:'mcr-sub',
+      meta_learning:'maml-sub',world_model:'wm-sub',active_learning_planner:'alp-sub',hierarchical_vae:'hvae-sub'};
+    if(p[key]!==undefined && el_map[k]) {
+      setC(el_map[k], p[key]);
+      if(sub_map[k]) { const sub = document.getElementById(sub_map[k]); if(sub) sub.style.opacity = p[key] ? '1' : '0.4'; }
+    }
   });
+  // Causal sub-params
+  if(p.notears_num_vars) setV('c-ntvars', p.notears_num_vars);
+  if(p.lambda_causal_dag != null) setR('c-ldag', p.lambda_causal_dag, 'c-ldag-v');
+  if(p.unified_simulator_num_vars) setV('c-ucvars', p.unified_simulator_num_vars);
+  if(p.causal_blend_weight != null) setR('c-cbw', p.causal_blend_weight, 'c-cbw-v');
+  // Meta sub-params
+  if(p.auto_critic_threshold != null) setR('c-act', p.auto_critic_threshold, 'c-act-v');
+  if(p.auto_critic_max_iterations) setV('c-acmi', p.auto_critic_max_iterations);
+  if(p.recursive_meta_depth) setR('c-rmd', p.recursive_meta_depth, 'c-rmd-v');
+  if(p.metacognitive_trigger_threshold != null) setR('c-mcrth', p.metacognitive_trigger_threshold, 'c-mcrth-v');
+  if(p.metacognitive_extra_iterations) setV('c-mcrei', p.metacognitive_extra_iterations);
+  if(p.meta_ewc_lambda != null) setR('c-ewc', p.meta_ewc_lambda, 'c-ewc-v');
+  // Coherence sub-params
+  if(p.module_coherence_threshold != null) setR('c-mcth', p.module_coherence_threshold, 'c-mcth-v');
+  if(p.feedback_threshold != null) setR('c-fbt', p.feedback_threshold, 'c-fbt-v');
+  if(p.feedback_scale != null) setR('c-fbs', p.feedback_scale, 'c-fbs-v');
+  // Planning sub-params
+  if(p.world_model_tree_depth) setV('c-wmd', p.world_model_tree_depth);
+  if(p.surprise_threshold != null) setR('c-st', p.surprise_threshold, 'c-st-v');
+  if(p.active_learning_curiosity_weight != null) setR('c-cw', p.active_learning_curiosity_weight, 'c-cw-v');
+  if(p.hvae_blend_weight != null) setR('c-hvbw', p.hvae_blend_weight, 'c-hvbw-v');
+  // Training
+  if(p.learning_rate) setV('c-lr', p.learning_rate);
+  if(p.batch_size) setV('c-bs', p.batch_size);
+  if(p.gradient_clip_norm != null) setR('c-gcn', p.gradient_clip_norm, 'c-gcn-v');
+  if(p.warmup_steps != null) setV('c-ws', p.warmup_steps);
+  if(p.synthetic_samples) setV('c-synth', p.synthetic_samples);
+  if(p.log_grad_norms !== undefined) setC('c-loggn', p.log_grad_norms);
+  // Observability
+  if(p.enable_structured_logging !== undefined) setC('c-obs-sl', p.enable_structured_logging);
+  if(p.enable_academic_mode !== undefined) setC('c-obs-am', p.enable_academic_mode);
+  if(p.enable_telemetry !== undefined) setC('c-obs-tel', p.enable_telemetry);
   syncJsonEditor();
   log('INFO', 'config', `Preset '${name}' applied`);
 }
@@ -2217,10 +2432,10 @@ async function refreshDash() {
 
     // VQ stats
     const vq = d.vq_stats || {};
-    const util = vq.utilization_ratio;
-    document.getElementById('d-vq').textContent = util ? (util*100).toFixed(0)+'%' : '—';
-    document.getElementById('d-vq-m').textContent = vq.active_codes ? `${vq.active_codes} active / ${vq.num_embeddings} total` : 'codebook usage';
-    document.getElementById('d-vq-bar').style.width = util ? (util*100)+'%' : '0%';
+    const util = vq.usage_rate ?? vq.utilization_ratio;
+    document.getElementById('d-vq').textContent = util != null ? (util*100).toFixed(0)+'%' : '—';
+    document.getElementById('d-vq-m').textContent = (vq.used_codes || vq.active_codes) ? `${vq.used_codes||vq.active_codes} active / ${vq.total_codes||vq.num_embeddings} total` : 'codebook usage';
+    document.getElementById('d-vq-bar').style.width = util != null ? (util*100)+'%' : '0%';
 
     // Recent decisions
     const decDiv = document.getElementById('d-decisions');
@@ -2274,9 +2489,9 @@ async function refreshDash() {
 function drawCodebook(vq) {
   const cbk = document.getElementById('d-cbk');
   if(!cbk) return;
-  const n = vq.num_embeddings || 256;
+  const n = vq.total_codes || vq.num_embeddings || 256;
   const cells = Math.min(n, 128);
-  const active = vq.active_codes || Math.floor(cells * 0.7);
+  const active = vq.used_codes || vq.active_codes || Math.floor(cells * 0.7);
   cbk.innerHTML = '';
   for(let i=0;i<cells;i++) {
     const div = document.createElement('div');
@@ -2287,13 +2502,31 @@ function drawCodebook(vq) {
     div.title = `Code ${i}: ${used?'active':'dead'}`;
     cbk.appendChild(div);
   }
+  const utilRatio = vq.usage_rate ?? vq.utilization_ratio;
   document.getElementById('d-cbk-m').textContent =
-    `${vq.active_codes||'?'} active / ${n} total codes · ${vq.utilization_ratio?(vq.utilization_ratio*100).toFixed(1)+'%':''} utilized`;
+    `${vq.used_codes||vq.active_codes||'?'} active / ${n} total codes · ${utilRatio!=null?(utilRatio*100).toFixed(1)+'%':''} utilized`;
 }
 
 // ─── ARCHITECTURE ─────────────────────────────────────────────────────────────
 let _archAutoRefreshTimer = null;
 let _archData = null;
+
+function resetArchPipeline() {
+  document.querySelectorAll('#arch-flow .arch-pulse').forEach(p => p.className = 'arch-pulse off');
+  ['arch-total-params','arch-train-params','arch-frozen-params','arch-total-mem'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.textContent = '—';
+  });
+  ['a-enc-p','a-vq-p','a-ml-p','a-dec-p'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.textContent = '';
+  });
+  const shDiv = document.getElementById('arch-stage-health');
+  if(shDiv) shDiv.innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>';
+  const tbody = document.querySelector('#arch-mod-tbl tbody');
+  if(tbody) tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text3)">Initialize model to see modules</td></tr>';
+  const summary = document.getElementById('arch-summary');
+  if(summary) summary.textContent = 'Initialize model first';
+  _archData = null;
+}
 
 function toggleArchAutoRefresh() {
   const on = document.getElementById('arch-auto-refresh')?.checked;
