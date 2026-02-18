@@ -2782,6 +2782,7 @@ class AEONConfig:
     chunk_overlap: int = 64             # Overlap between adjacent chunks
     max_sequence_length: int = 32768    # Maximum supported sequence length
     enable_inference_cache: bool = True  # Enable state caching for inference
+    inference_cache_similarity_threshold: float = 0.99  # Cosine similarity for cache hit
     pretrained_backbone: str = ""        # Path or HF model ID (empty=none)
     backbone_freeze: bool = True         # Freeze pretrained backbone weights
     backbone_adapter_dim: int = 64       # Adapter bottleneck dimension
@@ -17203,25 +17204,26 @@ class AEONDeltaV3(nn.Module):
             vq_indices = None
         
         # ===== CHUNKED ENCODING =====
-        # When input sequences exceed the configured chunk_size, process
-        # them in overlapping windows via ChunkedSequenceProcessor.
-        # This keeps memory bounded at O(chunk_size) per chunk while
-        # maintaining context continuity through state propagation and
-        # linear-interpolation blending in overlap regions.
+        # When input sequences exceed the configured chunk_size, re-encode
+        # in overlapping token windows via ChunkedSequenceProcessor, then
+        # aggregate the per-chunk embeddings.  This keeps peak memory
+        # bounded while maintaining cross-chunk context via state
+        # propagation and linear-interpolation blending in overlap regions.
         if (self.chunked_processor is not None
-                and input_ids.shape[1] > self.chunked_processor.chunk_size
-                and z_quantized.dim() == 2):
-            # Reshape [B, D] → [B, 1, D] for chunk API, then squeeze back
-            _z_3d = z_quantized.unsqueeze(1).expand(
-                -1, input_ids.shape[1], -1
-            )  # [B, L, D]
+                and input_ids.shape[1] > self.chunked_processor.chunk_size):
+            def _encode_chunk(token_chunk: torch.Tensor, state):
+                # token_chunk: [B, chunk_len, 1] — extract ids and encode
+                ids = token_chunk[..., 0].long()
+                z = self.encoder(ids)  # [B, hidden_dim]
+                return z.unsqueeze(1), state  # [B, 1, hidden_dim]
             try:
-                _z_chunked, _ = self.chunked_processor.process(
-                    model_fn=lambda x, s: (x, s),
-                    x=_z_3d,
+                _ids_3d = input_ids.float().unsqueeze(-1)  # [B, L, 1]
+                _z_chunks, _ = self.chunked_processor.process(
+                    model_fn=_encode_chunk,
+                    x=_ids_3d,
                     initial_state=None,
-                )
-                z_quantized = _z_chunked.mean(dim=1)  # [B, D]
+                )  # [B, num_chunks, hidden_dim]
+                z_quantized = _z_chunks.mean(dim=1)  # [B, hidden_dim]
             except Exception as chunk_err:
                 logger.debug(f"Chunked encoding skipped: {chunk_err}")
 
@@ -17243,7 +17245,7 @@ class AEONDeltaV3(nn.Module):
                         z_quantized.view(1, -1),
                         _prev_z.view(1, -1),
                     ).item()
-                    if _cosine_sim > 0.99:
+                    if _cosine_sim > self.config.inference_cache_similarity_threshold:
                         _cache_hit = True
 
         # ===== REASONING CORE =====
