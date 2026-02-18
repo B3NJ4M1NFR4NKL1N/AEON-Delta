@@ -13562,7 +13562,7 @@ class AEONDeltaV3(nn.Module):
                 ).to(self.device)
             else:
                 self.cognitive_executive = None
-                logger.info("CognitiveExecutiveFunction requires ≥2 subsystems; skipped")
+                logger.info("CognitiveExecutiveFunction requires >= 2 subsystems; skipped")
         else:
             self.cognitive_executive = None
         
@@ -15656,7 +15656,12 @@ class AEONDeltaV3(nn.Module):
                     'dag_loss': _prog_dag_loss,
                     'adjacency': self.causal_programmatic.adjacency.detach(),
                 }
-                # Blend SCM causal signal as residual
+                # Blend SCM causal signal as residual.  Mean-pooling across
+                # causal variables reduces [B, num_vars] → [B, 1] to match
+                # the hidden_dim broadcast.  This is consistent with how
+                # NeuralCausalModel blends its causal_residual (line 15437).
+                # The full per-variable structure is preserved in the output
+                # dict for downstream loss computation and analysis.
                 _prog_residual = _prog_vars.mean(dim=-1, keepdim=True)
                 if torch.isfinite(_prog_residual).all():
                     C_star = C_star + self.config.causal_programmatic_blend * _prog_residual

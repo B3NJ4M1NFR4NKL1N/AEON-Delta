@@ -18172,7 +18172,7 @@ def test_diversity_collapse_weight_in_fusion():
 def test_cognitive_executive_function_integration():
     """CognitiveExecutiveFunction dispatches subsystems and produces workspace output.
 
-    Verifies that when enable_cognitive_executive=True with ≥2 subsystems,
+    Verifies that when enable_cognitive_executive=True with >= 2 subsystems,
     the executive function produces valid results in the forward pass.
     """
     from aeon_core import AEONConfig, AEONDeltaV3
@@ -18188,7 +18188,7 @@ def test_cognitive_executive_function_integration():
     model.eval()
 
     assert model.cognitive_executive is not None, \
-        "CognitiveExecutiveFunction should be instantiated with ≥2 subsystems"
+        "CognitiveExecutiveFunction should be instantiated with >= 2 subsystems"
 
     B, L = 2, 16
     input_ids = torch.randint(0, config.vocab_size, (B, L))
