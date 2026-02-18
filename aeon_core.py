@@ -134,7 +134,7 @@ __all__ = [
     # Configuration & utilities
     "AEONConfig", "set_seed", "DeviceManager",
     # Tensor safety
-    "NaNPolicy", "TensorGuard", "tensor_safe",
+    "NaNPolicy", "TensorGuard", "tensor_safe", "SafeTensorProcessor",
     # Audit, validation & monitoring
     "DecisionAuditLog", "StateConsistencyValidator",
     "SemanticErrorClassifier", "ErrorRecoveryManager",
@@ -152,7 +152,7 @@ __all__ = [
     "PretrainedBackboneAdapter",
     # Core modules
     "RobustVectorQuantizer", "LipschitzConstrainedLambda",
-    "compute_lipschitz_loss",
+    "compute_lipschitz_loss", "CognitiveFeedbackBus",
     "ProvablyConvergentMetaLoop", "ConvergenceMonitor",
     "HierarchicalMetaLoop", "RecursiveMetaLoop",
     "FastHessianComputer",
@@ -171,9 +171,11 @@ __all__ = [
     "MultiModalGroundingModule", "GroundedMultimodalLearning",
     "MetaLearner", "Task2VecMetaLearner", "ContinualLearningCore",
     # Causal reasoning
+    "CausalProvenanceTracker",
     "NeuralCausalModel", "NOTEARSCausalModel",
     "CausalWorldModel", "CausalProgrammaticModel",
     "UnifiedCausalSimulator",
+    "TemporalCausalTraceBuffer", "CausalContextWindowManager",
     # Planning
     "ValueNetwork", "PolicyNetwork", "MCTSNode", "MCTSPlanner",
     "CuriosityDrivenExploration", "ActiveLearningPlanner",
@@ -187,6 +189,11 @@ __all__ = [
     "NeuroSymbolicBridge", "TemporalKnowledgeGraph",
     "HybridReasoningEngine",
     "CriticNetwork", "RevisionNetwork", "AutoCriticLoop",
+    # AGI coherence & verification
+    "MetaCognitiveRecursionTrigger", "CausalErrorEvolutionTracker",
+    "CrossValidationReconciler", "ExternalDataTrustScorer",
+    "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
+    "ModuleCoherenceVerifier",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability

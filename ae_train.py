@@ -55,6 +55,9 @@ __all__ = [
 # causal traceability, and meta-cognitive cycle integration during training.
 # TensorGuard extends the inference pipeline's NaN/Inf protection to
 # training, ensuring tensor safety is consistent across both pipelines.
+# CausalErrorEvolutionTracker bridges training convergence events to the
+# inference pipeline's error evolution system so that training-time
+# divergence and stagnation inform inference-time recovery strategies.
 try:
     from aeon_core import (
         CausalProvenanceTracker,
@@ -62,6 +65,7 @@ try:
         SemanticErrorClassifier,
         TensorGuard,
         NaNPolicy,
+        CausalErrorEvolutionTracker,
     )
     AEON_CORE_AVAILABLE = True
 except ImportError:
@@ -1333,8 +1337,15 @@ class SafeThoughtAETrainerV4:
         # Bridge to aeon_core convergence monitoring — tracks loss
         # trajectory across epochs to detect divergence/stagnation
         # and trigger adaptive training adjustments.
+        # Wire CausalErrorEvolutionTracker so training divergence and
+        # stagnation events are propagated to inference-time recovery.
+        self._error_evolution = (
+            CausalErrorEvolutionTracker(max_history=200)
+            if AEON_CORE_AVAILABLE else None
+        )
         self.convergence_monitor = TrainingConvergenceMonitor(
             threshold=1e-5, window_size=10,
+            error_evolution=self._error_evolution,
         )
         self.provenance = TrainingProvenanceTracker()
         # Error classifier for semantic error categorization when
@@ -1416,6 +1427,19 @@ class SafeThoughtAETrainerV4:
             self.scaler.scale(scaled_loss).backward()
         else:
             scaled_loss.backward()
+        
+        # Log provenance on successful steps so that root-cause analysis
+        # is available for normal-case training dynamics, not only on
+        # NaN/Inf failures.  This closes the traceability gap where
+        # successful steps were invisible to provenance diagnostics.
+        _provenance = outputs.get('provenance', {})
+        _contributions = _provenance.get('contributions', {})
+        if _contributions and self.global_step % 50 == 0:
+            _dominant = max(_contributions, key=_contributions.get)
+            logger.debug(
+                f"Step {self.global_step} provenance: dominant={_dominant} "
+                f"({_contributions[_dominant]:.1%})"
+            )
         
         return outputs
     
@@ -1706,9 +1730,16 @@ class ContextualRSSMTrainer:
         self.best_loss = float('inf')
         self.best_model_state = None
         self.global_step = 0
-        # Convergence monitor for Phase B loss trajectory
+        # Convergence monitor for Phase B loss trajectory.
+        # Wire CausalErrorEvolutionTracker so training divergence and
+        # stagnation events are propagated to inference-time recovery.
+        self._error_evolution = (
+            CausalErrorEvolutionTracker(max_history=200)
+            if AEON_CORE_AVAILABLE else None
+        )
         self.convergence_monitor = TrainingConvergenceMonitor(
             threshold=1e-5, window_size=10,
+            error_evolution=self._error_evolution,
         )
         # Bridge to aeon_core provenance and tensor safety — ensures
         # Phase B training errors are traceable to the RSSM component
@@ -1740,6 +1771,15 @@ class ContextualRSSMTrainer:
         # mean-pool over K to produce a [B, D] summary for provenance).
         self.provenance.record_before("rssm", z_context.mean(dim=1))
         pred = self.model.rssm(z_context)
+        # Detect non-finite RSSM output before sanitization so the NaN
+        # skip-backward path activates even when the tensor guard replaces
+        # the values.  This preserves diagnostic accuracy while still
+        # guarding against NaN propagation in the general case.
+        _pred_had_nan = not torch.isfinite(pred).all()
+        # Sanitize RSSM prediction to prevent NaN/Inf from propagating
+        # into loss computation, matching Phase A's encoder-output guard.
+        if self._tensor_guard is not None:
+            pred = self._tensor_guard.sanitize(pred, context="rssm_prediction")
         self.provenance.record_after("rssm", pred)
         
         # Losses
@@ -1747,10 +1787,11 @@ class ContextualRSSMTrainer:
         smooth_l1 = F.smooth_l1_loss(pred, z_target)
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
         
-        # Detect NaN/Inf loss to prevent corrupted gradient updates.
-        # When tensor guard is available, classify the error semantically
-        # so root-cause analysis can trace it to the RSSM component.
-        if torch.isnan(loss) or torch.isinf(loss):
+        # Detect NaN/Inf loss OR non-finite RSSM output to prevent
+        # corrupted gradient updates.  When tensor guard is available,
+        # classify the error semantically so root-cause analysis can
+        # trace it to the RSSM component.
+        if _pred_had_nan or torch.isnan(loss) or torch.isinf(loss):
             _prov = self.provenance.compute_attribution()
             _dominant = None
             _contributions = _prov.get('contributions', {})
@@ -1787,6 +1828,16 @@ class ContextualRSSMTrainer:
             l1_loss = F.l1_loss(pred, z_target).item()
             rel_error = (torch.norm(pred - z_target, dim=1) / (torch.norm(z_target, dim=1) + 1e-8)).clamp(max=1e4).mean().item()
         
+        # Log provenance on successful steps for root-cause traceability
+        _prov = self.provenance.compute_attribution()
+        _contributions = _prov.get('contributions', {})
+        if _contributions and self.global_step % 50 == 0:
+            _dominant = max(_contributions, key=_contributions.get)
+            logger.debug(
+                f"RSSM step {self.global_step} provenance: dominant={_dominant} "
+                f"({_contributions[_dominant]:.1%})"
+            )
+        
         return {
             "mse_loss": mse_loss.item(), 
             "smooth_l1": smooth_l1.item(),
@@ -1795,7 +1846,7 @@ class ContextualRSSMTrainer:
             "l1_loss": l1_loss,
             "rel_error": rel_error,
             "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
-            "provenance": self.provenance.compute_attribution(),
+            "provenance": _prov,
         }
 
     def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
