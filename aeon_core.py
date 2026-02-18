@@ -2888,6 +2888,24 @@ class AEONConfig:
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
+    # ===== COGNITIVE EXECUTIVE FUNCTION =====
+    enable_cognitive_executive: bool = False
+    cognitive_executive_top_k: int = 3
+    cognitive_executive_blend: float = 0.1
+
+    # ===== CAUSAL PROGRAMMATIC MODEL =====
+    enable_causal_programmatic: bool = False
+    causal_programmatic_num_vars: int = 8
+    causal_programmatic_blend: float = 0.05
+
+    # ===== NEURO-SYMBOLIC BRIDGE (standalone) =====
+    enable_standalone_ns_bridge: bool = False
+    standalone_ns_bridge_blend: float = 0.1
+
+    # ===== HIERARCHICAL WORLD MODEL =====
+    enable_hierarchical_world_model: bool = False
+    hierarchical_world_model_blend: float = 0.1
+
     # ===== OBSERVABILITY & TELEMETRY =====
     enable_structured_logging: bool = False
     enable_academic_mode: bool = False
@@ -2997,6 +3015,14 @@ class AEONConfig:
                 'enable_recursive_meta_loop',
                 # Meta-learning (EWC) for continual learning
                 'enable_meta_learning',
+                # Cognitive executive (Global Workspace Theory)
+                'enable_cognitive_executive',
+                # Pearl's structural causal model
+                'enable_causal_programmatic',
+                # Standalone neuro-symbolic bridge
+                'enable_standalone_ns_bridge',
+                # Hierarchical world model
+                'enable_hierarchical_world_model',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -13475,6 +13501,125 @@ class AEONDeltaV3(nn.Module):
         else:
             self.error_evolution = None
         
+        # ===== COGNITIVE EXECUTIVE FUNCTION (Global Workspace Theory) =====
+        # Coordinates subsystems via attention-based priority arbitration,
+        # selecting the top-K most urgent modules to execute and broadcasting
+        # the winning hypothesis through a shared workspace.  This transforms
+        # the flat list of subsystems into a prioritized, self-coordinating
+        # ensemble where each component competes for cognitive resources.
+        if getattr(config, 'enable_cognitive_executive', False):
+            logger.info("Loading CognitiveExecutiveFunction...")
+            # Wrap subsystems with adapters that accept a single state tensor,
+            # bridging the CognitiveExecutiveFunction's uniform interface with
+            # each subsystem's specific forward signature.
+            _exec_subsystems: Dict[str, nn.Module] = {}
+            if self.safety_system is not None:
+                class _SafetyAdapter(nn.Module):
+                    def __init__(self, system, cfg):
+                        super().__init__()
+                        self.system = system
+                        self.cfg = cfg
+                    def forward(self, state):
+                        B = state.shape[0]
+                        device = state.device
+                        action_emb = torch.zeros(B, self.cfg.action_dim, device=device)
+                        factors = torch.zeros(B, self.cfg.num_pillars, device=device)
+                        div = {'diversity': torch.zeros(B, device=device)}
+                        topo = {'potential': torch.zeros(B, device=device)}
+                        score = self.system(action_emb, state, factors, div, topo)
+                        return state * score  # modulated state
+                _exec_subsystems['safety'] = _SafetyAdapter(self.safety_system, config)
+            if self.diversity_metric is not None:
+                class _DiversityAdapter(nn.Module):
+                    def __init__(self, metric, cfg):
+                        super().__init__()
+                        self.metric = metric
+                        self.cfg = cfg
+                    def forward(self, state):
+                        factors = torch.zeros(state.shape[0], self.cfg.num_pillars, device=state.device)
+                        result = self.metric(factors)
+                        return state * result['diversity'].unsqueeze(-1).clamp(min=0.01)
+                _exec_subsystems['diversity'] = _DiversityAdapter(self.diversity_metric, config)
+            if self.topology_analyzer is not None:
+                class _TopologyAdapter(nn.Module):
+                    def __init__(self, analyzer, cfg):
+                        super().__init__()
+                        self.analyzer = analyzer
+                        self.cfg = cfg
+                    def forward(self, state):
+                        factors = torch.zeros(state.shape[0], self.cfg.num_pillars, device=state.device)
+                        iterations = torch.ones(state.shape[0], device=state.device)
+                        result = self.analyzer(factors, iterations)
+                        safe_mask = ~result['catastrophes']
+                        return state * safe_mask.unsqueeze(-1).float()
+                _exec_subsystems['topology'] = _TopologyAdapter(self.topology_analyzer, config)
+            if len(_exec_subsystems) >= 2:
+                self.cognitive_executive = CognitiveExecutiveFunction(
+                    subsystems=_exec_subsystems,
+                    state_dim=config.hidden_dim,
+                    workspace_capacity=config.hidden_dim * 2,
+                    top_k=min(config.cognitive_executive_top_k, len(_exec_subsystems)),
+                ).to(self.device)
+            else:
+                self.cognitive_executive = None
+                logger.info("CognitiveExecutiveFunction requires >= 2 subsystems; skipped")
+        else:
+            self.cognitive_executive = None
+        
+        # ===== CAUSAL PROGRAMMATIC MODEL (Pearl's SCM) =====
+        # Implements structural causal equations with do-calculus support.
+        # Complements NeuralCausalModel (soft adjacency) and NOTEARS
+        # (differentiable DAG constraint) with a third causal perspective:
+        # explicit structural equations that support counterfactual inference
+        # via abduction-action-prediction.  The SCM's DAG loss is added to
+        # the training objective alongside the other causal losses.
+        if getattr(config, 'enable_causal_programmatic', False):
+            logger.info("Loading CausalProgrammaticModel...")
+            self.causal_programmatic = CausalProgrammaticModel(
+                num_variables=config.causal_programmatic_num_vars,
+                hidden_dim=config.hidden_dim // 2,
+            ).to(self.device)
+            # Projection from factor space to SCM variable space
+            if config.num_pillars != config.causal_programmatic_num_vars:
+                self.causal_prog_proj = nn.Linear(
+                    config.num_pillars, config.causal_programmatic_num_vars,
+                ).to(self.device)
+            else:
+                self.causal_prog_proj = None
+        else:
+            self.causal_programmatic = None
+            self.causal_prog_proj = None
+        
+        # ===== STANDALONE NEURO-SYMBOLIC BRIDGE =====
+        # Provides direct neural↔symbolic grounding in the main pipeline,
+        # independent of HybridReasoningEngine.  When hybrid reasoning is
+        # enabled, the bridge inside HybridReasoningEngine handles the full
+        # fact→rule→conclusion cycle; this standalone bridge provides a
+        # lightweight symbolic grounding path for when only fact/rule
+        # extraction and re-embedding is needed.
+        if getattr(config, 'enable_standalone_ns_bridge', False):
+            logger.info("Loading standalone NeuroSymbolicBridge...")
+            self.standalone_ns_bridge = NeuroSymbolicBridge(
+                hidden_dim=config.hidden_dim,
+                num_predicates=config.hybrid_reasoning_num_predicates,
+            ).to(self.device)
+        else:
+            self.standalone_ns_bridge = None
+        
+        # ===== HIERARCHICAL WORLD MODEL =====
+        # Multi-level world model with temporal abstractions (Dreamer v3).
+        # Operates alongside PhysicsGroundedWorldModel when both are enabled:
+        # the physics model provides grounded single-step predictions while
+        # the hierarchical model provides multi-horizon planning across
+        # reactive, tactical, and strategic time scales.
+        if getattr(config, 'enable_hierarchical_world_model', False):
+            logger.info("Loading HierarchicalWorldModel...")
+            self.hierarchical_world_model = HierarchicalWorldModel(
+                config=config,
+            ).to(self.device)
+        else:
+            self.hierarchical_world_model = None
+        
         # ===== MEMORY & INTEGRATION =====
         logger.info("Loading Memory & Integration...")
         self.memory_manager = MemoryManager(config)
@@ -14041,6 +14186,10 @@ class AEONDeltaV3(nn.Module):
                 'causal_model_results': {},
                 'notears_results': {},
                 'hierarchical_vae_results': {},
+                'executive_results': {},
+                'causal_prog_results': {},
+                'ns_bridge_results': {},
+                'hierarchical_wm_results': {},
                 # --- AGI coherence provenance (partial state preserved) ---
                 'uncertainty': 1.0,
                 'adaptive_safety_threshold': self.config.safety_threshold,
@@ -14480,6 +14629,45 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.checkpoint("safety", C_star)
         self.progress_tracker.end_phase("safety", success=True)
         self.provenance_tracker.record_after("safety", C_star)
+        
+        # 5a-ib. Cognitive Executive Function — Global Workspace Theory
+        # dispatcher that prioritizes subsystems via attention budget and
+        # broadcasts the winning hypothesis through a shared workspace.
+        # This transforms the flat subsystem evaluation into a coordinated
+        # ensemble where modules compete for cognitive resources.  The
+        # executive's workspace broadcast is added as a weighted residual
+        # so that the winning subsystem's perspective biases downstream
+        # reasoning without overriding the converged state.
+        executive_results: Dict[str, Any] = {}
+        if self.cognitive_executive is not None and not fast:
+            try:
+                self.provenance_tracker.record_before("cognitive_executive", C_star)
+                executive_results = self.cognitive_executive(C_star)
+                _winner = executive_results.get("winner", None)
+                if _winner is not None and torch.is_tensor(_winner) and torch.isfinite(_winner).all():
+                    _exec_blend = self.config.cognitive_executive_blend
+                    C_star = C_star + _exec_blend * _winner
+                self.provenance_tracker.record_after("cognitive_executive", C_star)
+                self.audit_log.record("cognitive_executive", "dispatched", {
+                    "executed_subsystems": executive_results.get("executed", []),
+                    "top_k": self.cognitive_executive.top_k,
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "cognitive_executive", "dispatched",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "executed": executive_results.get("executed", []),
+                        },
+                    )
+            except Exception as exec_err:
+                logger.warning(f"CognitiveExecutiveFunction error (non-fatal): {exec_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="cognitive_executive_forward",
+                    success=False,
+                )
+        
         # Record safety enforcement in causal trace so that output
         # provenance includes whether safety rollback influenced the
         # final state, linking safety decisions to their consequences.
@@ -14896,6 +15084,47 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
+        
+        # 5b1a. Hierarchical World Model — multi-horizon planning across
+        # reactive, tactical, and strategic time scales (Dreamer v3).
+        # When both physics and hierarchical world models are enabled,
+        # the hierarchical model provides a complementary multi-level
+        # prediction.  The strategic-level prediction is blended as a
+        # residual to ground the reasoning state in long-horizon planning.
+        hierarchical_wm_results: Dict[str, Any] = {}
+        if self.hierarchical_world_model is not None and not fast:
+            try:
+                self.provenance_tracker.record_before("hierarchical_world_model", C_star)
+                _hwm_pred, _hwm_hiddens = self.hierarchical_world_model(C_star)
+                hierarchical_wm_results = {
+                    'prediction': _hwm_pred,
+                    'level_hiddens': _hwm_hiddens,
+                }
+                if torch.isfinite(_hwm_pred).all():
+                    _hwm_blend = self.config.hierarchical_world_model_blend
+                    C_star = C_star + _hwm_blend * _hwm_pred
+                self.provenance_tracker.record_after("hierarchical_world_model", C_star)
+                self.audit_log.record("hierarchical_world_model", "computed", {
+                    "num_levels": len(_hwm_hiddens),
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "hierarchical_world_model", "multi_horizon_prediction",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "num_levels": len(_hwm_hiddens),
+                        },
+                    )
+            except Exception as hwm_err:
+                logger.warning(f"HierarchicalWorldModel error (non-fatal): {hwm_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="hierarchical_world_model_forward",
+                    success=False,
+                )
+                uncertainty = min(1.0, uncertainty + 0.15)
+                uncertainty_sources["hierarchical_wm_error"] = 0.15
+                high_uncertainty = uncertainty > 0.5
         
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
@@ -15403,9 +15632,73 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
         
+        # 5d1c2. CausalProgrammaticModel — Pearl's structural causal model
+        # with explicit structural equations and do-calculus support.
+        # Complements NeuralCausalModel and NOTEARS with counterfactual
+        # inference via abduction-action-prediction.  The SCM's DAG loss
+        # is included in the training objective for end-to-end structure
+        # learning.  The generated causal variables are blended as a
+        # residual to ground the state in structural causal dynamics.
+        causal_prog_results: Dict[str, Any] = {}
+        if self.causal_programmatic is not None and not fast:
+            try:
+                self.provenance_tracker.record_before("causal_programmatic", C_star)
+                _prog_input = factors
+                if self.causal_prog_proj is not None:
+                    _prog_input = self.causal_prog_proj(factors)
+                _prog_vars, _prog_log_prob = self.causal_programmatic(
+                    observations=_prog_input,
+                )
+                _prog_dag_loss = self.causal_programmatic.dag_loss()
+                causal_prog_results = {
+                    'causal_vars': _prog_vars,
+                    'log_prob': _prog_log_prob,
+                    'dag_loss': _prog_dag_loss,
+                    'adjacency': self.causal_programmatic.adjacency.detach(),
+                }
+                # Blend SCM causal signal as residual.  Mean-pooling across
+                # causal variables reduces [B, num_vars] → [B, 1] to match
+                # the hidden_dim broadcast.  This is consistent with how
+                # NeuralCausalModel blends its causal_residual (line 15437).
+                # The full per-variable structure is preserved in the output
+                # dict for downstream loss computation and analysis.
+                _prog_residual = _prog_vars.mean(dim=-1, keepdim=True)
+                if torch.isfinite(_prog_residual).all():
+                    C_star = C_star + self.config.causal_programmatic_blend * _prog_residual
+                self.provenance_tracker.record_after("causal_programmatic", C_star)
+                self.audit_log.record("causal_programmatic", "computed", {
+                    "dag_loss": float(_prog_dag_loss.item()),
+                    "log_prob": float(_prog_log_prob.mean().item()),
+                })
+                # Update causal quality from SCM DAG loss
+                _prog_dag_val = float(_prog_dag_loss.item())
+                if math.isfinite(_prog_dag_val):
+                    _prog_quality = 1.0 / (1.0 + _prog_dag_val)
+                    self._cached_causal_quality = min(
+                        self._cached_causal_quality, _prog_quality,
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "causal_programmatic", "scm_computed",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "dag_loss": float(_prog_dag_loss.item()),
+                            "num_vars": _prog_vars.shape[-1],
+                        },
+                    )
+            except Exception as prog_err:
+                logger.warning(f"CausalProgrammaticModel error (non-fatal): {prog_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="causal_programmatic_forward",
+                    success=False,
+                )
+                _causal_healthy = False
+        
         self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
             "causal_model_executed": self.causal_model is not None and not fast,
             "notears_executed": self.notears_causal is not None and not fast,
+            "causal_programmatic_executed": self.causal_programmatic is not None and not fast,
             "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
         })
         
@@ -15629,6 +15922,53 @@ class AEONDeltaV3(nn.Module):
         self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
             "executed": self.hybrid_reasoning is not None and not fast,
         })
+        
+        # 5e3b. Standalone NeuroSymbolic Bridge — lightweight neural↔symbolic
+        # grounding that operates independently of HybridReasoningEngine.
+        # Extracts facts and rules from the current state, then re-embeds
+        # them as a symbolic residual.  This provides a direct symbolic
+        # verification path: if the re-embedded symbolic representation
+        # diverges from the neural state, it indicates a neural↔symbolic
+        # inconsistency that the residual blend helps reconcile.
+        ns_bridge_results: Dict[str, Any] = {}
+        if self.standalone_ns_bridge is not None and not fast:
+            try:
+                self.provenance_tracker.record_before("ns_bridge", C_star)
+                _ns_facts = self.standalone_ns_bridge.extract_facts(C_star)
+                _ns_rules = self.standalone_ns_bridge.extract_rules(C_star)
+                # Round-trip: neural → symbolic → neural
+                _ns_symbolic = torch.clamp(_ns_facts + _ns_rules * 0.5, 0.0, 1.0)
+                _ns_reembedded = self.standalone_ns_bridge.embed_conclusions(_ns_symbolic)
+                # Blend the round-trip residual to enforce symbolic consistency
+                if torch.isfinite(_ns_reembedded).all():
+                    _ns_blend = self.config.standalone_ns_bridge_blend
+                    C_star = C_star + _ns_blend * _ns_reembedded
+                ns_bridge_results = {
+                    'facts': _ns_facts,
+                    'rules': _ns_rules,
+                    'reembedded': _ns_reembedded,
+                }
+                self.provenance_tracker.record_after("ns_bridge", C_star)
+                self.audit_log.record("standalone_ns_bridge", "grounded", {
+                    "fact_activation": float(_ns_facts.mean().item()),
+                    "rule_activation": float(_ns_rules.mean().item()),
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "standalone_ns_bridge", "symbolic_grounding",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "fact_activation": float(_ns_facts.mean().item()),
+                            "rule_activation": float(_ns_rules.mean().item()),
+                        },
+                    )
+            except Exception as ns_err:
+                logger.warning(f"NeuroSymbolicBridge error (non-fatal): {ns_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="standalone_ns_bridge_forward",
+                    success=False,
+                )
         
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
@@ -16412,6 +16752,10 @@ class AEONDeltaV3(nn.Module):
             'causal_model_results': causal_model_results,
             'notears_results': notears_results,
             'hierarchical_vae_results': hierarchical_vae_results,
+            'executive_results': executive_results,
+            'causal_prog_results': causal_prog_results,
+            'ns_bridge_results': ns_bridge_results,
+            'hierarchical_wm_results': hierarchical_wm_results,
             # --- AGI coherence provenance ---
             'uncertainty': uncertainty,
             'adaptive_safety_threshold': adaptive_safety_threshold,
@@ -16745,6 +17089,15 @@ class AEONDeltaV3(nn.Module):
             _cw_dag = causal_world_results['dag_loss']
             if _cw_dag.requires_grad:
                 causal_dag_loss = causal_dag_loss + _cw_dag
+        # Include CausalProgrammaticModel DAG loss — structural causal
+        # equations with Pearl's do-calculus support.  Adding the SCM's
+        # DAG constraint alongside NeuralCausalModel and NOTEARS provides
+        # a third complementary causal learning signal.
+        causal_prog_results = outputs.get('causal_prog_results', {})
+        if causal_prog_results and 'dag_loss' in causal_prog_results:
+            _cp_dag = causal_prog_results['dag_loss']
+            if _cp_dag.requires_grad:
+                causal_dag_loss = causal_dag_loss + _cp_dag
         
         # ===== 10. HIERARCHICAL VAE KL LOSS =====
         hvae_kl_loss = torch.tensor(0.0, device=self.device)
@@ -17130,6 +17483,10 @@ class AEONDeltaV3(nn.Module):
             ("HybridReasoning", self.hybrid_reasoning),
             ("UnifiedSimulator", self.unified_simulator),
             ("MetaRecovery", self.meta_recovery),
+            ("CognitiveExec", self.cognitive_executive),
+            ("CausalProgrammatic", self.causal_programmatic),
+            ("NSBridge", self.standalone_ns_bridge),
+            ("HierarchicalWM", self.hierarchical_world_model),
         ]
         
         for name, module in modules:

@@ -18164,6 +18164,420 @@ def test_diversity_collapse_weight_in_fusion():
     print("✅ test_diversity_collapse_weight_in_fusion PASSED")
 
 
+# =============================================================================
+# Architectural Unification — New Module Integration Tests
+# =============================================================================
+
+
+def test_cognitive_executive_function_integration():
+    """CognitiveExecutiveFunction dispatches subsystems and produces workspace output.
+
+    Verifies that when enable_cognitive_executive=True with >= 2 subsystems,
+    the executive function produces valid results in the forward pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_cognitive_executive=True,
+        enable_safety_guardrails=True,
+        enable_quantum_sim=True,
+        enable_catastrophe_detection=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.cognitive_executive is not None, \
+        "CognitiveExecutiveFunction should be instantiated with >= 2 subsystems"
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    exec_results = outputs.get('executive_results', {})
+    assert bool(exec_results), \
+        "executive_results should be non-empty when cognitive executive is enabled"
+    assert 'winner' in exec_results, \
+        "executive_results should contain 'winner'"
+    assert 'executed' in exec_results, \
+        "executive_results should contain 'executed' subsystem list"
+
+    print("✅ test_cognitive_executive_function_integration PASSED")
+
+
+def test_cognitive_executive_disabled_by_default():
+    """CognitiveExecutiveFunction is None when config flag is False."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+
+    assert model.cognitive_executive is None, \
+        "CognitiveExecutiveFunction should be None when disabled"
+
+    print("✅ test_cognitive_executive_disabled_by_default PASSED")
+
+
+def test_causal_programmatic_model_integration():
+    """CausalProgrammaticModel produces SCM variables and DAG loss in forward pass.
+
+    Verifies that Pearl's structural causal model is integrated into the
+    reasoning pipeline and contributes to the causal reasoning outputs.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_causal_programmatic=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.causal_programmatic is not None, \
+        "CausalProgrammaticModel should be instantiated when enabled"
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    prog_results = outputs.get('causal_prog_results', {})
+    assert bool(prog_results), \
+        "causal_prog_results should be non-empty"
+    assert 'causal_vars' in prog_results, \
+        "causal_prog_results should contain 'causal_vars'"
+    assert 'dag_loss' in prog_results, \
+        "causal_prog_results should contain 'dag_loss'"
+    assert 'adjacency' in prog_results, \
+        "causal_prog_results should contain 'adjacency'"
+
+    print("✅ test_causal_programmatic_model_integration PASSED")
+
+
+def test_causal_programmatic_dag_loss_in_compute_loss():
+    """CausalProgrammaticModel DAG loss is included in the training objective.
+
+    Verifies that the SCM's DAG constraint feeds into compute_loss alongside
+    NeuralCausalModel and NOTEARS DAG losses.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_causal_programmatic=True,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    outputs = model(input_ids, fast=False)
+    targets = torch.randint(0, config.vocab_size, (B, L))
+    losses = model.compute_loss(outputs, targets)
+
+    assert 'causal_dag_loss' in losses, \
+        "compute_loss should return 'causal_dag_loss'"
+    # The DAG loss should be non-negative
+    assert losses['causal_dag_loss'].item() >= 0, \
+        "causal_dag_loss should be non-negative"
+
+    print("✅ test_causal_programmatic_dag_loss_in_compute_loss PASSED")
+
+
+def test_standalone_ns_bridge_integration():
+    """Standalone NeuroSymbolicBridge produces facts, rules, and re-embedded output.
+
+    Verifies that the bridge provides direct neural↔symbolic grounding
+    independent of HybridReasoningEngine.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_standalone_ns_bridge=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.standalone_ns_bridge is not None, \
+        "standalone NeuroSymbolicBridge should be instantiated when enabled"
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    ns_results = outputs.get('ns_bridge_results', {})
+    assert bool(ns_results), \
+        "ns_bridge_results should be non-empty"
+    assert 'facts' in ns_results, \
+        "ns_bridge_results should contain 'facts'"
+    assert 'rules' in ns_results, \
+        "ns_bridge_results should contain 'rules'"
+    assert 'reembedded' in ns_results, \
+        "ns_bridge_results should contain 'reembedded'"
+    # Facts and rules should be in [0, 1] (sigmoid output)
+    assert ns_results['facts'].min() >= 0 and ns_results['facts'].max() <= 1, \
+        "facts should be in [0, 1]"
+
+    print("✅ test_standalone_ns_bridge_integration PASSED")
+
+
+def test_hierarchical_world_model_integration():
+    """HierarchicalWorldModel produces multi-level predictions in forward pass.
+
+    Verifies that the Dreamer v3-inspired hierarchical world model provides
+    multi-horizon predictions at reactive, tactical, and strategic time scales.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_hierarchical_world_model=True,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.hierarchical_world_model is not None, \
+        "HierarchicalWorldModel should be instantiated when enabled"
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=False)
+
+    hwm_results = outputs.get('hierarchical_wm_results', {})
+    assert bool(hwm_results), \
+        "hierarchical_wm_results should be non-empty"
+    assert 'prediction' in hwm_results, \
+        "hierarchical_wm_results should contain 'prediction'"
+    assert 'level_hiddens' in hwm_results, \
+        "hierarchical_wm_results should contain 'level_hiddens'"
+    # Should have 3 levels (h0, h1, h2)
+    hiddens = hwm_results['level_hiddens']
+    assert 'h0' in hiddens and 'h1' in hiddens and 'h2' in hiddens, \
+        "hierarchical world model should produce 3 level hiddens"
+
+    print("✅ test_hierarchical_world_model_integration PASSED")
+
+
+def test_full_coherence_includes_new_modules():
+    """enable_full_coherence activates all new architectural modules.
+
+    Verifies that the unified coherence preset includes the cognitive
+    executive, causal programmatic model, NS bridge, and hierarchical
+    world model alongside all previously existing modules.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_full_coherence=True,
+    )
+
+    assert config.enable_cognitive_executive is True, \
+        "enable_full_coherence should activate cognitive executive"
+    assert config.enable_causal_programmatic is True, \
+        "enable_full_coherence should activate causal programmatic model"
+    assert config.enable_standalone_ns_bridge is True, \
+        "enable_full_coherence should activate standalone NS bridge"
+    assert config.enable_hierarchical_world_model is True, \
+        "enable_full_coherence should activate hierarchical world model"
+
+    print("✅ test_full_coherence_includes_new_modules PASSED")
+
+
+def test_new_config_defaults():
+    """New config fields have sensible default values."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+
+    # All new modules disabled by default
+    assert config.enable_cognitive_executive is False
+    assert config.enable_causal_programmatic is False
+    assert config.enable_standalone_ns_bridge is False
+    assert config.enable_hierarchical_world_model is False
+
+    # Default blend weights
+    assert config.cognitive_executive_blend == 0.1
+    assert config.causal_programmatic_blend == 0.05
+    assert config.standalone_ns_bridge_blend == 0.1
+    assert config.hierarchical_world_model_blend == 0.1
+
+    print("✅ test_new_config_defaults PASSED")
+
+
+def test_causal_programmatic_model_standalone():
+    """CausalProgrammaticModel forward and counterfactual inference work correctly.
+
+    Unit test for the SCM's forward pass and do-calculus counterfactual query.
+    """
+    from aeon_core import CausalProgrammaticModel
+
+    model = CausalProgrammaticModel(num_variables=5, hidden_dim=32)
+    model.eval()
+
+    B = 4
+    with torch.no_grad():
+        # Forward pass (generative)
+        vars_gen, log_prob = model(batch_size=B)
+        assert vars_gen.shape == (B, 5), f"Expected (4, 5), got {vars_gen.shape}"
+        assert log_prob.shape == (B,), f"Expected (4,), got {log_prob.shape}"
+
+        # Forward pass with observations
+        obs = torch.randn(B, 5)
+        vars_obs, log_prob_obs = model(observations=obs)
+        assert vars_obs.shape == (B, 5)
+
+        # Counterfactual inference: do(X_0 = 1.0)
+        cf = model.counterfactual(obs, intervention={0: 1.0})
+        assert cf.shape == (B, 5)
+        # Interventioned variable should be exactly the forced value
+        assert torch.allclose(cf[:, 0], torch.ones(B)), \
+            "Counterfactual X_0 should be 1.0 after do(X_0=1.0)"
+
+    # DAG loss should be non-negative
+    dag_loss = model.dag_loss()
+    assert dag_loss.item() >= 0, "DAG loss should be non-negative"
+
+    print("✅ test_causal_programmatic_model_standalone PASSED")
+
+
+def test_cognitive_executive_function_standalone():
+    """CognitiveExecutiveFunction dispatches top-K subsystems and produces a winner.
+
+    Unit test for the Global Workspace Theory dispatcher.
+    """
+    from aeon_core import CognitiveExecutiveFunction
+
+    # Create simple subsystems
+    subsystems = {
+        'module_a': nn.Linear(64, 64),
+        'module_b': nn.Linear(64, 64),
+        'module_c': nn.Linear(64, 64),
+    }
+    executive = CognitiveExecutiveFunction(
+        subsystems=subsystems,
+        state_dim=64,
+        workspace_capacity=128,
+        top_k=2,
+    )
+    executive.eval()
+
+    state = torch.randn(3, 64)
+    with torch.no_grad():
+        result = executive(state)
+
+    assert 'winner' in result
+    assert 'urgency' in result
+    assert 'executed' in result
+    assert len(result['executed']) == 2, \
+        f"Expected 2 executed subsystems (top_k=2), got {len(result['executed'])}"
+    assert 'workspace' in result
+
+    print("✅ test_cognitive_executive_function_standalone PASSED")
+
+
+def test_ns_bridge_round_trip_consistency():
+    """NeuroSymbolicBridge maintains consistency through neural→symbolic→neural round-trip.
+
+    Verifies that facts and rules are extracted correctly and re-embedded
+    back into the neural space.
+    """
+    from aeon_core import NeuroSymbolicBridge
+
+    bridge = NeuroSymbolicBridge(hidden_dim=128, num_predicates=16)
+    bridge.eval()
+
+    state = torch.randn(4, 128)
+    with torch.no_grad():
+        facts = bridge.extract_facts(state)
+        rules = bridge.extract_rules(state)
+        combined = torch.clamp(facts + rules * 0.5, 0.0, 1.0)
+        reembedded = bridge.embed_conclusions(combined)
+
+    assert facts.shape == (4, 16), f"Expected (4, 16), got {facts.shape}"
+    assert rules.shape == (4, 16)
+    assert reembedded.shape == (4, 128), \
+        "Reembedded should return to original hidden_dim"
+    assert facts.min() >= 0 and facts.max() <= 1, "Facts should be sigmoid-bounded"
+    assert rules.min() >= 0 and rules.max() <= 1, "Rules should be sigmoid-bounded"
+    assert torch.isfinite(reembedded).all(), "Reembedded should be finite"
+
+    print("✅ test_ns_bridge_round_trip_consistency PASSED")
+
+
+def test_hierarchical_world_model_standalone():
+    """HierarchicalWorldModel produces predictions at multiple time scales.
+
+    Unit test for the Dreamer v3-inspired multi-level world model.
+    """
+    from aeon_core import AEONConfig, HierarchicalWorldModel
+
+    config = AEONConfig(device_str='cpu')
+    model = HierarchicalWorldModel(config=config)
+    model.eval()
+
+    state = torch.randn(2, config.hidden_dim)
+    with torch.no_grad():
+        prediction, hiddens = model(state, level='all')
+
+    assert 'h0' in hiddens, "Should have level 0 hidden"
+    assert 'h1' in hiddens, "Should have level 1 hidden"
+    assert 'h2' in hiddens, "Should have level 2 hidden"
+    assert torch.isfinite(prediction).all(), "Prediction should be finite"
+
+    # Test single level
+    pred_0, hiddens_0 = model(state, level='0')
+    assert 'h0' in hiddens_0
+    assert torch.isfinite(pred_0).all()
+
+    print("✅ test_hierarchical_world_model_standalone PASSED")
+
+
+def test_new_modules_skipped_in_fast_mode():
+    """New modules are skipped when fast=True.
+
+    Verifies that all new modules respect the fast mode flag and produce
+    empty results when fast mode is active.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_cognitive_executive=True,
+        enable_causal_programmatic=True,
+        enable_standalone_ns_bridge=True,
+        enable_hierarchical_world_model=True,
+        enable_safety_guardrails=True,
+        enable_quantum_sim=True,
+        enable_catastrophe_detection=True,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids, fast=True)
+
+    # In fast mode, new modules should produce empty results
+    assert not outputs.get('executive_results', {}), \
+        "executive_results should be empty in fast mode"
+    assert not outputs.get('causal_prog_results', {}), \
+        "causal_prog_results should be empty in fast mode"
+    assert not outputs.get('ns_bridge_results', {}), \
+        "ns_bridge_results should be empty in fast mode"
+    assert not outputs.get('hierarchical_wm_results', {}), \
+        "hierarchical_wm_results should be empty in fast mode"
+
+    print("✅ test_new_modules_skipped_in_fast_mode PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -19023,6 +19437,21 @@ if __name__ == '__main__':
     test_mcts_best_state_blended_into_c_star()
     test_post_integration_safety_re_evaluation()
     test_diversity_collapse_weight_in_fusion()
+    
+    # Architectural Unification — New Module Integration Tests
+    test_cognitive_executive_function_integration()
+    test_cognitive_executive_disabled_by_default()
+    test_causal_programmatic_model_integration()
+    test_causal_programmatic_dag_loss_in_compute_loss()
+    test_standalone_ns_bridge_integration()
+    test_hierarchical_world_model_integration()
+    test_full_coherence_includes_new_modules()
+    test_new_config_defaults()
+    test_causal_programmatic_model_standalone()
+    test_cognitive_executive_function_standalone()
+    test_ns_bridge_round_trip_consistency()
+    test_hierarchical_world_model_standalone()
+    test_new_modules_skipped_in_fast_mode()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
