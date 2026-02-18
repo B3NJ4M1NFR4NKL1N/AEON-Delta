@@ -13912,6 +13912,7 @@ class AEONDeltaV3(nn.Module):
             downstream uncertainty escalation.
         """
         self._last_trust_score = 1.0  # default: fully trusted
+        self._last_verification_weight = 0.0  # default: no extra verification
         if memory_retrieval and self.memory_manager.size > 0:
             memory_contexts = []
             for q in C_star:
@@ -13930,10 +13931,15 @@ class AEONDeltaV3(nn.Module):
             if self.trust_scorer is not None:
                 trust_result = self.trust_scorer(memory_context, C_star)
                 trust_score = trust_result['trust_score']  # [B, 1]
+                verification_weight = trust_result['verification_weight']  # [B, 1]
                 memory_context = memory_context * trust_score
                 self._last_trust_score = float(trust_score.mean().item())
+                self._last_verification_weight = float(
+                    verification_weight.mean().item()
+                )
                 logger.debug(
-                    f"Memory trust: mean={self._last_trust_score:.3f}"
+                    f"Memory trust: mean={self._last_trust_score:.3f}, "
+                    f"verification_weight={self._last_verification_weight:.3f}"
                 )
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
@@ -14331,16 +14337,64 @@ class AEONDeltaV3(nn.Module):
                 f"error_rate={audit_insights['error_rate']:.2f})"
             )
         
+        # 0d. Error evolution in-pass strategy guidance — consult the
+        # error evolution tracker at the START of the reasoning pass for
+        # the historically best recovery strategy across all error classes.
+        # This enables learned error patterns to proactively influence the
+        # current pass (e.g. pre-tightening safety thresholds when a
+        # specific failure mode has been recurring) rather than only being
+        # consulted retroactively during exception handling.
+        _evolved_guidance: Optional[str] = None
+        _evolved_preemptive_uncertainty: float = 0.0
+        if self.error_evolution is not None and not fast:
+            _error_summary = self.error_evolution.get_error_summary()
+            _error_classes = _error_summary.get("error_classes", {})
+            # Identify error classes with low success rates (< 50%) that
+            # have occurred at least twice — these are systemic issues.
+            for _cls_name, _cls_stats in _error_classes.items():
+                if (_cls_name == "none"
+                        or _cls_stats.get("count", 0) < 2):
+                    continue
+                _success_rate = _cls_stats.get("success_rate", 1.0)
+                if _success_rate < 0.5:
+                    _evolved_guidance = self.error_evolution.get_best_strategy(
+                        _cls_name
+                    )
+                    # Pre-escalate uncertainty proportionally to the
+                    # failure rate so the metacognitive trigger is more
+                    # sensitive to historically problematic inputs.
+                    _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY = 0.1
+                    _evolved_preemptive_uncertainty = max(
+                        _evolved_preemptive_uncertainty,
+                        _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY * (1.0 - _success_rate),
+                    )
+            if _evolved_preemptive_uncertainty > 0:
+                logger.debug(
+                    f"Error evolution preemptive guidance: "
+                    f"strategy={_evolved_guidance}, "
+                    f"uncertainty_boost={_evolved_preemptive_uncertainty:.3f}"
+                )
+            # Also adapt metacognitive trigger weights if available
+            if (self.metacognitive_trigger is not None
+                    and _error_classes):
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    _error_summary
+                )
+        
         self.progress_tracker.begin_phase("meta_loop")
         
         # Initialize uncertainty tracking before meta-loop so that
         # NaN fallback paths can safely reference these variables.
         # They will be recomputed with proper values after meta-loop
         # convergence at step 1a-iii below.
-        uncertainty: float = 0.0
-        high_uncertainty: bool = False
+        uncertainty: float = _evolved_preemptive_uncertainty
+        high_uncertainty: bool = uncertainty > 0.5
         # Track individual uncertainty contributions for traceability
         uncertainty_sources: Dict[str, float] = {}
+        if _evolved_preemptive_uncertainty > 0:
+            uncertainty_sources["error_evolution_preemptive"] = (
+                _evolved_preemptive_uncertainty
+            )
         
         # 1. Retrieve cached feedback from previous forward pass.
         # This allows downstream signals (safety, uncertainty) computed
@@ -14821,6 +14875,14 @@ class AEONDeltaV3(nn.Module):
             # can learn targeted recovery strategies per subsystem pair
             # rather than treating all coherence deficits identically.
             _pairwise = coherence_results.get("pairwise", {})
+            _weakest_pair: Optional[str] = None
+            _weakest_pair_sim: float = 1.0
+            if _pairwise:
+                for (name_i, name_j), sim in _pairwise.items():
+                    _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
+                    if _pair_sim < _weakest_pair_sim:
+                        _weakest_pair_sim = _pair_sim
+                        _weakest_pair = f"{name_i}_vs_{name_j}"
             if _coherence_deficit and _pairwise and self.error_evolution is not None:
                 for (name_i, name_j), sim in _pairwise.items():
                     _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
@@ -14830,6 +14892,28 @@ class AEONDeltaV3(nn.Module):
                             strategy_used="pairwise_diagnostic",
                             success=False,
                         )
+            # Record the weakest pair in audit for targeted root-cause
+            # analysis — knowing *which* pair diverged most enables
+            # downstream recovery to focus on the specific subsystem link
+            # rather than uniformly re-reasoning over all modules.
+            if _weakest_pair is not None and _coherence_deficit:
+                self.audit_log.record("module_coherence", "weakest_pair", {
+                    "pair": _weakest_pair,
+                    "similarity": _weakest_pair_sim,
+                    "threshold": self.module_coherence.threshold,
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "coherence_weakest_pair", _weakest_pair,
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "similarity": _weakest_pair_sim,
+                        },
+                    )
+            # Stash weakest pair into coherence_results for output tracing
+            if _weakest_pair is not None:
+                coherence_results["_weakest_pair"] = _weakest_pair
+                coherence_results["_weakest_pair_sim"] = _weakest_pair_sim
             # 5a-iii-b. Coherence-driven corrective action — when coherence
             # deficit is detected, escalate uncertainty to ensure downstream
             # meta-cognitive cycles activate.  This closes the loop between
@@ -15783,12 +15867,32 @@ class AEONDeltaV3(nn.Module):
                     _orig_reconcile_threshold,
                     _orig_reconcile_threshold * self.config.coherence_reconciler_tightening,
                 )
+            # 5d2-0a. Trust-aware reconciliation — when external memory
+            # trust is low (high verification_weight), tighten the
+            # reconciler further so that cross-validation works harder
+            # to ensure factor–causal alignment when external data is
+            # unreliable.  This wires the previously unused
+            # verification_weight signal into active decision-making.
+            _verification_wt = getattr(self, '_last_verification_weight', 0.0)
+            _VERIFICATION_TIGHTENING_THRESHOLD = 0.3
+            _VERIFICATION_MIN_FACTOR = 0.7
+            _VERIFICATION_TIGHTENING_RATE = 0.3
+            if _verification_wt > _VERIFICATION_TIGHTENING_THRESHOLD:
+                _trust_tightening = max(
+                    _VERIFICATION_MIN_FACTOR,
+                    1.0 - _VERIFICATION_TIGHTENING_RATE * (
+                        _verification_wt - _VERIFICATION_TIGHTENING_THRESHOLD
+                    ),
+                )
+                self.cross_validator.agreement_threshold = min(
+                    self.cross_validator.agreement_threshold,
+                    self.cross_validator.agreement_threshold * _trust_tightening,
+                )
             reconciliation_results = self.cross_validator(
                 embedded_factors, _reconcile_second
             )
             # Restore original threshold after reconciliation
-            if _coherence_deficit:
-                self.cross_validator.agreement_threshold = _orig_reconcile_threshold
+            self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
@@ -16147,6 +16251,8 @@ class AEONDeltaV3(nn.Module):
         # Track auto-critic score for loss computation
         _auto_critic_final_score = None
         _auto_critic_final_score_tensor = None
+        # Track whether any auto-critic revision modified z_out
+        _any_auto_critic_revised = False
         
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
@@ -16226,12 +16332,36 @@ class AEONDeltaV3(nn.Module):
                         ns_consistency_results["overall_consistency"].mean().item()
                     ),
                 }, severity="warning")
+                # 8b2a. Record per-predicate satisfaction in causal trace
+                # so root-cause analysis can identify which logical rules
+                # were violated, enabling granular rule-violation diagnostics
+                # rather than a single aggregate consistency score.
+                if self.causal_trace is not None:
+                    _sat_scores = ns_consistency_results.get("satisfaction_scores")
+                    _violations = ns_consistency_results.get("violations")
+                    _violated_indices = []
+                    if _violations is not None:
+                        _violated_indices = (
+                            _violations.any(dim=0).nonzero(as_tuple=True)[0].tolist()
+                        )
+                    self.causal_trace.record(
+                        "ns_consistency", "per_predicate_violation",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "violated_predicate_indices": _violated_indices,
+                            "num_violated": len(_violated_indices),
+                            "mean_satisfaction": float(
+                                _sat_scores.mean().item()
+                            ) if _sat_scores is not None else None,
+                        },
+                    )
                 # 8b3. AutoCriticLoop — refine z_out when violations detected
                 if self.auto_critic is not None:
                     critic_result = self.auto_critic(z_out)
                     revised = critic_result.get("candidate", None)
                     if revised is not None and torch.isfinite(revised).all():
                         z_out = revised
+                        _any_auto_critic_revised = True
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
                     _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
                     self.audit_log.record("auto_critic", "revised", {
@@ -16286,6 +16416,7 @@ class AEONDeltaV3(nn.Module):
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
+                _any_auto_critic_revised = True
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
             # Determine which condition triggered the cycle
@@ -16575,6 +16706,7 @@ class AEONDeltaV3(nn.Module):
                     _post_revised = _post_critic.get("candidate", None)
                     if _post_revised is not None and torch.isfinite(_post_revised).all():
                         z_out = _post_revised
+                        _any_auto_critic_revised = True
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": _post_critic.get("iterations", 0),
                         "final_score": _post_critic.get("final_score", 0.0),
@@ -16587,16 +16719,16 @@ class AEONDeltaV3(nn.Module):
                         success=_post_metacog_triggered,
                     )
         
-        # 8g-0a. Post-integration safety re-evaluation — after the post-
-        # metacognitive cycle has potentially revised z_out via auto-critic,
-        # re-evaluate safety on the revised output.  The original safety
-        # enforcement (step 5a) operated on C_star before integration and
-        # auto-critic revision, so the final z_out may have drifted into
-        # unsafe territory.  This closes the safety-reasoning feedback
-        # loop: self-correction is validated by safety, ensuring that the
-        # auto-critic's revisions don't bypass safety constraints.
+        # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
+        # on z_out after ANY auto-critic revision, not only the post-
+        # metacognitive path.  The original safety enforcement (step 5a)
+        # operated on C_star before integration and auto-critic revision,
+        # so the final z_out may have drifted into unsafe territory.  This
+        # closes the safety-reasoning feedback loop unconditionally:
+        # every self-correction is validated by safety, ensuring that no
+        # auto-critic revision path bypasses safety constraints.
         if (self.safety_system is not None
-                and _post_metacog_triggered
+                and (_post_metacog_triggered or _any_auto_critic_revised)
                 and not fast):
             _post_action_emb = torch.zeros(B, self.config.action_dim, device=device)
             _post_safety = self.safety_system(
@@ -16742,6 +16874,7 @@ class AEONDeltaV3(nn.Module):
             "safety_enforced": safety_enforced,
             "adaptive_safety_threshold": adaptive_safety_threshold,
             "uncertainty": uncertainty,
+            "verification_weight": getattr(self, '_last_verification_weight', 0.0),
             "recovery_stats": self.error_recovery.get_recovery_stats(),
             "error_evolution_summary": (
                 self.error_evolution.get_error_summary()
@@ -16760,6 +16893,10 @@ class AEONDeltaV3(nn.Module):
             ),
             "uncertainty_sources": uncertainty_sources,
             "auto_critic_score": _auto_critic_final_score,
+            "weakest_coherence_pair": (
+                coherence_results.get("_weakest_pair")
+                if coherence_results else None
+            ),
         }
         
         outputs = {
