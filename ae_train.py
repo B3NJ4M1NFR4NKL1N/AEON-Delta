@@ -115,11 +115,27 @@ logger = configure_logger()
 # УСТРОЙСТВО
 # ==============================================================================
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _select_device() -> torch.device:
+    """Select best available device: CUDA → MPS → CPU with runtime probe."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        try:
+            _probe = torch.zeros(1, device="mps")
+            del _probe
+            return torch.device("mps")
+        except Exception as _e:
+            logger.warning(f"MPS available but probe failed ({_e}), using CPU")
+    return torch.device("cpu")
+
+
+device = _select_device()
 logger.info(f"🖥️  Device: {device}")
-if torch.cuda.is_available():
+if device.type == "cuda":
     logger.info(f"   GPU: {torch.cuda.get_device_name(0)}")
     logger.info(f"   VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+elif device.type == "mps":
+    logger.info("   Apple Silicon MPS accelerator")
 
 
 # ==============================================================================
@@ -1297,7 +1313,7 @@ class SafeThoughtAETrainerV4:
             label_smoothing=config.label_smoothing
         )
         
-        self.use_amp = config.use_amp and AMP_AVAILABLE
+        self.use_amp = config.use_amp and AMP_AVAILABLE and self.device.type == 'cuda'
         if self.use_amp:
             try:
                 self.scaler = GradScaler(device=self.device.type)
@@ -2294,7 +2310,17 @@ def main(
         logger.error(f"❌ Failed to save tokens: {e}")
 
     # Создание модели v4
-    model = AEONDeltaV4(config).to(device)
+    try:
+        model = AEONDeltaV4(config).to(device)
+    except (RuntimeError, NotImplementedError) as _to_err:
+        if device.type == 'mps':
+            logger.warning(
+                f"MPS transfer failed ({_to_err}), falling back to CPU"
+            )
+            device = torch.device('cpu')
+            model = AEONDeltaV4(config).to(device)
+        else:
+            raise
     
     # Загрузка checkpoint
     if resume_from and os.path.exists(resume_from):

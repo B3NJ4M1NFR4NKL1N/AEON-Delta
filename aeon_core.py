@@ -497,6 +497,20 @@ class DeviceManager:
                     logger.warning("MPS requested but unavailable, using CPU")
                     return torch.device('cpu')
                 raise RuntimeError("MPS device requested but not available")
+            # Probe MPS with a small tensor to detect runtime issues
+            # (e.g. broken Metal drivers or unsupported OS versions)
+            try:
+                _probe = torch.zeros(1, device='mps')
+                del _probe
+            except Exception as mps_err:
+                if allow_fallback:
+                    logger.warning(
+                        f"MPS probe failed ({mps_err}), falling back to CPU"
+                    )
+                    return torch.device('cpu')
+                raise RuntimeError(
+                    f"MPS device probe failed: {mps_err}"
+                ) from mps_err
         
         return target_device
     
@@ -568,8 +582,17 @@ class DeviceManager:
         # Check MPS (Apple Silicon)
         if (prefer_gpu and hasattr(torch.backends, 'mps') and 
                 torch.backends.mps.is_available()):
-            logger.info("Auto-selected MPS (Apple Silicon)")
-            return cls('mps')
+            # Probe MPS with a small allocation to catch runtime issues
+            try:
+                _probe = torch.zeros(1, device='mps')
+                del _probe
+                logger.info("Auto-selected MPS (Apple Silicon)")
+                return cls('mps')
+            except Exception as mps_err:
+                logger.warning(
+                    f"MPS available but probe failed ({mps_err}), "
+                    "falling back to CPU"
+                )
         
         # Fallback to CPU
         logger.info("Auto-selected CPU")
@@ -613,6 +636,36 @@ class DeviceManager:
                 'device': str(self._device)
             }
         return {'device': str(self._device), 'type': 'non-cuda'}
+    
+    def safe_to(
+        self,
+        module: nn.Module,
+    ) -> nn.Module:
+        """Move a module to the managed device with MPS fallback.
+        
+        If the primary device is MPS and the transfer raises a runtime
+        error (unsupported op, Metal backend issue, etc.), the entire
+        DeviceManager falls back to CPU transparently.
+        
+        Args:
+            module: ``nn.Module`` to transfer.
+        
+        Returns:
+            The module, already on the chosen device.
+        """
+        try:
+            return module.to(self._device)
+        except (RuntimeError, NotImplementedError) as e:
+            if self._device.type == 'mps' and self._allow_fallback:
+                logger.warning(
+                    f"MPS transfer failed ({e}), "
+                    "falling back to CPU for all subsequent operations"
+                )
+                self._device = torch.device('cpu')
+                self._amp_enabled = False
+                self._scaler = None
+                return module.to(self._device)
+            raise
     
     @contextmanager
     def device_context(self, temporary_device: Union[str, torch.device]):
@@ -13390,8 +13443,9 @@ class AEONDeltaV3(nn.Module):
         # Apply tensor safety hooks
         SafeTensorProcessor.register_hooks(self)
         
-        # Final device sync
-        self.to(self.device)
+        # Final device sync — use safe_to so that an MPS runtime error
+        # transparently falls back to CPU instead of crashing init.
+        self.device_manager.safe_to(self)
         
         # Print summary
         self.print_architecture_summary()
@@ -16822,7 +16876,7 @@ class AEONDeltaV3(nn.Module):
                 
                 # Load
                 self.load_state_dict(state_dict, strict=False)
-                self.to(self.device)
+                self.device_manager.safe_to(self)
                 logger.info("✅ Model weights loaded")
                 
                 # Reset EMA statistics in meta-loop after checkpoint load
