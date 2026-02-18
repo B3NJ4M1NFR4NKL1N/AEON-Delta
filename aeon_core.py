@@ -14074,8 +14074,8 @@ class AEONDeltaV3(nn.Module):
                     results['hierarchical'] = vecs
                     all_vecs.append(vecs.mean(dim=0).to(device))
                     all_weights.append(1.0)
-            except Exception:
-                pass
+            except (RuntimeError, KeyError, IndexError) as e:
+                logger.debug("Hierarchical memory query failed: %s", e)
 
         # 2. Neurogenic memory
         if self.neurogenic_memory is not None:
@@ -14086,8 +14086,8 @@ class AEONDeltaV3(nn.Module):
                     results['neurogenic'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.8)
-            except Exception:
-                pass
+            except (RuntimeError, KeyError, IndexError) as e:
+                logger.debug("Neurogenic memory query failed: %s", e)
 
         # 3. Consolidating memory (semantic prototypes)
         if self.consolidating_memory is not None:
@@ -14099,8 +14099,8 @@ class AEONDeltaV3(nn.Module):
                     results['consolidating'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.9)
-            except Exception:
-                pass
+            except (RuntimeError, KeyError, IndexError) as e:
+                logger.debug("Consolidating memory query failed: %s", e)
 
         # 4. Temporal memory
         if self.temporal_memory is not None:
@@ -14111,8 +14111,8 @@ class AEONDeltaV3(nn.Module):
                     results['temporal'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.7)
-            except Exception:
-                pass
+            except (RuntimeError, KeyError, IndexError) as e:
+                logger.debug("Temporal memory query failed: %s", e)
 
         # Combine all retrieved vectors with weighted average
         if all_vecs:
@@ -14122,11 +14122,13 @@ class AEONDeltaV3(nn.Module):
             combined = (weight_tensor.unsqueeze(-1) * stacked).sum(dim=0)
             results['combined'] = combined
             results['num_systems_responded'] = len(all_vecs)
+            results['fallback_used'] = False
         else:
             results['combined'] = torch.zeros(
                 self.config.hidden_dim, device=device,
             )
             results['num_systems_responded'] = 0
+            results['fallback_used'] = True
 
         return results
     

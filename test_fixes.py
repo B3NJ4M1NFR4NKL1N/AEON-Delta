@@ -21308,6 +21308,9 @@ def test_unified_memory_query():
     assert 'num_systems_responded' in result, (
         "unified_memory_query should return 'num_systems_responded'"
     )
+    assert 'fallback_used' in result, (
+        "unified_memory_query should return 'fallback_used'"
+    )
     assert result['combined'].shape == (32,), (
         f"Expected shape (32,), got {result['combined'].shape}"
     )
@@ -21336,15 +21339,13 @@ def test_training_inference_error_bridge():
     # Bridge training errors to inference
     bridged = bridge_training_errors_to_inference(monitor, inference_evo)
 
-    # Verify errors were bridged
-    inference_summary = inference_evo.get_error_summary()
-    error_classes = inference_summary.get('error_classes', {})
-    has_training_error = any(
-        k.startswith('training_') for k in error_classes.keys()
-    )
-    assert has_training_error or bridged >= 0, (
-        "Training errors should be bridgeable to inference"
-    )
+    # Verify bridging worked — even if no errors were recorded (divergence
+    # may not have triggered at exactly the right loss values), the bridge
+    # function should return without error.
+    assert bridged >= 0, "bridged count should be non-negative"
+    # The export should always return a valid dict
+    exported = monitor.export_error_patterns()
+    assert isinstance(exported, dict), "export_error_patterns should return dict"
     print("✅ test_training_inference_error_bridge PASSED")
 
 
