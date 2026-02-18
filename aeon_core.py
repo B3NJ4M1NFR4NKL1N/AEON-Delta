@@ -5936,7 +5936,24 @@ class CausalProvenanceTracker:
         self._order.clear()
     
     def record_before(self, module_name: str, state: torch.Tensor):
-        """Record the state before a module's transformation."""
+        """Record the state before a module's transformation.
+
+        If the module has already been recorded in this pass (e.g. a re-run
+        after coherence-deficit recovery), the previous delta is preserved in
+        ``_deltas`` and the new before-state overwrites the old one so that
+        the subsequent ``record_after`` computes a fresh delta.  Both deltas
+        are accumulated in ``_deltas`` so provenance attribution reflects the
+        total contribution across all invocations of the same module.
+        """
+        # Flush any pending before-state for this module that was never
+        # followed by a record_after — this shouldn't happen in normal
+        # operation but prevents silent state accumulation.
+        if module_name in self._before_states:
+            logger.debug(
+                "CausalProvenanceTracker: overwriting pending before-state "
+                "for module '%s' (record_after was not called for previous "
+                "invocation)", module_name,
+            )
         self._before_states[module_name] = state.detach().clone()
         if module_name not in self._order:
             self._order.append(module_name)
@@ -5945,11 +5962,16 @@ class CausalProvenanceTracker:
         """Record the state after a module's transformation.
         
         Computes the L2 delta immediately and releases the before-state
-        tensor to avoid accumulating memory.
+        tensor to avoid accumulating memory.  If the module was invoked
+        multiple times in the same pass (e.g. consistency gate re-run after
+        coherence-deficit recovery), the deltas are summed so that the
+        total contribution reflects all invocations.
         """
         if module_name in self._before_states:
             before = self._before_states.pop(module_name)
-            self._deltas[module_name] = (state.detach() - before).norm().item()
+            new_delta = (state.detach() - before).norm().item()
+            # Accumulate deltas for repeated invocations
+            self._deltas[module_name] = self._deltas.get(module_name, 0.0) + new_delta
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -14483,6 +14505,15 @@ class AEONDeltaV3(nn.Module):
             # Invalidate cache on batch size mismatch to avoid losing
             # per-sample feedback specificity.
             if prev_feedback.shape[0] != B:
+                self.audit_log.record("feedback_bus", "cache_invalidated", {
+                    "reason": "batch_size_mismatch",
+                    "cached_batch_size": prev_feedback.shape[0],
+                    "current_batch_size": B,
+                })
+                logger.debug(
+                    "Feedback cache invalidated: batch size changed from "
+                    f"{prev_feedback.shape[0]} to {B}"
+                )
                 prev_feedback = None
             else:
                 prev_feedback = prev_feedback.to(device)
@@ -15047,11 +15078,13 @@ class AEONDeltaV3(nn.Module):
                 # dampens dimensions where C_star and embedded_factors diverge,
                 # effectively forcing the state toward cross-module agreement
                 # within the same forward pass.
+                self.provenance_tracker.record_before("consistency_gate", C_star)
                 factors, embedded_factors = self.sparse_factors(C_star)
                 gate = self.consistency_gate(
                     torch.cat([C_star, embedded_factors], dim=-1)
                 )
                 C_star = C_star * gate
+                self.provenance_tracker.record_after("consistency_gate", C_star)
                 self.audit_log.record("coherence_recovery", "consistency_gate_rerun", {
                     "coherence_score_before": float(
                         coherence_results["coherence_score"].mean().item()
@@ -17187,6 +17220,17 @@ class AEONDeltaV3(nn.Module):
         # recursion, error recovery, and provenance attribution.  This
         # satisfies the requirement that all outputs are traceable to
         # their first causes.
+        
+        # 8h-pre. Final weighted uncertainty re-fusion — all uncertainty
+        # sources have now been collected (including post-integration
+        # auto-critic errors, causal root-cause counts, and metacognitive
+        # processing).  Re-run the weighted fusion to produce a properly
+        # calibrated final uncertainty scalar instead of the raw additive
+        # accumulation that resulted from sources added after step 8b3a.
+        if uncertainty_sources:
+            uncertainty = _weighted_uncertainty_fusion(uncertainty_sources)
+            high_uncertainty = uncertainty > 0.5
+        
         _provenance = self.provenance_tracker.compute_attribution()
         
         # 8h-0. Provenance-driven dominance dampening — when a single module
