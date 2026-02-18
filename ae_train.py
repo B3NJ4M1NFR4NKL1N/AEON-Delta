@@ -1434,7 +1434,7 @@ class SafeThoughtAETrainerV4:
         # successful steps were invisible to provenance diagnostics.
         _provenance = outputs.get('provenance', {})
         _contributions = _provenance.get('contributions', {})
-        if _contributions and self.global_step % 50 == 0:
+        if _contributions and self.global_step % _PROVENANCE_LOG_INTERVAL == 0:
             _dominant = max(_contributions, key=_contributions.get)
             logger.debug(
                 f"Step {self.global_step} provenance: dominant={_dominant} "
@@ -1775,7 +1775,7 @@ class ContextualRSSMTrainer:
         # skip-backward path activates even when the tensor guard replaces
         # the values.  This preserves diagnostic accuracy while still
         # guarding against NaN propagation in the general case.
-        _pred_had_nan = not torch.isfinite(pred).all()
+        _pred_had_nonfinite = not torch.isfinite(pred).all()
         # Sanitize RSSM prediction to prevent NaN/Inf from propagating
         # into loss computation, matching Phase A's encoder-output guard.
         if self._tensor_guard is not None:
@@ -1791,7 +1791,7 @@ class ContextualRSSMTrainer:
         # corrupted gradient updates.  When tensor guard is available,
         # classify the error semantically so root-cause analysis can
         # trace it to the RSSM component.
-        if _pred_had_nan or torch.isnan(loss) or torch.isinf(loss):
+        if _pred_had_nonfinite or torch.isnan(loss) or torch.isinf(loss):
             _prov = self.provenance.compute_attribution()
             _dominant = None
             _contributions = _prov.get('contributions', {})
@@ -1831,7 +1831,7 @@ class ContextualRSSMTrainer:
         # Log provenance on successful steps for root-cause traceability
         _prov = self.provenance.compute_attribution()
         _contributions = _prov.get('contributions', {})
-        if _contributions and self.global_step % 50 == 0:
+        if _contributions and self.global_step % _PROVENANCE_LOG_INTERVAL == 0:
             _dominant = max(_contributions, key=_contributions.get)
             logger.debug(
                 f"RSSM step {self.global_step} provenance: dominant={_dominant} "
@@ -1985,6 +1985,11 @@ class ContextualRSSMTrainer:
 # Threshold above which a single module's provenance contribution
 # triggers a dominance warning during validation.
 _PROVENANCE_DOMINANCE_WARNING_THRESHOLD = 0.9
+
+# Interval (in training steps) between provenance dominant-module log
+# entries.  Shared by Phase A and Phase B trainers to ensure consistent
+# traceability granularity across both training phases.
+_PROVENANCE_LOG_INTERVAL = 50
 
 class TrainingProvenanceTracker:
     """Lightweight provenance tracker for the training pipeline.
