@@ -467,7 +467,7 @@ class CorrelationIDMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         correlation_id = request.headers.get(
-            "X-Request-ID", str(_uuid.uuid4())
+            "X-Request-ID", generate_correlation_id()
         )
         request.state.correlation_id = correlation_id
         response: Response = await call_next(request)
