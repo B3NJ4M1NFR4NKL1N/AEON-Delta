@@ -16947,11 +16947,12 @@ def test_device_manager_mps_no_fallback_raises():
         # On Apple Silicon with working MPS this test is a no-op
         print("✅ test_device_manager_mps_no_fallback_raises SKIPPED (MPS available)")
         return
+    raised = False
     try:
         DeviceManager._validate_device('mps', allow_fallback=False)
-        assert False, "Should have raised RuntimeError"
     except RuntimeError:
-        pass
+        raised = True
+    assert raised, "Expected RuntimeError when MPS unavailable with allow_fallback=False"
     print("✅ test_device_manager_mps_no_fallback_raises PASSED")
 
 
