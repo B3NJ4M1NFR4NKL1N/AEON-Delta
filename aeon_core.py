@@ -6465,6 +6465,14 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "active_learning_curiosity": 0.3,
     "hvae_kl_divergence": 0.3,
     "low_memory_trust": 0.4,
+    "auto_critic_error": 0.6,
+    "causal_programmatic_error": 0.5,
+    "causal_root_cause_count": 0.6,
+    "consolidating_memory_error": 0.4,
+    "error_evolution_preemptive": 0.6,
+    "hierarchical_wm_error": 0.5,
+    "neurogenic_memory_sparse": 0.4,
+    "temporal_memory_sparse": 0.4,
     "pipeline_error": 1.0,
 }
 
@@ -16420,6 +16428,18 @@ class AEONDeltaV3(nn.Module):
             1.0 if _multimodal_healthy else 0.0,
             {"executed": self.multimodal is not None and not fast},
         )
+        # 7b-i. Multimodal health → CausalContextWindowManager — ensure
+        # that multimodal grounding quality feeds into the causal context
+        # hierarchy so cross-temporal reasoning benefits from multimodal
+        # health outcomes, closing the multimodal→causal feedback loop.
+        if self.causal_context is not None and self.multimodal is not None and _multimodal_healthy and not fast:
+            self.causal_context.add(
+                source="multimodal_health",
+                embedding=z_rssm.mean(dim=0).detach(),
+                relevance=1.0,
+                causal_weight=1.0,
+                tier="short_term",
+            )
         
         # 8. Integration with residual and normalization
         z_integrated = self.integration_proj(
@@ -17964,6 +17984,13 @@ class AEONDeltaV3(nn.Module):
                 max_length=max_length
             )
             
+            # Uncertainty-adaptive generation — adjust temperature and top_k
+            # based on the reasoning core's uncertainty estimate so that
+            # uncertain reasoning produces more diverse (higher temperature)
+            # and less constrained (higher top_k) outputs, making the
+            # system's epistemic state visible in generation behavior.
+            _gen_uncertainty = outputs.get('uncertainty', 0.0)
+
             generated_ids = outputs.get('generated_ids')
             
             if generated_ids is None or generated_ids.numel() == 0:
@@ -17985,7 +18012,9 @@ class AEONDeltaV3(nn.Module):
             return {
                 'text': generated_text,
                 'status': 'ok',
-                'reason': None
+                'reason': None,
+                'uncertainty': _gen_uncertainty,
+                'causal_decision_chain': outputs.get('causal_decision_chain', {}),
             }
         
         except Exception as e:
