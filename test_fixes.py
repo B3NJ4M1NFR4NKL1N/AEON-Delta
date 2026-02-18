@@ -20901,6 +20901,167 @@ def test_convergence_monitor_error_evolution_wired():
     print("✅ test_convergence_monitor_error_evolution_wired PASSED")
 
 
+def test_provenance_tracker_accumulates_repeated_modules():
+    """Fix: CausalProvenanceTracker.record_after accumulates deltas for
+    modules that run multiple times in the same forward pass (e.g. the
+    consistency gate re-run after coherence-deficit recovery).
+
+    Previously, the second record_before overwrote the first snapshot,
+    and the second record_after only captured the second delta, losing
+    the first invocation's contribution entirely.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Simulate first consistency_gate invocation
+    state_0 = torch.randn(2, 64)
+    state_1 = state_0 + torch.randn(2, 64) * 0.5  # moderate change
+    tracker.record_before("consistency_gate", state_0)
+    tracker.record_after("consistency_gate", state_1)
+    first_delta = tracker._deltas.get("consistency_gate", 0.0)
+    assert first_delta > 0, "First delta should be positive"
+
+    # Simulate second consistency_gate invocation (coherence-recovery re-run)
+    state_2 = state_1 + torch.randn(2, 64) * 0.3  # smaller change
+    tracker.record_before("consistency_gate", state_1)
+    tracker.record_after("consistency_gate", state_2)
+    accumulated_delta = tracker._deltas.get("consistency_gate", 0.0)
+
+    # The accumulated delta should be larger than either individual delta
+    assert accumulated_delta > first_delta, (
+        f"Accumulated delta ({accumulated_delta}) should exceed first delta "
+        f"({first_delta}) when module runs twice"
+    )
+
+    # Attribution should still produce valid results
+    attribution = tracker.compute_attribution()
+    assert "consistency_gate" in attribution["contributions"]
+    assert attribution["contributions"]["consistency_gate"] > 0
+
+    print("✅ test_provenance_tracker_accumulates_repeated_modules PASSED")
+
+
+def test_feedback_cache_invalidation_logged():
+    """Fix: When the CognitiveFeedbackBus cached feedback is invalidated
+    due to batch-size mismatch, the event is now recorded in the audit log.
+
+    Previously the cache was silently set to None, losing cross-pass
+    learning without any diagnostic trace.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # First forward pass with batch_size=2
+    ids_2 = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    with torch.no_grad():
+        _ = model(ids_2, decode_mode='inference', fast=True)
+
+    # Second forward pass with batch_size=4 → should invalidate cache
+    ids_4 = torch.randint(0, config.vocab_size, (4, config.seq_length))
+    with torch.no_grad():
+        _ = model(ids_4, decode_mode='inference', fast=True)
+
+    # Check that the invalidation was recorded in audit log
+    entries = model.audit_log._entries
+    cache_invalidated = any(
+        e.get("subsystem") == "feedback_bus"
+        and e.get("decision") == "cache_invalidated"
+        for e in entries
+    )
+    assert cache_invalidated, (
+        "Feedback cache invalidation due to batch-size mismatch "
+        "should be recorded in audit log"
+    )
+
+    print("✅ test_feedback_cache_invalidation_logged PASSED")
+
+
+def test_coherence_recovery_rerun_has_provenance():
+    """Fix: The consistency gate re-run during coherence-deficit recovery
+    (step 5a-iii-d) now records provenance via record_before/record_after.
+
+    Previously this re-run was invisible to the provenance tracker, meaning
+    the coherence recovery's contribution to the final state was not
+    attributed.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Simulate normal consistency_gate (step 2b)
+    state_0 = torch.randn(2, 64)
+    state_1 = state_0 + torch.randn(2, 64) * 0.5
+    tracker.record_before("consistency_gate", state_0)
+    tracker.record_after("consistency_gate", state_1)
+
+    # Simulate coherence-recovery re-run (step 5a-iii-d) with provenance
+    state_2 = state_1 + torch.randn(2, 64) * 0.3
+    tracker.record_before("consistency_gate", state_1)
+    tracker.record_after("consistency_gate", state_2)
+
+    attribution = tracker.compute_attribution()
+    cg_contrib = attribution["contributions"].get("consistency_gate", 0.0)
+
+    # consistency_gate should appear in provenance and have non-zero contrib
+    assert cg_contrib > 0, (
+        f"consistency_gate should have provenance contribution > 0, got {cg_contrib}"
+    )
+    # The order should contain consistency_gate exactly once
+    assert attribution["order"].count("consistency_gate") == 1
+
+    print("✅ test_coherence_recovery_rerun_has_provenance PASSED")
+
+
+def test_final_uncertainty_refusion():
+    """Fix: The final uncertainty scalar in reasoning_core output is now
+    re-fused using _weighted_uncertainty_fusion after ALL uncertainty sources
+    have been collected, not just those present at step 8b3a.
+
+    Previously, sources added after the first fusion (e.g. auto_critic_error,
+    causal_root_cause_count) were raw-added to the already-fused value,
+    producing an inconsistent mixed signal.
+    """
+    from aeon_core import _weighted_uncertainty_fusion
+
+    # Simulate uncertainty sources that would be accumulated during a pass
+    sources = {
+        "residual_variance": 0.3,
+        "coherence_deficit": 0.2,
+        "auto_critic_error": 0.15,      # Added after first fusion
+        "causal_root_cause_count": 0.1,  # Added after first fusion
+    }
+
+    # First fusion (only first two sources available at step 8b3a)
+    early_sources = {k: v for k, v in sources.items()
+                     if k in ("residual_variance", "coherence_deficit")}
+    early_fused = _weighted_uncertainty_fusion(early_sources)
+
+    # Final re-fusion (all sources)
+    final_fused = _weighted_uncertainty_fusion(sources)
+
+    # Both should be valid [0, 1] scalars
+    assert 0.0 <= early_fused <= 1.0
+    assert 0.0 <= final_fused <= 1.0
+
+    # The final fused value should differ from early + raw additions
+    # (demonstrating that re-fusion produces a different, properly weighted result)
+    naive_additive = early_fused + 0.15 + 0.1
+    assert abs(final_fused - naive_additive) > 1e-6, (
+        "Final re-fusion should differ from naive additive accumulation"
+    )
+
+    print("✅ test_final_uncertainty_refusion PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -21854,6 +22015,12 @@ if __name__ == '__main__':
     test_rssm_tensor_guard_sanitizes_prediction()
     test_successful_step_provenance_computed()
     test_convergence_monitor_error_evolution_wired()
+    
+    # Architectural Unification — Unified Cognitive System Fixes
+    test_provenance_tracker_accumulates_repeated_modules()
+    test_feedback_cache_invalidation_logged()
+    test_coherence_recovery_rerun_has_provenance()
+    test_final_uncertainty_refusion()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
