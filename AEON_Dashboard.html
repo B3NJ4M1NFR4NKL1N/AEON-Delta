@@ -364,6 +364,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="nav-item" onclick="go('audit')"><span class="nav-icon">◐</span> Audit Trail</div>
     <div class="nav-item" onclick="go('monitor')"><span class="nav-icon">◌</span> System Monitor</div>
     <div class="nav-item" onclick="go('tg')"><span class="nav-icon">🛡</span> TensorGuard</div>
+    <div class="nav-item" onclick="go('observability')"><span class="nav-icon">◎</span> Observability</div>
   </div>
   <div class="nav-group">
     <div class="nav-label">Tools</div>
@@ -566,6 +567,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <button class="tbtn" onclick="cTab('coh')">Coherence</button>
     <button class="tbtn" onclick="cTab('plan')">Planning</button>
     <button class="tbtn" onclick="cTab('train')">Training</button>
+    <button class="tbtn" onclick="cTab('obs')">Observability</button>
     <button class="tbtn" onclick="cTab('json-ed')">JSON Editor</button>
   </div>
 
@@ -697,6 +699,13 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="fr"><div class="fg"><div class="fl">gradient_clip_norm</div><div class="rr"><input type="range" id="c-gcn" min="0.1" max="5" step="0.1" value="1.0" oninput="rv('c-gcn-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="c-gcn-v">1.0</span></div></div><div class="fg"><div class="fl">warmup_steps</div><input type="number" id="c-ws" value="100" min="0"></div></div>
     <div class="fr"><div class="fg"><div class="fl">synthetic_samples</div><input type="number" id="c-synth" value="256" min="32" max="4096" step="32"></div><div class="fg"><div class="fl">checkpoint_dir</div><input type="text" id="c-ckpt" value="./checkpoints"></div></div>
     <div class="tog-row"><div class="tog-info"><div class="tog-name">log_grad_norms</div><div class="tog-desc">Track gradient norms per step (minor overhead)</div></div><label class="tog"><input type="checkbox" id="c-loggn" checked><div class="tog-track"></div></label></div>
+  </div>
+
+  <div class="tpanel" id="ctab-obs">
+    <div class="alert alert-blue"><span>◎</span><div><strong>Observability & Telemetry</strong> — Enable structured logging, academic mode, and telemetry collection for full-stack traceability.</div></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_structured_logging</div><div class="tog-desc">JSON-formatted logs with ISO 8601 timestamps, correlation IDs, and module identifiers</div></div><label class="tog"><input type="checkbox" id="c-obs-sl"><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_academic_mode</div><div class="tog-desc">Exhaustive DEBUG-level logging for research-grade reproducibility (slower)</div><div class="tog-def" style="color:var(--warn)">Performance impact — use for analysis only</div></div><label class="tog"><input type="checkbox" id="c-obs-am"><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_telemetry</div><div class="tog-desc">Collect KPIs: inference latency, memory footprint, decision confidence scores</div></div><label class="tog"><input type="checkbox" id="c-obs-tel" checked><div class="tog-track"></div></label></div>
   </div>
 
   <div class="tpanel" id="ctab-json-ed">
@@ -1378,6 +1387,47 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 </div>
 
+<!-- ══ OBSERVABILITY ══ -->
+<div class="panel" id="panel-observability">
+  <div class="ph">
+    <div><div class="ph-title">Observability & Telemetry</div><div class="ph-sub">Structured logging · Metrics · Distributed tracing · Academic mode</div></div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="loadObservability()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="exportTelemetry()">↓ Export</button>
+    </div>
+  </div>
+  <div class="g4" style="margin-bottom:14px">
+    <div class="card ca"><div class="ct">Structured Logging</div><div class="cv ca" id="obs-sl" style="font-size:16px">OFF</div><div class="cm-t">JSON-formatted logs with correlation IDs</div></div>
+    <div class="card cp"><div class="ct">Academic Mode</div><div class="cv cp" id="obs-am" style="font-size:16px">OFF</div><div class="cm-t">Exhaustive debug-level logging</div></div>
+    <div class="card cg"><div class="ct">Telemetry</div><div class="cv cg" id="obs-tel" style="font-size:16px">OFF</div><div class="cm-t">Metrics collection active</div></div>
+    <div class="card cw"><div class="ct">Metrics Count</div><div class="cv cw" id="obs-mc">0</div><div class="cm-t">distinct metric types</div></div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">Telemetry Metrics Snapshot</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+        <table class="tbl" id="obs-metrics-tbl">
+          <thead><tr><th>Metric</th><th>Count</th><th>Mean</th><th>Min</th><th>Max</th><th>Latest</th></tr></thead>
+          <tbody id="obs-metrics-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No metrics recorded yet</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Recent Trace Events</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+        <table class="tbl" id="obs-traces-tbl">
+          <thead><tr><th>Time</th><th>Subsystem</th><th>Decision</th><th>Severity</th></tr></thead>
+          <tbody id="obs-traces-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No traces yet — initialize model and run inference</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ct">Telemetry Counters</div>
+    <div id="obs-counters" style="margin-top:8px;font-size:12px;color:var(--text3)">No counters recorded</div>
+  </div>
+</div>
+
 <!-- ══ CODE GENERATOR ══ -->
 <div class="panel" id="panel-codegen">
   <div class="ph">
@@ -1712,6 +1762,10 @@ function buildInitPayload() {
     enable_active_learning_planner: gb('c-alp'), active_learning_curiosity_weight: gn('c-cw'),
     enable_hierarchical_vae: gb('c-hvae'), hvae_blend_weight: gn('c-hvbw'),
     seed: parseInt(document.getElementById('q-seed')?.value || '42'),
+    // Observability
+    enable_structured_logging: gb('c-obs-sl'),
+    enable_academic_mode: gb('c-obs-am'),
+    enable_telemetry: gb('c-obs-tel'),
   };
 }
 
@@ -3539,6 +3593,63 @@ function exportAudit() {
   a.href = 'data:application/json,' + encodeURIComponent(text);
   a.download = `aeon_audit_${Date.now()}.json`;
   a.click();
+}
+
+// ─── OBSERVABILITY ────────────────────────────────────────────────────────────
+async function loadObservability() {
+  try {
+    // Fetch config
+    const cfgR = await fetch(API + '/api/observability/config');
+    const cfg = await cfgR.json();
+    document.getElementById('obs-sl').textContent = cfg.structured_logging ? 'ON' : 'OFF';
+    document.getElementById('obs-am').textContent = cfg.academic_mode ? 'ON' : 'OFF';
+    document.getElementById('obs-tel').textContent = cfg.telemetry ? 'ON' : 'OFF';
+
+    // Fetch metrics
+    try {
+      const metR = await fetch(API + '/api/telemetry/metrics');
+      const met = await metR.json();
+      if (met.ok) {
+        const keys = Object.keys(met.metrics).filter(k => k !== 'counters');
+        document.getElementById('obs-mc').textContent = keys.length;
+        const tbody = document.getElementById('obs-metrics-tbody');
+        if (keys.length) {
+          tbody.innerHTML = keys.map(k => {
+            const m = met.metrics[k];
+            return `<tr><td>${k}</td><td>${m.count}</td><td>${typeof m.mean==='number'?m.mean.toFixed(4):'-'}</td><td>${typeof m.min==='number'?m.min.toFixed(4):'-'}</td><td>${typeof m.max==='number'?m.max.toFixed(4):'-'}</td><td>${typeof m.latest==='number'?m.latest.toFixed(4):'-'}</td></tr>`;
+          }).join('');
+        }
+        // Counters
+        const counters = met.metrics.counters || {};
+        const cKeys = Object.keys(counters);
+        document.getElementById('obs-counters').innerHTML = cKeys.length
+          ? cKeys.map(k => `<span style="display:inline-block;margin:2px 6px;padding:2px 8px;background:var(--surface3);border-radius:4px">${k}: <b>${counters[k]}</b></span>`).join('')
+          : 'No counters recorded';
+      }
+    } catch(e) { /* telemetry not available */ }
+
+    // Fetch traces
+    try {
+      const trR = await fetch(API + '/api/observability/traces?last_n=50');
+      const tr = await trR.json();
+      if (tr.ok && tr.traces.length) {
+        const tbody = document.getElementById('obs-traces-tbody');
+        tbody.innerHTML = tr.traces.slice(-50).reverse().map(e => {
+          const sevCls = e.severity==='error'||e.severity==='critical' ? 'color:var(--danger)' : e.severity==='warning' ? 'color:var(--warn)' : 'color:var(--text3)';
+          return `<tr><td>${typeof e.timestamp==='number'?e.timestamp.toFixed(2):e.timestamp}</td><td>${e.subsystem}</td><td>${e.decision}</td><td style="${sevCls}">${e.severity}</td></tr>`;
+        }).join('');
+      }
+    } catch(e) { /* traces not available */ }
+  } catch(e) { log('ERROR','observability',e.message); }
+}
+
+function exportTelemetry() {
+  fetch(API + '/api/telemetry/metrics').then(r=>r.json()).then(d=>{
+    const a = document.createElement('a');
+    a.href = 'data:application/json,' + encodeURIComponent(JSON.stringify(d, null, 2));
+    a.download = `aeon_telemetry_${Date.now()}.json`;
+    a.click();
+  }).catch(()=>{});
 }
 
 // ─── SESSION EXPORT ───────────────────────────────────────────────────────────

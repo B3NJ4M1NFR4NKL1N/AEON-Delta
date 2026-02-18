@@ -51,6 +51,8 @@ import traceback
 import math
 import time
 import pickle
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import (
@@ -187,6 +189,9 @@ __all__ = [
     "CriticNetwork", "RevisionNetwork", "AutoCriticLoop",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
+    # Observability
+    "StructuredLogFormatter", "TelemetryCollector",
+    "generate_correlation_id",
 ]
 
 # Logging setup
@@ -206,6 +211,130 @@ logger = logging.getLogger("AEON-Delta")
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
+
+
+# ============================================================================
+# SECTION 1b: STRUCTURED LOGGING & OBSERVABILITY FRAMEWORK
+# ============================================================================
+
+class StructuredLogFormatter(logging.Formatter):
+    """JSON-structured log formatter with ISO 8601 timestamps and correlation IDs.
+
+    Emits one JSON object per log line containing:
+    - ``timestamp`` (ISO 8601 with timezone)
+    - ``level`` (severity name)
+    - ``module`` (logger name / module identifier)
+    - ``correlation_id`` (per-request or per-session trace ID)
+    - ``message`` (log payload)
+    - ``extra`` (any additional key-value context)
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry: Dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(
+                record.created, tz=timezone.utc
+            ).isoformat(),
+            "level": record.levelname,
+            "module": record.name,
+            "correlation_id": getattr(record, "correlation_id", None),
+            "message": record.getMessage(),
+        }
+        extra = getattr(record, "structured_extra", None)
+        if extra:
+            entry["extra"] = extra
+        if record.exc_info and record.exc_info[1]:
+            entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
+
+
+def generate_correlation_id() -> str:
+    """Generate a unique correlation ID for request/session tracing."""
+    return str(uuid.uuid4())
+
+
+class TelemetryCollector:
+    """Centralized metrics collector for observability KPIs.
+
+    Collects inference latency, token usage, memory footprint, decision
+    confidence scores, and custom metrics. Thread-safe via internal lock.
+
+    Example::
+
+        tc = TelemetryCollector()
+        tc.record("inference_latency_ms", 42.5, {"prompt_len": 12})
+        tc.record("decision_confidence", 0.93, {"subsystem": "meta_loop"})
+        snapshot = tc.get_metrics_snapshot()
+    """
+
+    def __init__(self, max_entries_per_metric: int = 1000):
+        self._max = max(1, max_entries_per_metric)
+        self._lock = threading.Lock()
+        self._metrics: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=self._max)
+        )
+        self._counters: Dict[str, int] = defaultdict(int)
+
+    def record(
+        self,
+        metric_name: str,
+        value: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a metric data point.
+
+        Args:
+            metric_name: Name of the metric (e.g. ``"inference_latency_ms"``).
+            value: Numeric value.
+            metadata: Optional context tags.
+        """
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "value": value,
+            "metadata": metadata or {},
+        }
+        with self._lock:
+            self._metrics[metric_name].append(entry)
+            self._counters[metric_name] += 1
+
+    def increment(self, counter_name: str, amount: int = 1) -> None:
+        """Increment a simple counter."""
+        with self._lock:
+            self._counters[counter_name] += amount
+
+    def get_metrics_snapshot(self) -> Dict[str, Any]:
+        """Return a snapshot of all collected metrics with basic statistics."""
+        with self._lock:
+            snapshot: Dict[str, Any] = {}
+            for name, entries in self._metrics.items():
+                values = [e["value"] for e in entries]
+                if values:
+                    snapshot[name] = {
+                        "count": len(values),
+                        "total_recorded": self._counters.get(name, len(values)),
+                        "latest": values[-1],
+                        "mean": sum(values) / len(values),
+                        "min": min(values),
+                        "max": max(values),
+                        "recent": list(entries)[-10:],
+                    }
+            snapshot["counters"] = dict(self._counters)
+            return snapshot
+
+    def get_metric(self, metric_name: str, last_n: int = 50) -> List[Dict[str, Any]]:
+        """Return the most recent *last_n* entries for a specific metric."""
+        with self._lock:
+            entries = self._metrics.get(metric_name, deque())
+            return list(entries)[-last_n:]
+
+    def reset(self) -> None:
+        """Clear all metrics and counters."""
+        with self._lock:
+            self._metrics.clear()
+            self._counters.clear()
+
+
+# Module-level telemetry instance
+_telemetry = TelemetryCollector()
 
 
 def set_seed(seed: int) -> torch.Generator:
@@ -2662,6 +2791,12 @@ class AEONConfig:
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
+    # ===== OBSERVABILITY & TELEMETRY =====
+    enable_structured_logging: bool = False
+    enable_academic_mode: bool = False
+    enable_telemetry: bool = True
+    telemetry_max_entries: int = 1000
+
     # ===== UNIFIED COHERENCE PRESET =====
     # When True, activates all AGI coherence features as a group so that
     # every component verifies and reinforces the others, uncertainty
@@ -2671,6 +2806,7 @@ class AEONConfig:
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
+    telemetry_collector: Any = field(default=None, init=False, repr=False)
     version: str = field(default="3.1.0", init=False)
     _frozen: bool = field(default=False, init=False, repr=False)
     
@@ -2782,6 +2918,21 @@ class AEONConfig:
             alert_threshold=self.safety_alert_threshold
         )
         
+        # Telemetry initialization
+        self.telemetry_collector = TelemetryCollector(
+            max_entries_per_metric=self.telemetry_max_entries
+        )
+        
+        # Structured logging — switch formatter when enabled
+        if self.enable_structured_logging:
+            _structured_fmt = StructuredLogFormatter()
+            for handler in logging.getLogger("AEON-Delta").handlers:
+                handler.setFormatter(_structured_fmt)
+
+        # Academic mode — set log level to DEBUG for exhaustive output
+        if self.enable_academic_mode:
+            logging.getLogger("AEON-Delta").setLevel(logging.DEBUG)
+
         # Create directories
         for path_attr in ('memory_path', 'checkpoint_dir', 'log_dir', 'cache_dir'):
             path = getattr(self, path_attr)
@@ -2793,6 +2944,8 @@ class AEONConfig:
         logger.info(f"✅ AEONConfig v{self.version} initialized")
         logger.info(f"   Device: {self.device_manager.device}")
         logger.info(f"   Architecture: {self.hidden_dim}H x {self.num_pillars}F")
+        logger.info(f"   Observability: structured_logging={self.enable_structured_logging}, "
+                     f"academic_mode={self.enable_academic_mode}, telemetry={self.enable_telemetry}")
     
     def __setattr__(self, name, value):
         """Enforce immutability."""
