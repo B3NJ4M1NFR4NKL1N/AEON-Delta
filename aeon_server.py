@@ -1976,7 +1976,19 @@ def _v4_training_loop(req: V4TrainRequest):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(req.seed)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # ── Device selection: CUDA → MPS → CPU ────────────────────
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            try:
+                _probe = torch.zeros(1, device="mps")
+                del _probe
+                device = torch.device("mps")
+            except Exception as _mps_e:
+                logging.warning(f"MPS probe failed ({_mps_e}), using CPU")
+                device = torch.device("cpu")
+        else:
+            device = torch.device("cpu")
         out_dir = req.output_dir
         Path(out_dir).mkdir(parents=True, exist_ok=True)
 
@@ -2034,7 +2046,17 @@ def _v4_training_loop(req: V4TrainRequest):
 
         # ── Build model ───────────────────────────────────────────
         APP.v4_progress["phase"] = "model_init"
-        model = ae.AEONDeltaV4(config).to(device)
+        try:
+            model = ae.AEONDeltaV4(config).to(device)
+        except (RuntimeError, NotImplementedError) as _to_err:
+            if device.type == 'mps':
+                logging.warning(
+                    f"MPS transfer failed ({_to_err}), falling back to CPU"
+                )
+                device = torch.device('cpu')
+                model = ae.AEONDeltaV4(config).to(device)
+            else:
+                raise
 
         if req.resume_from and Path(req.resume_from).exists():
             logging.info(f"📂 Resuming from checkpoint: {req.resume_from}")

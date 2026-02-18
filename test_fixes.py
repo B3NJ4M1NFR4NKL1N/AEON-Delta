@@ -16864,6 +16864,98 @@ def test_config_telemetry_max_entries_custom():
     print("✅ test_config_telemetry_max_entries_custom PASSED")
 
 
+# ============================================================================
+# MPS SUPPORT & DEVICE FALLBACK TESTS
+# ============================================================================
+
+
+def test_device_manager_mps_validation_fallback():
+    """DeviceManager._validate_device falls back to CPU when MPS is unavailable."""
+    from aeon_core import DeviceManager
+    # On non-Apple hardware MPS won't be available; validation should
+    # gracefully fall back to CPU when allow_fallback=True.
+    dev = DeviceManager._validate_device('mps', allow_fallback=True)
+    # On a machine without MPS we expect CPU; on an Apple Silicon machine
+    # with working MPS we expect mps — both are acceptable.
+    assert dev.type in ('cpu', 'mps'), (
+        f"Expected 'cpu' or 'mps', got '{dev.type}'"
+    )
+    print("✅ test_device_manager_mps_validation_fallback PASSED")
+
+
+def test_device_manager_auto_select_returns_valid_device():
+    """DeviceManager.auto_select returns a usable device (never raises)."""
+    from aeon_core import DeviceManager
+    dm = DeviceManager.auto_select()
+    assert dm.device.type in ('cpu', 'cuda', 'mps'), (
+        f"Unexpected device type: {dm.device.type}"
+    )
+    # Verify basic allocation works on the selected device
+    t = torch.zeros(2, device=dm.device)
+    assert t.device.type == dm.device.type
+    print("✅ test_device_manager_auto_select_returns_valid_device PASSED")
+
+
+def test_device_manager_safe_to():
+    """DeviceManager.safe_to transfers a module; MPS failure falls back to CPU."""
+    from aeon_core import DeviceManager
+    dm = DeviceManager('cpu')
+    mod = nn.Linear(4, 4)
+    result = dm.safe_to(mod)
+    assert next(result.parameters()).device.type == 'cpu'
+    print("✅ test_device_manager_safe_to PASSED")
+
+
+def test_device_manager_is_mps_property():
+    """DeviceManager.is_mps property reflects MPS status correctly."""
+    from aeon_core import DeviceManager
+    dm = DeviceManager('cpu')
+    assert dm.is_mps is False
+    assert dm.is_cpu is True
+    print("✅ test_device_manager_is_mps_property PASSED")
+
+
+def test_ae_train_select_device():
+    """ae_train._select_device returns a usable device."""
+    from ae_train import _select_device
+    dev = _select_device()
+    assert dev.type in ('cpu', 'cuda', 'mps'), (
+        f"Unexpected device type: {dev.type}"
+    )
+    # Verify we can create a tensor on the returned device
+    t = torch.ones(1, device=dev)
+    assert t.device.type == dev.type
+    print("✅ test_ae_train_select_device PASSED")
+
+
+def test_amp_disabled_on_non_cuda():
+    """AMP/GradScaler must be disabled on MPS and CPU devices."""
+    from aeon_core import DeviceManager
+    dm = DeviceManager('cpu')
+    assert dm.amp_enabled is False, "AMP must be False for CPU"
+    assert dm.scaler is None, "GradScaler must be None for CPU"
+    print("✅ test_amp_disabled_on_non_cuda PASSED")
+
+
+def test_device_manager_mps_no_fallback_raises():
+    """DeviceManager raises RuntimeError for MPS when fallback is disabled and MPS unavailable."""
+    from aeon_core import DeviceManager
+    mps_available = (
+        hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    )
+    if mps_available:
+        # On Apple Silicon with working MPS this test is a no-op
+        print("✅ test_device_manager_mps_no_fallback_raises SKIPPED (MPS available)")
+        return
+    raised = False
+    try:
+        DeviceManager._validate_device('mps', allow_fallback=False)
+    except RuntimeError:
+        raised = True
+    assert raised, "Expected RuntimeError when MPS unavailable with allow_fallback=False"
+    print("✅ test_device_manager_mps_no_fallback_raises PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -17672,6 +17764,15 @@ if __name__ == '__main__':
     test_structured_log_all_levels()
     test_telemetry_get_metric_last_n_boundary()
     test_config_telemetry_max_entries_custom()
+
+    # MPS Support & Device Fallback Tests
+    test_device_manager_mps_validation_fallback()
+    test_device_manager_auto_select_returns_valid_device()
+    test_device_manager_safe_to()
+    test_device_manager_is_mps_property()
+    test_ae_train_select_device()
+    test_amp_disabled_on_non_cuda()
+    test_device_manager_mps_no_fallback_raises()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
