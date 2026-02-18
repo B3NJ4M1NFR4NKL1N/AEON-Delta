@@ -267,6 +267,51 @@ canvas{display:block;width:100%;}
 .vq-cell{aspect-ratio:1;border-radius:1px;transition:transform 0.1s;}
 .vq-cell:hover{transform:scale(2);z-index:5;outline:1px solid var(--accent);}
 
+/* VQ ACADEMIC DIAGNOSTICS */
+.vq-diag-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;}
+@media(max-width:1200px){.vq-diag-grid{grid-template-columns:repeat(3,1fr);}}
+.vq-metric{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;text-align:center;}
+.vq-metric .vm-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;}
+.vq-metric .vm-val{font-family:var(--display);font-size:18px;font-weight:700;margin:4px 0 2px;}
+.vq-metric .vm-sub{font-size:9px;color:var(--text3);}
+.vq-risk-badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:10px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;}
+.vq-risk-badge.critical{background:var(--danger-dim);color:var(--danger);border:1px solid rgba(239,68,68,0.3);}
+.vq-risk-badge.high{background:var(--warn-dim);color:var(--warn);border:1px solid rgba(245,158,11,0.3);}
+.vq-risk-badge.moderate{background:var(--warn-dim);color:var(--warn);border:1px solid rgba(245,158,11,0.2);}
+.vq-risk-badge.low{background:var(--green-dim);color:var(--green);border:1px solid rgba(16,185,129,0.2);}
+.vq-risk-badge.minimal{background:var(--green-dim);color:var(--green);border:1px solid rgba(16,185,129,0.3);}
+.vq-risk-badge.unknown{background:var(--surface3);color:var(--text3);border:1px solid var(--border);}
+.vq-code-tbl{max-height:300px;overflow-y:auto;}
+.vq-code-tbl .tbl td.dead{color:var(--danger);}
+.vq-code-tbl .tbl td.rare{color:var(--warn);}
+.vq-code-tbl .tbl td.low{color:var(--text3);}
+.vq-code-tbl .tbl td.active{color:var(--green);}
+.vq-hp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.vq-hp-item{display:flex;justify-content:space-between;font-size:11px;padding:4px 8px;background:var(--surface3);border-radius:6px;}
+.vq-hp-item .hp-k{color:var(--text3);}.vq-hp-item .hp-v{color:var(--accent);font-weight:600;}
+.vq-topk-row{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;}
+.vq-topk-row .tk-bar{flex:1;height:4px;background:var(--surface3);border-radius:2px;overflow:hidden;}
+.vq-topk-row .tk-fill{height:100%;border-radius:2px;}
+
+/* ARCHITECTURE ENHANCED */
+.arch-node{position:relative;}
+.arch-node .arch-pulse{position:absolute;top:4px;right:4px;width:6px;height:6px;border-radius:50%;}
+.arch-pulse.ok{background:var(--green);box-shadow:0 0 4px var(--green);animation:pulse 2s infinite;}
+.arch-pulse.warn{background:var(--warn);box-shadow:0 0 4px var(--warn);animation:pulse 1.2s infinite;}
+.arch-pulse.err{background:var(--danger);box-shadow:0 0 4px var(--danger);animation:pulse 0.8s infinite;}
+.arch-module-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:12px;}
+.arch-mod-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;transition:all 0.15s;}
+.arch-mod-card:hover{border-color:var(--accent);box-shadow:0 0 8px var(--accent-dim);}
+.arch-mod-card .amc-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.arch-mod-card .amc-name{font-size:12px;color:var(--accent);font-weight:600;flex:1;}
+.arch-mod-card .amc-type{font-size:10px;color:var(--purple);}
+.arch-mod-card .amc-stats{display:flex;flex-wrap:wrap;gap:10px;font-size:10px;color:var(--text3);}
+.arch-mod-card .amc-stats span{color:var(--text2);}
+.arch-mod-detail{display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);}
+.arch-mod-detail.open{display:block;}
+.arch-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+@media(max-width:1000px){.arch-summary-grid{grid-template-columns:repeat(2,1fr);}}
+
 hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
   /* ─── Test Suite v3.3 ─────────────────────────────────────────── */
@@ -482,45 +527,86 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ ARCHITECTURE ══ -->
 <div class="panel" id="panel-architecture">
   <div class="ph">
-    <div><div class="ph-title">Architecture</div><div class="ph-sub">Live model structure · model.print_architecture_summary()</div></div>
-    <button class="btn btn-secondary" onclick="loadArch()">↻ Refresh</button>
-  </div>
-  <div class="arch-wrap">
-    <div style="font-size:10px;color:var(--text3);margin-bottom:14px;text-transform:uppercase;letter-spacing:1px">Data Flow Pipeline</div>
-    <div class="flow">
-      <div class="fn hot"><div class="fn-n">Input IDs</div><div class="fn-s">[B, L]</div></div>
-      <div class="fa">→</div>
-      <div class="fn"><div class="fn-n">Encoder</div><div class="fn-s" id="a-enc">SSM</div></div>
-      <div class="fa">→</div>
-      <div class="fn warm"><div class="fn-n">VQ-VAE</div><div class="fn-s" id="a-vq">8192 codes</div></div>
-      <div class="fa">→</div>
-      <div class="fn"><div class="fn-n">Meta-Loop</div><div class="fn-s" id="a-ml">Banach FP · N iter</div></div>
-      <div class="fa">→</div>
-      <div class="fb">
-        <div class="fn" id="a-mem">Memory Systems</div>
-        <div class="fn" id="a-caus">Causal Models</div>
-        <div class="fn">Safety + Topology</div>
-        <div class="fn" id="a-plan">Planning</div>
-      </div>
-      <div class="fa">→</div>
-      <div class="fn cool"><div class="fn-n">C_star</div><div class="fn-s">Core State</div></div>
-      <div class="fa">→</div>
-      <div class="fn"><div class="fn-n">Decoder</div><div class="fn-s" id="a-dec">SSM</div></div>
-      <div class="fa">→</div>
-      <div class="fn hot"><div class="fn-n">Logits</div><div class="fn-s" id="a-out">[B,L,V]</div></div>
+    <div><div class="ph-title">Architecture — Real-Time Diagnostics</div><div class="ph-sub">Interactive pipeline visualization · per-module health · gradient flow · memory profiling</div></div>
+    <div class="btns">
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
+        <input type="checkbox" id="arch-auto-refresh" onchange="toggleArchAutoRefresh()" style="accent-color:var(--accent)"> Auto-refresh
+      </label>
+      <button class="btn btn-secondary" onclick="loadArch()">↻ Refresh</button>
     </div>
   </div>
+
+  <!-- Summary cards -->
+  <div class="arch-summary-grid">
+    <div class="card"><div class="ct">Total Parameters</div><div class="cv ca" id="arch-total-params">—</div></div>
+    <div class="card"><div class="ct">Trainable</div><div class="cv cg" id="arch-train-params">—</div></div>
+    <div class="card"><div class="ct">Frozen</div><div class="cv" style="color:var(--text3)" id="arch-frozen-params">—</div></div>
+    <div class="card"><div class="ct">Memory</div><div class="cv cp" id="arch-total-mem">—</div><div class="cm-t">model weights</div></div>
+  </div>
+
+  <!-- Interactive Data Flow Pipeline -->
+  <div class="arch-wrap">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">Interactive Data Flow Pipeline</div>
+      <div style="display:flex;gap:12px;font-size:9px;color:var(--text3)">
+        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:3px"></span>Healthy</span>
+        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--warn);margin-right:3px"></span>Warning</span>
+        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--danger);margin-right:3px"></span>Error</span>
+      </div>
+    </div>
+    <div class="flow" id="arch-flow">
+      <div class="fn hot arch-node" id="arch-n-input"><div class="arch-pulse ok"></div><div class="fn-n">Input IDs</div><div class="fn-s">[B, L]</div></div>
+      <div class="fa">→</div>
+      <div class="fn arch-node" id="arch-n-encoder" onclick="archShowDetail('encoder')"><div class="arch-pulse ok"></div><div class="fn-n">Encoder</div><div class="fn-s" id="a-enc">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-enc-p"></div></div>
+      <div class="fa">→</div>
+      <div class="fn warm arch-node" id="arch-n-vq" onclick="archShowDetail('vector_quantizer')"><div class="arch-pulse ok"></div><div class="fn-n">VQ-VAE</div><div class="fn-s" id="a-vq">8192 codes</div><div class="fn-s" style="color:var(--purple);font-size:8px" id="a-vq-p"></div></div>
+      <div class="fa">→</div>
+      <div class="fn arch-node" id="arch-n-meta" onclick="archShowDetail('meta_loop')"><div class="arch-pulse ok"></div><div class="fn-n">Meta-Loop</div><div class="fn-s" id="a-ml">Banach FP · N iter</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-ml-p"></div></div>
+      <div class="fa">→</div>
+      <div class="fb">
+        <div class="fn arch-node" id="arch-n-memory" onclick="archShowDetail('memory_manager')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-mem">Memory Systems</span></div>
+        <div class="fn arch-node" id="arch-n-causal" onclick="archShowDetail('causal_model')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-caus">Causal Models</span></div>
+        <div class="fn arch-node" id="arch-n-safety" onclick="archShowDetail('safety_system')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span>Safety + Topology</span></div>
+        <div class="fn arch-node" id="arch-n-plan" onclick="archShowDetail('planning')"><div class="arch-pulse ok" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-plan">Planning</span></div>
+      </div>
+      <div class="fa">→</div>
+      <div class="fn cool arch-node" id="arch-n-cstar"><div class="arch-pulse ok"></div><div class="fn-n">C_star</div><div class="fn-s">Core State</div></div>
+      <div class="fa">→</div>
+      <div class="fn arch-node" id="arch-n-decoder" onclick="archShowDetail('decoder')"><div class="arch-pulse ok"></div><div class="fn-n">Decoder</div><div class="fn-s" id="a-dec">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-dec-p"></div></div>
+      <div class="fa">→</div>
+      <div class="fn hot arch-node" id="arch-n-output"><div class="arch-pulse ok"></div><div class="fn-n">Logits</div><div class="fn-s" id="a-out">[B,L,V]</div></div>
+    </div>
+  </div>
+
+  <!-- Module Detail Popup -->
+  <div class="card" id="arch-detail-card" style="display:none;margin-bottom:14px;border-left:3px solid var(--accent)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="ct" id="arch-detail-title">Module Detail</div>
+      <button class="btn btn-ghost" onclick="document.getElementById('arch-detail-card').style.display='none'" style="padding:2px 8px;font-size:10px">✕ Close</button>
+    </div>
+    <div id="arch-detail-content" style="font-size:11px">—</div>
+  </div>
+
+  <!-- Module breakdown & summary -->
   <div class="g2" style="margin-bottom:16px">
     <div class="card">
-      <div class="ct">Module Breakdown</div>
+      <div class="ct">Module Breakdown — Per-Component Diagnostics</div>
       <div style="overflow-x:auto;margin-top:8px"><table class="tbl" id="arch-mod-tbl">
-        <thead><tr><th>Module</th><th>Type</th><th>Params</th><th>Share %</th></tr></thead>
-        <tbody><tr><td colspan="4" style="color:var(--text3)">Initialize model to see modules</td></tr></tbody>
+        <thead><tr><th>Module</th><th>Type</th><th>Params</th><th>Memory</th><th>Grad ‖·‖</th><th>Device</th><th>Health</th><th>Share %</th></tr></thead>
+        <tbody><tr><td colspan="8" style="color:var(--text3)">Initialize model to see modules</td></tr></tbody>
       </table></div>
     </div>
     <div class="card">
       <div class="ct">Architecture Summary (raw)</div>
       <div class="cb" style="margin-top:8px;max-height:280px;overflow-y:auto;font-size:10px;padding:10px"><pre id="arch-summary" style="margin:0;color:var(--text2)">Initialize model first</pre></div>
+    </div>
+  </div>
+
+  <!-- Pipeline Stage Health Overview -->
+  <div class="card">
+    <div class="ct">Pipeline Stage Health Overview</div>
+    <div id="arch-stage-health" style="margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
+      <div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>
     </div>
   </div>
 </div>
@@ -1244,31 +1330,127 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ VQ CODEBOOK ══ -->
 <div class="panel" id="panel-vq">
   <div class="ph">
-    <div><div class="ph-title">VQ Codebook</div><div class="ph-sub">RobustVectorQuantizer · embedding utilization · dead code detection</div></div>
+    <div><div class="ph-title">VQ Codebook — Academic Diagnostics</div><div class="ph-sub">RobustVectorQuantizer · exhaustive embedding analysis · codebook health · collapse detection</div></div>
     <div class="btns">
+      <button class="btn btn-ghost" onclick="exportVQDiag()">↓ Export JSON</button>
       <button class="btn btn-secondary" onclick="loadVQ()">↻ Refresh</button>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:14px">
-    <div class="card ca"><div class="ct">Codebook Size</div><div class="cv ca" id="vq-size">—</div><div class="cm-t">embeddings</div></div>
-    <div class="card cg"><div class="ct">Embedding Dim</div><div class="cv cg" id="vq-dim">—</div></div>
-    <div class="card cw"><div class="ct">Dead Codes</div><div class="cv cw" id="vq-dead">—</div><div class="cm-t">usage &lt; 0.1</div></div>
-    <div class="card cp"><div class="ct">Utilization</div><div class="cv cp" id="vq-util">—</div><div class="cm-t" id="vq-util-m">—</div></div>
+
+  <!-- Row 1: Core Metrics -->
+  <div class="vq-diag-grid">
+    <div class="vq-metric"><div class="vm-label">Codebook Size</div><div class="vm-val ca" id="vq-size">—</div><div class="vm-sub">embeddings</div></div>
+    <div class="vq-metric"><div class="vm-label">Embedding Dim</div><div class="vm-val cg" id="vq-dim">—</div><div class="vm-sub">dimensions</div></div>
+    <div class="vq-metric"><div class="vm-label">Dead Codes</div><div class="vm-val" style="color:var(--danger)" id="vq-dead">—</div><div class="vm-sub">usage &lt; 0.1</div></div>
+    <div class="vq-metric"><div class="vm-label">Utilization</div><div class="vm-val cp" id="vq-util">—</div><div class="vm-sub" id="vq-util-m">—</div></div>
+    <div class="vq-metric"><div class="vm-label">Perplexity</div><div class="vm-val" style="color:var(--accent)" id="vq-perp">—</div><div class="vm-sub">EMA smoothed</div></div>
   </div>
+
+  <!-- Row 2: Academic Metrics -->
+  <div class="vq-diag-grid">
+    <div class="vq-metric"><div class="vm-label">Shannon Entropy</div><div class="vm-val" style="color:#818cf8" id="vq-entropy">—</div><div class="vm-sub" id="vq-entropy-sub">—</div></div>
+    <div class="vq-metric"><div class="vm-label">Norm. Entropy</div><div class="vm-val" style="color:#818cf8" id="vq-nentropy">—</div><div class="vm-sub">H / H_max</div></div>
+    <div class="vq-metric"><div class="vm-label">Gini Coefficient</div><div class="vm-val" style="color:var(--warn)" id="vq-gini">—</div><div class="vm-sub">0=equal · 1=monopoly</div></div>
+    <div class="vq-metric"><div class="vm-label">Collapse Risk</div><div class="vm-val" id="vq-collapse">—</div><div class="vm-sub">entropy-based</div></div>
+    <div class="vq-metric"><div class="vm-label">Total Steps</div><div class="vm-val" style="color:var(--text2)" id="vq-steps">—</div><div class="vm-sub">training steps</div></div>
+  </div>
+
+  <!-- Row 3: Norm Statistics & Cosine Similarity -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">Embedding Norm Statistics</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">
+        <div class="vq-hp-item"><span class="hp-k">Mean</span><span class="hp-v" id="vq-nm-mean">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Std</span><span class="hp-v" id="vq-nm-std">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Min</span><span class="hp-v" id="vq-nm-min">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Max</span><span class="hp-v" id="vq-nm-max">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Median</span><span class="hp-v" id="vq-nm-med">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">CV</span><span class="hp-v" id="vq-nm-cv">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Inter-Embedding Cosine Similarity (sample 64)</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px">
+        <div class="vq-hp-item"><span class="hp-k">Mean Sim</span><span class="hp-v" id="vq-cs-mean">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Max Sim</span><span class="hp-v" id="vq-cs-max">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Min Sim</span><span class="hp-v" id="vq-cs-min">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Std Sim</span><span class="hp-v" id="vq-cs-std">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4: Steps-Since-Used & Status Summary -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">Steps Since Last Used — Staleness Analysis</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">
+        <div class="vq-hp-item"><span class="hp-k">Mean</span><span class="hp-v" id="vq-ssu-mean">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Max</span><span class="hp-v" id="vq-ssu-max">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Std</span><span class="hp-v" id="vq-ssu-std">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Stale &gt;50</span><span class="hp-v" id="vq-ssu-s50">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Stale &gt;100</span><span class="hp-v" id="vq-ssu-s100">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">Min</span><span class="hp-v" id="vq-ssu-min">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Code Status Distribution</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px">
+        <div class="vq-hp-item"><span class="hp-k">🟢 Active (≥5)</span><span class="hp-v" id="vq-st-active">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">🟡 Low (1–5)</span><span class="hp-v" id="vq-st-low">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">🟠 Rare (&lt;1)</span><span class="hp-v" id="vq-st-rare">—</span></div>
+        <div class="vq-hp-item"><span class="hp-k">🔴 Dead (&lt;0.1)</span><span class="hp-v" id="vq-st-dead">—</span></div>
+      </div>
+      <div style="margin-top:10px;height:6px;display:flex;border-radius:3px;overflow:hidden" id="vq-status-bar">
+        <div style="background:var(--green);width:0%" id="vq-sb-active"></div>
+        <div style="background:var(--warn);width:0%" id="vq-sb-low"></div>
+        <div style="background:#f97316;width:0%" id="vq-sb-rare"></div>
+        <div style="background:var(--danger);width:0%" id="vq-sb-dead"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 5: Charts -->
   <div class="g2" style="margin-bottom:14px">
     <div class="chart-wrap">
       <div class="chart-head"><div class="chart-title">Embedding Norm Distribution</div></div>
       <canvas id="vq-norm-chart" height="180"></canvas>
     </div>
     <div class="chart-wrap">
-      <div class="chart-head"><div class="chart-title">Usage Count Distribution</div></div>
+      <div class="chart-head"><div class="chart-title">Usage Count Distribution (log scale)</div></div>
       <canvas id="vq-usage-chart" height="180"></canvas>
     </div>
   </div>
-  <div class="card">
+
+  <!-- Row 6: Heatmap -->
+  <div class="card" style="margin-bottom:14px">
     <div class="ct">Codebook Utilization Heatmap (first 512 codes)</div>
     <div id="vq-heatmap" style="margin-top:10px"></div>
-    <div class="cm-t" style="margin-top:6px" id="vq-heatmap-legend">White = max usage · Black = dead code</div>
+    <div class="cm-t" style="margin-top:6px" id="vq-heatmap-legend">Cyan = max usage · Black = dead code</div>
+  </div>
+
+  <!-- Row 7: Top-K Used / Least Used -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">Top 20 Most Used Codes</div>
+      <div id="vq-topk-used" style="margin-top:8px;max-height:260px;overflow-y:auto;font-size:10px">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">Top 20 Least Used Codes</div>
+      <div id="vq-topk-unused" style="margin-top:8px;max-height:260px;overflow-y:auto;font-size:10px">—</div>
+    </div>
+  </div>
+
+  <!-- Row 8: Hyperparameters -->
+  <div class="card">
+    <div class="ct">VQ Hyperparameters</div>
+    <div class="vq-hp-grid" style="margin-top:10px" id="vq-hp-grid">
+      <div class="vq-hp-item"><span class="hp-k">commitment_cost</span><span class="hp-v" id="vq-hp-cc">—</span></div>
+      <div class="vq-hp-item"><span class="hp-k">decay (EMA)</span><span class="hp-v" id="vq-hp-decay">—</span></div>
+      <div class="vq-hp-item"><span class="hp-k">epsilon</span><span class="hp-v" id="vq-hp-eps">—</span></div>
+      <div class="vq-hp-item"><span class="hp-k">revival_threshold</span><span class="hp-v" id="vq-hp-revival">—</span></div>
+      <div class="vq-hp-item"><span class="hp-k">split_threshold</span><span class="hp-v" id="vq-hp-split">—</span></div>
+      <div class="vq-hp-item"><span class="hp-k">use_ema</span><span class="hp-v" id="vq-hp-ema">—</span></div>
+    </div>
   </div>
 </div>
 
@@ -2110,27 +2292,143 @@ function drawCodebook(vq) {
 }
 
 // ─── ARCHITECTURE ─────────────────────────────────────────────────────────────
+let _archAutoRefreshTimer = null;
+let _archData = null;
+
+function toggleArchAutoRefresh() {
+  const on = document.getElementById('arch-auto-refresh')?.checked;
+  if (_archAutoRefreshTimer) { clearInterval(_archAutoRefreshTimer); _archAutoRefreshTimer = null; }
+  if (on && S.modelReady) _archAutoRefreshTimer = setInterval(loadArch, 5000);
+}
+
+function fmtP(n) {
+  if (n == null) return '—';
+  return n > 1e6 ? (n/1e6).toFixed(2)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
+}
+
+function archShowDetail(name) {
+  if (!_archData) return;
+  const m = (_archData.modules || []).find(x => x.name === name);
+  if (!m) return;
+  const card = document.getElementById('arch-detail-card');
+  card.style.display = '';
+  document.getElementById('arch-detail-title').textContent = `${m.name} (${m.type})`;
+  const ws = m.weight_stats || {};
+  const gs = m.grad_stats || {};
+  document.getElementById('arch-detail-content').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+      <div><span style="color:var(--text3)">Params:</span> <span style="color:var(--accent)">${fmtP(m.params)}</span></div>
+      <div><span style="color:var(--text3)">Trainable:</span> <span style="color:var(--green)">${fmtP(m.trainable)}</span></div>
+      <div><span style="color:var(--text3)">Frozen:</span> <span style="color:var(--text3)">${fmtP(m.frozen)}</span></div>
+      <div><span style="color:var(--text3)">Memory:</span> <span style="color:var(--purple)">${m.memory_mb?.toFixed(2)} MB</span></div>
+      <div><span style="color:var(--text3)">Device:</span> <span style="color:var(--text2)">${m.device||'—'}</span></div>
+      <div><span style="color:var(--text3)">Submodules:</span> <span style="color:var(--text2)">${m.sub_count||0}</span></div>
+      <div><span style="color:var(--text3)">NaN:</span> ${m.has_nan?'<span style="color:var(--danger)">YES ⚠</span>':'<span style="color:var(--green)">No</span>'}</div>
+      <div><span style="color:var(--text3)">Inf:</span> ${m.has_inf?'<span style="color:var(--danger)">YES ⚠</span>':'<span style="color:var(--green)">No</span>'}</div>
+    </div>
+    ${Object.keys(ws).length ? `<div style="margin-bottom:8px"><strong style="color:var(--text2)">Weight Stats:</strong>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:4px;font-size:10px">
+        <div><span style="color:var(--text3)">mean:</span> <span style="color:var(--accent)">${ws.mean}</span></div>
+        <div><span style="color:var(--text3)">std:</span> <span style="color:var(--accent)">${ws.std}</span></div>
+        <div><span style="color:var(--text3)">min:</span> <span style="color:var(--accent)">${ws.min}</span></div>
+        <div><span style="color:var(--text3)">max:</span> <span style="color:var(--accent)">${ws.max}</span></div>
+        <div><span style="color:var(--text3)">L2:</span> <span style="color:var(--accent)">${ws.l2_norm}</span></div>
+        <div><span style="color:var(--text3)">sparsity:</span> <span style="color:var(--accent)">${(ws.sparsity*100).toFixed(1)}%</span></div>
+      </div>
+    </div>` : ''}
+    ${Object.keys(gs).length ? `<div><strong style="color:var(--text2)">Gradient Stats:</strong>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:4px;font-size:10px">
+        <div><span style="color:var(--text3)">‖grad‖:</span> <span style="color:var(--green)">${gs.norm}</span></div>
+        <div><span style="color:var(--text3)">mean:</span> <span style="color:var(--green)">${gs.mean}</span></div>
+        <div><span style="color:var(--text3)">std:</span> <span style="color:var(--green)">${gs.std}</span></div>
+        <div><span style="color:var(--text3)">max|g|:</span> <span style="color:var(--green)">${gs.max_abs}</span></div>
+        <div><span style="color:var(--text3)">grad NaN:</span> ${gs.has_nan?'<span style="color:var(--danger)">YES</span>':'<span style="color:var(--green)">No</span>'}</div>
+      </div>
+    </div>` : '<div style="color:var(--text3)">No gradients available (run training first)</div>'}
+  `;
+}
+
 async function loadArch() {
   try {
     const d = await api('GET', '/api/architecture');
+    _archData = d;
     document.getElementById('arch-summary').textContent = d.summary || '—';
     const cfg = d.config || {};
     document.getElementById('a-enc').textContent = cfg.encoder_backend?.toUpperCase() || '—';
     document.getElementById('a-dec').textContent = cfg.decoder_backend?.toUpperCase() || '—';
     document.getElementById('a-vq').textContent = `${cfg.vq_num_embeddings?.toLocaleString() || '—'} codes`;
     document.getElementById('a-ml').textContent = `Banach FP · ${cfg.max_iterations || '?'} iter`;
-    document.getElementById('a-out').textContent = `[B,${cfg.hidden_dim||'?'},${d.config?.vocab_size||'V'}]`;
+    document.getElementById('a-out').textContent = `[B,${cfg.seq_length||'?'},${cfg.vocab_size||'V'}]`;
 
-    const tbody = document.querySelector('#arch-mod-tbl tbody');
+    // Summary cards
+    document.getElementById('arch-total-params').textContent = fmtP(d.total_parameters);
+    document.getElementById('arch-train-params').textContent = fmtP(d.trainable_parameters);
+    document.getElementById('arch-frozen-params').textContent = fmtP(d.frozen_parameters);
+    document.getElementById('arch-total-mem').textContent = d.total_memory_mb ? d.total_memory_mb.toFixed(1)+' MB' : '—';
+
+    // Per-node param annotations
+    const modules = d.modules || [];
+    const modMap = {};
+    modules.forEach(m => modMap[m.name] = m);
+    if(modMap.encoder) { const el = document.getElementById('a-enc-p'); if(el) el.textContent = fmtP(modMap.encoder.params); }
+    if(modMap.vector_quantizer) { const el = document.getElementById('a-vq-p'); if(el) el.textContent = fmtP(modMap.vector_quantizer.params); }
+    if(modMap.meta_loop) { const el = document.getElementById('a-ml-p'); if(el) el.textContent = fmtP(modMap.meta_loop.params); }
+    if(modMap.decoder) { const el = document.getElementById('a-dec-p'); if(el) el.textContent = fmtP(modMap.decoder.params); }
+
+    // Update pipeline node health indicators
+    const stageHealth = d.stage_health || {};
+    const nodeMap = {
+      'encoder': 'arch-n-encoder', 'vector_quantizer': 'arch-n-vq',
+      'meta_loop': 'arch-n-meta', 'memory_manager': 'arch-n-memory',
+      'causal_model': 'arch-n-causal', 'safety_system': 'arch-n-safety',
+      'decoder': 'arch-n-decoder', 'embedding': 'arch-n-input',
+    };
+    for (const [modName, nodeId] of Object.entries(nodeMap)) {
+      const node = document.getElementById(nodeId);
+      if (!node) continue;
+      const pulse = node.querySelector('.arch-pulse');
+      if (!pulse) continue;
+      const sh = stageHealth[modName];
+      if (sh) {
+        const cls = sh.healthy ? 'ok' : (sh.has_nan || sh.has_inf ? 'err' : 'warn');
+        pulse.className = 'arch-pulse ' + cls;
+      }
+    }
+
+    // Module table (extended)
     const total = d.total_parameters || 1;
-    tbody.innerHTML = (d.modules || []).map(m => `
-      <tr>
+    const tbody = document.querySelector('#arch-mod-tbl tbody');
+    tbody.innerHTML = modules.map(m => {
+      const healthBadge = m.has_nan ? '<span class="badge br">NaN</span>' :
+                          m.has_inf ? '<span class="badge br">Inf</span>' :
+                          '<span class="badge bg">OK</span>';
+      return `<tr style="cursor:pointer" onclick="archShowDetail('${m.name}')">
         <td style="color:var(--accent)">${m.name}</td>
         <td style="color:var(--purple);font-size:10px">${m.type}</td>
-        <td style="font-family:var(--display);color:var(--text)">${m.params?.toLocaleString()}</td>
+        <td style="font-family:var(--display);color:var(--text)">${fmtP(m.params)}</td>
+        <td style="font-size:10px;color:var(--text3)">${m.memory_mb?.toFixed(2)} MB</td>
+        <td style="font-family:var(--display);color:${m.grad_norm != null ? 'var(--green)' : 'var(--text3)'}">${m.grad_norm != null ? m.grad_norm.toFixed(4) : '—'}</td>
+        <td style="font-size:10px;color:var(--text3)">${m.device||'—'}</td>
+        <td>${healthBadge}</td>
         <td><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:4px;background:var(--surface3);border-radius:2px"><div style="height:100%;background:var(--accent);border-radius:2px;width:${(m.params/total*100).toFixed(1)}%"></div></div><span style="font-size:10px;color:var(--text3)">${(m.params/total*100).toFixed(1)}%</span></div></td>
-      </tr>`).join('');
-  } catch(e) {}
+      </tr>`;
+    }).join('');
+
+    // Pipeline Stage Health overview
+    const shDiv = document.getElementById('arch-stage-health');
+    const shEntries = Object.entries(stageHealth);
+    if (shEntries.length) {
+      shDiv.innerHTML = shEntries.map(([k, sh]) => {
+        const clr = sh.healthy ? 'var(--green)' : 'var(--danger)';
+        const icon = sh.healthy ? '✓' : (sh.has_nan ? '⚠ NaN' : sh.has_inf ? '⚠ Inf' : '⚠');
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">${sh.label || k}</div>
+          <div style="font-size:14px;font-weight:700;color:${clr}">${icon}</div>
+          <div style="font-size:9px;color:var(--text3);margin-top:4px">${fmtP(sh.params)} · ${sh.memory_mb?.toFixed(1)} MB</div>
+        </div>`;
+      }).join('');
+    }
+  } catch(e) { log('ERROR', 'arch', e.message); }
 }
 
 // ─── MODULE INSPECTOR ─────────────────────────────────────────────────────────
@@ -3447,13 +3745,89 @@ async function loadVQ() {
       return;
     }
     S.vqData = d;
+
+    // Core metrics
     document.getElementById('vq-size').textContent = d.num_embeddings?.toLocaleString() || '—';
     document.getElementById('vq-dim').textContent = d.embedding_dim || '—';
     document.getElementById('vq-dead').textContent = d.dead_codes ?? '—';
     const basic = d.basic_stats || {};
-    document.getElementById('vq-util').textContent = basic.utilization_ratio ? (basic.utilization_ratio*100).toFixed(1)+'%' : '—';
-    document.getElementById('vq-util-m').textContent = `${basic.active_codes||'?'} active / ${d.num_embeddings||'?'} total`;
+    document.getElementById('vq-util').textContent = basic.usage_rate != null ? (basic.usage_rate*100).toFixed(1)+'%' :
+                                                     (basic.utilization_ratio ? (basic.utilization_ratio*100).toFixed(1)+'%' : '—');
+    document.getElementById('vq-util-m').textContent = `${basic.used_codes||basic.active_codes||'?'} active / ${d.num_embeddings||'?'} total`;
+    document.getElementById('vq-perp').textContent = d.perplexity ?? '—';
+
+    // Academic metrics
+    document.getElementById('vq-entropy').textContent = d.entropy != null ? d.entropy.toFixed(4) : '—';
+    document.getElementById('vq-entropy-sub').textContent = d.max_entropy != null ? `max: ${d.max_entropy.toFixed(4)}` : '—';
+    document.getElementById('vq-nentropy').textContent = d.normalized_entropy != null ? d.normalized_entropy.toFixed(4) : '—';
+    document.getElementById('vq-gini').textContent = d.gini_coefficient != null ? d.gini_coefficient.toFixed(4) : '—';
+    document.getElementById('vq-steps').textContent = d.total_steps != null ? d.total_steps.toLocaleString() : '—';
+
+    // Collapse risk
+    const colEl = document.getElementById('vq-collapse');
+    const risk = d.collapse_risk || 'unknown';
+    colEl.innerHTML = `<span class="vq-risk-badge ${risk}">${risk}</span>`;
+
+    // Norm statistics
+    const ns = d.norm_stats || {};
+    document.getElementById('vq-nm-mean').textContent = ns.mean ?? '—';
+    document.getElementById('vq-nm-std').textContent = ns.std ?? '—';
+    document.getElementById('vq-nm-min').textContent = ns.min ?? '—';
+    document.getElementById('vq-nm-max').textContent = ns.max ?? '—';
+    document.getElementById('vq-nm-med').textContent = ns.median ?? '—';
+    document.getElementById('vq-nm-cv').textContent = ns.cv ?? '—';
+
+    // Cosine similarity
+    const cs = d.cosine_stats || {};
+    document.getElementById('vq-cs-mean').textContent = cs.mean_similarity ?? '—';
+    document.getElementById('vq-cs-max').textContent = cs.max_similarity ?? '—';
+    document.getElementById('vq-cs-min').textContent = cs.min_similarity ?? '—';
+    document.getElementById('vq-cs-std').textContent = cs.std_similarity ?? '—';
+
+    // Steps since used
+    const ssu = d.steps_since_used || {};
+    document.getElementById('vq-ssu-mean').textContent = ssu.mean ?? '—';
+    document.getElementById('vq-ssu-max').textContent = ssu.max ?? '—';
+    document.getElementById('vq-ssu-std').textContent = ssu.std ?? '—';
+    document.getElementById('vq-ssu-min').textContent = ssu.min ?? '—';
+    document.getElementById('vq-ssu-s50').textContent = ssu.pct_stale_50 ?? '—';
+    document.getElementById('vq-ssu-s100').textContent = ssu.pct_stale_100 ?? '—';
+
+    // Status distribution
+    const ss = d.status_summary || {};
+    document.getElementById('vq-st-active').textContent = ss.active ?? '—';
+    document.getElementById('vq-st-low').textContent = ss.low ?? '—';
+    document.getElementById('vq-st-rare').textContent = ss.rare ?? '—';
+    document.getElementById('vq-st-dead').textContent = ss.dead ?? '—';
+    const totalStatus = (ss.active||0)+(ss.low||0)+(ss.rare||0)+(ss.dead||0) || 1;
+    document.getElementById('vq-sb-active').style.width = ((ss.active||0)/totalStatus*100)+'%';
+    document.getElementById('vq-sb-low').style.width = ((ss.low||0)/totalStatus*100)+'%';
+    document.getElementById('vq-sb-rare').style.width = ((ss.rare||0)/totalStatus*100)+'%';
+    document.getElementById('vq-sb-dead').style.width = ((ss.dead||0)/totalStatus*100)+'%';
+
+    // Top-K used
+    const topUsed = d.top_k_used || [];
+    const topMax = topUsed.length ? topUsed[0].usage : 1;
+    document.getElementById('vq-topk-used').innerHTML = topUsed.map(t =>
+      `<div class="vq-topk-row"><span style="width:50px;color:var(--accent)">Code ${t.code}</span><div class="tk-bar"><div class="tk-fill" style="width:${(t.usage/topMax*100).toFixed(1)}%;background:var(--accent)"></div></div><span style="width:60px;text-align:right;color:var(--text2)">${t.usage.toFixed(1)}</span></div>`
+    ).join('') || '<span style="color:var(--text3)">—</span>';
+
+    const botUsed = d.bottom_k_unused || [];
+    document.getElementById('vq-topk-unused').innerHTML = botUsed.map(t =>
+      `<div class="vq-topk-row"><span style="width:50px;color:${t.usage < 0.1 ? 'var(--danger)' : 'var(--warn)'}">Code ${t.code}</span><div class="tk-bar"><div class="tk-fill" style="width:${Math.max(1,(t.usage/topMax*100)).toFixed(1)}%;background:${t.usage < 0.1 ? 'var(--danger)' : 'var(--warn)'}"></div></div><span style="width:60px;text-align:right;color:var(--text3)">${t.usage.toFixed(2)}</span></div>`
+    ).join('') || '<span style="color:var(--text3)">—</span>';
+
+    // Hyperparameters
+    const hp = d.hyperparams || {};
+    document.getElementById('vq-hp-cc').textContent = hp.commitment_cost ?? '—';
+    document.getElementById('vq-hp-decay').textContent = hp.decay ?? '—';
+    document.getElementById('vq-hp-eps').textContent = hp.epsilon ?? '—';
+    document.getElementById('vq-hp-revival').textContent = hp.revival_threshold ?? '—';
+    document.getElementById('vq-hp-split').textContent = hp.split_threshold ?? '—';
+    document.getElementById('vq-hp-ema').textContent = hp.use_ema != null ? (hp.use_ema ? 'true' : 'false') : '—';
+
     drawVQCharts();
+
     // Draw heatmap
     const hm = document.getElementById('vq-heatmap');
     const counts = d.usage_counts || [];
@@ -3464,6 +3838,7 @@ async function loadVQ() {
     hm.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     hm.style.gap = '2px';
     hm.innerHTML = '';
+    const codeStatus = d.code_status || [];
     for(let i=0;i<n;i++) {
       const c = counts[i] || 0;
       const intensity = c / maxC;
@@ -3472,10 +3847,22 @@ async function loadVQ() {
       el.style.background = `rgb(${Math.round(intensity*0)},${Math.round(intensity*212)},${Math.round(intensity*255)})`;
       el.style.aspectRatio = '1';
       el.style.borderRadius = '2px';
-      el.title = `Code ${i}: ${c.toFixed(1)}`;
+      const status = codeStatus[i] || (c < 0.1 ? 'dead' : 'active');
+      el.title = `Code ${i}: ${c.toFixed(1)} [${status}]`;
       hm.appendChild(el);
     }
   } catch(e) { log('ERROR','vq',e.message); }
+}
+
+function exportVQDiag() {
+  if (!S.vqData) { log('WARN','vq','No VQ data to export'); return; }
+  const blob = new Blob([JSON.stringify(S.vqData, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `vq_diagnostics_${new Date().toISOString().slice(0,19)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log('INFO','vq','VQ diagnostics exported');
 }
 
 // ─── MONITOR / HEALTH ─────────────────────────────────────────────────────────
