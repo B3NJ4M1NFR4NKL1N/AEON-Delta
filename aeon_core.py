@@ -13785,6 +13785,7 @@ class AEONDeltaV3(nn.Module):
                     B, self.config.hidden_dim, device=device
                 ),
                 'convergence_quality': 0.0,
+                'convergence_delta': None,
                 'diversity_results': {
                     'diversity': torch.zeros(B, device=device),
                     'action_propensity': torch.full(
@@ -15451,13 +15452,27 @@ class AEONDeltaV3(nn.Module):
         # are validated against the same consistency rules as the main output.
         ns_consistency_results: Dict[str, Any] = {}
         if self.ns_consistency_checker is not None and not fast:
-            # Use factors as proxy soft rules (they encode learned structure)
-            rules_proxy = torch.sigmoid(factors)
+            # Use factors directly as proxy soft rules — they are already in
+            # [0, 1] after sigmoid in SparseFactorization.extract_factors(),
+            # so a second sigmoid would compress the range to ≈[0.5, 0.73],
+            # causing the rule_checker to produce near-threshold satisfaction
+            # scores and triggering spurious violations.
+            rules_proxy = factors
             ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
-            # Also validate hybrid reasoning conclusions if available
+            # Also validate hybrid reasoning conclusions if available.
+            # Normalize conclusions into the same distribution as z_out so
+            # that the consistency checker's output_to_predicates projection
+            # receives comparable inputs — raw conclusions from
+            # embed_conclusions can occupy a different subspace, causing
+            # false-positive violations.
             _hr_conclusions = hybrid_reasoning_results.get("conclusions", None)
             if _hr_conclusions is not None and torch.isfinite(_hr_conclusions).all():
-                hr_consistency = self.ns_consistency_checker(_hr_conclusions, rules_proxy)
+                _hr_norm = F.layer_norm(
+                    _hr_conclusions, [_hr_conclusions.shape[-1]]
+                )
+                _z_out_norm = F.layer_norm(z_out, [z_out.shape[-1]])
+                _hr_aligned = _hr_norm * _z_out_norm.std(dim=-1, keepdim=True) + _z_out_norm.mean(dim=-1, keepdim=True)
+                hr_consistency = self.ns_consistency_checker(_hr_aligned, rules_proxy)
                 hr_violations = hr_consistency["num_violations"].sum().item()
                 if hr_violations > 0:
                     self.audit_log.record("ns_consistency", "hybrid_reasoning_violation", {
@@ -15471,12 +15486,17 @@ class AEONDeltaV3(nn.Module):
                     # Escalate uncertainty when hybrid reasoning conclusions
                     # violate neuro-symbolic consistency rules, so that
                     # metacognitive cycles activate on reasoning failures.
-                    # Scale 0.15 per violation; typically 1–3 violations
-                    # occur, yielding a boost of 0.15–0.45.
-                    _HR_VIOLATION_UNCERTAINTY_SCALE = 0.15
+                    # Scale by the *proportion* of violated predicates rather
+                    # than a fixed per-violation constant to avoid runaway
+                    # uncertainty when many predicates are marginally below
+                    # threshold.  Capped at 0.25 total boost.
+                    _hr_violation_ratio = hr_violations / max(
+                        self.ns_consistency_checker.num_predicates, 1
+                    )
+                    _HR_VIOLATION_UNCERTAINTY_CAP = 0.25
                     _hr_boost = min(
                         1.0 - uncertainty,
-                        hr_violations * _HR_VIOLATION_UNCERTAINTY_SCALE,
+                        _hr_violation_ratio * _HR_VIOLATION_UNCERTAINTY_CAP,
                     )
                     uncertainty = min(1.0, uncertainty + _hr_boost)
                     uncertainty_sources["hybrid_reasoning_ns_violation"] = _hr_boost
@@ -15753,6 +15773,9 @@ class AEONDeltaV3(nn.Module):
         
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
+        # convergence_delta = final residual norm from the meta-loop, measuring
+        # how far the last iteration was from a true fixed point.
+        convergence_delta = meta_results.get('residual_norm', None)
         integrity_report = self.integrity_monitor.get_integrity_report()
         
         # 8g-0. Post-integration metacognitive re-evaluation — after all
@@ -15954,6 +15977,7 @@ class AEONDeltaV3(nn.Module):
             'factors': factors,
             'consistency_gate': gate,
             'convergence_quality': convergence_quality,
+            'convergence_delta': convergence_delta,
             'diversity_results': diversity_results,
             'topo_results': topo_results,
             'safety_score': safety_score,
