@@ -412,7 +412,7 @@ Production-ready FastAPI backend providing full REST API, WebSocket, and SSE int
 - **SSE** log streaming with per-level filtering and per-test event streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 655 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 764 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, correlation ID middleware
 - **VQ codebook introspection**: `/api/vq/codebook` with utilization history
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
@@ -510,7 +510,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 655 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 764 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -565,7 +565,9 @@ AEON-Delta/
 ├── aeon_server.py        # FastAPI backend v3.3.0 — 52 API endpoints, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — real-time monitoring, inference, training UI
 ├── ae_train.py           # Training pipeline v4.0 — 14 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (655 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py         # Comprehensive test suite (764 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── requirements.txt      # Python dependencies
+├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
@@ -577,9 +579,15 @@ AEON-Delta/
 
 ### Requirements
 - Python 3.8+  
-- PyTorch 1.13+ (PyTorch 2.0+ recommended for full feature support)  
+- PyTorch 2.2+ (PyTorch 2.6+ recommended for full feature support)  
 - Optional: `transformers`, `tqdm`, `matplotlib`, `tensorboard`, `wandb`
 - For Dashboard/Server: `fastapi`, `uvicorn`, `psutil`, `python-multipart`
+
+```bash
+pip install -r requirements.txt
+# or install with all extras:
+pip install -e ".[full]"
+```
 
 ### CLI Modes (`aeon_core.py`)
 ```bash
