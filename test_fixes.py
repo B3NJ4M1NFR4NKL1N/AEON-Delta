@@ -17164,9 +17164,12 @@ def test_late_pass_feedback_refresh():
         outputs = model(tokens, fast=False)
 
     # After a full forward pass, cached values should be updated to
-    # current-pass values (not the stale ones we injected)
-    assert model._cached_surprise != 0.99 or model._cached_surprise == 0.0, (
-        "Surprise should be refreshed by current-pass world model"
+    # current-pass values (not the stale ones we injected).
+    # The world model computes a new surprise value each pass, so it
+    # should differ from the injected stale value.
+    assert model._cached_surprise != 0.99, (
+        "Surprise should be refreshed by current-pass world model, "
+        f"but still has stale value: {model._cached_surprise}"
     )
     # Feedback should have been cached
     assert model._cached_feedback is not None, (
@@ -17209,6 +17212,7 @@ def test_coherence_reconciler_linkage():
     coherence_deficit = result["needs_recheck"]
 
     # Apply coherence-driven tightening (same logic as in _reasoning_core_impl)
+    _orig = reconciler.agreement_threshold
     if coherence_deficit:
         reconciler.agreement_threshold = min(
             reconciler.agreement_threshold,
@@ -17220,8 +17224,13 @@ def test_coherence_reconciler_linkage():
             f"Threshold should be tightened: {reconciler.agreement_threshold} < {original_threshold}"
         )
 
-    # Restore threshold
-    reconciler.agreement_threshold = original_threshold
+    # Verify threshold restoration (same logic as in _reasoning_core_impl)
+    if coherence_deficit:
+        reconciler.agreement_threshold = _orig
+    assert reconciler.agreement_threshold == original_threshold, (
+        f"Threshold should be restored to original: "
+        f"{reconciler.agreement_threshold} != {original_threshold}"
+    )
 
     print("✅ test_coherence_reconciler_linkage PASSED")
 
@@ -17306,14 +17315,16 @@ def test_provenance_safety_linkage():
     )
 
     # Apply provenance-weighted safety tightening (same logic as _reasoning_core_impl)
+    from aeon_core import AEONConfig
+    config = AEONConfig(device_str='cpu')
     base_threshold = 0.5
     adaptive_threshold = base_threshold
     max_contrib = max(contributions.values())
-    _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD = 0.5
-    if max_contrib > _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD:
+    _prov_safety_thresh = config.provenance_safety_tightening_threshold
+    if max_contrib > _prov_safety_thresh:
         provenance_tightening = max(
             0.7,
-            1.0 - 0.3 * (max_contrib - _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD),
+            1.0 - 0.3 * (max_contrib - _prov_safety_thresh),
         )
         adaptive_threshold = min(
             adaptive_threshold,
@@ -17399,6 +17410,9 @@ def test_config_new_agi_coherence_defaults():
     # Coherence-reconciler tightening
     assert config.coherence_reconciler_tightening == 0.8
     assert 0 < config.coherence_reconciler_tightening <= 1.0
+
+    # Provenance safety tightening threshold
+    assert config.provenance_safety_tightening_threshold == 0.5
 
     print("✅ test_config_new_agi_coherence_defaults PASSED")
 

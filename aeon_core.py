@@ -2714,6 +2714,10 @@ class AEONConfig:
     # detects low coherence, tighten CrossValidationReconciler agreement
     # threshold by this factor (< 1 tightens).
     coherence_reconciler_tightening: float = 0.8
+    # Provenance safety tightening: when a single module's provenance
+    # contribution exceeds this threshold, tighten the safety threshold
+    # proportionally (max 30% tighter).
+    provenance_safety_tightening_threshold: float = 0.5
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -15200,22 +15204,19 @@ class AEONDeltaV3(nn.Module):
             # agreement threshold so it works harder to align the factor
             # and causal interpretations.  This links the two independent
             # verification mechanisms into a cooperative pipeline.
-            _reconcile_threshold = self.cross_validator.agreement_threshold
+            _orig_reconcile_threshold = self.cross_validator.agreement_threshold
             if _coherence_deficit:
-                _reconcile_threshold = min(
-                    _reconcile_threshold,
-                    _reconcile_threshold * self.config.coherence_reconciler_tightening,
+                self.cross_validator.agreement_threshold = min(
+                    _orig_reconcile_threshold,
+                    _orig_reconcile_threshold * self.config.coherence_reconciler_tightening,
                 )
-                self.cross_validator.agreement_threshold = _reconcile_threshold
             causal_pred = causal_world_results.get('predicted_state', C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, causal_pred
             )
             # Restore original threshold after reconciliation
             if _coherence_deficit:
-                self.cross_validator.agreement_threshold = (
-                    _reconcile_threshold / self.config.coherence_reconciler_tightening
-                )
+                self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
@@ -16058,11 +16059,11 @@ class AEONDeltaV3(nn.Module):
         # purely observational) to active safety decision-making.
         if _contributions and len(_contributions) >= 2 and self.safety_system is not None:
             _max_contrib_val = max(_contributions.values())
-            _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD = 0.5
-            if _max_contrib_val > _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD:
+            _prov_safety_thresh = self.config.provenance_safety_tightening_threshold
+            if _max_contrib_val > _prov_safety_thresh:
                 _provenance_tightening = max(
                     0.7,
-                    1.0 - 0.3 * (_max_contrib_val - _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD),
+                    1.0 - 0.3 * (_max_contrib_val - _prov_safety_thresh),
                 )
                 adaptive_safety_threshold = min(
                     adaptive_safety_threshold,
