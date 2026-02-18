@@ -1603,6 +1603,18 @@ class SafeThoughtAETrainerV4:
                     f"(trend={convergence_verdict['trend']:.6f}). "
                     f"Recommendation: {convergence_verdict['recommendation']}"
                 )
+                # Act on the divergence recommendation by reducing the
+                # learning rate.  Without this, the convergence monitor
+                # produces actionable recommendations that go unused,
+                # breaking the feedback loop between monitoring and
+                # training behavior.
+                if convergence_verdict["recommendation"] == "reduce_lr_or_rollback":
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] *= 0.5
+                    logger.info(
+                        f"   ↘️ LR reduced to {self.optimizer.param_groups[0]['lr']:.2e} "
+                        f"due to divergence"
+                    )
             elif convergence_verdict["status"] == "stagnating":
                 logger.info(
                     f"   ℹ️ Convergence monitor: stagnating "
@@ -1681,6 +1693,15 @@ class ContextualRSSMTrainer:
         self.convergence_monitor = TrainingConvergenceMonitor(
             threshold=1e-5, window_size=10,
         )
+        # Bridge to aeon_core provenance and tensor safety — ensures
+        # Phase B training errors are traceable to the RSSM component
+        # and that NaN/Inf values are caught before gradient updates,
+        # matching the safety guarantees of Phase A (SafeThoughtAETrainerV4).
+        self.provenance = TrainingProvenanceTracker()
+        self._tensor_guard = (
+            TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
+            if AEON_CORE_AVAILABLE else None
+        )
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -1695,25 +1716,37 @@ class ContextualRSSMTrainer:
             Dictionary with loss and metric values.
         """
         self.model.rssm.train()
+        self.provenance.reset()
         
-        # Предсказание
+        # Track RSSM prediction provenance
+        self.provenance.record_before("rssm", z_context[:, -1, :])
         pred = self.model.rssm(z_context)
+        self.provenance.record_after("rssm", pred)
         
         # Losses
         mse_loss = F.mse_loss(pred, z_target)
         smooth_l1 = F.smooth_l1_loss(pred, z_target)
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
         
-        # Detect NaN/Inf loss to prevent corrupted gradient updates
+        # Detect NaN/Inf loss to prevent corrupted gradient updates.
+        # When tensor guard is available, classify the error semantically
+        # so root-cause analysis can trace it to the RSSM component.
         if torch.isnan(loss) or torch.isinf(loss):
+            _prov = self.provenance.compute_attribution()
+            _dominant = None
+            _contributions = _prov.get('contributions', {})
+            if _contributions:
+                _dominant = max(_contributions, key=_contributions.get)
             logger.warning(
-                f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}, skipping backward pass"
+                f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}"
+                f" (dominant_module={_dominant}), skipping backward pass"
             )
             return {
                 "mse_loss": float('nan'), "smooth_l1": float('nan'),
                 "total_loss": float('nan'), "cosine_sim": 0.0,
                 "l1_loss": float('nan'), "rel_error": float('nan'),
-                "grad_norm": 0.0
+                "grad_norm": 0.0,
+                "provenance": _prov,
             }
         
         self.optimizer.zero_grad()
@@ -1739,7 +1772,8 @@ class ContextualRSSMTrainer:
             "cosine_sim": cosine_sim, 
             "l1_loss": l1_loss,
             "rel_error": rel_error,
-            "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+            "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
+            "provenance": self.provenance.compute_attribution(),
         }
 
     def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
@@ -1824,6 +1858,16 @@ class ContextualRSSMTrainer:
                     f"   ⚠️ Phase B convergence: DIVERGING "
                     f"(trend={convergence_verdict['trend']:.6f})"
                 )
+                # Adaptive LR response — reduce learning rate when Phase B
+                # diverges, closing the monitoring-to-action feedback loop.
+                if convergence_verdict.get("recommendation") == "reduce_lr_or_rollback":
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] *= 0.5
+                    logger.info(
+                        f"   ↘️ Phase B LR reduced to "
+                        f"{self.optimizer.param_groups[0]['lr']:.2e} "
+                        f"due to divergence"
+                    )
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
