@@ -67,25 +67,35 @@ except ImportError:
     PSUTIL_AVAILABLE = False
 
 # ─── AEON Core ────────────────────────────────────────────────────────────────
-CORE_PATH = Path(__file__).parent / "core.py"
+CORE_PATH = Path(__file__).parent / "aeon_core.py"
+if not CORE_PATH.exists():
+    CORE_PATH = Path(__file__).parent / "core.py"
 if not CORE_PATH.exists():
     CORE_PATH = Path("/mnt/user-data/uploads/core.py")
 
 if not CORE_PATH.exists():
-    print(f"ERROR: core.py not found.")
+    print(f"ERROR: aeon_core.py / core.py not found.")
     sys.exit(1)
 
 sys.path.insert(0, str(CORE_PATH.parent))
 
 CORE_LOADED = False
 CORE_LOAD_ERROR = ""
+# Derive module name from the resolved file (aeon_core or core)
+_core_module_name = CORE_PATH.stem  # "aeon_core" or "core"
 try:
-    from core import AEONConfig, AEONDeltaV3, AEONTrainer, set_seed, AEONTestSuite
+    import importlib
+    _core_mod = importlib.import_module(_core_module_name)
+    AEONConfig = _core_mod.AEONConfig
+    AEONDeltaV3 = _core_mod.AEONDeltaV3
+    AEONTrainer = _core_mod.AEONTrainer
+    set_seed = _core_mod.set_seed
+    AEONTestSuite = _core_mod.AEONTestSuite
     CORE_LOADED = True
-    print("✅ core.py loaded successfully")
+    print(f"✅ {CORE_PATH.name} loaded successfully")
 except Exception as e:
     CORE_LOAD_ERROR = str(e)
-    print(f"⚠ core.py import error: {e}")
+    print(f"⚠ {CORE_PATH.name} import error: {e}")
 
 
 # ─── AEON ae_train v4 ─────────────────────────────────────────────────────────
