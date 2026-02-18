@@ -6392,6 +6392,11 @@ def compute_lipschitz_loss(
     return lip_penalty
 
 
+# Default reliability weight for uncertainty sources not listed in the
+# weight table.  Chosen as the midpoint of the [0, 1] scale to avoid
+# over- or under-weighting sources the system hasn't been tuned for.
+_DEFAULT_UNCERTAINTY_WEIGHT: float = 0.5
+
 # Reliability weights for uncertainty sources.  Structural failures
 # (NaN in core tensors, integration collapse) receive higher weight
 # because they are unambiguous indicators of system failure, whereas
@@ -6449,7 +6454,7 @@ def _weighted_uncertainty_fusion(
     total_weighted = 0.0
     total_weight = 0.0
     for name, raw_value in sources.items():
-        w = wt.get(name, 0.5)
+        w = wt.get(name, _DEFAULT_UNCERTAINTY_WEIGHT)
         total_weighted += w * raw_value
         total_weight += w
     if total_weight == 0.0:
@@ -15346,7 +15351,6 @@ class AEONDeltaV3(nn.Module):
         # enforces internal consistency during training.
         reconciliation_results: Dict[str, Any] = {}
         if self.cross_validator is not None and not fast:
-            _reconcile_second = None
             if self.causal_world_model is not None and causal_world_results:
                 _reconcile_second = causal_world_results.get('predicted_state', C_star)
             else:

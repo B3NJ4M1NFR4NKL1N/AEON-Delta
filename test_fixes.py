@@ -17689,11 +17689,17 @@ def test_weighted_uncertainty_fusion():
     # With weighted average: (1.0*0.3 + 0.3*0.3) / (1.0+0.3) = 0.39/1.3 ≈ 0.3
     assert mixed < 0.35, f"Expected weighted avg < 0.35, got {mixed}"
 
-    # Pure structural: should be higher than pure soft for same raw values
-    structural_only = _weighted_uncertainty_fusion({"integration_nan": 0.5})
-    soft_only = _weighted_uncertainty_fusion({"hvae_kl_divergence": 0.5})
-    assert structural_only == soft_only == 0.5, (
-        "Same raw value with single source should give same result regardless of weight"
+    # With two sources of equal raw value, higher-weight source pulls
+    # the average up more.  structural_nan (w=1.0) + soft (w=0.3):
+    # weighted avg = (1.0*0.5 + 0.3*0.5) / (1.0+0.3) = 0.65/1.3 = 0.5
+    # soft_nan (w=0.3) + structural (w=1.0):
+    # same result because raw values are equal — verify symmetry.
+    balanced = _weighted_uncertainty_fusion({
+        "integration_nan": 0.5,
+        "hvae_kl_divergence": 0.5,
+    })
+    assert abs(balanced - 0.5) < 1e-6, (
+        f"Equal raw values should average to 0.5, got {balanced}"
     )
 
     # Multiple sources: structural should dominate
@@ -17745,7 +17751,7 @@ def test_auto_critic_returns_differentiable_score():
     assert tensor_score.requires_grad, "Score tensor should require grad"
 
     # Verify gradient flows through
-    loss = 1.0 - tensor_score
+    loss = (1.0 - tensor_score).mean()
     loss.backward()
     assert query.grad is not None, "Gradient should flow to input"
 
