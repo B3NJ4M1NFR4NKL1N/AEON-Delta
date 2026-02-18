@@ -2718,6 +2718,13 @@ class AEONConfig:
     # contribution exceeds this threshold, tighten the safety threshold
     # proportionally (max 30% tighter).
     provenance_safety_tightening_threshold: float = 0.5
+    # Diversity collapse threshold: when mean diversity falls below this
+    # value, uncertainty is escalated to trigger meta-cognitive cycles.
+    # Prevents silent thought collapse.
+    diversity_collapse_threshold: float = 0.3
+    # MCTS blend weight: controls how strongly the MCTS planner's
+    # best discovered state is blended into the reasoning trajectory.
+    mcts_blend_weight: float = 0.05
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -6419,6 +6426,7 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "hybrid_reasoning_error": 0.5,
     "hybrid_reasoning_ns_violation": 0.6,
     "unified_simulator_divergence": 0.5,
+    "diversity_collapse": 0.6,
     # Soft signals (lower reliability)
     "mcts_low_confidence": 0.4,
     "active_learning_curiosity": 0.3,
@@ -14388,6 +14396,39 @@ class AEONDeltaV3(nn.Module):
             "mean_diversity": _diversity_score,
         })
         
+        # 3b. Diversity-collapse-driven uncertainty escalation — when
+        # diversity falls below the threshold, thought collapse is
+        # occurring and the system should trigger deeper meta-cognitive
+        # processing.  This closes the loop between diversity monitoring
+        # (previously passive) and active corrective behavior: low
+        # diversity now feeds back into the uncertainty scalar, ensuring
+        # that thought collapse triggers the same meta-cognitive re-
+        # reasoning cycle as any other source of epistemic uncertainty.
+        _DIVERSITY_COLLAPSE_THRESHOLD = self.config.diversity_collapse_threshold
+        _DIVERSITY_UNCERTAINTY_SCALE = 0.25
+        if (math.isfinite(_diversity_score)
+                and _diversity_score < _DIVERSITY_COLLAPSE_THRESHOLD
+                and not fast):
+            _diversity_boost = (
+                (_DIVERSITY_COLLAPSE_THRESHOLD - _diversity_score)
+                / max(_DIVERSITY_COLLAPSE_THRESHOLD, 1e-6)
+            ) * _DIVERSITY_UNCERTAINTY_SCALE
+            uncertainty = min(1.0, uncertainty + _diversity_boost)
+            uncertainty_sources["diversity_collapse"] = _diversity_boost
+            high_uncertainty = uncertainty > 0.5
+            self.audit_log.record("diversity", "collapse_detected", {
+                "diversity_score": _diversity_score,
+                "threshold": _DIVERSITY_COLLAPSE_THRESHOLD,
+                "uncertainty_boost": _diversity_boost,
+            }, severity="warning")
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="diversity_collapse",
+                    strategy_used="uncertainty_escalation",
+                    success=True,
+                    metadata={"diversity_score": _diversity_score},
+                )
+        
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
             C_star, factors, diversity_results, topo_results, B, device
@@ -15165,6 +15206,19 @@ class AEONDeltaV3(nn.Module):
         # memory-aware planning.  Gated by complexity gate[1].
         if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
             mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
+            # 5b2-0. Blend MCTS best_state into C_star — the planner's
+            # best state represents the most promising trajectory
+            # discovered via tree search.  Blending it as a weighted
+            # residual across the batch grounds the reasoning state in
+            # look-ahead planning, closing the loop between planning and
+            # the downstream reasoning pipeline.  The blend weight is
+            # configured via ``mcts_blend_weight`` (default 0.05) to keep
+            # the planning influence proportional but bounded.
+            _mcts_best = mcts_results.get("best_state", None)
+            if _mcts_best is not None and torch.isfinite(_mcts_best).all():
+                _mcts_blend = self.config.mcts_blend_weight
+                _mcts_best_expanded = _mcts_best.unsqueeze(0).expand(B, -1)
+                C_star = C_star + _mcts_blend * _mcts_best_expanded
             # 5b2-i. MCTS confidence feedback — when the planning search
             # yields low root value (poor expected outcome), escalate
             # uncertainty so that metacognitive cycles activate.  This
@@ -15314,6 +15368,32 @@ class AEONDeltaV3(nn.Module):
                 "dag_loss": float(notears_dag_loss.item()),
                 "l1_loss": float(notears_l1.item()),
             })
+            # 5d1c-i. NOTEARS → _cached_causal_quality feedback — update
+            # the causal quality cache from NOTEARS DAG loss so that the
+            # feedback bus reflects NOTEARS quality even when NeuralCausalModel
+            # is disabled.  Uses min() to retain the worst-case quality when
+            # both causal models are active, ensuring the feedback bus
+            # conditions the meta-loop on the weakest causal signal.
+            _nt_dag_val = float(notears_dag_loss.item())
+            if math.isfinite(_nt_dag_val):
+                _nt_quality = 1.0 / (1.0 + _nt_dag_val)
+                self._cached_causal_quality = min(
+                    self._cached_causal_quality, _nt_quality,
+                )
+            # 5d1c-ii. Record NOTEARS in causal trace for provenance
+            # traceability — ensures NOTEARS structural analysis is
+            # traceable alongside NeuralCausalModel, linking all causal
+            # conclusions back to their root causes.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "notears_causal", "dag_computed",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "dag_loss": float(notears_dag_loss.item()),
+                        "l1_loss": float(notears_l1.item()),
+                        "num_vars": notears_vars.shape[-1],
+                    },
+                )
         
         self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
             "causal_model_executed": self.causal_model is not None and not fast,
@@ -16119,6 +16199,44 @@ class AEONDeltaV3(nn.Module):
                         error_class="post_integration_metacognitive",
                         strategy_used="auto_critic",
                         success=_post_metacog_triggered,
+                    )
+        
+        # 8g-0a. Post-integration safety re-evaluation — after the post-
+        # metacognitive cycle has potentially revised z_out via auto-critic,
+        # re-evaluate safety on the revised output.  The original safety
+        # enforcement (step 5a) operated on C_star before integration and
+        # auto-critic revision, so the final z_out may have drifted into
+        # unsafe territory.  This closes the safety-reasoning feedback
+        # loop: self-correction is validated by safety, ensuring that the
+        # auto-critic's revisions don't bypass safety constraints.
+        if (self.safety_system is not None
+                and _post_metacog_triggered
+                and not fast):
+            _post_action_emb = torch.zeros(B, self.config.action_dim, device=device)
+            _post_safety = self.safety_system(
+                _post_action_emb, z_out, factors,
+                diversity_results, topo_results, mode='combined',
+            )
+            _post_unsafe = (_post_safety < adaptive_safety_threshold).squeeze(-1)
+            if _post_unsafe.any():
+                _post_weight = (
+                    _post_safety / max(adaptive_safety_threshold, 1e-6)
+                ).clamp(0.0, 1.0)
+                z_out = torch.where(
+                    _post_unsafe.unsqueeze(-1),
+                    _post_weight * z_out + (1 - _post_weight) * z_rssm,
+                    z_out,
+                )
+                self.audit_log.record("safety", "post_integration_rollback", {
+                    "unsafe_count": int(_post_unsafe.sum().item()),
+                    "min_score": float(_post_safety.min().item()),
+                    "threshold": adaptive_safety_threshold,
+                })
+                if self.error_recovery is not None:
+                    self.error_recovery.record_event(
+                        error_class="safety_rollback",
+                        context="post_integration_safety",
+                        success=True,
                     )
         
         # 8g. Record aggregated subsystem health in causal trace so that
