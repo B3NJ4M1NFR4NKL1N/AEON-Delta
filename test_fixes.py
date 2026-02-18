@@ -20454,8 +20454,9 @@ def test_post_integration_coherence_reverification():
     score_after = result_after["coherence_score"].mean().item()
 
     # The aligned states should have higher coherence
-    assert score_after > score_before or abs(score_after - score_before) < 0.5, (
-        "Post-revision re-verification should reflect the revised state"
+    assert score_after > score_before - 0.1, (
+        f"Post-revision re-verification should reflect the revised state "
+        f"(after={score_after:.3f}, before={score_before:.3f})"
     )
     assert "coherence_score" in result_after
     assert "needs_recheck" in result_after

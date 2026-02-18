@@ -17189,19 +17189,18 @@ class AEONDeltaV3(nn.Module):
                 # provenance-driven correction.
                 _WEAKEST_PAIR_DAMPEN_BOOST = 1.5
                 _weakest_pair_out = coherence_results.get("_weakest_pair", None) if coherence_results else None
+                _dominant_module = max(_contributions, key=_contributions.get)
+                _weakest_pair_escalated = False
                 if _weakest_pair_out is not None:
-                    _dominant_module = max(_contributions, key=_contributions.get)
                     if _dominant_module in _weakest_pair_out:
                         _dampen_alpha = _dampen_alpha * _WEAKEST_PAIR_DAMPEN_BOOST
+                        _weakest_pair_escalated = True
                 z_out = z_out * (1.0 - _dampen_alpha) + z_in.detach() * _dampen_alpha
                 self.audit_log.record("provenance", "dominance_dampened", {
-                    "dominant_module": max(_contributions, key=_contributions.get),
+                    "dominant_module": _dominant_module,
                     "dominance_ratio": _max_contrib,
                     "dampen_alpha": _dampen_alpha,
-                    "weakest_pair_escalated": (
-                        _weakest_pair_out is not None
-                        and max(_contributions, key=_contributions.get) in (_weakest_pair_out or "")
-                    ),
+                    "weakest_pair_escalated": _weakest_pair_escalated,
                 })
         
         # 8h-1. Provenance-weighted safety adaptation — when a single
@@ -17819,11 +17818,12 @@ class AEONDeltaV3(nn.Module):
         _uncertainty_val = outputs.get('uncertainty', 0.0)
         _UNCERTAINTY_LOSS_THRESHOLD = 0.5
         _UNCERTAINTY_LOSS_MAX_BOOST = 1.5  # max 1.5x additional scaling
+        _UNCERTAINTY_LOSS_RANGE = 1.0 - _UNCERTAINTY_LOSS_THRESHOLD
         _uncertainty_loss_scale = 1.0
         if isinstance(_uncertainty_val, (int, float)) and _uncertainty_val > _UNCERTAINTY_LOSS_THRESHOLD:
             _uncertainty_loss_scale = 1.0 + _UNCERTAINTY_LOSS_MAX_BOOST * (
                 (_uncertainty_val - _UNCERTAINTY_LOSS_THRESHOLD)
-                / max(1.0 - _UNCERTAINTY_LOSS_THRESHOLD, 1e-6)
+                / max(_UNCERTAINTY_LOSS_RANGE, 1e-6)
             )
             _uncertainty_loss_scale = min(_uncertainty_loss_scale, 1.0 + _UNCERTAINTY_LOSS_MAX_BOOST)
         
