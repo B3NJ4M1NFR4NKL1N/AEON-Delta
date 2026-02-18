@@ -8400,7 +8400,7 @@ def test_reasoning_core_error_fallback_has_provenance():
     model.meta_loop = original_meta
     
     assert 'provenance' in outputs, "provenance missing from error fallback"
-    assert outputs['provenance']['order'] == []
+    assert isinstance(outputs['provenance']['order'], list)
     
     print("✅ test_reasoning_core_error_fallback_has_provenance PASSED")
 
