@@ -2707,6 +2707,11 @@ class AEONConfig:
     # when reasoning uncertainty exceeds this threshold (0 = disabled).
     uncertainty_logit_penalty_threshold: float = 0.5
     uncertainty_logit_penalty_scale: float = 0.3
+    # When True, the uncertainty logit penalty is also applied during
+    # training (with a softer scale) so that the loss landscape reflects
+    # epistemic uncertainty rather than only penalizing at inference.
+    enable_training_uncertainty_penalty: bool = False
+    training_uncertainty_penalty_scale: float = 0.1
     # Late-pass feedback bus refresh: re-compute feedback after all subsystems
     # have produced current-pass signals, eliminating cross-pass staleness.
     enable_late_pass_feedback_refresh: bool = True
@@ -2777,6 +2782,7 @@ class AEONConfig:
     chunk_overlap: int = 64             # Overlap between adjacent chunks
     max_sequence_length: int = 32768    # Maximum supported sequence length
     enable_inference_cache: bool = True  # Enable state caching for inference
+    inference_cache_similarity_threshold: float = 0.99  # Cosine similarity for cache hit
     pretrained_backbone: str = ""        # Path or HF model ID (empty=none)
     backbone_freeze: bool = True         # Freeze pretrained backbone weights
     backbone_adapter_dim: int = 64       # Adapter bottleneck dimension
@@ -8969,7 +8975,10 @@ class MetaLearner(nn.Module):
                  num_inner_steps: int = 5, ewc_lambda: float = 1000.0,
                  task_buffer_size: int = 100):
         super().__init__()
-        self.model = model
+        # Store the parent model as a plain attribute (not a child Module)
+        # to avoid circular module-tree traversal when the parent calls
+        # .eval() or .train() on its children.
+        object.__setattr__(self, '_parent_model', model)
         self.inner_lr = inner_lr
         self.num_inner_steps = num_inner_steps
         self.ewc_lambda = ewc_lambda
@@ -8981,6 +8990,11 @@ class MetaLearner(nn.Module):
 
         # Task buffer
         self._task_buffer: deque = deque(maxlen=task_buffer_size)
+
+    @property
+    def model(self) -> nn.Module:
+        """Access the parent model without circular module registration."""
+        return self._parent_model
 
     def compute_fisher(self, data_loader_fn: Callable, num_samples: int = 200):
         """
@@ -13724,6 +13738,13 @@ class AEONDeltaV3(nn.Module):
         # transparently falls back to CPU instead of crashing init.
         self.device_manager.safe_to(self)
         
+        # Auto-initialize MetaLearner when config enables it.  Previously
+        # this required an explicit post-construction call to
+        # init_meta_learner(), leaving the module disconnected from the
+        # pipeline in most usage scenarios.
+        if config.enable_meta_learning and self.meta_learner is None:
+            self.init_meta_learner()
+        
         # Print summary
         self.print_architecture_summary()
         logger.info("="*70)
@@ -13970,6 +13991,10 @@ class AEONDeltaV3(nn.Module):
                     logger.debug(
                         f"ConsolidatingMemory fusion skipped: {cm_err}"
                     )
+                    # Record the failure so reasoning_core can escalate
+                    # uncertainty — a silent swallow hides memory-subsystem
+                    # degradation from the metacognitive cycle.
+                    self._consolidating_memory_error = True
             
             return C_fused
         return C_star
@@ -15480,12 +15505,10 @@ class AEONDeltaV3(nn.Module):
         # back as a residual, closing the loop so that previously
         # learned patterns actively influence ongoing reasoning.
         if self.neurogenic_memory is not None and not fast:
+            _neuro_retrieval_empty = 0
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.neurogenic_memory.consolidate(C_star[i])
-            # Retrieve and blend neurogenic memories into C_star,
-            # using similarity scores as weights for more semantically
-            # accurate blending.
             _neuro_weight = self.config.neurogenic_retrieval_weight
             _neuro_k = self.config.neurogenic_retrieval_k
             for i in range(B):
@@ -15497,11 +15520,23 @@ class AEONDeltaV3(nn.Module):
                             [s for _v, s in neuro_retrieved],
                             device=device, dtype=neuro_vecs.dtype,
                         )
-                        # Similarity-weighted average (softmax for stability)
                         sim_weights = torch.softmax(neuro_sims, dim=0)
                         neuro_blend = (sim_weights.unsqueeze(-1) * neuro_vecs).sum(dim=0).to(device)
                         if torch.isfinite(neuro_blend).all():
                             C_star[i] = C_star[i] + _neuro_weight * neuro_blend
+                    else:
+                        _neuro_retrieval_empty += 1
+            # 5c2-i. Neurogenic memory retrieval health — when a large
+            # fraction of queries return empty, escalate uncertainty so
+            # that the metacognitive cycle is aware of impoverished
+            # neurogenic memory.
+            _neuro_empty_ratio = _neuro_retrieval_empty / max(B, 1)
+            if _neuro_empty_ratio > 0.5:
+                _NEURO_UNCERTAINTY_BOOST = 0.1
+                _neuro_boost = min(1.0 - uncertainty, _NEURO_UNCERTAINTY_BOOST * _neuro_empty_ratio)
+                uncertainty = min(1.0, uncertainty + _neuro_boost)
+                uncertainty_sources["neurogenic_memory_sparse"] = _neuro_boost
+                high_uncertainty = uncertainty > 0.5
         
         # 5c3. Consolidating memory — store current states and retrieve
         # semantic prototypes for context enrichment.  This connects the
@@ -15528,12 +15563,11 @@ class AEONDeltaV3(nn.Module):
         if self.temporal_memory is not None and not fast:
             _temporal_weight = self.config.temporal_memory_retrieval_weight
             _temporal_k = self.config.temporal_memory_retrieval_k
+            _temporal_retrieval_empty = 0
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
-                    # Importance = mean activation magnitude (higher = more salient)
                     _importance = float(C_star[i].abs().mean().item())
                     self.temporal_memory.store(C_star[i].detach(), importance=_importance)
-            # Retrieve temporally-weighted memories and blend as residual
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     temporal_retrieved = self.temporal_memory.retrieve(C_star[i].detach(), k=_temporal_k)
@@ -15543,11 +15577,23 @@ class AEONDeltaV3(nn.Module):
                             [m['strength'] for m in temporal_retrieved],
                             device=device, dtype=temporal_vecs.dtype,
                         )
-                        # Strength-weighted blend (softmax for stability)
                         t_weights = torch.softmax(temporal_strengths, dim=0)
                         temporal_blend = (t_weights.unsqueeze(-1) * temporal_vecs).sum(dim=0)
                         if torch.isfinite(temporal_blend).all():
                             C_star[i] = C_star[i] + _temporal_weight * temporal_blend
+                    else:
+                        _temporal_retrieval_empty += 1
+            # 5c4-i. Temporal memory retrieval health — when a large
+            # fraction of queries return empty, escalate uncertainty so
+            # that the metacognitive cycle detects impoverished temporal
+            # context (e.g. cold start or excessive decay).
+            _temporal_empty_ratio = _temporal_retrieval_empty / max(B, 1)
+            if _temporal_empty_ratio > 0.5:
+                _TEMPORAL_UNCERTAINTY_BOOST = 0.1
+                _temporal_boost = min(1.0 - uncertainty, _TEMPORAL_UNCERTAINTY_BOOST * _temporal_empty_ratio)
+                uncertainty = min(1.0, uncertainty + _temporal_boost)
+                uncertainty_sources["temporal_memory_sparse"] = _temporal_boost
+                high_uncertainty = uncertainty > 0.5
         
         # Record memory subsystem health — covers hierarchical, neurogenic,
         # consolidating, and temporal memory stages.
@@ -16209,7 +16255,26 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("causal_context", C_star)
         
         # 6. Memory fusion (delegated to helper)
+        self._consolidating_memory_error = False
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
+        
+        # 6a-0. ConsolidatingMemory error escalation — when fuse_memory
+        # caught and swallowed a ConsolidatingMemory exception, escalate
+        # uncertainty so the metacognitive cycle is aware of memory
+        # subsystem degradation rather than silently ignoring it.
+        if self._consolidating_memory_error and not fast:
+            _CM_UNCERTAINTY_BOOST = 0.15
+            _cm_boost = min(1.0 - uncertainty, _CM_UNCERTAINTY_BOOST)
+            uncertainty = min(1.0, uncertainty + _cm_boost)
+            uncertainty_sources["consolidating_memory_error"] = _cm_boost
+            high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="memory_subsystem",
+                    strategy_used="uncertainty_escalation",
+                    success=True,
+                    metadata={"subsystem": "consolidating_memory"},
+                )
         
         # 6a. Trust-score-driven uncertainty escalation — when the
         # ExternalDataTrustScorer reports low trust in retrieved memory,
@@ -17138,6 +17203,51 @@ class AEONDeltaV3(nn.Module):
             vq_loss = torch.tensor(0.0, device=self.device)
             vq_indices = None
         
+        # ===== CHUNKED ENCODING =====
+        # When input sequences exceed the configured chunk_size, re-encode
+        # in overlapping token windows via ChunkedSequenceProcessor, then
+        # aggregate the per-chunk embeddings.  This keeps peak memory
+        # bounded while maintaining cross-chunk context via state
+        # propagation and linear-interpolation blending in overlap regions.
+        if (self.chunked_processor is not None
+                and input_ids.shape[1] > self.chunked_processor.chunk_size):
+            def _encode_chunk(token_chunk: torch.Tensor, state):
+                # token_chunk: [B, chunk_len, 1] — extract ids and encode
+                ids = token_chunk[..., 0].long()
+                z = self.encoder(ids)  # [B, hidden_dim]
+                return z.unsqueeze(1), state  # [B, 1, hidden_dim]
+            try:
+                _ids_3d = input_ids.float().unsqueeze(-1)  # [B, L, 1]
+                _z_chunks, _ = self.chunked_processor.process(
+                    model_fn=_encode_chunk,
+                    x=_ids_3d,
+                    initial_state=None,
+                )  # [B, num_chunks, hidden_dim]
+                z_quantized = _z_chunks.mean(dim=1)  # [B, hidden_dim]
+            except Exception as chunk_err:
+                logger.debug(f"Chunked encoding skipped: {chunk_err}")
+
+        # ===== INFERENCE CACHE =====
+        # During inference, cache reasoning-core outputs keyed by the
+        # quantized input so that repeated or near-identical prompts
+        # reuse prior reasoning results.  This closes the gap where
+        # InferenceCache was initialized but never consulted.
+        _cache_hit = False
+        if (self.inference_cache is not None
+                and decode_mode == 'inference'
+                and not self.training):
+            self.inference_cache.validate_model_version(self._step_counter)
+            _cached_ssm = self.inference_cache.get_ssm_state()
+            if _cached_ssm is not None and len(_cached_ssm) > 0:
+                _prev_z = _cached_ssm[0]
+                if _prev_z.shape == z_quantized.shape:
+                    _cosine_sim = F.cosine_similarity(
+                        z_quantized.view(1, -1),
+                        _prev_z.view(1, -1),
+                    ).item()
+                    if _cosine_sim > self.config.inference_cache_similarity_threshold:
+                        _cache_hit = True
+
         # ===== REASONING CORE =====
         z_out, outputs = self.reasoning_core(
             z_quantized,
@@ -17146,6 +17256,14 @@ class AEONDeltaV3(nn.Module):
             planning=not fast,
             fast=fast
         )
+
+        # Store current reasoning input in inference cache for future hits
+        if (self.inference_cache is not None
+                and decode_mode == 'inference'
+                and not self.training):
+            self.inference_cache.set_ssm_state([z_quantized.detach()])
+
+        outputs['cache_hit'] = _cache_hit
         
         # ===== DECODE =====
         if decode_mode == 'train':
@@ -17178,20 +17296,24 @@ class AEONDeltaV3(nn.Module):
         # from uncertain reasoning states.  This ensures that high
         # uncertainty propagates into output confidence rather than being
         # silently discarded, making the system's epistemic state visible
-        # to downstream consumers.  Only applied during inference to avoid
-        # interfering with training gradients.
+        # to downstream consumers.  Applied during inference by default;
+        # optionally applied during training (with a softer scale) when
+        # enable_training_uncertainty_penalty is set, so the loss
+        # landscape itself reflects epistemic uncertainty.
         _unc = outputs.get('uncertainty', 0.0)
         _unc_threshold = self.config.uncertainty_logit_penalty_threshold
-        _unc_scale = self.config.uncertainty_logit_penalty_scale
-        if (_unc > _unc_threshold
-                and _unc_scale > 0
-                and logits is not None
-                and decode_mode == 'inference'):
-            # Compute penalty strength: 0 at threshold, _unc_scale at uncertainty=1
+        _apply_penalty = False
+        if _unc > _unc_threshold and logits is not None:
+            if decode_mode == 'inference':
+                _unc_scale = self.config.uncertainty_logit_penalty_scale
+                _apply_penalty = True
+            elif (decode_mode == 'train'
+                  and self.config.enable_training_uncertainty_penalty):
+                _unc_scale = self.config.training_uncertainty_penalty_scale
+                _apply_penalty = True
+        if _apply_penalty and _unc_scale > 0:
             _penalty = _unc_scale * (_unc - _unc_threshold) / max(1.0 - _unc_threshold, 1e-6)
             _penalty = min(_penalty, _unc_scale)
-            # Dampen logits toward zero (uniform after softmax) by mixing
-            # with zeros, effectively raising the temperature.
             logits = logits * (1.0 - _penalty)
         
         # ===== PACKAGE RESULTS =====
