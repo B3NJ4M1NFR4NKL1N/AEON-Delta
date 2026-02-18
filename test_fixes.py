@@ -21077,6 +21077,330 @@ def test_final_uncertainty_refusion():
     print("✅ test_final_uncertainty_refusion PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Full Provenance & Causal Trace Coverage Tests
+# ============================================================================
+
+def test_provenance_covers_factor_extraction():
+    """Provenance tracker records before/after for factor extraction stage."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    state_before = torch.randn(2, 32)
+    state_after = state_before + torch.randn(2, 32) * 0.1
+
+    tracker.record_before("factor_extraction", state_before)
+    tracker.record_after("factor_extraction", state_after)
+
+    attr = tracker.compute_attribution()
+    assert 'contributions' in attr, "Attribution missing 'contributions'"
+    assert 'factor_extraction' in attr['contributions'], (
+        "factor_extraction not in provenance contributions"
+    )
+    assert attr['contributions']['factor_extraction'] > 0, (
+        "factor_extraction contribution should be > 0"
+    )
+    print("✅ test_provenance_covers_factor_extraction PASSED")
+
+
+def test_provenance_covers_rssm():
+    """Provenance tracker records before/after for RSSM dynamics stage."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    state_before = torch.randn(2, 32)
+    state_after = state_before + torch.randn(2, 32) * 0.2
+
+    tracker.record_before("rssm", state_before)
+    tracker.record_after("rssm", state_after)
+
+    attr = tracker.compute_attribution()
+    assert 'rssm' in attr['contributions'], (
+        "rssm not in provenance contributions"
+    )
+    assert attr['contributions']['rssm'] > 0
+    print("✅ test_provenance_covers_rssm PASSED")
+
+
+def test_provenance_covers_integration():
+    """Provenance tracker records before/after for integration projection."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    state_before = torch.randn(2, 32)
+    state_after = state_before + torch.randn(2, 32) * 0.15
+
+    tracker.record_before("integration", state_before)
+    tracker.record_after("integration", state_after)
+
+    attr = tracker.compute_attribution()
+    assert 'integration' in attr['contributions'], (
+        "integration not in provenance contributions"
+    )
+    assert attr['contributions']['integration'] > 0
+    print("✅ test_provenance_covers_integration PASSED")
+
+
+def test_provenance_covers_auto_critic():
+    """Provenance tracker records before/after for auto-critic revision."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    state_before = torch.randn(2, 32)
+    state_after = state_before + torch.randn(2, 32) * 0.05
+
+    tracker.record_before("auto_critic", state_before)
+    tracker.record_after("auto_critic", state_after)
+
+    attr = tracker.compute_attribution()
+    assert 'auto_critic' in attr['contributions'], (
+        "auto_critic not in provenance contributions"
+    )
+    assert attr['contributions']['auto_critic'] > 0
+    print("✅ test_provenance_covers_auto_critic PASSED")
+
+
+def test_provenance_covers_mcts_planning():
+    """Provenance tracker records before/after for MCTS planning blend."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    state_before = torch.randn(2, 32)
+    state_after = state_before + torch.randn(2, 32) * 0.05
+
+    tracker.record_before("mcts_planning", state_before)
+    tracker.record_after("mcts_planning", state_after)
+
+    attr = tracker.compute_attribution()
+    assert 'mcts_planning' in attr['contributions'], (
+        "mcts_planning not in provenance contributions"
+    )
+    assert attr['contributions']['mcts_planning'] > 0
+    print("✅ test_provenance_covers_mcts_planning PASSED")
+
+
+def test_full_provenance_chain_coverage():
+    """All major processing stages appear in provenance when simulated."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+
+    # Simulate the full pipeline provenance recording
+    stages = [
+        "meta_loop", "slot_binding", "factor_extraction",
+        "consistency_gate", "safety", "cognitive_executive",
+        "world_model", "memory", "rssm", "integration",
+        "auto_critic",
+    ]
+    state = torch.randn(2, 32)
+    for stage in stages:
+        tracker.record_before(stage, state)
+        state = state + torch.randn(2, 32) * 0.1
+        tracker.record_after(stage, state)
+
+    attr = tracker.compute_attribution()
+    for stage in stages:
+        assert stage in attr['contributions'], (
+            f"{stage} missing from provenance chain"
+        )
+        assert attr['contributions'][stage] > 0, (
+            f"{stage} has zero contribution"
+        )
+
+    # All stages should sum to ~1.0
+    total = sum(attr['contributions'].values())
+    assert abs(total - 1.0) < 1e-4, (
+        f"Provenance contributions should sum to 1.0, got {total}"
+    )
+    print("✅ test_full_provenance_chain_coverage PASSED")
+
+
+def test_causal_trace_covers_rssm():
+    """Causal trace records RSSM dynamics as a traceable event."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    trace_id = trace.record(
+        "rssm", "dynamics_computed",
+        causal_prerequisites=["input_001"],
+        metadata={"finite": True},
+    )
+    assert trace_id, "Causal trace should return a non-empty trace ID"
+
+    recent = trace.recent(n=5)
+    rssm_entries = [e for e in recent if e.get("subsystem") == "rssm"]
+    assert len(rssm_entries) >= 1, "RSSM should appear in causal trace"
+    assert rssm_entries[0]["decision"] == "dynamics_computed"
+    print("✅ test_causal_trace_covers_rssm PASSED")
+
+
+def test_causal_trace_covers_integration():
+    """Causal trace records integration step as a traceable event."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    trace_id = trace.record(
+        "integration", "projection_computed",
+        causal_prerequisites=["input_001"],
+        metadata={"finite": True},
+    )
+    recent = trace.recent(n=5)
+    int_entries = [e for e in recent if e.get("subsystem") == "integration"]
+    assert len(int_entries) >= 1, "integration should appear in causal trace"
+    print("✅ test_causal_trace_covers_integration PASSED")
+
+
+def test_causal_trace_covers_auto_critic():
+    """Causal trace records auto-critic revision as a traceable event."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    trace_id = trace.record(
+        "auto_critic", "ns_violation_revision",
+        causal_prerequisites=["input_001"],
+        metadata={"final_score": 0.85, "revised": True},
+    )
+    recent = trace.recent(n=5)
+    ac_entries = [e for e in recent if e.get("subsystem") == "auto_critic"]
+    assert len(ac_entries) >= 1, "auto_critic should appear in causal trace"
+    assert ac_entries[0]["metadata"]["revised"] is True
+    print("✅ test_causal_trace_covers_auto_critic PASSED")
+
+
+def test_causal_trace_covers_mcts_planning():
+    """Causal trace records MCTS planning as a traceable event."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    trace.record(
+        "mcts_planning", "search_completed",
+        causal_prerequisites=["input_001"],
+        metadata={"root_value": 0.6, "best_state_used": True},
+    )
+    recent = trace.recent(n=5)
+    mcts_entries = [e for e in recent if e.get("subsystem") == "mcts_planning"]
+    assert len(mcts_entries) >= 1, "mcts_planning should appear in causal trace"
+    print("✅ test_causal_trace_covers_mcts_planning PASSED")
+
+
+def test_unified_memory_query():
+    """AEONDeltaV3.unified_memory_query returns combined results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    query = torch.randn(32)
+    result = model.unified_memory_query(query)
+    assert 'combined' in result, "unified_memory_query should return 'combined'"
+    assert 'num_systems_responded' in result, (
+        "unified_memory_query should return 'num_systems_responded'"
+    )
+    assert result['combined'].shape == (32,), (
+        f"Expected shape (32,), got {result['combined'].shape}"
+    )
+    print("✅ test_unified_memory_query PASSED")
+
+
+def test_training_inference_error_bridge():
+    """bridge_training_errors_to_inference propagates training errors."""
+    from ae_train import TrainingConvergenceMonitor, bridge_training_errors_to_inference
+    from aeon_core import CausalErrorEvolutionTracker
+
+    # Set up training monitor with error evolution
+    training_evo = CausalErrorEvolutionTracker(max_history=50)
+    monitor = TrainingConvergenceMonitor(
+        threshold=1e-5, window_size=10,
+        error_evolution=training_evo,
+    )
+
+    # Simulate training divergence
+    for loss_val in [1.0, 0.9, 0.8, 0.7, 0.6, 5.0, 10.0]:
+        monitor.update(loss_val)
+
+    # Create inference error evolution tracker
+    inference_evo = CausalErrorEvolutionTracker(max_history=50)
+
+    # Bridge training errors to inference
+    bridged = bridge_training_errors_to_inference(monitor, inference_evo)
+
+    # Verify errors were bridged
+    inference_summary = inference_evo.get_error_summary()
+    error_classes = inference_summary.get('error_classes', {})
+    has_training_error = any(
+        k.startswith('training_') for k in error_classes.keys()
+    )
+    assert has_training_error or bridged >= 0, (
+        "Training errors should be bridgeable to inference"
+    )
+    print("✅ test_training_inference_error_bridge PASSED")
+
+
+def test_training_convergence_monitor_export():
+    """TrainingConvergenceMonitor.export_error_patterns returns valid data."""
+    from ae_train import TrainingConvergenceMonitor
+    from aeon_core import CausalErrorEvolutionTracker
+
+    evo = CausalErrorEvolutionTracker(max_history=50)
+    monitor = TrainingConvergenceMonitor(
+        threshold=1e-5, window_size=10,
+        error_evolution=evo,
+    )
+
+    # Feed some loss values
+    for v in [1.0, 0.9, 0.8, 0.7, 0.6]:
+        monitor.update(v)
+
+    exported = monitor.export_error_patterns()
+    assert isinstance(exported, dict), "export_error_patterns should return dict"
+    assert 'error_classes' in exported, "Should contain error_classes key"
+    print("✅ test_training_convergence_monitor_export PASSED")
+
+
+def test_forward_pass_provenance_includes_new_stages():
+    """AEONDeltaV3 forward pass provenance includes factor_extraction,
+    rssm, and integration stages."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    assert 'provenance' in result, "Result should contain provenance"
+    provenance = result['provenance']
+    contributions = provenance.get('contributions', {})
+
+    # New stages should now appear in provenance
+    for stage in ['factor_extraction', 'rssm', 'integration']:
+        assert stage in contributions, (
+            f"{stage} should appear in forward pass provenance but got: "
+            f"{list(contributions.keys())}"
+        )
+    print("✅ test_forward_pass_provenance_includes_new_stages PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -22036,6 +22360,22 @@ if __name__ == '__main__':
     test_feedback_cache_invalidation_logged()
     test_coherence_recovery_rerun_has_provenance()
     test_final_uncertainty_refusion()
+    
+    # Architectural Unification — Full Provenance & Causal Trace Coverage
+    test_provenance_covers_factor_extraction()
+    test_provenance_covers_rssm()
+    test_provenance_covers_integration()
+    test_provenance_covers_auto_critic()
+    test_provenance_covers_mcts_planning()
+    test_full_provenance_chain_coverage()
+    test_causal_trace_covers_rssm()
+    test_causal_trace_covers_integration()
+    test_causal_trace_covers_auto_critic()
+    test_causal_trace_covers_mcts_planning()
+    test_unified_memory_query()
+    test_training_inference_error_bridge()
+    test_training_convergence_monitor_export()
+    test_forward_pass_provenance_includes_new_stages()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

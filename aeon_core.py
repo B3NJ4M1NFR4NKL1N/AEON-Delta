@@ -14037,6 +14037,99 @@ class AEONDeltaV3(nn.Module):
             return C_fused
         return C_star
     
+    def unified_memory_query(
+        self,
+        query: torch.Tensor,
+        k: int = 5,
+    ) -> Dict[str, Any]:
+        """Query all memory subsystems and return combined results.
+
+        This method bridges the gap where multiple memory systems
+        (hierarchical, neurogenic, consolidating, temporal) are each
+        queried independently without a unified retrieval interface.
+        By aggregating results across all available memory systems,
+        downstream reasoning can leverage the full breadth of stored
+        knowledge in a single call, reinforcing cross-module coherence.
+
+        Args:
+            query: Query vector ``[hidden_dim]``.
+            k: Number of results per memory system.
+
+        Returns:
+            Dict with keys for each memory system and a ``combined``
+            entry containing the weighted mean of all retrieved vectors.
+        """
+        device = query.device
+        results: Dict[str, Any] = {}
+        all_vecs: List[torch.Tensor] = []
+        all_weights: List[float] = []
+
+        # 1. Hierarchical memory (NTM-based)
+        if self.hierarchical_memory is not None:
+            try:
+                ret = self.hierarchical_memory.retrieve(query, k=k)
+                working = ret.get('working', [])
+                if working:
+                    vecs = torch.stack([v for v, _s in working])
+                    results['hierarchical'] = vecs
+                    all_vecs.append(vecs.mean(dim=0).to(device))
+                    all_weights.append(1.0)
+            except Exception:
+                pass
+
+        # 2. Neurogenic memory
+        if self.neurogenic_memory is not None:
+            try:
+                neuro_ret = self.neurogenic_memory.retrieve(query, k=k)
+                if neuro_ret:
+                    vecs = torch.stack([v for v, _s in neuro_ret]).to(device)
+                    results['neurogenic'] = vecs
+                    all_vecs.append(vecs.mean(dim=0))
+                    all_weights.append(0.8)
+            except Exception:
+                pass
+
+        # 3. Consolidating memory (semantic prototypes)
+        if self.consolidating_memory is not None:
+            try:
+                ret = self.consolidating_memory.retrieve(query.detach(), k=k)
+                semantic = ret.get('semantic', [])
+                if semantic:
+                    vecs = torch.stack([v for v, _s in semantic]).to(device)
+                    results['consolidating'] = vecs
+                    all_vecs.append(vecs.mean(dim=0))
+                    all_weights.append(0.9)
+            except Exception:
+                pass
+
+        # 4. Temporal memory
+        if self.temporal_memory is not None:
+            try:
+                temporal_ret = self.temporal_memory.retrieve(query.detach(), k=k)
+                if temporal_ret:
+                    vecs = torch.stack([m['vector'] for m in temporal_ret]).to(device)
+                    results['temporal'] = vecs
+                    all_vecs.append(vecs.mean(dim=0))
+                    all_weights.append(0.7)
+            except Exception:
+                pass
+
+        # Combine all retrieved vectors with weighted average
+        if all_vecs:
+            weight_tensor = torch.tensor(all_weights, device=device)
+            weight_tensor = weight_tensor / weight_tensor.sum()
+            stacked = torch.stack(all_vecs)  # [N, hidden_dim]
+            combined = (weight_tensor.unsqueeze(-1) * stacked).sum(dim=0)
+            results['combined'] = combined
+            results['num_systems_responded'] = len(all_vecs)
+        else:
+            results['combined'] = torch.zeros(
+                self.config.hidden_dim, device=device,
+            )
+            results['num_systems_responded'] = 0
+
+        return results
+    
     @tensor_safe(policy=NaNPolicy.WARN, sanitize_outputs=True)
     def reasoning_core(
         self,
@@ -14715,7 +14808,9 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("slot_binding", C_star)
         
         # 2. Extract factors
+        self.provenance_tracker.record_before("factor_extraction", C_star)
         factors, embedded_factors = self.sparse_factors(C_star)
+        self.provenance_tracker.record_after("factor_extraction", embedded_factors)
         logger.debug(f"Factors: {factors.shape}")
         
         # 2a. Record factor extraction health — sparsity and finite checks
@@ -15713,6 +15808,7 @@ class AEONDeltaV3(nn.Module):
         # the search tree root state includes memory context, enabling
         # memory-aware planning.  Gated by complexity gate[1].
         if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
+            self.provenance_tracker.record_before("mcts_planning", C_star)
             mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
             # 5b2-0. Blend MCTS best_state into C_star — the planner's
             # best state represents the most promising trajectory
@@ -15757,6 +15853,19 @@ class AEONDeltaV3(nn.Module):
                             strategy_used="uncertainty_escalation",
                             success=False,
                         )
+            self.provenance_tracker.record_after("mcts_planning", C_star)
+            # Record MCTS planning in causal trace for full root-cause
+            # traceability — ensures planning decisions can be traced
+            # back to their search tree root and world model predictions.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "mcts_planning", "search_completed",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "root_value": float(_mcts_root_val) if isinstance(_mcts_root_val, (int, float)) else 0.0,
+                        "best_state_used": _mcts_best is not None and torch.isfinite(_mcts_best).all() if _mcts_best is not None else False,
+                    },
+                )
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
@@ -16396,6 +16505,7 @@ class AEONDeltaV3(nn.Module):
         
         # 7. RSSM dynamics with residual connection and normalization
         self.progress_tracker.begin_phase("integration")
+        self.provenance_tracker.record_before("rssm", C_fused)
         z_rssm_raw = self.rssm_cell(C_fused)
         z_rssm = self.rssm_norm(z_rssm_raw + C_fused)
         
@@ -16416,6 +16526,18 @@ class AEONDeltaV3(nn.Module):
             uncertainty_sources["rssm_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
             z_rssm = C_fused
+        self.provenance_tracker.record_after("rssm", z_rssm)
+        # Record RSSM dynamics in causal trace so that state transitions
+        # through the recurrent cell are traceable as causal prerequisites
+        # for downstream integration and decoding decisions.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "rssm", "dynamics_computed",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "finite": bool(torch.isfinite(z_rssm).all().item()),
+                },
+            )
         
         # 7b. Multimodal grounding (if available)
         _multimodal_healthy = True
@@ -16482,10 +16604,12 @@ class AEONDeltaV3(nn.Module):
             )
         
         # 8. Integration with residual and normalization
+        self.provenance_tracker.record_before("integration", z_rssm)
         z_integrated = self.integration_proj(
             torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         z_out = self.integration_norm(z_integrated + z_rssm)
+        self.provenance_tracker.record_after("integration", z_out)
         
         # 8a. Final output sanitization — last line of defense against
         # non-finite values before decoding.  Falls back to z_rssm to
@@ -16504,6 +16628,16 @@ class AEONDeltaV3(nn.Module):
             uncertainty_sources["integration_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
             z_out = torch.where(torch.isfinite(z_out), z_out, z_rssm)
+        # Record integration step in causal trace so that the final
+        # output can be traced back through the full processing chain.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "integration", "projection_computed",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "finite": bool(torch.isfinite(z_out).all().item()),
+                },
+            )
         
         # 8a-ii. Deterministic output validation
         output_valid, z_out = self.execution_guard.validate_output(
@@ -16620,11 +16754,13 @@ class AEONDeltaV3(nn.Module):
                     )
                 # 8b3. AutoCriticLoop — refine z_out when violations detected
                 if self.auto_critic is not None:
+                    self.provenance_tracker.record_before("auto_critic", z_out)
                     critic_result = self.auto_critic(z_out)
                     revised = critic_result.get("candidate", None)
                     if revised is not None and torch.isfinite(revised).all():
                         z_out = revised
                         _any_auto_critic_revised = True
+                    self.provenance_tracker.record_after("auto_critic", z_out)
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
                     _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
                     self.audit_log.record("auto_critic", "revised", {
@@ -16632,6 +16768,18 @@ class AEONDeltaV3(nn.Module):
                         "final_score": critic_result.get("final_score", 0.0),
                         "trigger": "ns_violation",
                     })
+                    # Record auto-critic revision in causal trace for
+                    # full root-cause traceability of self-corrections.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "auto_critic", "ns_violation_revision",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "final_score": critic_result.get("final_score", 0.0),
+                                "iterations": critic_result.get("iterations", 0),
+                                "revised": revised is not None and torch.isfinite(revised).all(),
+                            },
+                        )
                     # Record NS-violation-triggered auto-critic in error
                     # evolution so the system learns from self-critique
                     # outcomes across all trigger paths, not just the
@@ -16688,11 +16836,13 @@ class AEONDeltaV3(nn.Module):
                 and not fast
                 and _should_trigger_metacognition
                 and not _ns_already_handled):
+            self.provenance_tracker.record_before("auto_critic", z_out)
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
                 _any_auto_critic_revised = True
+            self.provenance_tracker.record_after("auto_critic", z_out)
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
             # Determine which condition triggered the cycle
@@ -16709,6 +16859,18 @@ class AEONDeltaV3(nn.Module):
                 "final_score": critic_result.get("final_score", 0.0),
                 "trigger": _trigger,
             })
+            # Record uncertainty-triggered auto-critic in causal trace
+            # for root-cause traceability of metacognitive self-corrections.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "auto_critic", f"metacognitive_revision_{_trigger}",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "trigger": _trigger,
+                        "final_score": critic_result.get("final_score", 0.0),
+                        "revised": revised is not None and torch.isfinite(revised).all(),
+                    },
+                )
             # Record uncertainty-triggered auto-critic in error evolution
             # so every self-critique path contributes to evolutionary
             # learning, not just the post-integration metacognitive path.

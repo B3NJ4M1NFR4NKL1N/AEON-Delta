@@ -47,7 +47,8 @@ __all__ = [
     "WarmupCosineScheduler",
     "SafeThoughtAETrainerV4", "ContextualRSSMTrainer",
     "validate_training_components", "TrainingProvenanceTracker",
-    "TrainingConvergenceMonitor", "main",
+    "TrainingConvergenceMonitor", "bridge_training_errors_to_inference",
+    "main",
 ]
 
 # --- Bridge to aeon_core cognitive architecture ---
@@ -2179,6 +2180,66 @@ class TrainingConvergenceMonitor:
             'trend': trend,
             'recommendation': recommendation,
         }
+
+    def export_error_patterns(self) -> Dict[str, Any]:
+        """Export training error patterns for inference-time recovery.
+
+        Returns a summary of training convergence events that can be
+        ingested by an inference-time ``CausalErrorEvolutionTracker``
+        via :func:`bridge_training_errors_to_inference`.  This closes
+        the training→inference feedback loop: training-time divergence
+        and stagnation patterns inform inference recovery strategies.
+        """
+        if self._error_evolution is not None:
+            return self._error_evolution.get_error_summary()
+        return {
+            'status': self.status,
+            'history_length': len(self._history),
+            'error_classes': {},
+        }
+
+
+def bridge_training_errors_to_inference(
+    trainer_monitor: 'TrainingConvergenceMonitor',
+    inference_error_evolution: Any,
+) -> int:
+    """Bridge training error patterns into inference error evolution.
+
+    Replays training-discovered error patterns (divergence, stagnation)
+    into the inference pipeline's ``CausalErrorEvolutionTracker`` so that
+    inference-time metacognitive triggers and recovery strategies benefit
+    from training-time convergence failures.
+
+    Args:
+        trainer_monitor: The training convergence monitor that has
+            accumulated error episodes during training.
+        inference_error_evolution: The inference pipeline's
+            ``CausalErrorEvolutionTracker`` instance.
+
+    Returns:
+        Number of error episodes bridged.
+    """
+    if inference_error_evolution is None:
+        return 0
+    training_summary = trainer_monitor.export_error_patterns()
+    error_classes = training_summary.get('error_classes', {})
+    bridged = 0
+    for cls_name, cls_stats in error_classes.items():
+        count = cls_stats.get('count', 0)
+        success_rate = cls_stats.get('success_rate', 1.0)
+        if count > 0 and success_rate < 1.0:
+            inference_error_evolution.record_episode(
+                error_class=f"training_{cls_name}",
+                strategy_used=cls_stats.get('best_strategy', 'unknown'),
+                success=success_rate >= 0.5,
+                metadata={
+                    'source': 'training_bridge',
+                    'training_count': count,
+                    'training_success_rate': success_rate,
+                },
+            )
+            bridged += 1
+    return bridged
 
 
 # ==============================================================================
