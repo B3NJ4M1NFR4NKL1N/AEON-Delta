@@ -1401,6 +1401,9 @@ class SafeThoughtAETrainerV4:
                 f"⚠️ {_error_detail} at step {self.global_step}"
                 f" (dominant_module={_dominant}), skipping backward pass"
             )
+            # Propagate NaN event to convergence monitor so it can
+            # detect training instability and recommend corrective action.
+            self.convergence_monitor.update(float('nan'))
             return outputs
         
         # Scale loss by gradient accumulation steps so that accumulated
@@ -1620,6 +1623,20 @@ class SafeThoughtAETrainerV4:
                     f"   ℹ️ Convergence monitor: stagnating "
                     f"(trend={convergence_verdict['trend']:.6f})"
                 )
+                # Adaptive LR response — increase learning rate slightly
+                # when Phase A stagnates, closing the monitoring-to-action
+                # feedback loop for the stagnation case.
+                if convergence_verdict.get("recommendation") == "increase_lr_or_augment":
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = min(
+                            param_group['lr'] * 1.5,
+                            self.config.learning_rate,
+                        )
+                    logger.info(
+                        f"   ↗️ LR increased to "
+                        f"{self.optimizer.param_groups[0]['lr']:.2e} "
+                        f"due to stagnation"
+                    )
             
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
@@ -1743,6 +1760,9 @@ class ContextualRSSMTrainer:
                 f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}"
                 f" (dominant_module={_dominant}), skipping backward pass"
             )
+            # Propagate NaN event to convergence monitor so it can
+            # detect training instability and recommend corrective action.
+            self.convergence_monitor.update(float('nan'))
             return {
                 "mse_loss": float('nan'), "smooth_l1": float('nan'),
                 "total_loss": float('nan'), "cosine_sim": 0.0,
@@ -1870,6 +1890,27 @@ class ContextualRSSMTrainer:
                         f"{self.optimizer.param_groups[0]['lr']:.2e} "
                         f"due to divergence"
                     )
+            elif convergence_verdict["status"] == "stagnating":
+                logger.info(
+                    f"   ℹ️ Phase B convergence: stagnating "
+                    f"(trend={convergence_verdict['trend']:.6f})"
+                )
+                # Adaptive LR response — increase learning rate slightly
+                # when Phase B stagnates, closing the monitoring-to-action
+                # feedback loop for the stagnation case.  Without this,
+                # convergence monitoring detects stagnation but the system
+                # takes no corrective action, breaking the feedback loop.
+                if convergence_verdict.get("recommendation") == "increase_lr_or_augment":
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = min(
+                            param_group['lr'] * 1.5,
+                            self.config.learning_rate,  # cap at initial LR
+                        )
+                    logger.info(
+                        f"   ↗️ Phase B LR increased to "
+                        f"{self.optimizer.param_groups[0]['lr']:.2e} "
+                        f"due to stagnation"
+                    )
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
@@ -1976,11 +2017,17 @@ class TrainingConvergenceMonitor:
     _DIVERGENCE_RATIO = 1.5
     _STAGNATION_THRESHOLD = 1e-6
 
-    def __init__(self, threshold: float = 1e-5, window_size: int = 10):
+    def __init__(self, threshold: float = 1e-5, window_size: int = 10,
+                 error_evolution=None):
         self._threshold = threshold
         self._window_size = window_size
         self._history: list = []
         self.status: str = 'warmup'
+        # Optional bridge to aeon_core's CausalErrorEvolutionTracker.
+        # When provided, convergence events (divergence, stagnation) are
+        # propagated as error episodes so that inference-time error
+        # recovery can learn from training-time convergence failures.
+        self._error_evolution = error_evolution
         if AEON_CORE_AVAILABLE:
             self._core_monitor = ConvergenceMonitor(threshold=threshold)
         else:
@@ -2041,6 +2088,24 @@ class TrainingConvergenceMonitor:
         # Feed into aeon_core monitor if available
         if self._core_monitor is not None:
             self._core_monitor.check(abs(trend))
+
+        # Propagate convergence events to error evolution tracker so
+        # that inference-time recovery can learn from training failures.
+        if self._error_evolution is not None:
+            if self.status == 'diverging':
+                self._error_evolution.record_episode(
+                    error_class="training_divergence",
+                    strategy_used=recommendation,
+                    success=False,
+                    metadata={"trend": trend, "loss_value": loss_value},
+                )
+            elif self.status == 'stagnating':
+                self._error_evolution.record_episode(
+                    error_class="training_stagnation",
+                    strategy_used=recommendation,
+                    success=False,
+                    metadata={"trend": trend, "loss_value": loss_value},
+                )
 
         return {
             'status': self.status,
