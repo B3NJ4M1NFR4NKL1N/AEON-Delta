@@ -16656,10 +16656,22 @@ class AEONDeltaV3(nn.Module):
     def get_audit_summary(self) -> Dict[str, Any]:
         """Return a summary of the decision audit log.
 
-        Includes aggregate decision counts, the most recent entries,
-        and the total number of decisions recorded.
+        Includes aggregate decision counts, severity-level tallies,
+        the most recent entries, and the total number of decisions recorded.
         """
-        return self.audit_log.summary()
+        base = self.audit_log.summary()
+        # Compute severity-level counts expected by the dashboard.
+        severity_counts: Dict[str, int] = defaultdict(int)
+        for entry in self.audit_log.recent(self.audit_log._max_entries):
+            sev = entry.get("severity", "info")
+            severity_counts[sev] += 1
+        total = base.get("total_decisions", 0)
+        base["total"] = total
+        base["info"] = severity_counts.get("info", 0) + severity_counts.get("debug", 0)
+        base["warning"] = severity_counts.get("warning", 0)
+        base["error"] = severity_counts.get("error", 0)
+        base["critical"] = severity_counts.get("critical", 0)
+        return base
     
     def get_recent_decisions(self, n: int = 10) -> List[Dict[str, Any]]:
         """Return the *n* most recent audit log entries."""

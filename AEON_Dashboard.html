@@ -3967,11 +3967,11 @@ async function loadAudit() {
       const sev = e.severity || 'info';
       const cls = sev==='critical' ? 'br' : sev==='warning' ? 'bw' : 'ba';
       return `<tr>
-        <td style="color:var(--text3)">${e.time||e.ts||'—'}</td>
+        <td style="color:var(--text3)">${typeof e.timestamp==='number'?e.timestamp.toFixed(2):(e.timestamp||e.time||e.ts||'—')}</td>
         <td style="color:var(--purple)">${e.subsystem||e.name||'—'}</td>
         <td><span class="badge ${cls}">${sev}</span></td>
         <td style="color:var(--text2)">${(e.decision||e.msg||'').slice(0,80)}</td>
-        <td style="font-size:10px;color:var(--text3)">${e.meta ? JSON.stringify(e.meta).slice(0,40) : ''}</td>
+        <td style="font-size:10px;color:var(--text3)">${(e.metadata||e.meta) ? JSON.stringify(e.metadata||e.meta).slice(0,40) : ''}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">No audit entries</td></tr>';
 

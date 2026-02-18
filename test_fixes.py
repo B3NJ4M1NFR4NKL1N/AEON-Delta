@@ -17128,6 +17128,80 @@ def test_vq_codebook_codeStatus_declaration_order():
     print("✅ test_vq_codebook_codeStatus_declaration_order PASSED")
 
 
+def test_audit_summary_severity_counts():
+    """get_audit_summary returns severity-level counts (info, warning, critical)
+    that the dashboard expects for rendering audit statistics."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    # Record entries with various severities
+    model.audit_log.record("test_sub", "test_info", {}, severity="info")
+    model.audit_log.record("test_sub", "test_warn", {}, severity="warning")
+    model.audit_log.record("test_sub", "test_warn2", {}, severity="warning")
+    model.audit_log.record("test_sub", "test_crit", {}, severity="critical")
+
+    summary = model.get_audit_summary()
+
+    # Must include severity-level counts
+    assert "info" in summary, "Summary must include 'info' count"
+    assert "warning" in summary, "Summary must include 'warning' count"
+    assert "critical" in summary, "Summary must include 'critical' count"
+    assert "total" in summary, "Summary must include 'total' count"
+
+    assert summary["warning"] == 2, f"Expected 2 warnings, got {summary['warning']}"
+    assert summary["critical"] == 1, f"Expected 1 critical, got {summary['critical']}"
+    assert summary["info"] >= 1, f"Expected at least 1 info, got {summary['info']}"
+    assert summary["total"] >= 4, f"Expected at least 4 total, got {summary['total']}"
+
+    print("✅ test_audit_summary_severity_counts PASSED")
+
+
+def test_audit_entry_timestamp_field():
+    """Audit log entries store the timestamp under the key 'timestamp',
+    which the dashboard rendering must read."""
+    from aeon_core import DecisionAuditLog
+
+    log = DecisionAuditLog(max_entries=10)
+    log.record("ns_consistency", "violation", {"num_violations": 3}, severity="warning")
+
+    entries = log.recent(1)
+    assert len(entries) == 1
+    entry = entries[0]
+
+    assert "timestamp" in entry, "Entry must have 'timestamp' key"
+    assert isinstance(entry["timestamp"], float), "Timestamp must be a float"
+    assert "metadata" in entry, "Entry must have 'metadata' key"
+    assert entry["metadata"]["num_violations"] == 3
+    assert entry["severity"] == "warning"
+    assert entry["decision"] == "violation"
+    assert entry["subsystem"] == "ns_consistency"
+
+    print("✅ test_audit_entry_timestamp_field PASSED")
+
+
+def test_dashboard_audit_trail_field_names():
+    """Verify that the dashboard audit trail rendering uses the correct
+    field names (timestamp, metadata) that match DecisionAuditLog entries."""
+    import re
+
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'AEON_Dashboard.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        src = f.read()
+
+    # The loadAudit function should reference e.timestamp for the time column
+    assert 'e.timestamp' in src, (
+        "Dashboard loadAudit must reference 'e.timestamp' to display audit entry times"
+    )
+    # The loadAudit function should reference e.metadata for the meta column
+    assert 'e.metadata' in src, (
+        "Dashboard loadAudit must reference 'e.metadata' to display audit entry metadata"
+    )
+
+    print("✅ test_dashboard_audit_trail_field_names PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -17953,6 +18027,11 @@ if __name__ == '__main__':
 
     # VQ Codebook Dashboard Fix
     test_vq_codebook_codeStatus_declaration_order()
+
+    # NS Consistency Audit Display Fix
+    test_audit_summary_severity_counts()
+    test_audit_entry_timestamp_field()
+    test_dashboard_audit_trail_field_names()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
