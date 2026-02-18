@@ -5,7 +5,10 @@ AEON-Δ RMT v3.1 — Setup Script
 from setuptools import setup, find_packages
 from pathlib import Path
 
-long_description = Path("README.md").read_text(encoding="utf-8")
+try:
+    long_description = Path("README.md").read_text(encoding="utf-8")
+except (FileNotFoundError, OSError):
+    long_description = "AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning"
 
 setup(
     name="aeon-delta",
@@ -16,7 +19,7 @@ setup(
     author="AEON Research Team",
     license="LicenseRef-AEON-Delta-NC-Research-Only-1.0",
     url="https://github.com/B3NJ4M1NFR4NKL1N/AEON-Delta",
-    py_modules=["aeon_core", "aeon_server", "ae_train", "test_fixes"],
+    py_modules=["aeon_core", "aeon_server", "ae_train"],
     python_requires=">=3.8",
     install_requires=[
         "numpy>=1.21.0",
@@ -61,6 +64,6 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
     ],
-    data_files=[("", ["AEON_Dashboard.html"])],
+    data_files=[("share/aeon-delta", ["AEON_Dashboard.html"])],
     include_package_data=True,
 )
