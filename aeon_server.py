@@ -1415,6 +1415,7 @@ async def introspect():
                 k: v for k, v in vars(APP.config).items()
                 if not k.startswith("_") and not callable(v)
                 and k not in ("device_manager", "tensor_guard")
+                and isinstance(v, (bool, int, float, str, list, dict, type(None)))
             } if APP.config else {},
         }
     except Exception as e:

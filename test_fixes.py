@@ -11370,9 +11370,9 @@ def test_hybrid_reasoning_consistency_check():
     assert isinstance(model.ns_consistency_checker, NeuroSymbolicConsistencyChecker)
 
     # Verify the NS checker can process tensors with correct dimensions:
-    # hidden_dim for state, num_predicates (default 32) for rules
+    # hidden_dim for state, num_pillars for rules (matching factor shape)
     test_state = torch.randn(2, 64)
-    test_rules = torch.sigmoid(torch.randn(2, 32))  # num_predicates=32 (default)
+    test_rules = torch.sigmoid(torch.randn(2, config.num_pillars))
     ns_result = model.ns_consistency_checker(test_state, test_rules)
     assert "num_violations" in ns_result, "NS checker should return violation counts"
 
