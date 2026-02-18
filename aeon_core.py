@@ -12837,6 +12837,7 @@ class MetaCognitiveRecursionTrigger:
             "world_model_prediction_error": "world_model_surprise",
             "low_causal_quality": "low_causal_quality",
             "mcts_low_confidence": "uncertainty",
+            "causal_programmatic_forward": "low_causal_quality",
         }
 
         # Accumulate boost factors for each signal
@@ -14129,8 +14130,11 @@ class AEONDeltaV3(nn.Module):
                         convergence_quality=0.0,
                         uncertainty=1.0,
                     ).detach()
-            except Exception:
-                pass  # feedback caching is best-effort
+            except Exception as fb_err:
+                logger.debug(
+                    "Feedback bus caching failed during error recovery "
+                    "(best-effort, non-fatal): %s", fb_err,
+                )
 
             # Positive recovery reinforcement — when recovery succeeded,
             # record a positive reward so MetaRecoveryLearner learns from
@@ -15827,13 +15831,25 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
             except Exception as prog_err:
+                _causal_healthy = False
                 logger.warning(f"CausalProgrammaticModel error (non-fatal): {prog_err}")
                 self.error_recovery.record_event(
                     error_class="subsystem",
                     context="causal_programmatic_forward",
                     success=False,
                 )
-                _causal_healthy = False
+                uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["causal_programmatic_error"] = 0.2
+                high_uncertainty = uncertainty > 0.5
+                self.audit_log.record("causal_programmatic", "error_recovered", {
+                    "error": str(prog_err)[:200],
+                }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "causal_programmatic", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={"error": str(prog_err)[:200]},
+                    )
         
         self.integrity_monitor.record_health("causal", 1.0 if _causal_healthy else 0.0, {
             "causal_model_executed": self.causal_model is not None and not fast,
@@ -16722,16 +16738,32 @@ class AEONDeltaV3(nn.Module):
                 metacognitive_info["phase"] = "post_integration"
                 # Invoke auto-critic for self-correction on the final output
                 if self.auto_critic is not None:
-                    _post_critic = self.auto_critic(z_out)
-                    _post_revised = _post_critic.get("candidate", None)
-                    if _post_revised is not None and torch.isfinite(_post_revised).all():
-                        z_out = _post_revised
-                        _any_auto_critic_revised = True
-                    self.audit_log.record("auto_critic", "revised", {
-                        "iterations": _post_critic.get("iterations", 0),
-                        "final_score": _post_critic.get("final_score", 0.0),
-                        "trigger": "post_integration_metacognitive",
-                    })
+                    try:
+                        _post_critic = self.auto_critic(z_out)
+                        _post_revised = _post_critic.get("candidate", None)
+                        if (_post_revised is not None
+                                and torch.isfinite(_post_revised).all()
+                                and _post_revised.shape == z_out.shape):
+                            z_out = _post_revised
+                            _any_auto_critic_revised = True
+                        self.audit_log.record("auto_critic", "revised", {
+                            "iterations": _post_critic.get("iterations", 0),
+                            "final_score": _post_critic.get("final_score", 0.0),
+                            "trigger": "post_integration_metacognitive",
+                        })
+                    except Exception as ac_err:
+                        logger.warning(
+                            "Post-integration auto-critic error (non-fatal): %s",
+                            ac_err,
+                        )
+                        self.error_recovery.record_event(
+                            error_class="subsystem",
+                            context="post_integration_auto_critic",
+                            success=False,
+                        )
+                        uncertainty = min(1.0, uncertainty + 0.15)
+                        uncertainty_sources["auto_critic_error"] = 0.15
+                        high_uncertainty = uncertainty > 0.5
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class="post_integration_metacognitive",

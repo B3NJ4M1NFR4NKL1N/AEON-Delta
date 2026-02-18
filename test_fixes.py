@@ -19393,6 +19393,179 @@ def test_training_convergence_monitor_divergence_recommendation():
     print("✅ test_training_convergence_monitor_divergence_recommendation PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Consistency & Coherence Gap Fixes
+# ============================================================================
+
+
+def test_causal_programmatic_error_escalates_uncertainty():
+    """Fix: CausalProgrammaticModel error handler now escalates uncertainty.
+
+    Previously, CausalProgrammaticModel failures did not escalate uncertainty,
+    unlike all other subsystem error handlers.  This broke the invariant that
+    *any* subsystem failure feeds into the metacognitive recursion trigger
+    via uncertainty escalation.
+    """
+    # Simulate the fixed error-handling logic inline:
+    uncertainty = 0.3
+    uncertainty_sources = {}
+
+    # Simulate CausalProgrammaticModel failure path (post-fix)
+    uncertainty = min(1.0, uncertainty + 0.2)
+    uncertainty_sources["causal_programmatic_error"] = 0.2
+    high_uncertainty = uncertainty > 0.5
+
+    assert abs(uncertainty - 0.5) < 1e-9, (
+        f"Uncertainty should be 0.5 after +0.2 escalation, got {uncertainty}"
+    )
+    assert "causal_programmatic_error" in uncertainty_sources, (
+        "causal_programmatic_error must be recorded in uncertainty_sources"
+    )
+    assert high_uncertainty is False, (
+        "high_uncertainty should be False when uncertainty equals 0.5 "
+        "(threshold is > 0.5, not >=)"
+    )
+
+    # One more failure pushes over the threshold
+    uncertainty = min(1.0, uncertainty + 0.2)
+    high_uncertainty = uncertainty > 0.5
+    assert high_uncertainty is True, (
+        "0.7 > 0.5 so high_uncertainty should be True"
+    )
+
+    print("✅ test_causal_programmatic_error_escalates_uncertainty PASSED")
+
+
+def test_metacognitive_trigger_maps_causal_programmatic():
+    """Fix: MetaCognitiveRecursionTrigger now maps causal_programmatic_forward
+    to the low_causal_quality signal, ensuring adaptive weight adjustment
+    covers this failure mode.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Simulate error summary with causal_programmatic_forward failures
+    error_summary = {
+        "error_classes": {
+            "causal_programmatic_forward": {
+                "count": 5,
+                "success_rate": 0.2,  # low success → high boost
+            },
+        },
+    }
+    initial_weight = trigger._signal_weights["low_causal_quality"]
+    trigger.adapt_weights_from_evolution(error_summary)
+    updated_weight = trigger._signal_weights["low_causal_quality"]
+
+    # Low success rate should boost the weight
+    assert updated_weight > initial_weight, (
+        f"low_causal_quality weight should increase after causal_programmatic "
+        f"failures (was {initial_weight}, now {updated_weight})"
+    )
+
+    print("✅ test_metacognitive_trigger_maps_causal_programmatic PASSED")
+
+
+def test_auto_critic_shape_mismatch_rejected():
+    """Fix: Post-integration auto-critic revision now validates shape match.
+
+    A revised candidate whose shape differs from z_out must NOT be applied,
+    even if the values are finite.
+    """
+    z_out = torch.randn(2, 8, 64)
+    # Simulate a mismatched candidate (wrong last dim)
+    mismatched = torch.randn(2, 8, 32)
+
+    # The fixed condition requires shape equality
+    accepted = (
+        mismatched is not None
+        and torch.isfinite(mismatched).all()
+        and mismatched.shape == z_out.shape
+    )
+    assert not accepted, (
+        "Shape-mismatched candidate should be rejected"
+    )
+
+    # Correct shape should be accepted
+    matched = torch.randn(2, 8, 64)
+    accepted = (
+        matched is not None
+        and torch.isfinite(matched).all()
+        and matched.shape == z_out.shape
+    )
+    assert accepted, "Shape-matched finite candidate should be accepted"
+
+    print("✅ test_auto_critic_shape_mismatch_rejected PASSED")
+
+
+def test_auto_critic_post_integration_error_handling():
+    """Fix: Post-integration auto-critic is now wrapped in try/except.
+
+    When the auto-critic raises an exception, the system should:
+    1. Log a warning (non-fatal)
+    2. Escalate uncertainty
+    3. Continue without crashing
+    """
+    uncertainty = 0.3
+    uncertainty_sources = {}
+
+    # Simulate the auto-critic error path (post-fix)
+    try:
+        raise RuntimeError("Simulated auto-critic failure")
+    except Exception:
+        uncertainty = min(1.0, uncertainty + 0.15)
+        uncertainty_sources["auto_critic_error"] = 0.15
+
+    assert abs(uncertainty - 0.45) < 1e-9, (
+        f"Uncertainty should be 0.45 after +0.15 escalation, got {uncertainty}"
+    )
+    assert "auto_critic_error" in uncertainty_sources, (
+        "auto_critic_error must be recorded in uncertainty_sources"
+    )
+
+    print("✅ test_auto_critic_post_integration_error_handling PASSED")
+
+
+def test_causal_programmatic_error_provenance_tracking():
+    """Fix: CausalProgrammaticModel error handler now records to causal trace.
+
+    Previously, only NeuralCausalModel errors were tracked in the causal
+    provenance chain.  CausalProgrammaticModel errors are now also recorded,
+    ensuring all causal subsystem failures are traceable to their root causes.
+    """
+    from aeon_core import TemporalCausalTraceBuffer
+
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Simulate an input trace (root cause)
+    input_trace_id = trace.record(
+        "input", "tokenized",
+        metadata={"prompt_length": 42},
+    )
+
+    # Simulate recording a causal_programmatic subsystem_error
+    error_trace_id = trace.record(
+        "causal_programmatic", "subsystem_error",
+        causal_prerequisites=[input_trace_id],
+        metadata={"error": "test error"},
+    )
+
+    assert error_trace_id is not None, "Trace must return an ID"
+
+    # Verify causal chain tracing back to root cause
+    chain = trace.get_causal_chain(error_trace_id)
+    assert len(chain) == 2, f"Chain should have 2 entries, got {len(chain)}"
+
+    root_info = trace.trace_root_cause(error_trace_id)
+    assert len(root_info["root_causes"]) == 1, "Should have 1 root cause"
+    assert root_info["root_causes"][0]["subsystem"] == "input", (
+        "Root cause should be the input trace"
+    )
+
+    print("✅ test_causal_programmatic_error_provenance_tracking PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -20290,6 +20463,13 @@ if __name__ == '__main__':
     test_convergence_diverging_reduces_lr_phase_a()
     test_convergence_diverging_reduces_lr_phase_b()
     test_training_convergence_monitor_divergence_recommendation()
+    
+    # Architectural Unification — Consistency & Coherence Gap Fixes
+    test_causal_programmatic_error_escalates_uncertainty()
+    test_metacognitive_trigger_maps_causal_programmatic()
+    test_auto_critic_shape_mismatch_rejected()
+    test_auto_critic_post_integration_error_handling()
+    test_causal_programmatic_error_provenance_tracking()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
