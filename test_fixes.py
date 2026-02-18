@@ -16386,6 +16386,484 @@ def test_config_telemetry_collector_initialized():
     print("✅ test_config_telemetry_collector_initialized PASSED")
 
 
+# ============================================================================
+# SECTION: OBSERVABILITY & TELEMETRY — INTEGRATION TESTS
+# ============================================================================
+
+def test_telemetry_max_entries_enforcement():
+    """Verify TelemetryCollector respects max_entries_per_metric limit.
+
+    When more entries are recorded than the configured maximum, the oldest
+    entries must be evicted (ring-buffer semantics) while statistical
+    aggregates remain consistent.
+    """
+    from aeon_core import TelemetryCollector
+
+    max_entries = 5
+    tc = TelemetryCollector(max_entries_per_metric=max_entries)
+
+    # Record more entries than the limit
+    for i in range(10):
+        tc.record("bounded_metric", float(i))
+
+    snap = tc.get_metrics_snapshot()
+    assert snap["bounded_metric"]["count"] == max_entries, (
+        f"Expected {max_entries} retained entries, got {snap['bounded_metric']['count']}"
+    )
+    # The retained entries should be the last 5: [5, 6, 7, 8, 9]
+    assert snap["bounded_metric"]["min"] == 5.0
+    assert snap["bounded_metric"]["max"] == 9.0
+    assert snap["bounded_metric"]["latest"] == 9.0
+    # total_recorded tracks lifetime count, not retained count
+    assert snap["bounded_metric"]["total_recorded"] == 10
+    print("✅ test_telemetry_max_entries_enforcement PASSED")
+
+
+def test_telemetry_collector_serialization():
+    """Verify TelemetryCollector survives deepcopy round-trip (checkpoint support).
+
+    Since the collector uses threading.Lock and defaultdict(lambda), standard
+    pickle is not directly supported. The __deepcopy__ protocol handles this
+    correctly and is the primary serialization path used during checkpointing.
+    """
+    from aeon_core import TelemetryCollector
+    import copy
+
+    tc = TelemetryCollector(max_entries_per_metric=50)
+    tc.record("latency", 42.5)
+    tc.record("latency", 38.0)
+    tc.increment("requests", 5)
+
+    # Deepcopy round-trip (used during checkpointing)
+    tc2 = copy.deepcopy(tc)
+
+    snap = tc2.get_metrics_snapshot()
+    assert snap["latency"]["count"] == 2
+    assert snap["latency"]["mean"] == (42.5 + 38.0) / 2
+    assert snap["counters"]["requests"] == 5
+
+    # Verify the restored collector is fully functional
+    tc2.record("latency", 50.0)
+    snap2 = tc2.get_metrics_snapshot()
+    assert snap2["latency"]["count"] == 3
+
+    # Verify __getstate__ removes lock
+    state = tc.__getstate__()
+    assert "_lock" not in state
+    assert "_metrics" in state
+    assert "_counters" in state
+    print("✅ test_telemetry_collector_serialization PASSED")
+
+
+def test_telemetry_collector_deepcopy():
+    """Verify TelemetryCollector.__deepcopy__ produces an independent copy.
+
+    Mutations on the copy must NOT affect the original.
+    """
+    from aeon_core import TelemetryCollector
+    import copy
+
+    tc = TelemetryCollector(max_entries_per_metric=100)
+    tc.record("metric_a", 1.0)
+    tc.increment("counter_a")
+
+    tc_copy = copy.deepcopy(tc)
+
+    # Mutate the copy
+    tc_copy.record("metric_a", 99.0)
+    tc_copy.increment("counter_a", 10)
+
+    # Original must be untouched
+    orig_snap = tc.get_metrics_snapshot()
+    assert orig_snap["metric_a"]["count"] == 1
+    assert orig_snap["metric_a"]["latest"] == 1.0
+    assert orig_snap["counters"]["counter_a"] == 1
+
+    # Copy must reflect mutations
+    copy_snap = tc_copy.get_metrics_snapshot()
+    assert copy_snap["metric_a"]["count"] == 2
+    assert copy_snap["metric_a"]["latest"] == 99.0
+    assert copy_snap["counters"]["counter_a"] == 11
+    print("✅ test_telemetry_collector_deepcopy PASSED")
+
+
+def test_telemetry_metadata_preserved():
+    """Verify recorded metadata is retained and accessible in metric entries."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    tc.record("inference_latency_ms", 42.5, {"prompt_len": 12, "model": "v3"})
+    tc.record("inference_latency_ms", 38.0, {"prompt_len": 8})
+
+    entries = tc.get_metric("inference_latency_ms", last_n=10)
+    assert len(entries) == 2
+    assert entries[0]["metadata"]["prompt_len"] == 12
+    assert entries[0]["metadata"]["model"] == "v3"
+    assert entries[1]["metadata"]["prompt_len"] == 8
+    # Each entry has a timestamp
+    assert "timestamp" in entries[0]
+    assert "T" in entries[0]["timestamp"]  # ISO 8601
+    print("✅ test_telemetry_metadata_preserved PASSED")
+
+
+def test_telemetry_empty_snapshot():
+    """Verify TelemetryCollector returns valid empty snapshot."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    snap = tc.get_metrics_snapshot()
+    assert snap == {"counters": {}}, f"Expected empty snapshot, got {snap}"
+    assert tc.get_metric("nonexistent") == []
+    print("✅ test_telemetry_empty_snapshot PASSED")
+
+
+def test_telemetry_counter_only_mode():
+    """Verify counters work independently of metric recording.
+
+    Counters should appear in snapshot even without any record() calls.
+    """
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    tc.increment("page_views", 100)
+    tc.increment("api_calls", 42)
+    tc.increment("api_calls", 8)
+
+    snap = tc.get_metrics_snapshot()
+    assert snap["counters"]["page_views"] == 100
+    assert snap["counters"]["api_calls"] == 50
+    # No metrics recorded — only counters should exist
+    keys = set(snap.keys())
+    assert keys == {"counters"}, f"Unexpected keys: {keys}"
+    print("✅ test_telemetry_counter_only_mode PASSED")
+
+
+def test_structured_log_formatter_extra_fields():
+    """Verify StructuredLogFormatter includes structured_extra in output."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    record = logging.LogRecord(
+        name="AEON-Delta", level=logging.INFO, pathname="", lineno=0,
+        msg="with extras", args=(), exc_info=None,
+    )
+    record.structured_extra = {"subsystem": "meta_loop", "step": 42}
+
+    output = fmt.format(record)
+    parsed = _json.loads(output)
+    assert "extra" in parsed
+    assert parsed["extra"]["subsystem"] == "meta_loop"
+    assert parsed["extra"]["step"] == 42
+    print("✅ test_structured_log_formatter_extra_fields PASSED")
+
+
+def test_structured_log_formatter_no_extra():
+    """Verify StructuredLogFormatter omits extra field when not set."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    record = logging.LogRecord(
+        name="test", level=logging.DEBUG, pathname="", lineno=0,
+        msg="no extras", args=(), exc_info=None,
+    )
+    output = fmt.format(record)
+    parsed = _json.loads(output)
+    assert "extra" not in parsed
+    assert parsed["level"] == "DEBUG"
+    print("✅ test_structured_log_formatter_no_extra PASSED")
+
+
+def test_observability_config_telemetry_disabled():
+    """Verify disabling telemetry still initializes a collector (no-op safe).
+
+    Even when enable_telemetry=False, the telemetry_collector must be
+    initialized to prevent AttributeError on components that record metrics.
+    """
+    from aeon_core import AEONConfig, TelemetryCollector
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4, seq_length=8,
+        enable_telemetry=False,
+    )
+    assert config.telemetry_collector is not None
+    assert isinstance(config.telemetry_collector, TelemetryCollector)
+    # Collector must still function (components may record regardless)
+    config.telemetry_collector.record("test_metric", 1.0)
+    snap = config.telemetry_collector.get_metrics_snapshot()
+    assert "test_metric" in snap
+    print("✅ test_observability_config_telemetry_disabled PASSED")
+
+
+def test_observability_config_all_enabled():
+    """Verify enabling all observability features simultaneously.
+
+    structured_logging + academic_mode + telemetry must coexist without
+    conflict.
+    """
+    from aeon_core import AEONConfig, StructuredLogFormatter
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4, seq_length=8,
+        enable_structured_logging=True,
+        enable_academic_mode=True,
+        enable_telemetry=True,
+    )
+    assert config.enable_structured_logging is True
+    assert config.enable_academic_mode is True
+    assert config.enable_telemetry is True
+
+    aeon_logger = logging.getLogger("AEON-Delta")
+    assert aeon_logger.level == logging.DEBUG
+
+    all_handlers = aeon_logger.handlers or logging.getLogger().handlers
+    has_structured = any(
+        isinstance(h.formatter, StructuredLogFormatter) for h in all_handlers
+    )
+    assert has_structured
+
+    # Telemetry collector should be fully functional
+    config.telemetry_collector.record("coexist_test", 1.0)
+    assert config.telemetry_collector.get_metrics_snapshot()["coexist_test"]["count"] == 1
+
+    # Reset
+    aeon_logger.setLevel(logging.INFO)
+    default_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    for h in all_handlers:
+        h.setFormatter(default_fmt)
+    print("✅ test_observability_config_all_enabled PASSED")
+
+
+def test_telemetry_statistical_accuracy():
+    """Verify telemetry snapshot statistics are numerically correct.
+
+    Tests mean, min, max, latest across a known sequence of values.
+    """
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    values = [10.0, 20.0, 30.0, 40.0, 50.0]
+    for v in values:
+        tc.record("accuracy_test", v)
+
+    snap = tc.get_metrics_snapshot()
+    metric = snap["accuracy_test"]
+    assert metric["count"] == 5
+    assert metric["min"] == 10.0
+    assert metric["max"] == 50.0
+    assert metric["latest"] == 50.0
+    expected_mean = sum(values) / len(values)
+    assert abs(metric["mean"] - expected_mean) < 1e-9, (
+        f"Mean mismatch: {metric['mean']} vs {expected_mean}"
+    )
+    print("✅ test_telemetry_statistical_accuracy PASSED")
+
+
+def test_telemetry_concurrent_read_write():
+    """Verify snapshot remains consistent under concurrent read/write pressure.
+
+    Writers add entries while readers take snapshots. No reader should observe
+    a corrupted or partially-written state.
+    """
+    from aeon_core import TelemetryCollector
+    import threading
+
+    tc = TelemetryCollector(max_entries_per_metric=100)
+    errors = []
+
+    def writer(thread_id):
+        try:
+            for i in range(50):
+                tc.record(f"metric_{thread_id}", float(i))
+        except Exception as e:
+            errors.append(e)
+
+    def reader():
+        try:
+            for _ in range(30):
+                snap = tc.get_metrics_snapshot()
+                # Snapshot must always be a valid dict
+                assert isinstance(snap, dict)
+                assert "counters" in snap
+        except Exception as e:
+            errors.append(e)
+
+    threads = []
+    for tid in range(3):
+        threads.append(threading.Thread(target=writer, args=(tid,)))
+    threads.append(threading.Thread(target=reader))
+    threads.append(threading.Thread(target=reader))
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent read/write errors: {errors}"
+    print("✅ test_telemetry_concurrent_read_write PASSED")
+
+
+def test_telemetry_integration_with_tensor_guard():
+    """Verify TelemetryCollector can instrument TensorGuard operations.
+
+    Simulates the pattern used in production: TensorGuard sanitizes tensors
+    and the results are recorded as telemetry metrics.
+    """
+    from aeon_core import TelemetryCollector, TensorGuard, NaNPolicy
+
+    tc = TelemetryCollector()
+    guard = TensorGuard(policy=NaNPolicy.QUARANTINE, enable_tracking=False)
+
+    # Simulate clean tensor sanitization
+    clean = torch.randn(4, 8)
+    result = guard.sanitize(clean, "clean_test")
+    tc.record("tensor_sanitize_clean", 1.0, {"shape": list(clean.shape)})
+
+    # Simulate NaN tensor sanitization
+    dirty = torch.full((4, 8), float('nan'))
+    result = guard.sanitize(dirty, "dirty_test")
+    tc.record("tensor_sanitize_nan", 1.0, {"shape": list(dirty.shape)})
+    tc.increment("nan_detections")
+
+    snap = tc.get_metrics_snapshot()
+    assert "tensor_sanitize_clean" in snap
+    assert "tensor_sanitize_nan" in snap
+    assert snap["counters"]["nan_detections"] == 1
+    print("✅ test_telemetry_integration_with_tensor_guard PASSED")
+
+
+def test_telemetry_integration_with_memory_manager():
+    """Verify telemetry can instrument MemoryManager operations.
+
+    Simulates the production pattern where memory operations (add, retrieve)
+    are instrumented with latency and size metrics.
+    """
+    from aeon_core import TelemetryCollector, MemoryManager, AEONConfig
+    import time
+
+    tc = TelemetryCollector()
+    config = AEONConfig(device_str='cpu')
+    mm = MemoryManager(config)
+
+    # Instrument memory add
+    start = time.monotonic()
+    v1 = torch.randn(256)
+    mm.add_embedding(v1, {'id': 1})
+    tc.record("memory_add_ms", (time.monotonic() - start) * 1000)
+
+    # Instrument memory retrieve
+    start = time.monotonic()
+    query = torch.randn(256)
+    results = mm.retrieve_relevant(query, k=1)
+    tc.record("memory_retrieve_ms", (time.monotonic() - start) * 1000)
+    tc.increment("memory_operations", 2)
+
+    snap = tc.get_metrics_snapshot()
+    assert "memory_add_ms" in snap
+    assert "memory_retrieve_ms" in snap
+    assert snap["memory_add_ms"]["count"] == 1
+    assert snap["memory_retrieve_ms"]["count"] == 1
+    assert snap["counters"]["memory_operations"] == 2
+    # Latencies must be non-negative
+    assert snap["memory_add_ms"]["latest"] >= 0
+    assert snap["memory_retrieve_ms"]["latest"] >= 0
+    print("✅ test_telemetry_integration_with_memory_manager PASSED")
+
+
+def test_correlation_id_format_and_uniqueness():
+    """Verify correlation IDs follow UUID v4 format and are collision-free.
+
+    Tests format compliance and uniqueness across a large sample set.
+    """
+    from aeon_core import generate_correlation_id
+    import re
+
+    uuid_pattern = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    )
+
+    ids = set()
+    for _ in range(500):
+        cid = generate_correlation_id()
+        assert uuid_pattern.match(cid), f"Invalid UUID v4 format: {cid}"
+        ids.add(cid)
+
+    assert len(ids) == 500, "Collision detected among 500 generated IDs"
+    print("✅ test_correlation_id_format_and_uniqueness PASSED")
+
+
+def test_structured_log_all_levels():
+    """Verify StructuredLogFormatter handles all standard log levels."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    levels = [
+        (logging.DEBUG, "DEBUG"),
+        (logging.INFO, "INFO"),
+        (logging.WARNING, "WARNING"),
+        (logging.ERROR, "ERROR"),
+        (logging.CRITICAL, "CRITICAL"),
+    ]
+    for level, name in levels:
+        record = logging.LogRecord(
+            name="test", level=level, pathname="", lineno=0,
+            msg=f"level_{name}", args=(), exc_info=None,
+        )
+        output = fmt.format(record)
+        parsed = _json.loads(output)
+        assert parsed["level"] == name, f"Expected {name}, got {parsed['level']}"
+        assert parsed["message"] == f"level_{name}"
+    print("✅ test_structured_log_all_levels PASSED")
+
+
+def test_telemetry_get_metric_last_n_boundary():
+    """Verify get_metric last_n parameter handles boundary conditions."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector(max_entries_per_metric=10)
+    for i in range(10):
+        tc.record("boundary_test", float(i))
+
+    # Request exactly as many as exist
+    entries = tc.get_metric("boundary_test", last_n=10)
+    assert len(entries) == 10
+
+    # Request more than exist
+    entries = tc.get_metric("boundary_test", last_n=100)
+    assert len(entries) == 10
+
+    # Request just 1
+    entries = tc.get_metric("boundary_test", last_n=1)
+    assert len(entries) == 1
+    assert entries[0]["value"] == 9.0  # Last recorded value
+    print("✅ test_telemetry_get_metric_last_n_boundary PASSED")
+
+
+def test_config_telemetry_max_entries_custom():
+    """Verify AEONConfig passes telemetry_max_entries to collector."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4, seq_length=8,
+        telemetry_max_entries=5,
+    )
+    # Record more than the limit
+    for i in range(10):
+        config.telemetry_collector.record("bounded", float(i))
+
+    snap = config.telemetry_collector.get_metrics_snapshot()
+    assert snap["bounded"]["count"] == 5, (
+        f"Expected 5 retained entries, got {snap['bounded']['count']}"
+    )
+    assert snap["bounded"]["min"] == 5.0  # oldest retained = 5
+    print("✅ test_config_telemetry_max_entries_custom PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -17174,6 +17652,26 @@ if __name__ == '__main__':
     test_config_academic_mode()
     test_config_structured_logging_activates_formatter()
     test_config_telemetry_collector_initialized()
+
+    # Observability & Telemetry — Integration Tests
+    test_telemetry_max_entries_enforcement()
+    test_telemetry_collector_serialization()
+    test_telemetry_collector_deepcopy()
+    test_telemetry_metadata_preserved()
+    test_telemetry_empty_snapshot()
+    test_telemetry_counter_only_mode()
+    test_structured_log_formatter_extra_fields()
+    test_structured_log_formatter_no_extra()
+    test_observability_config_telemetry_disabled()
+    test_observability_config_all_enabled()
+    test_telemetry_statistical_accuracy()
+    test_telemetry_concurrent_read_write()
+    test_telemetry_integration_with_tensor_guard()
+    test_telemetry_integration_with_memory_manager()
+    test_correlation_id_format_and_uniqueness()
+    test_structured_log_all_levels()
+    test_telemetry_get_metric_last_n_boundary()
+    test_config_telemetry_max_entries_custom()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

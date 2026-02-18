@@ -1536,6 +1536,7 @@ function go(panel) {
   if(panel === 'testsuite') refreshTests();
   if(panel === 'benchmark') refreshBenchmark();
   if(panel === 'codegen') genCode();
+  if(panel === 'observability') loadObservability();
   if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); }, 100); }
 }
 
