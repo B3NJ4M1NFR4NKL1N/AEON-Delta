@@ -1598,7 +1598,7 @@ async def get_observability_traces(last_n: int = 100):
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/vq/codebook")
 async def get_vq_codebook():
-    """Detailed VQ codebook: usage counts, embedding norms, dead codes."""
+    """Exhaustive academic-level VQ codebook diagnostics."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
@@ -1612,20 +1612,157 @@ async def get_vq_codebook():
         # Embedding norms
         emb = vq.embedding.weight if hasattr(vq, "embedding") else None
         norms = []
+        all_norms_tensor = None
         if emb is not None:
+            all_norms_tensor = emb.norm(dim=1)
             n = min(emb.shape[0], 512)  # cap for response size
-            norms = emb[:n].norm(dim=1).tolist()
+            norms = all_norms_tensor[:n].tolist()
             norms = [round(x, 4) for x in norms]
+
+        # Norm statistics (full codebook)
+        norm_stats = {}
+        if all_norms_tensor is not None:
+            norm_stats = {
+                "mean": round(all_norms_tensor.mean().item(), 6),
+                "std": round(all_norms_tensor.std().item(), 6),
+                "min": round(all_norms_tensor.min().item(), 6),
+                "max": round(all_norms_tensor.max().item(), 6),
+                "median": round(all_norms_tensor.median().item(), 6),
+                "cv": round((all_norms_tensor.std() / (all_norms_tensor.mean() + 1e-8)).item(), 6),
+            }
 
         # Usage counts (if tracked)
         counts = []
+        full_counts_tensor = None
         if hasattr(vq, "_ema_cluster_size"):
-            counts = vq._ema_cluster_size.tolist()[:512]
+            full_counts_tensor = vq._ema_cluster_size
+            counts = full_counts_tensor.tolist()[:512]
             counts = [round(x, 2) for x in counts]
         elif hasattr(vq, "_usage_counts"):
-            counts = vq._usage_counts.tolist()[:512]
+            full_counts_tensor = vq._usage_counts.float()
+            counts = full_counts_tensor.tolist()[:512]
+        elif hasattr(vq, "_code_usage_counter"):
+            full_counts_tensor = vq._code_usage_counter.float()
+            counts = full_counts_tensor.tolist()[:512]
 
         dead_count = sum(1 for c in counts if c < 0.1) if counts else None
+
+        # ── Academic diagnostic metrics ──────────────────────────────
+        # Perplexity
+        perplexity = None
+        if hasattr(vq, "_perplexity_ema"):
+            perplexity = round(vq._perplexity_ema.item(), 4)
+
+        # Total training steps
+        total_steps = None
+        if hasattr(vq, "_total_steps"):
+            total_steps = int(vq._total_steps.item())
+
+        # Usage entropy (Shannon)
+        entropy = None
+        max_entropy = None
+        normalized_entropy = None
+        if full_counts_tensor is not None:
+            total_usage = full_counts_tensor.sum()
+            if total_usage > 0:
+                probs = full_counts_tensor / total_usage
+                probs_pos = probs[probs > 0]
+                entropy = round(-(probs_pos * probs_pos.log()).sum().item(), 6)
+                max_entropy = round(math.log(vq.num_embeddings), 6)
+                normalized_entropy = round(entropy / max_entropy, 6) if max_entropy > 0 else 0.0
+
+        # Gini coefficient of usage
+        gini = None
+        if full_counts_tensor is not None and full_counts_tensor.numel() > 1:
+            sorted_counts, _ = full_counts_tensor.sort()
+            n_codes = sorted_counts.numel()
+            index = torch.arange(1, n_codes + 1, dtype=torch.float32, device=sorted_counts.device)
+            gini_val = (2.0 * (index * sorted_counts).sum() - (n_codes + 1) * sorted_counts.sum())
+            denom = n_codes * sorted_counts.sum()
+            gini = round((gini_val / (denom + 1e-8)).item(), 6)
+
+        # Steps-since-used statistics
+        steps_since_used_stats = {}
+        if hasattr(vq, "_steps_since_used"):
+            ssu = vq._steps_since_used.float()
+            steps_since_used_stats = {
+                "mean": round(ssu.mean().item(), 2),
+                "max": int(ssu.max().item()),
+                "min": int(ssu.min().item()),
+                "std": round(ssu.std().item(), 2),
+                "pct_stale_50": int((ssu > 50).sum().item()),
+                "pct_stale_100": int((ssu > 100).sum().item()),
+            }
+
+        # Per-code classification (first 512)
+        code_status = []
+        cap = min(vq.num_embeddings, 512) if hasattr(vq, "num_embeddings") else 512
+        for i in range(min(len(counts), cap)):
+            c = counts[i]
+            if c < 0.1:
+                status = "dead"
+            elif c < 1.0:
+                status = "rare"
+            elif c < 5.0:
+                status = "low"
+            else:
+                status = "active"
+            code_status.append(status)
+
+        status_summary = {}
+        for s in ["dead", "rare", "low", "active"]:
+            status_summary[s] = code_status.count(s)
+
+        # Top-K most and least used codes
+        top_k_used = []
+        bottom_k_unused = []
+        if full_counts_tensor is not None:
+            k = min(20, full_counts_tensor.numel())
+            top_vals, top_idx = full_counts_tensor.topk(k)
+            top_k_used = [{"code": int(idx), "usage": round(float(val), 2)}
+                          for idx, val in zip(top_idx.tolist(), top_vals.tolist())]
+            bot_vals, bot_idx = full_counts_tensor.topk(k, largest=False)
+            bottom_k_unused = [{"code": int(idx), "usage": round(float(val), 2)}
+                               for idx, val in zip(bot_idx.tolist(), bot_vals.tolist())]
+
+        # Inter-embedding cosine similarity (sample: first 64 codes for perf)
+        cosine_stats = {}
+        if emb is not None and emb.shape[0] >= 2:
+            sample_n = min(64, emb.shape[0])
+            sample_emb = torch.nn.functional.normalize(emb[:sample_n], dim=1)
+            sim_matrix = sample_emb @ sample_emb.T
+            mask = ~torch.eye(sample_n, dtype=torch.bool, device=sim_matrix.device)
+            off_diag = sim_matrix[mask]
+            cosine_stats = {
+                "mean_similarity": round(off_diag.mean().item(), 6),
+                "max_similarity": round(off_diag.max().item(), 6),
+                "min_similarity": round(off_diag.min().item(), 6),
+                "std_similarity": round(off_diag.std().item(), 6),
+            }
+
+        # Codebook collapse risk assessment
+        collapse_risk = "unknown"
+        if normalized_entropy is not None:
+            if normalized_entropy < 0.3:
+                collapse_risk = "critical"
+            elif normalized_entropy < 0.5:
+                collapse_risk = "high"
+            elif normalized_entropy < 0.7:
+                collapse_risk = "moderate"
+            elif normalized_entropy < 0.85:
+                collapse_risk = "low"
+            else:
+                collapse_risk = "minimal"
+
+        # Hyperparameter snapshot
+        hyperparams = {
+            "commitment_cost": getattr(vq, "commitment_cost", None),
+            "decay": getattr(vq, "decay", None),
+            "epsilon": getattr(vq, "epsilon", None),
+            "revival_threshold": getattr(vq, "revival_threshold", None),
+            "split_threshold": getattr(vq, "split_threshold", None),
+            "use_ema": getattr(vq, "use_ema", None),
+        }
 
         return {
             "ok": True,
@@ -1634,8 +1771,23 @@ async def get_vq_codebook():
             "num_embeddings": vq.embedding.weight.shape[0] if emb is not None else None,
             "embedding_dim": vq.embedding.weight.shape[1] if emb is not None else None,
             "embedding_norms": norms,
+            "norm_stats": norm_stats,
             "usage_counts": counts,
             "dead_codes": dead_count,
+            "perplexity": perplexity,
+            "total_steps": total_steps,
+            "entropy": entropy,
+            "max_entropy": max_entropy,
+            "normalized_entropy": normalized_entropy,
+            "gini_coefficient": gini,
+            "steps_since_used": steps_since_used_stats,
+            "code_status": code_status,
+            "status_summary": status_summary,
+            "top_k_used": top_k_used,
+            "bottom_k_unused": bottom_k_unused,
+            "cosine_stats": cosine_stats,
+            "collapse_risk": collapse_risk,
+            "hyperparams": hyperparams,
         }
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1646,6 +1798,7 @@ async def get_vq_codebook():
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/architecture")
 async def get_architecture():
+    """Exhaustive architecture diagnostics with per-module real-time stats."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
@@ -1654,14 +1807,113 @@ async def get_architecture():
         trainable = APP.model.count_trainable_parameters()
         modules = []
         for name, mod in APP.model.named_children():
-            p = sum(x.numel() for x in mod.parameters())
-            modules.append({"name": name, "type": type(mod).__name__, "params": p})
+            mod_params = list(mod.parameters())
+            p = sum(x.numel() for x in mod_params)
+            train_p = sum(x.numel() for x in mod_params if x.requires_grad)
+            frozen_p = p - train_p
+
+            # Weight statistics
+            weight_stats = {}
+            has_nan = False
+            has_inf = False
+            if mod_params:
+                all_w = [x.data.flatten() for x in mod_params if x.data.numel() > 0]
+                if all_w:
+                    cat_w = torch.cat(all_w)
+                    has_nan = bool(torch.isnan(cat_w).any().item())
+                    has_inf = bool(torch.isinf(cat_w).any().item())
+                    weight_stats = {
+                        "mean": round(cat_w.mean().item(), 6),
+                        "std": round(cat_w.std().item(), 6),
+                        "min": round(cat_w.min().item(), 6),
+                        "max": round(cat_w.max().item(), 6),
+                        "l2_norm": round(cat_w.norm(2).item(), 4),
+                        "sparsity": round((cat_w.abs() < 1e-6).float().mean().item(), 4),
+                    }
+
+            # Gradient norms (if gradients exist)
+            grad_norm = None
+            grad_stats = {}
+            grads = [x.grad.flatten() for x in mod_params if x.grad is not None and x.grad.numel() > 0]
+            if grads:
+                cat_g = torch.cat(grads)
+                grad_norm = round(cat_g.norm(2).item(), 6)
+                grad_stats = {
+                    "norm": grad_norm,
+                    "mean": round(cat_g.mean().item(), 8),
+                    "std": round(cat_g.std().item(), 8),
+                    "max_abs": round(cat_g.abs().max().item(), 8),
+                    "has_nan": bool(torch.isnan(cat_g).any().item()),
+                    "has_inf": bool(torch.isinf(cat_g).any().item()),
+                }
+
+            # Device placement
+            device = "cpu"
+            for x in mod_params:
+                device = str(x.device)
+                break
+
+            # Memory estimate (bytes)
+            mem_bytes = sum(x.numel() * x.element_size() for x in mod_params)
+            grad_mem = sum(x.grad.numel() * x.grad.element_size() for x in mod_params if x.grad is not None)
+
+            # Submodule count
+            sub_count = sum(1 for _ in mod.modules()) - 1
+
+            modules.append({
+                "name": name,
+                "type": type(mod).__name__,
+                "params": p,
+                "trainable": train_p,
+                "frozen": frozen_p,
+                "weight_stats": weight_stats,
+                "has_nan": has_nan,
+                "has_inf": has_inf,
+                "grad_norm": grad_norm,
+                "grad_stats": grad_stats,
+                "device": device,
+                "memory_mb": round(mem_bytes / 1e6, 3),
+                "grad_memory_mb": round(grad_mem / 1e6, 3),
+                "sub_count": sub_count,
+            })
+
+        # Pipeline stage health summary
+        stage_health = {}
+        stage_map = {
+            "embedding": "Input Embedding",
+            "encoder": "Encoder",
+            "vector_quantizer": "VQ-VAE",
+            "meta_loop": "Meta-Loop",
+            "memory_manager": "Memory",
+            "causal_model": "Causal Model",
+            "safety_system": "Safety",
+            "decoder": "Decoder",
+        }
+        for m in modules:
+            label = stage_map.get(m["name"], m["name"])
+            ok = not m["has_nan"] and not m["has_inf"]
+            grad_ok = m["grad_stats"].get("has_nan") is not True and m["grad_stats"].get("has_inf") is not True if m["grad_stats"] else True
+            stage_health[m["name"]] = {
+                "label": label,
+                "healthy": ok and grad_ok,
+                "has_nan": m["has_nan"],
+                "has_inf": m["has_inf"],
+                "grad_healthy": grad_ok,
+                "params": m["params"],
+                "memory_mb": m["memory_mb"],
+            }
+
+        total_memory_mb = round(sum(m["memory_mb"] for m in modules), 3)
+
         return {
             "ok": True,
             "summary": summary,
             "total_parameters": params,
             "trainable_parameters": trainable,
+            "frozen_parameters": params - trainable,
+            "total_memory_mb": total_memory_mb,
             "modules": modules,
+            "stage_health": stage_health,
             "config": {
                 "encoder_backend": APP.config.encoder_backend,
                 "decoder_backend": APP.config.decoder_backend,
@@ -1669,6 +1921,10 @@ async def get_architecture():
                 "z_dim": APP.config.z_dim,
                 "vq_num_embeddings": APP.config.vq_num_embeddings,
                 "max_iterations": APP.config.max_iterations,
+                "vocab_size": getattr(APP.config, "vocab_size", None),
+                "seq_length": getattr(APP.config, "seq_length", None),
+                "use_vq": getattr(APP.config, "use_vq", None),
+                "use_amp": getattr(APP.config, "use_amp", None),
             }
         }
     except Exception as e:
