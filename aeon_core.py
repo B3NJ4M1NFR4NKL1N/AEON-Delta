@@ -14238,7 +14238,7 @@ class AEONDeltaV3(nn.Module):
                     _cs_val = _coherence_score.mean().item()
                 else:
                     _cs_val = float(_coherence_score)
-                self._cached_coherence_deficit = float(1.0 - _cs_val)
+                self._cached_coherence_deficit = float(max(0.0, min(1.0, 1.0 - _cs_val)))
             else:
                 self._cached_coherence_deficit = 1.0 if _coherence_deficit else 0.0
             # Record coherence deficit in error evolution tracker so the
@@ -15669,7 +15669,7 @@ class AEONDeltaV3(nn.Module):
                     )
                     self._cached_coherence_deficit = max(
                         self._cached_coherence_deficit,
-                        float(1.0 - _post_cs_val),
+                        float(max(0.0, min(1.0, 1.0 - _post_cs_val))),
                     )
         
         # Package outputs
