@@ -2703,6 +2703,21 @@ class AEONConfig:
     provenance_dampen_factor: float = 0.15
     intra_pass_feedback_threshold: float = 0.3
     intra_pass_feedback_scale: float = 0.05
+    # Uncertainty confidence penalty: scales logits toward uniform distribution
+    # when reasoning uncertainty exceeds this threshold (0 = disabled).
+    uncertainty_logit_penalty_threshold: float = 0.5
+    uncertainty_logit_penalty_scale: float = 0.3
+    # Late-pass feedback bus refresh: re-compute feedback after all subsystems
+    # have produced current-pass signals, eliminating cross-pass staleness.
+    enable_late_pass_feedback_refresh: bool = True
+    # Coherence-deficit-aware reconciliation: when ModuleCoherenceVerifier
+    # detects low coherence, tighten CrossValidationReconciler agreement
+    # threshold by this factor (< 1 tightens).
+    coherence_reconciler_tightening: float = 0.8
+    # Provenance safety tightening: when a single module's provenance
+    # contribution exceeds this threshold, tighten the safety threshold
+    # proportionally (max 30% tighter).
+    provenance_safety_tightening_threshold: float = 0.5
     
     # ===== LORA =====
     lora_rank: int = 8
@@ -15155,16 +15170,53 @@ class AEONDeltaV3(nn.Module):
             "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
         })
         
+        # 5d1d. Late-pass feedback bus refresh — now that world model,
+        # coherence verifier, and causal model have all produced current-
+        # pass signals, refresh the cached feedback with up-to-date values.
+        # This eliminates the cross-pass staleness where the early feedback
+        # bus (step 5a-ii) had to use previous-pass surprise, coherence,
+        # and causal_quality because those subsystems hadn't run yet.
+        if self.config.enable_late_pass_feedback_refresh and not fast:
+            with torch.no_grad():
+                self._cached_feedback = self.feedback_bus(
+                    batch_size=B,
+                    device=device,
+                    safety_score=safety_score,
+                    convergence_quality=convergence_quality_scalar,
+                    uncertainty=uncertainty,
+                    subsystem_health=_recovery_health,
+                    convergence_loss_scale=getattr(
+                        self, '_last_convergence_loss_scale', 1.0,
+                    ),
+                    world_model_surprise=self._cached_surprise,
+                    coherence_deficit=self._cached_coherence_deficit,
+                    causal_quality=self._cached_causal_quality,
+                ).detach()
+        
         # 5d2. Cross-validation: reconcile factors vs causal predictions
         reconciliation_results: Dict[str, Any] = {}
         if (self.cross_validator is not None
                 and self.causal_world_model is not None
                 and causal_world_results
                 and not fast):
+            # 5d2-0. Coherence-aware reconciliation — when the coherence
+            # verifier detected a deficit earlier, tighten the reconciler's
+            # agreement threshold so it works harder to align the factor
+            # and causal interpretations.  This links the two independent
+            # verification mechanisms into a cooperative pipeline.
+            _orig_reconcile_threshold = self.cross_validator.agreement_threshold
+            if _coherence_deficit:
+                self.cross_validator.agreement_threshold = min(
+                    _orig_reconcile_threshold,
+                    _orig_reconcile_threshold * self.config.coherence_reconciler_tightening,
+                )
             causal_pred = causal_world_results.get('predicted_state', C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, causal_pred
             )
+            # Restore original threshold after reconciliation
+            if _coherence_deficit:
+                self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
@@ -15998,6 +16050,26 @@ class AEONDeltaV3(nn.Module):
                     "dampen_alpha": _dampen_alpha,
                 })
         
+        # 8h-1. Provenance-weighted safety adaptation — when a single
+        # module dominates the output (high provenance concentration),
+        # tighten the adaptive safety threshold proportionally.  High-
+        # contribution modules should be more carefully validated because
+        # a failure in the dominant module disproportionately affects
+        # the output.  This links the provenance tracker (previously
+        # purely observational) to active safety decision-making.
+        if _contributions and len(_contributions) >= 2 and self.safety_system is not None:
+            _max_contrib_val = max(_contributions.values())
+            _prov_safety_thresh = self.config.provenance_safety_tightening_threshold
+            if _max_contrib_val > _prov_safety_thresh:
+                _provenance_tightening = max(
+                    0.7,
+                    1.0 - 0.3 * (_max_contrib_val - _prov_safety_thresh),
+                )
+                adaptive_safety_threshold = min(
+                    adaptive_safety_threshold,
+                    adaptive_safety_threshold * _provenance_tightening,
+                )
+        
         _causal_decision_chain: Dict[str, Any] = {
             "input_trace_id": input_trace_id,
             "provenance": _provenance,
@@ -16204,6 +16276,28 @@ class AEONDeltaV3(nn.Module):
             )
         else:
             raise ValueError(f"Unknown decode_mode: {decode_mode}")
+        
+        # ===== UNCERTAINTY CONFIDENCE PENALTY =====
+        # When reasoning uncertainty exceeds the threshold, scale logits
+        # toward a uniform distribution to prevent overconfident outputs
+        # from uncertain reasoning states.  This ensures that high
+        # uncertainty propagates into output confidence rather than being
+        # silently discarded, making the system's epistemic state visible
+        # to downstream consumers.  Only applied during inference to avoid
+        # interfering with training gradients.
+        _unc = outputs.get('uncertainty', 0.0)
+        _unc_threshold = self.config.uncertainty_logit_penalty_threshold
+        _unc_scale = self.config.uncertainty_logit_penalty_scale
+        if (_unc > _unc_threshold
+                and _unc_scale > 0
+                and logits is not None
+                and decode_mode == 'inference'):
+            # Compute penalty strength: 0 at threshold, _unc_scale at uncertainty=1
+            _penalty = _unc_scale * (_unc - _unc_threshold) / max(1.0 - _unc_threshold, 1e-6)
+            _penalty = min(_penalty, _unc_scale)
+            # Dampen logits toward zero (uniform after softmax) by mixing
+            # with zeros, effectively raising the temperature.
+            logits = logits * (1.0 - _penalty)
         
         # ===== PACKAGE RESULTS =====
         result = {
