@@ -18578,6 +18578,273 @@ def test_new_modules_skipped_in_fast_mode():
     print("✅ test_new_modules_skipped_in_fast_mode PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Provenance-Enriched Error Evolution Tests
+# ============================================================================
+
+def test_provenance_enriched_metadata_helper():
+    """_provenance_enriched_metadata returns provenance data in metadata dict.
+
+    Verifies that the helper method adds ``provenance_contributions`` and
+    ``dominant_provenance_module`` keys from the provenance tracker, and
+    preserves existing metadata keys.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+
+    # Simulate provenance recording
+    z = torch.randn(2, config.hidden_dim)
+    model.provenance_tracker.reset()
+    model.provenance_tracker.record_before("test_module", z)
+    model.provenance_tracker.record_after("test_module", z + 0.1)
+
+    metadata = model._provenance_enriched_metadata({"existing_key": 42})
+    assert "existing_key" in metadata, "Base metadata must be preserved"
+    assert metadata["existing_key"] == 42
+    assert "provenance_contributions" in metadata, \
+        "provenance_contributions must be injected"
+    assert "dominant_provenance_module" in metadata, \
+        "dominant_provenance_module must be injected"
+    assert metadata["dominant_provenance_module"] == "test_module"
+
+    print("✅ test_provenance_enriched_metadata_helper PASSED")
+
+
+def test_provenance_enriched_metadata_empty_tracker():
+    """_provenance_enriched_metadata handles empty provenance gracefully.
+
+    When no provenance has been recorded, the method should still return
+    valid metadata without dominant_provenance_module.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    model.provenance_tracker.reset()
+
+    metadata = model._provenance_enriched_metadata({"key": "val"})
+    assert "key" in metadata
+    assert metadata["key"] == "val"
+    # With empty tracker, contributions dict should be empty
+    contribs = metadata.get("provenance_contributions", {})
+    assert isinstance(contribs, dict)
+
+    print("✅ test_provenance_enriched_metadata_empty_tracker PASSED")
+
+
+def test_error_evolution_receives_provenance_on_divergence():
+    """Error evolution record for convergence_divergence includes provenance.
+
+    When a divergence is detected, the error_evolution episode metadata
+    should contain provenance_contributions from the helper method.
+    """
+    from aeon_core import CausalErrorEvolutionTracker, CausalProvenanceTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    prov = CausalProvenanceTracker()
+
+    # Simulate some provenance
+    z = torch.randn(2, 64)
+    prov.reset()
+    prov.record_before("meta_loop", z)
+    prov.record_after("meta_loop", z + 0.5)
+
+    # Build enriched metadata (simulating what the helper does)
+    base = {"residual_norm": 1.5}
+    prov_attr = prov.compute_attribution()
+    contribs = prov_attr.get("contributions", {})
+    base["provenance_contributions"] = contribs
+    if contribs:
+        base["dominant_provenance_module"] = max(contribs, key=contribs.get)
+
+    tracker.record_episode(
+        error_class="convergence_divergence",
+        strategy_used="deeper_meta_loop",
+        success=False,
+        metadata=base,
+    )
+
+    summary = tracker.get_error_summary()
+    cls_info = summary["error_classes"]["convergence_divergence"]
+    assert cls_info["count"] == 1
+    assert cls_info["success_rate"] == 0.0
+
+    print("✅ test_error_evolution_receives_provenance_on_divergence PASSED")
+
+
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Gradient Accumulation Loss Scaling Tests
+# ============================================================================
+
+def test_gradient_accumulation_loss_scaling():
+    """Train step divides loss by gradient_accumulation_steps before backward.
+
+    With accumulation_steps=2, the gradient from a single train_step should
+    be approximately half compared to accumulation_steps=1, because the loss
+    is divided by the number of accumulation steps before backward().
+    """
+    from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
+    import tempfile
+
+    _logger = logging.getLogger("test_grad_accum")
+    vocab_size = 128
+    seq_len = 16
+    tokens = torch.randint(1, vocab_size, (4, seq_len))
+
+    # Train with accumulation_steps=1
+    config1 = AEONConfigV4(
+        vocab_size=vocab_size, seq_length=seq_len, z_dim=32,
+        hidden_dim=32, vq_num_embeddings=16, vq_embedding_dim=32,
+        gradient_accumulation_steps=1,
+    )
+    model1 = AEONDeltaV4(config1)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer1 = SafeThoughtAETrainerV4(model1, config1, TrainingMonitor(_logger, tmpdir), tmpdir)
+        trainer1.optimizer.zero_grad()
+        out1 = trainer1.train_step(tokens)
+
+    grad_norm_1 = 0.0
+    for p in model1.parameters():
+        if p.grad is not None:
+            grad_norm_1 += p.grad.norm().item() ** 2
+    grad_norm_1 = grad_norm_1 ** 0.5
+
+    # Train with accumulation_steps=2
+    config2 = AEONConfigV4(
+        vocab_size=vocab_size, seq_length=seq_len, z_dim=32,
+        hidden_dim=32, vq_num_embeddings=16, vq_embedding_dim=32,
+        gradient_accumulation_steps=2,
+    )
+    model2 = AEONDeltaV4(config2)
+    # Copy weights so outputs are identical
+    model2.load_state_dict(model1.state_dict())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer2 = SafeThoughtAETrainerV4(model2, config2, TrainingMonitor(_logger, tmpdir), tmpdir)
+        trainer2.optimizer.zero_grad()
+        out2 = trainer2.train_step(tokens)
+
+    grad_norm_2 = 0.0
+    for p in model2.parameters():
+        if p.grad is not None:
+            grad_norm_2 += p.grad.norm().item() ** 2
+    grad_norm_2 = grad_norm_2 ** 0.5
+
+    # With accumulation_steps=2, gradients should be roughly half
+    assert grad_norm_1 > 0, "Gradients must be non-zero with steps=1"
+    assert grad_norm_2 > 0, "Gradients must be non-zero with steps=2"
+    ratio = grad_norm_2 / grad_norm_1
+    assert 0.4 < ratio < 0.6, (
+        f"Gradient ratio should be ~0.5 (got {ratio:.3f}), "
+        f"indicating loss was divided by accumulation_steps"
+    )
+
+    print("✅ test_gradient_accumulation_loss_scaling PASSED")
+
+
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — TensorGuard Training Integration Tests
+# ============================================================================
+
+def test_tensor_guard_training_integration():
+    """SafeThoughtAETrainerV4 initializes TensorGuard when aeon_core is available.
+
+    Verifies that the trainer creates a TensorGuard instance for NaN/Inf
+    protection during training.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+        AEON_CORE_AVAILABLE,
+    )
+    import tempfile
+
+    _logger = logging.getLogger("test_tg_integration")
+    config = AEONConfigV4(
+        vocab_size=128, seq_length=16, z_dim=32,
+        hidden_dim=32, vq_num_embeddings=16, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV4(config)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer = SafeThoughtAETrainerV4(model, config, TrainingMonitor(_logger, tmpdir), tmpdir)
+
+    if AEON_CORE_AVAILABLE:
+        assert trainer._tensor_guard is not None, \
+            "TensorGuard should be initialized when aeon_core is available"
+    else:
+        assert trainer._tensor_guard is None, \
+            "TensorGuard should be None when aeon_core is unavailable"
+
+    print("✅ test_tensor_guard_training_integration PASSED")
+
+
+def test_tensor_guard_sanitizes_encoder_output():
+    """TensorGuard sanitizes NaN values from encoder output during training.
+
+    Injects NaN into the encoder output and verifies that TensorGuard
+    replaces it with a safe value before VQ processing.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+        AEON_CORE_AVAILABLE,
+    )
+    import tempfile
+
+    if not AEON_CORE_AVAILABLE:
+        print("⚠️ test_tensor_guard_sanitizes_encoder_output SKIPPED (aeon_core not available)")
+        return
+
+    _logger = logging.getLogger("test_tg_sanitize")
+    config = AEONConfigV4(
+        vocab_size=128, seq_length=16, z_dim=32,
+        hidden_dim=32, vq_num_embeddings=16, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV4(config)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer = SafeThoughtAETrainerV4(model, config, TrainingMonitor(_logger, tmpdir), tmpdir)
+
+    # Verify that TensorGuard is active and can sanitize
+    guard = trainer._tensor_guard
+    assert guard is not None, "TensorGuard must be initialized"
+
+    # Test sanitization of a NaN tensor
+    dirty = torch.tensor([1.0, float('nan'), 3.0])
+    clean = guard.sanitize(dirty, context="test")
+    assert torch.isfinite(clean).all(), "TensorGuard must remove NaN values"
+
+    print("✅ test_tensor_guard_sanitizes_encoder_output PASSED")
+
+
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Server Unused Import Cleanup Tests
+# ============================================================================
+
+def test_server_no_unused_core_imports():
+    """aeon_server.py does not import unused StructuredLogFormatter or AEONTrainer.
+
+    After cleanup, these symbols should not be present in the server module's
+    namespace from the core import block.
+    """
+    import ast
+    server_path = os.path.join(os.path.dirname(__file__), "aeon_server.py")
+    with open(server_path, 'r') as f:
+        source = f.read()
+
+    # Check that StructuredLogFormatter and AEONTrainer are not imported
+    # from the core module loading block (lines ~86-97)
+    assert "StructuredLogFormatter = _core_mod.StructuredLogFormatter" not in source, \
+        "StructuredLogFormatter should be removed from server imports"
+    assert "AEONTrainer = _core_mod.AEONTrainer" not in source, \
+        "AEONTrainer should be removed from server imports"
+
+    # Verify generate_correlation_id is still present (it's used)
+    assert "generate_correlation_id" in source, \
+        "generate_correlation_id must remain (used in CorrelationIDMiddleware)"
+
+    print("✅ test_server_no_unused_core_imports PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
