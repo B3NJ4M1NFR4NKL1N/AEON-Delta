@@ -20221,7 +20221,7 @@ def test_ns_violation_propagates_to_feedback_bus():
         enable_catastrophe_detection=False,
         enable_quantum_sim=False,
         enable_ns_consistency_check=True,
-        ns_violation_threshold=1.0,  # Force all predicates to "violate"
+        ns_violation_threshold=1.0,  # High threshold → any sub-perfect consistency triggers violations
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -20262,7 +20262,7 @@ def test_auto_critic_revised_stored_in_memory():
         enable_catastrophe_detection=False,
         enable_quantum_sim=False,
         enable_ns_consistency_check=True,
-        ns_violation_threshold=1.0,  # Force violations to trigger auto-critic
+        ns_violation_threshold=1.0,  # High threshold → triggers auto-critic on any sub-perfect consistency
         enable_auto_critic=True,
         enable_consolidating_memory=True,
     )

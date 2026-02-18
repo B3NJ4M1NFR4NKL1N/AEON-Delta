@@ -16989,8 +16989,8 @@ class AEONDeltaV3(nn.Module):
                     for i in range(_n):
                         if torch.isfinite(z_out[i]).all():
                             self.consolidating_memory.store(z_out[i].detach())
-                except Exception:
-                    pass  # memory storage is best-effort
+                except Exception as _cm_store_err:
+                    logger.debug("Post-critic consolidating memory store failed: %s", _cm_store_err)
             if self.hierarchical_memory is not None:
                 try:
                     _imp = self.importance_scorer(z_out).squeeze(-1)
@@ -17002,8 +17002,8 @@ class AEONDeltaV3(nn.Module):
                                 meta={'importance': float(_imp[i].item()),
                                       'auto_critic_revised': True},
                             )
-                except Exception:
-                    pass  # memory storage is best-effort
+                except Exception as _hm_store_err:
+                    logger.debug("Post-critic hierarchical memory store failed: %s", _hm_store_err)
         
         # 8g. Record aggregated subsystem health in causal trace so that
         # root-cause analysis can link system-wide health degradation
