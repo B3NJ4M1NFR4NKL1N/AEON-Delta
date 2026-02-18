@@ -1333,6 +1333,7 @@ def test_aeon_v3_with_world_model():
         enable_world_model=True, world_model_state_dim=32,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -1357,6 +1358,7 @@ def test_aeon_v3_with_hierarchical_memory():
         enable_hierarchical_memory=True,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -1485,6 +1487,7 @@ def test_forward_input_ids_validation():
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
         enable_tensorboard=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -1530,6 +1533,7 @@ def test_forward_ad_version_check():
             enable_catastrophe_detection=False,
             enable_safety_guardrails=False,
             enable_tensorboard=False,
+            device_str='cpu',
         )
         # Should not raise
         model = AEONDeltaV3(config)
@@ -1542,6 +1546,7 @@ def test_forward_ad_version_check():
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
         enable_tensorboard=False,
+        device_str='cpu',
     )
     model_fd = AEONDeltaV3(config_fd)
     assert model_fd is not None
@@ -2448,6 +2453,7 @@ def test_world_model_surprise_integration():
         enable_world_model=True, world_model_state_dim=32,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -2474,6 +2480,7 @@ def test_memory_retrieval_integration():
         enable_hierarchical_memory=True,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -2500,6 +2507,7 @@ def test_safety_enforcement():
         enable_safety_guardrails=True,
         safety_threshold=0.99,  # Very high threshold to trigger enforcement
         enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -2606,6 +2614,7 @@ def test_safety_blending_not_replacement():
         enable_safety_guardrails=True,
         safety_threshold=0.99,  # Very high to trigger rollback
         enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -4412,6 +4421,7 @@ def test_consistency_gate_forward():
         num_pillars=4, use_amp=False,
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -4440,6 +4450,7 @@ def test_consistency_gate_gradient_flow():
         num_pillars=4, use_amp=False,
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.train()
@@ -4470,6 +4481,7 @@ def test_consistency_gate_in_reasoning_output():
         num_pillars=4, use_amp=False,
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -4499,6 +4511,7 @@ def test_value_net_has_layer_norm():
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
         enable_world_model=True,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
 
@@ -4528,6 +4541,7 @@ def test_importance_scorer_has_layer_norm():
         enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
         enable_hierarchical_memory=True,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
 
@@ -6455,6 +6469,7 @@ def test_trainer_gradient_anomaly_tracking():
         enable_hierarchical_memory=False,
         enable_multimodal=False,
         use_vq=False,
+        device_str='cpu',
     )
     model = AEONDeltaV3(config)
     trainer = AEONTrainer(model, config)
