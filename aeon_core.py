@@ -8974,7 +8974,10 @@ class MetaLearner(nn.Module):
                  num_inner_steps: int = 5, ewc_lambda: float = 1000.0,
                  task_buffer_size: int = 100):
         super().__init__()
-        self.model = model
+        # Store the parent model as a plain attribute (not a child Module)
+        # to avoid circular module-tree traversal when the parent calls
+        # .eval() or .train() on its children.
+        object.__setattr__(self, '_parent_model', model)
         self.inner_lr = inner_lr
         self.num_inner_steps = num_inner_steps
         self.ewc_lambda = ewc_lambda
@@ -8986,6 +8989,11 @@ class MetaLearner(nn.Module):
 
         # Task buffer
         self._task_buffer: deque = deque(maxlen=task_buffer_size)
+
+    @property
+    def model(self) -> nn.Module:
+        """Access the parent model without circular module registration."""
+        return self._parent_model
 
     def compute_fisher(self, data_loader_fn: Callable, num_samples: int = 200):
         """
