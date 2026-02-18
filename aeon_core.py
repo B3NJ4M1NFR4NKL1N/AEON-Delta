@@ -15218,7 +15218,10 @@ class AEONDeltaV3(nn.Module):
             if _mcts_best is not None and torch.isfinite(_mcts_best).all():
                 _mcts_blend = self.config.mcts_blend_weight
                 _mcts_best_expanded = _mcts_best.unsqueeze(0).expand(B, -1)
+                _C_star_pre_mcts = C_star
                 C_star = C_star + _mcts_blend * _mcts_best_expanded
+                if not torch.isfinite(C_star).all():
+                    C_star = _C_star_pre_mcts
             # 5b2-i. MCTS confidence feedback — when the planning search
             # yields low root value (poor expected outcome), escalate
             # uncertainty so that metacognitive cycles activate.  This
@@ -15371,15 +15374,20 @@ class AEONDeltaV3(nn.Module):
             # 5d1c-i. NOTEARS → _cached_causal_quality feedback — update
             # the causal quality cache from NOTEARS DAG loss so that the
             # feedback bus reflects NOTEARS quality even when NeuralCausalModel
-            # is disabled.  Uses min() to retain the worst-case quality when
-            # both causal models are active, ensuring the feedback bus
-            # conditions the meta-loop on the weakest causal signal.
+            # is disabled.  When NeuralCausalModel also ran in this pass
+            # (causal_model_results non-empty), uses min() to retain the
+            # worst-case quality.  When NOTEARS is the only causal model,
+            # uses direct assignment so that quality can recover as the
+            # model improves over training.
             _nt_dag_val = float(notears_dag_loss.item())
             if math.isfinite(_nt_dag_val):
                 _nt_quality = 1.0 / (1.0 + _nt_dag_val)
-                self._cached_causal_quality = min(
-                    self._cached_causal_quality, _nt_quality,
-                )
+                if causal_model_results:
+                    self._cached_causal_quality = min(
+                        self._cached_causal_quality, _nt_quality,
+                    )
+                else:
+                    self._cached_causal_quality = _nt_quality
             # 5d1c-ii. Record NOTEARS in causal trace for provenance
             # traceability — ensures NOTEARS structural analysis is
             # traceable alongside NeuralCausalModel, linking all causal

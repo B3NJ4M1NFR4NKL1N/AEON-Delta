@@ -17939,14 +17939,21 @@ def test_notears_feeds_causal_quality_to_feedback():
     # Confirm initial cached quality is 1.0 (perfect, default)
     assert model._cached_causal_quality == 1.0
 
+    # Set NOTEARS adjacency to non-zero so DAG loss > 0, simulating
+    # a model that has started learning causal structure.  With
+    # zero-initialized W, DAG loss is exactly 0 (perfect DAG).
+    with torch.no_grad():
+        model.notears_causal.W.data = torch.randn(8, 8) * 0.1
+
     input_ids = torch.randint(1, 100, (2, 16))
     with torch.no_grad():
         outputs = model.forward(input_ids, decode_mode='train', fast=False)
 
     # After forward, NOTEARS should have updated _cached_causal_quality
-    # away from the default 1.0 (since DAG loss > 0 in untrained model)
-    assert model._cached_causal_quality <= 1.0, (
-        "_cached_causal_quality was not updated by NOTEARS"
+    # away from the default 1.0 (since DAG loss > 0 with non-zero W).
+    assert model._cached_causal_quality < 1.0, (
+        f"_cached_causal_quality ({model._cached_causal_quality}) was not "
+        f"updated by NOTEARS (expected < 1.0)"
     )
 
     print("✅ test_notears_feeds_causal_quality_to_feedback PASSED")
