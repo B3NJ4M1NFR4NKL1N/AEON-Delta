@@ -7738,7 +7738,7 @@ def test_hr_violation_uncertainty_proportional():
     hr_violations = 3
     ratio = hr_violations / max(num_predicates, 1)
     cap = 0.25
-    boost = min(1.0 - 0.0, ratio * cap)
+    boost = min(1.0, ratio * cap)
     # 3/64 * 0.25 = 0.01171875
     assert boost < 0.02, f"Boost for 3/64 violations should be small, got {boost}"
     # Old behaviour: 3 * 0.15 = 0.45 — way too high

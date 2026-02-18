@@ -15471,7 +15471,9 @@ class AEONDeltaV3(nn.Module):
                     _hr_conclusions, [_hr_conclusions.shape[-1]]
                 )
                 _z_out_norm = F.layer_norm(z_out, [z_out.shape[-1]])
-                _hr_aligned = _hr_norm * _z_out_norm.std(dim=-1, keepdim=True) + _z_out_norm.mean(dim=-1, keepdim=True)
+                _z_std = _z_out_norm.std(dim=-1, keepdim=True)
+                _z_mean = _z_out_norm.mean(dim=-1, keepdim=True)
+                _hr_aligned = _hr_norm * _z_std + _z_mean
                 hr_consistency = self.ns_consistency_checker(_hr_aligned, rules_proxy)
                 hr_violations = hr_consistency["num_violations"].sum().item()
                 if hr_violations > 0:
