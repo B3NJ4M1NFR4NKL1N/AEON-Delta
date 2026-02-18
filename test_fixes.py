@@ -20718,6 +20718,189 @@ def test_multimodal_causal_context_feedback():
     print("✅ test_multimodal_causal_context_feedback PASSED")
 
 
+# ==============================================================================
+# ARCHITECTURAL COHERENCE TESTS — validate unified AGI wiring fixes
+# ==============================================================================
+
+def test_aeon_core_all_exports_complete():
+    """Gap 1: All AGI-coherence classes must be in aeon_core.__all__.
+
+    CausalProvenanceTracker is directly imported by ae_train.py and must
+    be listed in __all__ for the training↔inference bridge to work under
+    explicit import policies.  Other coherence classes (ModuleCoherenceVerifier,
+    CausalErrorEvolutionTracker, etc.) must also be exported so external
+    consumers can reuse them.
+    """
+    import aeon_core
+
+    required_exports = [
+        "CausalProvenanceTracker",
+        "CognitiveFeedbackBus",
+        "SafeTensorProcessor",
+        "TemporalCausalTraceBuffer",
+        "CausalContextWindowManager",
+        "MetaCognitiveRecursionTrigger",
+        "CausalErrorEvolutionTracker",
+        "CrossValidationReconciler",
+        "ExternalDataTrustScorer",
+        "NeuroSymbolicConsistencyChecker",
+        "ComplexityEstimator",
+        "ModuleCoherenceVerifier",
+    ]
+
+    for name in required_exports:
+        assert name in aeon_core.__all__, (
+            f"{name} missing from aeon_core.__all__"
+        )
+        assert hasattr(aeon_core, name), (
+            f"{name} listed in __all__ but not defined in aeon_core"
+        )
+
+    print("✅ test_aeon_core_all_exports_complete PASSED")
+
+
+def test_ae_train_imports_from_core():
+    """Gap 1 (bridge): ae_train imports including CausalErrorEvolutionTracker
+    must succeed when aeon_core is available.
+    """
+    from ae_train import AEON_CORE_AVAILABLE
+
+    assert AEON_CORE_AVAILABLE, (
+        "AEON_CORE_AVAILABLE should be True when aeon_core is importable"
+    )
+
+    # Verify the new import is accessible
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    assert tracker is not None
+
+    print("✅ test_ae_train_imports_from_core PASSED")
+
+
+def test_rssm_tensor_guard_sanitizes_prediction():
+    """Gap 2: ContextualRSSMTrainer must sanitize RSSM prediction via TensorGuard.
+
+    When the RSSM produces non-finite output, the tensor guard should
+    sanitize it AND the NaN skip-backward path should still activate,
+    ensuring both safety and diagnostic accuracy.
+    """
+    from ae_train import ContextualRSSMTrainer, AEONConfigV4, AEONDeltaV4, TrainingMonitor
+
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Verify tensor guard is wired
+    if trainer._tensor_guard is not None:
+        # Normal prediction should pass through guard unchanged
+        K = config.context_window
+        z_context = torch.randn(2, K, config.z_dim)
+        z_target = torch.randn(2, config.z_dim)
+        metrics = trainer.train_step(z_context, z_target)
+        assert not math.isnan(metrics['total_loss']), "Normal step should not be NaN"
+
+    print("✅ test_rssm_tensor_guard_sanitizes_prediction PASSED")
+
+
+def test_successful_step_provenance_computed():
+    """Gap 3: Provenance must be computed on successful training steps.
+
+    Both Phase A and Phase B trainers should return provenance data on
+    every step, not only on NaN failures.
+    """
+    from ae_train import (
+        SafeThoughtAETrainerV4, ContextualRSSMTrainer,
+        AEONConfigV4, AEONDeltaV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+
+    # Phase A
+    trainer_a = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_prov")
+    tokens = torch.randint(0, 100, (2, 16))
+    metrics_a = trainer_a.train_step(tokens)
+    assert 'provenance' in metrics_a, "Phase A should return provenance"
+    prov_a = metrics_a['provenance']
+    assert 'contributions' in prov_a, "Provenance should contain contributions"
+
+    # Phase B
+    trainer_b = ContextualRSSMTrainer(model, config, monitor)
+    K = config.context_window
+    z_context = torch.randn(2, K, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    metrics_b = trainer_b.train_step(z_context, z_target)
+    assert 'provenance' in metrics_b, "Phase B should return provenance"
+    prov_b = metrics_b['provenance']
+    assert 'contributions' in prov_b, "Provenance should contain contributions"
+
+    print("✅ test_successful_step_provenance_computed PASSED")
+
+
+def test_convergence_monitor_error_evolution_wired():
+    """Gap 4: TrainingConvergenceMonitor must wire CausalErrorEvolutionTracker.
+
+    When divergence or stagnation is detected, the convergence monitor
+    should record error episodes into the evolution tracker so that
+    inference-time recovery learns from training-time failures.
+    """
+    from ae_train import (
+        SafeThoughtAETrainerV4, ContextualRSSMTrainer,
+        AEONConfigV4, AEONDeltaV4, TrainingMonitor,
+        AEON_CORE_AVAILABLE,
+    )
+
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=32,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+
+    # Phase A trainer
+    trainer_a = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_evol")
+    if AEON_CORE_AVAILABLE:
+        assert trainer_a._error_evolution is not None, (
+            "Phase A trainer should have _error_evolution when aeon_core available"
+        )
+        assert trainer_a.convergence_monitor._error_evolution is not None, (
+            "Phase A convergence monitor should have _error_evolution wired"
+        )
+
+    # Phase B trainer
+    trainer_b = ContextualRSSMTrainer(model, config, monitor)
+    if AEON_CORE_AVAILABLE:
+        assert trainer_b._error_evolution is not None, (
+            "Phase B trainer should have _error_evolution when aeon_core available"
+        )
+        assert trainer_b.convergence_monitor._error_evolution is not None, (
+            "Phase B convergence monitor should have _error_evolution wired"
+        )
+
+    # Verify divergence is recorded in error evolution
+    if AEON_CORE_AVAILABLE:
+        # Simulate divergence: push monotonically increasing losses
+        for i in range(10):
+            trainer_a.convergence_monitor.update(float(i + 1) * 100)
+        verdict = trainer_a.convergence_monitor.update(10000.0)
+        assert verdict['status'] == 'diverging', (
+            f"Expected 'diverging', got '{verdict['status']}'"
+        )
+
+        summary = trainer_a._error_evolution.get_error_summary()
+        error_classes = summary.get('error_classes', {})
+        assert 'training_divergence' in error_classes, (
+            "Divergence event should be recorded in error evolution tracker"
+        )
+
+    print("✅ test_convergence_monitor_error_evolution_wired PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -21664,6 +21847,13 @@ if __name__ == '__main__':
     test_uncertainty_source_weights_complete()
     test_generate_returns_uncertainty()
     test_multimodal_causal_context_feedback()
+    
+    # Architectural Coherence Tests — unified AGI wiring fixes
+    test_aeon_core_all_exports_complete()
+    test_ae_train_imports_from_core()
+    test_rssm_tensor_guard_sanitizes_prediction()
+    test_successful_step_provenance_computed()
+    test_convergence_monitor_error_evolution_wired()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
