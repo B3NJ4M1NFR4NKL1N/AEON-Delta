@@ -84,9 +84,8 @@ CORE_LOAD_ERROR = ""
 # Derive module name from the resolved file (aeon_core or core)
 _core_module_name = CORE_PATH.stem  # "aeon_core" or "core"
 try:
-    _core_mod = __import__(_core_module_name, fromlist=[
-        "AEONConfig", "AEONDeltaV3", "AEONTrainer", "set_seed", "AEONTestSuite"
-    ])
+    import importlib
+    _core_mod = importlib.import_module(_core_module_name)
     AEONConfig = _core_mod.AEONConfig
     AEONDeltaV3 = _core_mod.AEONDeltaV3
     AEONTrainer = _core_mod.AEONTrainer
