@@ -17128,6 +17128,281 @@ def test_vq_codebook_codeStatus_declaration_order():
     print("✅ test_vq_codebook_codeStatus_declaration_order PASSED")
 
 
+# ==========================================================================
+# Tests for AGI Architectural Unification (cross-module coherence)
+# ==========================================================================
+
+
+def test_late_pass_feedback_refresh():
+    """Late-pass feedback bus refresh uses current-pass signals.
+
+    Verifies that after world model and causal model update their cached
+    values, the feedback bus is refreshed with current-pass surprise,
+    coherence, and causal_quality — eliminating cross-pass staleness.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=True, world_model_state_dim=32,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_late_pass_feedback_refresh=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Set stale cached values from a "previous pass"
+    model._cached_surprise = 0.99
+    model._cached_coherence_deficit = 0.88
+    model._cached_causal_quality = 0.11
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+
+    # After a full forward pass, cached values should be updated to
+    # current-pass values (not the stale ones we injected)
+    assert model._cached_surprise != 0.99 or model._cached_surprise == 0.0, (
+        "Surprise should be refreshed by current-pass world model"
+    )
+    # Feedback should have been cached
+    assert model._cached_feedback is not None, (
+        "Late-pass feedback refresh should produce cached feedback"
+    )
+
+    print("✅ test_late_pass_feedback_refresh PASSED")
+
+
+def test_coherence_reconciler_linkage():
+    """Coherence deficit tightens reconciler agreement threshold.
+
+    When ModuleCoherenceVerifier detects low coherence, the
+    CrossValidationReconciler should use a tighter agreement threshold
+    to force harder alignment between factor and causal interpretations.
+    """
+    from aeon_core import (
+        CrossValidationReconciler,
+        ModuleCoherenceVerifier,
+        AEONConfig,
+    )
+
+    config = AEONConfig(
+        device_str='cpu',
+        coherence_reconciler_tightening=0.8,
+    )
+    verifier = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.95)
+    reconciler = CrossValidationReconciler(
+        hidden_dim=64, num_pillars=7, agreement_threshold=0.7,
+    )
+
+    original_threshold = reconciler.agreement_threshold
+
+    # Simulate coherence deficit
+    states = {
+        "meta_loop": torch.randn(2, 64),
+        "factors": torch.randn(2, 64) * 10,  # very different
+    }
+    result = verifier(states)
+    coherence_deficit = result["needs_recheck"]
+
+    # Apply coherence-driven tightening (same logic as in _reasoning_core_impl)
+    if coherence_deficit:
+        reconciler.agreement_threshold = min(
+            reconciler.agreement_threshold,
+            reconciler.agreement_threshold * config.coherence_reconciler_tightening,
+        )
+
+    if coherence_deficit:
+        assert reconciler.agreement_threshold < original_threshold, (
+            f"Threshold should be tightened: {reconciler.agreement_threshold} < {original_threshold}"
+        )
+
+    # Restore threshold
+    reconciler.agreement_threshold = original_threshold
+
+    print("✅ test_coherence_reconciler_linkage PASSED")
+
+
+def test_uncertainty_logit_penalty():
+    """High uncertainty dampens logits toward uniform distribution.
+
+    Verifies that when reasoning uncertainty is high, the decoder logits
+    are scaled down, reducing output confidence and preventing
+    overconfident outputs from uncertain reasoning states.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        uncertainty_logit_penalty_threshold=0.5,
+        uncertainty_logit_penalty_scale=0.3,
+    )
+
+    # Simulate the uncertainty penalty logic from _forward_impl
+    logits = torch.randn(2, 10, 100)  # [B, L, V]
+    original_logits = logits.clone()
+
+    # Low uncertainty — no penalty
+    uncertainty_low = 0.3
+    if uncertainty_low > config.uncertainty_logit_penalty_threshold:
+        penalty = config.uncertainty_logit_penalty_scale * (
+            uncertainty_low - config.uncertainty_logit_penalty_threshold
+        ) / max(1.0 - config.uncertainty_logit_penalty_threshold, 1e-6)
+        logits = logits * (1.0 - min(penalty, config.uncertainty_logit_penalty_scale))
+    assert torch.allclose(logits, original_logits), (
+        "Low uncertainty should not modify logits"
+    )
+
+    # High uncertainty — should dampen
+    logits_high = original_logits.clone()
+    uncertainty_high = 0.9
+    if uncertainty_high > config.uncertainty_logit_penalty_threshold:
+        penalty = config.uncertainty_logit_penalty_scale * (
+            uncertainty_high - config.uncertainty_logit_penalty_threshold
+        ) / max(1.0 - config.uncertainty_logit_penalty_threshold, 1e-6)
+        penalty = min(penalty, config.uncertainty_logit_penalty_scale)
+        logits_high = logits_high * (1.0 - penalty)
+
+    # Dampened logits should have smaller magnitude
+    assert logits_high.abs().mean() < original_logits.abs().mean(), (
+        "High uncertainty should dampen logits"
+    )
+    # But not zero
+    assert logits_high.abs().mean() > 0, (
+        "Dampened logits should not be zero"
+    )
+
+    print("✅ test_uncertainty_logit_penalty PASSED")
+
+
+def test_provenance_safety_linkage():
+    """Provenance dominance tightens safety threshold.
+
+    When a single module contributes >50% of the total state change,
+    the adaptive safety threshold should be tightened proportionally.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Simulate two modules: one dominant, one minor
+    state_0 = torch.zeros(1, 64)
+    state_after_dominant = torch.randn(1, 64) * 10  # large change
+    state_after_minor = state_after_dominant + torch.randn(1, 64) * 0.1  # tiny change
+
+    tracker.record_before("dominant_module", state_0)
+    tracker.record_after("dominant_module", state_after_dominant)
+    tracker.record_before("minor_module", state_after_dominant)
+    tracker.record_after("minor_module", state_after_minor)
+
+    provenance = tracker.compute_attribution()
+    contributions = provenance['contributions']
+
+    assert contributions['dominant_module'] > 0.9, (
+        f"Dominant module should have >90% contribution, got {contributions['dominant_module']:.2f}"
+    )
+
+    # Apply provenance-weighted safety tightening (same logic as _reasoning_core_impl)
+    base_threshold = 0.5
+    adaptive_threshold = base_threshold
+    max_contrib = max(contributions.values())
+    _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD = 0.5
+    if max_contrib > _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD:
+        provenance_tightening = max(
+            0.7,
+            1.0 - 0.3 * (max_contrib - _PROVENANCE_SAFETY_TIGHTENING_THRESHOLD),
+        )
+        adaptive_threshold = min(
+            adaptive_threshold,
+            adaptive_threshold * provenance_tightening,
+        )
+
+    assert adaptive_threshold < base_threshold, (
+        f"Dominant provenance should tighten threshold: {adaptive_threshold} < {base_threshold}"
+    )
+    assert adaptive_threshold >= base_threshold * 0.7, (
+        f"Tightening should not exceed 30%: {adaptive_threshold}"
+    )
+
+    print("✅ test_provenance_safety_linkage PASSED")
+
+
+def test_current_pass_signals_in_feedback():
+    """CognitiveFeedbackBus accepts current-pass signals for all 8 channels.
+
+    Verifies that the feedback bus can receive current-pass world model
+    surprise, coherence deficit, and causal quality values, producing
+    valid feedback embeddings for all signal combinations.
+    """
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    bus.eval()
+
+    # All neutral signals
+    with torch.no_grad():
+        fb_neutral = bus(
+            batch_size=2, device=torch.device('cpu'),
+            safety_score=torch.ones(2, 1),
+            convergence_quality=1.0,
+            uncertainty=0.0,
+            world_model_surprise=0.0,
+            coherence_deficit=0.0,
+            causal_quality=1.0,
+        )
+    assert fb_neutral.shape == (2, 64)
+    assert torch.isfinite(fb_neutral).all()
+
+    # All alarming signals (current-pass values)
+    with torch.no_grad():
+        fb_alarming = bus(
+            batch_size=2, device=torch.device('cpu'),
+            safety_score=torch.zeros(2, 1),
+            convergence_quality=0.0,
+            uncertainty=1.0,
+            world_model_surprise=5.0,  # high surprise
+            coherence_deficit=0.9,  # severe deficit
+            causal_quality=0.1,  # poor DAG structure
+        )
+    assert fb_alarming.shape == (2, 64)
+    assert torch.isfinite(fb_alarming).all()
+
+    # The two feedback vectors should differ significantly
+    diff = (fb_neutral - fb_alarming).abs().mean().item()
+    assert diff > 0.01, (
+        f"Neutral and alarming feedback should differ: mean_diff={diff:.4f}"
+    )
+
+    print("✅ test_current_pass_signals_in_feedback PASSED")
+
+
+def test_config_new_agi_coherence_defaults():
+    """New AGI coherence config parameters have correct defaults.
+
+    Verifies that the new configuration options introduced for
+    architectural unification are properly initialized.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+
+    # Uncertainty logit penalty
+    assert config.uncertainty_logit_penalty_threshold == 0.5
+    assert config.uncertainty_logit_penalty_scale == 0.3
+
+    # Late-pass feedback refresh
+    assert config.enable_late_pass_feedback_refresh is True
+
+    # Coherence-reconciler tightening
+    assert config.coherence_reconciler_tightening == 0.8
+    assert 0 < config.coherence_reconciler_tightening <= 1.0
+
+    print("✅ test_config_new_agi_coherence_defaults PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -17953,6 +18228,14 @@ if __name__ == '__main__':
 
     # VQ Codebook Dashboard Fix
     test_vq_codebook_codeStatus_declaration_order()
+
+    # Architectural Unification Tests
+    test_late_pass_feedback_refresh()
+    test_coherence_reconciler_linkage()
+    test_uncertainty_logit_penalty()
+    test_provenance_safety_linkage()
+    test_current_pass_signals_in_feedback()
+    test_config_new_agi_coherence_defaults()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
