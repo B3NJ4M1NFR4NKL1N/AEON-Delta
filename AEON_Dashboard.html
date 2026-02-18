@@ -3812,6 +3812,7 @@ async function loadVQ() {
       `<div class="vq-topk-row"><span style="width:50px;color:var(--accent)">Code ${t.code}</span><div class="tk-bar"><div class="tk-fill" style="width:${(t.usage/topMax*100).toFixed(1)}%;background:var(--accent)"></div></div><span style="width:60px;text-align:right;color:var(--text2)">${t.usage.toFixed(1)}</span></div>`
     ).join('') || '<span style="color:var(--text3)">—</span>';
 
+    const codeStatus = d.code_status || [];
     const botUsed = d.bottom_k_unused || [];
     document.getElementById('vq-topk-unused').innerHTML = botUsed.map(t => {
       const clr = codeStatus[t.code] === 'dead' ? 'var(--danger)' : 'var(--warn)';
@@ -3839,7 +3840,6 @@ async function loadVQ() {
     hm.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     hm.style.gap = '2px';
     hm.innerHTML = '';
-    const codeStatus = d.code_status || [];
     for(let i=0;i<n;i++) {
       const c = counts[i] || 0;
       const intensity = c / maxC;
