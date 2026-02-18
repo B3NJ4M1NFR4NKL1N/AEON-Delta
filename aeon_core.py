@@ -2658,6 +2658,7 @@ class AEONConfig:
     metacognitive_max_recursions: int = 2
     metacognitive_tightening_factor: float = 0.5
     metacognitive_extra_iterations: int = 10
+    metacognitive_blend_alpha: float = 0.2
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
 
@@ -13610,6 +13611,7 @@ class AEONDeltaV3(nn.Module):
                     'coherence_score': None,
                     'dominant_provenance_module': None,
                     'uncertainty_sources': {'pipeline_error': 1.0},
+                    'auto_critic_score': None,
                 },
                 'uncertainty_sources': {'pipeline_error': 1.0},
                 'auto_critic_final_score': None,
@@ -15686,6 +15688,7 @@ class AEONDeltaV3(nn.Module):
                 if _provenance.get("contributions") else None
             ),
             "uncertainty_sources": uncertainty_sources,
+            "auto_critic_score": _auto_critic_final_score,
         }
         
         outputs = {

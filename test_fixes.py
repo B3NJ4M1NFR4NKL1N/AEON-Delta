@@ -7347,7 +7347,7 @@ def test_anderson_solve_nonfinite_fallback():
     """
     from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
 
-    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     meta = ProvablyConvergentMetaLoop(config=config, anderson_memory=3)
 
     B, m = 2, 3
@@ -7703,7 +7703,7 @@ def test_agi_coherence_config_defaults():
     """New AGI coherence config fields have correct defaults."""
     from aeon_core import AEONConfig
 
-    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     assert config.enable_causal_context is False
     assert config.enable_cross_validation is False
     assert config.enable_external_trust is False
@@ -7909,7 +7909,7 @@ def test_new_config_defaults():
     """New config fields have correct defaults."""
     from aeon_core import AEONConfig
 
-    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     assert config.enable_auto_critic is False
     assert config.auto_critic_threshold == 0.85
     assert config.auto_critic_max_iterations == 3
@@ -9733,7 +9733,7 @@ def test_lambda_causal_dag_config():
     """Verify lambda_causal_dag config default exists."""
     from aeon_core import AEONConfig
 
-    config = AEONConfig(hidden_dim=16, z_dim=8, vq_embedding_dim=8)
+    config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     assert hasattr(config, 'lambda_causal_dag')
     assert config.lambda_causal_dag == 0.01
 
