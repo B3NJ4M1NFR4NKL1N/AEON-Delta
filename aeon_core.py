@@ -13781,6 +13781,38 @@ class AEONDeltaV3(nn.Module):
             flat = F.pad(flat, (0, target_dim - flat.numel()))
         return flat.unsqueeze(0).to(device)
 
+    def _provenance_enriched_metadata(
+        self, base_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build metadata dict enriched with current provenance attribution.
+
+        Computes a partial provenance snapshot from the tracker and merges it
+        into *base_metadata* so that :class:`CausalErrorEvolutionTracker` can
+        correlate error episodes with the modules that were dominant at the
+        time the error occurred.  This links error-learning to per-module
+        attribution, closing the gap between provenance tracking and
+        evolutionary error recovery.
+
+        Args:
+            base_metadata: Optional existing metadata dict to enrich.
+
+        Returns:
+            Metadata dict with ``provenance_contributions`` and
+            ``dominant_provenance_module`` keys added.
+        """
+        metadata = dict(base_metadata) if base_metadata else {}
+        try:
+            prov = self.provenance_tracker.compute_attribution()
+            contributions = prov.get("contributions", {})
+            metadata["provenance_contributions"] = contributions
+            if contributions:
+                metadata["dominant_provenance_module"] = max(
+                    contributions, key=contributions.get,
+                )
+        except Exception:
+            pass  # provenance enrichment is best-effort
+        return metadata
+
     def _compute_diversity(
         self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
@@ -14429,9 +14461,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="convergence_divergence",
                     strategy_used="deeper_meta_loop",
                     success=False,
-                    metadata={
+                    metadata=self._provenance_enriched_metadata({
                         "residual_norm": residual_norm_scalar,
-                    },
+                    }),
                 )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
@@ -14575,7 +14607,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="diversity_collapse",
                     strategy_used="uncertainty_escalation",
                     success=True,
-                    metadata={"diversity_score": _diversity_score},
+                    metadata=self._provenance_enriched_metadata(
+                        {"diversity_score": _diversity_score},
+                    ),
                 )
         
         # 5. Safety and self-reporting (delegated to helper)
@@ -15004,9 +15038,9 @@ class AEONDeltaV3(nn.Module):
                         error_class="metacognitive_rerun",
                         strategy_used="deeper_meta_loop",
                         success=_metacog_accepted,
-                        metadata={
+                        metadata=self._provenance_enriched_metadata({
                             "triggers": metacognitive_info.get("triggers_active", []),
-                        },
+                        }),
                     )
         
         # 5b. World model — surprise-driven integration
@@ -15151,7 +15185,9 @@ class AEONDeltaV3(nn.Module):
                         error_class="world_model_prediction_error",
                         strategy_used="uncertainty_escalation",
                         success=True,
-                        metadata={"mean_surprise": _mean_surprise},
+                        metadata=self._provenance_enriched_metadata(
+                            {"mean_surprise": _mean_surprise},
+                        ),
                     )
                 # 5b1b-ii. Surprise-driven causal cross-check — when the
                 # world model prediction error exceeds the threshold, record
@@ -16341,7 +16377,9 @@ class AEONDeltaV3(nn.Module):
                         error_class=f"subsystem_degraded_{_sub_name}",
                         strategy_used="integrity_monitor",
                         success=False,
-                        metadata={"health": _sub_health},
+                        metadata=self._provenance_enriched_metadata(
+                            {"health": _sub_health},
+                        ),
                     )
         
         # 8f. Post-integration coherence verification — a second coherence

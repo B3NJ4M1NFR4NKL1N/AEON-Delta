@@ -88,10 +88,8 @@ try:
     _core_mod = importlib.import_module(_core_module_name)
     AEONConfig = _core_mod.AEONConfig
     AEONDeltaV3 = _core_mod.AEONDeltaV3
-    AEONTrainer = _core_mod.AEONTrainer
     set_seed = _core_mod.set_seed
     AEONTestSuite = _core_mod.AEONTestSuite
-    StructuredLogFormatter = _core_mod.StructuredLogFormatter
     TelemetryCollector = _core_mod.TelemetryCollector
     generate_correlation_id = _core_mod.generate_correlation_id
     CORE_LOADED = True

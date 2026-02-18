@@ -53,11 +53,15 @@ __all__ = [
 # --- Bridge to aeon_core cognitive architecture ---
 # Import core cognitive components for unified coherence verification,
 # causal traceability, and meta-cognitive cycle integration during training.
+# TensorGuard extends the inference pipeline's NaN/Inf protection to
+# training, ensuring tensor safety is consistent across both pipelines.
 try:
     from aeon_core import (
         CausalProvenanceTracker,
         ConvergenceMonitor,
         SemanticErrorClassifier,
+        TensorGuard,
+        NaNPolicy,
     )
     AEON_CORE_AVAILABLE = True
 except ImportError:
@@ -1339,6 +1343,13 @@ class SafeThoughtAETrainerV4:
         self._error_classifier = (
             SemanticErrorClassifier() if AEON_CORE_AVAILABLE else None
         )
+        # TensorGuard for NaN/Inf protection during training — extends
+        # the inference pipeline's tensor safety to the training loop,
+        # ensuring numerical consistency across both pipelines.
+        self._tensor_guard = (
+            TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
+            if AEON_CORE_AVAILABLE else None
+        )
         
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
@@ -1392,10 +1403,16 @@ class SafeThoughtAETrainerV4:
             )
             return outputs
         
+        # Scale loss by gradient accumulation steps so that accumulated
+        # gradients are equivalent to a single large-batch gradient.
+        # Without this scaling, the effective loss is multiplied by
+        # gradient_accumulation_steps, causing training instability.
+        scaled_loss = total_loss / self.config.gradient_accumulation_steps
+        
         if self.use_amp:
-            self.scaler.scale(total_loss).backward()
+            self.scaler.scale(scaled_loss).backward()
         else:
-            total_loss.backward()
+            scaled_loss.backward()
         
         return outputs
     
@@ -1405,6 +1422,10 @@ class SafeThoughtAETrainerV4:
         self.provenance.reset()
 
         z = self.model.encode(tokens)
+        # Sanitize encoder output to prevent NaN/Inf from propagating
+        # into VQ and decoder, matching the inference pipeline's safety.
+        if self._tensor_guard is not None:
+            z = self._tensor_guard.sanitize(z, context="training_encoder_output")
         # Record encoder output as both before/after VQ input
         self.provenance.record_before("vq", z)
         quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
