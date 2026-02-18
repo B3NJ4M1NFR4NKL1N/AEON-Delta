@@ -13702,11 +13702,24 @@ class AEONDeltaV3(nn.Module):
 
             # Preserve convergence monitor state — if the meta-loop completed
             # before the exception, the monitor already has a meaningful verdict.
-            # Fall back to 'unknown' only when the history is truly empty.
-            if self.convergence_monitor.history:
-                _fallback_verdict = self.convergence_monitor.check(
-                    self.convergence_monitor.history[-1]
-                )
+            # Read the last verdict without calling check() to avoid adding a
+            # duplicate entry that would skew the monitor's sliding window.
+            if len(self.convergence_monitor.history) >= 3:
+                _hist = self.convergence_monitor.history
+                _ratios = [
+                    _hist[i] / max(_hist[i - 1], 1e-12)
+                    for i in range(1, len(_hist))
+                ]
+                _avg = float(np.mean(_ratios))
+                _last = _hist[-1]
+                if _avg < 1.0 and _last < self.convergence_monitor.threshold:
+                    _fallback_verdict = {'status': 'converged', 'certified': True}
+                elif _avg >= 1.0:
+                    _fallback_verdict = {'status': 'diverging', 'certified': False}
+                else:
+                    _fallback_verdict = {'status': 'converging', 'certified': False}
+            elif self.convergence_monitor.history:
+                _fallback_verdict = {'status': 'warmup', 'certified': False}
             else:
                 _fallback_verdict = {'status': 'unknown', 'certified': False}
 
@@ -13747,11 +13760,15 @@ class AEONDeltaV3(nn.Module):
 
             # Store recovered state in ConsolidatingMemory so that the
             # memory pipeline remains populated even after error recovery.
+            # recovered_value may differ in batch size from B when the
+            # ErrorRecoveryManager returns a reshaped or partial tensor.
             if (self.consolidating_memory is not None
                     and recovered_value is not None):
                 try:
-                    for i in range(min(B, recovered_value.shape[0])):
-                        if torch.isfinite(recovered_value[i]).all():
+                    _n = min(B, recovered_value.shape[0])
+                    _valid = torch.isfinite(recovered_value[:_n]).all(dim=-1)
+                    for i in range(_n):
+                        if _valid[i]:
                             self.consolidating_memory.store(
                                 recovered_value[i].detach()
                             )
