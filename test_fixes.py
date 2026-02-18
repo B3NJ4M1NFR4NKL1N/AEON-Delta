@@ -19223,8 +19223,7 @@ def test_uncertainty_consolidation_in_reasoning_core():
         "in the causal trace"
     )
     # Must include sources dict in metadata
-    assert '"sources": dict(uncertainty_sources)' in source or \
-           '"sources": dict(uncertainty_sources),' in source, (
+    assert 'dict(uncertainty_sources)' in source, (
         "Uncertainty sources must be passed to causal trace metadata"
     )
 
@@ -19322,8 +19321,12 @@ def test_rssm_trainer_provenance_in_output():
     )
     prov = metrics["provenance"]
     assert "contributions" in prov
-    # RSSM should appear in provenance
-    assert "rssm" in prov.get("contributions", {}) or "rssm" in prov.get("order", [])
+    # RSSM should appear in provenance contributions — the canonical
+    # structure uses a 'contributions' dict with module names as keys.
+    assert "rssm" in prov["contributions"], (
+        f"Expected 'rssm' in provenance contributions, "
+        f"got keys: {list(prov['contributions'].keys())}"
+    )
 
     print("✅ test_rssm_trainer_provenance_in_output PASSED")
 

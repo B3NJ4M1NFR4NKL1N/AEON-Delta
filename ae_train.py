@@ -1718,8 +1718,10 @@ class ContextualRSSMTrainer:
         self.model.rssm.train()
         self.provenance.reset()
         
-        # Track RSSM prediction provenance
-        self.provenance.record_before("rssm", z_context[:, -1, :])
+        # Track RSSM prediction provenance using mean-pooled context
+        # (the RSSM processes the full [B, K, D] context window, so we
+        # mean-pool over K to produce a [B, D] summary for provenance).
+        self.provenance.record_before("rssm", z_context.mean(dim=1))
         pred = self.model.rssm(z_context)
         self.provenance.record_after("rssm", pred)
         
