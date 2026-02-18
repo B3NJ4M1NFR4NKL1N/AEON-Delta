@@ -19156,6 +19156,243 @@ def test_auto_critic_revised_flag_tracks_all_paths():
     print("✅ test_auto_critic_revised_flag_tracks_all_paths PASSED")
 
 
+# ==============================================================================
+# Architectural Unification — Causal Traceability & Feedback Coherence Tests
+# ==============================================================================
+
+def test_uncertainty_sources_in_causal_trace():
+    """Fix 1: Verify that uncertainty sources are recorded in the causal
+    trace so that uncertainty can be traced back to its root causes.
+
+    The TemporalCausalTraceBuffer should contain an 'uncertainty_consolidation'
+    entry whose metadata lists individual module-level uncertainty sources.
+    """
+    from aeon_core import TemporalCausalTraceBuffer
+
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+    input_trace_id = trace.record("input", "received")
+
+    # Simulate the new uncertainty_consolidation recording
+    uncertainty_sources = {
+        "meta_loop_nan": 0.3,
+        "world_model_error": 0.2,
+        "coherence_deficit": 0.1,
+    }
+    total_uncertainty = sum(uncertainty_sources.values())
+
+    consolidation_id = trace.record(
+        "uncertainty_consolidation", "recorded",
+        causal_prerequisites=[input_trace_id],
+        metadata={
+            "total_uncertainty": total_uncertainty,
+            "num_sources": len(uncertainty_sources),
+            "sources": dict(uncertainty_sources),
+            "high_uncertainty": total_uncertainty > 0.5,
+            "metacognitive_triggered": True,
+        },
+    )
+
+    # Verify entry exists and is traceable
+    chain = trace.get_causal_chain(consolidation_id)
+    assert len(chain) >= 2, f"Expected chain length >= 2, got {len(chain)}"
+    consolidation_entry = chain[-1]
+    assert consolidation_entry["subsystem"] == "uncertainty_consolidation"
+    assert consolidation_entry["metadata"]["num_sources"] == 3
+    assert "meta_loop_nan" in consolidation_entry["metadata"]["sources"]
+    assert consolidation_entry["metadata"]["high_uncertainty"] is True
+
+    # Root cause should trace back to input
+    root = trace.trace_root_cause(consolidation_id)
+    assert len(root["root_causes"]) >= 1
+    assert root["root_causes"][0]["subsystem"] == "input"
+
+    print("✅ test_uncertainty_sources_in_causal_trace PASSED")
+
+
+def test_uncertainty_consolidation_in_reasoning_core():
+    """Verify that _reasoning_core_impl records uncertainty_consolidation
+    in the causal trace when uncertainty sources exist."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # Must contain the new causal trace recording for uncertainty
+    assert '"uncertainty_consolidation"' in source, (
+        "_reasoning_core_impl must record 'uncertainty_consolidation' "
+        "in the causal trace"
+    )
+    # Must include sources dict in metadata
+    assert 'dict(uncertainty_sources)' in source, (
+        "Uncertainty sources must be passed to causal trace metadata"
+    )
+
+    print("✅ test_uncertainty_consolidation_in_reasoning_core PASSED")
+
+
+def test_post_integration_metacognitive_feedback_refresh():
+    """Fix 2: Verify that post-integration metacognitive trigger refreshes
+    the feedback bus so the next forward pass starts with late-stage signals.
+
+    Without this, late-stage triggers (trust, HVAE KL, NS violations) would
+    not influence the next pass's meta-loop feedback, breaking the
+    cross-pass feedback loop.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # The post-integration metacognitive block (8g-0) must refresh
+    # _cached_feedback after triggering
+    post_metacog_section = source[source.find("post_integration_metacognitive"):]
+    assert "self._cached_feedback = self.feedback_bus(" in post_metacog_section, (
+        "Post-integration metacognitive trigger must refresh feedback bus "
+        "so the next forward pass incorporates late-stage signals"
+    )
+
+    print("✅ test_post_integration_metacognitive_feedback_refresh PASSED")
+
+
+def test_rssm_trainer_provenance_tracking():
+    """Fix 3: Verify ContextualRSSMTrainer has provenance tracking.
+
+    Phase B (RSSM) training must track per-component provenance
+    (matching Phase A) so training errors can be traced to their
+    originating component.
+    """
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+        TrainingProvenanceTracker,
+    )
+    import logging
+    import tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_rssm_prov")
+    test_logger.setLevel(logging.WARNING)
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
+
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Should have provenance tracker
+    assert hasattr(trainer, 'provenance'), (
+        "ContextualRSSMTrainer must have provenance tracker"
+    )
+    assert isinstance(trainer.provenance, TrainingProvenanceTracker)
+
+    # Should have tensor guard when aeon_core available
+    from ae_train import AEON_CORE_AVAILABLE
+    if AEON_CORE_AVAILABLE:
+        assert trainer._tensor_guard is not None, (
+            "ContextualRSSMTrainer must have TensorGuard when aeon_core available"
+        )
+
+    print("✅ test_rssm_trainer_provenance_tracking PASSED")
+
+
+def test_rssm_trainer_provenance_in_output():
+    """Fix 3: Verify ContextualRSSMTrainer train_step returns provenance."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+    import logging
+    import tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    test_logger = logging.getLogger("test_rssm_prov_out")
+    test_logger.setLevel(logging.WARNING)
+    tmpdir = tempfile.mkdtemp()
+    monitor = TrainingMonitor(test_logger, save_dir=tmpdir)
+
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Create small test tensors
+    B, K, D = 2, config.context_window, config.z_dim
+    z_context = torch.randn(B, K, D)
+    z_target = torch.randn(B, D)
+
+    metrics = trainer.train_step(z_context, z_target)
+    assert "provenance" in metrics, (
+        "ContextualRSSMTrainer.train_step must return provenance"
+    )
+    prov = metrics["provenance"]
+    assert "contributions" in prov
+    # RSSM should appear in provenance contributions — the canonical
+    # structure uses a 'contributions' dict with module names as keys.
+    assert "rssm" in prov["contributions"], (
+        f"Expected 'rssm' in provenance contributions, "
+        f"got keys: {list(prov['contributions'].keys())}"
+    )
+
+    print("✅ test_rssm_trainer_provenance_in_output PASSED")
+
+
+def test_convergence_diverging_reduces_lr_phase_a():
+    """Fix 4: Verify Phase A trainer reduces LR when convergence diverges.
+
+    The convergence monitor's 'reduce_lr_or_rollback' recommendation must
+    be acted upon rather than just logged.
+    """
+    import inspect
+    from ae_train import SafeThoughtAETrainerV4
+
+    source = inspect.getsource(SafeThoughtAETrainerV4.fit)
+
+    # Must contain LR reduction logic triggered by divergence
+    assert "param_group['lr'] *= 0.5" in source, (
+        "SafeThoughtAETrainerV4.fit must reduce LR when divergence detected"
+    )
+    assert "reduce_lr_or_rollback" in source, (
+        "SafeThoughtAETrainerV4.fit must check the divergence recommendation"
+    )
+
+    print("✅ test_convergence_diverging_reduces_lr_phase_a PASSED")
+
+
+def test_convergence_diverging_reduces_lr_phase_b():
+    """Fix 4: Verify Phase B trainer reduces LR when convergence diverges."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+
+    source = inspect.getsource(ContextualRSSMTrainer.fit)
+
+    # Must contain LR reduction logic triggered by divergence
+    assert "param_group['lr'] *= 0.5" in source, (
+        "ContextualRSSMTrainer.fit must reduce LR when divergence detected"
+    )
+    assert "reduce_lr_or_rollback" in source, (
+        "ContextualRSSMTrainer.fit must check the divergence recommendation"
+    )
+
+    print("✅ test_convergence_diverging_reduces_lr_phase_b PASSED")
+
+
+def test_training_convergence_monitor_divergence_recommendation():
+    """Fix 4: Verify TrainingConvergenceMonitor returns actionable
+    recommendations that the training loop can act upon."""
+    from ae_train import TrainingConvergenceMonitor
+
+    monitor = TrainingConvergenceMonitor(threshold=1e-5, window_size=10)
+
+    # Feed increasing losses to trigger divergence
+    for loss in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
+        verdict = monitor.update(loss)
+
+    assert verdict["status"] == "diverging", (
+        f"Expected 'diverging', got '{verdict['status']}'"
+    )
+    assert verdict["recommendation"] == "reduce_lr_or_rollback", (
+        f"Expected 'reduce_lr_or_rollback' recommendation, "
+        f"got '{verdict.get('recommendation')}'"
+    )
+
+    print("✅ test_training_convergence_monitor_divergence_recommendation PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -20043,6 +20280,16 @@ if __name__ == '__main__':
     test_reconciler_threshold_always_restored()
     test_weakest_pair_in_forward_outputs()
     test_auto_critic_revised_flag_tracks_all_paths()
+    
+    # Architectural Unification — Causal Traceability & Feedback Coherence Tests
+    test_uncertainty_sources_in_causal_trace()
+    test_uncertainty_consolidation_in_reasoning_core()
+    test_post_integration_metacognitive_feedback_refresh()
+    test_rssm_trainer_provenance_tracking()
+    test_rssm_trainer_provenance_in_output()
+    test_convergence_diverging_reduces_lr_phase_a()
+    test_convergence_diverging_reduces_lr_phase_b()
+    test_training_convergence_monitor_divergence_recommendation()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

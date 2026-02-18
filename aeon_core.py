@@ -15127,6 +15127,26 @@ class AEONDeltaV3(nn.Module):
                         }),
                     )
         
+        # 5a-v. Record accumulated uncertainty sources in the causal trace
+        # so that any downstream decision can be traced back to the specific
+        # modules that contributed to the uncertainty signal.  Without this,
+        # the causal trace captures *events* but cannot explain *why* the
+        # system was uncertain — breaking root-cause traceability.
+        if self.causal_trace is not None and uncertainty_sources:
+            self.causal_trace.record(
+                "uncertainty_consolidation", "recorded",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "total_uncertainty": uncertainty,
+                    "num_sources": len(uncertainty_sources),
+                    "sources": dict(uncertainty_sources),
+                    "high_uncertainty": high_uncertainty,
+                    "metacognitive_triggered": metacognitive_info.get(
+                        "should_trigger", False,
+                    ),
+                },
+            )
+        
         # 5b. World model — surprise-driven integration
         # Gated by complexity estimator gate[0] when available.
         # Override: high uncertainty forces world model activation regardless
@@ -16718,6 +16738,27 @@ class AEONDeltaV3(nn.Module):
                         strategy_used="auto_critic",
                         success=_post_metacog_triggered,
                     )
+                # Refresh feedback bus with post-integration signals so the
+                # *next* forward pass starts with feedback that reflects
+                # late-stage triggers (trust, HVAE KL, NS violations) that
+                # the early-pass feedback bus (step 5a-ii) could not see.
+                # Without this, post-integration metacognitive insights are
+                # lost between passes, breaking the cross-pass feedback loop.
+                with torch.no_grad():
+                    self._cached_feedback = self.feedback_bus(
+                        batch_size=B,
+                        device=device,
+                        safety_score=safety_score,
+                        convergence_quality=convergence_quality_scalar,
+                        uncertainty=uncertainty,
+                        subsystem_health=_recovery_health,
+                        convergence_loss_scale=getattr(
+                            self, '_last_convergence_loss_scale', 1.0,
+                        ),
+                        world_model_surprise=self._cached_surprise,
+                        coherence_deficit=self._cached_coherence_deficit,
+                        causal_quality=self._cached_causal_quality,
+                    ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
         # on z_out after ANY auto-critic revision, not only the post-
