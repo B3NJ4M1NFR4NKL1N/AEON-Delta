@@ -407,12 +407,35 @@ class V4TrainRequest(BaseModel):
     hidden_dim: int      = Field(256,   ge=64,   le=2048,  description="Hidden dimension")
     vq_num_embeddings: int = Field(2048, ge=64,  le=65536, description="VQ codebook size")
     context_window: int  = Field(3,     ge=1,    le=16,    description="RSSM context window (K previous states)")
+    num_pillars: int     = Field(5,     ge=1,    le=64,    description="Number of cognitive pillars")
+    seq_length: int      = Field(64,    ge=16,   le=8192,  description="Token sequence length per chunk")
     # Optimiser
     learning_rate: float = Field(3e-5,  gt=0,    description="Peak learning rate")
+    min_learning_rate: float = Field(1e-6, gt=0, description="Minimum learning rate for cosine decay")
     batch_size: int      = Field(16,    ge=1,    le=512,   description="Batch size")
     grad_clip: float     = Field(0.5,   gt=0,    description="Gradient clip norm")
     warmup_steps: int    = Field(1000,  ge=0,    description="LR warmup steps")
+    weight_decay: float  = Field(0.01,  ge=0.0,  description="AdamW weight decay")
+    gradient_accumulation_steps: int = Field(2, ge=1, le=64, description="Gradient accumulation steps")
     entropy_weight: float = Field(0.1,  ge=0.0,  description="VQ codebook entropy regularisation weight")
+    # VQ-VAE advanced
+    vq_commitment_cost: float = Field(0.25, ge=0.0, le=2.0,  description="VQ commitment cost coefficient")
+    vq_loss_weight: float     = Field(0.5,  ge=0.0, le=5.0,  description="VQ loss weight in total loss")
+    vq_ema_decay: float       = Field(0.99, ge=0.0, le=1.0,  description="EMA decay for VQ codebook updates")
+    vq_temperature: float     = Field(1.0,  gt=0.0,          description="Gumbel-Softmax temperature")
+    vq_reset_threshold: int   = Field(30,   ge=1,   le=1000, description="Epochs before dead code reset")
+    # RSSM advanced
+    rssm_hidden_dim: int = Field(512, ge=64, le=4096, description="RSSM hidden dimension")
+    # Regularisation
+    dropout_rate: float    = Field(0.1, ge=0.0, le=0.9,  description="Dropout rate")
+    label_smoothing: float = Field(0.1, ge=0.0, le=0.5,  description="Label smoothing factor")
+    # Early stopping & checkpointing
+    early_stopping_patience: int = Field(5,  ge=1, le=100, description="Early stopping patience (epochs)")
+    min_delta: float             = Field(1e-4, ge=0.0,     description="Minimum improvement delta for early stopping")
+    save_every_n_epochs: int     = Field(5,  ge=1, le=100, description="Save checkpoint every N epochs")
+    keep_n_checkpoints: int      = Field(3,  ge=1, le=50,  description="Max number of checkpoints to keep")
+    # Document-aware
+    min_doc_chunks: int  = Field(2, ge=1, le=100, description="Minimum chunks per document for document-aware mode")
     # Flags
     document_aware: bool = Field(True,  description="Build RSSM pairs within document boundaries")
     use_amp: bool        = Field(True,  description="Use automatic mixed precision (requires CUDA)")
@@ -2170,6 +2193,37 @@ async def v4_delete_file(filename: str):
     return {"ok": True}
 
 
+# ── Convergence helpers ────────────────────────────────────────────────────────
+def _detect_convergence(history: list, epoch: int) -> str:
+    """Detect training convergence status from epoch metrics history."""
+    if epoch < 3:
+        return "warmup"
+    if len(history) < 3:
+        return "warmup"
+    recent = [e.get("total", e.get("mse_loss", float("inf"))) for e in history[-5:] if isinstance(e, dict)]
+    if len(recent) < 2:
+        return "warmup"
+    deltas = [recent[i] - recent[i - 1] for i in range(1, len(recent))]
+    avg_delta = sum(deltas) / len(deltas) if deltas else 0
+    if avg_delta > 0.05:
+        return "diverging"
+    if all(abs(d) < 1e-4 for d in deltas):
+        return "converged"
+    if abs(avg_delta) < 1e-3 and len(recent) >= 4:
+        return "stagnating"
+    return "converging"
+
+
+def _compute_velocity(history: list) -> float:
+    """Compute loss velocity (rate of change) from recent epochs."""
+    losses = [e.get("total", e.get("mse_loss", None)) for e in history[-5:] if isinstance(e, dict)]
+    losses = [l for l in losses if l is not None and math.isfinite(l)]
+    if len(losses) < 2:
+        return 0.0
+    deltas = [losses[i] - losses[i - 1] for i in range(1, len(losses))]
+    return round(sum(deltas) / len(deltas), 6)
+
+
 # ── Training runner ────────────────────────────────────────────────────────────
 def _v4_training_loop(req: V4TrainRequest):
     """Full AEON v4 two-phase training, running in a background thread."""
@@ -2190,6 +2244,12 @@ def _v4_training_loop(req: V4TrainRequest):
         "batch": 0,
         "total_batches": 0,
         "codebook_usage": None,
+        "convergence_status": "warmup",
+        "convergence_velocity": 0.0,
+        "grad_norm": None,
+        "recon_loss": None,
+        "vq_loss": None,
+        "accuracy": None,
         "started_at": time.time(),
         "error": None,
     }
@@ -2221,11 +2281,29 @@ def _v4_training_loop(req: V4TrainRequest):
         config.vq_embedding_dim   = req.z_dim          # must match z_dim
         config.vq_num_embeddings  = req.vq_num_embeddings
         config.context_window     = req.context_window
+        config.num_pillars        = req.num_pillars
+        config.seq_length         = req.seq_length
         config.learning_rate      = req.learning_rate
+        config.min_learning_rate  = req.min_learning_rate
         config.batch_size         = req.batch_size
         config.grad_clip_norm     = req.grad_clip
         config.warmup_steps       = req.warmup_steps
+        config.weight_decay       = req.weight_decay
+        config.gradient_accumulation_steps = req.gradient_accumulation_steps
         config.entropy_weight     = req.entropy_weight
+        config.vq_commitment_cost = req.vq_commitment_cost
+        config.vq_loss_weight     = req.vq_loss_weight
+        config.vq_ema_decay       = req.vq_ema_decay
+        config.vq_temperature     = req.vq_temperature
+        config.vq_reset_threshold = req.vq_reset_threshold
+        config.rssm_hidden_dim    = req.rssm_hidden_dim
+        config.dropout_rate       = req.dropout_rate
+        config.label_smoothing    = req.label_smoothing
+        config.early_stopping_patience = req.early_stopping_patience
+        config.min_delta          = req.min_delta
+        config.save_every_n_epochs = req.save_every_n_epochs
+        config.keep_n_checkpoints = req.keep_n_checkpoints
+        config.min_doc_chunks     = req.min_doc_chunks
         config.document_aware     = req.document_aware
         config.use_amp            = req.use_amp
         config.seed               = req.seed
@@ -2416,7 +2494,15 @@ def _v4_training_loop(req: V4TrainRequest):
                 APP.v4_progress.update({
                     "epoch": epoch + 1,
                     "total_epochs": epochs,
+                    "current_loss": round(float(epoch_metrics.get("total", 0)), 6),
+                    "best_loss": round(float(self_t.best_loss), 6) if _math.isfinite(self_t.best_loss) else None,
                     "codebook_usage": round(float(epoch_metrics.get("codebook_%", 0)), 2),
+                    "grad_norm": round(float(epoch_metrics.get("grad_norm", 0)), 4),
+                    "recon_loss": round(float(epoch_metrics.get("recon", 0)), 6),
+                    "vq_loss": round(float(epoch_metrics.get("vq", 0)), 6),
+                    "accuracy": round(float(epoch_metrics.get("accuracy_%", 0)), 2),
+                    "convergence_status": _detect_convergence(APP.v4_metrics_history.get("phase_A", []), epoch),
+                    "convergence_velocity": _compute_velocity(APP.v4_metrics_history.get("phase_A", [])),
                 })
                 if epoch_metrics["total"] < self_t.best_loss:
                     self_t.best_loss = epoch_metrics["total"]
@@ -2528,7 +2614,15 @@ def _v4_training_loop(req: V4TrainRequest):
                         }, phase="phase_B", log_every=log_every_batch)
                 for k in epoch_metrics:
                     epoch_metrics[k] /= max(valid_batches, 1)
-                APP.v4_progress.update({"epoch": epoch + 1, "total_epochs": epochs})
+                APP.v4_progress.update({
+                    "epoch": epoch + 1,
+                    "total_epochs": epochs,
+                    "current_loss": round(float(epoch_metrics.get("mse_loss", 0)), 6),
+                    "best_loss": round(float(self_t.best_loss), 6) if _math.isfinite(self_t.best_loss) else None,
+                    "grad_norm": round(float(epoch_metrics.get("grad_norm", 0)), 4),
+                    "convergence_status": _detect_convergence(APP.v4_metrics_history.get("phase_B", []), epoch),
+                    "convergence_velocity": _compute_velocity(APP.v4_metrics_history.get("phase_B", [])),
+                })
                 if epoch_metrics["mse_loss"] < self_t.best_loss:
                     self_t.best_loss = epoch_metrics["mse_loss"]
                     self_t.best_model_state = _copy.deepcopy(self_t.model.rssm.state_dict())
@@ -2626,6 +2720,35 @@ async def v4_get_progress():
         "ae_train_available": AE_TRAIN_LOADED,
         "ae_train_error": AE_TRAIN_ERROR if not AE_TRAIN_LOADED else None,
     }
+
+
+@app.get("/api/train/v4/convergence")
+async def v4_get_convergence():
+    """Convergence status, velocity, and loss component breakdown."""
+    prog = APP.v4_progress
+    history_a = APP.v4_metrics_history.get("phase_A", [])
+    history_b = APP.v4_metrics_history.get("phase_B", [])
+    return {
+        "ok": True,
+        "phase": prog.get("phase", "idle"),
+        "convergence_status": prog.get("convergence_status", "idle"),
+        "convergence_velocity": prog.get("convergence_velocity", 0.0),
+        "grad_norm": prog.get("grad_norm"),
+        "recon_loss": prog.get("recon_loss"),
+        "vq_loss": prog.get("vq_loss"),
+        "accuracy": prog.get("accuracy"),
+        "loss_history_A": [e.get("total", None) for e in history_a if isinstance(e, dict)][-50:],
+        "loss_history_B": [e.get("mse_loss", None) for e in history_b if isinstance(e, dict)][-50:],
+        "grad_history_A": [e.get("grad_norm", None) for e in history_a if isinstance(e, dict)][-50:],
+        "grad_history_B": [e.get("grad_norm", None) for e in history_b if isinstance(e, dict)][-50:],
+    }
+
+
+@app.get("/api/train/v4/config")
+async def v4_get_config():
+    """Return the current V4TrainRequest schema with defaults and descriptions."""
+    schema = V4TrainRequest.model_json_schema()
+    return {"ok": True, "schema": schema}
 
 
 @app.get("/api/train/v4/logs")

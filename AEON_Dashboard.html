@@ -975,6 +975,9 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="ct">🏗 Architecture & Flags</div>
       <div class="fr" style="margin-top:8px">
         <div class="fg"><div class="fl">z_dim</div><input type="number" id="v4-zdim" value="256" min="64" max="2048" step="64"></div>
+        <div class="fg"><div class="fl">hidden_dim</div><input type="number" id="v4-hidden" value="256" min="64" max="2048" step="64"></div>
+      </div>
+      <div class="fr">
         <div class="fg"><div class="fl">VQ Embeddings</div>
           <select id="v4-vqn">
             <option value="512">512</option>
@@ -984,8 +987,10 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
             <option value="8192">8192</option>
           </select>
         </div>
+        <div class="fg"><div class="fl">Seq Length</div><input type="number" id="v4-seqlen" value="64" min="16" max="8192" step="16"></div>
       </div>
       <div class="fr">
+        <div class="fg"><div class="fl">Num Pillars</div><input type="number" id="v4-pillars" value="5" min="1" max="64"></div>
         <div class="fg"><div class="fl">Seed</div><input type="number" id="v4-seed" value="42"></div>
       </div>
       <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
@@ -1000,6 +1005,69 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       </div>
     </div>
   </div>
+
+  <!-- ── Advanced Training Parameters ─────────────────────────────── -->
+  <details style="margin-bottom:14px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--text2);padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg)">▶ Advanced Training Parameters (VQ-VAE, RSSM, Regularisation, Early Stopping)</summary>
+    <div style="border:1px solid var(--border);border-top:none;border-radius:0 0 var(--rlg) var(--rlg);padding:14px">
+      <div class="g3" style="margin-bottom:12px">
+        <!-- VQ-VAE -->
+        <div class="card ca">
+          <div class="ct">🔮 VQ-VAE Parameters</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            <div class="fg"><div class="fl">Commitment Cost</div>
+              <div class="rr"><input type="range" id="v4-vq-commit" min="0" max="2" step="0.05" value="0.25" oninput="rv('v4-vq-commit-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="v4-vq-commit-v">0.25</span></div>
+            </div>
+            <div class="fg"><div class="fl">VQ Loss Weight</div>
+              <div class="rr"><input type="range" id="v4-vq-lw" min="0" max="5" step="0.1" value="0.5" oninput="rv('v4-vq-lw-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="v4-vq-lw-v">0.5</span></div>
+            </div>
+            <div class="fg"><div class="fl">EMA Decay</div>
+              <div class="rr"><input type="range" id="v4-vq-ema" min="0.9" max="0.999" step="0.001" value="0.99" oninput="rv('v4-vq-ema-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="v4-vq-ema-v">0.990</span></div>
+            </div>
+            <div class="fg"><div class="fl">Temperature</div>
+              <div class="rr"><input type="range" id="v4-vq-temp" min="0.1" max="5" step="0.1" value="1.0" oninput="rv('v4-vq-temp-v',parseFloat(this.value).toFixed(1))"><span class="rv" id="v4-vq-temp-v">1.0</span></div>
+            </div>
+            <div class="fg"><div class="fl">Reset Threshold</div><input type="number" id="v4-vq-reset" value="30" min="1" max="1000"></div>
+          </div>
+        </div>
+        <!-- RSSM & Optimiser -->
+        <div class="card cp">
+          <div class="ct">⚙ RSSM & Optimiser</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            <div class="fg"><div class="fl">RSSM Hidden Dim</div><input type="number" id="v4-rssm-hdim" value="512" min="64" max="4096" step="64"></div>
+            <div class="fg"><div class="fl">Min Learning Rate</div>
+              <select id="v4-min-lr">
+                <option value="1e-7">1e-7</option>
+                <option value="1e-6" selected>1e-6</option>
+                <option value="1e-5">1e-5</option>
+              </select>
+            </div>
+            <div class="fg"><div class="fl">Weight Decay</div>
+              <div class="rr"><input type="range" id="v4-wd" min="0" max="0.1" step="0.001" value="0.01" oninput="rv('v4-wd-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="v4-wd-v">0.010</span></div>
+            </div>
+            <div class="fg"><div class="fl">Grad Accumulation Steps</div><input type="number" id="v4-gas" value="2" min="1" max="64"></div>
+            <div class="fg"><div class="fl">Min Doc Chunks</div><input type="number" id="v4-min-doc" value="2" min="1" max="100"></div>
+          </div>
+        </div>
+        <!-- Regularisation & Early Stopping -->
+        <div class="card cg">
+          <div class="ct">🛡 Regularisation & Early Stopping</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+            <div class="fg"><div class="fl">Dropout Rate</div>
+              <div class="rr"><input type="range" id="v4-dropout" min="0" max="0.9" step="0.05" value="0.1" oninput="rv('v4-dropout-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="v4-dropout-v">0.10</span></div>
+            </div>
+            <div class="fg"><div class="fl">Label Smoothing</div>
+              <div class="rr"><input type="range" id="v4-labsm" min="0" max="0.5" step="0.01" value="0.1" oninput="rv('v4-labsm-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="v4-labsm-v">0.10</span></div>
+            </div>
+            <div class="fg"><div class="fl">Early Stopping Patience</div><input type="number" id="v4-es-pat" value="5" min="1" max="100"></div>
+            <div class="fg"><div class="fl">Min Delta</div><input type="number" id="v4-min-delta" value="0.0001" min="0" max="1" step="0.0001"></div>
+            <div class="fg"><div class="fl">Save Every N Epochs</div><input type="number" id="v4-save-n" value="5" min="1" max="100"></div>
+            <div class="fg"><div class="fl">Keep N Checkpoints</div><input type="number" id="v4-keep-n" value="3" min="1" max="50"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </details>
 
   <!-- ── Live Status ─────────────────────────────────────────────────── -->
   <div class="g2" style="margin-bottom:14px">
@@ -1027,6 +1095,14 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
           <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Best</div><div style="font-family:var(--display);font-size:18px;color:var(--green)" id="v4-best">—</div></div>
           <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Codebook %</div><div style="font-family:var(--display);font-size:18px;color:var(--purple)" id="v4-cb">—</div></div>
           <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Elapsed</div><div style="font-family:var(--display);font-size:16px;color:var(--warn)" id="v4-elapsed">—</div></div>
+        </div>
+        <!-- Extended monitoring row -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Convergence</div><div style="font-family:var(--display);font-size:13px;font-weight:600" id="v4-conv-status">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Velocity</div><div style="font-family:var(--display);font-size:14px;color:var(--text2)" id="v4-conv-vel">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Grad Norm</div><div style="font-family:var(--display);font-size:14px;color:var(--warn)" id="v4-gnorm">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Recon / VQ</div><div style="font-family:var(--display);font-size:13px;color:var(--text2)" id="v4-loss-split">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Accuracy</div><div style="font-family:var(--display);font-size:14px;color:var(--green)" id="v4-acc">—</div></div>
         </div>
       </div>
       <!-- Completion summary -->
@@ -1086,6 +1162,28 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="chart-wrap">
       <div class="chart-head"><div class="chart-title">Accuracy % (Phase A)</div></div>
       <canvas id="v4-acc-chart" height="110"></canvas>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Gradient Norms per Epoch</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--warn)">── Phase A</span>
+          <span style="color:var(--purple)">── Phase B</span>
+        </div>
+      </div>
+      <canvas id="v4-grad-chart" height="110"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Loss Components (Phase A)</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--accent)">── recon</span>
+          <span style="color:var(--purple)">── vq</span>
+        </div>
+      </div>
+      <canvas id="v4-loss-split-chart" height="110"></canvas>
     </div>
   </div>
 
@@ -2845,8 +2943,8 @@ function clearInfer() {
 const V4 = {
   sse: null,
   pollTimer: null,
-  metricsA: { total: [], recon: [], vq: [], codebook: [], accuracy: [] },
-  metricsB: { mse: [], cosine: [] },
+  metricsA: { total: [], recon: [], vq: [], codebook: [], accuracy: [], grad_norm: [] },
+  metricsB: { mse: [], cosine: [], grad_norm: [] },
   logs: [],
   filterLevel: '',
 };
@@ -2943,15 +3041,37 @@ async function v4Start() {
     entropy_weight:    parseFloat(document.getElementById('v4-ew').value),
     context_window:    parseInt(document.getElementById('v4-cw').value),
     z_dim:             parseInt(document.getElementById('v4-zdim').value),
+    hidden_dim:        parseInt(document.getElementById('v4-hidden').value) || 256,
     vq_num_embeddings: parseInt(document.getElementById('v4-vqn').value),
+    num_pillars:       parseInt(document.getElementById('v4-pillars').value) || 5,
+    seq_length:        parseInt(document.getElementById('v4-seqlen').value) || 64,
     document_aware:    document.getElementById('v4-docaware').checked,
     use_amp:           document.getElementById('v4-amp').checked,
     seed:              parseInt(document.getElementById('v4-seed').value),
+    // Advanced: VQ-VAE
+    vq_commitment_cost: parseFloat(document.getElementById('v4-vq-commit').value),
+    vq_loss_weight:     parseFloat(document.getElementById('v4-vq-lw').value),
+    vq_ema_decay:       parseFloat(document.getElementById('v4-vq-ema').value),
+    vq_temperature:     parseFloat(document.getElementById('v4-vq-temp').value),
+    vq_reset_threshold: parseInt(document.getElementById('v4-vq-reset').value),
+    // Advanced: RSSM & Optimiser
+    rssm_hidden_dim:    parseInt(document.getElementById('v4-rssm-hdim').value),
+    min_learning_rate:  parseFloat(document.getElementById('v4-min-lr').value),
+    weight_decay:       parseFloat(document.getElementById('v4-wd').value),
+    gradient_accumulation_steps: parseInt(document.getElementById('v4-gas').value),
+    min_doc_chunks:     parseInt(document.getElementById('v4-min-doc').value),
+    // Advanced: Regularisation & Early Stopping
+    dropout_rate:       parseFloat(document.getElementById('v4-dropout').value),
+    label_smoothing:    parseFloat(document.getElementById('v4-labsm').value),
+    early_stopping_patience: parseInt(document.getElementById('v4-es-pat').value),
+    min_delta:          parseFloat(document.getElementById('v4-min-delta').value),
+    save_every_n_epochs: parseInt(document.getElementById('v4-save-n').value),
+    keep_n_checkpoints: parseInt(document.getElementById('v4-keep-n').value),
   };
 
   // Reset chart data
-  V4.metricsA = { total: [], recon: [], vq: [], codebook: [], accuracy: [] };
-  V4.metricsB = { mse: [], cosine: [] };
+  V4.metricsA = { total: [], recon: [], vq: [], codebook: [], accuracy: [], grad_norm: [] };
+  V4.metricsB = { mse: [], cosine: [], grad_norm: [] };
   V4.logs = [];
   v4ClearLogs();
 
@@ -3083,6 +3203,36 @@ function v4HandleProgress(prog) {
     if (elEl) elEl.textContent = elapsed;
   }
 
+  // Convergence status
+  const convColors = { warmup:'var(--text3)', converging:'var(--accent)', converged:'var(--green)', stagnating:'var(--warn)', diverging:'var(--danger)' };
+  const convEl = document.getElementById('v4-conv-status');
+  if (convEl && prog.convergence_status) {
+    convEl.textContent = prog.convergence_status;
+    convEl.style.color = convColors[prog.convergence_status] || 'var(--text2)';
+  }
+  const velEl = document.getElementById('v4-conv-vel');
+  if (velEl && prog.convergence_velocity !== undefined && prog.convergence_velocity !== null) {
+    const v = prog.convergence_velocity;
+    velEl.textContent = (v >= 0 ? '+' : '') + v.toFixed(6);
+    velEl.style.color = v < 0 ? 'var(--green)' : v > 0.01 ? 'var(--danger)' : 'var(--text2)';
+  }
+  // Gradient norm
+  const gnEl = document.getElementById('v4-gnorm');
+  if (gnEl && prog.grad_norm !== undefined && prog.grad_norm !== null) {
+    gnEl.textContent = prog.grad_norm.toFixed(4);
+  }
+  // Loss component split
+  const splitEl = document.getElementById('v4-loss-split');
+  if (splitEl && prog.recon_loss !== undefined && prog.recon_loss !== null) {
+    const vqLoss = prog.vq_loss !== undefined && prog.vq_loss !== null ? prog.vq_loss.toFixed(4) : '—';
+    splitEl.textContent = prog.recon_loss.toFixed(4) + ' / ' + vqLoss;
+  }
+  // Accuracy
+  const accEl = document.getElementById('v4-acc');
+  if (accEl && prog.accuracy !== undefined && prog.accuracy !== null) {
+    accEl.textContent = prog.accuracy.toFixed(1) + '%';
+  }
+
   if (prog.done && !prog.active) {
     v4ShowDone(prog);
     if (V4.sse) V4.sse.close();
@@ -3090,7 +3240,7 @@ function v4HandleProgress(prog) {
 }
 
 function v4HandleMetrics(data) {
-  // data = { new_A: [{total, recon, vq, codebook_%, accuracy_%},...], new_B: [{mse_loss, cosine_sim},...] }
+  // data = { new_A: [{total, recon, vq, codebook_%, accuracy_%, grad_norm},...], new_B: [{mse_loss, cosine_sim, grad_norm},...] }
   const newA = data.new_A || [];
   const newB = data.new_B || [];
   for (const m of newA) {
@@ -3099,10 +3249,12 @@ function v4HandleMetrics(data) {
     if (m.vq       !== undefined) V4.metricsA.vq.push(m.vq);
     if (m['codebook_%'] !== undefined) V4.metricsA.codebook.push(m['codebook_%']);
     if (m['accuracy_%'] !== undefined) V4.metricsA.accuracy.push(m['accuracy_%']);
+    if (m.grad_norm !== undefined) V4.metricsA.grad_norm.push(m.grad_norm);
   }
   for (const m of newB) {
     if (m.mse_loss    !== undefined) V4.metricsB.mse.push(m.mse_loss);
     if (m.cosine_sim  !== undefined) V4.metricsB.cosine.push(m.cosine_sim);
+    if (m.grad_norm   !== undefined) V4.metricsB.grad_norm.push(m.grad_norm);
   }
   v4DrawCharts();
 }
@@ -3122,6 +3274,18 @@ function v4DrawCharts() {
   );
   v4DrawSingleLine('v4-cb-chart', V4.metricsA.codebook, 'var(--purple)', 'Codebook %', 0, 100);
   v4DrawSingleLine('v4-acc-chart', V4.metricsA.accuracy, 'var(--green)', 'Accuracy %', 0, 100);
+  v4DrawMultiLine('v4-grad-chart',
+    [V4.metricsA.grad_norm, V4.metricsB.grad_norm],
+    ['var(--warn)', 'var(--purple)'],
+    'Gradient Norms',
+    ['Phase A', 'Phase B']
+  );
+  v4DrawMultiLine('v4-loss-split-chart',
+    [V4.metricsA.recon, V4.metricsA.vq],
+    ['var(--accent)', 'var(--purple)'],
+    'Loss Components',
+    ['Recon', 'VQ']
+  );
 }
 
 function v4DrawMultiLine(canvasId, seriesArr, colors, title, labels) {
