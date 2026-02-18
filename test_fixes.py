@@ -19829,7 +19829,7 @@ def test_convergence_monitor_stagnation_bridge():
 
     # Feed nearly identical losses to trigger stagnation
     for loss in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]:
-        verdict = monitor.update(loss)
+        monitor.update(loss)
 
     assert monitor.status == "stagnating", f"Expected 'stagnating', got '{monitor.status}'"
 
@@ -19851,6 +19851,7 @@ def test_convergence_monitor_no_error_evolution():
     monitor = TrainingConvergenceMonitor(threshold=1e-5, window_size=10)
 
     # Feed losses — should not raise
+    verdict = None
     for loss in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]:
         verdict = monitor.update(loss)
 

@@ -2018,7 +2018,17 @@ class TrainingConvergenceMonitor:
     _STAGNATION_THRESHOLD = 1e-6
 
     def __init__(self, threshold: float = 1e-5, window_size: int = 10,
-                 error_evolution=None):
+                 error_evolution: Optional[Any] = None):
+        """Initialize convergence monitor.
+
+        Args:
+            threshold: Loss change threshold for convergence detection.
+            window_size: Number of recent losses to retain.
+            error_evolution: Optional ``CausalErrorEvolutionTracker``
+                instance.  When provided, divergence and stagnation events
+                are recorded as error episodes so inference-time recovery
+                can learn from training-time convergence failures.
+        """
         self._threshold = threshold
         self._window_size = window_size
         self._history: list = []
