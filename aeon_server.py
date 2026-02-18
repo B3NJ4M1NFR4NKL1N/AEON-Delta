@@ -91,6 +91,9 @@ try:
     AEONTrainer = _core_mod.AEONTrainer
     set_seed = _core_mod.set_seed
     AEONTestSuite = _core_mod.AEONTestSuite
+    StructuredLogFormatter = _core_mod.StructuredLogFormatter
+    TelemetryCollector = _core_mod.TelemetryCollector
+    generate_correlation_id = _core_mod.generate_correlation_id
     CORE_LOADED = True
     print(f"✅ {CORE_PATH.name} loaded successfully")
 except Exception as e:
@@ -348,6 +351,10 @@ class InitRequest(BaseModel):
     enable_hierarchical_vae: bool = False
     hvae_blend_weight: float = 0.1
     seed: int = 42
+    # Observability
+    enable_structured_logging: bool = False
+    enable_academic_mode: bool = False
+    enable_telemetry: bool = True
 
 class InferRequest(BaseModel):
     prompt: str = "What is consciousness?"
@@ -444,6 +451,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  X-Request-ID / Correlation ID Middleware
+# ═══════════════════════════════════════════════════════════════════════════════
+import uuid as _uuid
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+
+class CorrelationIDMiddleware(BaseHTTPMiddleware):
+    """Injects a correlation ID into every HTTP request/response for distributed tracing."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        correlation_id = request.headers.get(
+            "X-Request-ID", generate_correlation_id()
+        )
+        request.state.correlation_id = correlation_id
+        response: Response = await call_next(request)
+        response.headers["X-Request-ID"] = correlation_id
+        return response
+
+
+app.add_middleware(CorrelationIDMiddleware)
+
 # ─── Serve Dashboard HTML ────────────────────────────────────────────────────
 DASHBOARD_FILE = Path(__file__).parent / "AEON_Dashboard.html"
 
@@ -471,6 +504,11 @@ async def get_status():
         "cuda_device_name": (
             torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
         ),
+        "observability": {
+            "structured_logging": getattr(APP.config, "enable_structured_logging", False) if APP.config else False,
+            "academic_mode": getattr(APP.config, "enable_academic_mode", False) if APP.config else False,
+            "telemetry": getattr(APP.config, "enable_telemetry", False) if APP.config else False,
+        },
     }
 
 @app.get("/api/status/system")
@@ -1495,6 +1533,63 @@ async def get_health():
         tg = APP.model.tensor_guard
         health = 1.0 - min(1.0, (tg._nan_count + tg._inf_count) * 0.05)
         return {"ok": True, "health_score": health, "subsystems": {}}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TELEMETRY & OBSERVABILITY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/telemetry/metrics")
+async def get_telemetry_metrics():
+    """Return a snapshot of all collected telemetry metrics with statistics."""
+    if APP.config is None:
+        raise HTTPException(400, "Model not initialized — no telemetry available")
+    try:
+        tc = APP.config.telemetry_collector
+        return {"ok": True, "metrics": tc.get_metrics_snapshot()}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/telemetry/metric/{metric_name}")
+async def get_telemetry_metric(metric_name: str, last_n: int = 50):
+    """Return the most recent entries for a specific metric."""
+    if APP.config is None:
+        raise HTTPException(400, "Model not initialized — no telemetry available")
+    try:
+        tc = APP.config.telemetry_collector
+        return {"ok": True, "metric": metric_name, "entries": tc.get_metric(metric_name, last_n)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/observability/config")
+async def get_observability_config():
+    """Return the current observability configuration."""
+    if APP.config is None:
+        return {
+            "ok": True,
+            "structured_logging": False,
+            "academic_mode": False,
+            "telemetry": False,
+        }
+    return {
+        "ok": True,
+        "structured_logging": APP.config.enable_structured_logging,
+        "academic_mode": APP.config.enable_academic_mode,
+        "telemetry": APP.config.enable_telemetry,
+    }
+
+
+@app.get("/api/observability/traces")
+async def get_observability_traces(last_n: int = 100):
+    """Return the most recent audit log entries as distributed trace records."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        entries = APP.model.audit_log.recent(last_n)
+        return {"ok": True, "traces": entries, "count": len(entries)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2665,6 +2760,17 @@ async def _heartbeat():
             payload["v4_progress"] = APP.v4_progress
         if APP.test_run_active:
             payload["test_progress"] = APP.test_run_progress
+        # Include telemetry snapshot in heartbeat when available
+        if APP.config is not None:
+            try:
+                tc = APP.config.telemetry_collector
+                snapshot = tc.get_metrics_snapshot()
+                payload["telemetry"] = {
+                    "counters": snapshot.get("counters", {}),
+                    "metric_names": list(k for k in snapshot if k != "counters"),
+                }
+            except Exception:
+                pass
         await broadcast(payload)
 
 
