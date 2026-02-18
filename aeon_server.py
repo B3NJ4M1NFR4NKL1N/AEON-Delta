@@ -2194,11 +2194,9 @@ async def v4_delete_file(filename: str):
 
 
 # ── Convergence helpers ────────────────────────────────────────────────────────
-def _detect_convergence(history: list, epoch: int) -> str:
+def _detect_convergence(history: list, current_epoch: int) -> str:
     """Detect training convergence status from epoch metrics history."""
-    if epoch < 3:
-        return "warmup"
-    if len(history) < 3:
+    if current_epoch < 3 or len(history) < 3:
         return "warmup"
     recent = [e.get("total", e.get("mse_loss", float("inf"))) for e in history[-5:] if isinstance(e, dict)]
     if len(recent) < 2:
@@ -2494,7 +2492,7 @@ def _v4_training_loop(req: V4TrainRequest):
                 APP.v4_progress.update({
                     "epoch": epoch + 1,
                     "total_epochs": epochs,
-                    "current_loss": round(float(epoch_metrics.get("total", 0)), 6),
+                    "current_loss": round(float(epoch_metrics.get("total", 0)), 6) if _math.isfinite(epoch_metrics.get("total", 0)) else None,
                     "best_loss": round(float(self_t.best_loss), 6) if _math.isfinite(self_t.best_loss) else None,
                     "codebook_usage": round(float(epoch_metrics.get("codebook_%", 0)), 2),
                     "grad_norm": round(float(epoch_metrics.get("grad_norm", 0)), 4),
@@ -2617,7 +2615,7 @@ def _v4_training_loop(req: V4TrainRequest):
                 APP.v4_progress.update({
                     "epoch": epoch + 1,
                     "total_epochs": epochs,
-                    "current_loss": round(float(epoch_metrics.get("mse_loss", 0)), 6),
+                    "current_loss": round(float(epoch_metrics.get("mse_loss", 0)), 6) if _math.isfinite(epoch_metrics.get("mse_loss", 0)) else None,
                     "best_loss": round(float(self_t.best_loss), 6) if _math.isfinite(self_t.best_loss) else None,
                     "grad_norm": round(float(epoch_metrics.get("grad_norm", 0)), 4),
                     "convergence_status": _detect_convergence(APP.v4_metrics_history.get("phase_B", []), epoch),
