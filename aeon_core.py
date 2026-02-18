@@ -6457,6 +6457,7 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "causal_model_error": 0.5,
     "hybrid_reasoning_error": 0.5,
     "hybrid_reasoning_ns_violation": 0.6,
+    "multimodal_error": 0.5,
     "unified_simulator_divergence": 0.5,
     "diversity_collapse": 0.6,
     # Soft signals (lower reliability)
@@ -15904,6 +15905,21 @@ class AEONDeltaV3(nn.Module):
             "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
         })
         
+        # 5d1d-0. Causal quality → CausalContextWindowManager — record the
+        # current causal model quality in the causal context hierarchy so
+        # that cross-temporal reasoning benefits from causal structure
+        # learning outcomes.  Without this, the causal context only
+        # contains meta-loop convergence and memory enrichment signals,
+        # missing the quality of the causal models themselves.
+        if self.causal_context is not None and _causal_healthy:
+            self.causal_context.add(
+                source="causal_quality",
+                embedding=C_star.mean(dim=0).detach(),
+                relevance=self._cached_causal_quality,
+                causal_weight=self._cached_causal_quality,
+                tier="mid_term",
+            )
+        
         # 5d1d. Late-pass feedback bus refresh — now that world model,
         # coherence verifier, and causal model have all produced current-
         # pass signals, refresh the cached feedback with up-to-date values.
@@ -16314,10 +16330,56 @@ class AEONDeltaV3(nn.Module):
             z_rssm = C_fused
         
         # 7b. Multimodal grounding (if available)
+        _multimodal_healthy = True
         if self.multimodal is not None and not fast:
-            # Use z_rssm as language representation
-            mm_result = self.multimodal(language=z_rssm.unsqueeze(1))
-            z_rssm = z_rssm + mm_result['fused']
+            self.provenance_tracker.record_before("multimodal", z_rssm)
+            try:
+                # Use z_rssm as language representation
+                mm_result = self.multimodal(language=z_rssm.unsqueeze(1))
+                _mm_fused = mm_result['fused']
+                if torch.isfinite(_mm_fused).all():
+                    z_rssm = z_rssm + _mm_fused
+                else:
+                    logger.warning("Non-finite multimodal output; skipping fusion")
+                    _multimodal_healthy = False
+                self.audit_log.record("multimodal", "grounded", {
+                    "fused_norm": float(_mm_fused.norm().item()),
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "multimodal", "grounded",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "fused_norm": float(_mm_fused.norm().item()),
+                        },
+                    )
+            except Exception as mm_err:
+                _multimodal_healthy = False
+                logger.warning(f"Multimodal grounding error (non-fatal): {mm_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="multimodal_grounding",
+                    success=False,
+                )
+                uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["multimodal_error"] = 0.2
+                high_uncertainty = uncertainty > 0.5
+                self.audit_log.record("multimodal", "error_recovered", {
+                    "error": str(mm_err)[:200],
+                }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "multimodal", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(mm_err)[:200]},
+                    )
+            self.provenance_tracker.record_after("multimodal", z_rssm)
+        self.integrity_monitor.record_health(
+            "multimodal",
+            1.0 if _multimodal_healthy else 0.0,
+            {"executed": self.multimodal is not None and not fast},
+        )
         
         # 8. Integration with residual and normalization
         z_integrated = self.integration_proj(
@@ -16480,6 +16542,19 @@ class AEONDeltaV3(nn.Module):
                             strategy_used="auto_critic",
                             success=revised is not None and torch.isfinite(revised).all(),
                         )
+                # 8b2b. NS violation → feedback bus propagation — escalate
+                # the cached coherence deficit so that the *next* forward
+                # pass's meta-loop is conditioned on symbolic consistency
+                # failures, closing the cross-pass feedback loop between
+                # neuro-symbolic verification and meta-loop reasoning depth.
+                _ns_overall = float(
+                    ns_consistency_results["overall_consistency"].mean().item()
+                )
+                if math.isfinite(_ns_overall):
+                    _ns_deficit = max(0.0, min(1.0, 1.0 - _ns_overall))
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit, _ns_deficit,
+                    )
         
         # 8b3a. Weighted uncertainty fusion — recompute the final scalar
         # uncertainty from all accumulated sources using reliability-based
@@ -16646,6 +16721,11 @@ class AEONDeltaV3(nn.Module):
             _us_next = unified_simulator_results.get("next_state", None)
             if _us_next is not None and _us_next.shape[-1] == z_out.shape[-1]:
                 post_states["unified_simulator"] = _us_next
+            # Include multimodal grounded state if available — ensures
+            # that multimodal grounding is cross-validated against other
+            # subsystems in the post-integration coherence check.
+            if self.multimodal is not None and _multimodal_healthy:
+                post_states["multimodal"] = z_rssm
             if len(post_states) >= 2:
                 post_coherence = self.module_coherence(post_states)
                 # Merge into coherence_results: use the lower of pre/post
@@ -16894,6 +16974,36 @@ class AEONDeltaV3(nn.Module):
                         context="post_integration_safety",
                         success=True,
                     )
+        
+        # 8g-0b. Store auto-critic-revised output in memory systems — when
+        # auto-critic has revised z_out, store the corrected state so that
+        # memory-based retrieval in subsequent forward passes benefits from
+        # self-corrected reasoning rather than only pre-correction states.
+        # This closes the memory feedback loop for self-critique: without
+        # it, memory systems only ever store uncorrected states, preventing
+        # the system from learning from its own corrections.
+        if _any_auto_critic_revised and not fast:
+            if self.consolidating_memory is not None:
+                try:
+                    _n = min(B, z_out.shape[0])
+                    for i in range(_n):
+                        if torch.isfinite(z_out[i]).all():
+                            self.consolidating_memory.store(z_out[i].detach())
+                except Exception as _cm_store_err:
+                    logger.debug("Post-critic consolidating memory store failed: %s", _cm_store_err)
+            if self.hierarchical_memory is not None:
+                try:
+                    _imp = self.importance_scorer(z_out).squeeze(-1)
+                    _n = min(B, z_out.shape[0])
+                    for i in range(_n):
+                        if torch.isfinite(z_out[i]).all():
+                            self.hierarchical_memory.store(
+                                z_out[i].detach(),
+                                meta={'importance': float(_imp[i].item()),
+                                      'auto_critic_revised': True},
+                            )
+                except Exception as _hm_store_err:
+                    logger.debug("Post-critic hierarchical memory store failed: %s", _hm_store_err)
         
         # 8g. Record aggregated subsystem health in causal trace so that
         # root-cause analysis can link system-wide health degradation

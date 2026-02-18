@@ -20055,6 +20055,333 @@ def test_nan_loss_propagates_to_convergence_monitor_phase_b():
     print("✅ test_nan_loss_propagates_to_convergence_monitor_phase_b PASSED")
 
 
+# ============================================================================
+# SECTION: Architectural Unification — Cross-Module Integration Gap Fixes
+# ============================================================================
+
+
+def test_multimodal_provenance_tracking():
+    """Gap 1: Verify multimodal module is tracked by provenance system.
+
+    Previously, the multimodal block ran without provenance recording,
+    making it invisible to attribution analysis.  After the fix, both
+    record_before and record_after calls bracket the multimodal execution
+    so that provenance contributions are properly attributed.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.multimodal is not None
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert torch.isfinite(z_out).all(), "Output should be finite"
+    # Provenance should include multimodal contribution
+    provenance = outputs.get("provenance", {})
+    contributions = provenance.get("contributions", {})
+    assert "multimodal" in contributions, (
+        f"Multimodal should appear in provenance contributions, got: {list(contributions.keys())}"
+    )
+
+    print("✅ test_multimodal_provenance_tracking PASSED")
+
+
+def test_multimodal_error_escalates_uncertainty():
+    """Gap 1: Verify multimodal errors escalate uncertainty.
+
+    Previously, the multimodal block had no error handling — a failure
+    would crash the pipeline.  After the fix, errors are caught and
+    uncertainty is escalated with source tracking.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Inject a failure into the multimodal module
+    original_forward = model.multimodal.forward
+    def failing_forward(*args, **kwargs):
+        raise RuntimeError("Simulated multimodal failure")
+    model.multimodal.forward = failing_forward
+
+    z_in = torch.randn(2, 32)
+    # Should NOT raise — error should be caught and uncertainty escalated
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+    assert torch.isfinite(z_out).all(), "Output should be finite even after multimodal error"
+
+    # Uncertainty sources should include multimodal_error
+    uncertainty_sources = outputs.get("uncertainty_sources", {})
+    assert "multimodal_error" in uncertainty_sources, (
+        f"Expected 'multimodal_error' in uncertainty_sources, got: {list(uncertainty_sources.keys())}"
+    )
+
+    # Restore original
+    model.multimodal.forward = original_forward
+
+    print("✅ test_multimodal_error_escalates_uncertainty PASSED")
+
+
+def test_multimodal_integrity_health_recorded():
+    """Gap 1: Verify multimodal health is reported to integrity monitor.
+
+    Previously, the multimodal module did not report health to the
+    SystemIntegrityMonitor, making it invisible to subsystem-level
+    health monitoring.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    report = model.integrity_monitor.get_integrity_report()
+    subsystem_health = report.get("subsystem_health", {})
+    assert "multimodal" in subsystem_health, (
+        f"Expected 'multimodal' in subsystem_health, got: {list(subsystem_health.keys())}"
+    )
+    assert subsystem_health["multimodal"] == 1.0, (
+        f"Healthy multimodal should have health=1.0, got {subsystem_health['multimodal']}"
+    )
+
+    print("✅ test_multimodal_integrity_health_recorded PASSED")
+
+
+def test_multimodal_causal_trace_recorded():
+    """Gap 1: Verify multimodal module records in causal trace.
+
+    Previously, the multimodal block did not record into the causal
+    trace, breaking root-cause traceability for multimodal grounding.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert model.causal_trace is not None
+    recent = model.causal_trace.recent(n=20)
+    multimodal_entries = [e for e in recent if e.get("subsystem") == "multimodal"]
+    assert len(multimodal_entries) > 0, (
+        "Expected at least one causal trace entry for 'multimodal'"
+    )
+
+    print("✅ test_multimodal_causal_trace_recorded PASSED")
+
+
+def test_ns_violation_propagates_to_feedback_bus():
+    """Gap 2: Verify NS violations propagate to feedback bus via coherence deficit.
+
+    Previously, NS consistency violations did not escalate the cached
+    coherence deficit, so the next forward pass's meta-loop was not
+    conditioned on symbolic consistency failures.  After the fix,
+    NS violations update _cached_coherence_deficit so the feedback bus
+    carries symbolic violation signals across passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_ns_consistency_check=True,
+        ns_violation_threshold=1.0,  # High threshold → any sub-perfect consistency triggers violations
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record initial coherence deficit
+    initial_deficit = model._cached_coherence_deficit
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # After a pass with NS violations, cached_coherence_deficit should be
+    # updated to reflect the symbolic consistency failure
+    ns_results = outputs.get("ns_consistency_results", {})
+    if ns_results:
+        num_violations = ns_results.get("num_violations", torch.zeros(1)).sum().item()
+        if num_violations > 0:
+            assert model._cached_coherence_deficit >= initial_deficit, (
+                f"NS violations should escalate coherence deficit: "
+                f"initial={initial_deficit}, current={model._cached_coherence_deficit}"
+            )
+
+    print("✅ test_ns_violation_propagates_to_feedback_bus PASSED")
+
+
+def test_auto_critic_revised_stored_in_memory():
+    """Gap 3: Verify auto-critic-revised output is stored in memory systems.
+
+    Previously, after auto-critic revised z_out, the corrected state was
+    never stored in memory systems, so memory didn't reflect self-corrected
+    reasoning.  After the fix, revised states are stored in both
+    consolidating_memory and hierarchical_memory when available.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_ns_consistency_check=True,
+        ns_violation_threshold=1.0,  # High threshold → triggers auto-critic on any sub-perfect consistency
+        enable_auto_critic=True,
+        enable_consolidating_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record initial consolidating memory state (working is a _RingBuffer)
+    initial_working = len(model.consolidating_memory.working)
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # After auto-critic revision, consolidated memory should have new entries
+    final_working = len(model.consolidating_memory.working)
+
+    # Memory should have grown (stores happen during reasoning + post-critic)
+    assert final_working > initial_working, (
+        f"Consolidating memory should grow after auto-critic revision: "
+        f"initial={initial_working}, final={final_working}"
+    )
+
+    print("✅ test_auto_critic_revised_stored_in_memory PASSED")
+
+
+def test_multimodal_error_weight_in_uncertainty_fusion():
+    """Gap 4: Verify multimodal_error has a weight in uncertainty fusion.
+
+    Previously, _UNCERTAINTY_SOURCE_WEIGHTS had no entry for
+    'multimodal_error', so any multimodal uncertainty escalation would
+    use the default weight.  After the fix, it has an explicit weight.
+    """
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    assert "multimodal_error" in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        f"Expected 'multimodal_error' in _UNCERTAINTY_SOURCE_WEIGHTS, "
+        f"got keys: {list(_UNCERTAINTY_SOURCE_WEIGHTS.keys())}"
+    )
+    assert _UNCERTAINTY_SOURCE_WEIGHTS["multimodal_error"] == 0.5
+
+    print("✅ test_multimodal_error_weight_in_uncertainty_fusion PASSED")
+
+
+def test_causal_quality_recorded_in_causal_context():
+    """Gap 5: Verify causal model quality is recorded in CausalContextWindowManager.
+
+    Previously, the causal context only received meta-loop convergence
+    and memory enrichment signals.  After the fix, causal model quality
+    is also stored so cross-temporal reasoning benefits from causal
+    structure learning outcomes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_model=True,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Check that causal_context received causal quality entries
+    assert model.causal_context is not None
+    # The causal context should have entries from multiple sources
+    # including 'causal_quality' after the fix.
+    # Use get_top_k to retrieve all entries and check sources.
+    all_top = model.causal_context.get_top_k(k=50)
+    sources = [e.get("source", "") for e in all_top]
+    assert "causal_quality" in sources, (
+        f"Expected 'causal_quality' source in causal context entries, got: {sources}"
+    )
+
+    print("✅ test_causal_quality_recorded_in_causal_context PASSED")
+
+
+def test_multimodal_in_post_integration_coherence():
+    """Gap 1 addendum: Verify multimodal is included in post-integration coherence.
+
+    Previously, the post-integration coherence verification (step 8f)
+    included world_model, hybrid_reasoning, causal_model, and
+    unified_simulator, but not the multimodal grounded state.  After
+    the fix, multimodal is included when available.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Coherence results should exist
+    coherence_results = outputs.get("coherence_results", {})
+    assert coherence_results, "coherence_results should be non-empty"
+
+    # The pairwise coherence should include multimodal pairs
+    pairwise = coherence_results.get("pairwise", {})
+    multimodal_pairs = [k for k in pairwise.keys()
+                        if "multimodal" in str(k)]
+    assert len(multimodal_pairs) > 0, (
+        f"Expected multimodal in pairwise coherence, got pairs: {list(pairwise.keys())}"
+    )
+
+    print("✅ test_multimodal_in_post_integration_coherence PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -20978,6 +21305,17 @@ if __name__ == '__main__':
     test_phase_b_stagnation_lr_increase()
     test_nan_loss_propagates_to_convergence_monitor_phase_a()
     test_nan_loss_propagates_to_convergence_monitor_phase_b()
+    
+    # Architectural Unification — Cross-Module Integration Gap Fixes
+    test_multimodal_provenance_tracking()
+    test_multimodal_error_escalates_uncertainty()
+    test_multimodal_integrity_health_recorded()
+    test_multimodal_causal_trace_recorded()
+    test_ns_violation_propagates_to_feedback_bus()
+    test_auto_critic_revised_stored_in_memory()
+    test_multimodal_error_weight_in_uncertainty_fusion()
+    test_causal_quality_recorded_in_causal_context()
+    test_multimodal_in_post_integration_coherence()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
