@@ -403,6 +403,41 @@ Ensures causal traceability, cross-module consistency, external data trust verif
 
 ---
 
+## 🖥️ Dashboard & Server (`aeon_server.py` + `AEON_Dashboard.html`)
+
+### **Server: aeon_server.py v3.3.0**
+Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
+- **52 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
+- **WebSocket** real-time updates (training progress, test events, log streaming)
+- **SSE** log streaming with per-level filtering and per-test event streaming
+- **Background training** thread with v4 pipeline integration (`ae_train.py`)
+- **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
+- **Comprehensive test runner**: catalogue of 655 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, correlation ID middleware
+- **VQ codebook introspection**: `/api/vq/codebook` with utilization history
+- **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
+- **Benchmarking**: `/api/benchmark` for N-run latency profiling with statistical summaries
+
+### **Dashboard: AEON_Dashboard.html v3.2**
+Single-file production control dashboard served at `http://localhost:8000`:
+- **Real-time monitoring** of model status, training progress, and system metrics via WebSocket
+- **Interactive inference** with configurable temperature, top-k, and prompt input
+- **Training management** (start/stop/progress) for both legacy and v4 training pipelines with file upload
+- **Configuration validation** and live editing
+- **Test execution** with per-test status streaming
+- **Dark-themed modern UI** with sidebar navigation
+
+### **Quick Start**
+```bash
+pip install fastapi uvicorn psutil python-multipart
+python aeon_server.py [--host 0.0.0.0] [--port 8000]
+
+# Dashboard:  http://localhost:8000
+# API Docs:   http://localhost:8000/docs
+```
+
+---
+
 ## 📂 Training Pipeline: v4.0 Connected Thoughts Edition (`ae_train.py`)
 
 ### **Architecture Components**
@@ -417,6 +452,8 @@ Ensures causal traceability, cross-module consistency, external data trust verif
 - **`ContextualRSSMTrainer`**: Phase B trainer for sequential dynamics within document boundaries
 - **`TrainingMonitor`**: Comprehensive metrics tracker with epoch/batch recording and JSON serialization
 - **`WarmupCosineScheduler`**: Learning rate scheduler with linear warmup and cosine annealing decay
+- **`TrainingProvenanceTracker`**: Tracks training provenance metadata including data sources, hyperparameters, and training history for reproducibility
+- **`TrainingConvergenceMonitor`**: Monitors training convergence metrics across epochs with early stopping and stability analysis
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
 - Document-aware tokenization preserving semantic boundaries  
@@ -473,7 +510,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 526 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 655 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -524,10 +561,12 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py      # Core architecture — 111 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── ae_train.py       # Training pipeline v4.0 — 12 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py     # Comprehensive test suite (526 tests) — stability, gradients, causal, planning, audit, recovery, coherence
-├── LICENSE           # AEON-Δ Research-Only Non-Commercial License
+├── aeon_core.py          # Core architecture — 113 classes, all modules, model (AEONDeltaV3), trainer, CLI
+├── aeon_server.py        # FastAPI backend v3.3.0 — 52 API endpoints, WebSocket, SSE, training runner
+├── AEON_Dashboard.html   # Production control dashboard v3.2 — real-time monitoring, inference, training UI
+├── ae_train.py           # Training pipeline v4.0 — 14 classes, Phase A (AE+VQ) & Phase B (RSSM)
+├── test_fixes.py         # Comprehensive test suite (655 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
 ```
@@ -540,6 +579,7 @@ AEON-Delta/
 - Python 3.8+  
 - PyTorch 1.13+ (PyTorch 2.0+ recommended for full feature support)  
 - Optional: `transformers`, `tqdm`, `matplotlib`, `tensorboard`, `wandb`
+- For Dashboard/Server: `fastapi`, `uvicorn`, `psutil`, `python-multipart`
 
 ### CLI Modes (`aeon_core.py`)
 ```bash
@@ -568,6 +608,15 @@ python ae_train.py --document_aware --json_path structured_data.json
 
 # Resume from checkpoint
 python ae_train.py --resume checkpoints/checkpoint_epoch_10.pt
+```
+
+### Dashboard & Server (`aeon_server.py`)
+```bash
+pip install fastapi uvicorn psutil python-multipart
+python aeon_server.py [--host 0.0.0.0] [--port 8000]
+
+# Dashboard:  http://localhost:8000
+# API Docs:   http://localhost:8000/docs
 ```
 
 ---
