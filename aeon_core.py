@@ -14363,9 +14363,10 @@ class AEONDeltaV3(nn.Module):
                     # Pre-escalate uncertainty proportionally to the
                     # failure rate so the metacognitive trigger is more
                     # sensitive to historically problematic inputs.
+                    _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY = 0.1
                     _evolved_preemptive_uncertainty = max(
                         _evolved_preemptive_uncertainty,
-                        0.1 * (1.0 - _success_rate),
+                        _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY * (1.0 - _success_rate),
                     )
             if _evolved_preemptive_uncertainty > 0:
                 logger.debug(
@@ -15874,10 +15875,14 @@ class AEONDeltaV3(nn.Module):
             # verification_weight signal into active decision-making.
             _verification_wt = getattr(self, '_last_verification_weight', 0.0)
             _VERIFICATION_TIGHTENING_THRESHOLD = 0.3
+            _VERIFICATION_MIN_FACTOR = 0.7
+            _VERIFICATION_TIGHTENING_RATE = 0.3
             if _verification_wt > _VERIFICATION_TIGHTENING_THRESHOLD:
                 _trust_tightening = max(
-                    0.7,
-                    1.0 - 0.3 * (_verification_wt - _VERIFICATION_TIGHTENING_THRESHOLD),
+                    _VERIFICATION_MIN_FACTOR,
+                    1.0 - _VERIFICATION_TIGHTENING_RATE * (
+                        _verification_wt - _VERIFICATION_TIGHTENING_THRESHOLD
+                    ),
                 )
                 self.cross_validator.agreement_threshold = min(
                     self.cross_validator.agreement_threshold,
