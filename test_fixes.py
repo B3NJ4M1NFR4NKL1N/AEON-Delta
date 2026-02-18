@@ -17451,6 +17451,8 @@ def test_backbone_adapter_integration():
 
         def forward(self, input_ids, attention_mask=None):
             B, L = input_ids.shape
+            # Use a non-trivial constant large enough to survive VQ
+            # quantization and propagate into the final output.
             return torch.ones(B, L, self.dim) * 0.5
 
     model.backbone_adapter = MockBackbone(64)

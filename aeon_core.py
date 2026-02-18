@@ -14145,11 +14145,12 @@ class AEONDeltaV3(nn.Module):
         # convergence rate (higher = more relevant), and the causal
         # weight reflects the confidence in the converged state.
         if self.causal_context is not None:
+            _convergence_relevance = float(convergence_rate) if meta_loop_valid else 0.0
             self.causal_context.add(
                 source="meta_loop_convergence",
                 embedding=C_star.mean(dim=0).detach(),
-                relevance=float(convergence_rate) if meta_loop_valid else 0.0,
-                causal_weight=float(convergence_rate) if meta_loop_valid else 0.0,
+                relevance=_convergence_relevance,
+                causal_weight=_convergence_relevance,
                 tier="short_term",
             )
         
