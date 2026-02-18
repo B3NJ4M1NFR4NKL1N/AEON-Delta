@@ -574,7 +574,6 @@ class GumbelVectorQuantizer(nn.Module):
         return 0.0
 
 
-
 class VectorQuantizerHybridV4(nn.Module):
     """
     VQ-VAE v4 с entropy regularization
