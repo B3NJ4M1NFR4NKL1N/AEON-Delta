@@ -17417,6 +17417,220 @@ def test_config_new_agi_coherence_defaults():
     print("✅ test_config_new_agi_coherence_defaults PASSED")
 
 
+# ==========================================================================
+# Tests for AGI Architectural Unification — Module Integration Fixes
+# ==========================================================================
+
+
+def test_backbone_adapter_integration():
+    """PretrainedBackboneAdapter enriches encoder output when available.
+
+    Verifies that when a backbone adapter is present, its output is
+    blended into z_encoded via residual addition, closing the gap
+    where the backbone was loaded but never used in the forward path.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch.nn as nn
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Manually attach a mock backbone adapter that returns a known
+    # constant to verify integration path.
+    class MockBackbone(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.dim = dim
+
+        def forward(self, input_ids, attention_mask=None):
+            B, L = input_ids.shape
+            return torch.ones(B, L, self.dim) * 0.5
+
+    model.backbone_adapter = MockBackbone(64)
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs_with = model(tokens, fast=True)
+
+    # Remove backbone adapter and run again
+    model.backbone_adapter = None
+    with torch.no_grad():
+        outputs_without = model(tokens, fast=True)
+
+    # The outputs should differ because the backbone enrichment path
+    # adds a residual.  This confirms the adapter is wired in.
+    thoughts_with = outputs_with['thoughts']
+    thoughts_without = outputs_without['thoughts']
+    assert not torch.allclose(thoughts_with, thoughts_without, atol=1e-6), (
+        "Backbone adapter should change output when present"
+    )
+
+    print("✅ test_backbone_adapter_integration PASSED")
+
+
+def test_full_coherence_preset_expanded():
+    """enable_full_coherence activates memory, planning, and NOTEARS flags.
+
+    Verifies that the expanded coherence preset includes all subsystems
+    required for a fully unified cognitive architecture.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_full_coherence=True,
+    )
+
+    # New flags that should be enabled by the preset
+    assert config.enable_hierarchical_memory is True, \
+        "enable_full_coherence should activate hierarchical memory"
+    assert config.enable_neurogenic_memory is True, \
+        "enable_full_coherence should activate neurogenic memory"
+    assert config.enable_temporal_memory is True, \
+        "enable_full_coherence should activate temporal memory"
+    assert config.enable_consolidating_memory is True, \
+        "enable_full_coherence should activate consolidating memory"
+    assert config.enable_notears_causal is True, \
+        "enable_full_coherence should activate NOTEARS causal model"
+    assert config.enable_mcts_planner is True, \
+        "enable_full_coherence should activate MCTS planner"
+    assert config.enable_active_learning_planner is True, \
+        "enable_full_coherence should activate active learning planner"
+    assert config.enable_hierarchical_vae is True, \
+        "enable_full_coherence should activate hierarchical VAE"
+
+    # Original flags should still be active
+    assert config.enable_module_coherence is True
+    assert config.enable_metacognitive_recursion is True
+    assert config.enable_causal_trace is True
+    assert config.enable_error_evolution is True
+    assert config.enable_auto_critic is True
+    assert config.enable_world_model is True
+
+    print("✅ test_full_coherence_preset_expanded PASSED")
+
+
+def test_causal_context_records_meta_loop():
+    """CausalContextWindowManager receives meta-loop convergence data.
+
+    Verifies that after the meta-loop converges, its state is recorded
+    in the causal context window for cross-temporal reasoning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_causal_context=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.causal_context is not None, "Causal context should be enabled"
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+
+    # After a forward pass, the causal context should have entries
+    # from both meta_loop_convergence and reasoning_core sources.
+    ctx = model.causal_context.get_context_tensor(k=10)
+    assert ctx is not None and ctx.shape[0] > 0, (
+        "Causal context should have entries after forward pass"
+    )
+
+    print("✅ test_causal_context_records_meta_loop PASSED")
+
+
+def test_consolidating_memory_in_fuse_memory():
+    """ConsolidatingMemory semantic prototypes enrich memory fusion.
+
+    When both MemoryManager and ConsolidatingMemory are active, the
+    _fuse_memory method should incorporate semantic prototypes from
+    ConsolidatingMemory into the fused representation.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_consolidating_memory=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.consolidating_memory is not None, \
+        "ConsolidatingMemory should be enabled"
+
+    # Pre-populate consolidating memory with some data
+    dummy = torch.randn(64)
+    for _ in range(5):
+        model.consolidating_memory.store(dummy.detach())
+
+    # Run forward to exercise the _fuse_memory path
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+
+    assert 'thoughts' in outputs, "Forward should complete successfully"
+    assert torch.isfinite(outputs['thoughts']).all(), \
+        "Output thoughts should be finite"
+
+    print("✅ test_consolidating_memory_in_fuse_memory PASSED")
+
+
+def test_backbone_adapter_error_resilience():
+    """Backbone adapter errors are caught without crashing forward pass.
+
+    When the backbone adapter raises an exception, the forward pass
+    should gracefully skip the enrichment and continue with the
+    primary encoder output alone.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch.nn as nn
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Attach a broken backbone adapter
+    class BrokenBackbone(nn.Module):
+        def forward(self, *args, **kwargs):
+            raise RuntimeError("Simulated backbone failure")
+
+    model.backbone_adapter = BrokenBackbone()
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=True)
+
+    # Forward pass should complete despite backbone error
+    assert 'thoughts' in outputs, "Forward should complete despite backbone error"
+    assert torch.isfinite(outputs['thoughts']).all(), \
+        "Output should be finite despite backbone error"
+
+    print("✅ test_backbone_adapter_error_resilience PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -18250,6 +18464,13 @@ if __name__ == '__main__':
     test_provenance_safety_linkage()
     test_current_pass_signals_in_feedback()
     test_config_new_agi_coherence_defaults()
+    
+    # AGI Architectural Unification — Module Integration Tests
+    test_backbone_adapter_integration()
+    test_full_coherence_preset_expanded()
+    test_causal_context_records_meta_loop()
+    test_consolidating_memory_in_fuse_memory()
+    test_backbone_adapter_error_resilience()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

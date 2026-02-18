@@ -2972,6 +2972,20 @@ class AEONConfig:
                 'enable_unified_simulator',
                 'enable_causal_world_model',
                 'enable_causal_model',
+                # Memory subsystems — unified coherence requires all
+                # memory tiers so that cross-temporal reasoning has a
+                # full hierarchy of retrieval sources.
+                'enable_hierarchical_memory',
+                'enable_neurogenic_memory',
+                'enable_temporal_memory',
+                'enable_consolidating_memory',
+                # Causal structure learning
+                'enable_notears_causal',
+                # Planning subsystems
+                'enable_mcts_planner',
+                'enable_active_learning_planner',
+                # Multi-scale abstraction
+                'enable_hierarchical_vae',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -13645,6 +13659,32 @@ class AEONDeltaV3(nn.Module):
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
+            
+            # Blend ConsolidatingMemory semantic prototypes into the
+            # fused state when available.  This bridges the two parallel
+            # memory systems (MemoryManager FAISS and ConsolidatingMemory
+            # knowledge graph) so that semantic-level abstractions
+            # influence the final memory-fused representation.
+            if self.consolidating_memory is not None:
+                try:
+                    for i in range(C_fused.shape[0]):
+                        cm_ret = self.consolidating_memory.retrieve(
+                            C_fused[i].detach(), k=3,
+                        )
+                        semantic_items = cm_ret.get('semantic', [])
+                        if semantic_items:
+                            sem_vecs = torch.stack(
+                                [v for v, _s in semantic_items]
+                            )
+                            C_fused[i] = C_fused[i] + (
+                                self.config.consolidating_semantic_weight
+                                * sem_vecs.mean(dim=0).to(device)
+                            )
+                except Exception as cm_err:
+                    logger.debug(
+                        f"ConsolidatingMemory fusion skipped: {cm_err}"
+                    )
+            
             return C_fused
         return C_star
     
@@ -14097,6 +14137,20 @@ class AEONDeltaV3(nn.Module):
                     "avg_iterations": float(iterations.mean().item()),
                     "finite": meta_loop_valid,
                 },
+            )
+        
+        # Record meta-loop convergence in CausalContextWindowManager so
+        # that cross-temporal reasoning benefits from the convergence
+        # state of prior forward passes.  The relevance is set to the
+        # convergence rate (higher = more relevant), and the causal
+        # weight reflects the confidence in the converged state.
+        if self.causal_context is not None:
+            self.causal_context.add(
+                source="meta_loop_convergence",
+                embedding=C_star.mean(dim=0).detach(),
+                relevance=float(convergence_rate) if meta_loop_valid else 0.0,
+                causal_weight=float(convergence_rate) if meta_loop_valid else 0.0,
+                tier="short_term",
             )
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
@@ -16231,6 +16285,24 @@ class AEONDeltaV3(nn.Module):
         """Inner forward logic (separated for OOM recovery)."""
         # ===== ENCODE =====
         z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
+        
+        # ===== BACKBONE ADAPTER ENRICHMENT =====
+        # When a pretrained backbone adapter is loaded, use it to enrich
+        # the encoder output with pretrained features.  The adapter
+        # produces [B, L, hidden_dim] sequence features; mean-pooling
+        # collapses them to [B, hidden_dim] for residual blending with
+        # the primary encoder output.  This closes the gap where the
+        # backbone was loaded but never integrated into the forward path.
+        if self.backbone_adapter is not None:
+            try:
+                backbone_features = self.backbone_adapter(
+                    input_ids, attention_mask=attention_mask,
+                )  # [B, L, hidden_dim]
+                backbone_pooled = backbone_features.mean(dim=1)  # [B, hidden_dim]
+                if torch.isfinite(backbone_pooled).all():
+                    z_encoded = z_encoded + backbone_pooled
+            except Exception as bb_err:
+                logger.warning(f"Backbone adapter error (non-fatal): {bb_err}")
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
