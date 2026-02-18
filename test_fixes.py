@@ -20704,8 +20704,10 @@ def test_multimodal_causal_context_feedback():
         "CausalContextWindowManager should have entries after forward pass"
     )
 
-    # Check that at least one entry is from multimodal_health source
-    all_entries = model.causal_context.get_top_k(k=50)
+    # Check that at least one entry is from multimodal_health source.
+    # Retrieve enough entries to cover all sources added during one pass.
+    _MAX_ENTRIES_TO_CHECK = 50
+    all_entries = model.causal_context.get_top_k(k=_MAX_ENTRIES_TO_CHECK)
     multimodal_entries = [
         e for e in all_entries if e["source"] == "multimodal_health"
     ]

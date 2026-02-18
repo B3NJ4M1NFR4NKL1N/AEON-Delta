@@ -17984,11 +17984,10 @@ class AEONDeltaV3(nn.Module):
                 max_length=max_length
             )
             
-            # Uncertainty-adaptive generation — adjust temperature and top_k
-            # based on the reasoning core's uncertainty estimate so that
-            # uncertain reasoning produces more diverse (higher temperature)
-            # and less constrained (higher top_k) outputs, making the
-            # system's epistemic state visible in generation behavior.
+            # Extract reasoning uncertainty for the caller.  The existing
+            # uncertainty logit penalty (applied in _forward_impl) already
+            # scales logits toward uniform during high uncertainty; this
+            # surfaces the scalar so callers can further adapt behavior.
             _gen_uncertainty = outputs.get('uncertainty', 0.0)
 
             generated_ids = outputs.get('generated_ids')
