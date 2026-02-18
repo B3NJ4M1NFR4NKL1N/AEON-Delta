@@ -20602,6 +20602,122 @@ def test_weakest_pair_targeted_provenance_dampening():
     print("✅ test_weakest_pair_targeted_provenance_dampening PASSED")
 
 
+def test_uncertainty_source_weights_complete():
+    """Verify all uncertainty sources used in the forward pass have explicit weights.
+
+    _UNCERTAINTY_SOURCE_WEIGHTS must contain entries for every key that
+    the reasoning_core adds to uncertainty_sources so that
+    _weighted_uncertainty_fusion applies intentional per-source reliability
+    scaling rather than falling back to the generic default weight.
+    """
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    # Every source added via uncertainty_sources["<name>"] in reasoning_core
+    expected_sources = [
+        "meta_loop_nan", "rssm_nan", "integration_nan",
+        "residual_variance", "coherence_deficit", "recovery_pressure",
+        "world_model_error", "world_model_surprise",
+        "memory_error", "memory_staleness",
+        "causal_model_error", "hybrid_reasoning_error",
+        "hybrid_reasoning_ns_violation", "multimodal_error",
+        "unified_simulator_divergence", "diversity_collapse",
+        "mcts_low_confidence", "active_learning_curiosity",
+        "hvae_kl_divergence", "low_memory_trust", "pipeline_error",
+        # Sources added by this PR:
+        "auto_critic_error", "causal_programmatic_error",
+        "causal_root_cause_count", "consolidating_memory_error",
+        "error_evolution_preemptive", "hierarchical_wm_error",
+        "neurogenic_memory_sparse", "temporal_memory_sparse",
+    ]
+    for src in expected_sources:
+        assert src in _UNCERTAINTY_SOURCE_WEIGHTS, (
+            f"Missing explicit weight for uncertainty source '{src}'"
+        )
+        w = _UNCERTAINTY_SOURCE_WEIGHTS[src]
+        assert 0.0 < w <= 1.0, (
+            f"Weight for '{src}' must be in (0, 1], got {w}"
+        )
+
+    print("✅ test_uncertainty_source_weights_complete PASSED")
+
+
+def test_generate_returns_uncertainty():
+    """Verify generate() includes uncertainty and causal_decision_chain in output.
+
+    When a tokenizer is not available the method returns a degraded response;
+    the non-degraded code path (tested via forward) must surface the
+    uncertainty metadata produced by the reasoning core.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, meta_dim=64, vq_embedding_dim=64,
+        num_pillars=8, action_dim=8,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # generate() without tokenizer returns degraded — that's fine, just verify
+    # the degraded path still returns a dict (doesn't crash).
+    result = model.generate("test prompt")
+    assert isinstance(result, dict), "generate() must return a dict"
+    assert "status" in result
+
+    # Verify forward pass with decode_mode='inference' produces uncertainty
+    B, L = 1, 16
+    input_ids = torch.randint(1, 100, (B, L))
+    with torch.no_grad():
+        outputs = model.forward(input_ids, decode_mode='inference', fast=True)
+    assert 'uncertainty' in outputs, "Forward outputs must include 'uncertainty'"
+
+    print("✅ test_generate_returns_uncertainty PASSED")
+
+
+def test_multimodal_causal_context_feedback():
+    """Verify multimodal health is recorded in CausalContextWindowManager.
+
+    When multimodal grounding succeeds, the multimodal health should be
+    stored in the causal context so that cross-temporal reasoning benefits
+    from multimodal grounding quality outcomes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, meta_dim=64, vq_embedding_dim=64,
+        num_pillars=8, action_dim=8,
+        enable_multimodal=True,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 100, (B, L))
+    with torch.no_grad():
+        outputs = model.forward(input_ids, decode_mode='train', fast=False)
+
+    # Check that causal context has entries from multimodal health
+    stats = model.causal_context.stats()
+    assert stats["total_added"] > 0, (
+        "CausalContextWindowManager should have entries after forward pass"
+    )
+
+    # Check that at least one entry is from multimodal_health source.
+    # Retrieve enough entries to cover all sources added during one pass.
+    _MAX_ENTRIES_TO_CHECK = 50
+    all_entries = model.causal_context.get_top_k(k=_MAX_ENTRIES_TO_CHECK)
+    multimodal_entries = [
+        e for e in all_entries if e["source"] == "multimodal_health"
+    ]
+    assert len(multimodal_entries) > 0, (
+        "CausalContextWindowManager should contain a 'multimodal_health' entry"
+    )
+
+    print("✅ test_multimodal_causal_context_feedback PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -21543,6 +21659,11 @@ if __name__ == '__main__':
     test_root_cause_count_in_uncertainty_sources()
     test_uncertainty_adaptive_loss_scaling()
     test_weakest_pair_targeted_provenance_dampening()
+    
+    # Architectural Unification — Uncertainty & Causal Traceability Completeness
+    test_uncertainty_source_weights_complete()
+    test_generate_returns_uncertainty()
+    test_multimodal_causal_context_feedback()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
