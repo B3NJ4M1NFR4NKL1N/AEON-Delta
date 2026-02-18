@@ -16139,6 +16139,253 @@ def test_post_integration_auto_critic_tracks_revision():
     print("✅ test_post_integration_auto_critic_tracks_revision PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# OBSERVABILITY & TELEMETRY TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_structured_log_formatter_json_output():
+    """Verify StructuredLogFormatter emits valid JSON with required fields."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    record = logging.LogRecord(
+        name="AEON-Delta", level=logging.INFO, pathname="", lineno=0,
+        msg="test message", args=(), exc_info=None,
+    )
+    output = fmt.format(record)
+    parsed = _json.loads(output)
+
+    assert "timestamp" in parsed, "Missing timestamp"
+    assert "level" in parsed, "Missing level"
+    assert parsed["level"] == "INFO"
+    assert "module" in parsed, "Missing module"
+    assert parsed["module"] == "AEON-Delta"
+    assert "message" in parsed, "Missing message"
+    assert parsed["message"] == "test message"
+    assert "correlation_id" in parsed
+    # ISO 8601 check
+    assert "T" in parsed["timestamp"], "Timestamp not ISO 8601"
+    print("✅ test_structured_log_formatter_json_output PASSED")
+
+
+def test_structured_log_formatter_with_correlation_id():
+    """Verify correlation_id propagates through the formatter."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    record = logging.LogRecord(
+        name="test", level=logging.WARNING, pathname="", lineno=0,
+        msg="correlated", args=(), exc_info=None,
+    )
+    record.correlation_id = "abc-123-def"
+    output = fmt.format(record)
+    parsed = _json.loads(output)
+
+    assert parsed["correlation_id"] == "abc-123-def"
+    assert parsed["level"] == "WARNING"
+    print("✅ test_structured_log_formatter_with_correlation_id PASSED")
+
+
+def test_structured_log_formatter_with_exception():
+    """Verify exception info is included in the structured log."""
+    from aeon_core import StructuredLogFormatter
+    import json as _json
+
+    fmt = StructuredLogFormatter()
+    try:
+        raise ValueError("test error")
+    except ValueError:
+        import sys as _sys
+        exc_info = _sys.exc_info()
+
+    record = logging.LogRecord(
+        name="test", level=logging.ERROR, pathname="", lineno=0,
+        msg="error occurred", args=(), exc_info=exc_info,
+    )
+    output = fmt.format(record)
+    parsed = _json.loads(output)
+
+    assert "exception" in parsed, "Missing exception field"
+    assert "ValueError" in parsed["exception"]
+    print("✅ test_structured_log_formatter_with_exception PASSED")
+
+
+def test_generate_correlation_id_unique():
+    """Verify generate_correlation_id returns unique UUIDs."""
+    from aeon_core import generate_correlation_id
+
+    ids = [generate_correlation_id() for _ in range(100)]
+    assert len(set(ids)) == 100, "Correlation IDs are not unique"
+    # Verify UUID format
+    for cid in ids[:5]:
+        assert len(cid) == 36, f"Unexpected ID length: {len(cid)}"
+        assert cid.count("-") == 4, f"Unexpected ID format: {cid}"
+    print("✅ test_generate_correlation_id_unique PASSED")
+
+
+def test_telemetry_collector_record_and_snapshot():
+    """Verify TelemetryCollector records metrics and produces snapshots."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector(max_entries_per_metric=100)
+    tc.record("latency_ms", 42.5, {"prompt_len": 12})
+    tc.record("latency_ms", 38.0)
+    tc.record("confidence", 0.93)
+
+    snap = tc.get_metrics_snapshot()
+    assert "latency_ms" in snap
+    assert snap["latency_ms"]["count"] == 2
+    assert snap["latency_ms"]["mean"] == (42.5 + 38.0) / 2
+    assert snap["latency_ms"]["min"] == 38.0
+    assert snap["latency_ms"]["max"] == 42.5
+    assert snap["latency_ms"]["latest"] == 38.0
+    assert "confidence" in snap
+    assert snap["confidence"]["count"] == 1
+    print("✅ test_telemetry_collector_record_and_snapshot PASSED")
+
+
+def test_telemetry_collector_get_metric():
+    """Verify TelemetryCollector.get_metric returns specific metric data."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    for i in range(5):
+        tc.record("test_metric", float(i))
+    
+    entries = tc.get_metric("test_metric", last_n=3)
+    assert len(entries) == 3
+    assert entries[-1]["value"] == 4.0
+    
+    # Non-existent metric returns empty list
+    assert tc.get_metric("nonexistent") == []
+    print("✅ test_telemetry_collector_get_metric PASSED")
+
+
+def test_telemetry_collector_increment_counter():
+    """Verify TelemetryCollector.increment works for simple counters."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    tc.increment("requests")
+    tc.increment("requests")
+    tc.increment("errors", 3)
+
+    snap = tc.get_metrics_snapshot()
+    assert snap["counters"]["requests"] == 2
+    assert snap["counters"]["errors"] == 3
+    print("✅ test_telemetry_collector_increment_counter PASSED")
+
+
+def test_telemetry_collector_reset():
+    """Verify TelemetryCollector.reset clears all data."""
+    from aeon_core import TelemetryCollector
+
+    tc = TelemetryCollector()
+    tc.record("metric", 1.0)
+    tc.increment("counter")
+    tc.reset()
+    
+    snap = tc.get_metrics_snapshot()
+    assert snap == {"counters": {}}
+    print("✅ test_telemetry_collector_reset PASSED")
+
+
+def test_telemetry_collector_thread_safety():
+    """Verify TelemetryCollector is thread-safe under concurrent writes."""
+    from aeon_core import TelemetryCollector
+    import threading
+
+    tc = TelemetryCollector()
+    errors = []
+
+    def writer():
+        try:
+            for i in range(50):
+                tc.record("concurrent_metric", float(i))
+                tc.increment("concurrent_counter")
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Thread safety errors: {errors}"
+    snap = tc.get_metrics_snapshot()
+    assert snap["counters"]["concurrent_counter"] == 200  # 4 * 50
+    assert snap["concurrent_metric"]["count"] == 200
+    print("✅ test_telemetry_collector_thread_safety PASSED")
+
+
+def test_config_observability_defaults():
+    """Verify AEONConfig observability defaults."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4, seq_length=8)
+    assert config.enable_structured_logging is False
+    assert config.enable_academic_mode is False
+    assert config.enable_telemetry is True
+    assert config.telemetry_max_entries == 1000
+    print("✅ test_config_observability_defaults PASSED")
+
+
+def test_config_academic_mode():
+    """Verify academic mode sets logger to DEBUG."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4, seq_length=8,
+                        enable_academic_mode=True)
+    assert config.enable_academic_mode is True
+    aeon_logger = logging.getLogger("AEON-Delta")
+    assert aeon_logger.level == logging.DEBUG
+    # Reset back
+    aeon_logger.setLevel(logging.INFO)
+    print("✅ test_config_academic_mode PASSED")
+
+
+def test_config_structured_logging_activates_formatter():
+    """Verify structured logging flag configures JSON formatter on handlers."""
+    from aeon_core import AEONConfig, StructuredLogFormatter
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4, seq_length=8,
+                        enable_structured_logging=True)
+    assert config.enable_structured_logging is True
+    aeon_logger = logging.getLogger("AEON-Delta")
+    # Check own handlers and root handlers (propagation fallback)
+    all_handlers = aeon_logger.handlers or logging.getLogger().handlers
+    has_structured = any(
+        isinstance(h.formatter, StructuredLogFormatter) for h in all_handlers
+    )
+    assert has_structured, "No handler has StructuredLogFormatter after enable_structured_logging=True"
+    # Reset formatters
+    default_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    for h in all_handlers:
+        h.setFormatter(default_fmt)
+    print("✅ test_config_structured_logging_activates_formatter PASSED")
+
+
+def test_config_telemetry_collector_initialized():
+    """Verify AEONConfig initializes telemetry_collector."""
+    from aeon_core import AEONConfig, TelemetryCollector
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4, seq_length=8)
+    assert config.telemetry_collector is not None
+    assert isinstance(config.telemetry_collector, TelemetryCollector)
+    # Verify it works
+    config.telemetry_collector.record("test", 1.0)
+    snap = config.telemetry_collector.get_metrics_snapshot()
+    assert "test" in snap
+    print("✅ test_config_telemetry_collector_initialized PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -16912,6 +17159,21 @@ if __name__ == '__main__':
     test_causal_error_evolution_thread_safety()
     test_notears_feeds_cached_causal_quality()
     test_post_integration_auto_critic_tracks_revision()
+
+    # Observability & Telemetry Tests
+    test_structured_log_formatter_json_output()
+    test_structured_log_formatter_with_correlation_id()
+    test_structured_log_formatter_with_exception()
+    test_generate_correlation_id_unique()
+    test_telemetry_collector_record_and_snapshot()
+    test_telemetry_collector_get_metric()
+    test_telemetry_collector_increment_counter()
+    test_telemetry_collector_reset()
+    test_telemetry_collector_thread_safety()
+    test_config_observability_defaults()
+    test_config_academic_mode()
+    test_config_structured_logging_activates_formatter()
+    test_config_telemetry_collector_initialized()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

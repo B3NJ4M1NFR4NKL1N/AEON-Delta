@@ -332,6 +332,28 @@ class TelemetryCollector:
             self._metrics.clear()
             self._counters.clear()
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        with self._lock:
+            new._max = self._max
+            new._lock = threading.Lock()
+            new._metrics = defaultdict(lambda: deque(maxlen=new._max))
+            for k, v in self._metrics.items():
+                new._metrics[k] = deque(v, maxlen=new._max)
+            new._counters = defaultdict(int, self._counters)
+        return new
+
 
 # Module-level telemetry instance
 _telemetry = TelemetryCollector()
@@ -2926,7 +2948,10 @@ class AEONConfig:
         # Structured logging — switch formatter when enabled
         if self.enable_structured_logging:
             _structured_fmt = StructuredLogFormatter()
-            for handler in logging.getLogger("AEON-Delta").handlers:
+            _aeon_logger = logging.getLogger("AEON-Delta")
+            # Apply to logger's own handlers and root handlers (propagation)
+            _target_handlers = _aeon_logger.handlers or logging.getLogger().handlers
+            for handler in _target_handlers:
                 handler.setFormatter(_structured_fmt)
 
         # Academic mode — set log level to DEBUG for exhaustive output
