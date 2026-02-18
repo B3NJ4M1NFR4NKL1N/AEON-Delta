@@ -5949,10 +5949,11 @@ class CausalProvenanceTracker:
         # followed by a record_after — this shouldn't happen in normal
         # operation but prevents silent state accumulation.
         if module_name in self._before_states:
-            # record_after was not called for the previous invocation;
-            # discard the stale snapshot (the delta is already in _deltas
-            # if it was recorded earlier).
-            pass
+            logger.debug(
+                "CausalProvenanceTracker: overwriting pending before-state "
+                "for module '%s' (record_after was not called for previous "
+                "invocation)", module_name,
+            )
         self._before_states[module_name] = state.detach().clone()
         if module_name not in self._order:
             self._order.append(module_name)

@@ -21059,6 +21059,21 @@ def test_final_uncertainty_refusion():
         "Final re-fusion should differ from naive additive accumulation"
     )
 
+    # Verify the final fused value is a proper weighted average of all sources.
+    # Manually compute expected weighted average using the weight table.
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS, _DEFAULT_UNCERTAINTY_WEIGHT
+    expected_weighted_sum = 0.0
+    expected_total_weight = 0.0
+    for name, raw in sources.items():
+        w = _UNCERTAINTY_SOURCE_WEIGHTS.get(name, _DEFAULT_UNCERTAINTY_WEIGHT)
+        expected_weighted_sum += w * raw
+        expected_total_weight += w
+    expected_fused = expected_weighted_sum / expected_total_weight
+    assert abs(final_fused - expected_fused) < 1e-6, (
+        f"Final fused uncertainty ({final_fused:.6f}) should equal "
+        f"expected weighted average ({expected_fused:.6f})"
+    )
+
     print("✅ test_final_uncertainty_refusion PASSED")
 
 
