@@ -19422,7 +19422,8 @@ def test_causal_programmatic_error_escalates_uncertainty():
         "causal_programmatic_error must be recorded in uncertainty_sources"
     )
     assert high_uncertainty is False, (
-        "0.5 == 0.5 is not >, so high_uncertainty should be False"
+        "high_uncertainty should be False when uncertainty equals 0.5 "
+        "(threshold is > 0.5, not >=)"
     )
 
     # One more failure pushes over the threshold
