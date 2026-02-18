@@ -13189,6 +13189,7 @@ class AEONDeltaV3(nn.Module):
             logger.info("Loading NeuroSymbolicConsistencyChecker...")
             self.ns_consistency_checker = NeuroSymbolicConsistencyChecker(
                 hidden_dim=config.hidden_dim,
+                num_predicates=config.num_pillars,
                 violation_threshold=config.ns_violation_threshold,
             ).to(self.device)
         else:
