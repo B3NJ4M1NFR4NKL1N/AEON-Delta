@@ -2986,6 +2986,10 @@ class AEONConfig:
                 'enable_active_learning_planner',
                 # Multi-scale abstraction
                 'enable_hierarchical_vae',
+                # Recursive meta-loop for hierarchical abstraction
+                'enable_recursive_meta_loop',
+                # Meta-learning (EWC) for continual learning
+                'enable_meta_learning',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -6388,6 +6392,72 @@ def compute_lipschitz_loss(
     return lip_penalty
 
 
+# Reliability weights for uncertainty sources.  Structural failures
+# (NaN in core tensors, integration collapse) receive higher weight
+# because they are unambiguous indicators of system failure, whereas
+# soft signals (surprise, curiosity) are informative but noisy.
+_UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
+    # Structural (high reliability)
+    "meta_loop_nan": 1.0,
+    "rssm_nan": 1.0,
+    "integration_nan": 1.0,
+    # Core reasoning (moderate-high)
+    "residual_variance": 0.8,
+    "coherence_deficit": 0.7,
+    "recovery_pressure": 0.7,
+    # Subsystem diagnostics (moderate)
+    "world_model_error": 0.5,
+    "world_model_surprise": 0.5,
+    "memory_error": 0.5,
+    "memory_staleness": 0.5,
+    "causal_model_error": 0.5,
+    "hybrid_reasoning_error": 0.5,
+    "hybrid_reasoning_ns_violation": 0.6,
+    "unified_simulator_divergence": 0.5,
+    # Soft signals (lower reliability)
+    "mcts_low_confidence": 0.4,
+    "active_learning_curiosity": 0.3,
+    "hvae_kl_divergence": 0.3,
+    "low_memory_trust": 0.4,
+    "pipeline_error": 1.0,
+}
+
+
+def _weighted_uncertainty_fusion(
+    sources: Dict[str, float],
+    weight_table: Optional[Dict[str, float]] = None,
+) -> float:
+    """Compute a reliability-weighted uncertainty scalar from tracked sources.
+
+    Instead of naively summing contributions (which lets many small soft
+    signals overwhelm a single structural failure), each source is scaled
+    by a reliability weight before averaging.  The result is clamped to
+    [0, 1].
+
+    Args:
+        sources: Mapping from source name to raw uncertainty contribution.
+        weight_table: Optional override for per-source reliability weights.
+            Falls back to ``_UNCERTAINTY_SOURCE_WEIGHTS`` for missing keys,
+            defaulting to 0.5 for unknown sources.
+
+    Returns:
+        Scalar uncertainty in [0, 1].
+    """
+    if not sources:
+        return 0.0
+    wt = weight_table if weight_table is not None else _UNCERTAINTY_SOURCE_WEIGHTS
+    total_weighted = 0.0
+    total_weight = 0.0
+    for name, raw_value in sources.items():
+        w = wt.get(name, 0.5)
+        total_weighted += w * raw_value
+        total_weight += w
+    if total_weight == 0.0:
+        return 0.0
+    fused = total_weighted / total_weight
+    return max(0.0, min(1.0, fused))
+
+
 class ConvergenceMonitor:
     """
     Certifiable convergence monitor for meta-loop iterations.
@@ -6551,6 +6621,7 @@ class RecursiveMetaLoop(nn.Module):
         self,
         z: torch.Tensor,
         target_abstraction: Optional[int] = None,
+        feedback: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
         Forward pass through recursive meta-loop.
@@ -6559,6 +6630,10 @@ class RecursiveMetaLoop(nn.Module):
             z: [B, hidden_dim] input latent.
             target_abstraction: Target abstraction level (0-based).
                 Defaults to max_recursion_depth - 1.
+            feedback: Optional [B, hidden_dim] conditioning vector from
+                CognitiveFeedbackBus.  Passed to each abstraction level
+                so that downstream cognitive signals influence every stage
+                of the recursive hierarchy.
 
         Returns:
             Tuple of (output, iterations, metadata).
@@ -6572,7 +6647,9 @@ class RecursiveMetaLoop(nn.Module):
         final_level = 0
 
         for level in range(target_abstraction + 1):
-            current, iterations, meta = self.levels[level](current)
+            current, iterations, meta = self.levels[level](
+                current, feedback=feedback,
+            )
             all_meta.append(meta)
             final_level = level
 
@@ -6581,7 +6658,9 @@ class RecursiveMetaLoop(nn.Module):
                 # Rollback: rerun at one level lower
                 if level > 0:
                     rollback_target = level - 1
-                    return self._rollback(z, rollback_target, all_meta)
+                    return self._rollback(
+                        z, rollback_target, all_meta, feedback=feedback,
+                    )
                 # Level 0 exceeded threshold – return current best effort
                 break
 
@@ -6604,11 +6683,14 @@ class RecursiveMetaLoop(nn.Module):
         z: torch.Tensor,
         rollback_target: int,
         prior_meta: List[Dict[str, Any]],
+        feedback: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """Rerun from scratch up to rollback_target level."""
         current = z
         for level in range(rollback_target + 1):
-            current, iterations, meta = self.levels[level](current)
+            current, iterations, meta = self.levels[level](
+                current, feedback=feedback,
+            )
 
         metadata = {
             'final_level': rollback_target,
@@ -11956,14 +12038,20 @@ class AutoCriticLoop(nn.Module):
         current_query = query
         best_candidate = self.generator(query)  # default candidate
         best_score = -1.0
+        # Keep a differentiable score tensor so compute_loss() can
+        # back-propagate through the critic, enabling end-to-end
+        # learning of the self-critique objective.
+        best_score_tensor: Optional[torch.Tensor] = None
 
         for iteration in range(self.max_iterations):
             candidate = self.generator(current_query)
             scores = self.critic(current_query, candidate)
 
-            correctness = scores["correctness"].mean().item()
+            correctness_tensor = scores["correctness"].mean()
+            correctness = correctness_tensor.item()
             if correctness > best_score:
                 best_score = correctness
+                best_score_tensor = correctness_tensor
                 best_candidate = candidate
 
             trajectory.append(
@@ -11985,6 +12073,7 @@ class AutoCriticLoop(nn.Module):
             "candidate": best_candidate,
             "iterations": len(trajectory),
             "final_score": best_score,
+            "final_score_tensor": best_score_tensor,
         }
         if return_trajectory:
             result["trajectory"] = trajectory
@@ -14075,7 +14164,9 @@ class AEONDeltaV3(nn.Module):
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_in)
         if self.recursive_meta_loop is not None and not fast:
-            C_star, iterations, meta_results = self.recursive_meta_loop(z_in)
+            C_star, iterations, meta_results = self.recursive_meta_loop(
+                z_in, feedback=prev_feedback,
+            )
         else:
             C_star, iterations, meta_results = self.meta_loop(
                 z_in, use_fixed_point=not fast, feedback=prev_feedback,
@@ -15248,12 +15339,18 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                 ).detach()
         
-        # 5d2. Cross-validation: reconcile factors vs causal predictions
+        # 5d2. Cross-validation: reconcile factors vs causal predictions.
+        # When CausalWorldModel is available, reconcile factor-embedded state
+        # against causal predictions.  When it is absent, reconcile against
+        # the reasoning core state C_star so the cross-validator still
+        # enforces internal consistency during training.
         reconciliation_results: Dict[str, Any] = {}
-        if (self.cross_validator is not None
-                and self.causal_world_model is not None
-                and causal_world_results
-                and not fast):
+        if self.cross_validator is not None and not fast:
+            _reconcile_second = None
+            if self.causal_world_model is not None and causal_world_results:
+                _reconcile_second = causal_world_results.get('predicted_state', C_star)
+            else:
+                _reconcile_second = C_star
             # 5d2-0. Coherence-aware reconciliation — when the coherence
             # verifier detected a deficit earlier, tighten the reconciler's
             # agreement threshold so it works harder to align the factor
@@ -15265,9 +15362,8 @@ class AEONDeltaV3(nn.Module):
                     _orig_reconcile_threshold,
                     _orig_reconcile_threshold * self.config.coherence_reconciler_tightening,
                 )
-            causal_pred = causal_world_results.get('predicted_state', C_star)
             reconciliation_results = self.cross_validator(
-                embedded_factors, causal_pred
+                embedded_factors, _reconcile_second
             )
             # Restore original threshold after reconciliation
             if _coherence_deficit:
@@ -15305,18 +15401,6 @@ class AEONDeltaV3(nn.Module):
                     adaptive_safety_threshold,
                     adaptive_safety_threshold * (0.5 + 0.5 * _agreement_val),
                 )
-        elif self.cross_validator is not None and not fast:
-            # Cross-validation was enabled but skipped because causal world
-            # model results were unavailable.  Record this so the audit log
-            # reflects when reconciliation is missing.
-            _skip_reason = (
-                "causal_world_model_disabled"
-                if self.causal_world_model is None
-                else "no_causal_world_results"
-            )
-            self.audit_log.record("cross_validation", "skipped", {
-                "reason": _skip_reason,
-            })
         
         # 5d3. Causal-aware planning annotation — when both MCTS planning
         # and causal model results are available, annotate the MCTS output
@@ -15594,6 +15678,7 @@ class AEONDeltaV3(nn.Module):
         
         # Track auto-critic score for loss computation
         _auto_critic_final_score = None
+        _auto_critic_final_score_tensor = None
         
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
@@ -15680,6 +15765,7 @@ class AEONDeltaV3(nn.Module):
                     if revised is not None and torch.isfinite(revised).all():
                         z_out = revised
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
+                    _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
@@ -15695,6 +15781,17 @@ class AEONDeltaV3(nn.Module):
                             strategy_used="auto_critic",
                             success=revised is not None and torch.isfinite(revised).all(),
                         )
+        
+        # 8b3a. Weighted uncertainty fusion — recompute the final scalar
+        # uncertainty from all accumulated sources using reliability-based
+        # weights.  Structural signals (meta-loop NaN, integration NaN)
+        # are more trustworthy indicators of failure than soft signals
+        # (surprise, curiosity), so they receive higher weight.  This
+        # replaces the naive additive accumulation with a principled
+        # weighted average that prevents soft signals from dominating.
+        if uncertainty_sources:
+            uncertainty = _weighted_uncertainty_fusion(uncertainty_sources)
+            high_uncertainty = uncertainty > 0.5
         
         # 8b4. Uncertainty-triggered meta-cognitive cycle — when uncertainty
         # is high, audit patterns indicate instability, topology detects
@@ -15722,6 +15819,7 @@ class AEONDeltaV3(nn.Module):
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
+            _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -15824,6 +15922,7 @@ class AEONDeltaV3(nn.Module):
             post_states: Dict[str, torch.Tensor] = {
                 "integrated_output": z_out,
                 "core_state": C_star,
+                "input": z_in,
             }
             # Include world model prediction if available
             _wm_pred = world_model_results.get("predicted_next", None)
@@ -16201,6 +16300,7 @@ class AEONDeltaV3(nn.Module):
             'causal_decision_chain': _causal_decision_chain,
             'uncertainty_sources': uncertainty_sources,
             'auto_critic_final_score': _auto_critic_final_score,
+            'auto_critic_final_score_tensor': _auto_critic_final_score_tensor,
         }
         
         return z_out, outputs
@@ -16578,16 +16678,24 @@ class AEONDeltaV3(nn.Module):
         # When AutoCriticLoop produces a revised candidate, penalize low
         # critic scores so that the generator learns to produce outputs
         # that satisfy the critic without needing revision.
-        # Note: _critic_score is a Python float (from .item()), so this
-        # loss is non-differentiable through the critic itself — it acts
-        # as a training-level regularization signal that encourages the
-        # overall model to produce outputs the critic accepts.
+        # Prefer the differentiable score tensor (final_score_tensor) so
+        # gradients flow back through the critic network, enabling
+        # end-to-end learning.  Fall back to the float score when the
+        # tensor is unavailable (e.g. when auto-critic didn't run).
         auto_critic_loss = torch.tensor(0.0, device=self.device)
-        _critic_score = outputs.get('auto_critic_final_score', None)
-        if _critic_score is not None and isinstance(_critic_score, (int, float)):
-            auto_critic_loss = torch.tensor(
-                max(0.0, 1.0 - _critic_score), device=self.device,
-            )
+        _critic_score_tensor = outputs.get('auto_critic_final_score_tensor', None)
+        if (
+            _critic_score_tensor is not None
+            and torch.is_tensor(_critic_score_tensor)
+            and _critic_score_tensor.requires_grad
+        ):
+            auto_critic_loss = torch.clamp(1.0 - _critic_score_tensor, min=0.0)
+        else:
+            _critic_score = outputs.get('auto_critic_final_score', None)
+            if _critic_score is not None and isinstance(_critic_score, (int, float)):
+                auto_critic_loss = torch.tensor(
+                    max(0.0, 1.0 - _critic_score), device=self.device,
+                )
 
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
