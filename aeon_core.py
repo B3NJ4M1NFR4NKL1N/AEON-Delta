@@ -17345,7 +17345,11 @@ class AEONDeltaV3(nn.Module):
                 _decay = self.config.gated_fallback_decay
                 _cached_cf = self._gated_fallback_cache["unified_sim_next_state"].to(device)
                 if _cached_cf.shape[-1] == C_star.shape[-1]:
-                    _cached_cf_expanded = _cached_cf[:B] if _cached_cf.shape[0] >= B else _cached_cf.expand(B, -1)
+                    # Slice to batch size if cache is larger, or expand if smaller
+                    if _cached_cf.shape[0] >= B:
+                        _cached_cf_expanded = _cached_cf[:B]
+                    else:
+                        _cached_cf_expanded = _cached_cf.expand(B, -1)
                     C_star = C_star + (self.config.unified_simulator_blend * _decay) * _cached_cf_expanded
                 self._gated_fallback_cache["unified_sim_next_state"] = _cached_cf * _decay
                 self.audit_log.record("gated_fallback", "unified_sim_used", {
