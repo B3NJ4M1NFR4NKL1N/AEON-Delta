@@ -19114,12 +19114,12 @@ class AEONDeltaV3(nn.Module):
         if self.metacognitive_trigger is not None:
             trigger_state = {
                 "available": True,
-                "threshold": self.metacognitive_trigger._trigger_threshold,
+                "threshold": self.metacognitive_trigger.trigger_threshold,
                 "signal_weights": dict(
                     self.metacognitive_trigger._signal_weights
                 ),
                 "recursion_count": self.metacognitive_trigger._recursion_count,
-                "max_recursions": self.metacognitive_trigger._max_recursions,
+                "max_recursions": self.metacognitive_trigger.max_recursions,
             }
 
         # --- Error evolution summary ---
@@ -19140,7 +19140,7 @@ class AEONDeltaV3(nn.Module):
         if self.causal_trace is not None:
             causal_trace_state = {
                 "available": True,
-                "buffer_length": len(self.causal_trace),
+                "buffer_length": len(self.causal_trace._entries),
             }
 
         # --- Coherence verdict ---
