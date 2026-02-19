@@ -14748,6 +14748,8 @@ class AEONDeltaV3(nn.Module):
     _RECOVERY_PRESSURE_RATE = 0.1
     # Health threshold below which a subsystem is considered degraded
     _SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD = 0.5
+    # Coherence deficit floor when ConvergenceMonitor detects divergence
+    _DIVERGENCE_COHERENCE_ESCALATION = 0.5
 
     def _compute_recovery_pressure(self) -> float:
         """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
@@ -15771,7 +15773,8 @@ class AEONDeltaV3(nn.Module):
             # monitoring and meta-loop reasoning depth even when the
             # UnifiedCognitiveCycle is not enabled.
             self._cached_coherence_deficit = max(
-                self._cached_coherence_deficit, 0.5,
+                self._cached_coherence_deficit,
+                self._DIVERGENCE_COHERENCE_ESCALATION,
             )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
