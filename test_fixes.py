@@ -24285,6 +24285,266 @@ def test_training_fallback_error_summary_includes_loss_magnitude():
     print("✅ test_training_fallback_error_summary_includes_loss_magnitude PASSED")
 
 
+# =============================================================================
+# Architecture unification tests (Gaps 1–8)
+# =============================================================================
+
+def test_pipeline_dependencies_cover_all_instrumented_modules():
+    """Gap 1: _PIPELINE_DEPENDENCIES must include all provenance-instrumented modules."""
+    from aeon_core import AEONDeltaV3
+
+    dep_nodes = set()
+    for u, d in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        dep_nodes.add(u)
+        dep_nodes.add(d)
+
+    # All modules that have record_before/after in the forward pass
+    expected = {
+        'meta_loop', 'slot_binding', 'factor_extraction',
+        'consistency_gate', 'safety', 'world_model', 'memory',
+        'causal_model', 'rssm', 'integration',
+        'cognitive_executive', 'certified_meta_loop',
+        'hierarchical_world_model', 'mcts_planning',
+        'causal_world_model', 'causal_programmatic',
+        'unified_simulator', 'hybrid_reasoning', 'ns_bridge',
+        'hierarchical_vae', 'causal_context', 'multimodal',
+        'auto_critic',
+    }
+    missing = expected - dep_nodes
+    assert not missing, f"Missing from _PIPELINE_DEPENDENCIES: {missing}"
+    print("✅ test_pipeline_dependencies_cover_all_instrumented_modules PASSED")
+
+
+def test_ucc_coherence_deficit_includes_provenance():
+    """Gap 2: UCC records provenance in error evolution when coherence is low."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    tracker = CausalProvenanceTracker()
+    tracker.record_before("meta_loop", torch.zeros(2, 64))
+    tracker.record_after("meta_loop", torch.ones(2, 64))
+
+    ee = CausalErrorEvolutionTracker()
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.99),
+        error_evolution=ee,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=tracker,
+    )
+
+    # Opposite states → guaranteed low coherence
+    states = {'a': torch.ones(2, 64), 'b': -torch.ones(2, 64)}
+    cycle.evaluate(subsystem_states=states, delta_norm=1.0)
+
+    episodes = ee._episodes.get('coherence_deficit', [])
+    assert len(episodes) > 0, "Expected coherence_deficit episode"
+    meta = episodes[-1]['metadata']
+    assert 'provenance_contributions' in meta, "Missing provenance_contributions"
+    assert 'dominant_provenance_module' in meta, "Missing dominant_provenance_module"
+    print("✅ test_ucc_coherence_deficit_includes_provenance PASSED")
+
+
+def test_module_coherence_verifier_adapt_threshold():
+    """Gap 3: adapt_threshold raises threshold when coherence deficits recur."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    v = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5)
+    assert v.threshold == 0.5
+
+    # Not enough episodes → no change
+    v.adapt_threshold({"error_classes": {"coherence_deficit": {"count": 1, "success_rate": 0.0}}})
+    assert v.threshold == 0.5
+
+    # 2+ episodes with <50% success → threshold increases
+    v.adapt_threshold({"error_classes": {"coherence_deficit": {"count": 5, "success_rate": 0.2}}})
+    assert v.threshold == 0.55
+
+    # Call again → increases further
+    v.adapt_threshold({"error_classes": {"coherence_deficit": {"count": 5, "success_rate": 0.2}}})
+    assert abs(v.threshold - 0.6) < 1e-9
+
+    # Cap at 0.9
+    v.threshold = 0.88
+    v.adapt_threshold({"error_classes": {"coherence_deficit": {"count": 10, "success_rate": 0.0}}})
+    assert v.threshold == 0.9
+    v.adapt_threshold({"error_classes": {"coherence_deficit": {"count": 10, "success_rate": 0.0}}})
+    assert v.threshold == 0.9  # stays at cap
+
+    print("✅ test_module_coherence_verifier_adapt_threshold PASSED")
+
+
+def test_convergence_monitor_provenance_wiring():
+    """Gap 4: ConvergenceMonitor bridges provenance info into error evolution."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalErrorEvolutionTracker,
+        CausalProvenanceTracker,
+    )
+
+    prov = CausalProvenanceTracker()
+    prov.record_before("meta_loop", torch.zeros(2, 64))
+    prov.record_after("meta_loop", torch.ones(2, 64))
+
+    ee = CausalErrorEvolutionTracker()
+    cm = ConvergenceMonitor(threshold=1e-5)
+    cm.set_error_evolution(ee)
+    cm.set_provenance_tracker(prov)
+
+    # Force divergence: increasing delta norms
+    for d in [1.0, 2.0, 4.0, 8.0]:
+        cm.check(d)
+
+    episodes = ee._episodes.get('convergence_diverging', [])
+    assert len(episodes) > 0, "Expected convergence_diverging episode"
+    meta = episodes[-1]['metadata']
+    assert 'provenance_contributions' in meta
+    assert 'dominant_provenance_module' in meta
+    assert meta['dominant_provenance_module'] == 'meta_loop'
+    print("✅ test_convergence_monitor_provenance_wiring PASSED")
+
+
+def test_ucc_trigger_detail_includes_provenance():
+    """Gap 5: UCC evaluate enriches trigger_detail with provenance info."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    tracker = CausalProvenanceTracker()
+    tracker.record_before("safety", torch.zeros(2, 64))
+    tracker.record_after("safety", torch.ones(2, 64) * 5)
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=tracker,
+    )
+
+    states = {'a': torch.randn(2, 64), 'b': torch.randn(2, 64)}
+    result = cycle.evaluate(subsystem_states=states, delta_norm=0.5)
+
+    td = result['trigger_detail']
+    assert 'provenance_contributions' in td
+    assert 'dominant_provenance_module' in td
+    assert td['dominant_provenance_module'] == 'safety'
+    print("✅ test_ucc_trigger_detail_includes_provenance PASSED")
+
+
+def test_ucc_adapts_coherence_threshold():
+    """Gap 6: UCC auto-adapts coherence verifier threshold from error evolution."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    ee = CausalErrorEvolutionTracker()
+    # Pre-populate with failed coherence episodes
+    for _ in range(5):
+        ee.record_episode('coherence_deficit', 'meta_rerun', success=False)
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5)
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=verifier,
+        error_evolution=ee,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {'a': torch.randn(2, 64), 'b': torch.randn(2, 64)}
+    cycle.evaluate(subsystem_states=states, delta_norm=0.5)
+
+    # Threshold should have been adapted upward
+    assert verifier.threshold > 0.5, (
+        f"Expected threshold > 0.5, got {verifier.threshold}"
+    )
+    print("✅ test_ucc_adapts_coherence_threshold PASSED")
+
+
+def test_self_diagnostic_verifies_provenance_coverage():
+    """Gap 7: self_diagnostic checks provenance dependency completeness."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    # Because our fix extends _PIPELINE_DEPENDENCIES to cover all
+    # instrumented modules, the diagnostic should report coverage.
+    provenance_verified = any(
+        'provenance_dependencies' in v for v in diag['verified_connections']
+    )
+    provenance_gap = any(
+        g.get('component') == 'provenance_dependencies' for g in diag['gaps']
+    )
+    # Exactly one of these should be True
+    assert provenance_verified or provenance_gap, (
+        "self_diagnostic must check provenance dependency coverage"
+    )
+    # With our fix, all modules are covered
+    assert provenance_verified, (
+        "Expected provenance_dependencies to be verified with extended DAG"
+    )
+    print("✅ test_self_diagnostic_verifies_provenance_coverage PASSED")
+
+
+def test_get_metacognitive_state_includes_provenance():
+    """Gap 8: get_metacognitive_state includes provenance attribution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    state = model.get_metacognitive_state()
+    assert 'provenance' in state, "Missing 'provenance' key in metacognitive state"
+    assert 'contributions' in state['provenance']
+    assert 'dominant_module' in state['provenance']
+    print("✅ test_get_metacognitive_state_includes_provenance PASSED")
+
+
+def test_convergence_monitor_has_set_provenance_tracker():
+    """Gap 4 prerequisite: ConvergenceMonitor has set_provenance_tracker."""
+    from aeon_core import ConvergenceMonitor, CausalProvenanceTracker
+
+    cm = ConvergenceMonitor()
+    assert cm._provenance_tracker is None
+    prov = CausalProvenanceTracker()
+    cm.set_provenance_tracker(prov)
+    assert cm._provenance_tracker is prov
+    print("✅ test_convergence_monitor_has_set_provenance_tracker PASSED")
+
+
+def test_ucc_wires_provenance_to_convergence_monitor():
+    """Gap 4: UCC constructor auto-wires provenance tracker to convergence monitor."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    prov = CausalProvenanceTracker()
+    cm = ConvergenceMonitor()
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=prov,
+    )
+
+    assert cm._provenance_tracker is prov, (
+        "UCC should auto-wire provenance tracker to convergence monitor"
+    )
+    print("✅ test_ucc_wires_provenance_to_convergence_monitor PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()

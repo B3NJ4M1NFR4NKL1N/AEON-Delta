@@ -6708,6 +6708,7 @@ class ConvergenceMonitor:
         self.threshold = threshold
         self.history: deque = deque(maxlen=10)
         self._error_evolution: Optional['CausalErrorEvolutionTracker'] = None
+        self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
 
     def set_error_evolution(
         self, tracker: Optional['CausalErrorEvolutionTracker'],
@@ -6722,6 +6723,18 @@ class ConvergenceMonitor:
         to re-invoke the meta-loop.
         """
         self._error_evolution = tracker
+
+    def set_provenance_tracker(
+        self, tracker: Optional['CausalProvenanceTracker'],
+    ) -> None:
+        """Attach a :class:`CausalProvenanceTracker`.
+
+        Once attached, divergence and stagnation events bridged to
+        error-evolution include provenance attribution metadata,
+        enabling root-cause analysis to identify which upstream
+        module dominated when the convergence failure occurred.
+        """
+        self._provenance_tracker = tracker
 
     def reset(self):
         """Clear recorded history."""
@@ -6791,15 +6804,34 @@ class ConvergenceMonitor:
         success: bool,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Forward a convergence event to the attached error evolution tracker."""
+        """Forward a convergence event to the attached error evolution tracker.
+
+        When a :class:`CausalProvenanceTracker` is attached, provenance
+        attribution is included in the metadata so root-cause analysis
+        can correlate convergence failures with the dominant upstream
+        module (Gap 4: convergence → provenance → error evolution).
+        """
         tracker = self._error_evolution
         if tracker is not None:
             try:
+                enriched = dict(metadata) if metadata else {}
+                prov = self._provenance_tracker
+                if prov is not None:
+                    try:
+                        snap = prov.compute_attribution()
+                        contribs = snap.get('contributions', {})
+                        enriched['provenance_contributions'] = contribs
+                        if contribs:
+                            enriched['dominant_provenance_module'] = max(
+                                contribs, key=contribs.get,
+                            )
+                    except Exception:
+                        pass
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
                     success=success,
-                    metadata=metadata,
+                    metadata=enriched,
                 )
             except Exception:
                 pass  # Never let monitoring break the hot path
@@ -12987,6 +13019,29 @@ class ModuleCoherenceVerifier(nn.Module):
             "needs_recheck": needs_recheck,
         }
 
+    def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
+        """Raise threshold when coherence deficits recur with low success.
+
+        Inspects the ``coherence_deficit`` error class in the supplied
+        error summary.  When the success rate is below 50 % and at least
+        two episodes have been recorded, the threshold is tightened by a
+        small step (capped at 0.9) so the system becomes stricter after
+        repeated failures.
+
+        Args:
+            error_summary: Output of
+                ``CausalErrorEvolutionTracker.get_error_summary()``.
+        """
+        classes = error_summary.get("error_classes", {})
+        cd_stats = classes.get("coherence_deficit")
+        if cd_stats is None:
+            return
+        if cd_stats.get("count", 0) < 2:
+            return
+        if cd_stats.get("success_rate", 1.0) < 0.5:
+            # Tighten by 0.05 per adaptation, capped at 0.9
+            self.threshold = min(0.9, self.threshold + 0.05)
+
 
 class CausalDAGConsensus:
     """Cross-validates causal DAG structures from multiple causal models.
@@ -13575,6 +13630,9 @@ class UnifiedCognitiveCycle:
 
         # Wire convergence monitor → error evolution automatically.
         self.convergence_monitor.set_error_evolution(self.error_evolution)
+        # Wire convergence monitor → provenance tracker so divergence
+        # events include per-module attribution (Gap 4).
+        self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
         # Wire error evolution → causal trace automatically.
         self.error_evolution.set_causal_trace(self.causal_trace)
 
@@ -13612,18 +13670,36 @@ class UnifiedCognitiveCycle:
         # 1. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
 
+        # 1b. Adapt coherence threshold from error evolution history so
+        # repeated coherence failures make the verifier stricter (Gap 6).
+        _err_summary = self.error_evolution.get_error_summary()
+        self.coherence_verifier.adapt_threshold(_err_summary)
+
         # 2. Cross-module coherence verification.
         coherence_result = self.coherence_verifier(subsystem_states)
         coherence_deficit = 1.0 - coherence_result['coherence_score'].mean().item()
         needs_recheck = coherence_result.get('needs_recheck', False)
 
         # Record coherence deficit in error evolution if significant.
+        # Enrich with provenance attribution so downstream root-cause
+        # analysis can identify which module dominated when the deficit
+        # occurred (Gap 2: error ↔ provenance correlation).
         if coherence_deficit > 0.3:
+            _prov_snapshot = self.provenance_tracker.compute_attribution()
+            _contributions = _prov_snapshot.get('contributions', {})
+            _dominant = (
+                max(_contributions, key=_contributions.get)
+                if _contributions else None
+            )
             self.error_evolution.record_episode(
                 error_class='coherence_deficit',
                 strategy_used='meta_rerun',
                 success=False,
-                metadata={'coherence_deficit': coherence_deficit},
+                metadata={
+                    'coherence_deficit': coherence_deficit,
+                    'provenance_contributions': _contributions,
+                    'dominant_provenance_module': _dominant,
+                },
             )
 
         # 3. Build signal dict for the metacognitive trigger.
@@ -13639,6 +13715,17 @@ class UnifiedCognitiveCycle:
             causal_quality=causal_quality,
         )
         should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
+
+        # Enrich trigger detail with provenance attribution so
+        # downstream consumers can see *which module* dominated when
+        # re-reasoning was recommended (Gap 5).
+        _prov_snap = self.provenance_tracker.compute_attribution()
+        _prov_contribs = _prov_snap.get('contributions', {})
+        trigger_detail['provenance_contributions'] = _prov_contribs
+        trigger_detail['dominant_provenance_module'] = (
+            max(_prov_contribs, key=_prov_contribs.get)
+            if _prov_contribs else None
+        )
 
         # 4. Record the cycle decision in the causal trace.
         trace_entry_id = None
@@ -13722,12 +13809,36 @@ class AEONDeltaV3(nn.Module):
     # backward through the pipeline.  Each tuple is (upstream, downstream).
     _PIPELINE_DEPENDENCIES: List[Tuple[str, str]] = [
         ("input", "meta_loop"),
+        ("meta_loop", "certified_meta_loop"),
         ("meta_loop", "slot_binding"),
+        ("certified_meta_loop", "slot_binding"),
         ("slot_binding", "factor_extraction"),
         ("factor_extraction", "consistency_gate"),
         ("consistency_gate", "safety"),
+        ("safety", "cognitive_executive"),
         ("safety", "world_model"),
+        ("cognitive_executive", "world_model"),
+        ("world_model", "hierarchical_world_model"),
         ("world_model", "memory"),
+        ("hierarchical_world_model", "memory"),
+        ("memory", "mcts_planning"),
+        ("memory", "causal_world_model"),
+        ("memory", "causal_model"),
+        ("mcts_planning", "causal_model"),
+        ("causal_world_model", "causal_model"),
+        ("causal_model", "causal_programmatic"),
+        ("causal_programmatic", "unified_simulator"),
+        ("causal_programmatic", "hybrid_reasoning"),
+        ("unified_simulator", "hybrid_reasoning"),
+        ("hybrid_reasoning", "ns_bridge"),
+        ("hybrid_reasoning", "hierarchical_vae"),
+        ("ns_bridge", "hierarchical_vae"),
+        ("hierarchical_vae", "causal_context"),
+        ("causal_context", "rssm"),
+        ("rssm", "multimodal"),
+        ("rssm", "integration"),
+        ("multimodal", "integration"),
+        ("integration", "auto_critic"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -19928,6 +20039,43 @@ class AEONDeltaV3(nn.Module):
             if self.causal_trace is not None else 0.0
         )
 
+        # 12. Provenance dependency DAG coverage (Gap 7) — verify that
+        # every active, provenance-instrumented module appears as a node
+        # in _PIPELINE_DEPENDENCIES.  Missing nodes mean trace_root_cause
+        # cannot reach them.
+        _dep_nodes: set = set()
+        for _u, _d in self._PIPELINE_DEPENDENCIES:
+            _dep_nodes.add(_u)
+            _dep_nodes.add(_d)
+        _provenance_instrumented = {
+            'meta_loop', 'slot_binding', 'factor_extraction',
+            'consistency_gate', 'safety', 'world_model', 'memory',
+            'causal_model', 'rssm', 'integration',
+            'cognitive_executive', 'certified_meta_loop',
+            'hierarchical_world_model', 'mcts_planning',
+            'causal_world_model', 'causal_programmatic',
+            'unified_simulator', 'hybrid_reasoning', 'ns_bridge',
+            'hierarchical_vae', 'causal_context', 'multimodal',
+            'auto_critic',
+        }
+        _missing_deps = _provenance_instrumented - _dep_nodes
+        if _missing_deps:
+            gaps.append({
+                'component': 'provenance_dependencies',
+                'gap': (
+                    f'Provenance-instrumented modules missing from '
+                    f'_PIPELINE_DEPENDENCIES: {sorted(_missing_deps)}'
+                ),
+                'remediation': (
+                    'Add missing modules to _PIPELINE_DEPENDENCIES for '
+                    'complete root-cause traceability'
+                ),
+            })
+        else:
+            verified.append(
+                'provenance_dependencies → all instrumented modules covered'
+            )
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -20019,11 +20167,23 @@ class AEONDeltaV3(nn.Module):
         ]
         _coherence_score = sum(_coherence_indicators) / len(_coherence_indicators)
 
+        # --- Provenance attribution snapshot (Gap 8) ---
+        _prov = self.provenance_tracker.compute_attribution()
+        _prov_contribs = _prov.get('contributions', {})
+        provenance_state: Dict[str, Any] = {
+            "contributions": _prov_contribs,
+            "dominant_module": (
+                max(_prov_contribs, key=_prov_contribs.get)
+                if _prov_contribs else None
+            ),
+        }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
             "convergence": convergence_state,
             "causal_trace": causal_trace_state,
+            "provenance": provenance_state,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
