@@ -3139,6 +3139,18 @@ class AEONConfig:
                 if not getattr(self, flag, False):
                     object.__setattr__(self, flag, True)
 
+        # UCC prerequisite propagation — when the Unified Cognitive Cycle
+        # is enabled, ensure that core verification subsystems are active
+        # so that cross-module coherence checks have all inputs they need.
+        if self.enable_unified_cognitive_cycle:
+            _ucc_prereqs = [
+                'enable_ns_consistency_check',
+                'enable_complexity_estimator',
+            ]
+            for flag in _ucc_prereqs:
+                if not getattr(self, flag, False):
+                    object.__setattr__(self, flag, True)
+
         # Device initialization
         if self.device_str == "auto":
             self.device_manager = DeviceManager.auto_select(
@@ -17847,6 +17859,21 @@ class AEONDeltaV3(nn.Module):
                     self.cross_validator.agreement_threshold,
                     self.cross_validator.agreement_threshold * _trust_tightening,
                 )
+            # 5d2-0b. Error-evolution-guided reconciliation — consult
+            # historical recovery outcomes to pre-tighten when past
+            # reconciliation failures required extra iterations.  This
+            # closes the learning loop between error recovery and
+            # cross-validation by applying lessons from prior failures
+            # to the current reconciliation pass.
+            if self.error_evolution is not None:
+                _cv_best = self.error_evolution.get_best_strategy(
+                    "cross_validation_low_agreement",
+                )
+                if _cv_best == "tighten_threshold":
+                    self.cross_validator.agreement_threshold = min(
+                        self.cross_validator.agreement_threshold,
+                        self.cross_validator.agreement_threshold * 0.85,
+                    )
             self.provenance_tracker.record_before("cross_validation", C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, _reconcile_second
@@ -17878,6 +17905,16 @@ class AEONDeltaV3(nn.Module):
                     error_class="reconciliation_disagreement",
                     strategy_used="cross_validation",
                     success=False,
+                )
+                # Also record the low-agreement episode so the
+                # error-evolution-guided tightening (5d2-0b) can
+                # learn that tightening the threshold is the
+                # appropriate response to cross-validation failures.
+                self.error_evolution.record_episode(
+                    error_class="cross_validation_low_agreement",
+                    strategy_used="tighten_threshold",
+                    success=reconciliation_results["reconcile_iterations"]
+                    < self.config.cross_validation_max_steps,
                 )
             # Tighten adaptive safety threshold when reconciliation
             # agreement is low — disagreeing modules warrant more
@@ -18519,7 +18556,9 @@ class AEONDeltaV3(nn.Module):
             # causing the rule_checker to produce near-threshold satisfaction
             # scores and triggering spurious violations.
             rules_proxy = factors
+            self.provenance_tracker.record_before("ns_consistency", z_out)
             ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
+            self.provenance_tracker.record_after("ns_consistency", z_out)
             # Also validate hybrid reasoning conclusions if available.
             # Normalize conclusions into the same distribution as z_out so
             # that the consistency checker's output_to_predicates projection
@@ -19099,8 +19138,27 @@ class AEONDeltaV3(nn.Module):
             if (_hr_conc_ucc is not None
                     and _hr_conc_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["hybrid_reasoning"] = _hr_conc_ucc
+            # Include the reconciled state from cross-validation so
+            # that the coherence verifier can compare factor–causal
+            # alignment against the integrated output and core state.
+            _cv_reconciled = reconciliation_results.get(
+                "reconciled_state", None,
+            )
+            if (_cv_reconciled is not None
+                    and isinstance(_cv_reconciled, torch.Tensor)
+                    and _cv_reconciled.shape[-1] == z_out.shape[-1]):
+                _ucc_states["cross_validation"] = _cv_reconciled
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
+                # Include NS consistency violations in the safety
+                # signal so that symbolic-rule failures trigger the
+                # same meta-cognitive rerun as safety guardrail
+                # activations, closing the verification loop.
+                _ucc_ns_violated = bool(
+                    ns_consistency_results.get(
+                        "num_violations", torch.zeros(1)
+                    ).sum().item() > 0
+                ) if ns_consistency_results else False
                 unified_cycle_results = self.unified_cognitive_cycle.evaluate(
                     subsystem_states=_ucc_states,
                     delta_norm=residual_norm_scalar,
@@ -19109,7 +19167,7 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     memory_staleness=self._memory_stale,
                     recovery_pressure=self._compute_recovery_pressure(),
-                    safety_violation=safety_enforced,
+                    safety_violation=safety_enforced or _ucc_ns_violated,
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,

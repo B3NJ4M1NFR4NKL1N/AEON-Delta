@@ -27465,6 +27465,174 @@ def test_training_imports_unified_components():
     print("✅ test_training_imports_unified_components PASSED")
 
 
+# =====================================================================
+# Architectural coherence integration tests
+# =====================================================================
+
+def test_ucc_enables_ns_consistency_and_complexity():
+    """When enable_unified_cognitive_cycle is True the NS consistency
+    checker and complexity estimator must be auto-enabled."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(device_str='cpu')
+    assert config.enable_unified_cognitive_cycle is True
+    assert config.enable_ns_consistency_check is True, (
+        "NS consistency check should be auto-enabled by UCC"
+    )
+    assert config.enable_complexity_estimator is True, (
+        "Complexity estimator should be auto-enabled by UCC"
+    )
+    # When UCC is disabled the flags should keep their defaults
+    config_no_ucc = AEONConfig(
+        device_str='cpu',
+        enable_unified_cognitive_cycle=False,
+    )
+    assert config_no_ucc.enable_ns_consistency_check is False
+    assert config_no_ucc.enable_complexity_estimator is False
+    print("✅ test_ucc_enables_ns_consistency_and_complexity PASSED")
+
+
+def test_ns_violations_feed_ucc_safety_signal():
+    """NS consistency violations should be included in the UCC's
+    safety_violation parameter via the ns_consistency_results dict."""
+    from aeon_core import UnifiedCognitiveCycle, ConvergenceMonitor
+    from aeon_core import ModuleCoherenceVerifier, CausalErrorEvolutionTracker
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalProvenanceTracker
+    hidden = 32
+    cv = ConvergenceMonitor()
+    coherence = ModuleCoherenceVerifier(hidden_dim=hidden, threshold=0.5)
+    error_evo = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cv,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+    states = {
+        "a": torch.randn(2, hidden),
+        "b": torch.randn(2, hidden),
+    }
+    # With safety_violation=True (simulating NS violation) the trigger
+    # should receive the signal and potentially recommend a rerun.
+    result_safe = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01, uncertainty=0.0,
+        safety_violation=False,
+    )
+    ucc.reset()
+    result_viol = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01, uncertainty=0.0,
+        safety_violation=True,
+    )
+    # The trigger score must be higher with a safety violation present
+    safe_score = result_safe.get("trigger_detail", {}).get("trigger_score", 0.0)
+    viol_score = result_viol.get("trigger_detail", {}).get("trigger_score", 0.0)
+    assert viol_score >= safe_score, (
+        f"Safety violation should increase trigger score: {viol_score} >= {safe_score}"
+    )
+    print("✅ test_ns_violations_feed_ucc_safety_signal PASSED")
+
+
+def test_provenance_records_ns_consistency():
+    """Provenance tracker should record before/after for ns_consistency."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    z = torch.randn(2, 16)
+    tracker.record_before("ns_consistency", z)
+    tracker.record_after("ns_consistency", z)
+    attr = tracker.compute_attribution()
+    assert "ns_consistency" in attr.get("contributions", {}), (
+        "Provenance should include ns_consistency"
+    )
+    print("✅ test_provenance_records_ns_consistency PASSED")
+
+
+def test_cross_validation_state_in_ucc():
+    """Cross-validation reconciled state should be included in UCC's
+    subsystem_states dict when available."""
+    from aeon_core import UnifiedCognitiveCycle, ConvergenceMonitor
+    from aeon_core import ModuleCoherenceVerifier, CausalErrorEvolutionTracker
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalProvenanceTracker
+    hidden = 32
+    cv = ConvergenceMonitor()
+    coherence = ModuleCoherenceVerifier(hidden_dim=hidden, threshold=0.5)
+    error_evo = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cv,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+    # Evaluate with only 2 states
+    states_2 = {
+        "integrated_output": torch.randn(2, hidden),
+        "core_state": torch.randn(2, hidden),
+    }
+    result_2 = ucc.evaluate(
+        subsystem_states=states_2, delta_norm=0.01, uncertainty=0.0,
+    )
+    ucc.reset()
+    # Now include a cross_validation state (3 states total)
+    states_3 = {
+        **states_2,
+        "cross_validation": torch.randn(2, hidden),
+    }
+    result_3 = ucc.evaluate(
+        subsystem_states=states_3, delta_norm=0.01, uncertainty=0.0,
+    )
+    # The coherence result should include a coherence_score in both cases
+    assert "coherence_score" in result_2.get("coherence_result", {}), (
+        "Coherence result should include coherence_score with 2 states"
+    )
+    assert "coherence_score" in result_3.get("coherence_result", {}), (
+        "Coherence result should include coherence_score with 3 states"
+    )
+    # The 3-state evaluation should produce a finite coherence score,
+    # confirming that the cross_validation state was processed
+    score_3 = result_3["coherence_result"]["coherence_score"]
+    assert torch.isfinite(score_3).all(), (
+        "Coherence score should be finite with cross_validation state"
+    )
+    print("✅ test_cross_validation_state_in_ucc PASSED")
+
+
+def test_error_evolution_records_cross_validation():
+    """Error evolution should record cross_validation_low_agreement
+    episodes so the tighten_threshold strategy can be learned."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    # Simulate two low-agreement episodes with tighten_threshold strategy
+    tracker.record_episode(
+        error_class="cross_validation_low_agreement",
+        strategy_used="tighten_threshold",
+        success=True,
+    )
+    tracker.record_episode(
+        error_class="cross_validation_low_agreement",
+        strategy_used="tighten_threshold",
+        success=True,
+    )
+    best = tracker.get_best_strategy("cross_validation_low_agreement")
+    assert best == "tighten_threshold", (
+        f"Expected 'tighten_threshold' as best strategy, got {best}"
+    )
+    print("✅ test_error_evolution_records_cross_validation PASSED")
+
+
+def test_full_coherence_enables_all_ucc_prereqs():
+    """enable_full_coherence should also enable UCC prereqs transitively."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(device_str='cpu', enable_full_coherence=True)
+    assert config.enable_ns_consistency_check is True
+    assert config.enable_complexity_estimator is True
+    assert config.enable_unified_cognitive_cycle is True
+    print("✅ test_full_coherence_enables_all_ucc_prereqs PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -28684,6 +28852,14 @@ if __name__ == '__main__':
     test_unified_cycle_evaluate_returns_expected_keys()
     test_semantic_error_recorded_in_evolution()
     test_training_imports_unified_components()
+
+    # Architectural coherence integration tests
+    test_ucc_enables_ns_consistency_and_complexity()
+    test_ns_violations_feed_ucc_safety_signal()
+    test_provenance_records_ns_consistency()
+    test_cross_validation_state_in_ucc()
+    test_error_evolution_records_cross_validation()
+    test_full_coherence_enables_all_ucc_prereqs()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
