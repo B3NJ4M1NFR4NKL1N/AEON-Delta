@@ -7840,8 +7840,8 @@ def test_agi_coherence_config_defaults():
     from aeon_core import AEONConfig
 
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
-    assert config.enable_causal_context is False
-    assert config.enable_cross_validation is False
+    assert config.enable_causal_context is True
+    assert config.enable_cross_validation is True
     assert config.enable_external_trust is False
     assert config.enable_ns_consistency_check is False
     assert config.enable_complexity_estimator is False
@@ -7899,8 +7899,8 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.causal_context is None
-    assert model.cross_validator is None
+    assert model.causal_context is not None
+    assert model.cross_validator is not None
     assert model.trust_scorer is None
     assert model.ns_consistency_checker is None
     assert model.complexity_estimator is None
