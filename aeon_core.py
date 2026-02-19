@@ -17910,11 +17910,14 @@ class AEONDeltaV3(nn.Module):
                 # error-evolution-guided tightening (5d2-0b) can
                 # learn that tightening the threshold is the
                 # appropriate response to cross-validation failures.
+                _reconciliation_converged = (
+                    reconciliation_results["reconcile_iterations"]
+                    < self.config.cross_validation_max_steps
+                )
                 self.error_evolution.record_episode(
                     error_class="cross_validation_low_agreement",
                     strategy_used="tighten_threshold",
-                    success=reconciliation_results["reconcile_iterations"]
-                    < self.config.cross_validation_max_steps,
+                    success=_reconciliation_converged,
                 )
             # Tighten adaptive safety threshold when reconciliation
             # agreement is low — disagreeing modules warrant more
