@@ -19911,13 +19911,14 @@ class AEONDeltaV3(nn.Module):
         # A lightweight cross-check: the system is coherent when the
         # metacognitive trigger is available, error evolution is
         # tracking, and causal traceability is active.
-        _coherence_score = sum([
+        _coherence_indicators = [
             trigger_state["available"],
             error_evolution_state["available"],
             causal_trace_state["available"],
             self.feedback_bus is not None,
             self.unified_cognitive_cycle is not None,
-        ]) / 5.0
+        ]
+        _coherence_score = sum(_coherence_indicators) / len(_coherence_indicators)
 
         return {
             "trigger": trigger_state,

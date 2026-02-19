@@ -23682,11 +23682,12 @@ def test_unified_cognitive_cycle_output_in_reasoning_core():
         "outputs should contain unified_cognitive_cycle_results"
     ucc = outputs['unified_cognitive_cycle_results']
     assert isinstance(ucc, dict), "unified_cognitive_cycle_results should be a dict"
-    if ucc:  # non-empty when the cycle ran
-        assert 'should_rerun' in ucc, "should contain should_rerun"
-        assert 'coherence_result' in ucc, "should contain coherence_result"
-        assert 'convergence_verdict' in ucc, "should contain convergence_verdict"
-        assert 'provenance' in ucc, "should contain provenance"
+    # The cycle should have run since all prerequisites are enabled
+    assert len(ucc) > 0, "unified_cognitive_cycle_results should be non-empty"
+    assert 'should_rerun' in ucc, "should contain should_rerun"
+    assert 'coherence_result' in ucc, "should contain coherence_result"
+    assert 'convergence_verdict' in ucc, "should contain convergence_verdict"
+    assert 'provenance' in ucc, "should contain provenance"
 
     # Also verify the causal_decision_chain includes the cycle info
     chain = outputs.get('causal_decision_chain', {})
