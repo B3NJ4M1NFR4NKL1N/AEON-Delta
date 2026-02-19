@@ -15098,15 +15098,9 @@ class AEONDeltaV3(nn.Module):
                 "convergence_quality": convergence_quality_scalar,
             })
         
-        # 1a-iv. MetaLearner EWC drift signal — when the MetaLearner has
-        # learned tasks, the magnitude of the EWC penalty indicates how far
-        # current parameters have drifted from previously learned optima.
-        # High drift signals reduced confidence in the reasoning state,
-        # closing the gap between the meta-learning module (previously only
-        # contributing to the training loss) and the metacognitive
-        # uncertainty pipeline.  This ensures "each component verifies and
-        # reinforces the others": meta-learning now actively conditions
-        # reasoning depth, not just training regularization.
+        # 1a-iv. MetaLearner EWC drift signal — compute EWC penalty
+        # magnitude and escalate uncertainty when drift exceeds threshold,
+        # connecting meta-learning to metacognitive reasoning depth.
         _EWC_DRIFT_THRESHOLD = 0.1
         _EWC_UNCERTAINTY_SCALE = 0.15
         if self.meta_learner is not None and self.training and not fast:

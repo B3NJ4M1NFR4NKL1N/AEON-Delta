@@ -22985,14 +22985,13 @@ def test_meta_learner_ewc_drift_uncertainty():
     z_in = torch.randn(B, config.hidden_dim)
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
-    # Check that the EWC drift signal is computed (it may or may not
-    # exceed the threshold depending on parameter drift magnitude,
-    # but the code path should execute without error)
+    # Check that the EWC drift signal is present — with Fisher=10.0
+    # and param offset=0.1, the EWC loss is very large (well above
+    # the _EWC_DRIFT_THRESHOLD of 0.1), so the signal must be present.
     sources = outputs.get('uncertainty_sources', {})
-    # The EWC loss may be very large due to artificial Fisher values,
-    # so the signal should be present
-    assert 'meta_learner_ewc_drift' in sources or True, (
-        "MetaLearner EWC drift should be evaluated during training"
+    assert 'meta_learner_ewc_drift' in sources, (
+        f"MetaLearner EWC drift should be detected during training; "
+        f"sources={list(sources.keys())}"
     )
 
     print("✅ test_meta_learner_ewc_drift_uncertainty PASSED")
