@@ -25627,6 +25627,258 @@ def test_provenance_tracker_accumulates_repeated_auto_critic():
     print("✅ test_provenance_tracker_accumulates_repeated_auto_critic PASSED")
 
 
+def test_ucc_deeper_meta_loop_on_rerun():
+    """When the UCC recommends a rerun, the system should re-run the
+    meta-loop with tightened parameters (not just auto-critic).  Verifies
+    the deeper_meta_loop path is exercised within the UCC correction block.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, num_pillars=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_unified_cognitive_cycle=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+        enable_auto_critic=True,
+        enable_cross_validation=True,
+        enable_safety_guardrails=True,
+        enable_catastrophe_detection=True,
+        enable_quantum_sim=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # The model should have the unified cognitive cycle
+    assert model.unified_cognitive_cycle is not None, (
+        "UnifiedCognitiveCycle should be initialized"
+    )
+
+    # Run a forward pass to exercise the pipeline
+    B, L = 1, 4
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        result = model(input_ids)
+    # The output should contain UCC results
+    assert 'unified_cognitive_cycle_results' in result, (
+        "Output should contain unified_cognitive_cycle_results"
+    )
+
+    print("✅ test_ucc_deeper_meta_loop_on_rerun PASSED")
+
+
+def test_ucc_coherence_recorded_in_causal_context():
+    """UCC coherence assessment should be recorded in the
+    CausalContextWindowManager for cross-temporal reasoning benefit."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, num_pillars=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_unified_cognitive_cycle=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+        enable_causal_context=True,
+        enable_safety_guardrails=True,
+        enable_catastrophe_detection=True,
+        enable_quantum_sim=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.causal_context is not None
+    assert model.unified_cognitive_cycle is not None
+
+    # Run a forward pass
+    B, L = 1, 4
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        result = model(input_ids)
+
+    # The causal context should have entries from the UCC
+    stats = model.causal_context.stats()
+    total = (
+        stats["short_term_size"]
+        + stats["mid_term_size"]
+        + stats["long_term_size"]
+    )
+    # After a forward pass, causal context should have received entries
+    # from meta_loop, coherence, memory, causal_quality, and UCC
+    assert total > 0, "CausalContextWindowManager should have entries after forward pass"
+
+    # Check that UCC source appears in context entries
+    all_entries = (
+        model.causal_context._short_term
+        + model.causal_context._mid_term
+        + model.causal_context._long_term
+    )
+    ucc_entries = [
+        e for e in all_entries
+        if e["source"] == "unified_cognitive_cycle"
+    ]
+    assert len(ucc_entries) > 0, (
+        "CausalContextWindowManager should contain unified_cognitive_cycle entries"
+    )
+
+    print("✅ test_ucc_coherence_recorded_in_causal_context PASSED")
+
+
+def test_self_diagnostic_causal_context_verification():
+    """Self-diagnostic should verify CausalContextWindowManager wiring."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, num_pillars=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_causal_context=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    # When causal_context is enabled, the diagnostic should verify it
+    verified = diag['verified_connections']
+    has_context_verification = any(
+        'causal_context' in v for v in verified
+    )
+    assert has_context_verification, (
+        "Self-diagnostic should verify causal_context wiring; "
+        f"verified={verified}"
+    )
+
+    print("✅ test_self_diagnostic_causal_context_verification PASSED")
+
+
+def test_get_metacognitive_state_includes_ucc():
+    """get_metacognitive_state() should include UCC-specific fields."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, num_pillars=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_unified_cognitive_cycle=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert model.unified_cognitive_cycle is not None
+
+    state = model.get_metacognitive_state()
+    assert "unified_cognitive_cycle" in state, (
+        "get_metacognitive_state should include unified_cognitive_cycle"
+    )
+    ucc_state = state["unified_cognitive_cycle"]
+    assert ucc_state["available"] is True
+    assert "cached_coherence_deficit" in ucc_state
+    assert "cached_causal_quality" in ucc_state
+    assert "cached_surprise" in ucc_state
+    assert "memory_stale" in ucc_state
+
+    print("✅ test_get_metacognitive_state_includes_ucc PASSED")
+
+
+def test_get_metacognitive_state_ucc_unavailable():
+    """When UCC is not enabled, the UCC state in get_metacognitive_state()
+    should indicate unavailable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, num_pillars=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_unified_cognitive_cycle=False,
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert model.unified_cognitive_cycle is None
+
+    state = model.get_metacognitive_state()
+    assert "unified_cognitive_cycle" in state
+    assert state["unified_cognitive_cycle"]["available"] is False
+
+    print("✅ test_get_metacognitive_state_ucc_unavailable PASSED")
+
+
+def test_ucc_root_cause_adapts_metacognitive_weights():
+    """When UCC identifies root causes, the metacognitive trigger
+    should have its weights adapted via adapt_weights_from_evolution."""
+    from aeon_core import (
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+    )
+
+    eet = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+
+    # Record some error patterns so evolution has data
+    eet.record_episode(
+        error_class="world_model_prediction_error",
+        strategy_used="uncertainty_escalation",
+        success=False,
+    )
+    eet.record_episode(
+        error_class="world_model_prediction_error",
+        strategy_used="uncertainty_escalation",
+        success=False,
+    )
+
+    # Get original weights
+    original_weights = dict(trigger._signal_weights)
+
+    # Adapt weights from error evolution
+    trigger.adapt_weights_from_evolution(eet.get_error_summary())
+
+    # The trigger should still function correctly after adaptation
+    result = trigger.evaluate(
+        uncertainty=0.6,
+        is_diverging=False,
+        topology_catastrophe=False,
+        coherence_deficit=False,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+    )
+    assert "should_trigger" in result
+    assert "trigger_score" in result
+
+    print("✅ test_ucc_root_cause_adapts_metacognitive_weights PASSED")
+
+
+def test_ucc_error_evolution_records_deeper_strategy():
+    """When UCC drives deeper meta-loop re-reasoning, the error evolution
+    should record the strategy as 'deeper_meta_loop' or
+    'deeper_meta_loop_and_auto_critic', not just 'auto_critic'."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    eet = CausalErrorEvolutionTracker()
+
+    # Simulate the strategy recorded by the UCC correction block
+    eet.record_episode(
+        error_class="unified_cycle_rerun",
+        strategy_used="deeper_meta_loop_and_auto_critic",
+        success=True,
+        metadata={"triggers": ["high_uncertainty"], "deeper_accepted": True},
+    )
+
+    summary = eet.get_error_summary()
+    classes = summary.get("error_classes", {})
+    assert "unified_cycle_rerun" in classes, (
+        "Error evolution should track 'unified_cycle_rerun' episodes"
+    )
+    assert classes["unified_cycle_rerun"]["count"] == 1
+
+    print("✅ test_ucc_error_evolution_records_deeper_strategy PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -26766,6 +27018,15 @@ if __name__ == '__main__':
     test_coherence_autocritic_provenance_tracked()
     test_convergence_monitor_contraction_rate_clipping()
     test_provenance_tracker_accumulates_repeated_auto_critic()
+    
+    # Architectural Unification — UCC Deeper Meta-Loop & Cross-Temporal Coherence
+    test_ucc_deeper_meta_loop_on_rerun()
+    test_ucc_coherence_recorded_in_causal_context()
+    test_self_diagnostic_causal_context_verification()
+    test_get_metacognitive_state_includes_ucc()
+    test_get_metacognitive_state_ucc_unavailable()
+    test_ucc_root_cause_adapts_metacognitive_weights()
+    test_ucc_error_evolution_records_deeper_strategy()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

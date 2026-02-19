@@ -18754,6 +18754,42 @@ class AEONDeltaV3(nn.Module):
                             ),
                         }
 
+        # 8f-ucc-ctx-all. Record UCC coherence assessment in the
+        # CausalContextWindowManager regardless of rerun status so that
+        # cross-temporal reasoning benefits from every UCC evaluation.
+        # When UCC triggers a rerun, the rerun block records more detailed
+        # metadata; this block covers the common case where UCC runs but
+        # does not recommend deeper reasoning.
+        if (self.unified_cognitive_cycle is not None
+                and unified_cycle_results
+                and not unified_cycle_results.get("should_rerun", False)
+                and self.causal_context is not None
+                and not fast):
+            _ucc_coh_all = unified_cycle_results.get(
+                "coherence_result", {},
+            )
+            _ucc_coh_all_score = _ucc_coh_all.get("coherence_score", None)
+            _ucc_coh_all_val = 0.0
+            if _ucc_coh_all_score is not None:
+                _ucc_coh_all_val = float(
+                    _ucc_coh_all_score.mean().item()
+                    if isinstance(_ucc_coh_all_score, torch.Tensor)
+                    else _ucc_coh_all_score
+                )
+            self.causal_context.add(
+                source="unified_cognitive_cycle",
+                embedding=z_out.mean(dim=0).detach(),
+                relevance=max(0.0, _ucc_coh_all_val),
+                causal_weight=max(0.0, _ucc_coh_all_val),
+                tier="short_term",
+                metadata={
+                    "should_rerun": False,
+                    "coherence_deficit": _ucc_coh_all.get(
+                        "coherence_deficit", 0.0,
+                    ),
+                },
+            )
+
         # 8f-ucc. UCC-driven active correction — when the UnifiedCognitiveCycle
         # recommended a rerun, invoke corrective actions (auto-critic and/or
         # error-evolution root-cause analysis) immediately.  This closes the
@@ -18774,6 +18810,19 @@ class AEONDeltaV3(nn.Module):
                     _rc = self.error_evolution.get_root_causes(_ucc_trig)
                     if _rc.get("root_causes"):
                         _ucc_root_causes[_ucc_trig] = _rc
+                # 8f-ucc-adapt. Feed UCC-identified root causes back into
+                # the metacognitive trigger's adaptive weights so that
+                # historically problematic trigger signals become more
+                # sensitive in subsequent forward passes.  Without this,
+                # UCC root-cause analysis is purely diagnostic — it
+                # identifies which modules caused the rerun but never
+                # feeds that insight back into the trigger mechanism
+                # that decides *whether* to re-reason.
+                if (self.metacognitive_trigger is not None
+                        and _ucc_triggers):
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
             # Record root-cause analysis in causal trace for traceability
             if self.causal_trace is not None and _ucc_root_causes:
                 self.causal_trace.record(
@@ -18786,6 +18835,89 @@ class AEONDeltaV3(nn.Module):
                         },
                     },
                 )
+            # 8f-ucc-deeper. UCC-driven deeper meta-loop re-reasoning —
+            # re-run the meta-loop with tightened parameters so the UCC's
+            # rerun signal triggers actual deeper reasoning (like the
+            # metacognitive trigger at step 5a-iv), not just auto-critic
+            # revision.  The tightened parameters come from the UCC's
+            # trigger_detail, mirroring the metacognitive recursion path.
+            # The deeper result is accepted only if it's finite and yields
+            # a better convergence rate, preventing degradation from
+            # unnecessary re-reasoning.
+            _ucc_deeper_accepted = False
+            _ucc_trigger_detail = unified_cycle_results.get(
+                "trigger_detail", {},
+            )
+            _ucc_tightening = _ucc_trigger_detail.get(
+                "tightened_threshold",
+                self.config.metacognitive_tightening_factor,
+            )
+            _ucc_extra_iters = _ucc_trigger_detail.get(
+                "extra_iterations",
+                self.config.metacognitive_extra_iterations,
+            )
+            _ucc_tight_threshold = (
+                self.config.convergence_threshold * _ucc_tightening
+            )
+            _ucc_orig_threshold = self.meta_loop.convergence_threshold
+            _ucc_orig_max_iter = self.meta_loop.max_iterations
+            self.meta_loop.convergence_threshold = _ucc_tight_threshold
+            self.meta_loop.max_iterations = min(
+                _ucc_orig_max_iter + _ucc_extra_iters,
+                _ucc_orig_max_iter * 2,
+            )
+            try:
+                _ucc_deeper_feedback = self.feedback_bus(
+                    batch_size=B,
+                    device=device,
+                    safety_score=safety_score,
+                    convergence_quality=convergence_quality_scalar,
+                    uncertainty=uncertainty,
+                    subsystem_health=_recovery_health,
+                    convergence_loss_scale=getattr(
+                        self, '_last_convergence_loss_scale', 1.0,
+                    ),
+                    world_model_surprise=self._cached_surprise,
+                    coherence_deficit=self._cached_coherence_deficit,
+                    causal_quality=self._cached_causal_quality,
+                ).detach()
+                self.provenance_tracker.record_before(
+                    "deeper_meta_loop", z_out,
+                )
+                _ucc_C_deeper, _ucc_iter, _ucc_meta_deeper = self.meta_loop(
+                    z_in, use_fixed_point=True, feedback=_ucc_deeper_feedback,
+                )
+                self.provenance_tracker.record_after(
+                    "deeper_meta_loop", _ucc_C_deeper,
+                )
+                if torch.isfinite(_ucc_C_deeper).all():
+                    _ucc_deeper_rate = _ucc_meta_deeper.get(
+                        "convergence_rate", 0.0,
+                    )
+                    if _ucc_deeper_rate >= convergence_quality_scalar:
+                        _ucc_deeper_accepted = True
+                        z_out = _ucc_C_deeper
+                        self.audit_log.record(
+                            "unified_cognitive_cycle",
+                            "deeper_meta_loop_accepted",
+                            {
+                                "deeper_rate": _ucc_deeper_rate,
+                                "original_rate": convergence_quality_scalar,
+                            },
+                        )
+            except Exception as _ucc_deep_err:
+                logger.warning(
+                    "UCC-driven deeper meta-loop error (non-fatal): %s",
+                    _ucc_deep_err,
+                )
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="ucc_deeper_meta_loop",
+                    success=False,
+                )
+            finally:
+                self.meta_loop.convergence_threshold = _ucc_orig_threshold
+                self.meta_loop.max_iterations = _ucc_orig_max_iter
             # Invoke auto-critic if available for self-correction
             if self.auto_critic is not None:
                 try:
@@ -18829,16 +18961,52 @@ class AEONDeltaV3(nn.Module):
                         context="ucc_driven_auto_critic",
                         success=False,
                     )
+            # 8f-ucc-ctx. Record UCC coherence assessment in the
+            # CausalContextWindowManager so that cross-temporal reasoning
+            # benefits from the UCC's comprehensive coherence evaluation.
+            # Without this, the causal context contains meta-loop and
+            # memory signals but misses the UCC's richer assessment that
+            # combines convergence, coherence, error evolution, and
+            # provenance into a single verdict.
+            if self.causal_context is not None:
+                _ucc_coh = unified_cycle_results.get(
+                    "coherence_result", {},
+                )
+                _ucc_coh_score_val = 0.0
+                _ucc_coh_score = _ucc_coh.get("coherence_score", None)
+                if _ucc_coh_score is not None:
+                    _ucc_coh_score_val = float(
+                        _ucc_coh_score.mean().item()
+                        if isinstance(_ucc_coh_score, torch.Tensor)
+                        else _ucc_coh_score
+                    )
+                self.causal_context.add(
+                    source="unified_cognitive_cycle",
+                    embedding=z_out.mean(dim=0).detach(),
+                    relevance=max(0.0, _ucc_coh_score_val),
+                    causal_weight=max(0.0, _ucc_coh_score_val),
+                    tier="short_term" if _ucc_coh_score_val > 0.5 else "mid_term",
+                    metadata={
+                        "should_rerun": True,
+                        "coherence_deficit": _ucc_coh.get(
+                            "coherence_deficit", 0.0,
+                        ),
+                        "deeper_accepted": _ucc_deeper_accepted,
+                    },
+                )
             # Record the corrective action in error evolution so the
             # system learns whether UCC-triggered corrections succeed.
-            # Only record when auto_critic is available; when it's None
-            # no correction was attempted and recording a failure would
-            # skew error evolution statistics.
-            if self.error_evolution is not None and self.auto_critic is not None:
+            _ucc_correction_success = (
+                _any_auto_critic_revised or _ucc_deeper_accepted
+            )
+            if self.error_evolution is not None:
+                _ucc_strategy = "deeper_meta_loop"
+                if self.auto_critic is not None:
+                    _ucc_strategy = "deeper_meta_loop_and_auto_critic"
                 self.error_evolution.record_episode(
                     error_class="unified_cycle_rerun",
-                    strategy_used="auto_critic",
-                    success=_any_auto_critic_revised,
+                    strategy_used=_ucc_strategy,
+                    success=_ucc_correction_success,
                     metadata=self._provenance_enriched_metadata({
                         "triggers": unified_cycle_results.get(
                             "trigger_detail", {},
@@ -18847,6 +19015,7 @@ class AEONDeltaV3(nn.Module):
                             k: v.get("root_causes", {})
                             for k, v in _ucc_root_causes.items()
                         },
+                        "deeper_accepted": _ucc_deeper_accepted,
                     }),
                 )
 
@@ -20333,6 +20502,18 @@ class AEONDeltaV3(nn.Module):
         if self.safety_system is not None:
             verified.append('safety_system → adaptive threshold → rollback')
 
+        # 5b. CausalContextWindowManager → cross-temporal reasoning
+        if getattr(self, 'causal_context', None) is not None:
+            verified.append('causal_context → cross-temporal reasoning')
+            if getattr(self, 'causal_context_proj', None) is not None:
+                verified.append('causal_context_proj → pre-loop conditioning')
+        elif self.config.enable_causal_context:
+            gaps.append({
+                'component': 'causal_context',
+                'gap': 'Causal context enabled in config but not initialized',
+                'remediation': 'Check CausalContextWindowManager initialization',
+            })
+
         # 6. Causal trace coverage
         _traceable_modules = set()
         _all_subsystems = {
@@ -20564,12 +20745,24 @@ class AEONDeltaV3(nn.Module):
             ),
         }
 
+        # --- Unified Cognitive Cycle state ---
+        ucc_state: Dict[str, Any] = {"available": False}
+        if self.unified_cognitive_cycle is not None:
+            ucc_state = {
+                "available": True,
+                "cached_coherence_deficit": self._cached_coherence_deficit,
+                "cached_causal_quality": self._cached_causal_quality,
+                "cached_surprise": self._cached_surprise,
+                "memory_stale": self._memory_stale,
+            }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
             "convergence": convergence_state,
             "causal_trace": causal_trace_state,
             "provenance": provenance_state,
+            "unified_cognitive_cycle": ucc_state,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
