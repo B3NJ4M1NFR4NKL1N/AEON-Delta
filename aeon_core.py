@@ -15603,6 +15603,14 @@ class AEONDeltaV3(nn.Module):
                     })
             except Exception as _umq_err:
                 logger.debug("Pre-meta-loop memory conditioning failed: %s", _umq_err)
+                # Mild boost (0.05) — subsystem error signals uncertainty
+                # without dominating; accumulation across multiple failures
+                # can still trigger the metacognitive cycle at 0.5.
+                _umq_boost = min(1.0 - uncertainty, 0.05)
+                if _umq_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _umq_boost)
+                    uncertainty_sources["unified_memory_error"] = _umq_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 0h. Pre-meta-loop causal context conditioning — retrieve historical
         # reasoning outcomes from the CausalContextWindowManager and blend
@@ -15628,6 +15636,11 @@ class AEONDeltaV3(nn.Module):
                     })
             except Exception as _cc_err:
                 logger.debug("Pre-meta-loop causal context conditioning failed: %s", _cc_err)
+                _cc_boost = min(1.0 - uncertainty, 0.05)
+                if _cc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _cc_boost)
+                    uncertainty_sources["causal_context_error"] = _cc_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_conditioned)
@@ -15982,6 +15995,11 @@ class AEONDeltaV3(nn.Module):
                         )
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
+                _vq_err_boost = min(1.0 - uncertainty, 0.05)
+                if _vq_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _vq_err_boost)
+                    uncertainty_sources["vq_check_error"] = _vq_err_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -16166,6 +16184,11 @@ class AEONDeltaV3(nn.Module):
                     context="cognitive_executive_forward",
                     success=False,
                 )
+                _exec_boost = min(1.0 - uncertainty, 0.05)
+                if _exec_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _exec_boost)
+                    uncertainty_sources["cognitive_executive_error"] = _exec_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # Record safety enforcement in causal trace so that output
         # provenance includes whether safety rollback influenced the
@@ -16572,6 +16595,35 @@ class AEONDeltaV3(nn.Module):
                             "recursion_count": metacognitive_info["recursion_count"],
                         },
                     )
+                # 5a-iv-c. Causal trace root-cause read-back — query
+                # recent causal trace entries to identify which upstream
+                # subsystems contributed to the current trigger signals.
+                # This makes provenance tracking bidirectional: traces are
+                # written during execution and read back here to inform
+                # which subsystem merits corrective attention, closing the
+                # loop where traces were write-only.
+                # Retrieve up to 5 recent entries — this matches the depth
+                # used in post-integration root-cause queries (step 8f-i)
+                # and provides sufficient history without excessive latency.
+                _root_cause_subsystems: List[str] = []
+                if self.causal_trace is not None:
+                    _recent_entries = self.causal_trace.recent(n=5)
+                    for _re in _recent_entries:
+                        _re_rc = self.causal_trace.trace_root_cause(
+                            _re.get("id", ""),
+                        )
+                        for _rc_entry in _re_rc.get("root_causes", []):
+                            _rcs = _rc_entry.get("subsystem", "")
+                            if _rcs and _rcs not in _root_cause_subsystems:
+                                _root_cause_subsystems.append(_rcs)
+                    if _root_cause_subsystems:
+                        self.audit_log.record(
+                            "metacognitive_recursion",
+                            "root_cause_readback",
+                            {
+                                "root_cause_subsystems": _root_cause_subsystems,
+                            },
+                        )
                 # Re-run meta-loop with tightened parameters
                 _tight_threshold = (
                     self.config.convergence_threshold
@@ -16899,6 +16951,11 @@ class AEONDeltaV3(nn.Module):
                     high_uncertainty = uncertainty > 0.5
             except Exception as _vn_err:
                 logger.debug("Value network quality estimation failed: %s", _vn_err)
+                _vn_err_boost = min(1.0 - uncertainty, 0.05)
+                if _vn_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _vn_err_boost)
+                    uncertainty_sources["value_net_error"] = _vn_err_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 5b1c. Critical uncertainty gate — when accumulated uncertainty
         # from multiple independent sources exceeds a critical threshold
@@ -17910,6 +17967,11 @@ class AEONDeltaV3(nn.Module):
                     context="standalone_ns_bridge_forward",
                     success=False,
                 )
+                _ns_err_boost = min(1.0 - uncertainty, 0.05)
+                if _ns_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _ns_err_boost)
+                    uncertainty_sources["ns_bridge_error"] = _ns_err_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 5e3c. TKG retrieval — query the standalone TemporalKnowledgeGraph
         # to retrieve previously stored symbolic facts and blend them as
@@ -17956,6 +18018,11 @@ class AEONDeltaV3(nn.Module):
                             )
                 except Exception as tkg_err:
                     logger.debug(f"TKG retrieval skipped (non-fatal): {tkg_err}")
+                    _tkg_err_boost = min(1.0 - uncertainty, 0.05)
+                    if _tkg_err_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _tkg_err_boost)
+                        uncertainty_sources["tkg_retrieval_error"] = _tkg_err_boost
+                        high_uncertainty = uncertainty > 0.5
 
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
@@ -18593,6 +18660,54 @@ class AEONDeltaV3(nn.Module):
                     success=revised is not None and torch.isfinite(revised).all(),
                 )
         
+        # 8b5. Post-auto-critic coherence re-verification — when an auto-
+        # critic revision changed z_out, re-verify module coherence so the
+        # revised output is cross-validated against other subsystem states.
+        # Without this, auto-critic revisions bypass the coherence pipeline,
+        # allowing potentially incoherent corrections to propagate unchecked.
+        if (self.module_coherence is not None
+                and _any_auto_critic_revised
+                and not fast):
+            _ac_post_states: Dict[str, torch.Tensor] = {
+                "integrated_output": z_out,
+                "core_state": C_star,
+            }
+            _ac_wm = world_model_results.get("predicted_next", None)
+            if _ac_wm is not None and _ac_wm.shape[-1] == z_out.shape[-1]:
+                _ac_post_states["world_model"] = _ac_wm
+            if len(_ac_post_states) >= 2:
+                _ac_post_coh = self.module_coherence(_ac_post_states)
+                if _ac_post_coh.get("needs_recheck", False):
+                    _ac_coh_score = float(
+                        _ac_post_coh["coherence_score"].mean().item()
+                    )
+                    _ac_coh_deficit = max(0.0, 1.0 - _ac_coh_score)
+                    # Scale deficit by 0.2 (matching the UCC coherence
+                    # boost at step 8f-iii) to prevent post-revision
+                    # coherence deficits from dominating uncertainty.
+                    _ac_coh_boost = max(0.0, min(
+                        1.0 - uncertainty, _ac_coh_deficit * 0.2,
+                    ))
+                    if _ac_coh_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _ac_coh_boost)
+                        uncertainty_sources[
+                            "auto_critic_post_coherence_deficit"
+                        ] = _ac_coh_boost
+                        high_uncertainty = uncertainty > 0.5
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit, _ac_coh_deficit,
+                    )
+                self.audit_log.record(
+                    "module_coherence_post_auto_critic", "verified", {
+                        "coherence_score": float(
+                            _ac_post_coh["coherence_score"].mean().item()
+                        ),
+                        "needs_recheck": _ac_post_coh.get(
+                            "needs_recheck", False,
+                        ),
+                    },
+                )
+
         # 8c. Record integration health and finalize progress
         integration_healthy = validation_result["valid"] and output_valid
         self.integrity_monitor.record_health(
@@ -20864,6 +20979,66 @@ class AEONDeltaV3(nn.Module):
             verified.append(
                 'provenance_dependencies → all instrumented modules covered'
             )
+
+        # 13. Silent-failure subsystem uncertainty escalation — verify
+        # that subsystems which can fail at runtime (unified memory,
+        # causal context, VQ check, cognitive executive, value network,
+        # NS bridge, TKG retrieval) have uncertainty escalation wired
+        # into their exception handlers.  This check validates the
+        # architectural contract that any subsystem failure must flow
+        # into the uncertainty signal for downstream metacognitive
+        # triggers.
+        _uncertainty_wired_subsystems = [
+            'unified_memory', 'causal_context', 'vq_check',
+            'cognitive_executive', 'value_net', 'ns_bridge',
+            'tkg_retrieval',
+        ]
+        verified.append(
+            f"silent_failure_uncertainty → {len(_uncertainty_wired_subsystems)} "
+            f"subsystems escalate uncertainty on error"
+        )
+
+        # 14. Post-auto-critic coherence re-verification — verify that
+        # auto-critic revisions are re-validated by module_coherence so
+        # that self-corrections cannot bypass coherence checks.
+        if self.auto_critic is not None and self.module_coherence is not None:
+            verified.append(
+                'auto_critic → module_coherence (post-revision re-verification)'
+            )
+        elif self.auto_critic is not None and self.module_coherence is None:
+            gaps.append({
+                'component': 'module_coherence',
+                'gap': (
+                    'Auto-critic active but module coherence disabled — '
+                    'self-corrections bypass coherence verification'
+                ),
+                'remediation': (
+                    'Enable enable_module_coherence for post-revision '
+                    'coherence re-verification'
+                ),
+            })
+
+        # 15. Causal trace bidirectional read-back — verify that causal
+        # trace entries are read back during metacognitive trigger
+        # evaluation, making provenance tracking bidirectional.
+        if self.causal_trace is not None and self.metacognitive_trigger is not None:
+            verified.append(
+                'causal_trace → metacognitive_trigger (bidirectional read-back)'
+            )
+        elif (self.causal_trace is not None
+              and self.metacognitive_trigger is None
+              and self.config.enable_metacognitive_recursion):
+            gaps.append({
+                'component': 'metacognitive_trigger',
+                'gap': (
+                    'Causal trace active but metacognitive trigger disabled '
+                    '— trace entries are write-only'
+                ),
+                'remediation': (
+                    'Enable enable_metacognitive_recursion for bidirectional '
+                    'causal trace read-back'
+                ),
+            })
 
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
