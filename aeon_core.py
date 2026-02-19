@@ -15926,7 +15926,7 @@ class AEONDeltaV3(nn.Module):
         # uncertain about how to distribute inputs across the codebook.
         if self.vector_quantizer is not None and not fast:
             try:
-                _vq_stats = self.vector_quantizer.get_usage_stats()
+                _vq_stats = self.vector_quantizer.get_codebook_usage_stats()
                 _vq_utilization = _vq_stats.get('usage_rate', 1.0)
                 _VQ_COLLAPSE_THRESHOLD = self.config.vq_collapse_utilization_threshold
                 _VQ_COLLAPSE_UNCERTAINTY_SCALE = self.config.vq_collapse_uncertainty_scale
