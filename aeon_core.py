@@ -3010,6 +3010,8 @@ class AEONConfig:
             f"cls_token_id ({self.cls_token_id}) must be in [0, vocab_size)"
         assert 0 <= self.sep_token_id < self.vocab_size, \
             f"sep_token_id ({self.sep_token_id}) must be in [0, vocab_size)"
+        assert 0.0 <= self.certified_meta_loop_uncertainty_boost <= 1.0, \
+            f"certified_meta_loop_uncertainty_boost ({self.certified_meta_loop_uncertainty_boost}) must be in [0.0, 1.0]"
         
         # Sequence backend validation
         assert self.encoder_backend in ("lstm", "ssm", "mamba2", "linear_attention"), \
@@ -14873,6 +14875,10 @@ class AEONDeltaV3(nn.Module):
         # transforms CertifiedMetaLoop from an unused architectural
         # component into an active verification gate that reinforces
         # the ProvablyConvergentMetaLoop's output.
+        # NOTE: Certification is skipped in fast mode to preserve
+        # low-latency inference.  This is intentional: fast mode
+        # already skips heavy subsystems, and formal verification
+        # is primarily useful for careful reasoning paths.
         _certified_results: Dict[str, Any] = {}
         if self.certified_meta_loop is not None and meta_loop_valid and not fast:
             try:

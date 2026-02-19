@@ -21862,6 +21862,72 @@ def test_architecture_summary_includes_new_meta_loops():
     print("✅ test_architecture_summary_includes_new_meta_loops PASSED")
 
 
+def test_certified_convergence_failure_escalates_uncertainty():
+    """When CertifiedMetaLoop's IBP verification fails (which is typical for
+    untrained networks where L_certified > 1), uncertainty must be escalated
+    and the certified_convergence_failed source must appear."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_certified_meta_loop=True,
+        certified_meta_loop_uncertainty_boost=0.3,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Random untrained weights → IBP Lipschitz will be >> 1 → certification fails
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='inference')
+
+    cert = result.get('certified_results', {})
+    # For an untrained network, IBP Lipschitz should be >> 1
+    assert cert.get('ibp_lipschitz', 0) > 1.0, (
+        "Untrained network should have IBP Lipschitz > 1"
+    )
+    assert cert.get('certified_convergence') is False, (
+        "Untrained network should not have certified convergence"
+    )
+    # Uncertainty should have been escalated
+    sources = result.get('uncertainty_sources', {})
+    assert 'certified_convergence_failed' in sources, (
+        "Failed certification should add certified_convergence_failed to uncertainty_sources"
+    )
+    assert sources['certified_convergence_failed'] == 0.3, (
+        "Uncertainty boost should match certified_meta_loop_uncertainty_boost config"
+    )
+    print("✅ test_certified_convergence_failure_escalates_uncertainty PASSED")
+
+
+def test_certified_meta_loop_uncertainty_boost_validation():
+    """certified_meta_loop_uncertainty_boost must be in [0.0, 1.0]."""
+    from aeon_core import AEONConfig
+
+    # Valid values should work
+    AEONConfig(certified_meta_loop_uncertainty_boost=0.0)
+    AEONConfig(certified_meta_loop_uncertainty_boost=1.0)
+
+    # Invalid values should fail
+    try:
+        AEONConfig(certified_meta_loop_uncertainty_boost=-0.1)
+        assert False, "Should have raised AssertionError for negative value"
+    except AssertionError:
+        pass
+
+    try:
+        AEONConfig(certified_meta_loop_uncertainty_boost=1.1)
+        assert False, "Should have raised AssertionError for value > 1.0"
+    except AssertionError:
+        pass
+
+    print("✅ test_certified_meta_loop_uncertainty_boost_validation PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -22857,6 +22923,8 @@ if __name__ == '__main__':
     test_full_coherence_activates_new_meta_loops()
     test_certified_meta_loop_uncertainty_boost_config()
     test_architecture_summary_includes_new_meta_loops()
+    test_certified_convergence_failure_escalates_uncertainty()
+    test_certified_meta_loop_uncertainty_boost_validation()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
