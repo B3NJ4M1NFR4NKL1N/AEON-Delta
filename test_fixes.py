@@ -7850,13 +7850,15 @@ def test_agi_coherence_config_defaults():
     assert config.enable_meta_recovery_integration is False
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
-    # When UCC is disabled, they revert to their declared defaults
+    # When UCC is disabled, NS consistency and complexity estimator
+    # retain their declared defaults (True) since they are architectural
+    # necessities for a unified, self-reflective system.
     config_no_ucc = AEONConfig(
         hidden_dim=16, z_dim=16, vq_embedding_dim=16,
         enable_unified_cognitive_cycle=False,
     )
-    assert config_no_ucc.enable_ns_consistency_check is False
-    assert config_no_ucc.enable_complexity_estimator is False
+    assert config_no_ucc.enable_ns_consistency_check is True
+    assert config_no_ucc.enable_complexity_estimator is True
     print("✅ test_agi_coherence_config_defaults PASSED")
 
 
@@ -10312,8 +10314,11 @@ def test_metacognitive_recursion_recorded_in_causal_trace():
     summary = model.causal_trace.summary()
     assert summary["total_entries"] > 0, "Causal trace should have entries"
 
-    # Check that metacognitive_recursion subsystem is in the trace
-    recent = model.causal_trace.recent(n=20)
+    # Check that metacognitive_recursion subsystem is in the trace.
+    # Use a large window to accommodate additional trace entries from
+    # NS consistency checks and complexity estimators that are now
+    # enabled by default.
+    recent = model.causal_trace.recent(n=50)
     metacog_entries = [e for e in recent if e["subsystem"] == "metacognitive_recursion"]
     # Note: only fires if the trigger actually evaluates should_trigger=True
     # With threshold=0.0 and coherence_deficit=True, trigger_score >= threshold
@@ -27490,13 +27495,15 @@ def test_ucc_enables_ns_consistency_and_complexity():
     assert config.enable_complexity_estimator is True, (
         "Complexity estimator should be auto-enabled by UCC"
     )
-    # When UCC is disabled the flags should keep their defaults
+    # When UCC is disabled the flags retain their new defaults (True)
+    # since NS consistency and complexity estimation are architectural
+    # necessities for any coherent system, not UCC-only features.
     config_no_ucc = AEONConfig(
         device_str='cpu',
         enable_unified_cognitive_cycle=False,
     )
-    assert config_no_ucc.enable_ns_consistency_check is False
-    assert config_no_ucc.enable_complexity_estimator is False
+    assert config_no_ucc.enable_ns_consistency_check is True
+    assert config_no_ucc.enable_complexity_estimator is True
     print("✅ test_ucc_enables_ns_consistency_and_complexity PASSED")
 
 

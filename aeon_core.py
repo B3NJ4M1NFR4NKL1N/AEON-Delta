@@ -2881,9 +2881,9 @@ class AEONConfig:
     cross_validation_agreement: float = 0.7
     cross_validation_max_steps: int = 3
     enable_external_trust: bool = False
-    enable_ns_consistency_check: bool = False
+    enable_ns_consistency_check: bool = True
     ns_violation_threshold: float = 0.5
-    enable_complexity_estimator: bool = False
+    enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
     enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = True
@@ -13356,6 +13356,7 @@ class MetaCognitiveRecursionTrigger:
             "convergence_divergence": "diverging",
             "coherence_deficit": "coherence_deficit",
             "post_integration_coherence_deficit": "coherence_deficit",
+            "post_auto_critic_coherence_deficit": "coherence_deficit",
             "metacognitive_rerun": "uncertainty",
             "numerical": "uncertainty",
             "safety_rollback": "safety_violation",
@@ -13970,6 +13971,11 @@ class AEONDeltaV3(nn.Module):
         ("deeper_meta_loop", "world_model"),
         ("safety", "auto_critic"),
         ("causal_model", "auto_critic"),
+        # Meta-cognitive feedback: auto-critic outputs feed the unified
+        # cognitive cycle which in turn may trigger a deeper meta-loop,
+        # closing the self-reflective reasoning loop.
+        ("auto_critic", "unified_cognitive_cycle"),
+        ("unified_cognitive_cycle", "deeper_meta_loop"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -14755,6 +14761,22 @@ class AEONDeltaV3(nn.Module):
                 provenance_tracker=self.provenance_tracker,
                 causal_trace=self.causal_trace,
             )
+            # Post-construction wiring verification: ensure UCC internal
+            # references point to the same instances as model-level
+            # attributes.  This eliminates the diagnostic gaps where
+            # UCC's convergence_monitor, error_evolution, or causal_trace
+            # could diverge from the model's own references.
+            _ucc = self.unified_cognitive_cycle
+            if _ucc.convergence_monitor is not self.convergence_monitor:
+                _ucc.convergence_monitor = self.convergence_monitor
+            if (self.error_evolution is not None
+                    and getattr(_ucc.convergence_monitor, '_error_evolution', None)
+                    is not self.error_evolution):
+                _ucc.convergence_monitor.set_error_evolution(self.error_evolution)
+            if (self.causal_trace is not None
+                    and _ucc.causal_trace is not self.causal_trace):
+                _ucc.causal_trace = self.causal_trace
+                _ucc.error_evolution.set_causal_trace(self.causal_trace)
         else:
             self.unified_cognitive_cycle = None
         
@@ -16688,6 +16710,7 @@ class AEONDeltaV3(nn.Module):
                 recovery_pressure=_recovery_pressure,
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
+                safety_violation=safety_enforced,
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             if metacognitive_info.get("should_trigger", False):
@@ -18891,6 +18914,18 @@ class AEONDeltaV3(nn.Module):
                     self._cached_coherence_deficit = max(
                         self._cached_coherence_deficit, _ac_coh_deficit,
                     )
+                    # Record post-auto-critic coherence deficit in error
+                    # evolution so the system can learn from repeated
+                    # auto-critic revisions that still fail coherence.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="post_auto_critic_coherence_deficit",
+                            strategy_used="auto_critic",
+                            success=False,
+                            metadata={
+                                "coherence_deficit": _ac_coh_deficit,
+                            },
+                        )
                 self.audit_log.record(
                     "module_coherence_post_auto_critic", "verified", {
                         "coherence_score": float(
@@ -21198,7 +21233,7 @@ class AEONDeltaV3(nn.Module):
             'unified_simulator', 'hybrid_reasoning', 'ns_bridge',
             'hierarchical_vae', 'causal_context', 'multimodal',
             'auto_critic', 'neurogenic_memory', 'consolidating_memory',
-            'temporal_memory',
+            'temporal_memory', 'unified_cognitive_cycle',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
