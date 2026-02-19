@@ -1614,7 +1614,7 @@ class SafeThoughtAETrainerV4:
             # evolution tracker so that training-time failures inform
             # inference-time recovery strategies with semantic context.
             self._error_evolution.record_episode(
-                error_class=_error_detail.split(":")[0] if ":" in _error_detail else "numerical",
+                error_class=_error_detail.split(":", 1)[0].strip() if ":" in _error_detail else "numerical",
                 strategy_used="skip_backward",
                 success=False,
                 metadata={
@@ -1877,7 +1877,7 @@ class SafeThoughtAETrainerV4:
             # conclusions are recorded in the causal provenance chain.
             try:
                 _loss_delta = abs(convergence_verdict.get("trend", 0.0))
-                _uncertainty = min(epoch_metrics.get("perplexity", 0.0) / 1000.0, 1.0)
+                _uncertainty = min(epoch_metrics.get("perplexity", 0.0) / _PERPLEXITY_UNCERTAINTY_SCALE, 1.0)
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
@@ -1903,7 +1903,7 @@ class SafeThoughtAETrainerV4:
                     # closes the feedback loop between the cognitive
                     # architecture and the training optimizer.
                     for param_group in self.optimizer.param_groups:
-                        param_group['lr'] *= 0.7
+                        param_group['lr'] *= _METACOGNITIVE_LR_FACTOR
             except Exception as _cycle_err:
                 logger.debug("Unified cognitive cycle evaluation skipped: %s", _cycle_err)
             
@@ -2222,7 +2222,7 @@ class ContextualRSSMTrainer:
             # --- Unified Cognitive Cycle evaluation for Phase B ---
             try:
                 _loss_delta = abs(convergence_verdict.get("trend", 0.0))
-                _uncertainty = min(epoch_metrics.get("mse_loss", 0.0) / 10.0, 1.0)
+                _uncertainty = min(epoch_metrics.get("mse_loss", 0.0) / _MSE_UNCERTAINTY_SCALE, 1.0)
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
@@ -2244,7 +2244,7 @@ class ContextualRSSMTrainer:
                         f"(signals={_active}), adapting training"
                     )
                     for param_group in self.optimizer.param_groups:
-                        param_group['lr'] *= 0.7
+                        param_group['lr'] *= _METACOGNITIVE_LR_FACTOR
             except Exception as _cycle_err:
                 logger.debug("Phase B unified cognitive cycle skipped: %s", _cycle_err)
             
@@ -2275,6 +2275,15 @@ _PROVENANCE_DOMINANCE_WARNING_THRESHOLD = 0.9
 # entries.  Shared by Phase A and Phase B trainers to ensure consistent
 # traceability granularity across both training phases.
 _PROVENANCE_LOG_INTERVAL = 50
+
+# Meta-cognitive learning rate adjustment factor applied when the
+# UnifiedCognitiveCycle triggers re-reasoning during training.
+_METACOGNITIVE_LR_FACTOR = 0.7
+
+# Normalization constants for mapping raw loss metrics to the [0, 1]
+# uncertainty range consumed by MetaCognitiveRecursionTrigger.
+_PERPLEXITY_UNCERTAINTY_SCALE = 1000.0  # Phase A: perplexity → uncertainty
+_MSE_UNCERTAINTY_SCALE = 10.0           # Phase B: mse_loss → uncertainty
 
 class TrainingProvenanceTracker:
     """Lightweight provenance tracker for the training pipeline.
