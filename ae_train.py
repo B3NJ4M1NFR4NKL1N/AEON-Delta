@@ -2842,6 +2842,8 @@ def main(
         logger.info(
             f"🔗 Bridged {_phaseA_bridged} error pattern(s) from Phase A → Phase B"
         )
+    else:
+        logger.info("🔗 Phase A produced no actionable error patterns to bridge")
 
     trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
 

@@ -23569,8 +23569,10 @@ def test_unified_cognitive_cycle_reset():
     assert len(cm.history) == 0
     # Provenance must NOT be cleared by UCC reset — the reasoning core
     # resets provenance at the start of each pass, not the UCC.
-    assert len(prov._order) == 1, (
-        f"UCC.reset() should preserve provenance, but _order={prov._order}"
+    attribution = prov.compute_attribution()
+    assert len(attribution['contributions']) == 1, (
+        f"UCC.reset() should preserve provenance, but got "
+        f"{len(attribution['contributions'])} contributions"
     )
 
     print("✅ test_unified_cognitive_cycle_reset PASSED")
@@ -23948,7 +23950,7 @@ def test_ucc_reset_preserves_provenance():
     prov.record_before('safety', torch.ones(2, 64))
     prov.record_after('safety', torch.ones(2, 64) * 0.9)
 
-    assert len(prov._order) == 2, "Pre-condition: 2 modules recorded"
+    assert len(prov.compute_attribution()['contributions']) == 2, "Pre-condition: 2 modules recorded"
 
     # UCC.reset() should NOT touch provenance
     cycle.reset()
