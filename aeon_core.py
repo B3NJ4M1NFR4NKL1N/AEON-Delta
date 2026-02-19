@@ -13090,6 +13090,36 @@ class ModuleCoherenceVerifier(nn.Module):
                 self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
             )
 
+    @staticmethod
+    def get_weakest_pair(
+        pairwise: Dict[tuple, torch.Tensor],
+    ) -> Optional[Dict[str, Any]]:
+        """Identify the weakest subsystem pair from pairwise similarities.
+
+        Given the ``pairwise`` dict returned by :meth:`forward`, finds the
+        pair with the lowest mean similarity.  This enables targeted
+        corrective action: downstream logic can re-compute or re-blend
+        the identified module rather than re-running the entire pipeline.
+
+        Args:
+            pairwise: ``{(name_i, name_j): [B] similarity}`` dict from
+                :meth:`forward`.
+
+        Returns:
+            Dict with ``pair``, ``similarity``, and ``modules`` keys,
+            or None if pairwise is empty.
+        """
+        if not pairwise:
+            return None
+        weakest_key = min(
+            pairwise, key=lambda k: pairwise[k].mean().item(),
+        )
+        return {
+            "pair": weakest_key,
+            "similarity": float(pairwise[weakest_key].mean().item()),
+            "modules": list(weakest_key),
+        }
+
 
 class CausalDAGConsensus:
     """Cross-validates causal DAG structures from multiple causal models.
@@ -13926,6 +13956,7 @@ class AEONDeltaV3(nn.Module):
         ("metacognitive_trigger", "deeper_meta_loop"),
         ("deeper_meta_loop", "world_model"),
         ("safety", "auto_critic"),
+        ("causal_model", "auto_critic"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -16396,12 +16427,10 @@ class AEONDeltaV3(nn.Module):
             _pairwise = coherence_results.get("pairwise", {})
             _weakest_pair: Optional[str] = None
             _weakest_pair_sim: float = 1.0
-            if _pairwise:
-                for (name_i, name_j), sim in _pairwise.items():
-                    _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
-                    if _pair_sim < _weakest_pair_sim:
-                        _weakest_pair_sim = _pair_sim
-                        _weakest_pair = f"{name_i}_vs_{name_j}"
+            _weakest_info = self.module_coherence.get_weakest_pair(_pairwise)
+            if _weakest_info is not None:
+                _weakest_pair = f"{_weakest_info['modules'][0]}_vs_{_weakest_info['modules'][1]}"
+                _weakest_pair_sim = _weakest_info['similarity']
             if _coherence_deficit and _pairwise and self.error_evolution is not None:
                 for (name_i, name_j), sim in _pairwise.items():
                     _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
@@ -17698,6 +17727,43 @@ class AEONDeltaV3(nn.Module):
                             "num_models": _dag_consensus_results["num_models"],
                         },
                     )
+                # 5d1c-dag2. DAG consensus → auto-critic bridge — when causal
+                # models structurally disagree (needs_escalation), invoke the
+                # auto-critic for immediate state revision.  Uncertainty
+                # escalation alone defers correction to the metacognitive
+                # cycle; direct auto-critic invocation provides immediate
+                # corrective feedback, closing the gap between causal DAG
+                # disagreement and active self-correction.
+                if (_dag_consensus_results.get("needs_escalation", False)
+                        and self.auto_critic is not None
+                        and not fast):
+                    try:
+                        self.provenance_tracker.record_before(
+                            "auto_critic_dag", C_star,
+                        )
+                        _dag_critic = self.auto_critic(C_star)
+                        _dag_revised = _dag_critic.get("candidate", None)
+                        if (_dag_revised is not None
+                                and torch.isfinite(_dag_revised).all()
+                                and _dag_revised.shape == C_star.shape):
+                            C_star = _dag_revised
+                        self.provenance_tracker.record_after(
+                            "auto_critic_dag", C_star,
+                        )
+                        self.audit_log.record(
+                            "auto_critic", "dag_disagreement_revision", {
+                                "consensus_score": _consensus_score,
+                                "revised": _dag_revised is not None,
+                                "critic_score": _dag_critic.get(
+                                    "final_score", 0.0,
+                                ),
+                            },
+                        )
+                    except Exception as _dag_ac_err:
+                        logger.debug(
+                            "DAG-consensus auto-critic failed (non-fatal): %s",
+                            _dag_ac_err,
+                        )
         
         # 5d1d-0. Causal quality → CausalContextWindowManager — record the
         # current causal model quality in the causal context hierarchy so
