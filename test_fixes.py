@@ -7845,7 +7845,7 @@ def test_agi_coherence_config_defaults():
     assert config.enable_external_trust is False
     assert config.enable_ns_consistency_check is False
     assert config.enable_complexity_estimator is False
-    assert config.enable_causal_trace is False
+    assert config.enable_causal_trace is True
     assert config.enable_meta_recovery_integration is False
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
@@ -7882,7 +7882,13 @@ def test_aeon_v3_with_coherence_layer():
 
 
 def test_aeon_v3_coherence_layer_disabled_by_default():
-    """AEONDeltaV3 has coherence components as None when disabled."""
+    """AEONDeltaV3 has optional coherence components as None when disabled.
+
+    Note: module_coherence, metacognitive_trigger, error_evolution,
+    unified_cognitive_cycle, and causal_trace are now enabled by default
+    as core architectural necessities.  This test verifies the remaining
+    optional components.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -7898,7 +7904,8 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
     assert model.trust_scorer is None
     assert model.ns_consistency_checker is None
     assert model.complexity_estimator is None
-    assert model.causal_trace is None
+    # causal_trace is now enabled by default (core traceability)
+    assert model.causal_trace is not None
     assert model.meta_recovery is None
     print("✅ test_aeon_v3_coherence_layer_disabled_by_default PASSED")
 
@@ -9064,7 +9071,13 @@ def test_aeon_v3_with_error_evolution():
 
 
 def test_new_components_disabled_by_default_coherence():
-    """Verify new coherence/recursion/evolution components are disabled by default."""
+    """Verify coherence/recursion/evolution components are enabled by default.
+
+    These components are now core architectural necessities, enabled by
+    default to ensure each component verifies the others, uncertainty
+    triggers meta-cognitive cycles, and conclusions are causally traceable.
+    They can be explicitly disabled when needed.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -9075,9 +9088,25 @@ def test_new_components_disabled_by_default_coherence():
     )
     model = AEONDeltaV3(config)
 
-    assert model.module_coherence is None
-    assert model.metacognitive_trigger is None
-    assert model.error_evolution is None
+    # Core meta-cognitive components are now enabled by default
+    assert model.module_coherence is not None
+    assert model.metacognitive_trigger is not None
+    assert model.error_evolution is not None
+
+    # Verify they can be explicitly disabled
+    config_off = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
+    )
+    model_off = AEONDeltaV3(config_off)
+    assert model_off.module_coherence is None
+    assert model_off.metacognitive_trigger is None
+    assert model_off.error_evolution is None
 
     print("✅ test_new_components_disabled_by_default_coherence PASSED")
 
@@ -23637,13 +23666,16 @@ def test_unified_cognitive_cycle_in_model_init():
 
 
 def test_unified_cognitive_cycle_disabled_without_prereqs():
-    """UnifiedCognitiveCycle is None when prerequisites are not met."""
+    """UnifiedCognitiveCycle is None when prerequisites are explicitly disabled."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
         z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
         enable_unified_cognitive_cycle=True,
-        # Missing prerequisites: module_coherence, metacognitive_recursion, error_evolution
+        # Explicitly disable prerequisites
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
     )
     model = AEONDeltaV3(config)
     assert model.unified_cognitive_cycle is None, \

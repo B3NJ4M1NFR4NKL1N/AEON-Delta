@@ -2882,7 +2882,7 @@ class AEONConfig:
     enable_ns_consistency_check: bool = False
     ns_violation_threshold: float = 0.5
     enable_complexity_estimator: bool = False
-    enable_causal_trace: bool = False
+    enable_causal_trace: bool = True
     enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = False
     auto_critic_threshold: float = 0.85
@@ -2896,23 +2896,29 @@ class AEONConfig:
     meta_recovery_error_penalty: float = -1.0
 
     # ===== MODULE COHERENCE & META-COGNITIVE RECURSION =====
-    enable_module_coherence: bool = False
+    # These four features form the core meta-cognitive loop that ensures
+    # each component verifies and reinforces the others, uncertainty
+    # triggers deeper reasoning, and all conclusions are causally
+    # traceable.  They are enabled by default because they are
+    # architectural necessities for a unified, self-reflective system
+    # rather than optional add-ons.
+    enable_module_coherence: bool = True
     module_coherence_threshold: float = 0.5
     coherence_autocritic_threshold: float = 0.3
-    enable_metacognitive_recursion: bool = False
+    enable_metacognitive_recursion: bool = True
     metacognitive_trigger_threshold: float = 0.5
     metacognitive_max_recursions: int = 2
     metacognitive_tightening_factor: float = 0.5
     metacognitive_extra_iterations: int = 10
     metacognitive_blend_alpha: float = 0.2
-    enable_error_evolution: bool = False
+    enable_error_evolution: bool = True
     error_evolution_max_history: int = 100
     # Unified cognitive cycle — orchestrates ConvergenceMonitor,
     # ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
     # MetaCognitiveRecursionTrigger, and CausalProvenanceTracker into a
     # single coherent evaluation pass.  Requires enable_module_coherence,
     # enable_metacognitive_recursion, and enable_error_evolution.
-    enable_unified_cognitive_cycle: bool = False
+    enable_unified_cognitive_cycle: bool = True
 
     # ===== COGNITIVE EXECUTIVE FUNCTION =====
     enable_cognitive_executive: bool = False
@@ -18572,6 +18578,82 @@ class AEONDeltaV3(nn.Module):
                                 )
                             ),
                         }
+
+        # 8f-ucc. UCC-driven active correction — when the UnifiedCognitiveCycle
+        # recommended a rerun, invoke corrective actions (auto-critic and/or
+        # error-evolution root-cause analysis) immediately.  This closes the
+        # gap where UCC set metacognitive_info["should_trigger"] = True but
+        # the post-integration block (8g-0) skipped because that flag was
+        # already True, leaving the corrective path unreachable.
+        if (self.unified_cognitive_cycle is not None
+                and unified_cycle_results.get("should_rerun", False)
+                and not fast):
+            # Query error evolution for root causes of the trigger signals
+            # so corrective action can be targeted rather than generic.
+            _ucc_root_causes: Dict[str, Any] = {}
+            if self.error_evolution is not None:
+                _ucc_triggers = unified_cycle_results.get(
+                    "trigger_detail", {},
+                ).get("triggers_active", [])
+                for _ucc_trig in _ucc_triggers:
+                    _rc = self.error_evolution.get_root_causes(_ucc_trig)
+                    if _rc.get("root_causes"):
+                        _ucc_root_causes[_ucc_trig] = _rc
+            # Record root-cause analysis in causal trace for traceability
+            if self.causal_trace is not None and _ucc_root_causes:
+                self.causal_trace.record(
+                    "unified_cognitive_cycle", "root_cause_analysis",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "root_causes": {
+                            k: v.get("root_causes", {})
+                            for k, v in _ucc_root_causes.items()
+                        },
+                    },
+                )
+            # Invoke auto-critic if available for self-correction
+            if self.auto_critic is not None:
+                try:
+                    _ucc_critic = self.auto_critic(z_out)
+                    _ucc_revised = _ucc_critic.get("candidate", None)
+                    if (_ucc_revised is not None
+                            and torch.isfinite(_ucc_revised).all()
+                            and _ucc_revised.shape == z_out.shape):
+                        z_out = _ucc_revised
+                        _any_auto_critic_revised = True
+                    self.audit_log.record("auto_critic", "ucc_driven_revision", {
+                        "iterations": _ucc_critic.get("iterations", 0),
+                        "final_score": _ucc_critic.get("final_score", 0.0),
+                        "trigger": "unified_cognitive_cycle",
+                        "root_causes": list(_ucc_root_causes.keys()),
+                    })
+                except Exception as _ucc_ac_err:
+                    logger.warning(
+                        "UCC-driven auto-critic error (non-fatal): %s",
+                        _ucc_ac_err,
+                    )
+                    self.error_recovery.record_event(
+                        error_class="subsystem",
+                        context="ucc_driven_auto_critic",
+                        success=False,
+                    )
+            # Record the corrective action in error evolution so the
+            # system learns whether UCC-triggered corrections succeed.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="unified_cycle_rerun",
+                    strategy_used="auto_critic",
+                    success=_any_auto_critic_revised if self.auto_critic is not None else False,
+                    metadata=self._provenance_enriched_metadata({
+                        "triggers": unified_cycle_results.get(
+                            "trigger_detail", {},
+                        ).get("triggers_active", []),
+                        "root_causes": {
+                            k: v.get("root_causes", {})
+                            for k, v in _ucc_root_causes.items()
+                        },
+                    }),
+                )
 
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
