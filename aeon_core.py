@@ -2897,6 +2897,7 @@ class AEONConfig:
     # ===== MODULE COHERENCE & META-COGNITIVE RECURSION =====
     enable_module_coherence: bool = False
     module_coherence_threshold: float = 0.5
+    coherence_autocritic_threshold: float = 0.3
     enable_metacognitive_recursion: bool = False
     metacognitive_trigger_threshold: float = 0.5
     metacognitive_max_recursions: int = 2
@@ -13422,7 +13423,13 @@ class CausalErrorEvolutionTracker:
         return best_strategy
 
     def get_error_summary(self) -> Dict[str, Any]:
-        """Return aggregate statistics across all error classes."""
+        """Return aggregate statistics across all error classes.
+
+        Includes loss magnitude aggregates (max and mean) extracted from
+        episode metadata when available.  This allows
+        :func:`bridge_training_errors_to_inference` and the metacognitive
+        trigger to distinguish mild divergence from catastrophic failure.
+        """
         with self._lock:
             summary: Dict[str, Any] = {
                 "total_recorded": self._total_recorded,
@@ -13430,11 +13437,23 @@ class CausalErrorEvolutionTracker:
             }
             for cls, episodes in self._episodes.items():
                 successes = sum(1 for ep in episodes if ep["success"])
-                summary["error_classes"][cls] = {
+                cls_stats: Dict[str, Any] = {
                     "count": len(episodes),
                     "success_rate": successes / max(len(episodes), 1),
                     "strategies_used": list({ep["strategy"] for ep in episodes}),
                 }
+                loss_values = [
+                    ep["metadata"].get("loss_value")
+                    for ep in episodes
+                    if isinstance(ep.get("metadata"), dict)
+                    and ep["metadata"].get("loss_value") is not None
+                ]
+                if loss_values:
+                    cls_stats["max_loss_magnitude"] = max(loss_values)
+                    cls_stats["mean_loss_magnitude"] = (
+                        sum(loss_values) / len(loss_values)
+                    )
+                summary["error_classes"][cls] = cls_stats
             return summary
 
     def get_root_causes(self, error_class: str) -> Dict[str, Any]:
@@ -13696,6 +13715,20 @@ class AEONDeltaV3(nn.Module):
     - Full device management
     - Production-ready error handling
     """
+    
+    # Standard data-flow dependency chain for the reasoning core.
+    # Used by _reasoning_core_impl to auto-populate the provenance
+    # tracker's dependency DAG so that trace_root_cause() can walk
+    # backward through the pipeline.  Each tuple is (upstream, downstream).
+    _PIPELINE_DEPENDENCIES: List[Tuple[str, str]] = [
+        ("input", "meta_loop"),
+        ("meta_loop", "slot_binding"),
+        ("slot_binding", "factor_extraction"),
+        ("factor_extraction", "consistency_gate"),
+        ("consistency_gate", "safety"),
+        ("safety", "world_model"),
+        ("world_model", "memory"),
+    ]
     
     def __init__(self, config: AEONConfig):
         super().__init__()
@@ -15165,6 +15198,15 @@ class AEONDeltaV3(nn.Module):
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
         
+        # 0. Auto-populate provenance dependency DAG so that
+        # trace_root_cause() can walk backward through the pipeline
+        # without requiring manual record_dependency() instrumentation
+        # at each call site.  The DAG mirrors the data-flow order of
+        # the reasoning core: each downstream module declares its
+        # upstream dependencies once per forward pass.
+        for _up, _down in self._PIPELINE_DEPENDENCIES:
+            self.provenance_tracker.record_dependency(_up, _down)
+        
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
             self.metacognitive_trigger.reset()
@@ -16061,6 +16103,44 @@ class AEONDeltaV3(nn.Module):
                         coherence_results["coherence_score"].mean().item()
                     ),
                 })
+                # 5a-iii-d1. Coherence-driven auto-critic — when the
+                # consistency gate rerun alone is insufficient, invoke the
+                # auto-critic for deeper self-correction.  This couples the
+                # ModuleCoherenceVerifier directly to the AutoCriticLoop so
+                # that coherence deficits trigger immediate revision rather
+                # than only escalating uncertainty for deferred handling.
+                # The auto-critic is only invoked when the coherence score
+                # is below the configurable threshold to avoid unnecessary
+                # compute on marginal deficits.
+                _coh_score_val = float(
+                    coherence_results["coherence_score"].mean().item()
+                )
+                if (self.auto_critic is not None
+                        and _coh_score_val < self.config.coherence_autocritic_threshold):
+                    try:
+                        _coh_critic = self.auto_critic(C_star)
+                        _coh_revised = _coh_critic.get("candidate", None)
+                        if (_coh_revised is not None
+                                and torch.isfinite(_coh_revised).all()
+                                and _coh_revised.shape == C_star.shape):
+                            C_star = _coh_revised
+                        self.audit_log.record(
+                            "auto_critic", "coherence_deficit_revision", {
+                                "coherence_score": _coh_score_val,
+                                "revised": _coh_revised is not None,
+                            },
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="coherence_deficit",
+                                strategy_used="auto_critic_revision",
+                                success=_coh_revised is not None,
+                            )
+                    except Exception as _coh_ac_err:
+                        logger.debug(
+                            "Coherence-driven auto-critic failed: %s",
+                            _coh_ac_err,
+                        )
             # 5a-iii-d2. Coherence → CausalContextWindowManager — record
             # the coherence verification result in the causal context
             # hierarchy so that cross-temporal reasoning benefits from
@@ -17155,6 +17235,18 @@ class AEONDeltaV3(nn.Module):
                                 "num_models": _dag_consensus_results["num_models"],
                             },
                         )
+                # 5d1c-dag. DAG consensus → _cached_causal_quality feedback —
+                # when multiple causal models disagree, the overall causal
+                # quality should degrade proportionally.  Without this, the
+                # metacognitive trigger's low_causal_quality signal and the
+                # feedback bus's causal_quality channel only reflect
+                # individual model DAG loss, not inter-model consistency.
+                # Taking the minimum of the per-model quality and the
+                # consensus score ensures that high individual quality
+                # cannot mask structural disagreement between models.
+                self._cached_causal_quality = min(
+                    self._cached_causal_quality, _consensus_score,
+                )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "causal_dag_consensus", "evaluated",

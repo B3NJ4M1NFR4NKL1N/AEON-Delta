@@ -134,12 +134,25 @@ except ImportError:
             for cls, eps in self._episodes.items():
                 successes = sum(1 for e in eps if e["success"])
                 strategies = list({e["strategy"] for e in eps})
-                summary["error_classes"][cls] = {
+                # Aggregate loss magnitudes from episode metadata so that
+                # bridge_training_errors_to_inference can convey severity
+                # (mild vs catastrophic divergence) to the inference side.
+                loss_values = [
+                    e["metadata"].get("loss_value")
+                    for e in eps
+                    if isinstance(e.get("metadata"), dict)
+                    and e["metadata"].get("loss_value") is not None
+                ]
+                cls_stats: Dict[str, Any] = {
                     "count": len(eps),
                     "success_rate": successes / max(len(eps), 1),
                     "strategies_used": strategies,
                     "best_strategy": strategies[0] if strategies else "unknown",
                 }
+                if loss_values:
+                    cls_stats["max_loss_magnitude"] = max(loss_values)
+                    cls_stats["mean_loss_magnitude"] = sum(loss_values) / len(loss_values)
+                summary["error_classes"][cls] = cls_stats
             return summary
 
     class ConvergenceMonitor:
@@ -2349,6 +2362,8 @@ def bridge_training_errors_to_inference(
                     'source': 'training_bridge',
                     'training_count': count,
                     'training_success_rate': success_rate,
+                    'max_loss_magnitude': cls_stats.get('max_loss_magnitude'),
+                    'mean_loss_magnitude': cls_stats.get('mean_loss_magnitude'),
                 },
             )
             # Record bridge event in causal trace so inference-time
