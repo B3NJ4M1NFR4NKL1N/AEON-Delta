@@ -17907,6 +17907,9 @@ class AEONDeltaV3(nn.Module):
             if len(self.temporal_knowledge_graph) > 0:
                 try:
                     _tkg_retrieved = self.temporal_knowledge_graph.retrieve_relevant(
+                        # Batch-mean query: TKG stores 1D fact vectors, so
+                        # we collapse the batch to a single representative
+                        # query and broadcast the result back to all samples.
                         C_star.mean(dim=0) if C_star.dim() > 1 else C_star,
                         top_k=self.config.tkg_retrieval_top_k,
                     )
@@ -17930,6 +17933,11 @@ class AEONDeltaV3(nn.Module):
                                         "tkg_size": len(self.temporal_knowledge_graph),
                                     },
                                 )
+                        else:
+                            logger.debug(
+                                "TKG retrieval shape mismatch: retrieved %s vs C_star %s",
+                                _tkg_retrieved.shape, C_star.shape,
+                            )
                 except Exception as tkg_err:
                     logger.debug(f"TKG retrieval skipped (non-fatal): {tkg_err}")
 
