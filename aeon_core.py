@@ -18309,15 +18309,57 @@ class AEONDeltaV3(nn.Module):
             )
             _uncertainty_loss_scale = min(_uncertainty_loss_scale, 1.0 + _UNCERTAINTY_LOSS_MAX_BOOST)
         
+        # ===== 16. PER-SOURCE UNCERTAINTY LOSS TARGETING =====
+        # When specific uncertainty sources are present, apply targeted
+        # boosts to the corresponding loss components.  This closes the
+        # loop between fine-grained uncertainty signals and training:
+        # a coherence deficit specifically boosts coherence loss, causal
+        # model errors boost causal DAG loss, etc.  The targeted boost
+        # is additive on top of the global uncertainty scaling above.
+        _uncertainty_sources = outputs.get('uncertainty_sources', {})
+        _causal_source_boost = 1.0
+        _coherence_source_boost = 1.0
+        _safety_source_boost = 1.0
+        _PER_SOURCE_BOOST_MULTIPLIER = 2.0
+        # Explicit key sets for per-source uncertainty matching to avoid
+        # fragile substring matching.
+        _CAUSAL_UNCERTAINTY_KEYS = {
+            'causal_model_error', 'causal_programmatic_error',
+            'causal_root_cause_count',
+        }
+        _SAFETY_UNCERTAINTY_KEYS = {
+            'world_model_error', 'world_model_surprise',
+            'value_net_low_quality', 'hierarchical_wm_error',
+        }
+        if _uncertainty_sources:
+            # Causal uncertainty → boost causal DAG loss
+            _causal_unc = sum(
+                v for k, v in _uncertainty_sources.items()
+                if k in _CAUSAL_UNCERTAINTY_KEYS
+            )
+            if _causal_unc > 0:
+                _causal_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_causal_unc, 0.5)
+            # Coherence deficit → boost coherence loss
+            _coherence_unc = _uncertainty_sources.get('coherence_deficit', 0.0)
+            if _coherence_unc > 0:
+                _coherence_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_coherence_unc, 0.5)
+            # Safety-related uncertainty → boost safety loss
+            _safety_unc = sum(
+                v for k, v in _uncertainty_sources.items()
+                if k in _SAFETY_UNCERTAINTY_KEYS
+            )
+            if _safety_unc > 0:
+                _safety_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_safety_unc, 0.5)
+        
         total_loss = (
             lm_loss +
             vq_loss +
             _uncertainty_loss_scale * consistency_loss +
             _convergence_loss_scale * self.config.lambda_lipschitz * lipschitz_loss +
-            _convergence_loss_scale * _uncertainty_loss_scale * self.config.lambda_safety * safety_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * _safety_source_boost * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
-            _convergence_loss_scale * _uncertainty_loss_scale * _coherence_weight * coherence_loss +
-            _causal_weight * causal_dag_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * _coherence_source_boost * _coherence_weight * coherence_loss +
+            _causal_source_boost * _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             ewc_loss +
             _provenance_weight * provenance_loss +
@@ -18871,6 +18913,18 @@ class AEONTrainer:
             )
             logger.info("WandB initialized")
         
+        # ===== TRAINING → INFERENCE ERROR BRIDGE =====
+        # Create a ConvergenceMonitor that bridges training convergence
+        # events to the model's CausalErrorEvolutionTracker.  This closes
+        # the training→inference feedback loop: training-time divergence
+        # and stagnation patterns inform inference-time metacognitive
+        # triggers and recovery strategies.
+        _model_error_evolution = getattr(model, 'error_evolution', None)
+        self.convergence_monitor = ConvergenceMonitor(
+            threshold=config.convergence_threshold,
+        )
+        self._error_evolution = _model_error_evolution
+        
         logger.info("✅ AEONTrainer initialized")
     
     def _create_optimizer(self) -> optim.Optimizer:
@@ -18957,6 +19011,13 @@ class AEONTrainer:
         # Skip backward pass on NaN/Inf to prevent gradient corruption
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             logger.warning(f"⚠️ NaN/Inf loss at step {self.global_step}, skipping update")
+            if self._error_evolution is not None:
+                self._error_evolution.record_episode(
+                    error_class="training_nan_loss",
+                    strategy_used="skip_update",
+                    success=False,
+                    metadata={"step": self.global_step},
+                )
             metrics = {k: float('nan') for k in loss_dict}
             metrics['lr'] = float(self.scheduler.get_last_lr()[0])
             metrics['grad_norm'] = 0.0
@@ -18990,6 +19051,16 @@ class AEONTrainer:
                 f"⚠️  Exploding gradients at step {self.global_step}: "
                 f"grad_norm={grad_norm_val:.2e}"
             )
+            if self._error_evolution is not None:
+                self._error_evolution.record_episode(
+                    error_class="training_gradient_explosion",
+                    strategy_used="gradient_clip",
+                    success=True,
+                    metadata={
+                        "step": self.global_step,
+                        "grad_norm": grad_norm_val,
+                    },
+                )
 
         # Loss divergence tracking (EMA)
         loss_val = float(total_loss.item())
@@ -19008,9 +19079,36 @@ class AEONTrainer:
                         f"{divergence_ratio:.2f}x EMA "
                         f"(loss={loss_val:.4f}, ema={self._loss_ema:.4f})"
                     )
+                    if self._error_evolution is not None:
+                        self._error_evolution.record_episode(
+                            error_class="training_loss_divergence",
+                            strategy_used="ema_detection",
+                            success=False,
+                            metadata={
+                                "step": self.global_step,
+                                "divergence_ratio": divergence_ratio,
+                                "loss": loss_val,
+                                "ema": self._loss_ema,
+                            },
+                        )
         
         self.scheduler.step()
         self.global_step += 1
+        
+        # ===== CONVERGENCE MONITORING → ERROR EVOLUTION =====
+        # Feed the current loss into the convergence monitor to detect
+        # sustained divergence or stagnation.  Verdicts are propagated
+        # to the model's CausalErrorEvolutionTracker so that inference-
+        # time metacognitive triggers benefit from training dynamics.
+        _convergence_verdict = self.convergence_monitor.check(loss_val)
+        _conv_status = _convergence_verdict.get('status', 'warmup')
+        if _conv_status == 'diverging' and self._error_evolution is not None:
+            self._error_evolution.record_episode(
+                error_class="training_convergence_diverging",
+                strategy_used="deeper_meta_loop",
+                success=False,
+                metadata={"step": self.global_step, "loss": loss_val},
+            )
         
         # Convert to float
         metrics = {
@@ -19021,6 +19119,7 @@ class AEONTrainer:
         metrics['grad_norm'] = grad_norm_val
         if self._loss_ema is not None:
             metrics['loss_ema'] = self._loss_ema
+        metrics['convergence_status'] = _conv_status
         
         return metrics
     
