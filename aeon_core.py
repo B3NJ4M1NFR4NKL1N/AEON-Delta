@@ -2886,7 +2886,7 @@ class AEONConfig:
     enable_complexity_estimator: bool = False
     enable_causal_trace: bool = True
     enable_meta_recovery_integration: bool = False
-    enable_auto_critic: bool = False
+    enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
     auto_critic_max_iterations: int = 3
     enable_hybrid_reasoning: bool = False
@@ -6796,6 +6796,16 @@ class ConvergenceMonitor:
                 'contraction_rate': avg_contraction,
                 'confidence': 1.0 - avg_contraction,
             }
+            # Record successful convergence so error-evolution can
+            # reinforce parameter states that led to good outcomes,
+            # not only learn from failures.
+            self._bridge_convergence_event(
+                'convergence_success',
+                'nominal',
+                success=True,
+                metadata={'avg_contraction': avg_contraction,
+                          'delta_norm': delta_norm},
+            )
         elif avg_contraction >= 1.0:
             verdict = {
                 'status': 'diverging',
@@ -13303,6 +13313,9 @@ class MetaCognitiveRecursionTrigger:
             "low_causal_quality": "low_causal_quality",
             "mcts_low_confidence": "uncertainty",
             "causal_programmatic_forward": "low_causal_quality",
+            "causal_dag_disagreement": "low_causal_quality",
+            "convergence_success": "uncertainty",
+            "certified_convergence_failure": "uncertainty",
         }
 
         # Accumulate boost factors for each signal
@@ -20536,6 +20549,7 @@ class AEONDeltaV3(nn.Module):
             'mcts_planner': getattr(self, 'mcts_planner', None),
             'active_learning_planner': getattr(self, 'active_learning_planner', None),
             'temporal_knowledge_graph': getattr(self, 'temporal_knowledge_graph', None),
+            'causal_dag_consensus': getattr(self, 'causal_dag_consensus', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -20654,6 +20668,12 @@ class AEONDeltaV3(nn.Module):
         # 11. Multimodal → uncertainty (non-finite + error paths)
         if self.multimodal is not None:
             verified.append('multimodal → uncertainty (non-finite + error) → metacognitive')
+
+        # 11a. CausalDAGConsensus → metacognitive trigger
+        if self.causal_dag_consensus is not None:
+            verified.append('causal_dag_consensus → uncertainty → metacognitive_trigger')
+            if self.error_evolution is not None:
+                verified.append('causal_dag_consensus → error_evolution (disagreement tracking)')
 
         # 11b. UnifiedCognitiveCycle internal wiring verification
         if self.unified_cognitive_cycle is not None:
@@ -20849,6 +20869,15 @@ class AEONDeltaV3(nn.Module):
                 "memory_stale": self._memory_stale,
             }
 
+        # --- Causal DAG consensus state ---
+        dag_consensus_state: Dict[str, Any] = {"available": False}
+        if self.causal_dag_consensus is not None:
+            dag_consensus_state = {
+                "available": True,
+                "agreement_threshold": self.causal_dag_consensus.agreement_threshold,
+                "cached_causal_quality": self._cached_causal_quality,
+            }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
@@ -20856,6 +20885,7 @@ class AEONDeltaV3(nn.Module):
             "causal_trace": causal_trace_state,
             "provenance": provenance_state,
             "unified_cognitive_cycle": ucc_state,
+            "dag_consensus": dag_consensus_state,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
@@ -20945,6 +20975,8 @@ class AEONDeltaV3(nn.Module):
         lines.append(f"{'UnifiedCogCycle':20s}: {_ucc_status:>12}")
         _tkg_status = "Enabled" if self.temporal_knowledge_graph is not None else "Disabled"
         lines.append(f"{'TemporalKG':20s}: {_tkg_status:>12}")
+        _dag_status = "Enabled" if self.causal_dag_consensus is not None else "Disabled"
+        lines.append(f"{'DAGConsensus':20s}: {_dag_status:>12}")
         
         lines.append("-"*70)
         lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")

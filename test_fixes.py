@@ -13518,6 +13518,7 @@ def test_coherence_check_includes_input_baseline():
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
         enable_module_coherence=True,
+        enable_auto_critic=False,
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -20389,6 +20390,7 @@ def test_multimodal_in_post_integration_coherence():
         enable_quantum_sim=False,
         enable_multimodal=True,
         enable_module_coherence=True,
+        enable_auto_critic=False,
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -26170,6 +26172,200 @@ def test_planning_docstring_not_placeholder():
     print("✅ test_planning_docstring_not_placeholder PASSED")
 
 
+def test_convergence_monitor_records_success():
+    """Gap 1: ConvergenceMonitor should record successful convergence in
+    error evolution, not only failures (divergence/stagnation)."""
+    from aeon_core import ConvergenceMonitor, CausalErrorEvolutionTracker
+
+    monitor = ConvergenceMonitor(threshold=1e-3)
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    monitor.set_error_evolution(tracker)
+
+    # Simulate convergent trajectory: decreasing residuals
+    for delta in [1.0, 0.5, 0.1, 0.01, 0.001, 0.0005]:
+        verdict = monitor.check(delta)
+
+    # Should reach 'converged' status
+    assert verdict['status'] == 'converged', f"Expected converged, got {verdict['status']}"
+    assert verdict['certified'] is True
+
+    # Error evolution should have a convergence_success entry
+    summary = tracker.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+    assert 'convergence_success' in error_classes, (
+        f"Expected convergence_success in error classes, got: {list(error_classes.keys())}"
+    )
+    assert error_classes['convergence_success']['count'] >= 1
+    # Success entry should be marked as success
+    assert error_classes['convergence_success']['success_rate'] == 1.0
+
+    print("✅ test_convergence_monitor_records_success PASSED")
+
+
+def test_metacognitive_trigger_maps_dag_disagreement():
+    """Gap 2 & 4: MetaCognitiveRecursionTrigger should map
+    causal_dag_disagreement error class to low_causal_quality signal
+    in adapt_weights_from_evolution()."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Simulate error summary with causal_dag_disagreement having low success
+    error_summary = {
+        'error_classes': {
+            'causal_dag_disagreement': {
+                'count': 5,
+                'success_rate': 0.2,
+            },
+        },
+    }
+    # Before adaptation, weights are uniform
+    original_weight = trigger._signal_weights['low_causal_quality']
+    trigger.adapt_weights_from_evolution(error_summary)
+    adapted_weight = trigger._signal_weights['low_causal_quality']
+
+    # low_causal_quality weight should increase because dag disagreement
+    # had low success rate
+    assert adapted_weight > original_weight, (
+        f"Expected low_causal_quality weight to increase from {original_weight} "
+        f"after dag_disagreement adaptation, got {adapted_weight}"
+    )
+
+    print("✅ test_metacognitive_trigger_maps_dag_disagreement PASSED")
+
+
+def test_auto_critic_enabled_by_default():
+    """Gap 3: enable_auto_critic should default to True so the
+    coherence→correction loop is active in the default configuration."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    assert config.enable_auto_critic is True, (
+        "enable_auto_critic should default to True for unified self-correction"
+    )
+
+    print("✅ test_auto_critic_enabled_by_default PASSED")
+
+
+def test_auto_critic_initialized_by_default():
+    """Gap 3: When auto_critic is enabled by default, AEONDeltaV3 should
+    initialize the AutoCriticLoop module."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert model.auto_critic is not None, (
+        "auto_critic should be initialized by default"
+    )
+
+    print("✅ test_auto_critic_initialized_by_default PASSED")
+
+
+def test_get_metacognitive_state_includes_dag_consensus():
+    """Gap 5: get_metacognitive_state should include dag_consensus results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    state = model.get_metacognitive_state()
+    assert 'dag_consensus' in state, (
+        "get_metacognitive_state should include 'dag_consensus' key"
+    )
+    # Without multiple causal models, it should show as unavailable
+    assert state['dag_consensus']['available'] is False
+
+    print("✅ test_get_metacognitive_state_includes_dag_consensus PASSED")
+
+
+def test_architecture_summary_includes_dag_consensus():
+    """Gap 6: Architecture summary should report DAG consensus status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+    assert 'DAGConsensus' in summary, (
+        "Architecture summary should include DAGConsensus status"
+    )
+
+    print("✅ test_architecture_summary_includes_dag_consensus PASSED")
+
+
+def test_self_diagnostic_includes_dag_consensus():
+    """Gap 6: self_diagnostic should include causal_dag_consensus in module checks."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Enable multiple causal models to activate DAG consensus
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_causal_model=True,
+        enable_notears_causal=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    assert 'causal_dag_consensus' in diag.get('active_modules', []), (
+        "self_diagnostic should list causal_dag_consensus as active when ≥2 causal models enabled"
+    )
+
+    print("✅ test_self_diagnostic_includes_dag_consensus PASSED")
+
+
+def test_metacognitive_trigger_maps_convergence_success():
+    """Verify MetaCognitiveRecursionTrigger maps convergence_success and
+    certified_convergence_failure error classes to appropriate signals."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Simulate error summary with certified convergence failures
+    error_summary = {
+        'error_classes': {
+            'certified_convergence_failure': {
+                'count': 3,
+                'success_rate': 0.3,
+            },
+        },
+    }
+    original_weight = trigger._signal_weights['uncertainty']
+    trigger.adapt_weights_from_evolution(error_summary)
+    adapted_weight = trigger._signal_weights['uncertainty']
+
+    # uncertainty weight should increase because certified convergence
+    # failures had low success rate
+    assert adapted_weight > original_weight, (
+        f"Expected uncertainty weight to increase from {original_weight} "
+        f"after certified_convergence_failure adaptation, got {adapted_weight}"
+    )
+
+    print("✅ test_metacognitive_trigger_maps_convergence_success PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -27332,6 +27528,16 @@ if __name__ == '__main__':
     test_architecture_summary_includes_tkg()
     test_self_diagnostic_includes_tkg()
     test_planning_docstring_not_placeholder()
+    
+    # Architectural Unification — Gaps 1-6 fix validation tests
+    test_convergence_monitor_records_success()
+    test_metacognitive_trigger_maps_dag_disagreement()
+    test_auto_critic_enabled_by_default()
+    test_auto_critic_initialized_by_default()
+    test_get_metacognitive_state_includes_dag_consensus()
+    test_architecture_summary_includes_dag_consensus()
+    test_self_diagnostic_includes_dag_consensus()
+    test_metacognitive_trigger_maps_convergence_success()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
