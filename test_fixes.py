@@ -23599,6 +23599,104 @@ def test_unified_cognitive_cycle_records_causal_trace():
     print("✅ test_unified_cognitive_cycle_records_causal_trace PASSED")
 
 
+def test_unified_cognitive_cycle_in_model_init():
+    """UnifiedCognitiveCycle is instantiated in AEONDeltaV3 when config enables it."""
+    from aeon_core import AEONConfig, AEONDeltaV3, UnifiedCognitiveCycle
+    import torch
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+    # Verify instantiation
+    assert model.unified_cognitive_cycle is not None, \
+        "UnifiedCognitiveCycle should be instantiated when enabled"
+    assert isinstance(model.unified_cognitive_cycle, UnifiedCognitiveCycle), \
+        "unified_cognitive_cycle should be a UnifiedCognitiveCycle instance"
+    # Verify auto-wiring to existing components
+    assert model.unified_cognitive_cycle.convergence_monitor is model.convergence_monitor
+    assert model.unified_cognitive_cycle.coherence_verifier is model.module_coherence
+    assert model.unified_cognitive_cycle.error_evolution is model.error_evolution
+    assert model.unified_cognitive_cycle.metacognitive_trigger is model.metacognitive_trigger
+    assert model.unified_cognitive_cycle.provenance_tracker is model.provenance_tracker
+
+    print("✅ test_unified_cognitive_cycle_in_model_init PASSED")
+
+
+def test_unified_cognitive_cycle_disabled_without_prereqs():
+    """UnifiedCognitiveCycle is None when prerequisites are not met."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+        enable_unified_cognitive_cycle=True,
+        # Missing prerequisites: module_coherence, metacognitive_recursion, error_evolution
+    )
+    model = AEONDeltaV3(config)
+    assert model.unified_cognitive_cycle is None, \
+        "UnifiedCognitiveCycle should be None when prerequisites are missing"
+
+    print("✅ test_unified_cognitive_cycle_disabled_without_prereqs PASSED")
+
+
+def test_unified_cognitive_cycle_in_full_coherence():
+    """enable_full_coherence includes enable_unified_cognitive_cycle."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+        enable_full_coherence=True,
+    )
+    assert config.enable_unified_cognitive_cycle is True, \
+        "enable_full_coherence should activate enable_unified_cognitive_cycle"
+
+    print("✅ test_unified_cognitive_cycle_in_full_coherence PASSED")
+
+
+def test_unified_cognitive_cycle_output_in_reasoning_core():
+    """UnifiedCognitiveCycle results appear in reasoning_core outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 64)
+    with torch.no_grad():
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'unified_cognitive_cycle_results' in outputs, \
+        "outputs should contain unified_cognitive_cycle_results"
+    ucc = outputs['unified_cognitive_cycle_results']
+    assert isinstance(ucc, dict), "unified_cognitive_cycle_results should be a dict"
+    # The cycle should have run since all prerequisites are enabled
+    assert len(ucc) > 0, "unified_cognitive_cycle_results should be non-empty"
+    assert 'should_rerun' in ucc, "should contain should_rerun"
+    assert 'coherence_result' in ucc, "should contain coherence_result"
+    assert 'convergence_verdict' in ucc, "should contain convergence_verdict"
+    assert 'provenance' in ucc, "should contain provenance"
+
+    # Also verify the causal_decision_chain includes the cycle info
+    chain = outputs.get('causal_decision_chain', {})
+    assert 'unified_cognitive_cycle' in chain, \
+        "causal_decision_chain should include unified_cognitive_cycle"
+
+    print("✅ test_unified_cognitive_cycle_output_in_reasoning_core PASSED")
+
+
 def test_bridge_training_errors_wires_convergence_monitor():
     """bridge_training_errors_to_inference wires inference convergence monitor."""
     from ae_train import bridge_training_errors_to_inference, TrainingConvergenceMonitor
@@ -24879,6 +24977,10 @@ if __name__ == '__main__':
     test_unified_cognitive_cycle_auto_wires_components()
     test_unified_cognitive_cycle_reset()
     test_unified_cognitive_cycle_records_causal_trace()
+    test_unified_cognitive_cycle_in_model_init()
+    test_unified_cognitive_cycle_disabled_without_prereqs()
+    test_unified_cognitive_cycle_in_full_coherence()
+    test_unified_cognitive_cycle_output_in_reasoning_core()
     test_bridge_training_errors_wires_convergence_monitor()
     
     # Architectural Unification — CausalDAGConsensus, Gated Fallback, Memory Quality
