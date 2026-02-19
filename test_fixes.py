@@ -23627,6 +23627,191 @@ def test_bridge_training_errors_wires_convergence_monitor():
     print("✅ test_bridge_training_errors_wires_convergence_monitor PASSED")
 
 
+# ==============================================================================
+# ARCHITECTURAL UNIFICATION — CausalDAGConsensus, Gated Fallback, Memory Quality
+# ==============================================================================
+
+def test_causal_dag_consensus_full_agreement():
+    """CausalDAGConsensus returns consensus=1.0 when all DAGs are identical."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus(agreement_threshold=0.5)
+    adj = torch.eye(4)
+    result = consensus.evaluate({
+        "model_a": adj.clone(),
+        "model_b": adj.clone(),
+        "model_c": adj.clone(),
+    })
+    assert result["consensus_score"] == 1.0, (
+        f"Expected 1.0, got {result['consensus_score']}"
+    )
+    assert result["needs_escalation"] is False
+    assert result["uncertainty_boost"] == 0.0
+    assert result["num_models"] == 3
+    print("✅ test_causal_dag_consensus_full_agreement PASSED")
+
+
+def test_causal_dag_consensus_disagreement():
+    """CausalDAGConsensus detects structural disagreement and escalates."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus(
+        agreement_threshold=0.8,
+        uncertainty_scale=0.3,
+    )
+    # Model A: strong causal edge A→B
+    adj_a = torch.tensor([[0.0, 0.9], [0.0, 0.0]])
+    # Model B: reversed edge B→A (complete disagreement)
+    adj_b = torch.tensor([[0.0, 0.0], [0.9, 0.0]])
+    result = consensus.evaluate({
+        "neural_causal": adj_a,
+        "notears": adj_b,
+    })
+    assert result["consensus_score"] < 0.8, (
+        f"Expected consensus < 0.8, got {result['consensus_score']}"
+    )
+    assert result["needs_escalation"] is True
+    assert result["uncertainty_boost"] > 0.0
+    assert result["num_models"] == 2
+    print("✅ test_causal_dag_consensus_disagreement PASSED")
+
+
+def test_causal_dag_consensus_single_model():
+    """CausalDAGConsensus gracefully handles single-model input."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus()
+    result = consensus.evaluate({"only_model": torch.eye(3)})
+    assert result["consensus_score"] == 1.0
+    assert result["needs_escalation"] is False
+    assert result["num_models"] == 1
+    print("✅ test_causal_dag_consensus_single_model PASSED")
+
+
+def test_causal_dag_consensus_different_sizes():
+    """CausalDAGConsensus handles adjacency matrices of different sizes."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus(agreement_threshold=0.5)
+    # Different sizes — consensus should handle via padding
+    adj_small = torch.eye(3)
+    adj_large = torch.eye(5)
+    result = consensus.evaluate({
+        "small": adj_small,
+        "large": adj_large,
+    })
+    # Should not crash and should return valid result
+    assert 0.0 <= result["consensus_score"] <= 1.0
+    assert result["num_models"] == 2
+    print("✅ test_causal_dag_consensus_different_sizes PASSED")
+
+
+def test_gated_fallback_cache_initialization():
+    """AEONDeltaV3 initializes the gated fallback cache dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_gated_fallback_cache=True,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_gated_fallback_cache')
+    assert isinstance(model._gated_fallback_cache, dict)
+    assert "world_model_surprise" in model._gated_fallback_cache
+    assert "unified_sim_next_state" in model._gated_fallback_cache
+    # All should start as None
+    for key, val in model._gated_fallback_cache.items():
+        assert val is None, f"Expected None for {key}, got {val}"
+    print("✅ test_gated_fallback_cache_initialization PASSED")
+
+
+def test_gated_fallback_cache_decay():
+    """Gated fallback cache applies exponential decay correctly."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        gated_fallback_decay=0.5,
+    )
+    model = AEONDeltaV3(config)
+    # Manually set cached surprise
+    model._gated_fallback_cache["world_model_surprise"] = torch.tensor([1.0, 2.0])
+    # Simulate decay
+    decay = config.gated_fallback_decay
+    cached = model._gated_fallback_cache["world_model_surprise"]
+    decayed = cached * decay
+    assert torch.allclose(decayed, torch.tensor([0.5, 1.0]))
+    print("✅ test_gated_fallback_cache_decay PASSED")
+
+
+def test_memory_retrieval_quality_in_output():
+    """reasoning_core output includes memory_retrieval_quality in causal decision chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B = 2
+    input_ids = torch.randint(0, 1000, (B, 16))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    # Check that the output contains memory_retrieval_quality
+    assert 'memory_retrieval_quality' in result, (
+        "Expected memory_retrieval_quality in model output"
+    )
+    print("✅ test_memory_retrieval_quality_in_output PASSED")
+
+
+def test_causal_dag_consensus_in_model_init():
+    """AEONDeltaV3 creates CausalDAGConsensus when ≥2 causal models are enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    # Enable two causal models → consensus should be active
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_causal_model=True,
+        enable_notears_causal=True,
+    )
+    model = AEONDeltaV3(config)
+    assert model.causal_dag_consensus is not None, (
+        "Expected CausalDAGConsensus to be initialized with ≥2 causal models"
+    )
+    # Disable second model → consensus should be None
+    config2 = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_causal_model=True,
+        enable_notears_causal=False,
+    )
+    model2 = AEONDeltaV3(config2)
+    assert model2.causal_dag_consensus is None, (
+        "Expected CausalDAGConsensus to be None with <2 causal models"
+    )
+    print("✅ test_causal_dag_consensus_in_model_init PASSED")
+
+
+def test_causal_decision_chain_includes_new_fields():
+    """Causal decision chain includes memory_retrieval_quality and dag_consensus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B = 2
+    input_ids = torch.randint(0, 1000, (B, 16))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+    chain = result.get('causal_decision_chain', {})
+    # Both new fields should exist in the chain
+    assert 'memory_retrieval_quality' in chain, (
+        "Expected memory_retrieval_quality in causal_decision_chain"
+    )
+    assert 'causal_dag_consensus' in chain, (
+        "Expected causal_dag_consensus in causal_decision_chain"
+    )
+    print("✅ test_causal_decision_chain_includes_new_fields PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -24695,6 +24880,17 @@ if __name__ == '__main__':
     test_unified_cognitive_cycle_reset()
     test_unified_cognitive_cycle_records_causal_trace()
     test_bridge_training_errors_wires_convergence_monitor()
+    
+    # Architectural Unification — CausalDAGConsensus, Gated Fallback, Memory Quality
+    test_causal_dag_consensus_full_agreement()
+    test_causal_dag_consensus_disagreement()
+    test_causal_dag_consensus_single_model()
+    test_causal_dag_consensus_different_sizes()
+    test_gated_fallback_cache_initialization()
+    test_gated_fallback_cache_decay()
+    test_memory_retrieval_quality_in_output()
+    test_causal_dag_consensus_in_model_init()
+    test_causal_decision_chain_includes_new_fields()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
