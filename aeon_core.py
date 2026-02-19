@@ -16344,11 +16344,12 @@ class AEONDeltaV3(nn.Module):
             # that conclusions are unreliable, so its signal must flow
             # into uncertainty_sources for causal traceability.
             if _topo_catastrophe_flag:
-                _topo_unc_boost = min(1.0 - uncertainty, 0.3)
-                if _topo_unc_boost > 0:
-                    uncertainty = min(1.0, uncertainty + _topo_unc_boost)
-                    uncertainty_sources["topology_catastrophe"] = _topo_unc_boost
-                    high_uncertainty = uncertainty > 0.5
+                _topo_unc_boost = max(0.0, min(1.0 - uncertainty, 0.3))
+                uncertainty = min(1.0, uncertainty + _topo_unc_boost)
+                uncertainty_sources["topology_catastrophe"] = max(
+                    _topo_unc_boost, 0.3,
+                )
+                high_uncertainty = uncertainty > 0.5
             # Adapt signal weights from error evolution history before
             # evaluating, so historically problematic failure modes
             # increase trigger sensitivity.
@@ -18191,11 +18192,14 @@ class AEONDeltaV3(nn.Module):
                     # meta-cognitive cycles via weighted fusion.
                     if _auto_critic_final_score < 0.5:
                         _ac_deficit = 1.0 - _auto_critic_final_score
-                        _ac_unc_boost = min(1.0 - uncertainty, _ac_deficit * 0.3)
-                        if _ac_unc_boost > 0:
-                            uncertainty = min(1.0, uncertainty + _ac_unc_boost)
-                            uncertainty_sources["auto_critic_low_score"] = _ac_unc_boost
-                            high_uncertainty = uncertainty > 0.5
+                        _ac_unc_boost = max(0.0, min(
+                            1.0 - uncertainty, _ac_deficit * 0.3,
+                        ))
+                        uncertainty = min(1.0, uncertainty + _ac_unc_boost)
+                        uncertainty_sources["auto_critic_low_score"] = max(
+                            _ac_unc_boost, _ac_deficit * 0.3,
+                        )
+                        high_uncertainty = uncertainty > 0.5
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
@@ -18283,11 +18287,14 @@ class AEONDeltaV3(nn.Module):
             # meta-cognitive cycles via weighted fusion.
             if _auto_critic_final_score < 0.5:
                 _ac_deficit = 1.0 - _auto_critic_final_score
-                _ac_unc_boost = min(1.0 - uncertainty, _ac_deficit * 0.3)
-                if _ac_unc_boost > 0:
-                    uncertainty = min(1.0, uncertainty + _ac_unc_boost)
-                    uncertainty_sources["auto_critic_low_score"] = _ac_unc_boost
-                    high_uncertainty = uncertainty > 0.5
+                _ac_unc_boost = max(0.0, min(
+                    1.0 - uncertainty, _ac_deficit * 0.3,
+                ))
+                uncertainty = min(1.0, uncertainty + _ac_unc_boost)
+                uncertainty_sources["auto_critic_low_score"] = max(
+                    _ac_unc_boost, _ac_deficit * 0.3,
+                )
+                high_uncertainty = uncertainty > 0.5
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -18481,16 +18488,15 @@ class AEONDeltaV3(nn.Module):
                     _post_coh_score = float(
                         post_coherence["coherence_score"].mean().item()
                     )
-                    _post_coh_boost = min(
-                        1.0 - uncertainty,
-                        max(0.0, (1.0 - _post_coh_score)) * 0.25,
-                    )
-                    if _post_coh_boost > 0:
-                        uncertainty = min(1.0, uncertainty + _post_coh_boost)
-                        uncertainty_sources[
-                            "post_integration_coherence_deficit"
-                        ] = _post_coh_boost
-                        high_uncertainty = uncertainty > 0.5
+                    _post_coh_deficit = max(0.0, (1.0 - _post_coh_score))
+                    _post_coh_boost = max(0.0, min(
+                        1.0 - uncertainty, _post_coh_deficit * 0.25,
+                    ))
+                    uncertainty = min(1.0, uncertainty + _post_coh_boost)
+                    uncertainty_sources[
+                        "post_integration_coherence_deficit"
+                    ] = max(_post_coh_boost, _post_coh_deficit * 0.25)
+                    high_uncertainty = uncertainty > 0.5
                 # 8f-i. Post-integration causal trace root-cause query —
                 # when post-integration coherence verification detects a
                 # deficit, query the causal trace for root causes so that
