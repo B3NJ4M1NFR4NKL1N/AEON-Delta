@@ -15956,6 +15956,21 @@ class AEONDeltaV3(nn.Module):
                     context="safety_enforcement",
                     success=True,
                 )
+                # Record safety rollback in causal trace so that
+                # downstream root-cause analysis can identify which
+                # modules produced the unsafe state that triggered
+                # the rollback, closing the traceability loop.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "safety_enforcement", "rollback_triggered",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "unsafe_count": int(unsafe_mask.sum().item()),
+                            "batch_size": B,
+                            "safety_threshold": safety_threshold,
+                            "min_score": float(safety_score.min().item()),
+                        },
+                    )
                 # Blend C_star toward z_in: higher safety_score preserves more C_star,
                 # lower safety_score shifts more toward the safe fallback z_in.
                 # safety_score in [0, threshold) → c_star_weight in [0, 1)
@@ -16324,6 +16339,16 @@ class AEONDeltaV3(nn.Module):
             _topo_catastrophe_flag = bool(
                 topo_results.get('catastrophes', torch.zeros(1)).any().item()
             )
+            # Topology catastrophe escalates uncertainty — a detected
+            # catastrophe in the loss landscape is a strong indicator
+            # that conclusions are unreliable, so its signal must flow
+            # into uncertainty_sources for causal traceability.
+            if _topo_catastrophe_flag:
+                _topo_unc_boost = min(1.0 - uncertainty, 0.3)
+                if _topo_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _topo_unc_boost)
+                    uncertainty_sources["topology_catastrophe"] = _topo_unc_boost
+                    high_uncertainty = uncertainty > 0.5
             # Adapt signal weights from error evolution history before
             # evaluating, so historically problematic failure modes
             # increase trigger sensitivity.
@@ -16361,6 +16386,7 @@ class AEONDeltaV3(nn.Module):
                         _causal_trace_uncertainty_boost
                     )
                     high_uncertainty = uncertainty > 0.5
+            self.provenance_tracker.record_before("metacognitive_trigger", C_star)
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -16371,6 +16397,7 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
             )
+            self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             if metacognitive_info.get("should_trigger", False):
                 # Consult error evolution for historically best strategy
                 # when facing metacognitive re-reasoning decisions.
@@ -16435,9 +16462,11 @@ class AEONDeltaV3(nn.Module):
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
                 ).detach()
+                self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
                     z_in, use_fixed_point=True, feedback=_refreshed_feedback,
                 )
+                self.provenance_tracker.record_after("deeper_meta_loop", C_star_deeper)
                 # Restore original parameters
                 self.meta_loop.convergence_threshold = orig_threshold
                 self.meta_loop.max_iterations = orig_max_iter
@@ -18157,6 +18186,16 @@ class AEONDeltaV3(nn.Module):
                     self.provenance_tracker.record_after("auto_critic", z_out)
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
                     _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
+                    # Feed auto-critic quality into uncertainty_sources so
+                    # low scores escalate uncertainty and trigger deeper
+                    # meta-cognitive cycles via weighted fusion.
+                    if _auto_critic_final_score < 0.5:
+                        _ac_deficit = 1.0 - _auto_critic_final_score
+                        _ac_unc_boost = min(1.0 - uncertainty, _ac_deficit * 0.3)
+                        if _ac_unc_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _ac_unc_boost)
+                            uncertainty_sources["auto_critic_low_score"] = _ac_unc_boost
+                            high_uncertainty = uncertainty > 0.5
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
@@ -18239,6 +18278,16 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after("auto_critic", z_out)
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
+            # Feed auto-critic quality into uncertainty_sources so
+            # low scores escalate uncertainty and trigger deeper
+            # meta-cognitive cycles via weighted fusion.
+            if _auto_critic_final_score < 0.5:
+                _ac_deficit = 1.0 - _auto_critic_final_score
+                _ac_unc_boost = min(1.0 - uncertainty, _ac_deficit * 0.3)
+                if _ac_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _ac_unc_boost)
+                    uncertainty_sources["auto_critic_low_score"] = _ac_unc_boost
+                    high_uncertainty = uncertainty > 0.5
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
@@ -18423,6 +18472,25 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                # 8f-ia. Post-integration coherence deficit escalates
+                # uncertainty — ensures any cross-module inconsistency
+                # detected after full pipeline execution feeds back into
+                # the active uncertainty signal, enabling downstream
+                # meta-cognitive triggers regardless of UCC enablement.
+                if post_coherence.get("needs_recheck", False):
+                    _post_coh_score = float(
+                        post_coherence["coherence_score"].mean().item()
+                    )
+                    _post_coh_boost = min(
+                        1.0 - uncertainty,
+                        max(0.0, (1.0 - _post_coh_score)) * 0.25,
+                    )
+                    if _post_coh_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _post_coh_boost)
+                        uncertainty_sources[
+                            "post_integration_coherence_deficit"
+                        ] = _post_coh_boost
+                        high_uncertainty = uncertainty > 0.5
                 # 8f-i. Post-integration causal trace root-cause query —
                 # when post-integration coherence verification detects a
                 # deficit, query the causal trace for root causes so that
