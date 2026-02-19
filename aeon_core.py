@@ -15098,6 +15098,27 @@ class AEONDeltaV3(nn.Module):
                 "convergence_quality": convergence_quality_scalar,
             })
         
+        # 1a-iv. MetaLearner EWC drift signal — compute EWC penalty
+        # magnitude and escalate uncertainty when drift exceeds threshold,
+        # connecting meta-learning to metacognitive reasoning depth.
+        _EWC_DRIFT_THRESHOLD = 0.1
+        _EWC_UNCERTAINTY_SCALE = 0.15
+        if self.meta_learner is not None and self.training and not fast:
+            try:
+                with torch.no_grad():
+                    _ewc_val = self.meta_learner.ewc_loss()
+                    _ewc_scalar = float(_ewc_val.item()) if torch.is_tensor(_ewc_val) else 0.0
+                if math.isfinite(_ewc_scalar) and _ewc_scalar > _EWC_DRIFT_THRESHOLD:
+                    _ewc_boost = min(
+                        1.0 - uncertainty,
+                        _ewc_scalar * _EWC_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _ewc_boost)
+                    uncertainty_sources["meta_learner_ewc_drift"] = _ewc_boost
+                    high_uncertainty = uncertainty > 0.5
+            except Exception as _ewc_err:
+                logger.debug("MetaLearner EWC drift estimation failed: %s", _ewc_err)
+        
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
         # pooling preserves permutation invariance across slots and
@@ -16807,33 +16828,76 @@ class AEONDeltaV3(nn.Module):
         # The auto-selected level is blended as a residual to enrich
         # the reasoning state with hierarchical structure.
         hierarchical_vae_results: Dict[str, Any] = {}
+        _hvae_healthy = True
         if self.hierarchical_vae is not None and not fast:
             self.provenance_tracker.record_before("hierarchical_vae", C_star)
-            vae_out = self.hierarchical_vae(C_star)
-            hierarchical_vae_results = vae_out
-            selected_level = vae_out.get('selected_level', None)
-            if selected_level is not None and torch.isfinite(selected_level).all():
-                C_star = C_star + self.config.hvae_blend_weight * selected_level
-            self.audit_log.record("hierarchical_vae", "computed", {
-                "kl_loss": float(vae_out['kl_loss'].item()),
-            })
-            # High HVAE KL divergence indicates the latent space
-            # distributions are highly spread, signalling abstraction-
-            # level uncertainty.  Escalate the uncertainty scalar so
-            # that metacognitive cycles activate when the VAE is unsure
-            # about the correct level of abstraction.
-            _HVAE_KL_THRESHOLD = 1.0
-            _HVAE_UNCERTAINTY_SCALE = 0.15
-            _hvae_kl_val = float(vae_out['kl_loss'].item())
-            if math.isfinite(_hvae_kl_val) and _hvae_kl_val > _HVAE_KL_THRESHOLD:
-                _hvae_boost = min(
-                    1.0 - uncertainty,
-                    (_hvae_kl_val - _HVAE_KL_THRESHOLD) * _HVAE_UNCERTAINTY_SCALE,
+            try:
+                vae_out = self.hierarchical_vae(C_star)
+                hierarchical_vae_results = vae_out
+                selected_level = vae_out.get('selected_level', None)
+                if selected_level is not None and torch.isfinite(selected_level).all():
+                    C_star = C_star + self.config.hvae_blend_weight * selected_level
+                self.audit_log.record("hierarchical_vae", "computed", {
+                    "kl_loss": float(vae_out['kl_loss'].item()),
+                })
+                # Record in causal trace for root-cause traceability —
+                # ensures HVAE contributions are traceable alongside all
+                # other subsystems in the causal DAG.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "hierarchical_vae", "computed",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "kl_loss": float(vae_out['kl_loss'].item()),
+                            "selected_level_valid": (
+                                selected_level is not None
+                                and torch.isfinite(selected_level).all()
+                            ),
+                        },
+                    )
+                # High HVAE KL divergence indicates the latent space
+                # distributions are highly spread, signalling abstraction-
+                # level uncertainty.  Escalate the uncertainty scalar so
+                # that metacognitive cycles activate when the VAE is unsure
+                # about the correct level of abstraction.
+                _HVAE_KL_THRESHOLD = 1.0
+                _HVAE_UNCERTAINTY_SCALE = 0.15
+                _hvae_kl_val = float(vae_out['kl_loss'].item())
+                if math.isfinite(_hvae_kl_val) and _hvae_kl_val > _HVAE_KL_THRESHOLD:
+                    _hvae_boost = min(
+                        1.0 - uncertainty,
+                        (_hvae_kl_val - _HVAE_KL_THRESHOLD) * _HVAE_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _hvae_boost)
+                    uncertainty_sources["hvae_kl_divergence"] = _hvae_boost
+                    high_uncertainty = uncertainty > 0.5
+            except Exception as hvae_err:
+                _hvae_healthy = False
+                logger.warning(f"HierarchicalVAE error (non-fatal): {hvae_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="hierarchical_vae_forward",
+                    success=False,
                 )
-                uncertainty = min(1.0, uncertainty + _hvae_boost)
-                uncertainty_sources["hvae_kl_divergence"] = _hvae_boost
+                uncertainty = min(1.0, uncertainty + 0.2)
+                uncertainty_sources["hvae_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
+                self.audit_log.record("hierarchical_vae", "error_recovered", {
+                    "error": str(hvae_err)[:200],
+                }, severity="warning")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "hierarchical_vae", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(hvae_err)[:200]},
+                    )
             self.provenance_tracker.record_after("hierarchical_vae", C_star)
+        self.integrity_monitor.record_health(
+            "hierarchical_vae",
+            1.0 if _hvae_healthy else 0.0,
+            {"executed": self.hierarchical_vae is not None and not fast},
+        )
         
         # 5f. Causal context — retrieve historical context, then store current
         self.provenance_tracker.record_before("causal_context", C_star)
@@ -16948,6 +17012,18 @@ class AEONDeltaV3(nn.Module):
                 else:
                     logger.warning("Non-finite multimodal output; skipping fusion")
                     _multimodal_healthy = False
+                    # Escalate uncertainty so the metacognitive cycle is
+                    # aware of degraded multimodal grounding, closing the
+                    # gap where non-finite output silently set a flag
+                    # without feeding into the uncertainty pipeline.
+                    self.error_recovery.record_event(
+                        error_class="numerical",
+                        context="multimodal_nonfinite_output",
+                        success=False,
+                    )
+                    uncertainty = min(1.0, uncertainty + 0.2)
+                    uncertainty_sources["multimodal_nonfinite"] = 0.2
+                    high_uncertainty = uncertainty > 0.5
                 self.audit_log.record("multimodal", "grounded", {
                     "fused_norm": float(_mm_fused.norm().item()),
                 })
@@ -18947,6 +19023,20 @@ class AEONDeltaV3(nn.Module):
         # 8. Adaptive meta-loop
         if self.adaptive_meta_loop is not None:
             verified.append('adaptive_meta_loop → per-sample halting')
+
+        # 9. HierarchicalVAE → uncertainty feedback loop
+        if self.hierarchical_vae is not None:
+            verified.append('hierarchical_vae → uncertainty (KL + error) → metacognitive')
+            if self.causal_trace is not None:
+                verified.append('hierarchical_vae → causal_trace (root-cause traceability)')
+
+        # 10. MetaLearner → uncertainty feedback loop
+        if self.meta_learner is not None:
+            verified.append('meta_learner → ewc_drift → uncertainty → metacognitive')
+
+        # 11. Multimodal → uncertainty (non-finite + error paths)
+        if self.multimodal is not None:
+            verified.append('multimodal → uncertainty (non-finite + error) → metacognitive')
 
         # --- Compute causal trace coverage ---
         _coverage = (

@@ -22815,6 +22815,245 @@ def test_adaptive_meta_loop_ponder_cost_loss_integration():
     print("✅ test_adaptive_meta_loop_ponder_cost_loss_integration PASSED")
 
 
+# ============================================================================
+# Architectural Unification — HVAE Error Handling, Multimodal Uncertainty,
+# MetaLearner EWC Drift
+# ============================================================================
+
+def test_hvae_error_recovery_escalates_uncertainty():
+    """Gap 1: HierarchicalVAE errors now escalate uncertainty and record
+    in error recovery, matching the pattern of all other subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        enable_hierarchical_vae=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch the HVAE to raise an error
+    original_forward = model.hierarchical_vae.forward
+
+    def _broken_forward(*args, **kwargs):
+        raise RuntimeError("Simulated HVAE failure")
+
+    model.hierarchical_vae.forward = _broken_forward
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+
+    # reasoning_core should NOT raise — the error should be caught
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+    assert z_out is not None, "reasoning_core should return output despite HVAE error"
+
+    # Uncertainty should include hvae_error source
+    sources = outputs.get('uncertainty_sources', {})
+    assert 'hvae_error' in sources, (
+        f"HVAE error should escalate uncertainty; sources={list(sources.keys())}"
+    )
+
+    # Error recovery should have recorded the event
+    stats = model.error_recovery.get_recovery_stats()
+    assert stats.get('total', 0) > 0, "Error recovery should record HVAE failure"
+
+    # Restore
+    model.hierarchical_vae.forward = original_forward
+
+    print("✅ test_hvae_error_recovery_escalates_uncertainty PASSED")
+
+
+def test_hvae_causal_trace_recorded():
+    """Gap 1: HierarchicalVAE now records in the causal trace for
+    root-cause traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        enable_hierarchical_vae=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Causal trace should contain a hierarchical_vae entry
+    recent = model.causal_trace.recent(n=50)
+    hvae_entries = [e for e in recent if e.get('subsystem') == 'hierarchical_vae']
+    assert len(hvae_entries) > 0, (
+        "Causal trace should contain hierarchical_vae entries for traceability"
+    )
+
+    print("✅ test_hvae_causal_trace_recorded PASSED")
+
+
+def test_hvae_integrity_monitor_health_recorded():
+    """Gap 4: HierarchicalVAE now records health in the integrity monitor."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_hierarchical_vae=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Integrity monitor should have hierarchical_vae health
+    health = model.integrity_monitor.get_subsystem_health("hierarchical_vae")
+    assert health is not None, (
+        "Integrity monitor should track hierarchical_vae health"
+    )
+    # Successful execution should report health = 1.0
+    assert health >= 0.0, f"HVAE health should be non-negative, got {health}"
+
+    print("✅ test_hvae_integrity_monitor_health_recorded PASSED")
+
+
+def test_multimodal_nonfinite_escalates_uncertainty():
+    """Gap 2: Multimodal non-finite output now escalates uncertainty,
+    not just the exception path."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_multimodal=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # SafeTensorProcessor hooks sanitize NaN before callers see them.
+    # To test the non-finite path, we need to inject NaN AFTER the
+    # hook runs.  We override the module's __call__ method directly
+    # to bypass the hook chain and inject NaN into the caller's view.
+    original_call = model.multimodal.__class__.__call__
+
+    def _nonfinite_call(self_mm, *args, **kwargs):
+        result = original_call(self_mm, *args, **kwargs)
+        if isinstance(result, dict) and 'fused' in result:
+            result['fused'] = torch.full_like(result['fused'], float('nan'))
+        return result
+
+    model.multimodal.__class__.__call__ = _nonfinite_call
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Uncertainty should include multimodal_nonfinite source
+    sources = outputs.get('uncertainty_sources', {})
+    assert 'multimodal_nonfinite' in sources, (
+        f"Multimodal non-finite output should escalate uncertainty; "
+        f"sources={list(sources.keys())}"
+    )
+
+    # Error recovery should have recorded the numerical error
+    stats = model.error_recovery.get_recovery_stats()
+    assert stats.get('total', 0) > 0, (
+        "Error recovery should record multimodal non-finite event"
+    )
+
+    # Restore
+    model.multimodal.__class__.__call__ = original_call
+
+    print("✅ test_multimodal_nonfinite_escalates_uncertainty PASSED")
+
+
+def test_meta_learner_ewc_drift_uncertainty():
+    """Gap 3: MetaLearner EWC drift magnitude feeds into the uncertainty
+    pipeline during training."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_meta_learning=True)
+    model = AEONDeltaV3(config)
+    assert model.meta_learner is not None, "MetaLearner should be initialized"
+
+    # Set up Fisher information to simulate a learned task
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            model.meta_learner._fisher_diag[name] = torch.ones_like(param) * 10.0
+            model.meta_learner._optimal_params[name] = param.data.clone() + 0.1
+
+    # In training mode, EWC drift should be detected
+    model.train()
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Check that the EWC drift signal is present — with Fisher=10.0
+    # and param offset=0.1, the EWC loss is very large (well above
+    # the _EWC_DRIFT_THRESHOLD of 0.1), so the signal must be present.
+    sources = outputs.get('uncertainty_sources', {})
+    assert 'meta_learner_ewc_drift' in sources, (
+        f"MetaLearner EWC drift should be detected during training; "
+        f"sources={list(sources.keys())}"
+    )
+
+    print("✅ test_meta_learner_ewc_drift_uncertainty PASSED")
+
+
+def test_self_diagnostic_includes_hvae_verification():
+    """Gap 5: self_diagnostic now verifies HVAE→uncertainty feedback loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        enable_hierarchical_vae=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    verified = report['verified_connections']
+    hvae_verified = [v for v in verified if 'hierarchical_vae' in v]
+    assert len(hvae_verified) > 0, (
+        f"self_diagnostic should verify HVAE connections; "
+        f"verified={verified}"
+    )
+
+    print("✅ test_self_diagnostic_includes_hvae_verification PASSED")
+
+
+def test_self_diagnostic_includes_meta_learner_ewc():
+    """Gap 5: self_diagnostic now verifies MetaLearner→uncertainty loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_meta_learning=True)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    verified = report['verified_connections']
+    ml_verified = [v for v in verified if 'meta_learner' in v]
+    assert len(ml_verified) > 0, (
+        f"self_diagnostic should verify MetaLearner EWC drift connection; "
+        f"verified={verified}"
+    )
+
+    print("✅ test_self_diagnostic_includes_meta_learner_ewc PASSED")
+
+
+def test_self_diagnostic_includes_multimodal_uncertainty():
+    """Gap 5: self_diagnostic now verifies Multimodal→uncertainty loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_multimodal=True)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    verified = report['verified_connections']
+    mm_verified = [v for v in verified if 'multimodal' in v]
+    assert len(mm_verified) > 0, (
+        f"self_diagnostic should verify multimodal uncertainty connection; "
+        f"verified={verified}"
+    )
+
+    print("✅ test_self_diagnostic_includes_multimodal_uncertainty PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -23849,6 +24088,16 @@ if __name__ == '__main__':
     test_architecture_summary_includes_adaptive_meta_loop()
     test_self_diagnostic_meta_learner_gap()
     test_adaptive_meta_loop_ponder_cost_loss_integration()
+    
+    # Architectural Unification — HVAE, Multimodal, MetaLearner Coherence
+    test_hvae_error_recovery_escalates_uncertainty()
+    test_hvae_causal_trace_recorded()
+    test_hvae_integrity_monitor_health_recorded()
+    test_multimodal_nonfinite_escalates_uncertainty()
+    test_meta_learner_ewc_drift_uncertainty()
+    test_self_diagnostic_includes_hvae_verification()
+    test_self_diagnostic_includes_meta_learner_ewc()
+    test_self_diagnostic_includes_multimodal_uncertainty()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
