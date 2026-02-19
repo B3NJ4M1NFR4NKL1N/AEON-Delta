@@ -107,8 +107,8 @@ except ImportError:
     class SemanticErrorClassifier:
         """Minimal error classifier (fallback when aeon_core unavailable)."""
 
-        def classify(self, error_msg: str) -> str:
-            return "unknown"
+        def classify(self, error: BaseException) -> tuple:
+            return ("unknown", str(error))
 
     class CausalErrorEvolutionTracker:
         """Lightweight error evolution tracker for standalone training."""
@@ -149,13 +149,17 @@ except ImportError:
             self.history: list = []
             self._threshold = threshold
 
-        def check(self, delta_norm: float) -> str:
+        def check(self, delta_norm: float) -> Dict[str, Any]:
             self.history.append(delta_norm)
             if len(self.history) < 3:
-                return "warmup"
+                return {"status": "warmup", "certified": False}
             if delta_norm < self._threshold:
-                return "converged"
-            return "converging"
+                return {"status": "converged", "certified": True}
+            if len(self.history) >= 3:
+                ratio = delta_norm / max(self.history[-2], 1e-12)
+                if ratio >= 1.0:
+                    return {"status": "diverging", "certified": False}
+            return {"status": "converging", "certified": False}
 
     class CausalProvenanceTracker:
         """Minimal provenance tracker (fallback when aeon_core unavailable)."""
@@ -2827,6 +2831,19 @@ def main(
             'version': '4.0.0'
         }
     }
+
+    # Export training error patterns so the inference pipeline can import
+    # them via bridge_training_errors_to_inference() at load time.  The
+    # patterns are persisted alongside the model checkpoint.
+    _training_error_patterns = {}
+    for _phase_label, _cm in [("Phase_A", convergence_monitor_A),
+                               ("Phase_B", trainer_B.convergence_monitor)]:
+        _patterns = _cm.export_error_patterns()
+        _training_error_patterns[_phase_label] = _patterns
+        _n_classes = len(_patterns.get("error_classes", {}))
+        if _n_classes:
+            logger.info(f"🔗 Exported {_n_classes} error class(es) from {_phase_label} for inference bridge")
+    save_dict['training_error_patterns'] = _training_error_patterns
     
     try:
         torch.save(save_dict, final_path)
@@ -2834,22 +2851,6 @@ def main(
     except OSError as e:
         logger.error(f"❌ Failed to save final model to {final_path}: {e}")
     monitor.save_metrics(os.path.join(output_dir, "training_metrics_v4.json"))
-    
-    # Bridge training error patterns to inference pipeline so that
-    # inference-time metacognitive triggers and recovery strategies
-    # benefit from training-time convergence failures.
-    _total_bridged = 0
-    for _phase_label, _cm in [("Phase_A", convergence_monitor_A),
-                               ("Phase_B", trainer_B.convergence_monitor)]:
-        _bridged = bridge_training_errors_to_inference(
-            trainer_monitor=_cm,
-            inference_error_evolution=_cm._error_evolution,
-        )
-        _total_bridged += _bridged
-        if _bridged:
-            logger.info(f"🔗 Bridged {_bridged} error patterns from {_phase_label} → inference")
-    if _total_bridged:
-        logger.info(f"🔗 Total bridged error patterns: {_total_bridged}")
 
     # Финальный отчёт
     logger.info("\n" + "🎉" * 25)

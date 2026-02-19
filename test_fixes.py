@@ -23123,16 +23123,15 @@ def test_fallback_classes_when_core_unavailable():
     # SemanticErrorClassifier
     classifier = SemanticErrorClassifier()
     cls = classifier.classify(ValueError("some error"))
-    assert isinstance(cls, (str, tuple)), f"classify should return str or tuple, got {type(cls)}"
+    assert isinstance(cls, tuple), f"classify should return tuple, got {type(cls)}"
+    assert len(cls) == 2
+    assert isinstance(cls[0], str)
 
     # ConvergenceMonitor
     cm = ConvergenceMonitor(threshold=1e-5)
     result = cm.check(0.1)
-    # The real ConvergenceMonitor returns a dict; fallback returns a string.
-    if isinstance(result, dict):
-        assert result.get("status") in ("warmup", "converging", "converged", "diverging")
-    else:
-        assert result in ("warmup", "converging", "converged")
+    assert isinstance(result, dict), f"check() should return dict, got {type(result)}"
+    assert result["status"] in ("warmup", "converging", "converged", "diverging")
 
     # CausalProvenanceTracker
     prov = CausalProvenanceTracker()
