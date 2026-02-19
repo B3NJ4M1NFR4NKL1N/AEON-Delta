@@ -2897,6 +2897,7 @@ class AEONConfig:
     # ===== MODULE COHERENCE & META-COGNITIVE RECURSION =====
     enable_module_coherence: bool = False
     module_coherence_threshold: float = 0.5
+    coherence_autocritic_threshold: float = 0.3
     enable_metacognitive_recursion: bool = False
     metacognitive_trigger_threshold: float = 0.5
     metacognitive_max_recursions: int = 2
@@ -13715,6 +13716,20 @@ class AEONDeltaV3(nn.Module):
     - Production-ready error handling
     """
     
+    # Standard data-flow dependency chain for the reasoning core.
+    # Used by _reasoning_core_impl to auto-populate the provenance
+    # tracker's dependency DAG so that trace_root_cause() can walk
+    # backward through the pipeline.  Each tuple is (upstream, downstream).
+    _PIPELINE_DEPENDENCIES: List[Tuple[str, str]] = [
+        ("input", "meta_loop"),
+        ("meta_loop", "slot_binding"),
+        ("slot_binding", "factor_extraction"),
+        ("factor_extraction", "consistency_gate"),
+        ("consistency_gate", "safety"),
+        ("safety", "world_model"),
+        ("world_model", "memory"),
+    ]
+    
     def __init__(self, config: AEONConfig):
         super().__init__()
         self.config = config
@@ -15189,13 +15204,8 @@ class AEONDeltaV3(nn.Module):
         # at each call site.  The DAG mirrors the data-flow order of
         # the reasoning core: each downstream module declares its
         # upstream dependencies once per forward pass.
-        self.provenance_tracker.record_dependency("input", "meta_loop")
-        self.provenance_tracker.record_dependency("meta_loop", "slot_binding")
-        self.provenance_tracker.record_dependency("slot_binding", "factor_extraction")
-        self.provenance_tracker.record_dependency("factor_extraction", "consistency_gate")
-        self.provenance_tracker.record_dependency("consistency_gate", "safety")
-        self.provenance_tracker.record_dependency("safety", "world_model")
-        self.provenance_tracker.record_dependency("world_model", "memory")
+        for _up, _down in self._PIPELINE_DEPENDENCIES:
+            self.provenance_tracker.record_dependency(_up, _down)
         
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
@@ -16100,14 +16110,13 @@ class AEONDeltaV3(nn.Module):
                 # that coherence deficits trigger immediate revision rather
                 # than only escalating uncertainty for deferred handling.
                 # The auto-critic is only invoked when the coherence score
-                # is below a stricter threshold (0.3) to avoid unnecessary
+                # is below the configurable threshold to avoid unnecessary
                 # compute on marginal deficits.
-                _COHERENCE_AUTOCRITIC_THRESHOLD = 0.3
                 _coh_score_val = float(
                     coherence_results["coherence_score"].mean().item()
                 )
                 if (self.auto_critic is not None
-                        and _coh_score_val < _COHERENCE_AUTOCRITIC_THRESHOLD):
+                        and _coh_score_val < self.config.coherence_autocritic_threshold):
                     try:
                         _coh_critic = self.auto_critic(C_star)
                         _coh_revised = _coh_critic.get("candidate", None)

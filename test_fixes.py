@@ -24233,6 +24233,9 @@ def test_training_bridge_includes_loss_magnitude():
     assert "max_loss_magnitude" in ep_meta, (
         f"Bridged episode should contain max_loss_magnitude; got {ep_meta}"
     )
+    assert "mean_loss_magnitude" in ep_meta, (
+        f"Bridged episode should contain mean_loss_magnitude; got {ep_meta}"
+    )
     print("✅ test_training_bridge_includes_loss_magnitude PASSED")
 
 
