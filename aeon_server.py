@@ -743,6 +743,8 @@ async def run_inference(req: InferRequest):
         "tokens_per_sec": tps,
         "audit": audit,
         "tensorguard": tg,
+        "uncertainty": result.get("uncertainty"),
+        "causal_decision_chain": result.get("causal_decision_chain", {}),
     }
 
 
@@ -776,6 +778,9 @@ async def run_forward(req: ForwardRequest):
                 float(out["convergence_delta"]) if "convergence_delta" in out
                 else None
             ),
+            "uncertainty": out.get("uncertainty"),
+            "causal_decision_chain": out.get("causal_decision_chain", {}),
+            "provenance": out.get("provenance", {}),
         }
         if logits is not None:
             probs = torch.softmax(logits[0, 0], dim=-1)
