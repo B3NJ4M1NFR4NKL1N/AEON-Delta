@@ -2710,6 +2710,11 @@ class AEONConfig:
     provenance_dampen_factor: float = 0.15
     intra_pass_feedback_threshold: float = 0.3
     intra_pass_feedback_scale: float = 0.05
+    # Per-error uncertainty boost from recent causal trace error entries.
+    # Each error/warning in the last 10 causal trace entries contributes
+    # this amount to the metacognitive trigger's uncertainty input, so
+    # 5 errors × 0.05 = 0.25 additional uncertainty.
+    causal_trace_error_uncertainty_scale: float = 0.05
     # Uncertainty confidence penalty: scales logits toward uniform distribution
     # when reasoning uncertainty exceeds this threshold (0 = disabled).
     uncertainty_logit_penalty_threshold: float = 0.5
@@ -13048,6 +13053,23 @@ class CausalErrorEvolutionTracker:
         # error_class → list of episode dicts
         self._episodes: Dict[str, List[Dict[str, Any]]] = {}
         self._total_recorded: int = 0
+        # Optional link to TemporalCausalTraceBuffer so that every
+        # error-recovery episode is automatically recorded as a traced
+        # decision, closing the gap between error evolution learning and
+        # causal traceability.
+        self._causal_trace: Optional['TemporalCausalTraceBuffer'] = None
+
+    def set_causal_trace(
+        self, trace: Optional['TemporalCausalTraceBuffer'],
+    ) -> None:
+        """Attach a TemporalCausalTraceBuffer for automatic propagation.
+
+        Once attached, every :meth:`record_episode` call also records
+        the episode in the causal trace buffer with the error class as
+        the subsystem and the strategy as the decision.  This enables
+        root-cause tracing through the full error-recovery history.
+        """
+        self._causal_trace = trace
 
     def record_episode(
         self,
@@ -13081,6 +13103,19 @@ class CausalErrorEvolutionTracker:
             if len(self._episodes[error_class]) > self._max_history:
                 self._episodes[error_class] = self._episodes[error_class][-self._max_history:]
             self._total_recorded += 1
+        # Propagate to causal trace when connected
+        if self._causal_trace is not None:
+            self._causal_trace.record(
+                subsystem=f"error_evolution/{error_class}",
+                decision=f"{strategy_used}:{'ok' if success else 'fail'}",
+                causal_prerequisites=causal_antecedents,
+                metadata={
+                    **(metadata or {}),
+                    "success": success,
+                    "error_class": error_class,
+                },
+                severity="info" if success else "warning",
+            )
 
     def get_best_strategy(self, error_class: str) -> Optional[str]:
         """Return the historically most successful strategy for an error class.
@@ -13620,6 +13655,13 @@ class AEONDeltaV3(nn.Module):
             self.error_evolution = CausalErrorEvolutionTracker(
                 max_history=config.error_evolution_max_history,
             )
+            # Wire error evolution to causal trace so every recorded
+            # error-recovery episode is automatically traceable in the
+            # causal DAG.  This unifies error learning with root-cause
+            # analysis: conclusions traced through the causal chain can
+            # now include error-recovery decisions as first-class nodes.
+            if self.causal_trace is not None:
+                self.error_evolution.set_causal_trace(self.causal_trace)
         else:
             self.error_evolution = None
         
@@ -15383,6 +15425,29 @@ class AEONDeltaV3(nn.Module):
                         coherence_results["coherence_score"].mean().item()
                     ),
                 })
+            # 5a-iii-d2. Coherence → CausalContextWindowManager — record
+            # the coherence verification result in the causal context
+            # hierarchy so that cross-temporal reasoning benefits from
+            # coherence outcomes.  High coherence promotes the current
+            # state as causally relevant context; low coherence demotes
+            # it, preventing incoherent states from polluting future
+            # context retrieval.  This closes the gap between the
+            # coherence verifier and the causal context system.
+            if self.causal_context is not None:
+                _coherence_val = float(
+                    coherence_results["coherence_score"].mean().item()
+                )
+                self.causal_context.add(
+                    source="coherence_verification",
+                    embedding=C_star.mean(dim=0).detach(),
+                    relevance=max(0.0, _coherence_val),
+                    causal_weight=max(0.0, _coherence_val),
+                    tier="short_term" if not _coherence_deficit else "mid_term",
+                    metadata={
+                        "coherence_score": _coherence_val,
+                        "deficit": _coherence_deficit,
+                    },
+                )
         
         # 5a-iii-e. Intra-pass feedback re-conditioning — when accumulated
         # uncertainty (from coherence deficit, recovery pressure, or
@@ -15426,6 +15491,32 @@ class AEONDeltaV3(nn.Module):
             # fraction of recent calls that required recovery, clamped [0, 1].
             # Rate of 0.1 means ~10 recoveries reach maximum pressure (1.0).
             _recovery_pressure = self._compute_recovery_pressure()
+            # 5a-iv-a. Causal-trace-informed uncertainty — query recent
+            # causal trace entries for error/warning severity events.
+            # The count of recent causal errors informs the metacognitive
+            # trigger by boosting uncertainty proportionally, closing the
+            # loop between causal traceability and active meta-cognitive
+            # decision-making: the trace is no longer write-only but
+            # actively influences reasoning depth.
+            _causal_trace_uncertainty_boost: float = 0.0
+            if self.causal_trace is not None:
+                _ct_recent = self.causal_trace.recent(n=10)
+                _ct_error_count = sum(
+                    1 for e in _ct_recent
+                    if e.get("severity") in ("error", "warning")
+                )
+                if _ct_error_count > 0:
+                    _causal_trace_uncertainty_boost = min(
+                        1.0 - uncertainty,
+                        _ct_error_count * self.config.causal_trace_error_uncertainty_scale,
+                    )
+                    uncertainty = min(
+                        1.0, uncertainty + _causal_trace_uncertainty_boost,
+                    )
+                    uncertainty_sources["causal_trace_errors"] = (
+                        _causal_trace_uncertainty_boost
+                    )
+                    high_uncertainty = uncertainty > 0.5
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -15536,6 +15627,27 @@ class AEONDeltaV3(nn.Module):
                         metadata=self._provenance_enriched_metadata({
                             "triggers": metacognitive_info.get("triggers_active", []),
                         }),
+                    )
+                # 5a-iv-b. Record metacognitive recursion *outcome* in the
+                # causal trace so that the decision to accept or reject
+                # deeper reasoning is fully traceable.  This closes the
+                # bidirectional link: the trace now records both the trigger
+                # (5a-iv, step above) and the outcome, enabling root-cause
+                # analysis that answers "did deeper reasoning help?"
+                if self.causal_trace is not None:
+                    _metacog_trace_id = self.causal_trace.record(
+                        "metacognitive_recursion",
+                        "accepted" if _metacog_accepted else "rejected",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "accepted": _metacog_accepted,
+                            "triggers": metacognitive_info.get(
+                                "triggers_active", [],
+                            ),
+                            "recursion_count": metacognitive_info.get(
+                                "recursion_count", 0,
+                            ),
+                        },
                     )
         
         # 5a-v. Record accumulated uncertainty sources in the causal trace
