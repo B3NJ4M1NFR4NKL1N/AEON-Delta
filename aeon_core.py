@@ -13900,6 +13900,11 @@ class AEONDeltaV3(nn.Module):
         ("notears_causal", "causal_programmatic"),
         ("ns_bridge", "temporal_knowledge_graph"),
         ("memory", "temporal_memory"),
+        ("memory", "neurogenic_memory"),
+        ("memory", "consolidating_memory"),
+        ("neurogenic_memory", "causal_context"),
+        ("consolidating_memory", "causal_context"),
+        ("temporal_memory", "causal_context"),
         ("cross_validation", "unified_simulator"),
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
@@ -14743,6 +14748,8 @@ class AEONDeltaV3(nn.Module):
     _RECOVERY_PRESSURE_RATE = 0.1
     # Health threshold below which a subsystem is considered degraded
     _SUBSYSTEM_HEALTH_DEGRADED_THRESHOLD = 0.5
+    # Coherence deficit floor when ConvergenceMonitor detects divergence
+    _DIVERGENCE_COHERENCE_ESCALATION = 0.5
 
     def _compute_recovery_pressure(self) -> float:
         """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
@@ -15760,6 +15767,15 @@ class AEONDeltaV3(nn.Module):
                         "residual_norm": residual_norm_scalar,
                     }),
                 )
+            # Escalate cached coherence deficit so the NEXT forward
+            # pass's feedback bus is conditioned on the divergence,
+            # closing the cross-pass feedback loop between convergence
+            # monitoring and meta-loop reasoning depth even when the
+            # UnifiedCognitiveCycle is not enabled.
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit,
+                self._DIVERGENCE_COHERENCE_ESCALATION,
+            )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
         # quality is low, audit patterns indicate instability, or the
@@ -18466,6 +18482,21 @@ class AEONDeltaV3(nn.Module):
                     "final_score": _auto_critic_final_score,
                     "trigger": "unconditional",
                 })
+                # Record unconditional auto-critic quality in error
+                # evolution so that low-quality outputs feed back into
+                # the evolutionary learning loop, enabling the system
+                # to adapt its recovery strategies over time.
+                if (self.error_evolution is not None
+                        and _auto_critic_final_score < 0.5):
+                    self.error_evolution.record_episode(
+                        error_class="auto_critic_low_quality",
+                        strategy_used="auto_critic",
+                        success=_any_auto_critic_revised,
+                        metadata=self._provenance_enriched_metadata({
+                            "final_score": _auto_critic_final_score,
+                            "trigger": "unconditional",
+                        }),
+                    )
             except Exception as _uc_err:
                 logger.debug(
                     "Unconditional auto-critic error (non-fatal): %s",
@@ -18859,6 +18890,13 @@ class AEONDeltaV3(nn.Module):
                             "unified_cycle_coherence"
                         ] = _ucc_unc_boost
                         high_uncertainty = uncertainty > 0.5
+                    # Feed UCC deficit into cached coherence deficit so
+                    # the terminal feedback bus refresh (step 8i) and
+                    # the NEXT forward pass incorporate the UCC's most
+                    # comprehensive coherence assessment.
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit, _ucc_deficit,
+                    )
                 # Propagate UCC coherence score into coherence_results
                 # so compute_loss() can use the UCC's richer assessment
                 # (which includes provenance-correlated evaluation and
@@ -20723,6 +20761,28 @@ class AEONDeltaV3(nn.Module):
             if self.error_evolution is not None:
                 verified.append('causal_dag_consensus → error_evolution (disagreement tracking)')
 
+        # 11c. Memory subsystem → CausalContextWindowManager cross-wiring
+        _memory_subsystems = {
+            'temporal_memory': getattr(self, 'temporal_memory', None),
+            'neurogenic_memory': getattr(self, 'neurogenic_memory', None),
+            'consolidating_memory': getattr(self, 'consolidating_memory', None),
+        }
+        _active_memory = [n for n, m in _memory_subsystems.items() if m is not None]
+        if _active_memory and getattr(self, 'causal_context', None) is not None:
+            verified.append(
+                f"memory_subsystems ({', '.join(_active_memory)}) → causal_context (cross-temporal)"
+            )
+        elif _active_memory and getattr(self, 'causal_context', None) is None:
+            gaps.append({
+                'component': 'causal_context',
+                'gap': (
+                    f'Memory subsystems ({", ".join(_active_memory)}) active '
+                    f'but CausalContextWindowManager disabled — memory consolidation '
+                    f'insights are lost across forward passes'
+                ),
+                'remediation': 'Enable enable_causal_context for cross-temporal memory persistence',
+            })
+
         # 11b. UnifiedCognitiveCycle internal wiring verification
         if self.unified_cognitive_cycle is not None:
             _ucc = self.unified_cognitive_cycle
@@ -20784,7 +20844,8 @@ class AEONDeltaV3(nn.Module):
             'causal_world_model', 'causal_programmatic',
             'unified_simulator', 'hybrid_reasoning', 'ns_bridge',
             'hierarchical_vae', 'causal_context', 'multimodal',
-            'auto_critic',
+            'auto_critic', 'neurogenic_memory', 'consolidating_memory',
+            'temporal_memory',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
@@ -20864,9 +20925,20 @@ class AEONDeltaV3(nn.Module):
         # --- Error evolution summary ---
         error_evolution_state: Dict[str, Any] = {"available": False}
         if self.error_evolution is not None:
+            _ee_summary = self.error_evolution.get_error_summary()
+            # Include best recovery strategy per error class so external
+            # consumers can understand the system's learned recovery
+            # patterns, closing the gap between evolutionary learning
+            # and metacognitive state observability.
+            _best_strategies: Dict[str, Optional[str]] = {}
+            for _cls_name in _ee_summary.get("error_classes", {}):
+                _best_strategies[_cls_name] = (
+                    self.error_evolution.get_best_strategy(_cls_name)
+                )
             error_evolution_state = {
                 "available": True,
-                **self.error_evolution.get_error_summary(),
+                "best_strategies": _best_strategies,
+                **_ee_summary,
             }
 
         # --- Convergence monitor ---
