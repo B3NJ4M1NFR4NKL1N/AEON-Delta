@@ -2707,6 +2707,7 @@ class AEONConfig:
     lambda_cross_validation: float = 0.05
     lambda_auto_critic: float = 0.02
     lambda_ucc: float = 0.02
+    lambda_self_report: float = 0.02
     
     # ===== AGI COHERENCE FEEDBACK THRESHOLDS =====
     provenance_dominance_threshold: float = 0.6
@@ -13794,6 +13795,13 @@ class UnifiedCognitiveCycle:
         _err_summary = self.error_evolution.get_error_summary()
         self.coherence_verifier.adapt_threshold(_err_summary)
 
+        # 1c. Pre-adapt metacognitive trigger weights from error evolution
+        # so that historically problematic signals have higher sensitivity
+        # when the trigger evaluates below.  This closes the loop where
+        # error evolution data was recorded but not fed back into the
+        # trigger's decision weights within the unified cycle.
+        self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
+
         # 2. Cross-module coherence verification.
         coherence_result = self.coherence_verifier(subsystem_states)
         coherence_deficit = 1.0 - coherence_result['coherence_score'].mean().item()
@@ -13926,6 +13934,8 @@ class AEONDeltaV3(nn.Module):
         ("slot_binding", "factor_extraction"),
         ("factor_extraction", "consistency_gate"),
         ("consistency_gate", "safety"),
+        ("consistency_gate", "self_report"),
+        ("self_report", "safety"),
         ("safety", "cognitive_executive"),
         ("safety", "world_model"),
         ("cognitive_executive", "world_model"),
@@ -16170,6 +16180,44 @@ class AEONDeltaV3(nn.Module):
         safety_score, self_report = self._compute_safety(
             C_star, factors, diversity_results, topo_results, B, device
         )
+        
+        # 5-sr. Self-report-driven uncertainty escalation and safety
+        # adaptation — when TransparentSelfReporting produces low
+        # honesty or low confidence, escalate uncertainty so the
+        # metacognitive trigger is more likely to invoke deeper
+        # reasoning.  When consistency is low, tighten the safety
+        # threshold.  This closes the gap where self-report was
+        # computed but never influenced behaviour.
+        if self_report:
+            _sr_honesty = self_report.get('honesty_gate', None)
+            _sr_confidence = self_report.get('confidence', None)
+            _sr_consistency = self_report.get('consistency', None)
+            # Low honesty or low confidence → escalate uncertainty
+            if _sr_honesty is not None and torch.is_tensor(_sr_honesty):
+                _honesty_val = float(_sr_honesty.mean().item())
+                if _honesty_val < 0.5:
+                    _sr_unc_boost = min(1.0 - uncertainty, (0.5 - _honesty_val) * 0.4)
+                    if _sr_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _sr_unc_boost)
+                        uncertainty_sources["self_report_low_honesty"] = _sr_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+            if _sr_confidence is not None and torch.is_tensor(_sr_confidence):
+                _confidence_val = float(_sr_confidence.mean().item())
+                if _confidence_val < 0.5:
+                    _sr_conf_boost = min(1.0 - uncertainty, (0.5 - _confidence_val) * 0.3)
+                    if _sr_conf_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _sr_conf_boost)
+                        uncertainty_sources["self_report_low_confidence"] = _sr_conf_boost
+                        high_uncertainty = uncertainty > 0.5
+            # Low internal consistency → tighten safety threshold
+            if _sr_consistency is not None and torch.is_tensor(_sr_consistency):
+                _consistency_val = float(_sr_consistency.mean().item())
+                if _consistency_val < 0.5:
+                    _sr_safety_tightening = max(0.8, 1.0 - 0.2 * (0.5 - _consistency_val))
+                    adaptive_safety_threshold = min(
+                        adaptive_safety_threshold,
+                        adaptive_safety_threshold * _sr_safety_tightening,
+                    )
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         # Uses adaptive_safety_threshold which is tightened when convergence
@@ -20581,6 +20629,27 @@ class AEONDeltaV3(nn.Module):
                     min(1.0, _trigger_score), device=self.device,
                 )
 
+        # ===== 16. SELF-REPORT LOSS =====
+        # When TransparentSelfReporting is enabled, penalize low honesty
+        # and low internal consistency so that the self-reporting module
+        # learns through gradients to produce honest, consistent, and
+        # confident assessments.  This closes the gap where self-report
+        # metrics were computed but never influenced the training
+        # objective, making the module a passive observer.
+        self_report_loss = torch.tensor(0.0, device=self.device)
+        _self_report = outputs.get('self_report', {})
+        if _self_report:
+            _sr_honesty_t = _self_report.get('honesty_gate', None)
+            _sr_consistency_t = _self_report.get('consistency', None)
+            if (_sr_honesty_t is not None
+                    and torch.is_tensor(_sr_honesty_t)
+                    and _sr_honesty_t.requires_grad):
+                self_report_loss = self_report_loss + (1.0 - _sr_honesty_t.mean())
+            if (_sr_consistency_t is not None
+                    and torch.is_tensor(_sr_consistency_t)
+                    and _sr_consistency_t.requires_grad):
+                self_report_loss = self_report_loss + (1.0 - _sr_consistency_t.mean())
+
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
@@ -20695,6 +20764,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_cross_validation * cross_validation_loss +
             self.config.lambda_auto_critic * auto_critic_loss +
             self.config.lambda_ucc * ucc_loss +
+            self.config.lambda_self_report * self_report_loss +
             reg_loss
         )
         
@@ -20723,6 +20793,7 @@ class AEONDeltaV3(nn.Module):
             'cross_validation_loss': cross_validation_loss,
             'auto_critic_loss': auto_critic_loss,
             'ucc_loss': ucc_loss,
+            'self_report_loss': self_report_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,

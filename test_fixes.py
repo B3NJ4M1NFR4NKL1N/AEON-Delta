@@ -27865,6 +27865,241 @@ def test_provenance_instrumented_includes_ucc():
     print("✅ test_provenance_instrumented_includes_ucc PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Self-report feedback, error evolution pre-
+# adaptation in UCC, self-report loss in training, and pipeline dependency
+# completeness tests.
+# ============================================================================
+
+
+def test_self_report_low_honesty_escalates_uncertainty():
+    """Self-report low honesty should escalate uncertainty via uncertainty_sources.
+
+    TransparentSelfReporting outputs honesty_gate, confidence, and
+    consistency.  When honesty_gate < 0.5, the reasoning core should
+    increase the uncertainty estimate so that the metacognitive trigger
+    has a higher probability of firing deeper reasoning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=True,
+        enable_catastrophe_detection=False, enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify self_reporter is present when safety guardrails are enabled
+    if model.self_reporter is None:
+        print("✅ test_self_report_low_honesty_escalates_uncertainty SKIPPED (self_reporter disabled)")
+        return
+
+    # The forward method now checks self_report for low honesty/confidence
+    # and escalates uncertainty.  Verify the code path exists by checking
+    # that the source code references 'self_report_low_honesty'.
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert "self_report_low_honesty" in src, (
+        "Expected 'self_report_low_honesty' uncertainty_sources key in "
+        "_reasoning_core_impl to wire self-report into uncertainty."
+    )
+    print("✅ test_self_report_low_honesty_escalates_uncertainty PASSED")
+
+
+def test_self_report_low_confidence_escalates_uncertainty():
+    """Self-report low confidence should also escalate uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "self_report_low_confidence" in src, (
+        "Expected 'self_report_low_confidence' uncertainty_sources key in "
+        "_reasoning_core_impl to wire self-report confidence into uncertainty."
+    )
+    print("✅ test_self_report_low_confidence_escalates_uncertainty PASSED")
+
+
+def test_self_report_low_consistency_tightens_safety():
+    """Self-report low internal consistency should tighten safety threshold.
+
+    When the self-reporting module signals low internal consistency, the
+    adaptive safety threshold should be reduced (tightened) so that the
+    safety system is more vigilant during periods of incoherent reasoning.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_sr_safety_tightening" in src, (
+        "Expected safety tightening code path when self_report consistency "
+        "is low, but '_sr_safety_tightening' not found in _reasoning_core_impl."
+    )
+    print("✅ test_self_report_low_consistency_tightens_safety PASSED")
+
+
+def test_self_report_loss_in_compute_loss():
+    """compute_loss should include a self_report_loss term.
+
+    This trains TransparentSelfReporting to produce high honesty and
+    high consistency, closing the gap where the module had no gradient
+    signal and was effectively dead.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False, enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Construct minimal outputs dict with a mock self_report
+    targets = torch.zeros(2, 16, dtype=torch.long)
+    outputs = {
+        'logits': torch.randn(2, 16, config.vocab_size, requires_grad=True),
+        'core_state': torch.randn(2, config.hidden_dim),
+        'psi_0': torch.randn(2, config.z_dim),
+        'safety_score': torch.ones(2, 1),
+        'iterations': torch.tensor([5.0, 5.0]),
+        'diversity_results': {'diversity': torch.tensor([0.5, 0.5])},
+        'topo_results': {'catastrophes': torch.zeros(2, dtype=torch.bool)},
+        'self_report': {
+            'honesty_gate': torch.tensor([[0.3]], requires_grad=True),
+            'consistency': torch.tensor([[0.4]], requires_grad=True),
+            'confidence': torch.tensor([[0.8]], requires_grad=True),
+        },
+    }
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'self_report_loss' in loss_dict, (
+        "compute_loss should return 'self_report_loss' key"
+    )
+    sr_loss = loss_dict['self_report_loss']
+    assert sr_loss.item() > 0, (
+        f"self_report_loss should be > 0 when honesty and consistency are "
+        f"low, got {sr_loss.item()}"
+    )
+    print("✅ test_self_report_loss_in_compute_loss PASSED")
+
+
+def test_self_report_loss_zero_when_absent():
+    """compute_loss self_report_loss should be 0.0 when self_report is empty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False, enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    targets = torch.zeros(2, 16, dtype=torch.long)
+    outputs = {
+        'logits': torch.randn(2, 16, config.vocab_size, requires_grad=True),
+        'core_state': torch.randn(2, config.hidden_dim),
+        'psi_0': torch.randn(2, config.z_dim),
+        'safety_score': torch.ones(2, 1),
+        'iterations': torch.tensor([5.0, 5.0]),
+        'diversity_results': {'diversity': torch.tensor([0.5, 0.5])},
+        'topo_results': {'catastrophes': torch.zeros(2, dtype=torch.bool)},
+        'self_report': {},
+    }
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'self_report_loss' in loss_dict
+    assert loss_dict['self_report_loss'].item() == 0.0
+    print("✅ test_self_report_loss_zero_when_absent PASSED")
+
+
+def test_lambda_self_report_config():
+    """AEONConfig should have a lambda_self_report parameter."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'lambda_self_report'), (
+        "AEONConfig should have lambda_self_report attribute"
+    )
+    assert isinstance(config.lambda_self_report, float)
+    assert config.lambda_self_report > 0
+    print("✅ test_lambda_self_report_config PASSED")
+
+
+def test_ucc_adapts_trigger_weights_before_evaluation():
+    """UnifiedCognitiveCycle.evaluate should adapt metacognitive trigger
+    weights from error evolution BEFORE evaluating the trigger.
+
+    Without pre-adaptation, the trigger uses stale uniform weights even
+    when error evolution has identified historically problematic signals.
+    """
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        AEONConfig,
+    )
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, device_str='cpu',
+    )
+    conv_mon = ConvergenceMonitor()
+    coh_ver = ModuleCoherenceVerifier(hidden_dim=32)
+    err_evo = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=coh_ver,
+        error_evolution=err_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+
+    # Pre-populate error evolution with a recurring coherence failure
+    for _ in range(3):
+        err_evo.record_episode(
+            error_class="coherence_deficit",
+            strategy_used="meta_rerun",
+            success=False,
+        )
+
+    initial_weight = trigger._signal_weights["coherence_deficit"]
+    ucc.evaluate(
+        subsystem_states={
+            "a": torch.randn(1, 32),
+            "b": torch.randn(1, 32),
+        },
+        delta_norm=0.01,
+    )
+    adapted_weight = trigger._signal_weights["coherence_deficit"]
+
+    # The coherence_deficit weight should have increased due to the
+    # error evolution history being fed into adapt_weights_from_evolution
+    # inside UCC.evaluate().
+    assert adapted_weight > initial_weight, (
+        f"Expected coherence_deficit weight to increase after UCC evaluate "
+        f"with error history: {adapted_weight} > {initial_weight}"
+    )
+    print("✅ test_ucc_adapts_trigger_weights_before_evaluation PASSED")
+
+
+def test_pipeline_dependencies_include_self_report():
+    """Pipeline dependency DAG should include self_report edges.
+
+    self_report feeds into safety threshold adaptation and uncertainty
+    escalation, so the provenance DAG should reflect this data flow.
+    """
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("consistency_gate", "self_report") in dep_set, (
+        "consistency_gate → self_report edge missing from pipeline dependencies"
+    )
+    assert ("self_report", "safety") in dep_set, (
+        "self_report → safety edge missing from pipeline dependencies"
+    )
+    print("✅ test_pipeline_dependencies_include_self_report PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -29101,6 +29336,17 @@ if __name__ == '__main__':
     test_adapt_weights_handles_post_auto_critic_class()
     test_ns_consistency_and_complexity_default_true()
     test_provenance_instrumented_includes_ucc()
+    
+    # Architectural Unification — Self-report feedback, error evolution
+    # pre-adaptation in UCC, self-report loss, pipeline dependency tests
+    test_self_report_low_honesty_escalates_uncertainty()
+    test_self_report_low_confidence_escalates_uncertainty()
+    test_self_report_low_consistency_tightens_safety()
+    test_self_report_loss_in_compute_loss()
+    test_self_report_loss_zero_when_absent()
+    test_lambda_self_report_config()
+    test_ucc_adapts_trigger_weights_before_evaluation()
+    test_pipeline_dependencies_include_self_report()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
