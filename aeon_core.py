@@ -6791,7 +6791,11 @@ class ConvergenceMonitor:
                 'confidence': 1.0 - avg_contraction,
             }
         elif avg_contraction >= 1.0:
-            verdict = {'status': 'diverging', 'certified': False}
+            verdict = {
+                'status': 'diverging',
+                'certified': False,
+                'contraction_rate': avg_contraction,
+            }
             self._bridge_convergence_event(
                 'convergence_diverging',
                 'meta_loop_rollback',
@@ -6800,7 +6804,11 @@ class ConvergenceMonitor:
                           'delta_norm': delta_norm},
             )
         else:
-            verdict = {'status': 'converging', 'certified': False}
+            verdict = {
+                'status': 'converging',
+                'certified': False,
+                'contraction_rate': avg_contraction,
+            }
             # Stagnation: converging but delta hasn't dropped below
             # threshold for a long time.
             if len(self.history) >= 10 and delta_norm > self.threshold * 10:
@@ -15721,6 +15729,22 @@ class AEONDeltaV3(nn.Module):
         # should invest more compute.
         convergence_quality_scalar = float(convergence_rate) if meta_loop_valid else 0.0
         
+        # 1a-iii-cr. Blend per-step convergence rate with the
+        # ConvergenceMonitor's cross-pass contraction ratio so the
+        # feedback bus reflects both intra-pass and inter-pass health.
+        # When the monitor certifies convergence it reports a
+        # contraction_rate < 1; taking the minimum ensures that a
+        # good single-step rate cannot mask sustained cross-pass
+        # divergence detected by the sliding-window monitor.
+        _cross_pass_contraction = convergence_verdict.get(
+            'contraction_rate', None,
+        )
+        if _cross_pass_contraction is not None:
+            convergence_quality_scalar = min(
+                convergence_quality_scalar,
+                max(0.0, 1.0 - _cross_pass_contraction),
+            )
+        
         # 1a-ii-b. Certified convergence verification — run the
         # CertifiedMetaLoop's IBP-based formal verification on the
         # converged state.  If the Banach fixed-point preconditions
@@ -16288,12 +16312,14 @@ class AEONDeltaV3(nn.Module):
                 if (self.auto_critic is not None
                         and _coh_score_val < self.config.coherence_autocritic_threshold):
                     try:
+                        self.provenance_tracker.record_before("auto_critic", C_star)
                         _coh_critic = self.auto_critic(C_star)
                         _coh_revised = _coh_critic.get("candidate", None)
                         if (_coh_revised is not None
                                 and torch.isfinite(_coh_revised).all()
                                 and _coh_revised.shape == C_star.shape):
                             C_star = _coh_revised
+                        self.provenance_tracker.record_after("auto_critic", C_star)
                         self.audit_log.record(
                             "auto_critic", "coherence_deficit_revision", {
                                 "coherence_score": _coh_score_val,
@@ -18893,6 +18919,7 @@ class AEONDeltaV3(nn.Module):
                 # Invoke auto-critic for self-correction on the final output
                 if self.auto_critic is not None:
                     try:
+                        self.provenance_tracker.record_before("auto_critic", z_out)
                         _post_critic = self.auto_critic(z_out)
                         _post_revised = _post_critic.get("candidate", None)
                         if (_post_revised is not None
@@ -18900,6 +18927,7 @@ class AEONDeltaV3(nn.Module):
                                 and _post_revised.shape == z_out.shape):
                             z_out = _post_revised
                             _any_auto_critic_revised = True
+                        self.provenance_tracker.record_after("auto_critic", z_out)
                         self.audit_log.record("auto_critic", "revised", {
                             "iterations": _post_critic.get("iterations", 0),
                             "final_score": _post_critic.get("final_score", 0.0),
