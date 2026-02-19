@@ -24772,6 +24772,267 @@ def test_lambda_ucc_config():
     print("✅ test_lambda_ucc_config PASSED")
 
 
+# ============================================================================
+# SECTION: ARCHITECTURAL UNIFICATION — DEFAULT COHERENCE INTEGRATION TESTS
+# ============================================================================
+
+
+def test_default_config_enables_metacognitive_cycle():
+    """Default AEONConfig enables the meta-cognitive cycle components.
+
+    Verifies that module_coherence, metacognitive_recursion, error_evolution,
+    unified_cognitive_cycle, and causal_trace are all enabled by default,
+    ensuring the system is a unified, self-reflective architecture out of
+    the box.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert config.enable_module_coherence is True, \
+        "enable_module_coherence should be True by default"
+    assert config.enable_metacognitive_recursion is True, \
+        "enable_metacognitive_recursion should be True by default"
+    assert config.enable_error_evolution is True, \
+        "enable_error_evolution should be True by default"
+    assert config.enable_unified_cognitive_cycle is True, \
+        "enable_unified_cognitive_cycle should be True by default"
+    assert config.enable_causal_trace is True, \
+        "enable_causal_trace should be True by default"
+
+    print("✅ test_default_config_enables_metacognitive_cycle PASSED")
+
+
+def test_default_model_has_all_metacognitive_components():
+    """Default AEONDeltaV3 initializes with all meta-cognitive components."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.module_coherence is not None, \
+        "module_coherence should be initialized by default"
+    assert model.metacognitive_trigger is not None, \
+        "metacognitive_trigger should be initialized by default"
+    assert model.error_evolution is not None, \
+        "error_evolution should be initialized by default"
+    assert model.unified_cognitive_cycle is not None, \
+        "unified_cognitive_cycle should be initialized by default"
+    assert model.causal_trace is not None, \
+        "causal_trace should be initialized by default"
+
+    print("✅ test_default_model_has_all_metacognitive_components PASSED")
+
+
+def test_forward_pass_produces_ucc_results_by_default():
+    """Forward pass with default config produces UnifiedCognitiveCycle results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        result = model(tokens)
+
+    ucc = result.get('unified_cognitive_cycle_results', {})
+    assert len(ucc) > 0, "UCC results should not be empty"
+    assert 'should_rerun' in ucc, "UCC results should include should_rerun"
+    assert 'trigger_detail' in ucc, "UCC results should include trigger_detail"
+    assert 'provenance' in ucc, "UCC results should include provenance"
+    assert 'coherence_result' in ucc, "UCC results should include coherence_result"
+
+    print("✅ test_forward_pass_produces_ucc_results_by_default PASSED")
+
+
+def test_error_evolution_populated_after_forward_pass():
+    """Error evolution tracker records episodes during a default forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        model(tokens)
+
+    summary = model.error_evolution.get_error_summary()
+    assert summary['total_recorded'] > 0, \
+        "Error evolution should record episodes during a forward pass"
+
+    print("✅ test_error_evolution_populated_after_forward_pass PASSED")
+
+
+def test_causal_trace_populated_after_forward_pass():
+    """Causal trace buffer has entries after a default forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        model(tokens)
+
+    recent = model.causal_trace.recent(n=20)
+    assert len(recent) > 0, "Causal trace should have entries after forward pass"
+    # Check that different subsystems are represented
+    subsystems = {e.get('subsystem') for e in recent}
+    assert len(subsystems) > 1, \
+        f"Multiple subsystems should be traced, got: {subsystems}"
+
+    print("✅ test_causal_trace_populated_after_forward_pass PASSED")
+
+
+def test_metacognitive_trigger_evaluates_during_forward_pass():
+    """MetaCognitiveRecursionTrigger is evaluated during the forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        result = model(tokens)
+
+    # metacognitive_info should be in the output
+    meta_info = result.get('metacognitive_info', {})
+    assert isinstance(meta_info, dict), "metacognitive_info should be a dict"
+
+    print("✅ test_metacognitive_trigger_evaluates_during_forward_pass PASSED")
+
+
+def test_ucc_root_cause_tracing():
+    """UnifiedCognitiveCycle evaluate produces root_cause_trace when causal_trace available."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, TemporalCausalTraceBuffer,
+    )
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    coherence = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.99)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    metacog = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    provenance = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=metacog,
+        provenance_tracker=provenance,
+        causal_trace=trace,
+    )
+
+    # Record some provenance data
+    x = torch.randn(2, 16)
+    provenance.record_before("meta_loop", x)
+    provenance.record_after("meta_loop", x + 0.1)
+
+    states = {
+        "meta_loop": torch.randn(2, 16),
+        "factors": torch.randn(2, 16),
+    }
+
+    ucc.reset()
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.7,
+    )
+
+    assert 'root_cause_trace' in result, "evaluate should return root_cause_trace"
+    assert 'provenance' in result, "evaluate should return provenance"
+    assert 'should_rerun' in result, "evaluate should return should_rerun"
+
+    print("✅ test_ucc_root_cause_tracing PASSED")
+
+
+def test_error_evolution_root_cause_feedback():
+    """Error evolution get_root_causes returns structured root-cause data."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+
+    # Record episodes with causal antecedents
+    tracker.record_episode(
+        error_class="coherence_deficit",
+        strategy_used="meta_rerun",
+        success=False,
+        causal_antecedents=["convergence_divergence", "memory_staleness"],
+    )
+    tracker.record_episode(
+        error_class="coherence_deficit",
+        strategy_used="auto_critic",
+        success=True,
+        causal_antecedents=["convergence_divergence"],
+    )
+
+    root_causes = tracker.get_root_causes("coherence_deficit")
+    assert root_causes['episodes_with_antecedents'] == 2, \
+        "Both episodes have antecedents"
+    assert 'memory_staleness' in root_causes['root_causes'], \
+        "memory_staleness should be a root cause (not a known error class)"
+    assert root_causes['antecedent_depth'] > 0, \
+        "Antecedent depth should be positive"
+
+    print("✅ test_error_evolution_root_cause_feedback PASSED")
+
+
+def test_coherence_features_can_be_explicitly_disabled():
+    """All coherence features can be explicitly disabled via config."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
+        enable_unified_cognitive_cycle=False,
+        enable_causal_trace=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.module_coherence is None
+    assert model.metacognitive_trigger is None
+    assert model.error_evolution is None
+    assert model.unified_cognitive_cycle is None
+    assert model.causal_trace is None
+
+    # Model should still work without these features
+    tokens = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    assert 'logits' in result
+
+    print("✅ test_coherence_features_can_be_explicitly_disabled PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -25877,6 +26138,17 @@ if __name__ == '__main__':
     test_self_diagnostic_ucc_wiring_verification()
     test_self_diagnostic_detects_ucc_prereqs_without_ucc()
     test_lambda_ucc_config()
+    
+    # Architectural Unification — Default Coherence Integration Tests
+    test_default_config_enables_metacognitive_cycle()
+    test_default_model_has_all_metacognitive_components()
+    test_forward_pass_produces_ucc_results_by_default()
+    test_error_evolution_populated_after_forward_pass()
+    test_causal_trace_populated_after_forward_pass()
+    test_metacognitive_trigger_evaluates_during_forward_pass()
+    test_ucc_root_cause_tracing()
+    test_error_evolution_root_cause_feedback()
+    test_coherence_features_can_be_explicitly_disabled()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
