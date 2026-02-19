@@ -13114,9 +13114,10 @@ class ModuleCoherenceVerifier(nn.Module):
         weakest_key = min(
             pairwise, key=lambda k: pairwise[k].mean().item(),
         )
+        weakest_sim = float(pairwise[weakest_key].mean().item())
         return {
             "pair": weakest_key,
-            "similarity": float(pairwise[weakest_key].mean().item()),
+            "similarity": weakest_sim,
             "modules": list(weakest_key),
         }
 

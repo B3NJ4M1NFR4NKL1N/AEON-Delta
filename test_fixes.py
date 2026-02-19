@@ -26587,7 +26587,9 @@ def test_convergence_divergence_updates_cached_coherence_deficit():
     )
 
     # Run a forward pass — the diverging monitor should escalate the
-    # cached coherence deficit.
+    # cached coherence deficit.  Fixed seed ensures deterministic model
+    # behavior regardless of prior test execution order, preventing
+    # flakiness from random initialization affecting coherence scores.
     torch.manual_seed(0)
     tokens = torch.randint(100, 1000, (1, 16))
     with torch.no_grad():
