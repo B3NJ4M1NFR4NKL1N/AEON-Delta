@@ -7840,8 +7840,8 @@ def test_agi_coherence_config_defaults():
     from aeon_core import AEONConfig
 
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
-    assert config.enable_causal_context is False
-    assert config.enable_cross_validation is False
+    assert config.enable_causal_context is True
+    assert config.enable_cross_validation is True
     assert config.enable_external_trust is False
     assert config.enable_ns_consistency_check is False
     assert config.enable_complexity_estimator is False
@@ -7899,8 +7899,8 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.causal_context is None
-    assert model.cross_validator is None
+    assert model.causal_context is not None
+    assert model.cross_validator is not None
     assert model.trust_scorer is None
     assert model.ns_consistency_checker is None
     assert model.complexity_estimator is None
@@ -25273,6 +25273,202 @@ def test_metacognitive_trigger_provenance_tracked():
     print("✅ test_metacognitive_trigger_provenance_tracked PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — GAP CLOSURE VERIFICATION TESTS
+# ============================================================================
+
+
+def test_cross_validation_enabled_by_default():
+    """Verify that CrossValidationReconciler is enabled by default,
+    ensuring each component verifies and reinforces the others."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    assert config.enable_cross_validation is True, (
+        "enable_cross_validation must default to True for mutual verification"
+    )
+    model = AEONDeltaV3(config)
+    assert model.cross_validator is not None, (
+        "CrossValidationReconciler must be instantiated by default"
+    )
+    print("✅ test_cross_validation_enabled_by_default PASSED")
+
+
+def test_causal_context_enabled_by_default():
+    """Verify that CausalContextWindowManager is enabled by default,
+    ensuring all conclusions are traceable to root causes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    assert config.enable_causal_context is True, (
+        "enable_causal_context must default to True for root-cause traceability"
+    )
+    model = AEONDeltaV3(config)
+    assert model.causal_context is not None, (
+        "CausalContextWindowManager must be instantiated by default"
+    )
+    print("✅ test_causal_context_enabled_by_default PASSED")
+
+
+def test_convergence_monitor_wired_without_ucc():
+    """Verify that convergence_monitor is wired to error_evolution and
+    provenance_tracker even when UnifiedCognitiveCycle is disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_unified_cognitive_cycle=False,
+    )
+    model = AEONDeltaV3(config)
+    assert model.unified_cognitive_cycle is None, "UCC must be disabled"
+    assert model.convergence_monitor._error_evolution is not None, (
+        "convergence_monitor must be wired to error_evolution even without UCC"
+    )
+    assert model.convergence_monitor._provenance_tracker is not None, (
+        "convergence_monitor must be wired to provenance_tracker even without UCC"
+    )
+    print("✅ test_convergence_monitor_wired_without_ucc PASSED")
+
+
+def test_cross_validation_provenance_tracked():
+    """Verify that cross-validation reconciliation records provenance
+    before/after so trace_root_cause() can walk through it."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_cross_validation=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    assert model.cross_validator is not None
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Check that cross_validation appears in provenance contributions
+    attribution = model.provenance_tracker.compute_attribution()
+    contributions = attribution.get("contributions", {})
+    assert "cross_validation" in contributions, (
+        f"cross_validation must appear in provenance; got {list(contributions.keys())}"
+    )
+    print("✅ test_cross_validation_provenance_tracked PASSED")
+
+
+def test_pipeline_dependencies_include_cross_validation():
+    """Verify _PIPELINE_DEPENDENCIES includes cross_validation,
+    metacognitive_trigger, and deeper_meta_loop."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    # Check cross_validation is in the dependency chain
+    assert ("factor_extraction", "cross_validation") in dep_set, (
+        "cross_validation must be downstream of factor_extraction"
+    )
+    assert ("causal_model", "cross_validation") in dep_set, (
+        "cross_validation must be downstream of causal_model"
+    )
+    # Check metacognitive_trigger is in the dependency chain
+    assert ("consistency_gate", "metacognitive_trigger") in dep_set, (
+        "metacognitive_trigger must be downstream of consistency_gate"
+    )
+    # Check deeper_meta_loop is in the dependency chain
+    assert ("metacognitive_trigger", "deeper_meta_loop") in dep_set, (
+        "deeper_meta_loop must be downstream of metacognitive_trigger"
+    )
+    print("✅ test_pipeline_dependencies_include_cross_validation PASSED")
+
+
+def test_uncertainty_source_weights_complete():
+    """Verify all uncertainty sources used in the pipeline have
+    explicit reliability weights."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    required = [
+        "auto_critic_low_score",
+        "causal_dag_disagreement",
+        "causal_trace_errors",
+        "post_integration_coherence_deficit",
+        "unified_cycle_coherence",
+    ]
+    for name in required:
+        assert name in _UNCERTAINTY_SOURCE_WEIGHTS, (
+            f"'{name}' must have an explicit reliability weight"
+        )
+        assert 0.0 < _UNCERTAINTY_SOURCE_WEIGHTS[name] <= 1.0, (
+            f"Weight for '{name}' must be in (0, 1]"
+        )
+    print("✅ test_uncertainty_source_weights_complete PASSED")
+
+
+def test_unconditional_auto_critic_quality_assessment():
+    """Verify that when auto-critic is enabled, it always assesses
+    output quality and escalates uncertainty on low scores."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_auto_critic=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    assert model.auto_critic is not None
+
+    # Monkey-patch to always return very low score
+    original_forward = model.auto_critic.forward
+
+    def _low_critic(*args, **kwargs):
+        result = original_forward(*args, **kwargs)
+        result["final_score"] = 0.05
+        return result
+
+    model.auto_critic.forward = _low_critic
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    sources = outputs.get("uncertainty_sources", {})
+    assert "auto_critic_low_score" in sources, (
+        f"auto_critic_low_score must be in uncertainty_sources; got {list(sources.keys())}"
+    )
+    assert sources["auto_critic_low_score"] > 0, (
+        "auto_critic_low_score boost must be positive"
+    )
+
+    model.auto_critic.forward = original_forward
+    print("✅ test_unconditional_auto_critic_quality_assessment PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -26396,6 +26592,15 @@ if __name__ == '__main__':
     test_topology_catastrophe_escalates_uncertainty()
     test_safety_rollback_recorded_in_causal_trace()
     test_metacognitive_trigger_provenance_tracked()
+    
+    # Architectural Unification — Gap Closure Verification
+    test_cross_validation_enabled_by_default()
+    test_causal_context_enabled_by_default()
+    test_convergence_monitor_wired_without_ucc()
+    test_cross_validation_provenance_tracked()
+    test_pipeline_dependencies_include_cross_validation()
+    test_uncertainty_source_weights_complete()
+    test_unconditional_auto_critic_quality_assessment()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

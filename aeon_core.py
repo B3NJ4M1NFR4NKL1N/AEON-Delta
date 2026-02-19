@@ -2871,11 +2871,11 @@ class AEONConfig:
     notears_hidden_dim: int = 64
     
     # ===== AGI COHERENCE LAYER =====
-    enable_causal_context: bool = False
+    enable_causal_context: bool = True
     causal_context_short_cap: int = 32
     causal_context_mid_cap: int = 128
     causal_context_long_cap: int = 256
-    enable_cross_validation: bool = False
+    enable_cross_validation: bool = True
     cross_validation_agreement: float = 0.7
     cross_validation_max_steps: int = 3
     enable_external_trust: bool = False
@@ -6659,8 +6659,13 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "hvae_kl_divergence": 0.3,
     "low_memory_trust": 0.4,
     "auto_critic_error": 0.6,
+    "auto_critic_low_score": 0.7,
     "causal_programmatic_error": 0.5,
+    "causal_dag_disagreement": 0.7,
     "causal_root_cause_count": 0.6,
+    "causal_trace_errors": 0.5,
+    "post_integration_coherence_deficit": 0.7,
+    "unified_cycle_coherence": 0.7,
     "consolidating_memory_error": 0.4,
     "error_evolution_preemptive": 0.6,
     "hierarchical_wm_error": 0.5,
@@ -13856,6 +13861,16 @@ class AEONDeltaV3(nn.Module):
         ("rssm", "integration"),
         ("multimodal", "integration"),
         ("integration", "auto_critic"),
+        # Cross-validation reconciliation sits between causal models
+        # and downstream modules; metacognitive trigger and deeper
+        # meta-loop feed back into the pipeline when re-reasoning
+        # is required.
+        ("factor_extraction", "cross_validation"),
+        ("causal_model", "cross_validation"),
+        ("cross_validation", "unified_simulator"),
+        ("consistency_gate", "metacognitive_trigger"),
+        ("metacognitive_trigger", "deeper_meta_loop"),
+        ("deeper_meta_loop", "world_model"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -14597,6 +14612,18 @@ class AEONDeltaV3(nn.Module):
         self.convergence_monitor = ConvergenceMonitor(
             threshold=config.convergence_threshold,
         )
+        
+        # Wire convergence monitor → error evolution and provenance
+        # tracker directly so that divergence events are always captured,
+        # regardless of whether the UnifiedCognitiveCycle is instantiated.
+        # The UCC.__init__ also sets these, but if UCC prerequisites are
+        # partially missing, these links would otherwise be absent.
+        if self.error_evolution is not None:
+            self.convergence_monitor.set_error_evolution(self.error_evolution)
+        if self.provenance_tracker is not None:
+            self.convergence_monitor.set_provenance_tracker(
+                self.provenance_tracker
+            )
         
         # ===== UNIFIED COGNITIVE CYCLE =====
         # Orchestrates ConvergenceMonitor, ModuleCoherenceVerifier,
@@ -17497,12 +17524,14 @@ class AEONDeltaV3(nn.Module):
                     self.cross_validator.agreement_threshold,
                     self.cross_validator.agreement_threshold * _trust_tightening,
                 )
+            self.provenance_tracker.record_before("cross_validation", C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, _reconcile_second
             )
             # Restore original threshold after reconciliation
             self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
+            self.provenance_tracker.record_after("cross_validation", C_star)
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
                 "iterations": reconciliation_results["reconcile_iterations"],
@@ -18241,6 +18270,52 @@ class AEONDeltaV3(nn.Module):
                         self._cached_coherence_deficit, _ns_deficit,
                     )
         
+        # 8b2c. Unconditional auto-critic quality assessment — when the
+        # auto-critic is enabled, always evaluate output quality so that
+        # a low score escalates uncertainty and feeds into the weighted
+        # fusion.  The NS-violation path (8b3) and meta-cognitive path
+        # (8b4) only invoke the critic reactively; this path ensures
+        # that "any uncertainty triggers a meta-cognitive cycle" even
+        # when the critic discovers quality issues not flagged by other
+        # subsystems.  Skipped if a prior path already invoked the
+        # critic to avoid redundant computation.
+        if (self.auto_critic is not None
+                and not fast
+                and not _any_auto_critic_revised):
+            try:
+                self.provenance_tracker.record_before("auto_critic", z_out)
+                _uc_critic = self.auto_critic(z_out)
+                _uc_revised = _uc_critic.get("candidate", None)
+                if (_uc_revised is not None
+                        and torch.isfinite(_uc_revised).all()
+                        and _uc_revised.shape == z_out.shape):
+                    z_out = _uc_revised
+                    _any_auto_critic_revised = True
+                self.provenance_tracker.record_after("auto_critic", z_out)
+                _auto_critic_final_score = _uc_critic.get("final_score", 0.0)
+                _auto_critic_final_score_tensor = _uc_critic.get(
+                    "final_score_tensor", None,
+                )
+                if _auto_critic_final_score < 0.5:
+                    _uc_deficit = 1.0 - _auto_critic_final_score
+                    _uc_boost = max(0.0, min(
+                        1.0 - uncertainty, _uc_deficit * 0.3,
+                    ))
+                    uncertainty = min(1.0, uncertainty + _uc_boost)
+                    uncertainty_sources["auto_critic_low_score"] = max(
+                        _uc_boost, _uc_deficit * 0.3,
+                    )
+                    high_uncertainty = uncertainty > 0.5
+                self.audit_log.record("auto_critic", "quality_assessment", {
+                    "final_score": _auto_critic_final_score,
+                    "trigger": "unconditional",
+                })
+            except Exception as _uc_err:
+                logger.debug(
+                    "Unconditional auto-critic error (non-fatal): %s",
+                    _uc_err,
+                )
+        
         # 8b3a. Weighted uncertainty fusion — recompute the final scalar
         # uncertainty from all accumulated sources using reliability-based
         # weights.  Structural signals (meta-loop NaN, integration NaN)
@@ -18695,6 +18770,23 @@ class AEONDeltaV3(nn.Module):
                             and _ucc_revised.shape == z_out.shape):
                         z_out = _ucc_revised
                         _any_auto_critic_revised = True
+                    # Escalate uncertainty when the UCC-driven auto-critic
+                    # returns a low final score, mirroring the logic in
+                    # steps 8b3 and 8b4.  Without this, the UCC path
+                    # invokes the critic but silently discards quality
+                    # feedback, breaking the "any uncertainty triggers a
+                    # meta-cognitive cycle" contract.
+                    _ucc_ac_score = _ucc_critic.get("final_score", 0.0)
+                    if _ucc_ac_score < 0.5:
+                        _ucc_ac_deficit = 1.0 - _ucc_ac_score
+                        _ucc_ac_boost = max(0.0, min(
+                            1.0 - uncertainty, _ucc_ac_deficit * 0.3,
+                        ))
+                        uncertainty = min(1.0, uncertainty + _ucc_ac_boost)
+                        uncertainty_sources["auto_critic_low_score"] = max(
+                            _ucc_ac_boost, _ucc_ac_deficit * 0.3,
+                        )
+                        high_uncertainty = uncertainty > 0.5
                     self.audit_log.record("auto_critic", "ucc_driven_revision", {
                         "iterations": _ucc_critic.get("iterations", 0),
                         "final_score": _ucc_critic.get("final_score", 0.0),
