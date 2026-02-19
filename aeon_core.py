@@ -2952,6 +2952,8 @@ class AEONConfig:
     standalone_ns_bridge_blend: float = 0.1
     enable_temporal_knowledge_graph: bool = False
     temporal_knowledge_graph_capacity: int = 500
+    tkg_retrieval_blend: float = 0.05
+    tkg_retrieval_top_k: int = 5
 
     # ===== HIERARCHICAL WORLD MODEL =====
     enable_hierarchical_world_model: bool = False
@@ -12306,7 +12308,7 @@ class HybridReasoningEngine(nn.Module):
         }
 
     def forward(self, neural_state: torch.Tensor) -> Dict[str, Any]:
-        return self.reason(neural_state)
+        return self.reason(neural_state, query=neural_state)
 
 
 # ---------------------------------------------------------------------------
@@ -17893,6 +17895,44 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                 )
         
+        # 5e3c. TKG retrieval — query the standalone TemporalKnowledgeGraph
+        # to retrieve previously stored symbolic facts and blend them as
+        # a knowledge-grounding residual.  This closes the loop where the
+        # TKG accumulated facts from ns_bridge (step 5e3b) across forward
+        # passes but never fed them back into the reasoning state, making
+        # the standalone TKG write-only.  The retrieved knowledge enriches
+        # C_star with cross-temporal symbolic context so that conclusions
+        # are grounded in persistent symbolic memory.
+        if self.temporal_knowledge_graph is not None and not fast:
+            if len(self.temporal_knowledge_graph) > 0:
+                try:
+                    _tkg_retrieved = self.temporal_knowledge_graph.retrieve_relevant(
+                        C_star.mean(dim=0) if C_star.dim() > 1 else C_star,
+                        top_k=self.config.tkg_retrieval_top_k,
+                    )
+                    if _tkg_retrieved is not None and torch.isfinite(_tkg_retrieved).all():
+                        _tkg_retrieved = _tkg_retrieved.to(device)
+                        # Align retrieved facts to C_star shape
+                        if _tkg_retrieved.dim() == 1 and C_star.dim() == 2:
+                            _tkg_retrieved = _tkg_retrieved.unsqueeze(0).expand(B, -1)
+                        # Only blend if dimensions match
+                        if _tkg_retrieved.shape[-1] == C_star.shape[-1]:
+                            C_star = C_star + self.config.tkg_retrieval_blend * _tkg_retrieved
+                            self.audit_log.record("tkg_retrieval", "blended", {
+                                "tkg_size": len(self.temporal_knowledge_graph),
+                                "blend_weight": self.config.tkg_retrieval_blend,
+                            })
+                            if self.causal_trace is not None:
+                                self.causal_trace.record(
+                                    "tkg_retrieval", "knowledge_grounded",
+                                    causal_prerequisites=[input_trace_id],
+                                    metadata={
+                                        "tkg_size": len(self.temporal_knowledge_graph),
+                                    },
+                                )
+                except Exception as tkg_err:
+                    logger.debug(f"TKG retrieval skipped (non-fatal): {tkg_err}")
+
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
         # at multiple abstraction levels (tokens → concepts → goals).
