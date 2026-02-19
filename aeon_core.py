@@ -2704,6 +2704,7 @@ class AEONConfig:
     lambda_provenance: float = 0.01
     lambda_cross_validation: float = 0.05
     lambda_auto_critic: float = 0.02
+    lambda_ucc: float = 0.02
     
     # ===== AGI COHERENCE FEEDBACK THRESHOLDS =====
     provenance_dominance_threshold: float = 0.6
@@ -6011,12 +6012,14 @@ class CausalProvenanceTracker:
     def __init__(self):
         self._before_states: Dict[str, torch.Tensor] = {}
         self._deltas: Dict[str, float] = {}
+        self._timestamps: Dict[str, float] = {}
         self._order: list = []
     
     def reset(self):
         """Clear all recorded snapshots for a new forward pass."""
         self._before_states.clear()
         self._deltas.clear()
+        self._timestamps.clear()
         self._order.clear()
     
     def record_before(self, module_name: str, state: torch.Tensor):
@@ -6056,6 +6059,7 @@ class CausalProvenanceTracker:
             new_delta = (state.detach() - before).norm().item()
             # Accumulate deltas for repeated invocations
             self._deltas[module_name] = self._deltas.get(module_name, 0.0) + new_delta
+            self._timestamps[module_name] = time.monotonic()
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -6064,6 +6068,7 @@ class CausalProvenanceTracker:
             Dict with:
                 - contributions: {module_name: float} normalized [0, 1]
                 - deltas: {module_name: float} raw L2 delta norms
+                - timestamps: {module_name: float} monotonic timestamps
                 - order: list of module names in execution order
         """
         deltas: Dict[str, float] = {}
@@ -6076,6 +6081,7 @@ class CausalProvenanceTracker:
         return {
             'contributions': contributions,
             'deltas': deltas,
+            'timestamps': dict(self._timestamps),
             'order': list(self._order),
         }
 
@@ -17493,6 +17499,19 @@ class AEONDeltaV3(nn.Module):
                     adaptive_safety_threshold,
                     adaptive_safety_threshold * (0.5 + 0.5 * _agreement_val),
                 )
+                # Escalate uncertainty so the metacognitive trigger
+                # responds to cross-module reconciliation disagreement.
+                # Without this, low agreement tightens safety but never
+                # triggers deeper reasoning via the metacognitive cycle.
+                _RECONCILE_UNCERTAINTY_SCALE = 0.15
+                _reconcile_unc_boost = min(
+                    1.0 - uncertainty,
+                    _RECONCILE_UNCERTAINTY_SCALE * (1.0 - _agreement_val),
+                )
+                if _reconcile_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _reconcile_unc_boost)
+                    uncertainty_sources["reconciliation_disagreement"] = _reconcile_unc_boost
+                    high_uncertainty = uncertainty > 0.5
         
         # 5d3. Causal-aware planning annotation — when both MCTS planning
         # and causal model results are available, annotate the MCTS output
@@ -18529,6 +18548,30 @@ class AEONDeltaV3(nn.Module):
                             "unified_cycle_coherence"
                         ] = _ucc_unc_boost
                         high_uncertainty = uncertainty > 0.5
+                # Propagate UCC coherence score into coherence_results
+                # so compute_loss() can use the UCC's richer assessment
+                # (which includes provenance-correlated evaluation and
+                # error-evolution-adaptive thresholds) as training signal.
+                _ucc_score = _ucc_coherence.get("coherence_score", None)
+                if _ucc_score is not None and coherence_results:
+                    _existing_score = coherence_results.get(
+                        "coherence_score", None,
+                    )
+                    if _existing_score is not None:
+                        coherence_results = {
+                            **coherence_results,
+                            "coherence_score": torch.min(
+                                _existing_score, _ucc_score,
+                            ),
+                            "needs_recheck": (
+                                coherence_results.get(
+                                    "needs_recheck", False,
+                                )
+                                or _ucc_coherence.get(
+                                    "needs_recheck", False,
+                                )
+                            ),
+                        }
 
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -19513,6 +19556,25 @@ class AEONDeltaV3(nn.Module):
                     max(0.0, 1.0 - _critic_score), device=self.device,
                 )
 
+        # ===== 15. UNIFIED COGNITIVE CYCLE LOSS =====
+        # When the UnifiedCognitiveCycle determines that re-reasoning is
+        # needed (should_rerun=True), penalize the output state so that
+        # training drives the model toward producing internally consistent
+        # states that do not require meta-cognitive re-invocation.  The
+        # loss is proportional to the trigger score (weighted sum of active
+        # signals) so that severe coherence failures incur stronger
+        # penalties than mild ones.
+        ucc_loss = torch.tensor(0.0, device=self.device)
+        _ucc_results = outputs.get('unified_cognitive_cycle_results', {})
+        if _ucc_results:
+            _ucc_trigger = _ucc_results.get('trigger_detail', {})
+            _ucc_should_rerun = _ucc_results.get('should_rerun', False)
+            if _ucc_should_rerun:
+                _trigger_score = _ucc_trigger.get('trigger_score', 0.0)
+                ucc_loss = torch.tensor(
+                    min(1.0, _trigger_score), device=self.device,
+                )
+
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
@@ -19626,6 +19688,7 @@ class AEONDeltaV3(nn.Module):
             _provenance_weight * provenance_loss +
             self.config.lambda_cross_validation * cross_validation_loss +
             self.config.lambda_auto_critic * auto_critic_loss +
+            self.config.lambda_ucc * ucc_loss +
             reg_loss
         )
         
@@ -19653,6 +19716,7 @@ class AEONDeltaV3(nn.Module):
             'provenance_loss': provenance_loss,
             'cross_validation_loss': cross_validation_loss,
             'auto_critic_loss': auto_critic_loss,
+            'ucc_loss': ucc_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
@@ -20037,6 +20101,44 @@ class AEONDeltaV3(nn.Module):
         # 11. Multimodal → uncertainty (non-finite + error paths)
         if self.multimodal is not None:
             verified.append('multimodal → uncertainty (non-finite + error) → metacognitive')
+
+        # 11b. UnifiedCognitiveCycle internal wiring verification
+        if self.unified_cognitive_cycle is not None:
+            _ucc = self.unified_cognitive_cycle
+            _ucc_wiring_ok = True
+            if _ucc.convergence_monitor is not self.convergence_monitor:
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': 'UCC convergence_monitor not linked to model convergence_monitor',
+                    'remediation': 'Pass self.convergence_monitor to UnifiedCognitiveCycle',
+                })
+                _ucc_wiring_ok = False
+            if (self.error_evolution is not None
+                    and _ucc.convergence_monitor._error_evolution is None):
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': 'ConvergenceMonitor not wired to error_evolution inside UCC',
+                    'remediation': 'Call convergence_monitor.set_error_evolution()',
+                })
+                _ucc_wiring_ok = False
+            if (self.causal_trace is not None
+                    and _ucc.causal_trace is not self.causal_trace):
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': 'UCC causal_trace not linked to model causal_trace',
+                    'remediation': 'Pass self.causal_trace to UnifiedCognitiveCycle',
+                })
+                _ucc_wiring_ok = False
+            if _ucc_wiring_ok:
+                verified.append('unified_cognitive_cycle → internal wiring verified')
+        elif (self.module_coherence is not None
+              and self.metacognitive_trigger is not None
+              and self.error_evolution is not None):
+            gaps.append({
+                'component': 'unified_cognitive_cycle',
+                'gap': 'All UCC prerequisites active but UCC not enabled',
+                'remediation': 'Enable enable_unified_cognitive_cycle for unified orchestration',
+            })
 
         # --- Compute causal trace coverage ---
         _coverage = (
