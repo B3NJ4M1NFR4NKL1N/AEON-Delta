@@ -13661,10 +13661,17 @@ class UnifiedCognitiveCycle:
         }
 
     def reset(self) -> None:
-        """Reset all internal state for a new forward pass."""
+        """Reset internal state for a new evaluation cycle.
+
+        Note: the provenance tracker is intentionally NOT reset here because
+        it accumulates attribution data across the entire reasoning-core
+        forward pass.  Resetting it mid-pass (when the UCC evaluates) would
+        discard all provenance recorded by earlier subsystems, causing the
+        final ``compute_attribution()`` to return empty contributions.  The
+        reasoning core resets the tracker at the start of each pass instead.
+        """
         self.convergence_monitor.reset()
         self.metacognitive_trigger.reset()
-        self.provenance_tracker.reset()
 
 
 # ============================================================================

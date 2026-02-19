@@ -23537,7 +23537,9 @@ def test_unified_cognitive_cycle_auto_wires_components():
 
 
 def test_unified_cognitive_cycle_reset():
-    """UnifiedCognitiveCycle.reset() clears all internal state."""
+    """UnifiedCognitiveCycle.reset() clears convergence and trigger state
+    but preserves provenance — the reasoning core owns the provenance
+    lifecycle and resets it at the start of each forward pass."""
     from aeon_core import (
         UnifiedCognitiveCycle, ConvergenceMonitor,
         ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
@@ -23565,7 +23567,11 @@ def test_unified_cognitive_cycle_reset():
     cycle.reset()
 
     assert len(cm.history) == 0
-    assert len(prov._order) == 0
+    # Provenance must NOT be cleared by UCC reset — the reasoning core
+    # resets provenance at the start of each pass, not the UCC.
+    assert len(prov._order) == 1, (
+        f"UCC.reset() should preserve provenance, but _order={prov._order}"
+    )
 
     print("✅ test_unified_cognitive_cycle_reset PASSED")
 
@@ -23908,6 +23914,137 @@ def test_causal_decision_chain_includes_new_fields():
         "Expected causal_dag_consensus in causal_decision_chain"
     )
     print("✅ test_causal_decision_chain_includes_new_fields PASSED")
+
+
+# ===== Architectural Unification — Provenance Preservation & Cross-Phase Bridging =====
+
+def test_ucc_reset_preserves_provenance():
+    """UnifiedCognitiveCycle.reset() must NOT wipe provenance data.
+
+    The provenance tracker accumulates attribution across the entire
+    reasoning-core forward pass.  UCC.reset() is called mid-pass when
+    the unified cognitive cycle evaluates; if it cleared provenance,
+    all earlier subsystem attributions would be lost and the final
+    ``compute_attribution()`` would return empty contributions.
+    """
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    prov = CausalProvenanceTracker()
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=prov,
+    )
+
+    # Simulate reasoning-core provenance recording
+    prov.record_before('meta_loop', torch.zeros(2, 64))
+    prov.record_after('meta_loop', torch.ones(2, 64))
+    prov.record_before('safety', torch.ones(2, 64))
+    prov.record_after('safety', torch.ones(2, 64) * 0.9)
+
+    assert len(prov._order) == 2, "Pre-condition: 2 modules recorded"
+
+    # UCC.reset() should NOT touch provenance
+    cycle.reset()
+
+    attribution = prov.compute_attribution()
+    assert len(attribution['contributions']) == 2, (
+        "UCC.reset() wiped provenance — contributions should still have 2 entries"
+    )
+    assert 'meta_loop' in attribution['contributions']
+    assert 'safety' in attribution['contributions']
+    print("✅ test_ucc_reset_preserves_provenance PASSED")
+
+
+def test_full_coherence_provenance_end_to_end():
+    """Full-coherence forward pass produces non-empty provenance."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    provenance = result.get('provenance', {})
+    contributions = provenance.get('contributions', {})
+    assert len(contributions) > 0, (
+        "Full coherence forward pass should have non-empty provenance contributions"
+    )
+    # At least meta_loop should always be recorded
+    assert 'meta_loop' in contributions, (
+        "meta_loop must always appear in provenance contributions"
+    )
+    print("✅ test_full_coherence_provenance_end_to_end PASSED")
+
+
+def test_phase_a_to_phase_b_error_bridge():
+    """Phase A error patterns are bridged to Phase B error evolution.
+
+    Verifies that bridge_training_errors_to_inference() correctly
+    transfers error episodes from Phase A's convergence monitor into
+    Phase B's error evolution tracker.
+    """
+    from ae_train import (
+        TrainingConvergenceMonitor, bridge_training_errors_to_inference,
+    )
+    from aeon_core import CausalErrorEvolutionTracker
+
+    # Simulate Phase A convergence monitor with a divergence episode
+    phaseA_error_evo = CausalErrorEvolutionTracker(max_history=50)
+    phaseA_monitor = TrainingConvergenceMonitor(
+        threshold=1e-5, window_size=5,
+        error_evolution=phaseA_error_evo,
+    )
+    # Record a divergence episode
+    phaseA_error_evo.record_episode(
+        error_class='divergence',
+        strategy_used='reduce_lr',
+        success=True,
+        metadata={'phase': 'A'},
+    )
+    phaseA_error_evo.record_episode(
+        error_class='stagnation',
+        strategy_used='increase_lr',
+        success=False,
+        metadata={'phase': 'A'},
+    )
+
+    # Phase B's fresh error evolution tracker
+    phaseB_error_evo = CausalErrorEvolutionTracker(max_history=50)
+    assert len(phaseB_error_evo._episodes) == 0, "Pre-condition: empty"
+
+    # Bridge Phase A → Phase B
+    bridged = bridge_training_errors_to_inference(
+        trainer_monitor=phaseA_monitor,
+        inference_error_evolution=phaseB_error_evo,
+    )
+
+    assert bridged >= 1, (
+        f"Expected at least 1 bridged episode, got {bridged}"
+    )
+    # Phase B error evolution should now contain bridged episodes
+    summary = phaseB_error_evo.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+    assert len(error_classes) > 0, (
+        "Phase B error evolution should contain bridged error classes"
+    )
+    print("✅ test_phase_a_to_phase_b_error_bridge PASSED")
 
 
 if __name__ == '__main__':
@@ -24993,6 +25130,11 @@ if __name__ == '__main__':
     test_memory_retrieval_quality_in_output()
     test_causal_dag_consensus_in_model_init()
     test_causal_decision_chain_includes_new_fields()
+    
+    # Architectural Unification — Provenance Preservation & Cross-Phase Bridging
+    test_ucc_reset_preserves_provenance()
+    test_full_coherence_provenance_end_to_end()
+    test_phase_a_to_phase_b_error_bridge()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
