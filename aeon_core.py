@@ -14768,13 +14768,16 @@ class AEONDeltaV3(nn.Module):
             # could diverge from the model's own references.
             _ucc = self.unified_cognitive_cycle
             if _ucc.convergence_monitor is not self.convergence_monitor:
+                logger.warning("UCC wiring repair: convergence_monitor reference mismatch — re-linking")
                 _ucc.convergence_monitor = self.convergence_monitor
             if (self.error_evolution is not None
                     and getattr(_ucc.convergence_monitor, '_error_evolution', None)
                     is not self.error_evolution):
+                logger.warning("UCC wiring repair: convergence_monitor.error_evolution mismatch — re-linking")
                 _ucc.convergence_monitor.set_error_evolution(self.error_evolution)
             if (self.causal_trace is not None
                     and _ucc.causal_trace is not self.causal_trace):
+                logger.warning("UCC wiring repair: causal_trace reference mismatch — re-linking")
                 _ucc.causal_trace = self.causal_trace
                 _ucc.error_evolution.set_causal_trace(self.causal_trace)
         else:

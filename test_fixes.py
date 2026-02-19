@@ -27687,13 +27687,24 @@ def test_post_auto_critic_coherence_deficit_recorded():
     has_post_ac_deficit = "post_auto_critic_coherence_deficit" in err_classes
     # Also acceptable: the auto-critic may not revise (threshold not met),
     # in which case the post-auto-critic coherence check is skipped.
-    # We verify that the error class mapping exists regardless.
+    # Verify that the error class is at least in the trigger's mapping.
     from aeon_core import MetaCognitiveRecursionTrigger
     trigger = MetaCognitiveRecursionTrigger()
     trigger.adapt_weights_from_evolution(summary)
-    # The new error class must be in the class-to-signal mapping
-    assert has_post_ac_deficit or True, (
-        "Post-auto-critic coherence deficit class exists in mapping"
+    # The new error class must be in the class-to-signal mapping —
+    # verify by checking that a summary with this class modifies weights.
+    test_summary = {
+        "error_classes": {
+            "post_auto_critic_coherence_deficit": {
+                "success_rate": 0.0, "count": 1,
+            },
+        },
+    }
+    trigger2 = MetaCognitiveRecursionTrigger()
+    initial_w = trigger2._signal_weights["coherence_deficit"]
+    trigger2.adapt_weights_from_evolution(test_summary)
+    assert trigger2._signal_weights["coherence_deficit"] > initial_w, (
+        "post_auto_critic_coherence_deficit must be mapped to coherence_deficit signal"
     )
     print("✅ test_post_auto_critic_coherence_deficit_recorded PASSED")
 
@@ -27730,7 +27741,7 @@ def test_ucc_wiring_matches_model_references():
         "UCC causal_trace must reference model's causal_trace"
     )
     # Error evolution must have causal trace wired
-    assert ucc.error_evolution._causal_trace is model.causal_trace or True, (
+    assert ucc.error_evolution._causal_trace is model.causal_trace, (
         "Error evolution inside UCC should have causal trace wired"
     )
     # self_diagnostic should report no UCC wiring gaps
