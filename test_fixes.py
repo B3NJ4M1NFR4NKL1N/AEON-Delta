@@ -25879,6 +25879,297 @@ def test_ucc_error_evolution_records_deeper_strategy():
     print("✅ test_ucc_error_evolution_records_deeper_strategy PASSED")
 
 
+# ============================================================================
+# Architecture Unification — New gap fix validation tests
+# ============================================================================
+
+def test_vq_codebook_collapse_escalates_uncertainty():
+    """Verify that low VQ codebook utilization escalates uncertainty.
+
+    When the vector quantizer has low codebook utilization (many dead codes),
+    the reasoning core should boost uncertainty via the vq_codebook_collapse
+    source, triggering deeper meta-cognitive processing.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        use_vq=True,
+        vq_collapse_utilization_threshold=0.99,  # set very high so utilization is always below it
+        vq_collapse_uncertainty_scale=0.2,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(tokens, fast=False)
+
+    # With threshold 0.99 the utilization will almost always be below it,
+    # so vq_codebook_collapse should appear in uncertainty_sources.
+    sources = result.get('uncertainty_sources', {})
+    assert 'vq_codebook_collapse' in sources, (
+        f"Expected 'vq_codebook_collapse' in uncertainty_sources; got {sorted(sources.keys())}"
+    )
+    assert sources['vq_codebook_collapse'] > 0, (
+        "VQ codebook collapse uncertainty boost should be positive"
+    )
+
+    print("✅ test_vq_codebook_collapse_escalates_uncertainty PASSED")
+
+
+def test_vq_codebook_collapse_config_defaults():
+    """Verify VQ collapse config defaults are reasonable."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'vq_collapse_utilization_threshold')
+    assert hasattr(config, 'vq_collapse_uncertainty_scale')
+    assert 0.0 < config.vq_collapse_utilization_threshold < 1.0
+    assert 0.0 < config.vq_collapse_uncertainty_scale <= 1.0
+
+    print("✅ test_vq_codebook_collapse_config_defaults PASSED")
+
+
+def test_terminal_feedback_bus_refresh():
+    """Verify _cached_feedback is populated after a successful forward pass.
+
+    The terminal feedback bus refresh (step 8i) should ensure that
+    _cached_feedback is a non-None tensor after _reasoning_core_impl
+    completes, so the next forward pass starts with feedback that
+    reflects all decisions made in the current pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Before first forward pass, feedback should be None
+    assert model._cached_feedback is None
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        _ = model(tokens, fast=False)
+
+    # After forward pass, feedback should be populated
+    assert model._cached_feedback is not None, (
+        "_cached_feedback should be non-None after a successful forward pass"
+    )
+    assert torch.isfinite(model._cached_feedback).all(), (
+        "_cached_feedback should contain only finite values"
+    )
+    assert model._cached_feedback.shape[-1] == config.hidden_dim, (
+        f"_cached_feedback last dim should be {config.hidden_dim}, "
+        f"got {model._cached_feedback.shape[-1]}"
+    )
+
+    print("✅ test_terminal_feedback_bus_refresh PASSED")
+
+
+def test_temporal_knowledge_graph_config():
+    """Verify TemporalKnowledgeGraph config attributes exist."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'enable_temporal_knowledge_graph')
+    assert hasattr(config, 'temporal_knowledge_graph_capacity')
+    assert config.enable_temporal_knowledge_graph is False  # disabled by default
+    assert config.temporal_knowledge_graph_capacity > 0
+
+    print("✅ test_temporal_knowledge_graph_config PASSED")
+
+
+def test_temporal_knowledge_graph_instantiation():
+    """Verify TemporalKnowledgeGraph is instantiated when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_temporal_knowledge_graph=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert model.temporal_knowledge_graph is not None, (
+        "TemporalKnowledgeGraph should be instantiated when enabled"
+    )
+
+    print("✅ test_temporal_knowledge_graph_instantiation PASSED")
+
+
+def test_temporal_knowledge_graph_disabled_by_default():
+    """Verify TemporalKnowledgeGraph is None when not enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert model.temporal_knowledge_graph is None
+
+    print("✅ test_temporal_knowledge_graph_disabled_by_default PASSED")
+
+
+def test_ns_bridge_stores_facts_in_tkg():
+    """Verify that the NS bridge stores extracted facts in the TKG.
+
+    When both standalone_ns_bridge and temporal_knowledge_graph are enabled,
+    the pipeline should store extracted facts so that symbolic knowledge
+    persists across forward passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_standalone_ns_bridge=True,
+        enable_temporal_knowledge_graph=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.standalone_ns_bridge is not None
+    assert model.temporal_knowledge_graph is not None
+
+    # TKG should be empty before forward pass
+    assert len(model.temporal_knowledge_graph._store) == 0
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        _ = model(tokens, fast=False)
+
+    # After forward pass, TKG should contain facts
+    assert len(model.temporal_knowledge_graph._store) > 0, (
+        "TemporalKnowledgeGraph should contain facts after NS bridge processes"
+    )
+
+    print("✅ test_ns_bridge_stores_facts_in_tkg PASSED")
+
+
+def test_pipeline_dependencies_include_new_edges():
+    """Verify _PIPELINE_DEPENDENCIES includes the new dependency edges."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    # New edges that should be present
+    expected_new_edges = [
+        ("causal_model", "notears_causal"),
+        ("notears_causal", "causal_programmatic"),
+        ("ns_bridge", "temporal_knowledge_graph"),
+        ("memory", "temporal_memory"),
+    ]
+
+    for edge in expected_new_edges:
+        assert edge in dep_set, (
+            f"Expected pipeline dependency {edge} not found in _PIPELINE_DEPENDENCIES"
+        )
+
+    print("✅ test_pipeline_dependencies_include_new_edges PASSED")
+
+
+def test_full_coherence_enables_tkg():
+    """Verify enable_full_coherence activates temporal_knowledge_graph."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        enable_full_coherence=True,
+        device_str='cpu',
+    )
+    assert config.enable_temporal_knowledge_graph is True, (
+        "enable_full_coherence should set enable_temporal_knowledge_graph=True"
+    )
+
+    print("✅ test_full_coherence_enables_tkg PASSED")
+
+
+def test_architecture_summary_includes_tkg():
+    """Verify print_architecture_summary includes TemporalKG status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_temporal_knowledge_graph=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+    assert 'TemporalKG' in summary, (
+        "Architecture summary should include TemporalKG"
+    )
+
+    print("✅ test_architecture_summary_includes_tkg PASSED")
+
+
+def test_self_diagnostic_includes_tkg():
+    """Verify self_diagnostic includes temporal_knowledge_graph in module checks."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_temporal_knowledge_graph=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    assert 'temporal_knowledge_graph' in diag.get('active_modules', []), (
+        "self_diagnostic should list temporal_knowledge_graph as active"
+    )
+
+    print("✅ test_self_diagnostic_includes_tkg PASSED")
+
+
+def test_planning_docstring_not_placeholder():
+    """Verify the planning parameter docstring no longer says 'placeholder'."""
+    from aeon_core import AEONDeltaV3
+    import inspect
+
+    doc = inspect.getdoc(AEONDeltaV3.reasoning_core)
+    # Check specifically that the planning parameter is not described as placeholder
+    assert 'planning' not in doc.lower() or 'placeholder' not in doc.lower(), (
+        "reasoning_core docstring should not describe planning as 'placeholder' — "
+        "MCTS planning is fully implemented"
+    )
+    # Verify the specific parameter line does not contain 'placeholder'
+    for line in doc.splitlines():
+        if 'planning' in line.lower():
+            assert 'placeholder' not in line.lower(), (
+                f"Planning parameter line still references placeholder: {line!r}"
+            )
+
+    print("✅ test_planning_docstring_not_placeholder PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -27027,6 +27318,20 @@ if __name__ == '__main__':
     test_get_metacognitive_state_ucc_unavailable()
     test_ucc_root_cause_adapts_metacognitive_weights()
     test_ucc_error_evolution_records_deeper_strategy()
+    
+    # Architecture Unification — New gap fix validation tests
+    test_vq_codebook_collapse_escalates_uncertainty()
+    test_vq_codebook_collapse_config_defaults()
+    test_terminal_feedback_bus_refresh()
+    test_temporal_knowledge_graph_config()
+    test_temporal_knowledge_graph_instantiation()
+    test_temporal_knowledge_graph_disabled_by_default()
+    test_ns_bridge_stores_facts_in_tkg()
+    test_pipeline_dependencies_include_new_edges()
+    test_full_coherence_enables_tkg()
+    test_architecture_summary_includes_tkg()
+    test_self_diagnostic_includes_tkg()
+    test_planning_docstring_not_placeholder()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
