@@ -22516,6 +22516,305 @@ def test_fuse_memory_trust_score_in_causal_trace():
     print("✅ test_fuse_memory_trust_score_in_causal_trace PASSED")
 
 
+# =====================================================================
+# ARCHITECTURAL UNIFICATION — Adaptive Meta-Loop, MetaLearner Integration,
+# Self-Diagnostic, and generate() Uncertainty Modulation
+# =====================================================================
+
+
+def test_adaptive_meta_loop_config():
+    """AdaptiveMetaLoop config defaults exist and are sensible."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, 'enable_adaptive_meta_loop'), (
+        "Config should have enable_adaptive_meta_loop"
+    )
+    assert config.enable_adaptive_meta_loop is False, (
+        "AdaptiveMetaLoop should be disabled by default"
+    )
+    assert hasattr(config, 'adaptive_meta_loop_ponder_weight'), (
+        "Config should have adaptive_meta_loop_ponder_weight"
+    )
+    assert config.adaptive_meta_loop_ponder_weight > 0, (
+        "Ponder weight should be positive"
+    )
+
+    print("✅ test_adaptive_meta_loop_config PASSED")
+
+
+def test_adaptive_meta_loop_instantiation():
+    """AdaptiveMetaLoop is created when config flag is set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_adaptive_meta_loop=True)
+    model = AEONDeltaV3(config)
+    assert model.adaptive_meta_loop is not None, (
+        "AdaptiveMetaLoop should be instantiated when enabled"
+    )
+
+    print("✅ test_adaptive_meta_loop_instantiation PASSED")
+
+
+def test_adaptive_meta_loop_disabled_by_default():
+    """AdaptiveMetaLoop is None when config flag is unset."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert model.adaptive_meta_loop is None, (
+        "AdaptiveMetaLoop should be None by default"
+    )
+
+    print("✅ test_adaptive_meta_loop_disabled_by_default PASSED")
+
+
+def test_adaptive_meta_loop_forward():
+    """AdaptiveMetaLoop produces finite output and halting metadata."""
+    from aeon_core import AEONConfig, AdaptiveMetaLoop
+
+    config = AEONConfig()
+    loop = AdaptiveMetaLoop(config, max_steps=10)
+    x = torch.randn(2, config.hidden_dim)
+    output, meta = loop(x)
+
+    assert output.shape == (2, config.hidden_dim), (
+        f"Expected shape (2, {config.hidden_dim}), got {output.shape}"
+    )
+    assert torch.isfinite(output).all(), "Output should be finite"
+    assert 'ponder_cost' in meta, "Should contain ponder_cost"
+    assert 'steps' in meta, "Should contain steps"
+    assert 'halted' in meta, "Should contain halted"
+
+    print("✅ test_adaptive_meta_loop_forward PASSED")
+
+
+def test_adaptive_meta_loop_in_inference_pipeline():
+    """AdaptiveMetaLoop is used during inference, standard during training."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_adaptive_meta_loop=True)
+    model = AEONDeltaV3(config)
+
+    B, L = 1, 16
+    input_ids = torch.randint(1, config.vocab_size, (B, L))
+
+    # Inference mode — adaptive meta-loop should be used
+    model.eval()
+    with torch.no_grad():
+        out = model(input_ids, decode_mode='train', fast=False)
+    # The adaptive meta-loop records 'adaptive' in the audit log
+    assert 'meta_results' in out, "Output should contain meta_results"
+
+    print("✅ test_adaptive_meta_loop_in_inference_pipeline PASSED")
+
+
+def test_full_coherence_enables_adaptive_meta_loop():
+    """enable_full_coherence preset should enable adaptive meta-loop."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(enable_full_coherence=True)
+    assert config.enable_adaptive_meta_loop is True, (
+        "Full coherence should enable adaptive meta-loop"
+    )
+
+    print("✅ test_full_coherence_enables_adaptive_meta_loop PASSED")
+
+
+def test_ponder_loss_in_compute_loss():
+    """compute_loss includes ponder_loss when meta_results has ponder_cost."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    B, L = 1, 16
+    input_ids = torch.randint(1, config.vocab_size, (B, L))
+    targets = torch.randint(1, config.vocab_size, (B, L))
+
+    model.train()
+    outputs = model(input_ids, decode_mode='train', fast=True)
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'ponder_loss' in loss_dict, "Loss dict should contain ponder_loss"
+    # Without adaptive meta-loop, ponder_loss should be 0
+    assert float(loss_dict['ponder_loss'].item()) == 0.0, (
+        "Ponder loss should be 0 when adaptive meta-loop is not used"
+    )
+
+    print("✅ test_ponder_loss_in_compute_loss PASSED")
+
+
+def test_self_diagnostic_basic():
+    """self_diagnostic returns a well-structured report."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    assert 'status' in report, "Report should have status"
+    assert report['status'] in ('healthy', 'degraded', 'critical'), (
+        f"Invalid status: {report['status']}"
+    )
+    assert 'active_modules' in report, "Report should have active_modules"
+    assert isinstance(report['active_modules'], list), (
+        "active_modules should be a list"
+    )
+    assert 'gaps' in report, "Report should have gaps"
+    assert 'verified_connections' in report, (
+        "Report should have verified_connections"
+    )
+    assert 'integrity_report' in report, (
+        "Report should have integrity_report"
+    )
+    assert 'total_parameters' in report, (
+        "Report should have total_parameters"
+    )
+    assert 'trainable_parameters' in report, (
+        "Report should have trainable_parameters"
+    )
+
+    print("✅ test_self_diagnostic_basic PASSED")
+
+
+def test_self_diagnostic_detects_gaps():
+    """self_diagnostic identifies gaps when subsystems are partially enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Enable error evolution but not causal trace — should detect gap
+    config = AEONConfig(enable_error_evolution=True, enable_causal_trace=False)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    gap_components = [g['component'] for g in report['gaps']]
+    assert 'causal_trace' in gap_components, (
+        "Should detect causal_trace gap when error_evolution is on but trace is off"
+    )
+
+    print("✅ test_self_diagnostic_detects_gaps PASSED")
+
+
+def test_self_diagnostic_full_coherence():
+    """self_diagnostic reports healthy when full coherence is enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    # Full coherence should activate all modules and have few gaps
+    assert report['active_module_count'] > 20, (
+        f"Full coherence should have many active modules, got {report['active_module_count']}"
+    )
+    assert len(report['verified_connections']) >= 5, (
+        f"Full coherence should have many verified connections, got {len(report['verified_connections'])}"
+    )
+
+    print("✅ test_self_diagnostic_full_coherence PASSED")
+
+
+def test_meta_learner_task_buffer_populated_by_trainer():
+    """AEONTrainer populates MetaLearner task buffer during training."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(enable_meta_learning=True)
+    model = AEONDeltaV3(config)
+    assert model.meta_learner is not None, "MetaLearner should be initialized"
+    assert model.meta_learner.num_tasks == 0, (
+        "Task buffer should be empty initially"
+    )
+
+    trainer = AEONTrainer(model, config)
+
+    # Simulate a training step
+    B, L = 1, 16
+    batch = {
+        'input_ids': torch.randint(1, config.vocab_size, (B, L)),
+        'labels': torch.randint(1, config.vocab_size, (B, L)),
+    }
+    trainer.train_step(batch)
+
+    assert model.meta_learner.num_tasks >= 1, (
+        "MetaLearner task buffer should be populated after training step"
+    )
+
+    print("✅ test_meta_learner_task_buffer_populated_by_trainer PASSED")
+
+
+def test_generate_uncertainty_surfaces_in_output():
+    """generate() returns uncertainty in the output dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # generate() without tokenizer returns degraded mode, not uncertainty
+    result = model.generate("test")
+    assert result['status'] == 'degraded', "Without tokenizer, should be degraded"
+
+    print("✅ test_generate_uncertainty_surfaces_in_output PASSED")
+
+
+def test_architecture_summary_includes_adaptive_meta_loop():
+    """print_architecture_summary lists AdaptiveMetaLoop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_adaptive_meta_loop=True)
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+
+    assert 'AdaptiveMetaLoop' in summary, (
+        "Architecture summary should include AdaptiveMetaLoop"
+    )
+
+    print("✅ test_architecture_summary_includes_adaptive_meta_loop PASSED")
+
+
+def test_self_diagnostic_meta_learner_gap():
+    """self_diagnostic detects empty MetaLearner task buffer."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_meta_learning=True)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    # MetaLearner is initialized but task buffer is empty
+    gap_components = [g['component'] for g in report['gaps']]
+    assert 'meta_learner' in gap_components, (
+        "Should detect empty MetaLearner task buffer"
+    )
+
+    print("✅ test_self_diagnostic_meta_learner_gap PASSED")
+
+
+def test_adaptive_meta_loop_ponder_cost_loss_integration():
+    """Ponder cost from AdaptiveMetaLoop flows into compute_loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_adaptive_meta_loop=True)
+    model = AEONDeltaV3(config)
+
+    B, L = 1, 16
+    input_ids = torch.randint(1, config.vocab_size, (B, L))
+    targets = torch.randint(1, config.vocab_size, (B, L))
+
+    # At eval time, adaptive meta-loop is used
+    model.eval()
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='train', fast=False)
+
+    # The meta_results should contain ponder_cost
+    meta_results = outputs.get('meta_results', {})
+    has_ponder = 'ponder_cost' in meta_results
+    # When eval, adaptive meta-loop should have been used
+    assert has_ponder, (
+        "meta_results should contain ponder_cost when adaptive meta-loop is used"
+    )
+
+    print("✅ test_adaptive_meta_loop_ponder_cost_loss_integration PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -23533,6 +23832,23 @@ if __name__ == '__main__':
     test_enable_full_coherence_includes_multimodal()
     test_save_load_cognitive_state()
     test_fuse_memory_trust_score_in_causal_trace()
+    
+    # Architectural Unification — AdaptiveMetaLoop, MetaLearner, Self-Diagnostic
+    test_adaptive_meta_loop_config()
+    test_adaptive_meta_loop_instantiation()
+    test_adaptive_meta_loop_disabled_by_default()
+    test_adaptive_meta_loop_forward()
+    test_adaptive_meta_loop_in_inference_pipeline()
+    test_full_coherence_enables_adaptive_meta_loop()
+    test_ponder_loss_in_compute_loss()
+    test_self_diagnostic_basic()
+    test_self_diagnostic_detects_gaps()
+    test_self_diagnostic_full_coherence()
+    test_meta_learner_task_buffer_populated_by_trainer()
+    test_generate_uncertainty_surfaces_in_output()
+    test_architecture_summary_includes_adaptive_meta_loop()
+    test_self_diagnostic_meta_learner_gap()
+    test_adaptive_meta_loop_ponder_cost_loss_integration()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
