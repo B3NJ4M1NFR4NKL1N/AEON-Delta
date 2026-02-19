@@ -13800,7 +13800,13 @@ class UnifiedCognitiveCycle:
         # when the trigger evaluates below.  This closes the loop where
         # error evolution data was recorded but not fed back into the
         # trigger's decision weights within the unified cycle.
-        self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
+        try:
+            self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
+        except Exception as _adapt_err:
+            logger.warning(
+                "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
+                _adapt_err,
+            )
 
         # 2. Cross-module coherence verification.
         coherence_result = self.coherence_verifier(subsystem_states)
@@ -16188,6 +16194,10 @@ class AEONDeltaV3(nn.Module):
         # reasoning.  When consistency is low, tighten the safety
         # threshold.  This closes the gap where self-report was
         # computed but never influenced behaviour.
+        _SR_HONESTY_UNCERTAINTY_SCALE = 0.4
+        _SR_CONFIDENCE_UNCERTAINTY_SCALE = 0.3
+        _SR_CONSISTENCY_SAFETY_MIN = 0.8
+        _SR_CONSISTENCY_SAFETY_SCALE = 0.2
         if self_report:
             _sr_honesty = self_report.get('honesty_gate', None)
             _sr_confidence = self_report.get('confidence', None)
@@ -16196,7 +16206,10 @@ class AEONDeltaV3(nn.Module):
             if _sr_honesty is not None and torch.is_tensor(_sr_honesty):
                 _honesty_val = float(_sr_honesty.mean().item())
                 if _honesty_val < 0.5:
-                    _sr_unc_boost = min(1.0 - uncertainty, (0.5 - _honesty_val) * 0.4)
+                    _sr_unc_boost = min(
+                        1.0 - uncertainty,
+                        (0.5 - _honesty_val) * _SR_HONESTY_UNCERTAINTY_SCALE,
+                    )
                     if _sr_unc_boost > 0:
                         uncertainty = min(1.0, uncertainty + _sr_unc_boost)
                         uncertainty_sources["self_report_low_honesty"] = _sr_unc_boost
@@ -16204,7 +16217,10 @@ class AEONDeltaV3(nn.Module):
             if _sr_confidence is not None and torch.is_tensor(_sr_confidence):
                 _confidence_val = float(_sr_confidence.mean().item())
                 if _confidence_val < 0.5:
-                    _sr_conf_boost = min(1.0 - uncertainty, (0.5 - _confidence_val) * 0.3)
+                    _sr_conf_boost = min(
+                        1.0 - uncertainty,
+                        (0.5 - _confidence_val) * _SR_CONFIDENCE_UNCERTAINTY_SCALE,
+                    )
                     if _sr_conf_boost > 0:
                         uncertainty = min(1.0, uncertainty + _sr_conf_boost)
                         uncertainty_sources["self_report_low_confidence"] = _sr_conf_boost
@@ -16213,10 +16229,12 @@ class AEONDeltaV3(nn.Module):
             if _sr_consistency is not None and torch.is_tensor(_sr_consistency):
                 _consistency_val = float(_sr_consistency.mean().item())
                 if _consistency_val < 0.5:
-                    _sr_safety_tightening = max(0.8, 1.0 - 0.2 * (0.5 - _consistency_val))
-                    adaptive_safety_threshold = min(
-                        adaptive_safety_threshold,
-                        adaptive_safety_threshold * _sr_safety_tightening,
+                    _sr_safety_tightening = max(
+                        _SR_CONSISTENCY_SAFETY_MIN,
+                        1.0 - _SR_CONSISTENCY_SAFETY_SCALE * (0.5 - _consistency_val),
+                    )
+                    adaptive_safety_threshold = (
+                        adaptive_safety_threshold * _sr_safety_tightening
                     )
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
