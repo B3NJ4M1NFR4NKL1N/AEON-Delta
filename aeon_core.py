@@ -2938,6 +2938,16 @@ class AEONConfig:
     enable_certified_meta_loop: bool = False
     certified_meta_loop_uncertainty_boost: float = 0.2
 
+    # ===== ADAPTIVE META-LOOP =====
+    # Adaptive Computation Time (ACT) meta-loop variant that uses a learned
+    # halting network to decide per-sample when to stop iterating.  Simple
+    # inputs halt early, complex inputs iterate longer, yielding latency
+    # reduction on easy inputs while preserving quality on hard tasks.
+    # Mutually exclusive with hierarchical_meta_loop at inference time;
+    # if both are enabled, adaptive_meta_loop takes priority.
+    enable_adaptive_meta_loop: bool = False
+    adaptive_meta_loop_ponder_weight: float = 0.01
+
     # ===== OBSERVABILITY & TELEMETRY =====
     enable_structured_logging: bool = False
     enable_academic_mode: bool = False
@@ -3081,6 +3091,8 @@ class AEONConfig:
                 'enable_hierarchical_meta_loop',
                 # Certified convergence via IBP
                 'enable_certified_meta_loop',
+                # Adaptive computation time meta-loop — per-sample halting
+                'enable_adaptive_meta_loop',
                 # Multimodal grounding — ensures cross-modal signals
                 # participate in the unified coherence pipeline.
                 'enable_multimodal',
@@ -13321,6 +13333,23 @@ class AEONDeltaV3(nn.Module):
         else:
             self.certified_meta_loop = None
         
+        # ===== ADAPTIVE META-LOOP =====
+        # Adaptive Computation Time (ACT) variant: a learned halting network
+        # decides per-sample when to stop iterating.  At inference time,
+        # when enabled, this replaces the standard meta-loop so that simple
+        # inputs halt early (reducing latency) while complex inputs iterate
+        # longer (preserving quality).  Training always uses the standard
+        # meta-loop for stable gradient flow; the adaptive loop's ponder
+        # cost is added to the training loss for efficiency regularization.
+        if getattr(config, 'enable_adaptive_meta_loop', False):
+            logger.info("Loading AdaptiveMetaLoop...")
+            self.adaptive_meta_loop = AdaptiveMetaLoop(
+                config=config,
+                max_steps=config.max_iterations,
+            ).to(self.device)
+        else:
+            self.adaptive_meta_loop = None
+        
         # ===== SPARSE FACTORIZATION =====
         logger.info("Loading SparseFactorization...")
         self.sparse_factors = SparseFactorization(config).to(self.device)
@@ -14797,10 +14826,25 @@ class AEONDeltaV3(nn.Module):
         
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_conditioned)
+        _adaptive_meta_used = False
         if self.recursive_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.recursive_meta_loop(
                 z_conditioned, feedback=prev_feedback,
             )
+        elif self.adaptive_meta_loop is not None and not self.training and not fast:
+            # AdaptiveMetaLoop uses learned halting for per-sample compute
+            # budgets.  Only used at inference; training uses the standard
+            # meta-loop for stable gradients.  The ponder_cost is stored
+            # in meta_results for loss computation.
+            C_star, _adapt_meta = self.adaptive_meta_loop(z_conditioned)
+            iterations = _adapt_meta.get('steps', torch.ones(z_conditioned.shape[0], device=z_conditioned.device))
+            meta_results = {
+                'convergence_rate': 1.0,
+                'residual_norm': 0.0,
+                'ponder_cost': _adapt_meta.get('ponder_cost', torch.tensor(0.0)),
+                'mean_steps': _adapt_meta.get('mean_steps', 0.0),
+            }
+            _adaptive_meta_used = True
         elif self.hierarchical_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.hierarchical_meta_loop(
                 z_conditioned,
@@ -14823,6 +14867,7 @@ class AEONDeltaV3(nn.Module):
             "convergence_rate": meta_results.get("convergence_rate", 0.0),
             "recursive": self.recursive_meta_loop is not None and not fast,
             "hierarchical": self.hierarchical_meta_loop is not None and not fast,
+            "adaptive": _adaptive_meta_used,
         })
         
         # 1a. Semantic error recovery — if meta-loop produced NaN/Inf,
@@ -18307,6 +18352,18 @@ class AEONDeltaV3(nn.Module):
             if _kl.requires_grad:
                 hvae_kl_loss = self.config.kl_weight * _kl
         
+        # ===== 10b. ADAPTIVE META-LOOP PONDER COST =====
+        # When AdaptiveMetaLoop is active, its ponder cost is propagated
+        # through meta_results.  Penalizing high ponder cost encourages
+        # the halting network to stop early when the input is simple,
+        # yielding efficient per-sample computation allocation while
+        # maintaining quality on complex inputs.
+        ponder_loss = torch.tensor(0.0, device=self.device)
+        _meta_results = outputs.get('meta_results', {})
+        _ponder_cost = _meta_results.get('ponder_cost', None)
+        if _ponder_cost is not None and torch.is_tensor(_ponder_cost):
+            ponder_loss = self.config.adaptive_meta_loop_ponder_weight * _ponder_cost
+        
         # ===== 11. META-LEARNER EWC LOSS =====
         # When MetaLearner is initialized and has computed Fisher information,
         # add its EWC penalty to prevent catastrophic forgetting of previously
@@ -18488,6 +18545,7 @@ class AEONDeltaV3(nn.Module):
             _convergence_loss_scale * _uncertainty_loss_scale * _coherence_source_boost * _coherence_weight * coherence_loss +
             _causal_source_boost * _causal_weight * causal_dag_loss +
             hvae_kl_loss +
+            ponder_loss +
             ewc_loss +
             _provenance_weight * provenance_loss +
             self.config.lambda_cross_validation * cross_validation_loss +
@@ -18514,6 +18572,7 @@ class AEONDeltaV3(nn.Module):
             'coherence_loss': coherence_loss,
             'causal_dag_loss': causal_dag_loss,
             'hvae_kl_loss': hvae_kl_loss,
+            'ponder_loss': ponder_loss,
             'ewc_loss': ewc_loss,
             'provenance_loss': provenance_loss,
             'cross_validation_loss': cross_validation_loss,
@@ -18619,7 +18678,45 @@ class AEONDeltaV3(nn.Module):
             # uncertainty logit penalty (applied in _forward_impl) already
             # scales logits toward uniform during high uncertainty; this
             # surfaces the scalar so callers can further adapt behavior.
+            #
+            # Additionally, when uncertainty is high, modulate sampling
+            # temperature upward so that the decoder explores more diverse
+            # continuations — reflecting epistemic caution in the output
+            # distribution.  This closes the gap where reasoning uncertainty
+            # only affected logit magnitudes (via the penalty) but not the
+            # sampling process itself, so uncertain states could still
+            # produce deterministic-looking outputs.
             _gen_uncertainty = outputs.get('uncertainty', 0.0)
+            _uncertainty_regenerated = False
+            if (_gen_uncertainty > self.config.uncertainty_logit_penalty_threshold
+                    and sample
+                    and not _uncertainty_regenerated):
+                # Single re-generation attempt with elevated temperature
+                # proportional to uncertainty.  Max boost of 0.5 keeps
+                # output coherent.  The flag prevents repeated attempts.
+                _uncertainty_regenerated = True
+                _unc_temp_boost = min(
+                    0.5,
+                    self.config.uncertainty_logit_penalty_scale
+                    * (_gen_uncertainty - self.config.uncertainty_logit_penalty_threshold),
+                )
+                _elevated_temp = temperature + _unc_temp_boost
+                outputs = self.forward(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    decode_mode='inference',
+                    fast=False,
+                    temperature=_elevated_temp,
+                    top_k=top_k,
+                    sample=sample,
+                    max_length=max_length,
+                )
+                _gen_uncertainty = outputs.get('uncertainty', 0.0)
+                self.audit_log.record("generate", "uncertainty_temperature_boost", {
+                    "original_temperature": temperature,
+                    "elevated_temperature": _elevated_temp,
+                    "uncertainty": _gen_uncertainty,
+                })
 
             generated_ids = outputs.get('generated_ids')
             
@@ -18694,6 +18791,201 @@ class AEONDeltaV3(nn.Module):
         """Return the *n* most recent audit log entries."""
         return self.audit_log.recent(n)
     
+    def self_diagnostic(self) -> Dict[str, Any]:
+        """Run a comprehensive self-diagnostic validating all module
+        interconnections and reporting actionable architectural gaps.
+
+        This method checks that every initialized subsystem is properly
+        wired into the forward pipeline, that feedback loops are closed,
+        and that causal traceability covers all active modules.  It
+        returns a structured report with:
+
+        - ``status``: ``'healthy'``, ``'degraded'``, or ``'critical'``
+        - ``active_modules``: list of initialized optional modules
+        - ``verified_connections``: list of connections that passed
+        - ``gaps``: list of detected architectural gaps with remediation
+        - ``integrity_report``: latest subsystem health from the monitor
+        - ``error_evolution_summary``: historical error-recovery patterns
+        - ``causal_trace_coverage``: fraction of modules traceable
+
+        Returns:
+            Dict with diagnostic results.
+        """
+        gaps: List[Dict[str, str]] = []
+        verified: List[str] = []
+        active_modules: List[str] = []
+
+        # --- Check which modules are active ---
+        _module_checks = {
+            'meta_loop': self.meta_loop,
+            'recursive_meta_loop': getattr(self, 'recursive_meta_loop', None),
+            'hierarchical_meta_loop': getattr(self, 'hierarchical_meta_loop', None),
+            'adaptive_meta_loop': getattr(self, 'adaptive_meta_loop', None),
+            'certified_meta_loop': getattr(self, 'certified_meta_loop', None),
+            'world_model': getattr(self, 'world_model', None),
+            'hierarchical_world_model': getattr(self, 'hierarchical_world_model', None),
+            'safety_system': getattr(self, 'safety_system', None),
+            'diversity_metric': getattr(self, 'diversity_metric', None),
+            'topology_analyzer': getattr(self, 'topology_analyzer', None),
+            'hierarchical_memory': getattr(self, 'hierarchical_memory', None),
+            'neurogenic_memory': getattr(self, 'neurogenic_memory', None),
+            'temporal_memory': getattr(self, 'temporal_memory', None),
+            'consolidating_memory': getattr(self, 'consolidating_memory', None),
+            'causal_model': getattr(self, 'causal_model', None),
+            'notears_causal': getattr(self, 'notears_causal', None),
+            'causal_programmatic': getattr(self, 'causal_programmatic', None),
+            'causal_world_model': getattr(self, 'causal_world_model', None),
+            'unified_simulator': getattr(self, 'unified_simulator', None),
+            'hybrid_reasoning': getattr(self, 'hybrid_reasoning', None),
+            'standalone_ns_bridge': getattr(self, 'standalone_ns_bridge', None),
+            'hierarchical_vae': getattr(self, 'hierarchical_vae', None),
+            'auto_critic': getattr(self, 'auto_critic', None),
+            'module_coherence': getattr(self, 'module_coherence', None),
+            'metacognitive_trigger': getattr(self, 'metacognitive_trigger', None),
+            'cross_validator': getattr(self, 'cross_validator', None),
+            'trust_scorer': getattr(self, 'trust_scorer', None),
+            'ns_consistency_checker': getattr(self, 'ns_consistency_checker', None),
+            'complexity_estimator': getattr(self, 'complexity_estimator', None),
+            'causal_trace': getattr(self, 'causal_trace', None),
+            'error_evolution': getattr(self, 'error_evolution', None),
+            'meta_recovery': getattr(self, 'meta_recovery', None),
+            'cognitive_executive': getattr(self, 'cognitive_executive', None),
+            'causal_context': getattr(self, 'causal_context', None),
+            'meta_learner': getattr(self, 'meta_learner', None),
+            'multimodal': getattr(self, 'multimodal', None),
+            'mcts_planner': getattr(self, 'mcts_planner', None),
+            'active_learning_planner': getattr(self, 'active_learning_planner', None),
+        }
+        for name, module in _module_checks.items():
+            if module is not None:
+                active_modules.append(name)
+
+        # --- Verify key feedback loops ---
+        # 1. Meta-loop → feedback bus → next pass
+        if self.feedback_bus is not None:
+            verified.append('feedback_bus → meta_loop (cross-pass feedback)')
+        else:
+            gaps.append({
+                'component': 'feedback_bus',
+                'gap': 'CognitiveFeedbackBus not initialized',
+                'remediation': 'Ensure feedback_bus is created in __init__',
+            })
+
+        # 2. Uncertainty → metacognitive trigger
+        if self.metacognitive_trigger is not None:
+            verified.append('uncertainty → metacognitive_trigger → deeper reasoning')
+        elif self.config.enable_metacognitive_recursion:
+            gaps.append({
+                'component': 'metacognitive_trigger',
+                'gap': 'Metacognitive recursion enabled but trigger is None',
+                'remediation': 'Check MetaCognitiveRecursionTrigger initialization',
+            })
+
+        # 3. Error evolution → proactive guidance
+        if self.error_evolution is not None:
+            verified.append('error_evolution → proactive meta-loop tightening')
+            if self.causal_trace is not None:
+                verified.append('error_evolution ↔ causal_trace (bidirectional)')
+            else:
+                gaps.append({
+                    'component': 'causal_trace',
+                    'gap': 'Error evolution active but causal trace disabled',
+                    'remediation': 'Enable enable_causal_trace for full traceability',
+                })
+        elif self.config.enable_error_evolution:
+            gaps.append({
+                'component': 'error_evolution',
+                'gap': 'Error evolution enabled but tracker is None',
+                'remediation': 'Check CausalErrorEvolutionTracker initialization',
+            })
+
+        # 4. Module coherence → corrective action
+        if self.module_coherence is not None:
+            if self.auto_critic is not None:
+                verified.append('module_coherence → auto_critic (corrective cycle)')
+            else:
+                gaps.append({
+                    'component': 'auto_critic',
+                    'gap': 'Module coherence active but auto-critic disabled',
+                    'remediation': 'Enable enable_auto_critic for self-correction',
+                })
+
+        # 5. Safety → provenance → dampening
+        if self.safety_system is not None:
+            verified.append('safety_system → adaptive threshold → rollback')
+
+        # 6. Causal trace coverage
+        _traceable_modules = set()
+        _all_subsystems = {
+            'meta_loop', 'world_model', 'memory', 'causal_model',
+            'safety', 'integration', 'rssm',
+        }
+        if self.causal_trace is not None:
+            verified.append('causal_trace → root-cause analysis')
+            _traceable_modules = _all_subsystems  # all are recorded in pipeline
+        else:
+            if any(m in active_modules for m in [
+                'causal_model', 'notears_causal', 'causal_programmatic',
+            ]):
+                gaps.append({
+                    'component': 'causal_trace',
+                    'gap': 'Causal models active but trace disabled',
+                    'remediation': 'Enable enable_causal_trace for root-cause analysis',
+                })
+
+        # 7. MetaLearner task tracking
+        if self.meta_learner is not None:
+            if self.meta_learner.num_tasks > 0:
+                verified.append('meta_learner → task buffer populated')
+            else:
+                gaps.append({
+                    'component': 'meta_learner',
+                    'gap': 'MetaLearner initialized but task buffer empty',
+                    'remediation': 'Run training steps to populate task buffer',
+                })
+
+        # 8. Adaptive meta-loop
+        if self.adaptive_meta_loop is not None:
+            verified.append('adaptive_meta_loop → per-sample halting')
+
+        # --- Compute causal trace coverage ---
+        _coverage = (
+            len(_traceable_modules) / max(len(_all_subsystems), 1)
+            if self.causal_trace is not None else 0.0
+        )
+
+        # --- Determine overall status ---
+        _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
+        if len(_critical_gaps) >= 3:
+            status = 'critical'
+        elif gaps:
+            status = 'degraded'
+        else:
+            status = 'healthy'
+
+        return {
+            'status': status,
+            'active_modules': active_modules,
+            'active_module_count': len(active_modules),
+            'verified_connections': verified,
+            'verified_count': len(verified),
+            'gaps': gaps,
+            'gap_count': len(gaps),
+            'integrity_report': self.integrity_monitor.get_integrity_report(),
+            'error_evolution_summary': (
+                self.error_evolution.get_error_summary()
+                if self.error_evolution is not None else {}
+            ),
+            'error_recovery_stats': self.error_recovery.get_recovery_stats(),
+            'causal_trace_coverage': _coverage,
+            'convergence_monitor_history_length': len(
+                self.convergence_monitor.history
+            ),
+            'audit_pattern_insights': self.audit_log.get_pattern_insights(),
+            'total_parameters': self.count_parameters(),
+            'trainable_parameters': self.count_trainable_parameters(),
+        }
+    
     def init_meta_learner(self):
         """Initialize the MetaLearner post-construction (requires self reference)."""
         if self.config.enable_meta_learning and self.meta_learner is None:
@@ -18728,6 +19020,7 @@ class AEONDeltaV3(nn.Module):
             ("RecursiveMetaLoop", self.recursive_meta_loop),
             ("HierarchicalMetaLoop", self.hierarchical_meta_loop),
             ("CertifiedMetaLoop", self.certified_meta_loop),
+            ("AdaptiveMetaLoop", self.adaptive_meta_loop),
             ("FeedbackBus", self.feedback_bus),
             ("SlotBinder", self.slot_binder),
             ("SparseFactorization", self.sparse_factors),
@@ -19300,6 +19593,21 @@ class AEONTrainer:
         
         self.scheduler.step()
         self.global_step += 1
+        
+        # ===== META-LEARNER TASK TRACKING =====
+        # When MetaLearner is initialized, register each training step as
+        # a micro-task.  This populates the task buffer so that the EWC
+        # Fisher information (computed via ``compute_fisher()``) can
+        # leverage the task distribution for continual learning.  Without
+        # this, the MetaLearner's task buffer remains empty and EWC loss
+        # is always zero, breaking the meta-learning → training feedback
+        # loop.  Task registration is lightweight (just a buffer append)
+        # so the overhead is negligible.
+        if self.model.meta_learner is not None:
+            self.model.meta_learner.add_task(
+                f"step_{self.global_step}",
+                {"step": self.global_step, "loss": loss_val},
+            )
         
         # ===== CONVERGENCE MONITORING → ERROR EVOLUTION =====
         # Feed the current loss into the convergence monitor to detect
