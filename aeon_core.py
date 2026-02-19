@@ -2925,6 +2925,19 @@ class AEONConfig:
     enable_telemetry: bool = True
     telemetry_max_entries: int = 1000
 
+    # ===== AGI COHERENCE INTEGRATION =====
+    # Pre-meta-loop memory conditioning weight — blends a unified memory
+    # query result into the meta-loop input so historical context
+    # influences reasoning from the start, not only post-convergence.
+    pre_loop_memory_weight: float = 0.05
+    # Pre-meta-loop causal context weight — blends causal context
+    # (historical reasoning outcomes) into the meta-loop input.
+    pre_loop_causal_context_weight: float = 0.05
+    # Value network quality signal weight in uncertainty estimation.
+    # When the value network scores the current state as low-quality,
+    # uncertainty is escalated to trigger deeper meta-cognitive processing.
+    value_net_uncertainty_scale: float = 0.15
+
     # ===== UNIFIED COHERENCE PRESET =====
     # When True, activates all AGI coherence features as a group so that
     # every component verifies and reinforces the others, uncertainty
@@ -14613,15 +14626,67 @@ class AEONDeltaV3(nn.Module):
             else:
                 prev_feedback = prev_feedback.to(device)
         
+        # 0g. Pre-meta-loop unified memory conditioning — query all memory
+        # subsystems BEFORE the meta-loop so that historical context
+        # influences reasoning from the start, closing the gap where
+        # memory was only read post-convergence.  Uses the unified_memory_query
+        # method to provide a coherent multi-system retrieval signal.
+        # The result is blended as a lightweight residual into a conditioned
+        # input (z_conditioned) while preserving z_in as the safe fallback.
+        z_conditioned = z_in
+        if memory_retrieval and not fast and (
+            self.hierarchical_memory is not None
+            or self.neurogenic_memory is not None
+            or self.consolidating_memory is not None
+            or self.temporal_memory is not None
+        ):
+            try:
+                _umq = self.unified_memory_query(z_in.mean(dim=0), k=3)
+                _umq_combined = _umq.get('combined', None)
+                if (_umq_combined is not None
+                        and _umq_combined.numel() > 0
+                        and torch.isfinite(_umq_combined).all()):
+                    _umq_expanded = _umq_combined.unsqueeze(0).expand(B, -1).to(device)
+                    z_conditioned = z_in + self.config.pre_loop_memory_weight * _umq_expanded
+                    self.audit_log.record("unified_memory", "pre_loop_conditioning", {
+                        "num_systems": _umq.get('num_systems_responded', 0),
+                        "fallback_used": _umq.get('fallback_used', True),
+                    })
+            except Exception as _umq_err:
+                logger.debug("Pre-meta-loop memory conditioning failed: %s", _umq_err)
+        
+        # 0h. Pre-meta-loop causal context conditioning — retrieve historical
+        # reasoning outcomes from the CausalContextWindowManager and blend
+        # into z_conditioned so the meta-loop benefits from temporal context
+        # accumulated across prior forward passes.
+        if self.causal_context is not None and not fast:
+            try:
+                _pre_ctx = self.causal_context.get_context_tensor(k=3)
+                if (_pre_ctx is not None
+                        and _pre_ctx.shape[0] > 0
+                        and _pre_ctx.shape[-1] == self.config.hidden_dim):
+                    _pre_ctx = _pre_ctx.to(device)
+                    _pre_ctx_mean = _pre_ctx.mean(dim=0)  # [hidden_dim]
+                    _pre_ctx_proj = self.causal_context_proj(_pre_ctx_mean)
+                    z_conditioned = z_conditioned + (
+                        self.config.pre_loop_causal_context_weight
+                        * _pre_ctx_proj.unsqueeze(0).expand(B, -1)
+                    )
+                    self.audit_log.record("causal_context", "pre_loop_conditioning", {
+                        "num_entries": _pre_ctx.shape[0],
+                    })
+            except Exception as _cc_err:
+                logger.debug("Pre-meta-loop causal context conditioning failed: %s", _cc_err)
+        
         # 1. Meta-loop convergence
-        self.provenance_tracker.record_before("meta_loop", z_in)
+        self.provenance_tracker.record_before("meta_loop", z_conditioned)
         if self.recursive_meta_loop is not None and not fast:
             C_star, iterations, meta_results = self.recursive_meta_loop(
-                z_in, feedback=prev_feedback,
+                z_conditioned, feedback=prev_feedback,
             )
         else:
             C_star, iterations, meta_results = self.meta_loop(
-                z_in, use_fixed_point=not fast, feedback=prev_feedback,
+                z_conditioned, use_fixed_point=not fast, feedback=prev_feedback,
             )
         self.provenance_tracker.record_after("meta_loop", C_star)
         # Restore meta-loop parameters if proactively adjusted by evolved
@@ -15526,6 +15591,32 @@ class AEONDeltaV3(nn.Module):
                             "uncertainty_after_boost": uncertainty,
                         },
                     )
+        
+        # 5b1b-iii. Value network state quality signal — when the world
+        # model's value network is available, score the current C_star to
+        # estimate reasoning state quality.  Low-quality states (below the
+        # midpoint) escalate uncertainty, closing the loop between the
+        # value network (previously only used for world model surprise-
+        # switching) and the meta-cognitive uncertainty pipeline.  This
+        # makes the value network a general-purpose state quality estimator
+        # that reinforces the system's self-reflective capabilities.
+        if self.world_model is not None and self.config.enable_world_model and not fast:
+            try:
+                with torch.no_grad():
+                    _state_value = self.value_net(C_star)  # [B, 1]
+                    _state_quality = float(torch.sigmoid(_state_value).mean().item())
+                _VALUE_QUALITY_MIDPOINT = 0.5
+                if math.isfinite(_state_quality) and _state_quality < _VALUE_QUALITY_MIDPOINT:
+                    _val_boost = min(
+                        1.0 - uncertainty,
+                        (_VALUE_QUALITY_MIDPOINT - _state_quality)
+                        * self.config.value_net_uncertainty_scale,
+                    )
+                    uncertainty = min(1.0, uncertainty + _val_boost)
+                    uncertainty_sources["value_net_low_quality"] = _val_boost
+                    high_uncertainty = uncertainty > 0.5
+            except Exception as _vn_err:
+                logger.debug("Value network quality estimation failed: %s", _vn_err)
         
         # 5b1c. Critical uncertainty gate — when accumulated uncertainty
         # from multiple independent sources exceeds a critical threshold
@@ -16604,6 +16695,24 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=1.0,
                 tier="short_term",
             )
+        
+        # 7b-ii. Multimodal → memory storage — store the multimodal-grounded
+        # state in memory systems so that subsequent forward passes can
+        # retrieve cross-modal patterns.  Without this, multimodal
+        # grounding is ephemeral — it enriches the current pass but is
+        # lost to future reasoning, preventing the system from building
+        # a persistent cross-modal knowledge base.
+        if self.multimodal is not None and _multimodal_healthy and not fast:
+            if self.consolidating_memory is not None:
+                try:
+                    for i in range(min(B, z_rssm.shape[0])):
+                        if torch.isfinite(z_rssm[i]).all():
+                            self.consolidating_memory.store(z_rssm[i].detach())
+                except Exception as _mm_store_err:
+                    logger.debug(
+                        "Multimodal→ConsolidatingMemory store failed: %s",
+                        _mm_store_err,
+                    )
         
         # 8. Integration with residual and normalization
         self.provenance_tracker.record_before("integration", z_rssm)
