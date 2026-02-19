@@ -24993,8 +24993,15 @@ def test_error_evolution_root_cause_feedback():
     root_causes = tracker.get_root_causes("coherence_deficit")
     assert root_causes['episodes_with_antecedents'] == 2, \
         "Both episodes have antecedents"
+    # 'memory_staleness' appears as a root cause because it was listed as
+    # a causal_antecedent but is NOT itself a known error class in the
+    # tracker (only 'coherence_deficit' has episodes).  The get_root_causes
+    # algorithm classifies antecedents that are not known error classes as
+    # root causes — external or upstream events that initiated the chain.
     assert 'memory_staleness' in root_causes['root_causes'], \
         "memory_staleness should be a root cause (not a known error class)"
+    assert len(root_causes['root_causes']) >= 1, \
+        "At least one root cause should be identified"
     assert root_causes['antecedent_depth'] > 0, \
         "Antecedent depth should be positive"
 

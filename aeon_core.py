@@ -18639,11 +18639,14 @@ class AEONDeltaV3(nn.Module):
                     )
             # Record the corrective action in error evolution so the
             # system learns whether UCC-triggered corrections succeed.
-            if self.error_evolution is not None:
+            # Only record when auto_critic is available; when it's None
+            # no correction was attempted and recording a failure would
+            # skew error evolution statistics.
+            if self.error_evolution is not None and self.auto_critic is not None:
                 self.error_evolution.record_episode(
                     error_class="unified_cycle_rerun",
                     strategy_used="auto_critic",
-                    success=_any_auto_critic_revised if self.auto_critic is not None else False,
+                    success=_any_auto_critic_revised,
                     metadata=self._provenance_enriched_metadata({
                         "triggers": unified_cycle_results.get(
                             "trigger_detail", {},
