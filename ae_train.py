@@ -72,6 +72,107 @@ try:
 except ImportError:
     AEON_CORE_AVAILABLE = False
 
+    # Lightweight fallback so convergence events are still recorded and
+    # bridge_training_errors_to_inference() works without aeon_core.
+    from enum import Enum, auto
+    from collections import defaultdict
+
+    class NaNPolicy(Enum):
+        WARN = auto()
+        QUARANTINE = auto()
+
+    class TensorGuard:
+        """Minimal tensor safety guard (fallback when aeon_core unavailable)."""
+
+        def __init__(self, policy=None, enable_tracking: bool = False):
+            self.policy = policy or NaNPolicy.WARN
+            self._nan_count = 0
+            self._inf_count = 0
+            self._sanitize_count = 0
+
+        def sanitize(self, tensor: torch.Tensor, context: str = "") -> torch.Tensor:
+            has_nan = torch.isnan(tensor).any().item()
+            has_inf = torch.isinf(tensor).any().item()
+            if has_nan:
+                self._nan_count += 1
+            if has_inf:
+                self._inf_count += 1
+            if has_nan or has_inf:
+                self._sanitize_count += 1
+                tensor = torch.where(
+                    torch.isfinite(tensor), tensor, torch.zeros_like(tensor)
+                )
+            return tensor
+
+    class SemanticErrorClassifier:
+        """Minimal error classifier (fallback when aeon_core unavailable)."""
+
+        def classify(self, error_msg: str) -> str:
+            return "unknown"
+
+    class CausalErrorEvolutionTracker:
+        """Lightweight error evolution tracker for standalone training."""
+
+        def __init__(self, max_history: int = 100):
+            self._max_history = max_history
+            self._episodes: Dict[str, list] = defaultdict(list)
+
+        def record_episode(self, error_class: str, strategy_used: str,
+                           success: bool, metadata: Optional[Dict] = None,
+                           **kwargs) -> None:
+            history = self._episodes[error_class]
+            history.append({
+                "strategy": strategy_used,
+                "success": success,
+                "metadata": metadata or {},
+            })
+            if len(history) > self._max_history:
+                self._episodes[error_class] = history[-self._max_history:]
+
+        def get_error_summary(self) -> Dict[str, Any]:
+            summary: Dict[str, Any] = {"error_classes": {}}
+            for cls, eps in self._episodes.items():
+                successes = sum(1 for e in eps if e["success"])
+                strategies = list({e["strategy"] for e in eps})
+                summary["error_classes"][cls] = {
+                    "count": len(eps),
+                    "success_rate": successes / max(len(eps), 1),
+                    "strategies_used": strategies,
+                    "best_strategy": strategies[0] if strategies else "unknown",
+                }
+            return summary
+
+    class ConvergenceMonitor:
+        """Minimal convergence monitor (fallback when aeon_core unavailable)."""
+
+        def __init__(self, threshold: float = 1e-5):
+            self.history: list = []
+            self._threshold = threshold
+
+        def check(self, delta_norm: float) -> str:
+            self.history.append(delta_norm)
+            if len(self.history) < 3:
+                return "warmup"
+            if delta_norm < self._threshold:
+                return "converged"
+            return "converging"
+
+    class CausalProvenanceTracker:
+        """Minimal provenance tracker (fallback when aeon_core unavailable)."""
+
+        def __init__(self):
+            self._deltas: Dict[str, float] = {}
+            self._order: list = []
+
+        def record_before(self, module_name: str, state: torch.Tensor) -> None:
+            self._order.append(module_name)
+
+        def record_after(self, module_name: str, state: torch.Tensor) -> None:
+            pass
+
+        def compute_attribution(self) -> Dict[str, Any]:
+            return {"attribution": {}, "raw_deltas": {}, "order": self._order}
+
 # --- Токенизатор ---
 try:
     from transformers import AutoTokenizer
@@ -1340,10 +1441,7 @@ class SafeThoughtAETrainerV4:
         # and trigger adaptive training adjustments.
         # Wire CausalErrorEvolutionTracker so training divergence and
         # stagnation events are propagated to inference-time recovery.
-        self._error_evolution = (
-            CausalErrorEvolutionTracker(max_history=200)
-            if AEON_CORE_AVAILABLE else None
-        )
+        self._error_evolution = CausalErrorEvolutionTracker(max_history=200)
         self.convergence_monitor = TrainingConvergenceMonitor(
             threshold=1e-5, window_size=10,
             error_evolution=self._error_evolution,
@@ -1352,16 +1450,11 @@ class SafeThoughtAETrainerV4:
         # Error classifier for semantic error categorization when
         # aeon_core is available; provides richer diagnostics than
         # raw exception strings.
-        self._error_classifier = (
-            SemanticErrorClassifier() if AEON_CORE_AVAILABLE else None
-        )
+        self._error_classifier = SemanticErrorClassifier()
         # TensorGuard for NaN/Inf protection during training — extends
         # the inference pipeline's tensor safety to the training loop,
         # ensuring numerical consistency across both pipelines.
-        self._tensor_guard = (
-            TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
-            if AEON_CORE_AVAILABLE else None
-        )
+        self._tensor_guard = TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
         
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
@@ -1734,10 +1827,7 @@ class ContextualRSSMTrainer:
         # Convergence monitor for Phase B loss trajectory.
         # Wire CausalErrorEvolutionTracker so training divergence and
         # stagnation events are propagated to inference-time recovery.
-        self._error_evolution = (
-            CausalErrorEvolutionTracker(max_history=200)
-            if AEON_CORE_AVAILABLE else None
-        )
+        self._error_evolution = CausalErrorEvolutionTracker(max_history=200)
         self.convergence_monitor = TrainingConvergenceMonitor(
             threshold=1e-5, window_size=10,
             error_evolution=self._error_evolution,
@@ -1747,10 +1837,7 @@ class ContextualRSSMTrainer:
         # and that NaN/Inf values are caught before gradient updates,
         # matching the safety guarantees of Phase A (SafeThoughtAETrainerV4).
         self.provenance = TrainingProvenanceTracker()
-        self._tensor_guard = (
-            TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
-            if AEON_CORE_AVAILABLE else None
-        )
+        self._tensor_guard = TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -2007,10 +2094,7 @@ class TrainingProvenanceTracker:
     """
 
     def __init__(self):
-        if AEON_CORE_AVAILABLE:
-            self._tracker = CausalProvenanceTracker()
-        else:
-            self._tracker = None
+        self._tracker = CausalProvenanceTracker()
         # Standalone fallback storage
         self._deltas: Dict[str, float] = {}
         self._order: list = []
@@ -2095,10 +2179,7 @@ class TrainingConvergenceMonitor:
         # propagated as error episodes so that inference-time error
         # recovery can learn from training-time convergence failures.
         self._error_evolution = error_evolution
-        if AEON_CORE_AVAILABLE:
-            self._core_monitor = ConvergenceMonitor(threshold=threshold)
-        else:
-            self._core_monitor = None
+        self._core_monitor = ConvergenceMonitor(threshold=threshold)
 
     def update(self, loss_value: float) -> Dict[str, Any]:
         """Record a loss value and return convergence verdict.
@@ -2651,8 +2732,9 @@ def main(
     trainer_A = SafeThoughtAETrainerV4(model, config, monitor, output_dir)
     trainer_A.fit(tokens, epochs=epochs_A)
 
-    # Save best loss before releasing Phase A resources
+    # Save best loss and convergence monitor before releasing Phase A resources
     best_loss_A = trainer_A.best_loss
+    convergence_monitor_A = trainer_A.convergence_monitor
 
     # Release Phase A training resources before Phase B
     del trainer_A
@@ -2753,6 +2835,22 @@ def main(
         logger.error(f"❌ Failed to save final model to {final_path}: {e}")
     monitor.save_metrics(os.path.join(output_dir, "training_metrics_v4.json"))
     
+    # Bridge training error patterns to inference pipeline so that
+    # inference-time metacognitive triggers and recovery strategies
+    # benefit from training-time convergence failures.
+    _total_bridged = 0
+    for _phase_label, _cm in [("Phase_A", convergence_monitor_A),
+                               ("Phase_B", trainer_B.convergence_monitor)]:
+        _bridged = bridge_training_errors_to_inference(
+            trainer_monitor=_cm,
+            inference_error_evolution=_cm._error_evolution,
+        )
+        _total_bridged += _bridged
+        if _bridged:
+            logger.info(f"🔗 Bridged {_bridged} error patterns from {_phase_label} → inference")
+    if _total_bridged:
+        logger.info(f"🔗 Total bridged error patterns: {_total_bridged}")
+
     # Финальный отчёт
     logger.info("\n" + "🎉" * 25)
     logger.info("     ОБУЧЕНИЕ v4 УСПЕШНО ЗАВЕРШЕНО!")

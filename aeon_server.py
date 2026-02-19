@@ -1563,8 +1563,36 @@ async def get_health():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TELEMETRY & OBSERVABILITY ENDPOINTS
+#  META-COGNITIVE STATE
 # ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/metacognition")
+async def get_metacognition():
+    """Return a unified snapshot of the meta-cognitive subsystem.
+
+    Exposes the metacognitive trigger state, error evolution patterns,
+    convergence history, causal trace coverage, and a coherence verdict
+    that summarises how well the cognitive subsystems reinforce each
+    other.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        state = APP.model.get_metacognitive_state()
+        diagnostic = APP.model.self_diagnostic()
+        return {
+            "ok": True,
+            "metacognitive_state": state,
+            "self_diagnostic": {
+                "status": diagnostic.get("status"),
+                "verified_count": diagnostic.get("verified_count"),
+                "gap_count": diagnostic.get("gap_count"),
+                "gaps": diagnostic.get("gaps", []),
+                "causal_trace_coverage": diagnostic.get("causal_trace_coverage"),
+            },
+        }
+    except Exception as e:
+        logging.error(f"Metacognition endpoint error: {e}")
+        raise HTTPException(500, str(e))
 @app.get("/api/telemetry/metrics")
 async def get_telemetry_metrics():
     """Return a snapshot of all collected telemetry metrics with statistics."""
