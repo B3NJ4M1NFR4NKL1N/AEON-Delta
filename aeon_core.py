@@ -6072,18 +6072,18 @@ class CausalProvenanceTracker:
             to_module: Name of the downstream module (consumer).
         """
         if not hasattr(self, '_dependencies'):
-            # Lazily initialised so that existing serialised instances
+            # Lazily initialized so that existing serialized instances
             # remain backward-compatible.
-            self._dependencies: Dict[str, set] = {}
+            self._dependencies: Dict[str, Set[str]] = {}
         self._dependencies.setdefault(to_module, set()).add(from_module)
 
     def get_dependency_graph(self) -> Dict[str, List[str]]:
         """Return the inter-module dependency DAG.
 
         Returns:
-            Mapping from downstream module name to list of upstream modules.
+            Mapping from downstream module name to sorted list of upstream modules.
         """
-        deps: Dict[str, set] = getattr(self, '_dependencies', {})
+        deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
         return {k: sorted(v) for k, v in deps.items()}
 
     def trace_root_cause(self, module_name: str) -> Dict[str, Any]:
@@ -6105,8 +6105,8 @@ class CausalProvenanceTracker:
                 - visited: set of all modules in the dependency cone.
                 - contributions: {module: delta} for visited modules.
         """
-        deps: Dict[str, set] = getattr(self, '_dependencies', {})
-        visited: set = set()
+        deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
+        visited: Set[str] = set()
         queue = [module_name]
         while queue:
             current = queue.pop(0)
@@ -13345,7 +13345,7 @@ class CausalErrorEvolutionTracker:
                 with_antecedents += 1
             depth = 0
             queue = list(antecedents)
-            visited: set = set()
+            visited: Set[str] = set()
             while queue:
                 ant = queue.pop(0)
                 if ant in visited:
