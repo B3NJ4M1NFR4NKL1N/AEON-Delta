@@ -23251,6 +23251,382 @@ def test_post_output_uncertainty_records_error_evolution():
     print("✅ test_post_output_uncertainty_records_error_evolution PASSED")
 
 
+# ==============================================================================
+# Unified Cognitive Cycle & Architectural Coherence Tests
+# ==============================================================================
+
+def test_provenance_tracker_dependency_graph():
+    """CausalProvenanceTracker records inter-module dependencies as a DAG."""
+    from aeon_core import CausalProvenanceTracker
+
+    pt = CausalProvenanceTracker()
+    pt.record_dependency('encoder', 'meta_loop')
+    pt.record_dependency('meta_loop', 'safety')
+    pt.record_dependency('meta_loop', 'memory')
+    pt.record_dependency('safety', 'decoder')
+    pt.record_dependency('memory', 'decoder')
+
+    graph = pt.get_dependency_graph()
+
+    assert graph['meta_loop'] == ['encoder']
+    assert 'meta_loop' in graph['safety']
+    assert 'meta_loop' in graph['memory']
+    assert sorted(graph['decoder']) == ['memory', 'safety']
+
+    print("✅ test_provenance_tracker_dependency_graph PASSED")
+
+
+def test_provenance_tracker_trace_root_cause():
+    """trace_root_cause walks the dependency DAG to find root modules."""
+    from aeon_core import CausalProvenanceTracker
+
+    pt = CausalProvenanceTracker()
+    # Build a chain: input → encoder → meta_loop → safety → decoder
+    pt.record_dependency('input', 'encoder')
+    pt.record_dependency('encoder', 'meta_loop')
+    pt.record_dependency('meta_loop', 'safety')
+    pt.record_dependency('safety', 'decoder')
+
+    # Also record some deltas
+    t1 = torch.zeros(2, 64)
+    t2 = torch.ones(2, 64)
+    pt.record_before('encoder', t1)
+    pt.record_after('encoder', t2)
+    pt.record_before('safety', t1)
+    pt.record_after('safety', t2 * 0.5)
+
+    result = pt.trace_root_cause('decoder')
+
+    # 'input' has no upstream deps, so it's a root module
+    assert 'input' in result['root_modules'], f"Expected 'input' in root_modules, got {result['root_modules']}"
+    assert 'decoder' in result['visited']
+    assert 'safety' in result['visited']
+    assert 'meta_loop' in result['visited']
+    assert 'encoder' in result['visited']
+    assert 'input' in result['visited']
+    # Contributions should include recorded modules
+    assert result['contributions']['encoder'] > 0
+    assert result['contributions']['safety'] > 0
+
+    print("✅ test_provenance_tracker_trace_root_cause PASSED")
+
+
+def test_provenance_tracker_empty_dependency_graph():
+    """get_dependency_graph returns empty dict when no dependencies recorded."""
+    from aeon_core import CausalProvenanceTracker
+
+    pt = CausalProvenanceTracker()
+    assert pt.get_dependency_graph() == {}
+
+    # trace_root_cause with no deps should return the module itself as root
+    result = pt.trace_root_cause('some_module')
+    assert 'some_module' in result['root_modules']
+
+    print("✅ test_provenance_tracker_empty_dependency_graph PASSED")
+
+
+def test_convergence_monitor_auto_bridges_divergence():
+    """ConvergenceMonitor auto-records divergence in CausalErrorEvolutionTracker."""
+    from aeon_core import ConvergenceMonitor, CausalErrorEvolutionTracker
+
+    cm = ConvergenceMonitor(threshold=1e-5)
+    eet = CausalErrorEvolutionTracker()
+    cm.set_error_evolution(eet)
+
+    # Force divergence: increasing delta norms
+    cm.check(1.0)
+    cm.check(2.0)
+    cm.check(3.0)  # Should detect divergence and auto-bridge
+
+    summary = eet.get_error_summary()
+    assert summary['total_recorded'] > 0, "Expected at least one bridged event"
+    assert 'convergence_diverging' in summary['error_classes'], (
+        f"Expected 'convergence_diverging' in error classes, got {list(summary['error_classes'].keys())}"
+    )
+
+    print("✅ test_convergence_monitor_auto_bridges_divergence PASSED")
+
+
+def test_convergence_monitor_no_bridge_without_tracker():
+    """ConvergenceMonitor works normally when no error evolution is attached."""
+    from aeon_core import ConvergenceMonitor
+
+    cm = ConvergenceMonitor(threshold=1e-5)
+    # No set_error_evolution call — should not crash
+    result = cm.check(1.0)
+    result = cm.check(2.0)
+    result = cm.check(3.0)
+    assert result['status'] == 'diverging'
+
+    print("✅ test_convergence_monitor_no_bridge_without_tracker PASSED")
+
+
+def test_convergence_monitor_stagnation_bridge():
+    """ConvergenceMonitor detects stagnation and bridges to error evolution."""
+    from aeon_core import ConvergenceMonitor, CausalErrorEvolutionTracker
+
+    cm = ConvergenceMonitor(threshold=1e-5)
+    eet = CausalErrorEvolutionTracker()
+    cm.set_error_evolution(eet)
+
+    # Fill the window with slowly *decreasing* values (ratio < 1 → converging)
+    # but delta still >> threshold * 10, so stagnation is detected.
+    for i in range(12):
+        # Slowly decreasing: 1.0, 0.99, 0.98 ... all >> 1e-4
+        cm.check(1.0 - i * 0.005)
+
+    summary = eet.get_error_summary()
+    # Should have recorded stagnation
+    assert 'convergence_stagnation' in summary.get('error_classes', {}), (
+        f"Expected stagnation event, got {summary}"
+    )
+
+    print("✅ test_convergence_monitor_stagnation_bridge PASSED")
+
+
+def test_error_evolution_get_root_causes():
+    """CausalErrorEvolutionTracker.get_root_causes traces antecedent chains."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    eet = CausalErrorEvolutionTracker()
+
+    # Record an upstream error class
+    eet.record_episode(
+        error_class='numerical',
+        strategy_used='sanitize',
+        success=True,
+        causal_antecedents=['tensor_overflow'],
+    )
+
+    # Record a downstream error class that cites 'numerical' as antecedent
+    eet.record_episode(
+        error_class='convergence',
+        strategy_used='rollback',
+        success=False,
+        causal_antecedents=['numerical'],
+    )
+
+    result = eet.get_root_causes('convergence')
+    # 'tensor_overflow' is not a known error class, so it's a root cause
+    assert 'tensor_overflow' in result['root_causes'], (
+        f"Expected 'tensor_overflow' in root causes, got {result['root_causes']}"
+    )
+    assert result['episodes_with_antecedents'] == 1
+
+    print("✅ test_error_evolution_get_root_causes PASSED")
+
+
+def test_error_evolution_get_root_causes_empty():
+    """get_root_causes returns empty results for unknown error class."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    eet = CausalErrorEvolutionTracker()
+    result = eet.get_root_causes('nonexistent')
+    assert result['root_causes'] == {}
+    assert result['antecedent_depth'] == 0.0
+    assert result['episodes_with_antecedents'] == 0
+
+    print("✅ test_error_evolution_get_root_causes_empty PASSED")
+
+
+def test_unified_cognitive_cycle_basic():
+    """UnifiedCognitiveCycle orchestrates all meta-cognitive components."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # Simulate subsystem states
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'safety': torch.randn(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.3,
+    )
+
+    assert 'convergence_verdict' in result
+    assert 'coherence_result' in result
+    assert 'should_rerun' in result
+    assert 'trigger_detail' in result
+    assert 'provenance' in result
+    assert 'root_cause_trace' in result
+    assert isinstance(result['should_rerun'], bool)
+
+    print("✅ test_unified_cognitive_cycle_basic PASSED")
+
+
+def test_unified_cognitive_cycle_triggers_rerun():
+    """UnifiedCognitiveCycle triggers rerun when coherence is low."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.99),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.1),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # States that are very different → low coherence → should trigger rerun
+    states = {
+        'meta_loop': torch.ones(2, 64),
+        'safety': -torch.ones(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=1.0,
+        uncertainty=0.8,
+    )
+
+    # With very different states and high uncertainty, should recommend rerun
+    assert result['should_rerun'] is True or result['coherence_result']['needs_recheck'] is True
+
+    print("✅ test_unified_cognitive_cycle_triggers_rerun PASSED")
+
+
+def test_unified_cognitive_cycle_auto_wires_components():
+    """UnifiedCognitiveCycle auto-wires convergence→error_evolution and error_evolution→causal_trace."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cm = ConvergenceMonitor(threshold=1e-5)
+    eet = CausalErrorEvolutionTracker()
+    trace = TemporalCausalTraceBuffer()
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=eet,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=trace,
+    )
+
+    # Verify wiring: convergence → error evolution
+    assert cm._error_evolution is eet
+    # Verify wiring: error evolution → causal trace
+    assert eet._causal_trace is trace
+
+    print("✅ test_unified_cognitive_cycle_auto_wires_components PASSED")
+
+
+def test_unified_cognitive_cycle_reset():
+    """UnifiedCognitiveCycle.reset() clears all internal state."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor(threshold=1e-5)
+    trigger = MetaCognitiveRecursionTrigger()
+    prov = CausalProvenanceTracker()
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+
+    # Put some state in
+    cm.check(1.0)
+    cm.check(2.0)
+    prov.record_before('test', torch.zeros(2, 64))
+    prov.record_after('test', torch.ones(2, 64))
+
+    cycle.reset()
+
+    assert len(cm.history) == 0
+    assert len(prov._order) == 0
+
+    print("✅ test_unified_cognitive_cycle_reset PASSED")
+
+
+def test_unified_cognitive_cycle_records_causal_trace():
+    """UnifiedCognitiveCycle records its decisions in the causal trace."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    trace = TemporalCausalTraceBuffer()
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=trace,
+    )
+
+    states = {'a': torch.randn(2, 64), 'b': torch.randn(2, 64)}
+    cycle.evaluate(subsystem_states=states, delta_norm=0.1)
+
+    recent = trace.recent(1)
+    assert len(recent) >= 1
+    assert recent[-1]['subsystem'] == 'unified_cognitive_cycle'
+
+    print("✅ test_unified_cognitive_cycle_records_causal_trace PASSED")
+
+
+def test_bridge_training_errors_wires_convergence_monitor():
+    """bridge_training_errors_to_inference wires inference convergence monitor."""
+    from ae_train import bridge_training_errors_to_inference, TrainingConvergenceMonitor
+    from aeon_core import ConvergenceMonitor, CausalErrorEvolutionTracker
+
+    # Create a training monitor with its own error evolution for recording
+    train_eet = CausalErrorEvolutionTracker()
+    tcm = TrainingConvergenceMonitor(error_evolution=train_eet)
+    # Force a divergence event via update() to produce bridgeable data
+    for v in [1.0, 0.9, 0.8, 0.7, 10.0]:  # spike causes divergence
+        tcm.update(v)
+
+    eet = CausalErrorEvolutionTracker()
+    icm = ConvergenceMonitor()
+
+    bridged = bridge_training_errors_to_inference(
+        trainer_monitor=tcm,
+        inference_error_evolution=eet,
+        inference_convergence_monitor=icm,
+    )
+
+    # Verify the inference convergence monitor was wired
+    assert icm._error_evolution is eet
+    assert bridged >= 1
+
+    print("✅ test_bridge_training_errors_wires_convergence_monitor PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -24303,6 +24679,22 @@ if __name__ == '__main__':
     test_get_metacognitive_state()
     test_get_metacognitive_state_degraded()
     test_post_output_uncertainty_records_error_evolution()
+    
+    # Unified Cognitive Cycle & Architectural Coherence tests
+    test_provenance_tracker_dependency_graph()
+    test_provenance_tracker_trace_root_cause()
+    test_provenance_tracker_empty_dependency_graph()
+    test_convergence_monitor_auto_bridges_divergence()
+    test_convergence_monitor_no_bridge_without_tracker()
+    test_convergence_monitor_stagnation_bridge()
+    test_error_evolution_get_root_causes()
+    test_error_evolution_get_root_causes_empty()
+    test_unified_cognitive_cycle_basic()
+    test_unified_cognitive_cycle_triggers_rerun()
+    test_unified_cognitive_cycle_auto_wires_components()
+    test_unified_cognitive_cycle_reset()
+    test_unified_cognitive_cycle_records_causal_trace()
+    test_bridge_training_errors_wires_convergence_monitor()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
