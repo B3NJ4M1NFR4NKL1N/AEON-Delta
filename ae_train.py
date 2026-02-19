@@ -2288,6 +2288,7 @@ def bridge_training_errors_to_inference(
     trainer_monitor: 'TrainingConvergenceMonitor',
     inference_error_evolution: Any,
     causal_trace: Any = None,
+    inference_convergence_monitor: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -2301,6 +2302,12 @@ def bridge_training_errors_to_inference(
     root-cause analysis can trace inference-time recovery strategies back
     to the specific training-time failure patterns that informed them.
 
+    When *inference_convergence_monitor* is provided, it is wired to
+    the inference error evolution tracker via
+    :meth:`ConvergenceMonitor.set_error_evolution` so that future
+    inference-time divergence/stagnation events automatically flow
+    into the same error-evolution system.
+
     Args:
         trainer_monitor: The training convergence monitor that has
             accumulated error episodes during training.
@@ -2308,12 +2315,25 @@ def bridge_training_errors_to_inference(
             ``CausalErrorEvolutionTracker`` instance.
         causal_trace: Optional ``TemporalCausalTraceBuffer`` for
             recording bridged episodes as causal trace entries.
+        inference_convergence_monitor: Optional inference-side
+            ``ConvergenceMonitor`` to wire for automatic bridging.
 
     Returns:
         Number of error episodes bridged.
     """
     if inference_error_evolution is None:
         return 0
+
+    # Wire inference convergence monitor → error evolution so future
+    # inference-time convergence events are automatically bridged.
+    if inference_convergence_monitor is not None:
+        try:
+            inference_convergence_monitor.set_error_evolution(
+                inference_error_evolution,
+            )
+        except AttributeError:
+            pass  # Older ConvergenceMonitor without set_error_evolution
+
     training_summary = trainer_monitor.export_error_patterns()
     error_classes = training_summary.get('error_classes', {})
     bridged = 0

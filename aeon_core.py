@@ -193,7 +193,7 @@ __all__ = [
     "MetaCognitiveRecursionTrigger", "CausalErrorEvolutionTracker",
     "CrossValidationReconciler", "ExternalDataTrustScorer",
     "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
-    "ModuleCoherenceVerifier",
+    "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
@@ -6056,6 +6056,74 @@ class CausalProvenanceTracker:
             'order': list(self._order),
         }
 
+    # ------------------------------------------------------------------
+    # Inter-module dependency tracking
+    # ------------------------------------------------------------------
+
+    def record_dependency(self, from_module: str, to_module: str) -> None:
+        """Record a data-flow dependency from one module to another.
+
+        This builds a lightweight DAG of inter-module causal dependencies
+        that enables :meth:`trace_root_cause` to walk backward from any
+        module to the original inputs that influenced its output.
+
+        Args:
+            from_module: Name of the upstream module (provider).
+            to_module: Name of the downstream module (consumer).
+        """
+        if not hasattr(self, '_dependencies'):
+            # Lazily initialised so that existing serialised instances
+            # remain backward-compatible.
+            self._dependencies: Dict[str, set] = {}
+        self._dependencies.setdefault(to_module, set()).add(from_module)
+
+    def get_dependency_graph(self) -> Dict[str, List[str]]:
+        """Return the inter-module dependency DAG.
+
+        Returns:
+            Mapping from downstream module name to list of upstream modules.
+        """
+        deps: Dict[str, set] = getattr(self, '_dependencies', {})
+        return {k: sorted(v) for k, v in deps.items()}
+
+    def trace_root_cause(self, module_name: str) -> Dict[str, Any]:
+        """Trace backward through the dependency DAG to find root causes.
+
+        A *root cause* is a module that has no recorded upstream
+        dependencies — i.e. an entry point in the cognitive pipeline.
+
+        The method also annotates each node with its L2 delta
+        contribution so that the caller can identify not just *which*
+        root modules contributed, but *how much* each one contributed.
+
+        Args:
+            module_name: Starting module to trace from.
+
+        Returns:
+            Dict with:
+                - root_modules: list of module names with no upstream deps.
+                - visited: set of all modules in the dependency cone.
+                - contributions: {module: delta} for visited modules.
+        """
+        deps: Dict[str, set] = getattr(self, '_dependencies', {})
+        visited: set = set()
+        queue = [module_name]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            for parent in deps.get(current, set()):
+                queue.append(parent)
+
+        root_modules = [m for m in visited if not deps.get(m)]
+        contributions = {m: self._deltas.get(m, 0.0) for m in visited}
+        return {
+            'root_modules': sorted(root_modules),
+            'visited': visited,
+            'contributions': contributions,
+        }
+
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
@@ -6616,6 +6684,21 @@ class ConvergenceMonitor:
     def __init__(self, threshold: float = 1e-5):
         self.threshold = threshold
         self.history: deque = deque(maxlen=10)
+        self._error_evolution: Optional['CausalErrorEvolutionTracker'] = None
+
+    def set_error_evolution(
+        self, tracker: Optional['CausalErrorEvolutionTracker'],
+    ) -> None:
+        """Attach a :class:`CausalErrorEvolutionTracker`.
+
+        Once attached, every divergence or stagnation event detected by
+        :meth:`check` is automatically recorded in the tracker, closing
+        the gap between convergence monitoring and error-evolution
+        learning.  This enables the :class:`MetaCognitiveRecursionTrigger`
+        to consult historical convergence failures when deciding whether
+        to re-invoke the meta-loop.
+        """
+        self._error_evolution = tracker
 
     def reset(self):
         """Clear recorded history."""
@@ -6624,6 +6707,10 @@ class ConvergenceMonitor:
     def check(self, delta_norm: float) -> Dict[str, Any]:
         """
         Record ``delta_norm`` and return a convergence verdict.
+
+        When an attached :class:`CausalErrorEvolutionTracker` is present,
+        divergence and stagnation events are automatically bridged to the
+        error-evolution system.
 
         Args:
             delta_norm: L2 norm of the latest residual.
@@ -6644,16 +6731,55 @@ class ConvergenceMonitor:
         avg_contraction = float(np.mean(ratios))
 
         if avg_contraction < 1.0 and delta_norm < self.threshold:
-            return {
+            verdict = {
                 'status': 'converged',
                 'certified': True,
                 'contraction_rate': avg_contraction,
                 'confidence': 1.0 - avg_contraction,
             }
         elif avg_contraction >= 1.0:
-            return {'status': 'diverging', 'certified': False}
+            verdict = {'status': 'diverging', 'certified': False}
+            self._bridge_convergence_event(
+                'convergence_diverging',
+                'meta_loop_rollback',
+                success=False,
+                metadata={'avg_contraction': avg_contraction,
+                          'delta_norm': delta_norm},
+            )
         else:
-            return {'status': 'converging', 'certified': False}
+            verdict = {'status': 'converging', 'certified': False}
+            # Stagnation: converging but delta hasn't dropped below
+            # threshold for a long time.
+            if len(self.history) >= 10 and delta_norm > self.threshold * 10:
+                self._bridge_convergence_event(
+                    'convergence_stagnation',
+                    'increase_iterations',
+                    success=False,
+                    metadata={'avg_contraction': avg_contraction,
+                              'delta_norm': delta_norm},
+                )
+        return verdict
+
+    # ---- internal helper ---------------------------------------------------
+    def _bridge_convergence_event(
+        self,
+        error_class: str,
+        strategy: str,
+        success: bool,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward a convergence event to the attached error evolution tracker."""
+        tracker = self._error_evolution
+        if tracker is not None:
+            try:
+                tracker.record_episode(
+                    error_class=error_class,
+                    strategy_used=strategy,
+                    success=success,
+                    metadata=metadata,
+                )
+            except Exception:
+                pass  # Never let monitoring break the hot path
 
 
 class HierarchicalMetaLoop(nn.Module):
@@ -13176,6 +13302,235 @@ class CausalErrorEvolutionTracker:
                     "strategies_used": list({ep["strategy"] for ep in episodes}),
                 }
             return summary
+
+    def get_root_causes(self, error_class: str) -> Dict[str, Any]:
+        """Trace causal antecedent chains to identify root causes.
+
+        Walks backward through the ``causal_antecedents`` recorded for
+        each episode in the given error class.  An antecedent that does
+        not itself appear as an error class is considered a *root cause*
+        — an external or upstream event that initiated the error chain.
+
+        This enables the system to answer: "what upstream failures
+        caused these errors?" rather than just "which strategy worked
+        best?".
+
+        Args:
+            error_class: Semantic error category to analyse.
+
+        Returns:
+            Dict with:
+                - root_causes: Counter of root-cause names → frequency.
+                - antecedent_depth: average chain depth across episodes.
+                - episodes_with_antecedents: count of episodes that have
+                  at least one recorded antecedent.
+        """
+        with self._lock:
+            episodes = list(self._episodes.get(error_class, []))
+        if not episodes:
+            return {
+                'root_causes': {},
+                'antecedent_depth': 0.0,
+                'episodes_with_antecedents': 0,
+            }
+
+        known_classes = set(self._episodes.keys())
+        root_counter: Counter = Counter()
+        total_depth = 0
+        with_antecedents = 0
+
+        for ep in episodes:
+            antecedents = ep.get('causal_antecedents', [])
+            if antecedents:
+                with_antecedents += 1
+            depth = 0
+            queue = list(antecedents)
+            visited: set = set()
+            while queue:
+                ant = queue.pop(0)
+                if ant in visited:
+                    continue
+                visited.add(ant)
+                depth += 1
+                # If the antecedent is not itself a known error class,
+                # it is a root cause (external or upstream origin).
+                if ant not in known_classes:
+                    root_counter[ant] += 1
+                else:
+                    # Walk deeper: look at antecedents of episodes in
+                    # the antecedent class.
+                    with self._lock:
+                        deeper = self._episodes.get(ant, [])
+                    for dep_ep in deeper:
+                        queue.extend(dep_ep.get('causal_antecedents', []))
+            total_depth += depth
+
+        return {
+            'root_causes': dict(root_counter),
+            'antecedent_depth': total_depth / max(len(episodes), 1),
+            'episodes_with_antecedents': with_antecedents,
+        }
+
+
+class UnifiedCognitiveCycle:
+    """Orchestrates meta-cognitive components into a single coherent cycle.
+
+    This class closes the architectural gap between independently designed
+    sub-systems by providing a single :meth:`evaluate` entry-point that:
+
+    1. Checks convergence via :class:`ConvergenceMonitor`.
+    2. Verifies cross-module coherence via :class:`ModuleCoherenceVerifier`.
+    3. Records any anomalies in :class:`CausalErrorEvolutionTracker`.
+    4. Evaluates whether re-reasoning is needed via
+       :class:`MetaCognitiveRecursionTrigger`.
+    5. Traces all decisions via :class:`CausalProvenanceTracker`.
+
+    By routing all five concerns through one call the cycle guarantees that:
+
+    - Each component verifies and reinforces the others.
+    - Any uncertainty triggers a meta-cognitive re-evaluation.
+    - All conclusions are traceable back to their root causes via the
+      provenance and causal trace systems.
+
+    This is a pure-logic orchestrator with **no learnable parameters** and
+    negligible overhead — it simply coordinates the existing components.
+
+    Args:
+        convergence_monitor: Instance monitoring meta-loop convergence.
+        coherence_verifier: Instance cross-validating subsystem outputs.
+        error_evolution: Instance tracking error-recovery patterns.
+        metacognitive_trigger: Instance deciding whether to re-reason.
+        provenance_tracker: Instance recording per-module attribution.
+        causal_trace: Optional temporal causal trace buffer.
+    """
+
+    def __init__(
+        self,
+        convergence_monitor: 'ConvergenceMonitor',
+        coherence_verifier: 'ModuleCoherenceVerifier',
+        error_evolution: 'CausalErrorEvolutionTracker',
+        metacognitive_trigger: 'MetaCognitiveRecursionTrigger',
+        provenance_tracker: 'CausalProvenanceTracker',
+        causal_trace: Optional['TemporalCausalTraceBuffer'] = None,
+    ):
+        self.convergence_monitor = convergence_monitor
+        self.coherence_verifier = coherence_verifier
+        self.error_evolution = error_evolution
+        self.metacognitive_trigger = metacognitive_trigger
+        self.provenance_tracker = provenance_tracker
+        self.causal_trace = causal_trace
+
+        # Wire convergence monitor → error evolution automatically.
+        self.convergence_monitor.set_error_evolution(self.error_evolution)
+        # Wire error evolution → causal trace automatically.
+        self.error_evolution.set_causal_trace(self.causal_trace)
+
+    def evaluate(
+        self,
+        subsystem_states: Dict[str, torch.Tensor],
+        delta_norm: float,
+        uncertainty: float = 0.0,
+        world_model_surprise: float = 0.0,
+        causal_quality: float = 1.0,
+        memory_staleness: bool = False,
+        recovery_pressure: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Run the full meta-cognitive evaluation cycle.
+
+        Args:
+            subsystem_states: Named tensors from each subsystem for coherence
+                verification (e.g. ``{'meta_loop': ..., 'safety': ...}``).
+            delta_norm: Latest residual norm from the meta-loop.
+            uncertainty: Current uncertainty estimate ∈ [0, 1].
+            world_model_surprise: World-model prediction error.
+            causal_quality: DAG quality ∈ [0, 1] (1 = perfect).
+            memory_staleness: Whether memory retrieval returned stale data.
+            recovery_pressure: Error recovery pressure ∈ [0, 1].
+
+        Returns:
+            Dict with:
+                - convergence_verdict: output of ConvergenceMonitor.check().
+                - coherence_result: output of ModuleCoherenceVerifier.forward().
+                - should_rerun: bool — whether the meta-loop should re-run.
+                - trigger_detail: full output of MetaCognitiveRecursionTrigger.
+                - provenance: current attribution snapshot.
+                - root_cause_trace: root-cause info if causal_trace available.
+        """
+        # 1. Convergence check (auto-bridges to error_evolution).
+        convergence_verdict = self.convergence_monitor.check(delta_norm)
+
+        # 2. Cross-module coherence verification.
+        coherence_result = self.coherence_verifier(subsystem_states)
+        coherence_deficit = 1.0 - coherence_result['coherence_score'].mean().item()
+        needs_recheck = coherence_result.get('needs_recheck', False)
+
+        # Record coherence deficit in error evolution if significant.
+        if coherence_deficit > 0.3:
+            self.error_evolution.record_episode(
+                error_class='coherence_deficit',
+                strategy_used='meta_rerun',
+                success=False,
+                metadata={'coherence_deficit': coherence_deficit},
+            )
+
+        # 3. Build signal dict for the metacognitive trigger.
+        is_diverging = convergence_verdict.get('status') == 'diverging'
+        trigger_detail = self.metacognitive_trigger.evaluate(
+            uncertainty=uncertainty,
+            is_diverging=is_diverging,
+            topology_catastrophe=False,
+            coherence_deficit=coherence_deficit > 0.3,
+            memory_staleness=memory_staleness,
+            recovery_pressure=recovery_pressure,
+            world_model_surprise=world_model_surprise,
+            causal_quality=causal_quality,
+        )
+        should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
+
+        # 4. Record the cycle decision in the causal trace.
+        trace_entry_id = None
+        if self.causal_trace is not None:
+            trace_entry_id = self.causal_trace.record(
+                subsystem='unified_cognitive_cycle',
+                decision=f"rerun={should_rerun}",
+                metadata={
+                    'convergence_status': convergence_verdict.get('status'),
+                    'coherence_deficit': coherence_deficit,
+                    'uncertainty': uncertainty,
+                    'trigger_detail': {
+                        k: v for k, v in trigger_detail.items()
+                        if not isinstance(v, torch.Tensor)
+                    },
+                },
+                severity='warning' if should_rerun else 'info',
+            )
+
+        # 5. Provenance snapshot.
+        provenance = self.provenance_tracker.compute_attribution()
+
+        # 6. Root-cause trace (if available).
+        root_cause_trace = {}
+        if self.causal_trace is not None and trace_entry_id is not None:
+            root_cause_trace = self.causal_trace.trace_root_cause(trace_entry_id)
+
+        return {
+            'convergence_verdict': convergence_verdict,
+            'coherence_result': {
+                'coherence_score': coherence_result['coherence_score'],
+                'needs_recheck': needs_recheck,
+                'coherence_deficit': coherence_deficit,
+            },
+            'should_rerun': should_rerun,
+            'trigger_detail': trigger_detail,
+            'provenance': provenance,
+            'root_cause_trace': root_cause_trace,
+        }
+
+    def reset(self) -> None:
+        """Reset all internal state for a new forward pass."""
+        self.convergence_monitor.reset()
+        self.metacognitive_trigger.reset()
+        self.provenance_tracker.reset()
 
 
 # ============================================================================
