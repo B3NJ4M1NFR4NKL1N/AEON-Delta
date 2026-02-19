@@ -12966,6 +12966,10 @@ class ModuleCoherenceVerifier(nn.Module):
         threshold: Minimum acceptable mean pairwise coherence.
     """
 
+    # Adaptive threshold constants
+    _ADAPT_STEP: float = 0.05
+    _ADAPT_CAP: float = 0.9
+
     def __init__(self, hidden_dim: int = 256, threshold: float = 0.5):
         super().__init__()
         self.threshold = threshold
@@ -13039,8 +13043,9 @@ class ModuleCoherenceVerifier(nn.Module):
         if cd_stats.get("count", 0) < 2:
             return
         if cd_stats.get("success_rate", 1.0) < 0.5:
-            # Tighten by 0.05 per adaptation, capped at 0.9
-            self.threshold = min(0.9, self.threshold + 0.05)
+            self.threshold = min(
+                self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
+            )
 
 
 class CausalDAGConsensus:
@@ -13636,6 +13641,15 @@ class UnifiedCognitiveCycle:
         # Wire error evolution → causal trace automatically.
         self.error_evolution.set_causal_trace(self.causal_trace)
 
+    def _provenance_snapshot(self) -> Tuple[Dict[str, float], Optional[str]]:
+        """Return (contributions, dominant_module) from the provenance tracker."""
+        snap = self.provenance_tracker.compute_attribution()
+        contribs = snap.get('contributions', {})
+        dominant = (
+            max(contribs, key=contribs.get) if contribs else None
+        )
+        return contribs, dominant
+
     def evaluate(
         self,
         subsystem_states: Dict[str, torch.Tensor],
@@ -13685,12 +13699,7 @@ class UnifiedCognitiveCycle:
         # analysis can identify which module dominated when the deficit
         # occurred (Gap 2: error ↔ provenance correlation).
         if coherence_deficit > 0.3:
-            _prov_snapshot = self.provenance_tracker.compute_attribution()
-            _contributions = _prov_snapshot.get('contributions', {})
-            _dominant = (
-                max(_contributions, key=_contributions.get)
-                if _contributions else None
-            )
+            _contributions, _dominant = self._provenance_snapshot()
             self.error_evolution.record_episode(
                 error_class='coherence_deficit',
                 strategy_used='meta_rerun',
@@ -13719,13 +13728,9 @@ class UnifiedCognitiveCycle:
         # Enrich trigger detail with provenance attribution so
         # downstream consumers can see *which module* dominated when
         # re-reasoning was recommended (Gap 5).
-        _prov_snap = self.provenance_tracker.compute_attribution()
-        _prov_contribs = _prov_snap.get('contributions', {})
+        _prov_contribs, _prov_dominant = self._provenance_snapshot()
         trigger_detail['provenance_contributions'] = _prov_contribs
-        trigger_detail['dominant_provenance_module'] = (
-            max(_prov_contribs, key=_prov_contribs.get)
-            if _prov_contribs else None
-        )
+        trigger_detail['dominant_provenance_module'] = _prov_dominant
 
         # 4. Record the cycle decision in the causal trace.
         trace_entry_id = None
