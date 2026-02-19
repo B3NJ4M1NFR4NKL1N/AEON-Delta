@@ -19011,8 +19011,15 @@ class AEONDeltaV3(nn.Module):
                         with self.error_evolution._lock:
                             for cls, episodes in loaded_episodes.items():
                                 for ep in episodes:
+                                    # Timestamps use time.monotonic() which
+                                    # resets between processes; default to 0.0
+                                    # to indicate "loaded from checkpoint".
                                     ep.setdefault('timestamp', 0.0)
-                                self.error_evolution._episodes[cls] = episodes[
+                                # Merge loaded episodes with any existing
+                                # ones, then trim to max_history.
+                                existing = self.error_evolution._episodes.get(cls, [])
+                                merged = existing + episodes
+                                self.error_evolution._episodes[cls] = merged[
                                     -self.error_evolution._max_history:
                                 ]
                             self.error_evolution._total_recorded = sum(
