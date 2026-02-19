@@ -13090,6 +13090,37 @@ class ModuleCoherenceVerifier(nn.Module):
                 self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
             )
 
+    @staticmethod
+    def get_weakest_pair(
+        pairwise: Dict[tuple, torch.Tensor],
+    ) -> Optional[Dict[str, Any]]:
+        """Identify the weakest subsystem pair from pairwise similarities.
+
+        Given the ``pairwise`` dict returned by :meth:`forward`, finds the
+        pair with the lowest mean similarity.  This enables targeted
+        corrective action: downstream logic can re-compute or re-blend
+        the identified module rather than re-running the entire pipeline.
+
+        Args:
+            pairwise: ``{(name_i, name_j): [B] similarity}`` dict from
+                :meth:`forward`.
+
+        Returns:
+            Dict with ``pair``, ``similarity``, and ``modules`` keys,
+            or None if pairwise is empty.
+        """
+        if not pairwise:
+            return None
+        weakest_key = min(
+            pairwise, key=lambda k: pairwise[k].mean().item(),
+        )
+        weakest_sim = float(pairwise[weakest_key].mean().item())
+        return {
+            "pair": weakest_key,
+            "similarity": weakest_sim,
+            "modules": list(weakest_key),
+        }
+
 
 class CausalDAGConsensus:
     """Cross-validates causal DAG structures from multiple causal models.
@@ -13206,7 +13237,7 @@ class CausalDAGConsensus:
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors eight independent signals:
+    Monitors nine independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -13222,6 +13253,11 @@ class MetaCognitiveRecursionTrigger:
     8. ``low_causal_quality`` — poor causal DAG quality (high DAG loss),
        indicating the causal model's structural constraints are violated
        and deeper reasoning may resolve the acyclicity issues.
+    9. ``safety_violation`` — safety system detected an unsafe state and
+       enforced a rollback, indicating the reasoning pipeline produced
+       output that violates safety constraints.  Deeper re-reasoning
+       may find a safe alternative rather than simply blending back to
+       the input.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -13242,8 +13278,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (8 signals × 1/8 = 0.125 each)
-    _DEFAULT_WEIGHT = 1.0 / 8.0
+    # Default per-signal weight (9 signals × 1/9 ≈ 0.111 each)
+    _DEFAULT_WEIGHT = 1.0 / 9.0
 
     def __init__(
         self,
@@ -13278,6 +13314,7 @@ class MetaCognitiveRecursionTrigger:
             "recovery_pressure": self._DEFAULT_WEIGHT,
             "world_model_surprise": self._DEFAULT_WEIGHT,
             "low_causal_quality": self._DEFAULT_WEIGHT,
+            "safety_violation": self._DEFAULT_WEIGHT,
         }
 
     def reset(self) -> None:
@@ -13309,7 +13346,7 @@ class MetaCognitiveRecursionTrigger:
             "post_integration_coherence_deficit": "coherence_deficit",
             "metacognitive_rerun": "uncertainty",
             "numerical": "uncertainty",
-            "safety_rollback": "uncertainty",
+            "safety_rollback": "safety_violation",
             "reconciliation_disagreement": "coherence_deficit",
             "world_model_prediction_error": "world_model_surprise",
             "low_causal_quality": "low_causal_quality",
@@ -13318,6 +13355,7 @@ class MetaCognitiveRecursionTrigger:
             "causal_dag_disagreement": "low_causal_quality",
             "convergence_success": "uncertainty",
             "certified_convergence_failure": "uncertainty",
+            "safety_critic_revision": "safety_violation",
         }
 
         # Accumulate boost factors for each signal
@@ -13351,6 +13389,7 @@ class MetaCognitiveRecursionTrigger:
         recovery_pressure: float = 0.0,
         world_model_surprise: float = 0.0,
         causal_quality: float = 1.0,
+        safety_violation: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -13371,6 +13410,9 @@ class MetaCognitiveRecursionTrigger:
             causal_quality: Scalar ∈ [0, 1] representing causal DAG quality.
                 Low values (high DAG loss) indicate structural issues that
                 deeper reasoning may resolve.
+            safety_violation: True if the safety system detected an unsafe
+                state and enforced a rollback.  Triggers deeper reasoning
+                to search for a safe alternative.
 
         Returns:
             Dict with:
@@ -13391,6 +13433,7 @@ class MetaCognitiveRecursionTrigger:
             "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
             "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
             "low_causal_quality": w["low_causal_quality"] * float(causal_quality < self._causal_quality_threshold),
+            "safety_violation": w["safety_violation"] * float(safety_violation),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -13705,6 +13748,7 @@ class UnifiedCognitiveCycle:
         causal_quality: float = 1.0,
         memory_staleness: bool = False,
         recovery_pressure: float = 0.0,
+        safety_violation: bool = False,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -13717,6 +13761,8 @@ class UnifiedCognitiveCycle:
             causal_quality: DAG quality ∈ [0, 1] (1 = perfect).
             memory_staleness: Whether memory retrieval returned stale data.
             recovery_pressure: Error recovery pressure ∈ [0, 1].
+            safety_violation: Whether the safety system enforced a rollback
+                on the current forward pass.
 
         Returns:
             Dict with:
@@ -13768,6 +13814,7 @@ class UnifiedCognitiveCycle:
             recovery_pressure=recovery_pressure,
             world_model_surprise=world_model_surprise,
             causal_quality=causal_quality,
+            safety_violation=safety_violation,
         )
         should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
 
@@ -13909,6 +13956,8 @@ class AEONDeltaV3(nn.Module):
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
         ("deeper_meta_loop", "world_model"),
+        ("safety", "auto_critic"),
+        ("causal_model", "auto_critic"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -16137,6 +16186,74 @@ class AEONDeltaV3(nn.Module):
                     c_star_weight * C_star + (1 - c_star_weight) * z_in,
                     C_star
                 )
+                # 5a-safety-critic. Safety → AutoCritic bridge — when a safety
+                # violation triggers rollback, invoke the auto-critic on the
+                # blended state to search for a higher-quality safe
+                # alternative rather than simply regressing toward the input.
+                # The critic may find a revision that both satisfies safety
+                # constraints and preserves more of the reasoning progress.
+                # The revised state is re-scored by the safety system; if it
+                # passes, it replaces the blended fallback.  This closes the
+                # critical gap where safety enforcement and self-critique
+                # operated as independent, non-communicating systems.
+                if self.auto_critic is not None and not fast:
+                    try:
+                        self.provenance_tracker.record_before("auto_critic_safety", C_star)
+                        _safety_critic = self.auto_critic(C_star)
+                        _safety_revised = _safety_critic.get("candidate", None)
+                        if (_safety_revised is not None
+                                and torch.isfinite(_safety_revised).all()
+                                and _safety_revised.shape == C_star.shape):
+                            # Re-score the revised candidate through safety
+                            _revised_safety, _ = self._compute_safety(
+                                _safety_revised, factors, diversity_results,
+                                topo_results, B, device,
+                            )
+                            _revised_safe_mask = (
+                                _revised_safety >= safety_threshold
+                            ).squeeze(-1)
+                            # Accept revision only for samples that are now safe
+                            # and were previously unsafe
+                            _accept_mask = unsafe_mask & _revised_safe_mask
+                            if _accept_mask.any():
+                                C_star = torch.where(
+                                    _accept_mask.unsqueeze(-1),
+                                    _safety_revised,
+                                    C_star,
+                                )
+                                safety_score = torch.where(
+                                    _accept_mask.unsqueeze(-1),
+                                    _revised_safety,
+                                    safety_score,
+                                )
+                        self.provenance_tracker.record_after("auto_critic_safety", C_star)
+                        _sc_score = _safety_critic.get("final_score", 0.0)
+                        self.audit_log.record(
+                            "auto_critic", "safety_violation_revision", {
+                                "critic_score": _sc_score,
+                                "revised": _safety_revised is not None,
+                                "accepted_count": int(
+                                    _accept_mask.sum().item()
+                                ) if _safety_revised is not None else 0,
+                            },
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="safety_critic_revision",
+                                strategy_used="auto_critic",
+                                success=_safety_revised is not None and (
+                                    _accept_mask.any()
+                                    if _safety_revised is not None else False
+                                ),
+                                metadata={
+                                    "critic_score": _sc_score,
+                                },
+                            )
+                    except Exception as _sc_err:
+                        logger.debug(
+                            "Safety-driven auto-critic failed (non-fatal): %s",
+                            _sc_err,
+                        )
         
         self.integrity_monitor.record_health(
             "safety",
@@ -16311,12 +16428,10 @@ class AEONDeltaV3(nn.Module):
             _pairwise = coherence_results.get("pairwise", {})
             _weakest_pair: Optional[str] = None
             _weakest_pair_sim: float = 1.0
-            if _pairwise:
-                for (name_i, name_j), sim in _pairwise.items():
-                    _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
-                    if _pair_sim < _weakest_pair_sim:
-                        _weakest_pair_sim = _pair_sim
-                        _weakest_pair = f"{name_i}_vs_{name_j}"
+            _weakest_info = self.module_coherence.get_weakest_pair(_pairwise)
+            if _weakest_info is not None:
+                _weakest_pair = f"{_weakest_info['modules'][0]}_vs_{_weakest_info['modules'][1]}"
+                _weakest_pair_sim = _weakest_info['similarity']
             if _coherence_deficit and _pairwise and self.error_evolution is not None:
                 for (name_i, name_j), sim in _pairwise.items():
                     _pair_sim = sim.mean().item() if torch.is_tensor(sim) else float(sim)
@@ -17613,6 +17728,43 @@ class AEONDeltaV3(nn.Module):
                             "num_models": _dag_consensus_results["num_models"],
                         },
                     )
+                # 5d1c-dag2. DAG consensus → auto-critic bridge — when causal
+                # models structurally disagree (needs_escalation), invoke the
+                # auto-critic for immediate state revision.  Uncertainty
+                # escalation alone defers correction to the metacognitive
+                # cycle; direct auto-critic invocation provides immediate
+                # corrective feedback, closing the gap between causal DAG
+                # disagreement and active self-correction.
+                if (_dag_consensus_results.get("needs_escalation", False)
+                        and self.auto_critic is not None
+                        and not fast):
+                    try:
+                        self.provenance_tracker.record_before(
+                            "auto_critic_dag", C_star,
+                        )
+                        _dag_critic = self.auto_critic(C_star)
+                        _dag_revised = _dag_critic.get("candidate", None)
+                        if (_dag_revised is not None
+                                and torch.isfinite(_dag_revised).all()
+                                and _dag_revised.shape == C_star.shape):
+                            C_star = _dag_revised
+                        self.provenance_tracker.record_after(
+                            "auto_critic_dag", C_star,
+                        )
+                        self.audit_log.record(
+                            "auto_critic", "dag_disagreement_revision", {
+                                "consensus_score": _consensus_score,
+                                "revised": _dag_revised is not None,
+                                "critic_score": _dag_critic.get(
+                                    "final_score", 0.0,
+                                ),
+                            },
+                        )
+                    except Exception as _dag_ac_err:
+                        logger.debug(
+                            "DAG-consensus auto-critic failed (non-fatal): %s",
+                            _dag_ac_err,
+                        )
         
         # 5d1d-0. Causal quality → CausalContextWindowManager — record the
         # current causal model quality in the causal context hierarchy so
@@ -18957,6 +19109,7 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     memory_staleness=self._memory_stale,
                     recovery_pressure=self._compute_recovery_pressure(),
+                    safety_violation=safety_enforced,
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -20809,6 +20962,17 @@ class AEONDeltaV3(nn.Module):
         # 5. Safety → provenance → dampening
         if self.safety_system is not None:
             verified.append('safety_system → adaptive threshold → rollback')
+            if self.auto_critic is not None:
+                verified.append('safety_system → auto_critic (safety-critic bridge)')
+            else:
+                gaps.append({
+                    'component': 'safety_auto_critic',
+                    'gap': 'Safety system active but auto-critic disabled; '
+                           'safety violations cannot trigger self-correction',
+                    'remediation': 'Enable enable_auto_critic so safety '
+                                   'rollbacks trigger the auto-critic for '
+                                   'higher-quality safe alternatives',
+                })
 
         # 5b. CausalContextWindowManager → cross-temporal reasoning
         if getattr(self, 'causal_context', None) is not None:
@@ -20875,6 +21039,19 @@ class AEONDeltaV3(nn.Module):
             verified.append('causal_dag_consensus → uncertainty → metacognitive_trigger')
             if self.error_evolution is not None:
                 verified.append('causal_dag_consensus → error_evolution (disagreement tracking)')
+
+        # 11a2. Safety violation → metacognitive trigger
+        if self.safety_system is not None and self.metacognitive_trigger is not None:
+            if 'safety_violation' in self.metacognitive_trigger._signal_weights:
+                verified.append('safety_violation → metacognitive_trigger (re-reasoning on unsafe states)')
+            else:
+                gaps.append({
+                    'component': 'metacognitive_trigger',
+                    'gap': 'Safety system active but metacognitive trigger '
+                           'has no safety_violation signal',
+                    'remediation': 'MetaCognitiveRecursionTrigger should '
+                                   'include safety_violation as a signal',
+                })
 
         # 11c. Memory subsystem → CausalContextWindowManager cross-wiring
         _memory_subsystems = {
@@ -21173,6 +21350,11 @@ class AEONDeltaV3(nn.Module):
                 "cached_causal_quality": self._cached_causal_quality,
             }
 
+        # --- Safety-critic bridge state ---
+        safety_critic_bridge_state: Dict[str, Any] = {
+            "available": self.safety_system is not None and self.auto_critic is not None,
+        }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
@@ -21181,6 +21363,7 @@ class AEONDeltaV3(nn.Module):
             "provenance": provenance_state,
             "unified_cognitive_cycle": ucc_state,
             "dag_consensus": dag_consensus_state,
+            "safety_critic_bridge": safety_critic_bridge_state,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
@@ -21272,6 +21455,8 @@ class AEONDeltaV3(nn.Module):
         lines.append(f"{'TemporalKG':20s}: {_tkg_status:>12}")
         _dag_status = "Enabled" if self.causal_dag_consensus is not None else "Disabled"
         lines.append(f"{'DAGConsensus':20s}: {_dag_status:>12}")
+        _scb_status = "Enabled" if (self.safety_system is not None and self.auto_critic is not None) else "Disabled"
+        lines.append(f"{'SafetyCriticBridge':20s}: {_scb_status:>12}")
         
         lines.append("-"*70)
         lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")
