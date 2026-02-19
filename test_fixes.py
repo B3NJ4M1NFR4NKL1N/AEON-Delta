@@ -25576,7 +25576,7 @@ def test_convergence_monitor_contraction_rate_clipping():
 
     monitor = ConvergenceMonitor(threshold=1e-5)
 
-    # Simulate rapidly converging series: contraction_rate ≈ 0.5
+    # Simulate rapidly converging series: contraction_rate = 0.5
     monitor.check(1.0)
     monitor.check(0.5)
     monitor.check(0.25)
@@ -25585,10 +25585,12 @@ def test_convergence_monitor_contraction_rate_clipping():
     cr = verdict['contraction_rate']
     assert 0 < cr < 1, f"contraction_rate should be in (0, 1); got {cr}"
 
-    # The blended convergence_quality = min(per_step, 1 - contraction_rate)
-    # where 1 - contraction_rate > 0 when cr < 1
-    blended = max(0.0, 1.0 - cr)
-    assert blended > 0, f"Blended quality should be > 0; got {blended}"
+    # Verify that 1 - contraction_rate yields a positive quality signal
+    # that the feedback bus blending (min with per_step rate) can use.
+    quality_from_contraction = max(0.0, 1.0 - cr)
+    assert quality_from_contraction > 0, (
+        f"Quality from contraction should be > 0; got {quality_from_contraction}"
+    )
 
     print("✅ test_convergence_monitor_contraction_rate_clipping PASSED")
 
@@ -25607,14 +25609,16 @@ def test_provenance_tracker_accumulates_repeated_auto_critic():
     tracker.record_before("auto_critic", state)
     state1 = state + torch.randn(2, 32) * 0.1
     tracker.record_after("auto_critic", state1)
-    delta_1 = tracker._deltas.get("auto_critic", 0.0)
+    attr_1 = tracker.compute_attribution()
+    delta_1 = attr_1["deltas"].get("auto_critic", 0.0)
     assert delta_1 > 0
 
     # Second invocation (unconditional)
     tracker.record_before("auto_critic", state1)
     state2 = state1 + torch.randn(2, 32) * 0.1
     tracker.record_after("auto_critic", state2)
-    delta_2 = tracker._deltas.get("auto_critic", 0.0)
+    attr_2 = tracker.compute_attribution()
+    delta_2 = attr_2["deltas"].get("auto_critic", 0.0)
 
     # Accumulated delta should be greater than the first
     assert delta_2 > delta_1, (
