@@ -2666,6 +2666,8 @@ class AEONConfig:
     vq_ema_decay: float = 0.99
     vq_revival_threshold: int = 100
     vq_split_threshold: float = 0.1
+    vq_collapse_utilization_threshold: float = 0.3
+    vq_collapse_uncertainty_scale: float = 0.15
     use_vq: bool = True
     
     # ===== TOPOLOGY =====
@@ -2948,6 +2950,8 @@ class AEONConfig:
     # ===== NEURO-SYMBOLIC BRIDGE (standalone) =====
     enable_standalone_ns_bridge: bool = False
     standalone_ns_bridge_blend: float = 0.1
+    enable_temporal_knowledge_graph: bool = False
+    temporal_knowledge_graph_capacity: int = 500
 
     # ===== HIERARCHICAL WORLD MODEL =====
     enable_hierarchical_world_model: bool = False
@@ -3115,6 +3119,8 @@ class AEONConfig:
                 'enable_causal_programmatic',
                 # Standalone neuro-symbolic bridge
                 'enable_standalone_ns_bridge',
+                # Temporal knowledge graph for persistent symbolic facts
+                'enable_temporal_knowledge_graph',
                 # Hierarchical world model
                 'enable_hierarchical_world_model',
                 # Multi-scale meta-loop (complexity-routed)
@@ -13875,6 +13881,10 @@ class AEONDeltaV3(nn.Module):
         # is required.
         ("factor_extraction", "cross_validation"),
         ("causal_model", "cross_validation"),
+        ("causal_model", "notears_causal"),
+        ("notears_causal", "causal_programmatic"),
+        ("ns_bridge", "temporal_knowledge_graph"),
+        ("memory", "temporal_memory"),
         ("cross_validation", "unified_simulator"),
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
@@ -14483,6 +14493,19 @@ class AEONDeltaV3(nn.Module):
         else:
             self.standalone_ns_bridge = None
         
+        # ===== TEMPORAL KNOWLEDGE GRAPH =====
+        # In-memory store of soft symbolic facts with timestamps and
+        # confidence scores.  When enabled alongside the standalone
+        # NeuroSymbolicBridge, extracted facts are stored here so that
+        # temporal symbolic reasoning spans multiple forward passes.
+        if getattr(config, 'enable_temporal_knowledge_graph', False):
+            logger.info("Loading TemporalKnowledgeGraph...")
+            self.temporal_knowledge_graph = TemporalKnowledgeGraph(
+                capacity=config.temporal_knowledge_graph_capacity,
+            )
+        else:
+            self.temporal_knowledge_graph = None
+        
         # ===== HIERARCHICAL WORLD MODEL =====
         # Multi-level world model with temporal abstractions (Dreamer v3).
         # Operates alongside PhysicsGroundedWorldModel when both are enabled:
@@ -15051,7 +15074,7 @@ class AEONDeltaV3(nn.Module):
             z_in: Encoded latent [B, z_dim]
             attention_mask: Attention mask [B, L]
             memory_retrieval: Use memory fusion
-            planning: Run planning (placeholder)
+            planning: Run MCTS planning via world model
             fast: Skip heavy computations
         
         Returns:
@@ -15894,6 +15917,40 @@ class AEONDeltaV3(nn.Module):
                     high_uncertainty = uncertainty > 0.5
             except Exception as _ewc_err:
                 logger.debug("MetaLearner EWC drift estimation failed: %s", _ewc_err)
+        
+        # 1a-v. VQ codebook utilization feedback — when the vector
+        # quantizer has low codebook utilization (many dead codes),
+        # escalate uncertainty.  Low utilization indicates the latent
+        # space is collapsing to a small subset of codes, reducing
+        # representational capacity and signalling that the model is
+        # uncertain about how to distribute inputs across the codebook.
+        if self.vector_quantizer is not None and not fast:
+            try:
+                _vq_stats = self.vector_quantizer.get_usage_stats()
+                _vq_utilization = _vq_stats.get('usage_rate', 1.0)
+                _VQ_COLLAPSE_THRESHOLD = self.config.vq_collapse_utilization_threshold
+                _VQ_COLLAPSE_UNCERTAINTY_SCALE = self.config.vq_collapse_uncertainty_scale
+                if _vq_utilization < _VQ_COLLAPSE_THRESHOLD:
+                    _vq_boost = min(
+                        1.0 - uncertainty,
+                        (1.0 - _vq_utilization) * _VQ_COLLAPSE_UNCERTAINTY_SCALE,
+                    )
+                    uncertainty = min(1.0, uncertainty + _vq_boost)
+                    uncertainty_sources["vq_codebook_collapse"] = _vq_boost
+                    high_uncertainty = uncertainty > 0.5
+                    self.audit_log.record("vector_quantizer", "low_utilization", {
+                        "usage_rate": _vq_utilization,
+                        "uncertainty_boost": _vq_boost,
+                    })
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="vq_codebook_collapse",
+                            strategy_used="uncertainty_escalation",
+                            success=False,
+                            metadata={"usage_rate": _vq_utilization},
+                        )
+            except Exception as _vq_err:
+                logger.debug("VQ codebook utilization check failed: %s", _vq_err)
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -17803,6 +17860,18 @@ class AEONDeltaV3(nn.Module):
                             "rule_activation": float(_ns_rules.mean().item()),
                         },
                     )
+                # Store extracted facts in TemporalKnowledgeGraph so that
+                # symbolic knowledge persists across forward passes, enabling
+                # temporal symbolic reasoning.  The confidence is derived
+                # from the mean fact activation: high activation indicates
+                # the neural state strongly grounds the symbolic predicates.
+                if self.temporal_knowledge_graph is not None:
+                    _ns_fact_confidence = float(_ns_facts.mean().item())
+                    self.temporal_knowledge_graph.add_facts(
+                        _ns_facts.detach(),
+                        confidence=_ns_fact_confidence,
+                        timestamp=self._step_counter,
+                    )
             except Exception as ns_err:
                 logger.warning(f"NeuroSymbolicBridge error (non-fatal): {ns_err}")
                 self.error_recovery.record_event(
@@ -19454,6 +19523,29 @@ class AEONDeltaV3(nn.Module):
             ),
         }
         
+        # 8i. Terminal feedback bus refresh — after ALL post-integration
+        # processing (auto-critic, coherence re-verification, root-cause
+        # analysis, provenance dampening) is complete, refresh the cached
+        # feedback with the absolute final state.  This ensures the NEXT
+        # forward pass starts with feedback that reflects every decision
+        # made in the current pass, including late-stage signals that
+        # earlier refresh points (steps 5a-ii, 5d1d, 8f) could not see.
+        with torch.no_grad():
+            self._cached_feedback = self.feedback_bus(
+                batch_size=B,
+                device=device,
+                safety_score=safety_score,
+                convergence_quality=convergence_quality_scalar,
+                uncertainty=uncertainty,
+                subsystem_health=_recovery_health,
+                convergence_loss_scale=getattr(
+                    self, '_last_convergence_loss_scale', 1.0,
+                ),
+                world_model_surprise=self._cached_surprise,
+                coherence_deficit=self._cached_coherence_deficit,
+                causal_quality=self._cached_causal_quality,
+            ).detach()
+        
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -20443,6 +20535,7 @@ class AEONDeltaV3(nn.Module):
             'multimodal': getattr(self, 'multimodal', None),
             'mcts_planner': getattr(self, 'mcts_planner', None),
             'active_learning_planner': getattr(self, 'active_learning_planner', None),
+            'temporal_knowledge_graph': getattr(self, 'temporal_knowledge_graph', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -20850,6 +20943,8 @@ class AEONDeltaV3(nn.Module):
         # Non-parameterized orchestrators
         _ucc_status = "Enabled" if self.unified_cognitive_cycle is not None else "Disabled"
         lines.append(f"{'UnifiedCogCycle':20s}: {_ucc_status:>12}")
+        _tkg_status = "Enabled" if self.temporal_knowledge_graph is not None else "Disabled"
+        lines.append(f"{'TemporalKG':20s}: {_tkg_status:>12}")
         
         lines.append("-"*70)
         lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")
