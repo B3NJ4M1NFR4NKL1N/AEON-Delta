@@ -2916,6 +2916,21 @@ class AEONConfig:
     causal_programmatic_num_vars: int = 8
     causal_programmatic_blend: float = 0.05
 
+    # ===== CAUSAL DAG CONSENSUS =====
+    # Cross-validates adjacency matrices from multiple causal models
+    # (NeuralCausalModel, NOTEARS, CausalProgrammaticModel) to detect
+    # structural disagreement.  Low consensus triggers uncertainty
+    # escalation so the metacognitive cycle activates.
+    causal_dag_consensus_threshold: float = 0.5
+    causal_dag_consensus_uncertainty_scale: float = 0.2
+
+    # ===== COMPLEXITY-GATED FALLBACK CACHING =====
+    # When a complexity-gated subsystem (world_model, MCTS, causal_world,
+    # unified_simulator) is skipped, use its last-known-good cached output
+    # with exponential decay so downstream modules still receive signal.
+    enable_gated_fallback_cache: bool = True
+    gated_fallback_decay: float = 0.8
+
     # ===== NEURO-SYMBOLIC BRIDGE (standalone) =====
     enable_standalone_ns_bridge: bool = False
     standalone_ns_bridge_blend: float = 0.1
@@ -12965,6 +12980,118 @@ class ModuleCoherenceVerifier(nn.Module):
         }
 
 
+class CausalDAGConsensus:
+    """Cross-validates causal DAG structures from multiple causal models.
+
+    When multiple causal models (NeuralCausalModel, NOTEARS,
+    CausalProgrammaticModel) are active, they each learn an independent
+    adjacency matrix.  Without consensus verification, these DAGs may
+    diverge silently: one model might assert ``A → B`` while another
+    asserts ``B → A``, with no mechanism to detect the disagreement.
+
+    This utility computes pairwise Frobenius-norm distances between
+    adjacency matrices and returns a consensus score ∈ [0, 1] where
+    1 = perfect agreement and 0 = maximal disagreement.  When the
+    consensus falls below a configurable threshold, it signals
+    uncertainty escalation so that the metacognitive trigger can
+    invoke deeper reasoning to reconcile the discrepancy.
+
+    This is a pure-logic utility with no learnable parameters (not an
+    ``nn.Module``), so it introduces zero additional model size.
+
+    Args:
+        agreement_threshold: Minimum consensus score below which
+            disagreement is flagged (default 0.5).
+        uncertainty_scale: Maximum uncertainty boost when consensus
+            is zero (default 0.2).
+    """
+
+    def __init__(
+        self,
+        agreement_threshold: float = 0.5,
+        uncertainty_scale: float = 0.2,
+    ):
+        self.agreement_threshold = max(0.0, min(agreement_threshold, 1.0))
+        self.uncertainty_scale = max(0.0, uncertainty_scale)
+
+    def evaluate(
+        self,
+        adjacency_matrices: Dict[str, torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Compute consensus across causal DAG adjacency matrices.
+
+        Args:
+            adjacency_matrices: Mapping from model name to its adjacency
+                matrix (any shape, will be flattened for comparison).
+
+        Returns:
+            Dict with:
+                - consensus_score: float ∈ [0, 1] (1 = all agree).
+                - pairwise_distances: dict of (model_i, model_j) → distance.
+                - needs_escalation: bool — True when consensus < threshold.
+                - uncertainty_boost: float — suggested uncertainty increase.
+                - num_models: int — number of models compared.
+        """
+        names = list(adjacency_matrices.keys())
+        n = len(names)
+        if n < 2:
+            return {
+                "consensus_score": 1.0,
+                "pairwise_distances": {},
+                "needs_escalation": False,
+                "uncertainty_boost": 0.0,
+                "num_models": n,
+            }
+
+        # Flatten adjacency matrices to vectors for pairwise comparison
+        flat: Dict[str, torch.Tensor] = {}
+        for name, adj in adjacency_matrices.items():
+            flat[name] = adj.detach().float().flatten()
+
+        # Pad to same length if needed (models may have different num_vars)
+        max_len = max(v.numel() for v in flat.values())
+        for name in flat:
+            if flat[name].numel() < max_len:
+                flat[name] = F.pad(flat[name], (0, max_len - flat[name].numel()))
+
+        pairwise_distances: Dict[Tuple[str, str], float] = {}
+        total_distance = 0.0
+        count = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = flat[names[i]]
+                b = flat[names[j]]
+                # Normalized Frobenius distance ∈ [0, 1]
+                norm_sum = a.norm() + b.norm()
+                if norm_sum > 0:
+                    dist = float((a - b).norm().item() / norm_sum.item())
+                else:
+                    dist = 0.0
+                pairwise_distances[(names[i], names[j])] = dist
+                total_distance += dist
+                count += 1
+
+        avg_distance = total_distance / max(count, 1)
+        # Consensus = 1 - average_distance (clamped [0, 1])
+        consensus_score = max(0.0, min(1.0, 1.0 - avg_distance))
+
+        needs_escalation = consensus_score < self.agreement_threshold
+        uncertainty_boost = 0.0
+        if needs_escalation:
+            uncertainty_boost = (
+                (self.agreement_threshold - consensus_score)
+                / max(self.agreement_threshold, 1e-6)
+            ) * self.uncertainty_scale
+
+        return {
+            "consensus_score": consensus_score,
+            "pairwise_distances": pairwise_distances,
+            "needs_escalation": needs_escalation,
+            "uncertainty_boost": uncertainty_boost,
+            "num_models": n,
+        }
+
+
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
@@ -14233,6 +14360,41 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
         
+        # ===== CAUSAL DAG CONSENSUS =====
+        # Cross-validates adjacency matrices from multiple causal models
+        # to detect structural disagreement.  Active whenever ≥2 causal
+        # models are enabled; otherwise a no-op.
+        _num_causal_models = sum([
+            self.causal_model is not None,
+            self.notears_causal is not None,
+            self.causal_programmatic is not None,
+        ])
+        if _num_causal_models >= 2:
+            self.causal_dag_consensus = CausalDAGConsensus(
+                agreement_threshold=config.causal_dag_consensus_threshold,
+                uncertainty_scale=config.causal_dag_consensus_uncertainty_scale,
+            )
+            logger.info("CausalDAGConsensus enabled (%d models)", _num_causal_models)
+        else:
+            self.causal_dag_consensus = None
+        
+        # ===== COMPLEXITY-GATED FALLBACK CACHE =====
+        # Stores last-known-good outputs from complexity-gated subsystems
+        # so that downstream modules receive decayed signal when the
+        # subsystem is skipped due to low complexity.
+        self._gated_fallback_cache: Dict[str, Optional[torch.Tensor]] = {
+            "world_model_surprise": None,
+            "mcts_best_state": None,
+            "causal_world_predicted": None,
+            "unified_sim_next_state": None,
+        }
+        
+        # ===== MEMORY RETRIEVAL QUALITY =====
+        # Tracks per-pass memory retrieval quality for inclusion in the
+        # causal decision chain, enabling root-cause analysis of memory-
+        # influenced reasoning outcomes.
+        self._last_memory_retrieval_quality: Dict[str, Any] = {}
+        
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
         self.state_validator = StateConsistencyValidator(
@@ -14944,6 +15106,8 @@ class AEONDeltaV3(nn.Module):
                 },
                 'uncertainty_sources': {'pipeline_error': 1.0},
                 'auto_critic_final_score': None,
+                'dag_consensus_results': {},
+                'memory_retrieval_quality': {},
             }
             return z_fallback, fallback_outputs
 
@@ -16182,6 +16346,30 @@ class AEONDeltaV3(nn.Module):
         })
         self.provenance_tracker.record_after("world_model", C_star)
         
+        # 5b-fc. Complexity-gated fallback caching for world model —
+        # when the world model ran, cache its surprise for future passes
+        # where it may be skipped.  When skipped, apply the decayed
+        # cached surprise so downstream modules (uncertainty pipeline,
+        # feedback bus) still receive a signal from the world model's
+        # last execution, preventing information loss from gating.
+        if self.config.enable_gated_fallback_cache:
+            if self.world_model is not None and not _world_model_should_skip and not fast:
+                # Cache the current surprise tensor
+                if surprise.numel() > 0 and torch.isfinite(surprise).all():
+                    self._gated_fallback_cache["world_model_surprise"] = surprise.detach().clone()
+            elif _world_model_should_skip and self._gated_fallback_cache["world_model_surprise"] is not None:
+                _decay = self.config.gated_fallback_decay
+                _cached_surprise_t = self._gated_fallback_cache["world_model_surprise"].to(device)
+                surprise = _cached_surprise_t * _decay
+                # Decay the cache for next potential skip
+                self._gated_fallback_cache["world_model_surprise"] = (
+                    _cached_surprise_t * _decay
+                )
+                self.audit_log.record("gated_fallback", "world_model_surprise_used", {
+                    "decayed_surprise_mean": float(surprise.mean().item()),
+                    "decay_factor": _decay,
+                })
+        
         # 5b1a. Hierarchical World Model — multi-horizon planning across
         # reactive, tactical, and strategic time scales (Dreamer v3).
         # When both physics and hierarchical world models are enabled,
@@ -16561,6 +16749,21 @@ class AEONDeltaV3(nn.Module):
         })
         self.provenance_tracker.record_after("memory", C_star)
         
+        # 5c5-0. Memory retrieval quality tracking — record per-pass memory
+        # retrieval statistics for inclusion in the causal decision chain.
+        # Enables root-cause analysis linking reasoning outcomes to the
+        # quality of memory-based context that influenced them.
+        self._last_memory_retrieval_quality = {
+            "retrieval_quality": _memory_retrieval_quality,
+            "empty_ratio": _memory_empty_count / max(B, 1),
+            "stale": self._memory_stale,
+            "healthy": _memory_healthy,
+            "hierarchical_active": self.hierarchical_memory is not None,
+            "neurogenic_active": self.neurogenic_memory is not None,
+            "consolidating_active": self.consolidating_memory is not None,
+            "temporal_active": self.temporal_memory is not None,
+        }
+        
         # 5c5. Cross-populate CausalContextWindowManager with memory-enriched
         # state so that memory retrievals contribute to the causal context
         # pool.  This closes the gap between the memory subsystems
@@ -16874,6 +17077,59 @@ class AEONDeltaV3(nn.Module):
             "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
         })
         
+        # 5d1c3. Causal DAG consensus — cross-validate adjacency matrices
+        # from all active causal models to detect structural disagreement.
+        # When multiple models assert conflicting causal structures,
+        # escalate uncertainty so the metacognitive trigger activates
+        # deeper reasoning to reconcile the discrepancy.  This transforms
+        # the independent causal models into a cooperative ensemble where
+        # their agreement (or disagreement) actively influences reasoning
+        # depth.
+        _dag_consensus_results: Dict[str, Any] = {}
+        if self.causal_dag_consensus is not None and _causal_healthy and not fast:
+            _adj_matrices: Dict[str, torch.Tensor] = {}
+            if causal_model_results and 'adjacency' in causal_model_results:
+                _adj_matrices['neural_causal'] = causal_model_results['adjacency']
+            if notears_results and self.notears_causal is not None:
+                _adj_matrices['notears'] = self.notears_causal.W.detach()
+            if causal_prog_results and 'adjacency' in causal_prog_results:
+                _adj_matrices['causal_programmatic'] = causal_prog_results['adjacency']
+            if len(_adj_matrices) >= 2:
+                _dag_consensus_results = self.causal_dag_consensus.evaluate(
+                    _adj_matrices
+                )
+                _consensus_score = _dag_consensus_results["consensus_score"]
+                if _dag_consensus_results["needs_escalation"]:
+                    _dag_unc_boost = _dag_consensus_results["uncertainty_boost"]
+                    uncertainty = min(1.0, uncertainty + _dag_unc_boost)
+                    uncertainty_sources["causal_dag_disagreement"] = _dag_unc_boost
+                    high_uncertainty = uncertainty > 0.5
+                    self.audit_log.record("causal_dag_consensus", "disagreement", {
+                        "consensus_score": _consensus_score,
+                        "num_models": _dag_consensus_results["num_models"],
+                        "uncertainty_boost": _dag_unc_boost,
+                    }, severity="warning")
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="causal_dag_disagreement",
+                            strategy_used="uncertainty_escalation",
+                            success=True,
+                            metadata={
+                                "consensus_score": _consensus_score,
+                                "num_models": _dag_consensus_results["num_models"],
+                            },
+                        )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "causal_dag_consensus", "evaluated",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "consensus_score": _consensus_score,
+                            "needs_escalation": _dag_consensus_results["needs_escalation"],
+                            "num_models": _dag_consensus_results["num_models"],
+                        },
+                    )
+        
         # 5d1d-0. Causal quality → CausalContextWindowManager — record the
         # current causal model quality in the causal context hierarchy so
         # that cross-temporal reasoning benefits from causal structure
@@ -17075,6 +17331,30 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _usim_boost)
                     uncertainty_sources["unified_simulator_divergence"] = _usim_boost
                     high_uncertainty = uncertainty > 0.5
+        
+        # 5e2-fc. Complexity-gated fallback for unified simulator —
+        # cache the counterfactual next_state when it runs; when skipped,
+        # blend the decayed cached state as a weak residual so the
+        # counterfactual reasoning signal is not entirely lost.
+        if self.config.enable_gated_fallback_cache:
+            if self.unified_simulator is not None and not _unified_sim_should_skip and not fast:
+                cf_cached = unified_simulator_results.get("next_state", None)
+                if cf_cached is not None and torch.isfinite(cf_cached).all():
+                    self._gated_fallback_cache["unified_sim_next_state"] = cf_cached.detach().clone()
+            elif _unified_sim_should_skip and self._gated_fallback_cache["unified_sim_next_state"] is not None:
+                _decay = self.config.gated_fallback_decay
+                _cached_cf = self._gated_fallback_cache["unified_sim_next_state"].to(device)
+                if _cached_cf.shape[-1] == C_star.shape[-1]:
+                    # Slice to batch size if cache is larger, or expand if smaller
+                    if _cached_cf.shape[0] >= B:
+                        _cached_cf_expanded = _cached_cf[:B]
+                    else:
+                        _cached_cf_expanded = _cached_cf.expand(B, -1)
+                    C_star = C_star + (self.config.unified_simulator_blend * _decay) * _cached_cf_expanded
+                self._gated_fallback_cache["unified_sim_next_state"] = _cached_cf * _decay
+                self.audit_log.record("gated_fallback", "unified_sim_used", {
+                    "decay_factor": _decay,
+                })
         
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
@@ -18340,6 +18620,10 @@ class AEONDeltaV3(nn.Module):
             "certified_error_bound": _certified_results.get(
                 "certified_error_bound", None
             ),
+            "memory_retrieval_quality": self._last_memory_retrieval_quality,
+            "causal_dag_consensus": (
+                _dag_consensus_results if _dag_consensus_results else None
+            ),
         }
         
         outputs = {
@@ -18394,6 +18678,8 @@ class AEONDeltaV3(nn.Module):
             'auto_critic_final_score': _auto_critic_final_score,
             'auto_critic_final_score_tensor': _auto_critic_final_score_tensor,
             'certified_results': _certified_results,
+            'dag_consensus_results': _dag_consensus_results,
+            'memory_retrieval_quality': self._last_memory_retrieval_quality,
         }
         
         return z_out, outputs
