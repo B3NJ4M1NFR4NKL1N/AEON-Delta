@@ -2829,6 +2829,22 @@ def main(
     z_sequences_gpu = [seq.to(device) for seq in z_sequences]
     
     trainer_B = ContextualRSSMTrainer(model, config, monitor)
+
+    # Seed Phase B error evolution with Phase A patterns so that RSSM
+    # training benefits from AE-phase convergence failures.  Without this,
+    # Phase B starts with a blank error tracker and cannot leverage
+    # divergence/stagnation patterns already discovered during Phase A.
+    _phaseA_bridged = bridge_training_errors_to_inference(
+        trainer_monitor=convergence_monitor_A,
+        inference_error_evolution=trainer_B._error_evolution,
+    )
+    if _phaseA_bridged:
+        logger.info(
+            f"🔗 Bridged {_phaseA_bridged} error pattern(s) from Phase A → Phase B"
+        )
+    else:
+        logger.info("🔗 Phase A produced no actionable error patterns to bridge")
+
     trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
 
     # ===== Сохранение =====
