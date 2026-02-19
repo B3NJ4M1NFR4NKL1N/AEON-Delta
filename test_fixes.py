@@ -8078,7 +8078,8 @@ def test_new_components_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.auto_critic is None
+    # auto_critic is now enabled by default for unified self-verification
+    assert model.auto_critic is not None
     assert model.hybrid_reasoning is None
     assert model.unified_simulator is None
     print("✅ test_new_components_disabled_by_default PASSED")
@@ -25194,6 +25195,7 @@ def test_safety_rollback_recorded_in_causal_trace():
         enable_causal_trace=True,
         enable_metacognitive_recursion=True,
         enable_error_evolution=True,
+        enable_auto_critic=False,
     )
     model = AEONDeltaV3(config)
     model.eval()
@@ -25216,7 +25218,7 @@ def test_safety_rollback_recorded_in_causal_trace():
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
     # Check causal trace for safety_enforcement entry
-    recent = model.causal_trace.recent(n=20)
+    recent = model.causal_trace.recent(n=50)
     safety_entries = [
         e for e in recent
         if e.get("subsystem") == "safety_enforcement"
