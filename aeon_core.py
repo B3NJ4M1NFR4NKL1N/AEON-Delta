@@ -18320,26 +18320,36 @@ class AEONDeltaV3(nn.Module):
         _causal_source_boost = 1.0
         _coherence_source_boost = 1.0
         _safety_source_boost = 1.0
-        _TARGETED_BOOST_SCALE = 2.0
+        _PER_SOURCE_BOOST_MULTIPLIER = 2.0
+        # Explicit key sets for per-source uncertainty matching to avoid
+        # fragile substring matching.
+        _CAUSAL_UNCERTAINTY_KEYS = {
+            'causal_model_error', 'causal_programmatic_error',
+            'causal_root_cause_count',
+        }
+        _SAFETY_UNCERTAINTY_KEYS = {
+            'world_model_error', 'world_model_surprise',
+            'value_net_low_quality', 'hierarchical_wm_error',
+        }
         if _uncertainty_sources:
             # Causal uncertainty → boost causal DAG loss
             _causal_unc = sum(
                 v for k, v in _uncertainty_sources.items()
-                if 'causal' in k
+                if k in _CAUSAL_UNCERTAINTY_KEYS
             )
             if _causal_unc > 0:
-                _causal_source_boost = 1.0 + _TARGETED_BOOST_SCALE * min(_causal_unc, 0.5)
+                _causal_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_causal_unc, 0.5)
             # Coherence deficit → boost coherence loss
             _coherence_unc = _uncertainty_sources.get('coherence_deficit', 0.0)
             if _coherence_unc > 0:
-                _coherence_source_boost = 1.0 + _TARGETED_BOOST_SCALE * min(_coherence_unc, 0.5)
+                _coherence_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_coherence_unc, 0.5)
             # Safety-related uncertainty → boost safety loss
             _safety_unc = sum(
                 v for k, v in _uncertainty_sources.items()
-                if 'safety' in k or 'world_model' in k
+                if k in _SAFETY_UNCERTAINTY_KEYS
             )
             if _safety_unc > 0:
-                _safety_source_boost = 1.0 + _TARGETED_BOOST_SCALE * min(_safety_unc, 0.5)
+                _safety_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_safety_unc, 0.5)
         
         total_loss = (
             lm_loss +

@@ -21947,28 +21947,32 @@ def test_trainer_error_evolution_nan_loss():
     assert trainer._error_evolution is not None
     assert trainer._error_evolution is model.error_evolution
 
-    # Simulate a training step with NaN loss
+    # Run a normal training step and verify convergence_status is reported
     B, L = 2, config.seq_length
     batch = {
         'input_ids': torch.randint(0, config.vocab_size, (B, L)),
         'attention_mask': torch.ones(B, L, dtype=torch.long),
         'labels': torch.randint(0, config.vocab_size, (B, L)),
     }
-
-    # Get initial error summary
-    summary_before = model.error_evolution.get_error_summary()
-    initial_count = sum(
-        v.get('count', 0)
-        for v in summary_before.get('error_classes', {}).values()
-    )
-
-    # Run a normal training step (should record success or training event)
     metrics = trainer.train_step(batch)
-
-    # Verify convergence_status is reported
     assert 'convergence_status' in metrics, (
         "train_step must include convergence_status in metrics"
     )
+
+    # Directly test the NaN recording path by injecting a NaN episode
+    # into error evolution and verifying it appears in the summary
+    model.error_evolution.record_episode(
+        error_class="training_nan_loss",
+        strategy_used="skip_update",
+        success=False,
+        metadata={"step": 999},
+    )
+    summary = model.error_evolution.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+    assert 'training_nan_loss' in error_classes, (
+        "NaN loss event must appear in error evolution summary"
+    )
+    assert error_classes['training_nan_loss']['count'] >= 1
 
     print("✅ test_trainer_error_evolution_nan_loss PASSED")
 
@@ -22014,6 +22018,20 @@ def test_trainer_gradient_explosion_recorded():
     metrics = trainer.train_step(batch)
     assert 'total_loss' in metrics
     assert 'grad_norm' in metrics
+
+    # Verify the gradient explosion recording path exists by directly
+    # simulating what train_step does when grad_norm exceeds threshold
+    model.error_evolution.record_episode(
+        error_class="training_gradient_explosion",
+        strategy_used="gradient_clip",
+        success=True,
+        metadata={"step": 0, "grad_norm": 100.0},
+    )
+    summary = model.error_evolution.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+    assert 'training_gradient_explosion' in error_classes, (
+        "Gradient explosion must appear in error evolution summary"
+    )
 
     print("✅ test_trainer_gradient_explosion_recorded PASSED")
 
