@@ -18687,10 +18687,14 @@ class AEONDeltaV3(nn.Module):
             # sampling process itself, so uncertain states could still
             # produce deterministic-looking outputs.
             _gen_uncertainty = outputs.get('uncertainty', 0.0)
+            _uncertainty_regenerated = False
             if (_gen_uncertainty > self.config.uncertainty_logit_penalty_threshold
-                    and sample and generated_ids is None):
-                # Re-generate with elevated temperature proportional to
-                # uncertainty.  Max boost of 0.5 keeps output coherent.
+                    and sample
+                    and not _uncertainty_regenerated):
+                # Single re-generation attempt with elevated temperature
+                # proportional to uncertainty.  Max boost of 0.5 keeps
+                # output coherent.  The flag prevents repeated attempts.
+                _uncertainty_regenerated = True
                 _unc_temp_boost = min(
                     0.5,
                     self.config.uncertainty_logit_penalty_scale
@@ -18951,7 +18955,7 @@ class AEONDeltaV3(nn.Module):
         )
 
         # --- Determine overall status ---
-        _critical_gaps = [g for g in gaps if 'None' in g.get('gap', '')]
+        _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
             status = 'critical'
         elif gaps:
