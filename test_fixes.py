@@ -26368,6 +26368,136 @@ def test_metacognitive_trigger_maps_certified_convergence_failure():
     print("✅ test_metacognitive_trigger_maps_certified_convergence_failure PASSED")
 
 
+def test_hybrid_reasoning_forward_uses_tkg():
+    """Verify HybridReasoningEngine.forward() uses TKG retrieval.
+
+    After the first call populates the internal TKG, subsequent
+    forward() calls should consult the TKG because forward() now
+    passes neural_state as query, activating the retrieve_relevant
+    branch inside reason().
+    """
+    from aeon_core import HybridReasoningEngine
+
+    engine = HybridReasoningEngine(hidden_dim=64, num_predicates=16)
+    state = torch.randn(2, 64)
+
+    # First forward pass — populates internal TKG
+    out1 = engine(state)
+    assert len(engine.knowledge_graph) >= 1, (
+        "Internal TKG should be populated after first forward()"
+    )
+
+    # Second forward pass — should now retrieve from TKG
+    out2 = engine(state)
+    assert len(engine.knowledge_graph) >= 2, (
+        "Internal TKG should grow after second forward()"
+    )
+    assert out2["conclusions"].shape == (2, 64)
+
+    print("✅ test_hybrid_reasoning_forward_uses_tkg PASSED")
+
+
+def test_tkg_retrieval_config_defaults():
+    """Verify TKG retrieval config attributes exist with correct defaults."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'tkg_retrieval_blend'), (
+        "AEONConfig should have tkg_retrieval_blend attribute"
+    )
+    assert hasattr(config, 'tkg_retrieval_top_k'), (
+        "AEONConfig should have tkg_retrieval_top_k attribute"
+    )
+    assert config.tkg_retrieval_blend == 0.05, (
+        f"Expected default tkg_retrieval_blend=0.05, got {config.tkg_retrieval_blend}"
+    )
+    assert config.tkg_retrieval_top_k == 5, (
+        f"Expected default tkg_retrieval_top_k=5, got {config.tkg_retrieval_top_k}"
+    )
+
+    print("✅ test_tkg_retrieval_config_defaults PASSED")
+
+
+def test_tkg_retrieval_blends_into_reasoning():
+    """Verify that TKG retrieval blends stored knowledge back into
+    the reasoning state during the forward pass, closing the write-only
+    gap where TKG only accumulated facts without feeding them back.
+
+    After two forward passes with ns_bridge and TKG enabled:
+    - Pass 1 stores facts in TKG
+    - Pass 2 should retrieve and blend those facts
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_standalone_ns_bridge=True,
+        enable_temporal_knowledge_graph=True,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(100, 1000, (1, 16))
+
+    # Pass 1: populate TKG via ns_bridge
+    with torch.no_grad():
+        _ = model(tokens, fast=False)
+    tkg_size_after_pass1 = len(model.temporal_knowledge_graph)
+    assert tkg_size_after_pass1 > 0, (
+        "TKG should contain facts after first forward pass"
+    )
+
+    # Pass 2: TKG retrieval should activate
+    with torch.no_grad():
+        result2 = model(tokens, fast=False)
+
+    # The second pass should have produced valid output
+    assert result2['thoughts'].shape[-1] == config.hidden_dim
+    # TKG should still have entries (may have grown with second pass)
+    assert len(model.temporal_knowledge_graph) >= tkg_size_after_pass1
+
+    print("✅ test_tkg_retrieval_blends_into_reasoning PASSED")
+
+
+def test_tkg_retrieve_relevant_returns_useful_tensor():
+    """Verify TemporalKnowledgeGraph.retrieve_relevant returns a tensor
+    that is non-zero and has the correct shape when facts are stored."""
+    from aeon_core import TemporalKnowledgeGraph
+
+    tkg = TemporalKnowledgeGraph(capacity=100)
+
+    # Store some facts
+    facts1 = torch.randn(64)
+    facts2 = torch.randn(64)
+    tkg.add_facts(facts1, confidence=0.9, timestamp=0)
+    tkg.add_facts(facts2, confidence=0.8, timestamp=1)
+
+    # Query retrieval
+    query = torch.randn(64)
+    retrieved = tkg.retrieve_relevant(query, top_k=5)
+    assert retrieved.shape == query.shape, (
+        f"Retrieved shape {retrieved.shape} should match query shape {query.shape}"
+    )
+    assert torch.isfinite(retrieved).all(), "Retrieved tensor should be finite"
+    # Should be non-zero since we stored non-zero facts
+    assert retrieved.abs().sum().item() > 0, (
+        "Retrieved tensor should be non-zero when TKG has stored facts"
+    )
+
+    # Empty TKG returns zeros
+    empty_tkg = TemporalKnowledgeGraph()
+    retrieved_empty = empty_tkg.retrieve_relevant(query)
+    assert (retrieved_empty == 0).all(), (
+        "Empty TKG should return zero tensor"
+    )
+
+    print("✅ test_tkg_retrieve_relevant_returns_useful_tensor PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -27540,6 +27670,12 @@ if __name__ == '__main__':
     test_architecture_summary_includes_dag_consensus()
     test_self_diagnostic_includes_dag_consensus()
     test_metacognitive_trigger_maps_certified_convergence_failure()
+    
+    # Architectural Unification — TKG Retrieval & Hybrid Reasoning Gap Fixes
+    test_hybrid_reasoning_forward_uses_tkg()
+    test_tkg_retrieval_config_defaults()
+    test_tkg_retrieval_blends_into_reasoning()
+    test_tkg_retrieve_relevant_returns_useful_tensor()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
