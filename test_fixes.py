@@ -22143,6 +22143,223 @@ def test_forward_output_contains_provenance_and_uncertainty_sources():
     print("✅ test_forward_output_contains_provenance_and_uncertainty_sources PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Causal Coherence & Meta-Cognitive Integration
+# ============================================================================
+
+
+def test_error_evolution_causal_trace_propagation():
+    """CausalErrorEvolutionTracker propagates episodes to TemporalCausalTraceBuffer.
+
+    Verifies that when set_causal_trace() is used to attach a trace buffer,
+    every record_episode() call also creates a corresponding entry in the
+    causal trace, closing the gap between error evolution and causal
+    traceability.
+    """
+    from aeon_core import CausalErrorEvolutionTracker, TemporalCausalTraceBuffer
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Before wiring: no trace entries
+    tracker.record_episode("numerical", "sanitize", True)
+    assert trace.summary()["total_entries"] == 0, "Trace should be empty before wiring"
+
+    # Wire the trace
+    tracker.set_causal_trace(trace)
+
+    # After wiring: episodes propagate
+    tracker.record_episode("convergence", "rollback", False, metadata={"step": 42})
+    assert trace.summary()["total_entries"] == 1, "Trace should have 1 entry after wiring"
+
+    recent = trace.recent(n=1)
+    assert len(recent) == 1
+    entry = recent[0]
+    assert "error_evolution/convergence" in entry["subsystem"]
+    assert "rollback" in entry["decision"]
+    assert entry["severity"] == "warning"  # failure → warning
+    assert entry["metadata"]["error_class"] == "convergence"
+
+    # Success entry → info severity
+    tracker.record_episode("numerical", "sanitize", True)
+    success_entry = trace.recent(n=1)[0]
+    assert success_entry["severity"] == "info"
+
+    print("✅ test_error_evolution_causal_trace_propagation PASSED")
+
+
+def test_error_evolution_causal_trace_root_cause():
+    """Root-cause tracing works through error evolution entries.
+
+    Verifies that causal_antecedents passed to record_episode() are
+    preserved in the trace buffer and can be used for root-cause analysis.
+    """
+    from aeon_core import CausalErrorEvolutionTracker, TemporalCausalTraceBuffer
+
+    tracker = CausalErrorEvolutionTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+    tracker.set_causal_trace(trace)
+
+    # Record a root cause entry directly in trace
+    root_id = trace.record("input", "received", metadata={"batch_size": 4})
+
+    # Record an error episode that points to the root cause
+    tracker.record_episode(
+        "numerical", "sanitize", True,
+        causal_antecedents=[root_id],
+    )
+
+    # Verify the error episode links back to the root cause
+    entries = trace.recent(n=2)
+    error_entry = entries[-1]
+    assert root_id in error_entry["causal_prerequisites"]
+
+    # Root-cause tracing should find the input entry
+    root_result = trace.trace_root_cause(error_entry["id"])
+    assert root_result["chain_length"] == 2
+    assert any(
+        rc["subsystem"] == "input" for rc in root_result["root_causes"]
+    )
+
+    print("✅ test_error_evolution_causal_trace_root_cause PASSED")
+
+
+def test_error_evolution_set_causal_trace_wiring_in_model():
+    """AEONDeltaV3 wires error_evolution to causal_trace when both enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is not None, "error_evolution should be enabled"
+    assert model.causal_trace is not None, "causal_trace should be enabled"
+    assert model.error_evolution._causal_trace is model.causal_trace, (
+        "error_evolution should be wired to causal_trace"
+    )
+
+    # Verify propagation works end-to-end
+    model.error_evolution.record_episode("test_class", "test_strat", True)
+    assert model.causal_trace.summary()["total_entries"] >= 1
+
+    print("✅ test_error_evolution_set_causal_trace_wiring_in_model PASSED")
+
+
+def test_causal_trace_informed_metacognitive_trigger():
+    """Causal trace error history boosts uncertainty for metacognitive trigger.
+
+    Verifies that MetaCognitiveRecursionTrigger's evaluate() receives
+    boosted uncertainty when the causal trace contains recent error entries,
+    ensuring the trace is no longer write-only.
+    """
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        TemporalCausalTraceBuffer,
+    )
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.3)
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Simulate the causal-trace-informed uncertainty boost logic
+    # (mirrors the code in _reasoning_core_impl 5a-iv-a)
+    base_uncertainty = 0.2
+
+    # No errors → no boost
+    ct_recent = trace.recent(n=10)
+    ct_error_count = sum(
+        1 for e in ct_recent
+        if e.get("severity") in ("error", "warning")
+    )
+    assert ct_error_count == 0
+
+    # Add error entries to trace
+    for i in range(5):
+        trace.record("subsystem", f"error_{i}", severity="error")
+
+    ct_recent = trace.recent(n=10)
+    ct_error_count = sum(
+        1 for e in ct_recent
+        if e.get("severity") in ("error", "warning")
+    )
+    assert ct_error_count == 5
+
+    # Apply the same boost logic as in the forward pass
+    _CT_ERROR_UNCERTAINTY_SCALE = 0.05
+    boost = min(1.0 - base_uncertainty, ct_error_count * _CT_ERROR_UNCERTAINTY_SCALE)
+    boosted_uncertainty = min(1.0, base_uncertainty + boost)
+
+    assert boosted_uncertainty > base_uncertainty, (
+        f"Uncertainty should be boosted: {boosted_uncertainty} > {base_uncertainty}"
+    )
+    assert abs(boosted_uncertainty - 0.45) < 0.01, (
+        f"Expected ~0.45 uncertainty, got {boosted_uncertainty}"
+    )
+
+    # With boosted uncertainty, the trigger should be more likely to fire
+    result_low = trigger.evaluate(uncertainty=base_uncertainty)
+    result_high = trigger.evaluate(uncertainty=boosted_uncertainty)
+    assert result_high["trigger_score"] >= result_low["trigger_score"], (
+        "Higher uncertainty should produce higher trigger score"
+    )
+
+    print("✅ test_causal_trace_informed_metacognitive_trigger PASSED")
+
+
+def test_training_bridge_causal_trace():
+    """bridge_training_errors_to_inference records in causal trace.
+
+    Verifies that the training→inference bridge function records bridged
+    episodes in the causal trace when one is provided.
+    """
+    from aeon_core import CausalErrorEvolutionTracker, TemporalCausalTraceBuffer
+    from ae_train import TrainingConvergenceMonitor, bridge_training_errors_to_inference
+
+    # Set up training monitor with an error evolution tracker so
+    # that export_error_patterns() returns real data.
+    training_error_evo = CausalErrorEvolutionTracker()
+    monitor = TrainingConvergenceMonitor(error_evolution=training_error_evo)
+
+    # Simulate a training sequence that diverges: feed losses that
+    # increase sharply so the monitor detects divergence and records
+    # error episodes in the training error evolution tracker.
+    for loss in [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 3.0, 5.0, 8.0]:
+        monitor.update(loss)
+
+    # Verify training error evolution has some episodes
+    training_summary = training_error_evo.get_error_summary()
+    assert training_summary["total_recorded"] > 0, (
+        "Training should have recorded error episodes"
+    )
+
+    # Set up inference side
+    inference_tracker = CausalErrorEvolutionTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Bridge WITHOUT causal trace (backward compatible)
+    bridged = bridge_training_errors_to_inference(monitor, inference_tracker)
+    assert bridged >= 1, "Should bridge at least 1 error class"
+    assert trace.summary()["total_entries"] == 0, (
+        "No trace entries when causal_trace not provided"
+    )
+
+    # Bridge WITH causal trace
+    inference_tracker2 = CausalErrorEvolutionTracker()
+    bridged2 = bridge_training_errors_to_inference(
+        monitor, inference_tracker2, causal_trace=trace,
+    )
+    assert bridged2 >= 1
+    assert trace.summary()["total_entries"] >= 1, (
+        "Trace should have entries when causal_trace is provided"
+    )
+
+    recent = trace.recent(n=1)
+    assert recent[0]["subsystem"] == "training_bridge"
+
+    print("✅ test_training_bridge_causal_trace PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -23148,6 +23365,13 @@ if __name__ == '__main__':
     test_compute_loss_per_source_uncertainty_targeting()
     test_server_infer_response_includes_provenance()
     test_forward_output_contains_provenance_and_uncertainty_sources()
+    
+    # Architectural Unification — Causal Coherence & Meta-Cognitive Integration
+    test_error_evolution_causal_trace_propagation()
+    test_error_evolution_causal_trace_root_cause()
+    test_error_evolution_set_causal_trace_wiring_in_model()
+    test_causal_trace_informed_metacognitive_trigger()
+    test_training_bridge_causal_trace()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

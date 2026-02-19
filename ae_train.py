@@ -2202,6 +2202,7 @@ class TrainingConvergenceMonitor:
 def bridge_training_errors_to_inference(
     trainer_monitor: 'TrainingConvergenceMonitor',
     inference_error_evolution: Any,
+    causal_trace: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -2210,11 +2211,18 @@ def bridge_training_errors_to_inference(
     inference-time metacognitive triggers and recovery strategies benefit
     from training-time convergence failures.
 
+    When a ``TemporalCausalTraceBuffer`` is provided via *causal_trace*,
+    each bridged episode is also recorded as a traced decision so that
+    root-cause analysis can trace inference-time recovery strategies back
+    to the specific training-time failure patterns that informed them.
+
     Args:
         trainer_monitor: The training convergence monitor that has
             accumulated error episodes during training.
         inference_error_evolution: The inference pipeline's
             ``CausalErrorEvolutionTracker`` instance.
+        causal_trace: Optional ``TemporalCausalTraceBuffer`` for
+            recording bridged episodes as causal trace entries.
 
     Returns:
         Number of error episodes bridged.
@@ -2238,6 +2246,24 @@ def bridge_training_errors_to_inference(
                     'training_success_rate': success_rate,
                 },
             )
+            # Record bridge event in causal trace so inference-time
+            # recovery strategies are traceable to training failures.
+            if causal_trace is not None:
+                try:
+                    causal_trace.record(
+                        subsystem="training_bridge",
+                        decision=f"bridged_{cls_name}",
+                        metadata={
+                            "training_count": count,
+                            "success_rate": success_rate,
+                            "best_strategy": cls_stats.get(
+                                "best_strategy", "unknown",
+                            ),
+                        },
+                        severity="warning" if success_rate < 0.5 else "info",
+                    )
+                except Exception:
+                    pass  # causal trace recording is best-effort
             bridged += 1
     return bridged
 
