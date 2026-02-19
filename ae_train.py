@@ -2262,8 +2262,11 @@ def bridge_training_errors_to_inference(
                         },
                         severity="warning" if success_rate < 0.5 else "info",
                     )
-                except Exception:
-                    pass  # causal trace recording is best-effort
+                except Exception as _ct_err:
+                    logging.getLogger(__name__).debug(
+                        "Causal trace recording failed during bridge: %s",
+                        _ct_err,
+                    )
             bridged += 1
     return bridged
 

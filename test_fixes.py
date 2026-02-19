@@ -22293,8 +22293,10 @@ def test_causal_trace_informed_metacognitive_trigger():
     assert boosted_uncertainty > base_uncertainty, (
         f"Uncertainty should be boosted: {boosted_uncertainty} > {base_uncertainty}"
     )
-    assert abs(boosted_uncertainty - 0.45) < 0.01, (
-        f"Expected ~0.45 uncertainty, got {boosted_uncertainty}"
+    # Expected: base (0.2) + 5 errors * 0.05 scale = 0.45
+    _expected = base_uncertainty + ct_error_count * _CT_ERROR_UNCERTAINTY_SCALE
+    assert abs(boosted_uncertainty - _expected) < 0.01, (
+        f"Expected ~{_expected} uncertainty, got {boosted_uncertainty}"
     )
 
     # With boosted uncertainty, the trigger should be more likely to fire

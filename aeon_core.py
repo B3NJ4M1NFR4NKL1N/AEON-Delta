@@ -2710,6 +2710,11 @@ class AEONConfig:
     provenance_dampen_factor: float = 0.15
     intra_pass_feedback_threshold: float = 0.3
     intra_pass_feedback_scale: float = 0.05
+    # Per-error uncertainty boost from recent causal trace error entries.
+    # Each error/warning in the last 10 causal trace entries contributes
+    # this amount to the metacognitive trigger's uncertainty input, so
+    # 5 errors × 0.05 = 0.25 additional uncertainty.
+    causal_trace_error_uncertainty_scale: float = 0.05
     # Uncertainty confidence penalty: scales logits toward uniform distribution
     # when reasoning uncertainty exceeds this threshold (0 = disabled).
     uncertainty_logit_penalty_threshold: float = 0.5
@@ -15501,10 +15506,9 @@ class AEONDeltaV3(nn.Module):
                     if e.get("severity") in ("error", "warning")
                 )
                 if _ct_error_count > 0:
-                    _CT_ERROR_UNCERTAINTY_SCALE = 0.05
                     _causal_trace_uncertainty_boost = min(
                         1.0 - uncertainty,
-                        _ct_error_count * _CT_ERROR_UNCERTAINTY_SCALE,
+                        _ct_error_count * self.config.causal_trace_error_uncertainty_scale,
                     )
                     uncertainty = min(
                         1.0, uncertainty + _causal_trace_uncertainty_boost,
