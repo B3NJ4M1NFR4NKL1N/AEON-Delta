@@ -3081,6 +3081,9 @@ class AEONConfig:
                 'enable_hierarchical_meta_loop',
                 # Certified convergence via IBP
                 'enable_certified_meta_loop',
+                # Multimodal grounding — ensures cross-modal signals
+                # participate in the unified coherence pipeline.
+                'enable_multimodal',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -3162,6 +3165,7 @@ class AEONConfig:
         config_dict = asdict(self)
         config_dict.pop('device_manager', None)
         config_dict.pop('tensor_guard', None)
+        config_dict.pop('telemetry_collector', None)
         config_dict.pop('_frozen', None)
         if 'device' in config_dict:
             config_dict['device'] = str(config_dict['device'])
@@ -14112,6 +14116,17 @@ class AEONDeltaV3(nn.Module):
                     f"Memory trust: mean={self._last_trust_score:.3f}, "
                     f"verification_weight={self._last_verification_weight:.3f}"
                 )
+                # Record trust score in causal trace so that root-cause
+                # analysis can link memory trust levels to downstream
+                # reasoning decisions, closing the trust→traceability gap.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "memory_trust", "scored",
+                        metadata={
+                            "mean_trust": self._last_trust_score,
+                            "verification_weight": self._last_verification_weight,
+                        },
+                    )
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
@@ -18819,6 +18834,39 @@ class AEONDeltaV3(nn.Module):
                 with open(save_dir / "vq_stats.json", 'w') as f:
                     json.dump(vq_stats, f, indent=2)
             
+            # Cognitive state — persist learned error patterns, convergence
+            # history, and metacognitive signal weights so that error
+            # evolution insights, convergence trends, and trigger
+            # sensitivity survive across restarts.  Without this, the
+            # system loses its accumulated self-reflective knowledge on
+            # every restart, breaking the requirement that conclusions
+            # can be traced back to root causes across sessions.
+            cognitive_state: Dict[str, Any] = {}
+            if self.error_evolution is not None:
+                cognitive_state['error_evolution'] = (
+                    self.error_evolution.get_error_summary()
+                )
+                with self.error_evolution._lock:
+                    cognitive_state['error_evolution_episodes'] = {
+                        cls: [
+                            {k: v for k, v in ep.items() if k != 'timestamp'}
+                            for ep in episodes
+                        ]
+                        for cls, episodes in self.error_evolution._episodes.items()
+                    }
+            if hasattr(self, 'convergence_monitor') and self.convergence_monitor.history:
+                cognitive_state['convergence_history'] = list(
+                    self.convergence_monitor.history
+                )
+            if self.metacognitive_trigger is not None:
+                cognitive_state['metacognitive_signal_weights'] = dict(
+                    self.metacognitive_trigger._signal_weights
+                )
+            if cognitive_state:
+                with open(save_dir / "cognitive_state.json", 'w') as f:
+                    json.dump(cognitive_state, f, indent=2)
+                logger.info("Saved cognitive state (error evolution, convergence, metacognitive weights)")
+            
             logger.info(f"✅ State saved to {save_dir}")
             return True
         
@@ -18948,6 +18996,52 @@ class AEONDeltaV3(nn.Module):
                     for k, v in metrics.items():
                         if k in self.metrics_log:
                             self.metrics_log[k] = deque(v, maxlen=10000)
+            
+            # Cognitive state — restore learned error patterns, convergence
+            # history, and metacognitive signal weights from a prior run.
+            cognitive_path = save_dir / "cognitive_state.json"
+            if cognitive_path.exists():
+                try:
+                    with open(cognitive_path, 'r') as f:
+                        cognitive_state = json.load(f)
+                    # Restore error evolution episodes
+                    if (self.error_evolution is not None
+                            and 'error_evolution_episodes' in cognitive_state):
+                        loaded_episodes = cognitive_state['error_evolution_episodes']
+                        with self.error_evolution._lock:
+                            for cls, episodes in loaded_episodes.items():
+                                for ep in episodes:
+                                    # Timestamps use time.monotonic() which
+                                    # resets between processes; default to 0.0
+                                    # to indicate "loaded from checkpoint".
+                                    ep.setdefault('timestamp', 0.0)
+                                # Merge loaded episodes with any existing
+                                # ones, then trim to max_history.
+                                existing = self.error_evolution._episodes.get(cls, [])
+                                merged = existing + episodes
+                                self.error_evolution._episodes[cls] = merged[
+                                    -self.error_evolution._max_history:
+                                ]
+                            self.error_evolution._total_recorded = sum(
+                                len(v) for v in self.error_evolution._episodes.values()
+                            )
+                        logger.info("Restored error evolution episodes")
+                    # Restore convergence history
+                    if ('convergence_history' in cognitive_state
+                            and hasattr(self, 'convergence_monitor')):
+                        for val in cognitive_state['convergence_history']:
+                            self.convergence_monitor.history.append(float(val))
+                        logger.info("Restored convergence monitor history")
+                    # Restore metacognitive signal weights
+                    if (self.metacognitive_trigger is not None
+                            and 'metacognitive_signal_weights' in cognitive_state):
+                        loaded_weights = cognitive_state['metacognitive_signal_weights']
+                        for k_w, v_w in loaded_weights.items():
+                            if k_w in self.metacognitive_trigger._signal_weights:
+                                self.metacognitive_trigger._signal_weights[k_w] = float(v_w)
+                        logger.info("Restored metacognitive signal weights")
+                except Exception as cog_err:
+                    logger.warning(f"Failed to load cognitive state (non-fatal): {cog_err}")
             
             logger.info(f"✅ State loaded from {save_dir}")
             return True

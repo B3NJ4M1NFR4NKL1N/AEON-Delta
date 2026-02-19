@@ -22362,6 +22362,160 @@ def test_training_bridge_causal_trace():
     print("✅ test_training_bridge_causal_trace PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Unified Coherence & State Persistence
+# ============================================================================
+
+
+def test_enable_full_coherence_includes_multimodal():
+    """Fix: enable_full_coherence now also activates enable_multimodal,
+    ensuring that multimodal grounding participates in the unified
+    coherence pipeline for cross-modal verification."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    assert config.enable_multimodal is True, (
+        "enable_full_coherence should set enable_multimodal=True"
+    )
+    print("✅ test_enable_full_coherence_includes_multimodal PASSED")
+
+
+def test_save_load_cognitive_state():
+    """Fix: save_state/load_state now persist and restore cognitive state
+    (error evolution episodes, convergence monitor history, metacognitive
+    signal weights) so learned patterns survive restarts."""
+    import tempfile
+    import os
+    from aeon_core import (
+        AEONConfig, AEONDeltaV3,
+        CausalErrorEvolutionTracker, ConvergenceMonitor,
+    )
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Populate error evolution with episodes
+    assert model.error_evolution is not None
+    model.error_evolution.record_episode(
+        error_class="test_error",
+        strategy_used="test_strategy",
+        success=True,
+    )
+    model.error_evolution.record_episode(
+        error_class="test_error",
+        strategy_used="test_strategy",
+        success=False,
+    )
+
+    # Populate convergence monitor
+    model.convergence_monitor.check(1.0)
+    model.convergence_monitor.check(0.5)
+    model.convergence_monitor.check(0.1)
+
+    # Modify metacognitive signal weights
+    assert model.metacognitive_trigger is not None
+    model.metacognitive_trigger._signal_weights["uncertainty"] = 0.5
+
+    # Save state
+    with tempfile.TemporaryDirectory() as tmpdir:
+        save_path = os.path.join(tmpdir, "test_state")
+        model.save_state(save_path)
+
+        # Verify cognitive_state.json was created
+        cognitive_path = os.path.join(save_path, "cognitive_state.json")
+        assert os.path.exists(cognitive_path), (
+            "cognitive_state.json should be created by save_state"
+        )
+
+        # Create a fresh model and load state
+        model2 = AEONDeltaV3(config)
+        # Verify fresh state is empty
+        assert model2.error_evolution.get_error_summary()["total_recorded"] == 0
+        assert len(model2.convergence_monitor.history) == 0
+
+        model2.load_state(save_path)
+
+        # Verify error evolution restored
+        summary = model2.error_evolution.get_error_summary()
+        assert summary["total_recorded"] == 2, (
+            f"Expected 2 error episodes, got {summary['total_recorded']}"
+        )
+        assert "test_error" in summary["error_classes"]
+        assert summary["error_classes"]["test_error"]["count"] == 2
+
+        # Verify convergence monitor restored
+        assert len(model2.convergence_monitor.history) == 3, (
+            f"Expected 3 convergence entries, got "
+            f"{len(model2.convergence_monitor.history)}"
+        )
+
+        # Verify metacognitive signal weights restored
+        assert abs(
+            model2.metacognitive_trigger._signal_weights["uncertainty"] - 0.5
+        ) < 1e-6, (
+            "Metacognitive signal weights should be restored from save"
+        )
+
+    print("✅ test_save_load_cognitive_state PASSED")
+
+
+def test_fuse_memory_trust_score_in_causal_trace():
+    """Fix: _fuse_memory now records trust scores in the causal trace
+    so root-cause analysis can trace memory trust levels to downstream
+    reasoning decisions."""
+    from aeon_core import (
+        AEONConfig, AEONDeltaV3, TemporalCausalTraceBuffer,
+    )
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_external_trust=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the model has both causal trace and trust scorer
+    assert model.causal_trace is not None
+    assert model.trust_scorer is not None
+
+    # Simulate memory fusion with trust scoring
+    import torch
+    B = 2
+    device = torch.device('cpu')
+    C_star = torch.randn(B, config.hidden_dim)
+
+    # Add some memory entries to trigger fusion
+    for _ in range(3):
+        model.memory_manager.add_embedding(
+            torch.randn(config.hidden_dim),
+            meta={"text": "test"},
+        )
+
+    # Call _fuse_memory which should record in causal trace
+    _ = model._fuse_memory(C_star, device, memory_retrieval=True)
+
+    # Check that trust score was recorded in causal trace
+    recent = model.causal_trace.recent(n=10)
+    trust_entries = [
+        e for e in recent if e.get("subsystem") == "memory_trust"
+    ]
+    assert len(trust_entries) >= 1, (
+        "Trust score should be recorded in causal trace during memory fusion"
+    )
+    assert "mean_trust" in trust_entries[0].get("metadata", {}), (
+        "Trust entry should contain mean_trust in metadata"
+    )
+
+    print("✅ test_fuse_memory_trust_score_in_causal_trace PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -23374,6 +23528,11 @@ if __name__ == '__main__':
     test_error_evolution_set_causal_trace_wiring_in_model()
     test_causal_trace_informed_metacognitive_trigger()
     test_training_bridge_causal_trace()
+    
+    # Architectural Unification — Unified Coherence & State Persistence
+    test_enable_full_coherence_includes_multimodal()
+    test_save_load_cognitive_state()
+    test_fuse_memory_trust_score_in_causal_trace()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
