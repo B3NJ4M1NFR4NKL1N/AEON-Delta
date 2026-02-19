@@ -18266,6 +18266,27 @@ class AEONDeltaV3(nn.Module):
             _penalty = _unc_scale * (_unc - _unc_threshold) / max(1.0 - _unc_threshold, 1e-6)
             _penalty = min(_penalty, _unc_scale)
             logits = logits * (1.0 - _penalty)
+
+        # ===== POST-OUTPUT UNCERTAINTY → ERROR EVOLUTION =====
+        # When the final reasoning uncertainty exceeds the trigger
+        # threshold, record it in the error evolution tracker so that
+        # future inference passes can learn from high-uncertainty
+        # outputs and adjust recovery strategies accordingly.  This
+        # closes the loop between the output-stage uncertainty signal
+        # and the metacognitive error evolution system.
+        if (_unc > _unc_threshold
+                and self.error_evolution is not None):
+            self.error_evolution.record_episode(
+                error_class="high_output_uncertainty",
+                strategy_used="logit_penalty" if _apply_penalty else "none",
+                success=_unc < 0.8,
+                metadata={
+                    "uncertainty": float(_unc),
+                    "threshold": float(_unc_threshold),
+                    "penalty_applied": _apply_penalty,
+                    "decode_mode": decode_mode,
+                },
+            )
         
         # ===== PACKAGE RESULTS =====
         result = {
@@ -19074,6 +19095,76 @@ class AEONDeltaV3(nn.Module):
             'audit_pattern_insights': self.audit_log.get_pattern_insights(),
             'total_parameters': self.count_parameters(),
             'trainable_parameters': self.count_trainable_parameters(),
+        }
+
+    def get_metacognitive_state(self) -> Dict[str, Any]:
+        """Return a unified snapshot of the meta-cognitive subsystem.
+
+        Aggregates the metacognitive trigger state, error evolution
+        patterns, convergence monitor history, and causal trace
+        coverage into a single dict suitable for API exposure and
+        cross-module coherence verification.
+
+        Returns:
+            Dict with ``trigger``, ``error_evolution``, ``convergence``,
+            ``causal_trace``, and ``coherence_verdict`` keys.
+        """
+        # --- Metacognitive trigger state ---
+        trigger_state: Dict[str, Any] = {"available": False}
+        if self.metacognitive_trigger is not None:
+            trigger_state = {
+                "available": True,
+                "threshold": self.metacognitive_trigger.trigger_threshold,
+                "signal_weights": dict(
+                    self.metacognitive_trigger._signal_weights
+                ),
+                "recursion_count": self.metacognitive_trigger._recursion_count,
+                "max_recursions": self.metacognitive_trigger.max_recursions,
+            }
+
+        # --- Error evolution summary ---
+        error_evolution_state: Dict[str, Any] = {"available": False}
+        if self.error_evolution is not None:
+            error_evolution_state = {
+                "available": True,
+                **self.error_evolution.get_error_summary(),
+            }
+
+        # --- Convergence monitor ---
+        convergence_state: Dict[str, Any] = {
+            "history_length": len(self.convergence_monitor.history),
+        }
+
+        # --- Causal trace coverage ---
+        causal_trace_state: Dict[str, Any] = {"available": False}
+        if self.causal_trace is not None:
+            causal_trace_state = {
+                "available": True,
+                "buffer_length": len(self.causal_trace._entries),
+            }
+
+        # --- Coherence verdict ---
+        # A lightweight cross-check: the system is coherent when the
+        # metacognitive trigger is available, error evolution is
+        # tracking, and causal traceability is active.
+        _coherence_score = sum([
+            trigger_state["available"],
+            error_evolution_state["available"],
+            causal_trace_state["available"],
+            self.feedback_bus is not None,
+        ]) / 4.0
+
+        return {
+            "trigger": trigger_state,
+            "error_evolution": error_evolution_state,
+            "convergence": convergence_state,
+            "causal_trace": causal_trace_state,
+            "coherence_score": _coherence_score,
+            "coherence_verdict": (
+                "unified" if _coherence_score >= 0.75
+                else "degraded" if _coherence_score >= 0.5
+                else "fragmented"
+            ),
         }
     
     def init_meta_learner(self):
