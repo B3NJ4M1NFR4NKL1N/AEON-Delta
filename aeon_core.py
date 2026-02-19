@@ -2930,13 +2930,20 @@ class AEONConfig:
     # query result into the meta-loop input so historical context
     # influences reasoning from the start, not only post-convergence.
     pre_loop_memory_weight: float = 0.05
+    # Number of memory entries to retrieve for pre-loop conditioning.
+    pre_loop_memory_retrieval_k: int = 3
     # Pre-meta-loop causal context weight — blends causal context
     # (historical reasoning outcomes) into the meta-loop input.
     pre_loop_causal_context_weight: float = 0.05
+    # Number of causal context entries to retrieve for pre-loop conditioning.
+    pre_loop_causal_context_k: int = 3
     # Value network quality signal weight in uncertainty estimation.
     # When the value network scores the current state as low-quality,
     # uncertainty is escalated to trigger deeper meta-cognitive processing.
     value_net_uncertainty_scale: float = 0.15
+    # Sigmoid midpoint for value network quality — states scoring below
+    # this threshold escalate uncertainty.
+    value_net_quality_threshold: float = 0.5
 
     # ===== UNIFIED COHERENCE PRESET =====
     # When True, activates all AGI coherence features as a group so that
@@ -14641,7 +14648,9 @@ class AEONDeltaV3(nn.Module):
             or self.temporal_memory is not None
         ):
             try:
-                _umq = self.unified_memory_query(z_in.mean(dim=0), k=3)
+                _umq = self.unified_memory_query(
+                    z_in.mean(dim=0), k=self.config.pre_loop_memory_retrieval_k,
+                )
                 _umq_combined = _umq.get('combined', None)
                 if (_umq_combined is not None
                         and _umq_combined.numel() > 0
@@ -14661,7 +14670,9 @@ class AEONDeltaV3(nn.Module):
         # accumulated across prior forward passes.
         if self.causal_context is not None and not fast:
             try:
-                _pre_ctx = self.causal_context.get_context_tensor(k=3)
+                _pre_ctx = self.causal_context.get_context_tensor(
+                    k=self.config.pre_loop_causal_context_k,
+                )
                 if (_pre_ctx is not None
                         and _pre_ctx.shape[0] > 0
                         and _pre_ctx.shape[-1] == self.config.hidden_dim):
@@ -15605,7 +15616,7 @@ class AEONDeltaV3(nn.Module):
                 with torch.no_grad():
                     _state_value = self.value_net(C_star)  # [B, 1]
                     _state_quality = float(torch.sigmoid(_state_value).mean().item())
-                _VALUE_QUALITY_MIDPOINT = 0.5
+                _VALUE_QUALITY_MIDPOINT = self.config.value_net_quality_threshold
                 if math.isfinite(_state_quality) and _state_quality < _VALUE_QUALITY_MIDPOINT:
                     _val_boost = min(
                         1.0 - uncertainty,
