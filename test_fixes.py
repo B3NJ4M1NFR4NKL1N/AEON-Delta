@@ -8861,22 +8861,24 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 3/8 = 0.375 < 0.5 threshold → should NOT trigger
-    # with default weights; activate four to cross threshold.
-    # Four signals → score = 4/8 = 0.5 ≥ threshold → should trigger
-    # (8 signals at 1/8 weight each; 4 active = 0.5)
+    # Three signals → score = 3/9 ≈ 0.333 < 0.5 threshold → should NOT trigger
+    # with default weights; activate five to cross threshold.
+    # Five signals → score = 5/9 ≈ 0.556 ≥ threshold → should trigger
+    # (9 signals at 1/9 weight each; 5 active ≈ 0.556)
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
         memory_staleness=True,
         topology_catastrophe=True,
+        safety_violation=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 4.0 / 8.0) < 1e-9
+    assert abs(result["trigger_score"] - 5.0 / 9.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
     assert "topology_catastrophe" in result["triggers_active"]
+    assert "safety_violation" in result["triggers_active"]
     assert result["recursion_count"] == 1
 
     print("✅ test_metacognitive_recursion_trigger_evaluate PASSED")
@@ -8887,11 +8889,11 @@ def test_metacognitive_recursion_trigger_max_recursions():
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(
-        trigger_threshold=1.0 / 8.0 - 0.01,  # just below one-signal weight
+        trigger_threshold=1.0 / 9.0 - 0.01,  # just below one-signal weight
         max_recursions=1,
     )
 
-    # First call → should trigger (one signal = 1/8 = 0.125 ≥ threshold)
+    # First call → should trigger (one signal = 1/9 ≈ 0.111 ≥ threshold)
     r1 = trigger.evaluate(uncertainty=0.8)
     assert r1["should_trigger"] is True
 
@@ -8909,7 +8911,7 @@ def test_metacognitive_recursion_trigger_max_recursions():
 
 
 def test_metacognitive_recursion_trigger_all_signals():
-    """Verify all eight signals contribute to trigger score."""
+    """Verify all nine signals contribute to trigger score."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
@@ -8923,9 +8925,10 @@ def test_metacognitive_recursion_trigger_all_signals():
         recovery_pressure=0.5,
         world_model_surprise=1.0,
         causal_quality=0.1,
+        safety_violation=True,
     )
     assert abs(result["trigger_score"] - 1.0) < 1e-9
-    assert len(result["triggers_active"]) == 8
+    assert len(result["triggers_active"]) == 9
     assert result["should_trigger"] is True
 
     print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
@@ -9436,10 +9439,10 @@ def test_memory_staleness_feeds_metacognitive_trigger():
     trigger as one of six signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 8.0  # per-signal weight with 8 signals
+    _w = 1.0 / 9.0  # per-signal weight with 9 signals
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only memory_staleness active → score = 1/8 ≥ threshold
+    # Only memory_staleness active → score = 1/9 ≥ threshold
     result = trigger.evaluate(memory_staleness=True)
     assert result["should_trigger"] is True
     assert "memory_staleness" in result["triggers_active"]
@@ -11105,10 +11108,10 @@ def test_causal_trace_summary_in_fallback():
 # ============================================================================
 
 def test_recovery_pressure_in_metacognitive_trigger():
-    """Gap 5: recovery_pressure is one of 8 signals in MetaCognitiveRecursionTrigger."""
+    """Gap 5: recovery_pressure is one of 9 signals in MetaCognitiveRecursionTrigger."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 8.0
+    _w = 1.0 / 9.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # Only recovery_pressure active (above 0.3 threshold)
@@ -11327,7 +11330,7 @@ def test_signal_weights_returned_in_evaluate():
         "Expected 'signal_weights' in evaluate() result"
     )
     weights = result['signal_weights']
-    assert len(weights) == 8, f"Expected 8 signal weights, got {len(weights)}"
+    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
     assert abs(sum(weights.values()) - 1.0) < 1e-9, (
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
@@ -15180,7 +15183,7 @@ def test_causal_quality_in_metacognitive_trigger():
     DAG quality and reasoning depth."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 8.0
+    _w = 1.0 / 9.0
     trigger = MetaCognitiveRecursionTrigger(
         trigger_threshold=_w - 0.01,
         causal_quality_threshold=0.3,
@@ -27028,6 +27031,247 @@ def test_self_diagnostic_auto_critic_without_coherence_gap():
     print("✅ test_self_diagnostic_auto_critic_without_coherence_gap PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Safety-Critic Bridge, Safety Violation Signal,
+# and Unified Meta-Cognitive Integration Tests
+# ============================================================================
+
+def test_safety_violation_signal_in_metacognitive_trigger():
+    """Verify the new safety_violation signal activates the metacognitive
+    trigger when a safety rollback occurs, enabling deeper re-reasoning
+    to find safe alternatives rather than simply blending to input."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    _w = 1.0 / 9.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
+
+    # safety_violation=True → should trigger
+    result = trigger.evaluate(safety_violation=True)
+    assert result["should_trigger"] is True
+    assert "safety_violation" in result["triggers_active"]
+    assert abs(result["trigger_score"] - _w) < 1e-9
+
+    # safety_violation=False → should NOT trigger (no other signals)
+    trigger.reset()
+    result_safe = trigger.evaluate(safety_violation=False)
+    assert "safety_violation" not in result_safe["triggers_active"]
+    assert result_safe["trigger_score"] == 0.0
+
+    print("✅ test_safety_violation_signal_in_metacognitive_trigger PASSED")
+
+
+def test_safety_violation_weight_in_adapt_weights():
+    """Verify safety_rollback error class maps to safety_violation signal
+    weight in adapt_weights_from_evolution."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    original_weight = trigger._signal_weights["safety_violation"]
+
+    # Simulate error summary with low success rate for safety_rollback
+    trigger.adapt_weights_from_evolution({
+        "error_classes": {
+            "safety_rollback": {"success_rate": 0.0, "count": 10},
+        }
+    })
+    adapted_weight = trigger._signal_weights["safety_violation"]
+    assert adapted_weight > original_weight, (
+        f"safety_violation weight should increase after low-success "
+        f"safety_rollback: {original_weight} → {adapted_weight}"
+    )
+
+    print("✅ test_safety_violation_weight_in_adapt_weights PASSED")
+
+
+def test_safety_critic_revision_weight_in_adapt_weights():
+    """Verify safety_critic_revision error class maps to safety_violation
+    signal weight in adapt_weights_from_evolution."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    original_weight = trigger._signal_weights["safety_violation"]
+
+    trigger.adapt_weights_from_evolution({
+        "error_classes": {
+            "safety_critic_revision": {"success_rate": 0.2, "count": 5},
+        }
+    })
+    adapted_weight = trigger._signal_weights["safety_violation"]
+    assert adapted_weight > original_weight, (
+        f"safety_violation weight should increase after low-success "
+        f"safety_critic_revision: {original_weight} → {adapted_weight}"
+    )
+
+    print("✅ test_safety_critic_revision_weight_in_adapt_weights PASSED")
+
+
+def test_ucc_evaluate_accepts_safety_violation():
+    """Verify UnifiedCognitiveCycle.evaluate() accepts and forwards
+    safety_violation to the MetaCognitiveRecursionTrigger."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
+    ee = CausalErrorEvolutionTracker()
+    # Low threshold so single safety_violation signal triggers
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
+
+    states = {
+        "a": torch.randn(2, hidden_dim),
+        "b": torch.randn(2, hidden_dim),
+    }
+
+    # Without safety_violation → should not trigger (only convergence check)
+    result_no = ucc.evaluate(states, delta_norm=0.01)
+    # With safety_violation → should trigger
+    mt.reset()
+    cm.reset()
+    result_yes = ucc.evaluate(states, delta_norm=0.01, safety_violation=True)
+
+    assert result_yes["trigger_detail"]["triggers_active"] != [], (
+        "safety_violation=True should activate at least one trigger signal"
+    )
+    assert "safety_violation" in result_yes["trigger_detail"]["triggers_active"]
+
+    print("✅ test_ucc_evaluate_accepts_safety_violation PASSED")
+
+
+def test_pipeline_dependencies_include_safety_auto_critic():
+    """Verify _PIPELINE_DEPENDENCIES includes safety → auto_critic edge."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    assert ("safety", "auto_critic") in deps, (
+        "Expected ('safety', 'auto_critic') in _PIPELINE_DEPENDENCIES"
+    )
+
+    print("✅ test_pipeline_dependencies_include_safety_auto_critic PASSED")
+
+
+def test_self_diagnostic_safety_critic_bridge():
+    """Verify self_diagnostic reports safety-critic bridge when both
+    safety system and auto-critic are enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
+        enable_auto_critic=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # Both safety and auto-critic are enabled by default
+    assert any(
+        'safety_system → auto_critic' in v
+        for v in diag['verified_connections']
+    ), (
+        f"Expected safety → auto_critic verification; "
+        f"verified: {diag['verified_connections']}"
+    )
+
+    print("✅ test_self_diagnostic_safety_critic_bridge PASSED")
+
+
+def test_self_diagnostic_safety_violation_signal():
+    """Verify self_diagnostic reports safety_violation → metacognitive_trigger
+    connection when both are active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    assert any(
+        'safety_violation → metacognitive_trigger' in v
+        for v in diag['verified_connections']
+    ), (
+        f"Expected safety_violation → metacognitive_trigger verification; "
+        f"verified: {diag['verified_connections']}"
+    )
+
+    print("✅ test_self_diagnostic_safety_violation_signal PASSED")
+
+
+def test_get_metacognitive_state_includes_safety_critic_bridge():
+    """Verify get_metacognitive_state includes safety_critic_bridge status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
+        enable_auto_critic=True,
+    )
+    model = AEONDeltaV3(config)
+    state = model.get_metacognitive_state()
+
+    assert "safety_critic_bridge" in state, (
+        "Expected 'safety_critic_bridge' in get_metacognitive_state()"
+    )
+    assert state["safety_critic_bridge"]["available"] is True, (
+        "Expected safety_critic_bridge to be available when both "
+        "safety_system and auto_critic are enabled"
+    )
+
+    print("✅ test_get_metacognitive_state_includes_safety_critic_bridge PASSED")
+
+
+def test_architecture_summary_includes_safety_critic_bridge():
+    """Verify print_architecture_summary includes SafetyCriticBridge status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        device_str='cpu',
+        enable_auto_critic=True,
+    )
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+
+    assert "SafetyCriticBridge" in summary, (
+        "Expected 'SafetyCriticBridge' in architecture summary"
+    )
+
+    print("✅ test_architecture_summary_includes_safety_critic_bridge PASSED")
+
+
+def test_nine_signals_in_metacognitive_trigger():
+    """Verify MetaCognitiveRecursionTrigger has exactly 9 signals
+    after adding safety_violation."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    weights = trigger._signal_weights
+    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
+    assert "safety_violation" in weights, (
+        "Expected 'safety_violation' in signal weights"
+    )
+    assert abs(sum(weights.values()) - 1.0) < 1e-9, (
+        f"Signal weights should sum to 1.0, got {sum(weights.values())}"
+    )
+
+    print("✅ test_nine_signals_in_metacognitive_trigger PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -28226,6 +28470,18 @@ if __name__ == '__main__':
     test_causal_trace_bidirectional_readback_in_diagnostic()
     test_self_diagnostic_silent_failure_uncertainty_wiring()
     test_self_diagnostic_auto_critic_without_coherence_gap()
+    
+    # Architectural Unification — Safety-Critic Bridge & Safety Violation Signal
+    test_safety_violation_signal_in_metacognitive_trigger()
+    test_safety_violation_weight_in_adapt_weights()
+    test_safety_critic_revision_weight_in_adapt_weights()
+    test_ucc_evaluate_accepts_safety_violation()
+    test_pipeline_dependencies_include_safety_auto_critic()
+    test_self_diagnostic_safety_critic_bridge()
+    test_self_diagnostic_safety_violation_signal()
+    test_get_metacognitive_state_includes_safety_critic_bridge()
+    test_architecture_summary_includes_safety_critic_bridge()
+    test_nine_signals_in_metacognitive_trigger()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
