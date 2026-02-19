@@ -26769,6 +26769,265 @@ def test_auto_critic_low_quality_records_error_evolution():
     print("✅ test_auto_critic_low_quality_records_error_evolution PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Silent Failure, Post-Critic Coherence,
+# Causal Trace Read-Back, and Self-Diagnostic Coverage Tests
+# ============================================================================
+
+
+def test_silent_failure_escalates_uncertainty_unified_memory():
+    """Verify that unified memory failure escalates uncertainty.
+
+    When pre-meta-loop memory conditioning raises an exception, the
+    exception handler must boost uncertainty via the
+    'unified_memory_error' source, ensuring that any subsystem failure
+    triggers the meta-cognitive cycle.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    from unittest.mock import patch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # The pre-loop conditioning requires at least one memory module
+    has_memory = (
+        model.hierarchical_memory is not None
+        or getattr(model, 'neurogenic_memory', None) is not None
+        or getattr(model, 'consolidating_memory', None) is not None
+        or getattr(model, 'temporal_memory', None) is not None
+    )
+    if not has_memory:
+        print("✅ test_silent_failure_escalates_uncertainty_unified_memory PASSED (no memory modules)")
+        return
+
+    # Sabotage unified_memory_query to force exception
+    def _raise(*a, **kw):
+        raise RuntimeError("test sabotage")
+    with patch.object(model, 'unified_memory_query', side_effect=_raise):
+        tokens = torch.randint(0, 100, (1, 8))
+        with torch.no_grad():
+            result = model(tokens, fast=False)
+    sources = result.get('uncertainty_sources', {})
+    assert 'unified_memory_error' in sources, (
+        f"Expected 'unified_memory_error' in uncertainty_sources; "
+        f"got {sorted(sources.keys())}"
+    )
+
+    print("✅ test_silent_failure_escalates_uncertainty_unified_memory PASSED")
+
+
+def test_silent_failure_escalates_uncertainty_cognitive_executive():
+    """Verify cognitive executive failure escalates uncertainty.
+
+    When CognitiveExecutiveFunction raises, the handler must add
+    'cognitive_executive_error' to uncertainty_sources.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    from unittest.mock import patch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if getattr(model, 'cognitive_executive', None) is None:
+        print("✅ test_silent_failure_escalates_uncertainty_cognitive_executive PASSED (no executive)")
+        return
+
+    def _raise(*a, **kw):
+        raise RuntimeError("test sabotage")
+    with patch.object(model.cognitive_executive, 'forward', side_effect=_raise):
+        tokens = torch.randint(0, 100, (1, 8))
+        with torch.no_grad():
+            result = model(tokens, fast=False)
+    sources = result.get('uncertainty_sources', {})
+    assert 'cognitive_executive_error' in sources, (
+        f"Expected 'cognitive_executive_error' in uncertainty_sources; "
+        f"got {sorted(sources.keys())}"
+    )
+
+    print("✅ test_silent_failure_escalates_uncertainty_cognitive_executive PASSED")
+
+
+def test_silent_failure_escalates_uncertainty_ns_bridge():
+    """Verify NeuroSymbolicBridge failure escalates uncertainty.
+
+    When the standalone NS bridge raises, the handler must add
+    'ns_bridge_error' to uncertainty_sources.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    from unittest.mock import patch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if getattr(model, 'standalone_ns_bridge', None) is None:
+        print("✅ test_silent_failure_escalates_uncertainty_ns_bridge PASSED (no ns bridge)")
+        return
+
+    def _raise(*a, **kw):
+        raise RuntimeError("test sabotage")
+    with patch.object(model.standalone_ns_bridge, 'forward', side_effect=_raise):
+        tokens = torch.randint(0, 100, (1, 8))
+        with torch.no_grad():
+            result = model(tokens, fast=False)
+    sources = result.get('uncertainty_sources', {})
+    assert 'ns_bridge_error' in sources, (
+        f"Expected 'ns_bridge_error' in uncertainty_sources; "
+        f"got {sorted(sources.keys())}"
+    )
+
+    print("✅ test_silent_failure_escalates_uncertainty_ns_bridge PASSED")
+
+
+def test_post_auto_critic_coherence_reverification():
+    """Verify that auto-critic revisions are re-verified by module coherence.
+
+    When the auto-critic revises z_out, the post-auto-critic coherence
+    re-verification step (8b5) must run so that self-corrections
+    cannot bypass coherence checks.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Both auto_critic and module_coherence should be present
+    assert model.auto_critic is not None, "Auto-critic should be enabled by default"
+    assert model.module_coherence is not None, "Module coherence should be enabled by default"
+
+    # The self_diagnostic should confirm the post-revision re-verification
+    diag = model.self_diagnostic()
+    verified = diag['verified_connections']
+    assert any('post-revision re-verification' in v for v in verified), (
+        f"Expected 'post-revision re-verification' in verified connections; "
+        f"got: {verified}"
+    )
+
+    print("✅ test_post_auto_critic_coherence_reverification PASSED")
+
+
+def test_causal_trace_bidirectional_readback_in_diagnostic():
+    """Verify self_diagnostic reports causal trace bidirectional read-back.
+
+    When both causal_trace and metacognitive_trigger are active, the
+    diagnostic should confirm that trace entries are read back during
+    metacognitive evaluation, making provenance bidirectional.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.causal_trace is not None, "Causal trace should be enabled by default"
+    assert model.metacognitive_trigger is not None, (
+        "Metacognitive trigger should be enabled by default"
+    )
+
+    diag = model.self_diagnostic()
+    verified = diag['verified_connections']
+    assert any('bidirectional read-back' in v for v in verified), (
+        f"Expected 'bidirectional read-back' in verified connections; "
+        f"got: {verified}"
+    )
+
+    print("✅ test_causal_trace_bidirectional_readback_in_diagnostic PASSED")
+
+
+def test_self_diagnostic_silent_failure_uncertainty_wiring():
+    """Verify self_diagnostic reports silent-failure uncertainty wiring.
+
+    The diagnostic should confirm that subsystems which can fail at
+    runtime have uncertainty escalation wired into their handlers.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    verified = diag['verified_connections']
+    assert any('silent_failure_uncertainty' in v for v in verified), (
+        f"Expected 'silent_failure_uncertainty' in verified connections; "
+        f"got: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_silent_failure_uncertainty_wiring PASSED")
+
+
+def test_self_diagnostic_auto_critic_without_coherence_gap():
+    """Verify that self_diagnostic flags auto-critic without module coherence.
+
+    When auto-critic is active but module_coherence is disabled, the
+    diagnostic should report a gap since self-corrections bypass
+    coherence verification.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    if model.auto_critic is not None and model.module_coherence is None:
+        diag = model.self_diagnostic()
+        gap_components = [g['component'] for g in diag['gaps']]
+        assert 'module_coherence' in gap_components, (
+            f"Expected 'module_coherence' gap when auto-critic active "
+            f"but coherence disabled; gaps: {diag['gaps']}"
+        )
+
+    print("✅ test_self_diagnostic_auto_critic_without_coherence_gap PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -27957,6 +28216,16 @@ if __name__ == '__main__':
     test_self_diagnostic_memory_cross_wiring_healthy()
     test_ucc_coherence_deficit_feeds_cached_coherence()
     test_auto_critic_low_quality_records_error_evolution()
+    
+    # Architectural Unification — Silent Failure, Post-Critic Coherence,
+    # Causal Trace Read-Back, and Self-Diagnostic Coverage
+    test_silent_failure_escalates_uncertainty_unified_memory()
+    test_silent_failure_escalates_uncertainty_cognitive_executive()
+    test_silent_failure_escalates_uncertainty_ns_bridge()
+    test_post_auto_critic_coherence_reverification()
+    test_causal_trace_bidirectional_readback_in_diagnostic()
+    test_self_diagnostic_silent_failure_uncertainty_wiring()
+    test_self_diagnostic_auto_critic_without_coherence_gap()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
