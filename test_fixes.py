@@ -7843,12 +7843,20 @@ def test_agi_coherence_config_defaults():
     assert config.enable_causal_context is True
     assert config.enable_cross_validation is True
     assert config.enable_external_trust is False
-    assert config.enable_ns_consistency_check is False
-    assert config.enable_complexity_estimator is False
+    # NS consistency and complexity estimator are auto-enabled by UCC
+    assert config.enable_ns_consistency_check is True
+    assert config.enable_complexity_estimator is True
     assert config.enable_causal_trace is True
     assert config.enable_meta_recovery_integration is False
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
+    # When UCC is disabled, they revert to their declared defaults
+    config_no_ucc = AEONConfig(
+        hidden_dim=16, z_dim=16, vq_embedding_dim=16,
+        enable_unified_cognitive_cycle=False,
+    )
+    assert config_no_ucc.enable_ns_consistency_check is False
+    assert config_no_ucc.enable_complexity_estimator is False
     print("✅ test_agi_coherence_config_defaults PASSED")
 
 
@@ -7902,8 +7910,9 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
     assert model.causal_context is not None
     assert model.cross_validator is not None
     assert model.trust_scorer is None
-    assert model.ns_consistency_checker is None
-    assert model.complexity_estimator is None
+    # NS consistency and complexity estimator are auto-enabled by UCC
+    assert model.ns_consistency_checker is not None
+    assert model.complexity_estimator is not None
     # causal_trace is now enabled by default (core traceability)
     assert model.causal_trace is not None
     assert model.meta_recovery is None
