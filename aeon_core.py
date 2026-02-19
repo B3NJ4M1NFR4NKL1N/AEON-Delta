@@ -2905,6 +2905,12 @@ class AEONConfig:
     metacognitive_blend_alpha: float = 0.2
     enable_error_evolution: bool = False
     error_evolution_max_history: int = 100
+    # Unified cognitive cycle — orchestrates ConvergenceMonitor,
+    # ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+    # MetaCognitiveRecursionTrigger, and CausalProvenanceTracker into a
+    # single coherent evaluation pass.  Requires enable_module_coherence,
+    # enable_metacognitive_recursion, and enable_error_evolution.
+    enable_unified_cognitive_cycle: bool = False
 
     # ===== COGNITIVE EXECUTIVE FUNCTION =====
     enable_cognitive_executive: bool = False
@@ -3064,6 +3070,7 @@ class AEONConfig:
                 'enable_metacognitive_recursion',
                 'enable_causal_trace',
                 'enable_error_evolution',
+                'enable_unified_cognitive_cycle',
                 'enable_auto_critic',
                 'enable_cross_validation',
                 'enable_ns_consistency_check',
@@ -14423,6 +14430,27 @@ class AEONDeltaV3(nn.Module):
             threshold=config.convergence_threshold,
         )
         
+        # ===== UNIFIED COGNITIVE CYCLE =====
+        # Orchestrates ConvergenceMonitor, ModuleCoherenceVerifier,
+        # CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        # and CausalProvenanceTracker into a single coherent evaluation
+        # that ensures each component verifies and reinforces the others.
+        if (getattr(config, 'enable_unified_cognitive_cycle', False)
+                and self.module_coherence is not None
+                and self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            logger.info("Loading UnifiedCognitiveCycle...")
+            self.unified_cognitive_cycle = UnifiedCognitiveCycle(
+                convergence_monitor=self.convergence_monitor,
+                coherence_verifier=self.module_coherence,
+                error_evolution=self.error_evolution,
+                metacognitive_trigger=self.metacognitive_trigger,
+                provenance_tracker=self.provenance_tracker,
+                causal_trace=self.causal_trace,
+            )
+        else:
+            self.unified_cognitive_cycle = None
+        
         # ===== INTEGRITY, PROGRESS & DETERMINISM =====
         self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
         self.progress_tracker = ProgressTracker(max_checkpoints=10)
@@ -15108,6 +15136,7 @@ class AEONDeltaV3(nn.Module):
                 'auto_critic_final_score': None,
                 'dag_consensus_results': {},
                 'memory_retrieval_quality': {},
+                'unified_cognitive_cycle_results': {},
             }
             return z_fallback, fallback_outputs
 
@@ -18202,6 +18231,90 @@ class AEONDeltaV3(nn.Module):
                         float(max(0.0, min(1.0, 1.0 - _post_cs_val))),
                     )
         
+        # 8f-iii. Unified cognitive cycle evaluation — runs the full
+        # meta-cognitive evaluation cycle orchestrating convergence
+        # monitoring, cross-module coherence, error evolution, meta-
+        # cognitive recursion trigger, and provenance attribution in a
+        # single coherent pass.  This replaces ad-hoc inline checks
+        # with a unified orchestrator that ensures each component
+        # verifies and reinforces the others.  The result is stored
+        # in the output for downstream analysis and decision-making.
+        unified_cycle_results: Dict[str, Any] = {}
+        if self.unified_cognitive_cycle is not None and not fast:
+            # Gather subsystem state tensors for coherence verification
+            _ucc_states: Dict[str, torch.Tensor] = {
+                "integrated_output": z_out,
+                "core_state": C_star,
+            }
+            if embedded_factors is not None:
+                _ucc_states["factor_embedding"] = embedded_factors
+            _wm_pred_ucc = world_model_results.get("predicted_next", None)
+            if (_wm_pred_ucc is not None
+                    and _wm_pred_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["world_model"] = _wm_pred_ucc
+            _hr_conc_ucc = hybrid_reasoning_results.get("conclusions", None)
+            if (_hr_conc_ucc is not None
+                    and _hr_conc_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["hybrid_reasoning"] = _hr_conc_ucc
+            if len(_ucc_states) >= 2:
+                self.unified_cognitive_cycle.reset()
+                unified_cycle_results = self.unified_cognitive_cycle.evaluate(
+                    subsystem_states=_ucc_states,
+                    delta_norm=residual_norm_scalar,
+                    uncertainty=uncertainty,
+                    world_model_surprise=self._cached_surprise,
+                    causal_quality=self._cached_causal_quality,
+                    memory_staleness=self._memory_stale,
+                    recovery_pressure=self._compute_recovery_pressure(),
+                )
+                _ucc_should_rerun = unified_cycle_results.get(
+                    "should_rerun", False,
+                )
+                if _ucc_should_rerun:
+                    self.audit_log.record(
+                        "unified_cognitive_cycle", "rerun_recommended", {
+                            "trigger_detail": {
+                                k: v
+                                for k, v in unified_cycle_results.get(
+                                    "trigger_detail", {},
+                                ).items()
+                                if not isinstance(v, torch.Tensor)
+                            },
+                        },
+                    )
+                    # Feed the unified cycle's rerun signal into
+                    # metacognitive_info so downstream re-reasoning
+                    # logic (step 8g-0) respects the unified verdict.
+                    if not metacognitive_info.get("should_trigger", False):
+                        metacognitive_info["should_trigger"] = True
+                        metacognitive_info["triggers_active"] = (
+                            unified_cycle_results.get(
+                                "trigger_detail", {},
+                            ).get("triggers_active", [])
+                        )
+                        metacognitive_info["trigger_score"] = (
+                            unified_cycle_results.get(
+                                "trigger_detail", {},
+                            ).get("trigger_score", 0.0)
+                        )
+                        metacognitive_info["phase"] = "unified_cycle"
+                # Update uncertainty from the unified cycle's coherence
+                # assessment if it detected a significant deficit.
+                _ucc_coherence = unified_cycle_results.get(
+                    "coherence_result", {},
+                )
+                _ucc_deficit = _ucc_coherence.get("coherence_deficit", 0.0)
+                if _ucc_deficit > 0.3:
+                    _ucc_unc_boost = min(
+                        1.0 - uncertainty, _ucc_deficit * 0.2,
+                    )
+                    if _ucc_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _ucc_unc_boost)
+                        uncertainty_sources[
+                            "unified_cycle_coherence"
+                        ] = _ucc_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
         # convergence_delta = final residual norm from the meta-loop, measuring
@@ -18624,6 +18737,15 @@ class AEONDeltaV3(nn.Module):
             "causal_dag_consensus": (
                 _dag_consensus_results if _dag_consensus_results else None
             ),
+            "unified_cognitive_cycle": (
+                {
+                    "should_rerun": unified_cycle_results.get("should_rerun", False),
+                    "coherence_deficit": unified_cycle_results.get(
+                        "coherence_result", {},
+                    ).get("coherence_deficit", 0.0),
+                }
+                if unified_cycle_results else None
+            ),
         }
         
         outputs = {
@@ -18680,6 +18802,7 @@ class AEONDeltaV3(nn.Module):
             'certified_results': _certified_results,
             'dag_consensus_results': _dag_consensus_results,
             'memory_retrieval_quality': self._last_memory_retrieval_quality,
+            'unified_cognitive_cycle_results': unified_cycle_results,
         }
         
         return z_out, outputs
@@ -19793,7 +19916,8 @@ class AEONDeltaV3(nn.Module):
             error_evolution_state["available"],
             causal_trace_state["available"],
             self.feedback_bus is not None,
-        ]) / 4.0
+            self.unified_cognitive_cycle is not None,
+        ]) / 5.0
 
         return {
             "trigger": trigger_state,
@@ -19883,6 +20007,10 @@ class AEONDeltaV3(nn.Module):
                 lines.append(f"{name:20s}: {params:>12,} params")
             else:
                 lines.append(f"{name:20s}: {'Disabled':>12}")
+        
+        # Non-parameterized orchestrators
+        _ucc_status = "Enabled" if self.unified_cognitive_cycle is not None else "Disabled"
+        lines.append(f"{'UnifiedCogCycle':20s}: {_ucc_status:>12}")
         
         lines.append("-"*70)
         lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")
