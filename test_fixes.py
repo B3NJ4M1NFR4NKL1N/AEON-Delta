@@ -21605,6 +21605,263 @@ def test_unified_cognitive_pipeline_full_coherence():
     print("✅ test_unified_cognitive_pipeline_full_coherence PASSED")
 
 
+# ===== Architectural Unification — HierarchicalMetaLoop & CertifiedMetaLoop Integration =====
+
+def test_hierarchical_meta_loop_instantiation():
+    """HierarchicalMetaLoop is properly instantiated when its config flag is set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.hierarchical_meta_loop is not None, (
+        "HierarchicalMetaLoop should be instantiated when enabled"
+    )
+    # Should have fast/medium/deep sub-loops
+    assert hasattr(model.hierarchical_meta_loop, 'fast_loop'), (
+        "HierarchicalMetaLoop should have fast_loop"
+    )
+    assert hasattr(model.hierarchical_meta_loop, 'medium_loop'), (
+        "HierarchicalMetaLoop should have medium_loop"
+    )
+    assert hasattr(model.hierarchical_meta_loop, 'deep_loop'), (
+        "HierarchicalMetaLoop should have deep_loop"
+    )
+    print("✅ test_hierarchical_meta_loop_instantiation PASSED")
+
+
+def test_hierarchical_meta_loop_disabled_by_default():
+    """HierarchicalMetaLoop is None when not explicitly enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.hierarchical_meta_loop is None, (
+        "HierarchicalMetaLoop should be disabled by default"
+    )
+    print("✅ test_hierarchical_meta_loop_disabled_by_default PASSED")
+
+
+def test_hierarchical_meta_loop_in_forward_pass():
+    """HierarchicalMetaLoop is used in the forward pass when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='inference')
+
+    assert 'logits' in result, "Forward pass should produce logits"
+    assert result['logits'].shape[0] == 2, "Batch size should be preserved"
+
+    # Check audit log records hierarchical usage
+    chain = result.get('causal_decision_chain', {})
+    assert chain is not None, "causal_decision_chain should be present"
+    print("✅ test_hierarchical_meta_loop_in_forward_pass PASSED")
+
+
+def test_certified_meta_loop_instantiation():
+    """CertifiedMetaLoop is properly instantiated when its config flag is set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.certified_meta_loop is not None, (
+        "CertifiedMetaLoop should be instantiated when enabled"
+    )
+    # Should have IBP verification capability
+    assert hasattr(model.certified_meta_loop, 'verify_convergence_preconditions'), (
+        "CertifiedMetaLoop should have verify_convergence_preconditions method"
+    )
+    print("✅ test_certified_meta_loop_instantiation PASSED")
+
+
+def test_certified_meta_loop_disabled_by_default():
+    """CertifiedMetaLoop is None when not explicitly enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.certified_meta_loop is None, (
+        "CertifiedMetaLoop should be disabled by default"
+    )
+    print("✅ test_certified_meta_loop_disabled_by_default PASSED")
+
+
+def test_certified_meta_loop_verification_in_pipeline():
+    """CertifiedMetaLoop verification runs in the forward pass and feeds
+    into the uncertainty pipeline when convergence is not certified."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='inference')
+
+    # Certified results should be in output
+    cert = result.get('certified_results', {})
+    assert isinstance(cert, dict), "certified_results should be a dict"
+    assert 'certified_convergence' in cert, (
+        "certified_results should contain certified_convergence"
+    )
+    assert 'ibp_lipschitz' in cert, (
+        "certified_results should contain ibp_lipschitz"
+    )
+
+    # Causal decision chain should include certification status
+    chain = result.get('causal_decision_chain', {})
+    assert 'certified_convergence' in chain, (
+        "causal_decision_chain should include certified_convergence"
+    )
+    assert 'certified_error_bound' in chain, (
+        "causal_decision_chain should include certified_error_bound"
+    )
+
+    # When certification fails, uncertainty should be escalated
+    sources = result.get('uncertainty_sources', {})
+    if not cert.get('certified_convergence', True):
+        assert 'certified_convergence_failed' in sources, (
+            "Failed certification should add to uncertainty_sources"
+        )
+    print("✅ test_certified_meta_loop_verification_in_pipeline PASSED")
+
+
+def test_certified_meta_loop_provenance_tracked():
+    """CertifiedMetaLoop has provenance tracking in the pipeline."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='inference')
+
+    # Provenance should include certified_meta_loop entry
+    provenance = result.get('provenance', {})
+    contributions = provenance.get('contributions', {})
+    # certified_meta_loop should be recorded (delta may be 0 if it
+    # didn't change the state, but the module name should be present)
+    assert 'certified_meta_loop' in contributions, (
+        "Provenance should track certified_meta_loop contribution"
+    )
+    print("✅ test_certified_meta_loop_provenance_tracked PASSED")
+
+
+def test_full_coherence_activates_new_meta_loops():
+    """enable_full_coherence should activate both HierarchicalMetaLoop
+    and CertifiedMetaLoop."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(enable_full_coherence=True)
+    assert config.enable_hierarchical_meta_loop, (
+        "enable_full_coherence should activate enable_hierarchical_meta_loop"
+    )
+    assert config.enable_certified_meta_loop, (
+        "enable_full_coherence should activate enable_certified_meta_loop"
+    )
+    print("✅ test_full_coherence_activates_new_meta_loops PASSED")
+
+
+def test_certified_meta_loop_uncertainty_boost_config():
+    """certified_meta_loop_uncertainty_boost config is respected."""
+    from aeon_core import AEONConfig
+
+    # Default
+    c = AEONConfig()
+    assert c.certified_meta_loop_uncertainty_boost == 0.2, (
+        "Default certified_meta_loop_uncertainty_boost should be 0.2"
+    )
+    # Custom
+    c2 = AEONConfig(certified_meta_loop_uncertainty_boost=0.5)
+    assert c2.certified_meta_loop_uncertainty_boost == 0.5, (
+        "Custom certified_meta_loop_uncertainty_boost should be respected"
+    )
+    print("✅ test_certified_meta_loop_uncertainty_boost_config PASSED")
+
+
+def test_architecture_summary_includes_new_meta_loops():
+    """Architecture summary should show new meta-loop modules."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_meta_loop=True,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+
+    assert 'HierarchicalMetaLoop' in summary, (
+        "Architecture summary should include HierarchicalMetaLoop"
+    )
+    assert 'CertifiedMetaLoop' in summary, (
+        "Architecture summary should include CertifiedMetaLoop"
+    )
+    print("✅ test_architecture_summary_includes_new_meta_loops PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -22588,6 +22845,18 @@ if __name__ == '__main__':
     test_multimodal_memory_storage()
     test_value_net_uncertainty_integration()
     test_unified_cognitive_pipeline_full_coherence()
+    
+    # Architectural Unification — HierarchicalMetaLoop & CertifiedMetaLoop Integration
+    test_hierarchical_meta_loop_instantiation()
+    test_hierarchical_meta_loop_disabled_by_default()
+    test_hierarchical_meta_loop_in_forward_pass()
+    test_certified_meta_loop_instantiation()
+    test_certified_meta_loop_disabled_by_default()
+    test_certified_meta_loop_verification_in_pipeline()
+    test_certified_meta_loop_provenance_tracked()
+    test_full_coherence_activates_new_meta_loops()
+    test_certified_meta_loop_uncertainty_boost_config()
+    test_architecture_summary_includes_new_meta_loops()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

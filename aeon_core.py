@@ -2919,6 +2919,20 @@ class AEONConfig:
     enable_hierarchical_world_model: bool = False
     hierarchical_world_model_blend: float = 0.1
 
+    # ===== HIERARCHICAL META-LOOP =====
+    # Multi-scale meta-loop that routes inputs through fast/medium/deep
+    # cycles based on learned complexity scoring, yielding latency
+    # reduction on simple inputs while preserving quality on hard tasks.
+    enable_hierarchical_meta_loop: bool = False
+
+    # ===== CERTIFIED META-LOOP =====
+    # Interval Bound Propagation-based certified convergence verification.
+    # Provides formal Banach fixed-point guarantees via IBP Lipschitz bounds.
+    # When the certification fails, uncertainty is escalated so that
+    # downstream meta-cognitive cycles activate.
+    enable_certified_meta_loop: bool = False
+    certified_meta_loop_uncertainty_boost: float = 0.2
+
     # ===== OBSERVABILITY & TELEMETRY =====
     enable_structured_logging: bool = False
     enable_academic_mode: bool = False
@@ -3056,6 +3070,10 @@ class AEONConfig:
                 'enable_standalone_ns_bridge',
                 # Hierarchical world model
                 'enable_hierarchical_world_model',
+                # Multi-scale meta-loop (complexity-routed)
+                'enable_hierarchical_meta_loop',
+                # Certified convergence via IBP
+                'enable_certified_meta_loop',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -13233,6 +13251,35 @@ class AEONDeltaV3(nn.Module):
         else:
             self.recursive_meta_loop = None
         
+        # ===== HIERARCHICAL META-LOOP =====
+        # Multi-scale meta-loop that routes inputs through fast/medium/deep
+        # cycles based on learned complexity scoring.  When enabled, it
+        # replaces the standard meta-loop at inference time (training always
+        # uses the deep path for full gradient flow).
+        if getattr(config, 'enable_hierarchical_meta_loop', False):
+            logger.info("Loading HierarchicalMetaLoop...")
+            self.hierarchical_meta_loop = HierarchicalMetaLoop(
+                config=config,
+            ).to(self.device)
+        else:
+            self.hierarchical_meta_loop = None
+        
+        # ===== CERTIFIED META-LOOP =====
+        # IBP-based certified convergence verification pass.  Runs after
+        # the primary meta-loop to formally verify convergence via
+        # Interval Bound Propagation Lipschitz bounds.  When certification
+        # fails, uncertainty is escalated to trigger meta-cognitive cycles.
+        if getattr(config, 'enable_certified_meta_loop', False):
+            logger.info("Loading CertifiedMetaLoop...")
+            self.certified_meta_loop = CertifiedMetaLoop(
+                config=config,
+                max_iterations=config.max_iterations,
+                convergence_threshold=config.convergence_threshold,
+                min_iterations=config.min_iterations,
+            ).to(self.device)
+        else:
+            self.certified_meta_loop = None
+        
         # ===== SPARSE FACTORIZATION =====
         logger.info("Loading SparseFactorization...")
         self.sparse_factors = SparseFactorization(config).to(self.device)
@@ -14695,6 +14742,10 @@ class AEONDeltaV3(nn.Module):
             C_star, iterations, meta_results = self.recursive_meta_loop(
                 z_conditioned, feedback=prev_feedback,
             )
+        elif self.hierarchical_meta_loop is not None and not fast:
+            C_star, iterations, meta_results = self.hierarchical_meta_loop(
+                z_conditioned,
+            )
         else:
             C_star, iterations, meta_results = self.meta_loop(
                 z_conditioned, use_fixed_point=not fast, feedback=prev_feedback,
@@ -14712,6 +14763,7 @@ class AEONDeltaV3(nn.Module):
             "avg_iterations": iterations.mean().item(),
             "convergence_rate": meta_results.get("convergence_rate", 0.0),
             "recursive": self.recursive_meta_loop is not None and not fast,
+            "hierarchical": self.hierarchical_meta_loop is not None and not fast,
         })
         
         # 1a. Semantic error recovery — if meta-loop produced NaN/Inf,
@@ -14812,6 +14864,68 @@ class AEONDeltaV3(nn.Module):
         # convergence monitor detects divergence, downstream subsystems
         # should invest more compute.
         convergence_quality_scalar = float(convergence_rate) if meta_loop_valid else 0.0
+        
+        # 1a-ii-b. Certified convergence verification — run the
+        # CertifiedMetaLoop's IBP-based formal verification on the
+        # converged state.  If the Banach fixed-point preconditions
+        # are not satisfied (L_certified >= 1), escalate uncertainty
+        # so that downstream meta-cognitive cycles activate.  This
+        # transforms CertifiedMetaLoop from an unused architectural
+        # component into an active verification gate that reinforces
+        # the ProvablyConvergentMetaLoop's output.
+        _certified_results: Dict[str, Any] = {}
+        if self.certified_meta_loop is not None and meta_loop_valid and not fast:
+            try:
+                self.provenance_tracker.record_before("certified_meta_loop", C_star)
+                _, _cert_iter, _cert_meta = self.certified_meta_loop(C_star)
+                _certified_results = _cert_meta
+                _cert_guaranteed = _cert_meta.get("certified_convergence", False)
+                _cert_error_bound = _cert_meta.get("certified_error_bound", None)
+                self.provenance_tracker.record_after("certified_meta_loop", C_star)
+                self.integrity_monitor.record_health(
+                    "certified_meta_loop",
+                    1.0 if _cert_guaranteed else 0.0,
+                    {
+                        "certified": _cert_guaranteed,
+                        "error_bound": _cert_error_bound,
+                        "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                    },
+                )
+                self.audit_log.record("certified_meta_loop", "verified", {
+                    "certified_convergence": _cert_guaranteed,
+                    "certified_error_bound": _cert_error_bound,
+                    "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "certified_meta_loop", "verified",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "certified": _cert_guaranteed,
+                            "error_bound": _cert_error_bound,
+                        },
+                    )
+                if not _cert_guaranteed:
+                    _cert_unc_boost = self.config.certified_meta_loop_uncertainty_boost
+                    uncertainty = min(1.0, uncertainty + _cert_unc_boost)
+                    uncertainty_sources["certified_convergence_failed"] = _cert_unc_boost
+                    high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="certified_convergence_failure",
+                            strategy_used="uncertainty_escalation",
+                            success=True,
+                            metadata=self._provenance_enriched_metadata({
+                                "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                            }),
+                        )
+            except Exception as _cert_err:
+                logger.debug("CertifiedMetaLoop verification failed (non-fatal): %s", _cert_err)
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="certified_meta_loop_forward",
+                    success=False,
+                )
         _needs_deeper = (
             convergence_quality_scalar < 0.5
             or audit_recommends_deeper
@@ -17611,6 +17725,12 @@ class AEONDeltaV3(nn.Module):
                 coherence_results.get("_weakest_pair")
                 if coherence_results else None
             ),
+            "certified_convergence": _certified_results.get(
+                "certified_convergence", None
+            ),
+            "certified_error_bound": _certified_results.get(
+                "certified_error_bound", None
+            ),
         }
         
         outputs = {
@@ -17664,6 +17784,7 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_sources': uncertainty_sources,
             'auto_critic_final_score': _auto_critic_final_score,
             'auto_critic_final_score_tensor': _auto_critic_final_score_tensor,
+            'certified_results': _certified_results,
         }
         
         return z_out, outputs
@@ -18430,6 +18551,8 @@ class AEONDeltaV3(nn.Module):
             ("VectorQuantizer", self.vector_quantizer),
             ("MetaLoop", self.meta_loop),
             ("RecursiveMetaLoop", self.recursive_meta_loop),
+            ("HierarchicalMetaLoop", self.hierarchical_meta_loop),
+            ("CertifiedMetaLoop", self.certified_meta_loop),
             ("FeedbackBus", self.feedback_bus),
             ("SlotBinder", self.slot_binder),
             ("SparseFactorization", self.sparse_factors),
