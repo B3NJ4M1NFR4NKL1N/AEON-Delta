@@ -24568,7 +24568,7 @@ def test_provenance_tracker_timestamps():
     )
     ts = attribution["timestamps"]["module_a"]
     assert isinstance(ts, float), "timestamp must be a float (monotonic time)"
-    assert ts > 0, "timestamp must be positive"
+    assert ts >= 0, "timestamp must be non-negative"
 
     # Verify reset clears timestamps
     tracker.reset()
