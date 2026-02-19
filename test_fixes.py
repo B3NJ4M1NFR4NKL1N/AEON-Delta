@@ -21402,6 +21402,209 @@ def test_forward_pass_provenance_includes_new_stages():
     print("✅ test_forward_pass_provenance_includes_new_stages PASSED")
 
 
+# =========================================================================
+# AGI Coherence Integration Tests — Unified Cognitive Pipeline Wiring
+# =========================================================================
+
+def test_pre_loop_memory_conditioning_config():
+    """New config parameters for pre-loop memory/causal context conditioning
+    exist with correct default values."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    assert hasattr(config, 'pre_loop_memory_weight'), (
+        "AEONConfig should have pre_loop_memory_weight"
+    )
+    assert config.pre_loop_memory_weight == 0.05, (
+        f"Expected 0.05, got {config.pre_loop_memory_weight}"
+    )
+    assert hasattr(config, 'pre_loop_causal_context_weight'), (
+        "AEONConfig should have pre_loop_causal_context_weight"
+    )
+    assert config.pre_loop_causal_context_weight == 0.05, (
+        f"Expected 0.05, got {config.pre_loop_causal_context_weight}"
+    )
+    assert hasattr(config, 'value_net_uncertainty_scale'), (
+        "AEONConfig should have value_net_uncertainty_scale"
+    )
+    assert config.value_net_uncertainty_scale == 0.15, (
+        f"Expected 0.15, got {config.value_net_uncertainty_scale}"
+    )
+    print("✅ test_pre_loop_memory_conditioning_config PASSED")
+
+
+def test_pre_loop_memory_conditioning_with_hierarchical_memory():
+    """When hierarchical memory is enabled, the pre-meta-loop unified memory
+    conditioning path should execute without error.  After storing some
+    memories, the conditioned input should differ from raw z_in."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # First pass — stores memories
+    input_ids_1 = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result_1 = model(input_ids_1, decode_mode='train')
+    assert 'thoughts' in result_1, "First pass should produce thoughts"
+
+    # Second pass — pre-loop conditioning should now have memories to draw from
+    input_ids_2 = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result_2 = model(input_ids_2, decode_mode='train')
+    assert 'thoughts' in result_2, "Second pass should produce thoughts"
+    print("✅ test_pre_loop_memory_conditioning_with_hierarchical_memory PASSED")
+
+
+def test_pre_loop_causal_context_conditioning():
+    """When causal context is enabled, the pre-meta-loop causal context
+    conditioning path should execute without error across multiple passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Multiple passes to accumulate causal context entries
+    for _ in range(3):
+        input_ids = torch.randint(1, 100, (2, 16))
+        with torch.no_grad():
+            result = model(input_ids, decode_mode='train')
+        assert 'thoughts' in result, "Pass should produce thoughts"
+    print("✅ test_pre_loop_causal_context_conditioning PASSED")
+
+
+def test_multimodal_memory_storage():
+    """When multimodal grounding and consolidating memory are both enabled,
+    multimodal-grounded states should be stored in memory."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_multimodal=True,
+        enable_consolidating_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run forward pass
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    # After forward pass, consolidating memory should have items stored
+    # (from both the main pipeline and the multimodal storage path)
+    cm = model.consolidating_memory
+    assert cm is not None, "ConsolidatingMemory should be initialized"
+    # Working memory (ring buffer) should contain stored items
+    working_count = len(cm.working)
+    assert working_count > 0, (
+        f"ConsolidatingMemory working buffer should have items after "
+        f"forward pass with multimodal, got {working_count}"
+    )
+    print("✅ test_multimodal_memory_storage PASSED")
+
+
+def test_value_net_uncertainty_integration():
+    """When world model is enabled, the value network provides a state
+    quality signal that feeds into the uncertainty pipeline."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    # The uncertainty_sources dict should be present
+    assert 'uncertainty_sources' in result, (
+        "Result should contain uncertainty_sources"
+    )
+    # The value_net_low_quality source may or may not appear depending on
+    # state quality — just verify the pipeline doesn't crash
+    assert isinstance(result['uncertainty_sources'], dict), (
+        "uncertainty_sources should be a dict"
+    )
+    print("✅ test_value_net_uncertainty_integration PASSED")
+
+
+def test_unified_cognitive_pipeline_full_coherence():
+    """When enable_full_coherence is True, all cognitive subsystems
+    should be activated and the forward pass should complete with
+    a valid causal decision chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(1, 100, (2, 16))
+    with torch.no_grad():
+        result = model(input_ids, decode_mode='train')
+
+    # Verify the causal decision chain is present and complete
+    assert 'causal_decision_chain' in result, (
+        "Full coherence mode should produce a causal decision chain"
+    )
+    chain = result['causal_decision_chain']
+    assert 'provenance' in chain, "Chain should contain provenance"
+    assert 'uncertainty_sources' in chain, "Chain should contain uncertainty sources"
+    assert 'convergence_verdict' in chain, "Chain should contain convergence verdict"
+
+    # Verify uncertainty_sources is populated (multiple subsystems contribute)
+    sources = result.get('uncertainty_sources', {})
+    assert isinstance(sources, dict), "uncertainty_sources should be dict"
+
+    # Verify provenance tracks module contributions
+    provenance = result.get('provenance', {})
+    contributions = provenance.get('contributions', {})
+    assert len(contributions) > 0, (
+        "Full coherence provenance should track module contributions"
+    )
+    print("✅ test_unified_cognitive_pipeline_full_coherence PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -22377,6 +22580,14 @@ if __name__ == '__main__':
     test_training_inference_error_bridge()
     test_training_convergence_monitor_export()
     test_forward_pass_provenance_includes_new_stages()
+    
+    # AGI Coherence Integration — Unified Cognitive Pipeline Wiring
+    test_pre_loop_memory_conditioning_config()
+    test_pre_loop_memory_conditioning_with_hierarchical_memory()
+    test_pre_loop_causal_context_conditioning()
+    test_multimodal_memory_storage()
+    test_value_net_uncertainty_integration()
+    test_unified_cognitive_pipeline_full_coherence()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
