@@ -15603,6 +15603,9 @@ class AEONDeltaV3(nn.Module):
                     })
             except Exception as _umq_err:
                 logger.debug("Pre-meta-loop memory conditioning failed: %s", _umq_err)
+                # Mild boost (0.05) — subsystem error signals uncertainty
+                # without dominating; accumulation across multiple failures
+                # can still trigger the metacognitive cycle at 0.5.
                 _umq_boost = min(1.0 - uncertainty, 0.05)
                 if _umq_boost > 0:
                     uncertainty = min(1.0, uncertainty + _umq_boost)
@@ -16599,6 +16602,9 @@ class AEONDeltaV3(nn.Module):
                 # written during execution and read back here to inform
                 # which subsystem merits corrective attention, closing the
                 # loop where traces were write-only.
+                # Retrieve up to 5 recent entries — this matches the depth
+                # used in post-integration root-cause queries (step 8f-i)
+                # and provides sufficient history without excessive latency.
                 _root_cause_subsystems: List[str] = []
                 if self.causal_trace is not None:
                     _recent_entries = self.causal_trace.recent(n=5)
@@ -18676,6 +18682,9 @@ class AEONDeltaV3(nn.Module):
                         _ac_post_coh["coherence_score"].mean().item()
                     )
                     _ac_coh_deficit = max(0.0, 1.0 - _ac_coh_score)
+                    # Scale deficit by 0.2 (matching the UCC coherence
+                    # boost at step 8f-iii) to prevent post-revision
+                    # coherence deficits from dominating uncertainty.
                     _ac_coh_boost = max(0.0, min(
                         1.0 - uncertainty, _ac_coh_deficit * 0.2,
                     ))
