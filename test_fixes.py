@@ -26338,7 +26338,7 @@ def test_self_diagnostic_includes_dag_consensus():
     print("✅ test_self_diagnostic_includes_dag_consensus PASSED")
 
 
-def test_metacognitive_trigger_maps_convergence_success():
+def test_metacognitive_trigger_maps_certified_convergence_failure():
     """Verify MetaCognitiveRecursionTrigger maps convergence_success and
     certified_convergence_failure error classes to appropriate signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
@@ -26365,7 +26365,7 @@ def test_metacognitive_trigger_maps_convergence_success():
         f"after certified_convergence_failure adaptation, got {adapted_weight}"
     )
 
-    print("✅ test_metacognitive_trigger_maps_convergence_success PASSED")
+    print("✅ test_metacognitive_trigger_maps_certified_convergence_failure PASSED")
 
 
 if __name__ == '__main__':
@@ -27539,7 +27539,7 @@ if __name__ == '__main__':
     test_get_metacognitive_state_includes_dag_consensus()
     test_architecture_summary_includes_dag_consensus()
     test_self_diagnostic_includes_dag_consensus()
-    test_metacognitive_trigger_maps_convergence_success()
+    test_metacognitive_trigger_maps_certified_convergence_failure()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
