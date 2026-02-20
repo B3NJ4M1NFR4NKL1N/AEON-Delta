@@ -30127,11 +30127,15 @@ def test_ucc_graceful_degradation_no_trigger():
         provenance_tracker=pt,
     )
 
-    # Low uncertainty, no violations — should not rerun
+    # Low uncertainty, no violations, similar states — should not rerun
+    _shared = torch.randn(2, 8)
     result_ok = ucc.evaluate(
-        subsystem_states={'a': torch.randn(2, 8), 'b': torch.randn(2, 8)},
+        subsystem_states={'a': _shared, 'b': _shared + 0.01 * torch.randn(2, 8)},
         delta_norm=0.001,
         uncertainty=0.1,
+    )
+    assert result_ok['should_rerun'] is False, (
+        "Fallback trigger should NOT fire on low uncertainty with coherent states"
     )
     # High uncertainty — should trigger fallback
     result_hi = ucc.evaluate(

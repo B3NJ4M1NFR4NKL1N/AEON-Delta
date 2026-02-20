@@ -13867,9 +13867,16 @@ class UnifiedCognitiveCycle:
 
     Args:
         convergence_monitor: Instance monitoring meta-loop convergence.
-        coherence_verifier: Instance cross-validating subsystem outputs.
-        error_evolution: Instance tracking error-recovery patterns.
-        metacognitive_trigger: Instance deciding whether to re-reason.
+        coherence_verifier: Optional instance cross-validating subsystem
+            outputs.  When None, coherence is assumed perfect (score=1.0)
+            and no cross-module verification is performed.
+        error_evolution: Optional instance tracking error-recovery patterns.
+            When None, error-evolution recording and root-cause queries
+            are skipped.
+        metacognitive_trigger: Optional instance deciding whether to
+            re-reason.  When None, a built-in fallback fires on
+            divergence, high uncertainty, safety violations, or topology
+            catastrophes.
         provenance_tracker: Instance recording per-module attribution.
         causal_trace: Optional temporal causal trace buffer.
     """
