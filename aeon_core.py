@@ -2983,6 +2983,7 @@ class AEONConfig:
     # ===== HIERARCHICAL WORLD MODEL =====
     enable_hierarchical_world_model: bool = False
     hierarchical_world_model_blend: float = 0.1
+    wm_cross_divergence_threshold: float = 0.1
 
     # ===== HIERARCHICAL META-LOOP =====
     # Multi-scale meta-loop that routes inputs through fast/medium/deep
@@ -14411,6 +14412,8 @@ class UnifiedCognitiveCycle:
         certified_results: Optional[Dict[str, Any]] = None,
         memory_signal: Optional[torch.Tensor] = None,
         converged_state: Optional[torch.Tensor] = None,
+        auto_critic_quality: Optional[float] = None,
+        executive_health: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -14433,6 +14436,13 @@ class UnifiedCognitiveCycle:
                 catastrophe in the loss landscape.  When True the signal
                 flows into the metacognitive trigger so that topology
                 issues participate in the re-reasoning decision.
+            auto_critic_quality: Optional auto-critic self-assessment
+                score ∈ [0, 1].  When provided and below 0.5, signals
+                low self-verification confidence to the metacognitive
+                trigger and directional uncertainty tracker.
+            executive_health: Optional cognitive executive health
+                score ∈ [0, 1].  When provided, tracked in directional
+                uncertainty so subsystem arbitration issues are visible.
 
         Returns:
             Dict with:
@@ -14699,6 +14709,20 @@ class UnifiedCognitiveCycle:
                 self.uncertainty_tracker.record("topology", 0.9)
             if convergence_arbiter_result.get("has_conflict", False):
                 self.uncertainty_tracker.record("convergence_arbiter", 0.6)
+            if auto_critic_quality is not None:
+                _ac_q = max(0.0, min(1.0, auto_critic_quality))
+                if _ac_q < 0.5:
+                    self.uncertainty_tracker.record(
+                        "auto_critic", 1.0 - _ac_q,
+                        source_label="low_self_assessment",
+                    )
+            if executive_health is not None:
+                _eh = max(0.0, min(1.0, executive_health))
+                if _eh < 1.0:
+                    self.uncertainty_tracker.record(
+                        "cognitive_executive", 1.0 - _eh,
+                        source_label="executive_arbitration_deficit",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -18376,6 +18400,64 @@ class AEONDeltaV3(nn.Module):
                 uncertainty_sources["hierarchical_wm_error"] = 0.15
                 high_uncertainty = uncertainty > 0.5
         
+        # 5b1a-xv. World model cross-validation — when both the physics-
+        # grounded and hierarchical world models produced predictions,
+        # compute their normalised divergence.  High divergence indicates
+        # the two models disagree about future states, which should
+        # escalate uncertainty and be recorded in the causal trace so
+        # root-cause analysis can link planning failures to model
+        # disagreement.  This transforms the two independent world models
+        # into a cooperative pair that actively reinforces confidence when
+        # they agree and flags epistemic uncertainty when they diverge.
+        _wm_predicted = world_model_results.get("predicted_next", None)
+        _hwm_predicted = hierarchical_wm_results.get("prediction", None)
+        if (_wm_predicted is not None
+                and _hwm_predicted is not None
+                and _wm_predicted.shape == _hwm_predicted.shape):
+            # Normalise by element count so the threshold behaves
+            # consistently regardless of prediction dimensionality.
+            _wm_divergence = float(
+                (_wm_predicted.detach() - _hwm_predicted.detach())
+                .pow(2).mean().item()
+            )
+            hierarchical_wm_results["wm_cross_divergence"] = _wm_divergence
+            _wm_xv_thresh = self.config.wm_cross_divergence_threshold
+            if (math.isfinite(_wm_divergence)
+                    and _wm_divergence > _wm_xv_thresh):
+                _wm_xv_boost = min(
+                    1.0 - uncertainty,
+                    _wm_divergence * 0.15,
+                )
+                uncertainty = min(1.0, uncertainty + _wm_xv_boost)
+                uncertainty_sources["world_model_cross_divergence"] = _wm_xv_boost
+                high_uncertainty = uncertainty > 0.5
+                self.audit_log.record(
+                    "world_model_cross_validation", "divergence_detected", {
+                        "divergence": _wm_divergence,
+                        "uncertainty_boost": _wm_xv_boost,
+                    }, severity="warning",
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="world_model_cross_divergence",
+                        strategy_used="uncertainty_escalation",
+                        success=True,
+                        metadata={
+                            "divergence": _wm_divergence,
+                        },
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "world_model_cross_validation",
+                        "prediction_divergence",
+                        causal_prerequisites=[input_trace_id],
+                        severity="warning",
+                        metadata={
+                            "divergence": _wm_divergence,
+                            "threshold": _wm_xv_thresh,
+                        },
+                    )
+
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
         # internal model is inaccurate, which should trigger deeper
@@ -20730,6 +20812,23 @@ class AEONDeltaV3(nn.Module):
                 _ucc_states["causal_dag_consensus"] = (
                     C_star * _consensus_score_val
                 )
+            # Include cognitive executive workspace so the coherence
+            # verifier can detect misalignment between the executive's
+            # winning subsystem and the integrated output.  Without this,
+            # executive arbitration decisions are invisible to the UCC.
+            _exec_winner_ucc = executive_results.get("winner", None)
+            if (_exec_winner_ucc is not None
+                    and torch.is_tensor(_exec_winner_ucc)
+                    and _exec_winner_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["cognitive_executive"] = _exec_winner_ucc
+            # Include hierarchical world model prediction so the
+            # coherence verifier can cross-validate multi-horizon
+            # planning predictions against the integrated output.
+            _hwm_pred_ucc = hierarchical_wm_results.get("prediction", None)
+            if (_hwm_pred_ucc is not None
+                    and torch.is_tensor(_hwm_pred_ucc)
+                    and _hwm_pred_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["hierarchical_world_model"] = _hwm_pred_ucc
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -20756,6 +20855,18 @@ class AEONDeltaV3(nn.Module):
                     certified_results=_certified_results,
                     memory_signal=_pre_loop_memory_signal,
                     converged_state=C_star.detach(),
+                    auto_critic_quality=_auto_critic_final_score,
+                    # Binary proxy: the executive either produced a
+                    # valid winner (1.0) or failed / was not enabled
+                    # (0.0 / None).  The module exposes no richer
+                    # health metric; urgency scores are subsystem-
+                    # relative and unsuitable as a global health
+                    # indicator.
+                    executive_health=(
+                        1.0 if executive_results.get("winner") is not None
+                        else (0.0 if self.cognitive_executive is not None
+                              else None)
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
