@@ -14041,7 +14041,7 @@ class UnifiedConvergenceArbiter:
             certified_flags["certified_meta_loop"] = cert_conv
 
         # Compute consensus
-        all_converged = all(v in ("converged",) for v in verdicts.values())
+        all_converged = all(v == "converged" for v in verdicts.values())
         any_diverging = any(v == "diverging" for v in verdicts.values())
         all_certified = all(certified_flags.values()) and len(certified_flags) > 0
 
@@ -14124,12 +14124,19 @@ class DirectionalUncertaintyTracker:
     def get_most_uncertain_module(self) -> Optional[str]:
         """Return the name of the module with the highest uncertainty.
 
+        When multiple modules share the maximum value, the one with the
+        lexicographically smallest name is returned for deterministic
+        tie-breaking.
+
         Returns:
             Module name, or None if no uncertainty has been recorded.
         """
         if not self._module_uncertainties:
             return None
-        return max(self._module_uncertainties, key=self._module_uncertainties.get)
+        return max(
+            self._module_uncertainties,
+            key=lambda k: (self._module_uncertainties[k], k),
+        )
 
     def get_sources(self) -> Dict[str, float]:
         """Return all recorded uncertainty sources with their values."""
@@ -14230,7 +14237,10 @@ class MemoryReasoningValidator:
                 "memory_available": False,
             }
 
-        # Ensure compatible shapes
+        # Ensure compatible shapes — both tensors are reduced to
+        # [B, hidden_dim] for cosine similarity.  If converged_state has
+        # a sequence dimension (dim > 2, e.g. [B, L, hidden_dim]), it is
+        # averaged along dim=1 to produce [B, hidden_dim].
         mem = memory_signal
         state = converged_state
         if mem.dim() == 1:

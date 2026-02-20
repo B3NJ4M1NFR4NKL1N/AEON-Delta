@@ -3302,8 +3302,10 @@ def bridge_inference_insights_to_training(
                     _summary.get('aggregate_uncertainty', 0.0)
                 )
                 adjustments += 1
-        except Exception:
-            pass
+        except (AttributeError, KeyError, TypeError) as _unc_err:
+            logging.getLogger(__name__).debug(
+                "Uncertainty tracker bridge failed (non-fatal): %s", _unc_err,
+            )
 
     return adjustments
 
