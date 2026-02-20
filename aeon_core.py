@@ -13391,6 +13391,7 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: int = 10,
         surprise_threshold: float = 0.5,
         causal_quality_threshold: float = 0.3,
+        high_uncertainty_override: float = 0.7,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
@@ -13405,6 +13406,9 @@ class MetaCognitiveRecursionTrigger:
         # Low causal quality (high DAG loss) indicates structural issues
         # in the causal model that deeper reasoning may resolve.
         self._causal_quality_threshold = max(0.0, causal_quality_threshold)
+        # Uncertainty level above which a meta-cognitive cycle is forced
+        # regardless of the composite trigger score.
+        self._high_uncertainty_override = max(0.0, high_uncertainty_override)
         # Adaptive signal weights — initialized uniformly; can be
         # adjusted by adapt_weights_from_evolution().
         self._signal_weights: Dict[str, float] = {
@@ -13568,8 +13572,15 @@ class MetaCognitiveRecursionTrigger:
         _cd_signal = 0.0
         if _cd > _COHERENCE_DEFICIT_THRESHOLD:
             _cd_signal = min(1.0, (_cd - _COHERENCE_DEFICIT_THRESHOLD) / (1.0 - _COHERENCE_DEFICIT_THRESHOLD))
+        # Graduated uncertainty: use the actual uncertainty magnitude
+        # (already ∈ [0, 1]) so that higher uncertainty contributes
+        # proportionally more weight, matching the graduated coherence
+        # deficit above.  The previous binary threshold (uncertainty > 0.5)
+        # discarded magnitude information and prevented moderate
+        # uncertainty from contributing to composite trigger decisions.
+        _unc_signal = max(0.0, min(1.0, uncertainty))
         signal_values = {
-            "uncertainty": w["uncertainty"] * float(uncertainty > 0.5),
+            "uncertainty": w["uncertainty"] * _unc_signal,
             "diverging": w["diverging"] * float(is_diverging),
             "topology_catastrophe": w["topology_catastrophe"] * float(topology_catastrophe),
             "coherence_deficit": w["coherence_deficit"] * _cd_signal,
@@ -13584,6 +13595,19 @@ class MetaCognitiveRecursionTrigger:
 
         can_recurse = self._recursion_count < self.max_recursions
         should_trigger = trigger_score >= self.trigger_threshold and can_recurse
+
+        # High-uncertainty override: when uncertainty alone is
+        # sufficiently high, force a meta-cognitive cycle even if the
+        # composite score doesn't reach trigger_threshold.  This
+        # implements the architectural requirement that *any*
+        # significant uncertainty triggers meta-cognitive re-reasoning,
+        # not just composite multi-signal events.
+        if (not should_trigger
+                and uncertainty > self._high_uncertainty_override
+                and can_recurse):
+            should_trigger = True
+            if "uncertainty" not in triggers_active:
+                triggers_active.append("uncertainty")
 
         if should_trigger:
             self._recursion_count += 1
@@ -15886,6 +15910,10 @@ class AEONDeltaV3(nn.Module):
         high_uncertainty: bool = uncertainty > 0.5
         # Track individual uncertainty contributions for traceability
         uncertainty_sources: Dict[str, float] = {}
+        # Initialize DAG consensus results early so that metacognitive
+        # re-reasoning (which runs before the DAG consensus evaluation)
+        # can safely reference it.
+        _dag_consensus_results: Dict[str, Any] = {}
         if _evolved_preemptive_uncertainty > 0:
             uncertainty_sources["error_evolution_preemptive"] = (
                 _evolved_preemptive_uncertainty
@@ -16273,13 +16301,26 @@ class AEONDeltaV3(nn.Module):
         if high_uncertainty and not fast:
             logger.debug(
                 f"High uncertainty detected ({uncertainty:.3f}); "
-                "triggering deeper meta-cognitive processing"
+                "meta-cognitive cycle will activate via metacognitive trigger"
             )
             self.audit_log.record("uncertainty", "high", {
                 "uncertainty": uncertainty,
                 "residual_var": residual_var,
                 "convergence_quality": convergence_quality_scalar,
             })
+            # Record early high-uncertainty detection in causal trace
+            # so root-cause analysis can trace back to the residual
+            # variance that originated the uncertainty signal.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "uncertainty", "high_detected",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "uncertainty": uncertainty,
+                        "residual_var": residual_var,
+                        "sources": dict(uncertainty_sources),
+                    },
+                )
         
         # 1a-iv. MetaLearner EWC drift signal — compute EWC penalty
         # magnitude and escalate uncertainty when drift exceeds threshold,
@@ -17103,6 +17144,10 @@ class AEONDeltaV3(nn.Module):
                     * metacognitive_info["tightened_threshold"]
                 )
                 _extra_iters = metacognitive_info["extra_iterations"]
+                # Add DAG consensus extra iterations when causal models
+                # disagree, wiring structural causal validation directly
+                # into reasoning depth.
+                _extra_iters += _dag_consensus_results.get("extra_iterations", 0)
                 # Temporarily adjust meta-loop parameters
                 orig_threshold = self.meta_loop.convergence_threshold
                 orig_max_iter = self.meta_loop.max_iterations
@@ -18042,7 +18087,6 @@ class AEONDeltaV3(nn.Module):
         # the independent causal models into a cooperative ensemble where
         # their agreement (or disagreement) actively influences reasoning
         # depth.
-        _dag_consensus_results: Dict[str, Any] = {}
         if self.causal_dag_consensus is not None and _causal_healthy and not fast:
             _adj_matrices: Dict[str, torch.Tensor] = {}
             if causal_model_results and 'adjacency' in causal_model_results:
@@ -18076,6 +18120,16 @@ class AEONDeltaV3(nn.Module):
                                 "num_models": _dag_consensus_results["num_models"],
                             },
                         )
+                # 5d1c-dag-depth. DAG consensus → meta-loop depth adjustment —
+                # when causal models structurally disagree, request extra
+                # meta-loop iterations proportional to disagreement
+                # magnitude so the system reasons more deeply to reconcile
+                # conflicting causal structures.  This wires DAG consensus
+                # directly to reasoning depth, not just uncertainty.
+                _dag_disagreement = max(0.0, 1.0 - _consensus_score)
+                if _dag_disagreement > 0.3:
+                    _dag_extra_iters = max(1, int(_dag_disagreement * self.config.metacognitive_extra_iterations))
+                    _dag_consensus_results["extra_iterations"] = _dag_extra_iters
                 # 5d1c-dag. DAG consensus → _cached_causal_quality feedback —
                 # when multiple causal models disagree, the overall causal
                 # quality should degrade proportionally.  Without this, the
