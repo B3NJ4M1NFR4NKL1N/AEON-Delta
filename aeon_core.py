@@ -15137,17 +15137,6 @@ class AEONDeltaV3(nn.Module):
                     "Loading UnifiedCognitiveCycle (components: %s)...",
                     ', '.join(_ucc_available),
                 )
-            else:
-                # Without any optional prerequisites the UCC degenerates
-                # into a bare convergence-monitor wrapper that adds no
-                # cross-verification value.  Disable it so that downstream
-                # code does not invoke an empty orchestration layer.
-                logger.info(
-                    "Skipping UnifiedCognitiveCycle: no optional prerequisites "
-                    "(module_coherence, metacognitive_trigger, error_evolution) available"
-                )
-                self.unified_cognitive_cycle = None
-            if _ucc_available:
                 self.unified_cognitive_cycle = UnifiedCognitiveCycle(
                     convergence_monitor=self.convergence_monitor,
                     coherence_verifier=self.module_coherence,
@@ -15176,6 +15165,16 @@ class AEONDeltaV3(nn.Module):
                     _ucc.causal_trace = self.causal_trace
                     if _ucc.error_evolution is not None:
                         _ucc.error_evolution.set_causal_trace(self.causal_trace)
+            else:
+                # Without any optional prerequisites the UCC degenerates
+                # into a bare convergence-monitor wrapper that adds no
+                # cross-verification value.  Disable it so that downstream
+                # code does not invoke an empty orchestration layer.
+                logger.info(
+                    "Skipping UnifiedCognitiveCycle: no optional prerequisites "
+                    "(module_coherence, metacognitive_trigger, error_evolution) available"
+                )
+                self.unified_cognitive_cycle = None
         else:
             self.unified_cognitive_cycle = None
         
