@@ -2224,6 +2224,27 @@ class ContextualRSSMTrainer:
                     f"{_PROVENANCE_DOMINANCE_WARNING_THRESHOLD:.0%})"
                 )
         
+        # RSSM-decoder cross-validation: verify that the RSSM prediction
+        # can produce valid token reconstructions through the frozen decoder.
+        # Without this, Phase B optimizes latent-space proximity (L2) but
+        # never validates that predicted latent states lie in the decoder's
+        # valid input manifold.  A high reconstruction error here indicates
+        # the RSSM is predicting states that the decoder cannot interpret,
+        # signalling a latent-space drift between encoder/VQ and RSSM.
+        _decoder_valid = True
+        with torch.no_grad():
+            try:
+                _recon_from_pred = self.model.decoder(pred.detach())
+                _recon_from_target = self.model.decoder(z_target)
+                _decoder_cross_loss = F.mse_loss(
+                    _recon_from_pred, _recon_from_target,
+                ).item()
+                if not math.isfinite(_decoder_cross_loss):
+                    _decoder_valid = False
+            except Exception:
+                _decoder_cross_loss = float('nan')
+                _decoder_valid = False
+
         return {
             "mse_loss": mse_loss.item(), 
             "smooth_l1": smooth_l1.item(),
@@ -2233,6 +2254,8 @@ class ContextualRSSMTrainer:
             "rel_error": rel_error,
             "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
             "provenance": _prov,
+            "decoder_cross_loss": _decoder_cross_loss,
+            "decoder_valid": _decoder_valid,
         }
 
     def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
@@ -2415,9 +2438,11 @@ class ContextualRSSMTrainer:
 _PROVENANCE_DOMINANCE_WARNING_THRESHOLD = 0.9
 
 # Interval (in training steps) between provenance dominant-module log
-# entries.  Shared by Phase A and Phase B trainers to ensure consistent
-# traceability granularity across both training phases.
-_PROVENANCE_LOG_INTERVAL = 50
+# entries.  Reduced from 50 to 10 to improve root-cause traceability:
+# at 50-step intervals, provenance data for normal (non-NaN) training
+# steps was invisible, preventing root-cause analysis from tracing
+# gradual drift patterns that only manifest over multiple steps.
+_PROVENANCE_LOG_INTERVAL = 10
 
 # Meta-cognitive learning rate adjustment factor applied when the
 # UnifiedCognitiveCycle triggers re-reasoning during training.
@@ -3255,6 +3280,22 @@ def main(
         )
     else:
         logger.info("🔗 Phase A produced no actionable error patterns to bridge")
+
+    # ===== Phase transition provenance =====
+    # Record Phase A summary in provenance tracker so that root-cause
+    # analysis can trace Phase B issues back to Phase A training state.
+    if hasattr(trainer_B, '_provenance') and trainer_B._provenance is not None:
+        trainer_B._provenance.record(
+            "phase_transition",
+            {"phase": "A_to_B",
+             "phaseA_best_loss": best_loss_A,
+             "phaseA_bridged_errors": _phaseA_bridged,
+             "z_sequences_count": len(z_sequences),
+             "total_pairs": sum(
+                 max(0, seq.size(0) - config.context_window)
+                 for seq in z_sequences
+             )},
+        )
 
     trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
 

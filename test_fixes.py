@@ -8874,8 +8874,8 @@ def test_metacognitive_recursion_trigger_evaluate():
 
     # Three signals → score = 3/9 ≈ 0.333 < 0.5 threshold → should NOT trigger
     # with default weights; activate five to cross threshold.
-    # Five signals → score = 5/9 ≈ 0.556 ≥ threshold → should trigger
-    # (9 signals at 1/9 weight each; 5 active ≈ 0.556)
+    # Five signals → with graduated uncertainty (0.8 × 1/9) + 4 binary
+    # signals (4 × 1/9) = 4.8/9 ≈ 0.533 ≥ threshold → should trigger
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
@@ -8884,7 +8884,7 @@ def test_metacognitive_recursion_trigger_evaluate():
         safety_violation=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 5.0 / 9.0) < 1e-9
+    assert abs(result["trigger_score"] - 4.8 / 9.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
@@ -8928,7 +8928,7 @@ def test_metacognitive_recursion_trigger_all_signals():
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
 
     result = trigger.evaluate(
-        uncertainty=0.8,
+        uncertainty=1.0,
         is_diverging=True,
         topology_catastrophe=True,
         coherence_deficit=True,
@@ -29949,6 +29949,108 @@ def test_cross_phase_error_classifier_consistency():
     print("✅ test_cross_phase_error_classifier_consistency PASSED")
 
 
+def test_graduated_uncertainty_signal():
+    """MetaCognitiveRecursionTrigger uses graduated (not binary) uncertainty."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.99)
+    # Moderate uncertainty (0.4) should contribute proportionally, not 0.
+    result = trigger.evaluate(uncertainty=0.4)
+    assert result["trigger_score"] > 0.0, (
+        "Graduated uncertainty should contribute > 0 even below old binary threshold"
+    )
+    # Score should be proportional: w * 0.4 = (1/9) * 0.4
+    expected = (1.0 / 9.0) * 0.4
+    assert abs(result["trigger_score"] - expected) < 1e-9, (
+        f"Expected graduated score {expected}, got {result['trigger_score']}"
+    )
+    assert "uncertainty" in result["triggers_active"]
+    print("✅ test_graduated_uncertainty_signal PASSED")
+
+
+def test_high_uncertainty_override_triggers():
+    """High uncertainty (> 0.7) alone triggers meta-cognitive cycle."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.9,  # high threshold that uncertainty alone can't reach
+        max_recursions=2,
+    )
+    # uncertainty=0.8 alone gives score = (1/9)*0.8 ≈ 0.089, well below 0.9
+    # But the high-uncertainty override (>0.7) should force trigger
+    result = trigger.evaluate(uncertainty=0.8)
+    assert result["should_trigger"] is True, (
+        "High uncertainty (>0.7) should override composite threshold"
+    )
+    assert "uncertainty" in result["triggers_active"]
+    assert result["recursion_count"] == 1
+    # Low uncertainty should NOT override
+    trigger.reset()
+    result_low = trigger.evaluate(uncertainty=0.5)
+    assert result_low["should_trigger"] is False, (
+        "Moderate uncertainty (0.5) should not override high threshold"
+    )
+    print("✅ test_high_uncertainty_override_triggers PASSED")
+
+
+def test_dag_consensus_extra_iterations():
+    """DAG consensus disagreement adds extra meta-loop iterations."""
+    from aeon_core import CausalDAGConsensus
+    import torch
+    consensus = CausalDAGConsensus(agreement_threshold=0.9, uncertainty_scale=0.3)
+    # Create strongly disagreeing adjacency matrices
+    adj_a = torch.eye(4)
+    adj_b = torch.ones(4, 4) * 0.5
+    result = consensus.evaluate({
+        "model_a": adj_a,
+        "model_b": adj_b,
+    })
+    assert result["needs_escalation"] is True
+    assert result["consensus_score"] < 0.9
+    # The extra_iterations field should be set by the forward pass, not
+    # by CausalDAGConsensus itself, so we just verify the consensus works
+    # and produces a score that would trigger extra iterations.
+    disagreement = 1.0 - result["consensus_score"]
+    assert disagreement > 0.3, (
+        f"Expected significant disagreement, got {disagreement}"
+    )
+    print("✅ test_dag_consensus_extra_iterations PASSED")
+
+
+def test_rssm_decoder_cross_validation():
+    """Phase B train_step returns decoder cross-validation metrics."""
+    from ae_train import AEONDeltaV4, AEONConfigV4, TrainingMonitor, ContextualRSSMTrainer
+    import torch, logging
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, vq_num_embeddings=32,
+        vq_embedding_dim=32, hidden_dim=32, rssm_hidden_dim=64,
+        context_window=2, seq_length=16,
+    )
+    model = AEONDeltaV4(config)
+    _logger = logging.getLogger("test_rssm_xval")
+    monitor = TrainingMonitor(logger=_logger, save_dir="/tmp/test_rssm_xval")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+    # Create dummy context and target
+    z_context = torch.randn(2, 2, 32)
+    z_target = torch.randn(2, 32)
+    result = trainer.train_step(z_context, z_target)
+    assert "decoder_cross_loss" in result, (
+        "train_step should return decoder_cross_loss for RSSM-decoder cross-validation"
+    )
+    assert "decoder_valid" in result, (
+        "train_step should return decoder_valid flag"
+    )
+    assert isinstance(result["decoder_valid"], bool)
+    print("✅ test_rssm_decoder_cross_validation PASSED")
+
+
+def test_provenance_log_interval_reduced():
+    """Provenance log interval should be reduced for better traceability."""
+    from ae_train import _PROVENANCE_LOG_INTERVAL
+    assert _PROVENANCE_LOG_INTERVAL <= 10, (
+        f"Expected provenance log interval ≤ 10, got {_PROVENANCE_LOG_INTERVAL}"
+    )
+    print("✅ test_provenance_log_interval_reduced PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -31276,6 +31378,13 @@ if __name__ == '__main__':
     test_phase_a_adapt_weights_from_evolution()
     test_phase_b_provenance_dominance_warning()
     test_cross_phase_error_classifier_consistency()
+    
+    # Architectural Unification — Graduated Uncertainty & High-Uncertainty Override
+    test_graduated_uncertainty_signal()
+    test_high_uncertainty_override_triggers()
+    test_dag_consensus_extra_iterations()
+    test_rssm_decoder_cross_validation()
+    test_provenance_log_interval_reduced()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

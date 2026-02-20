@@ -225,6 +225,8 @@ class AppState:
     v4_log_buffer: List[dict]    = []   # dedicated log ring for v4 training
     v4_metrics_history: dict     = {"phase_A": [], "phase_B": []}
     v4_upload_dir: str           = "./training_data"
+    v4_trained_model: Optional[Any] = None      # trained AEONDeltaV4 instance
+    v4_trained_model_path: Optional[str] = None # path to saved v4 checkpoint
 
 APP = AppState()
 
@@ -2684,6 +2686,14 @@ def _v4_training_loop(req: V4TrainRequest):
             }
         }, final_path)
         logging.info(f"💾 Final model saved: {final_path}")
+
+        # Store the trained v4 model reference in APP so that
+        # subsequent inference can use the trained weights without
+        # requiring a separate /api/init call.  Since AEONDeltaV4
+        # differs from AEONDeltaV3, we store it separately and
+        # record the final model path for checkpoint reloading.
+        APP.v4_trained_model = model
+        APP.v4_trained_model_path = final_path
 
         codebook_pct = model.vq.get_codebook_usage()
         APP.v4_progress.update({
