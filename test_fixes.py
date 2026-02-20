@@ -11563,20 +11563,20 @@ def test_hybrid_reasoning_consistency_check():
 
 
 def test_feedback_bus_num_channels():
-    """Verify CognitiveFeedbackBus has 10 signal channels after adding
+    """Verify CognitiveFeedbackBus has 11 signal channels after adding
     world_model_surprise, coherence_deficit, causal_quality, recovery_pressure,
-    and self_report_consistency."""
+    self_report_consistency, and output_quality."""
     from aeon_core import CognitiveFeedbackBus
 
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 10, (
-        f"Expected 10 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 11, (
+        f"Expected 11 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
 
     bus = CognitiveFeedbackBus(hidden_dim=32)
     # Projection input should match NUM_SIGNAL_CHANNELS
     first_layer = bus.projection[0]
-    assert first_layer.in_features == 10, (
-        f"First layer input features should be 10, got {first_layer.in_features}"
+    assert first_layer.in_features == 11, (
+        f"First layer input features should be 11, got {first_layer.in_features}"
     )
 
     print("✅ test_feedback_bus_num_channels PASSED")
