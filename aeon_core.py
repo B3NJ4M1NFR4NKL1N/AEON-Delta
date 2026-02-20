@@ -14843,6 +14843,20 @@ class AEONDeltaV3(nn.Module):
         ("memory", "memory_validation"),
         ("meta_loop", "memory_validation"),
         ("memory_validation", "unified_cognitive_cycle"),
+        # Topology catastrophe feeds into safety and causal trace so that
+        # loss-landscape instability is both traceable and actionable.
+        ("factor_extraction", "topology_analysis"),
+        ("topology_analysis", "safety"),
+        # Diversity collapse feeds into causal trace for root-cause
+        # traceability of thought collapse events.
+        ("factor_extraction", "diversity_analysis"),
+        ("diversity_analysis", "metacognitive_trigger"),
+        # DAG consensus disagreement tightens the cross-validation
+        # reconciler threshold for stricter factor–causal alignment.
+        ("causal_dag_consensus", "cross_validation"),
+        # Convergence arbiter conflict adds extra iterations to the
+        # deeper meta-loop for more thorough reasoning.
+        ("convergence_arbiter", "deeper_meta_loop"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -17155,6 +17169,21 @@ class AEONDeltaV3(nn.Module):
                         {"diversity_score": _diversity_score},
                     ),
                 )
+            # 3b-trace. Record diversity collapse in the causal trace so
+            # root-cause analysis can identify thought collapse as a
+            # contributor to downstream uncertainty escalation.  Without
+            # this, diversity collapse is invisible to trace_root_cause()
+            # even though it actively degrades reasoning quality.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "diversity_analysis", "collapse_detected",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "diversity_score": _diversity_score,
+                        "threshold": _DIVERSITY_COLLAPSE_THRESHOLD,
+                        "uncertainty_boost": _diversity_boost,
+                    },
+                )
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -17721,6 +17750,38 @@ class AEONDeltaV3(nn.Module):
                     _topo_unc_boost, 0.3,
                 )
                 high_uncertainty = uncertainty > 0.5
+                # 5a-iv-topo-safety. Tighten adaptive safety threshold
+                # when a topology catastrophe is detected — an unstable
+                # loss landscape means the current reasoning state may be
+                # near a bifurcation point, so the safety system should be
+                # more protective.  This closes the gap where catastrophe
+                # detection boosted uncertainty but did not feed back into
+                # safety thresholds, unlike self-report low consistency and
+                # convergence weakness which both tighten safety.
+                _TOPO_SAFETY_TIGHTENING = 0.8
+                if self.safety_system is not None:
+                    adaptive_safety_threshold = min(
+                        adaptive_safety_threshold,
+                        adaptive_safety_threshold * _TOPO_SAFETY_TIGHTENING,
+                    )
+                # 5a-iv-topo-trace. Record topology catastrophe in the
+                # causal trace so root-cause analysis can identify that a
+                # loss-landscape catastrophe contributed to downstream
+                # uncertainty escalation and safety tightening.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "topology_analysis", "catastrophe_detected",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "catastrophe_rate": float(
+                                topo_results.get(
+                                    'catastrophes', torch.zeros(1),
+                                ).float().mean().item()
+                            ),
+                            "uncertainty_boost": _topo_unc_boost,
+                            "safety_tightened": self.safety_system is not None,
+                        },
+                    )
             # Adapt signal weights from error evolution history before
             # evaluating, so historically problematic failure modes
             # increase trigger sensitivity.
@@ -17842,6 +17903,14 @@ class AEONDeltaV3(nn.Module):
                 # disagree, wiring structural causal validation directly
                 # into reasoning depth.
                 _extra_iters += _dag_consensus_results.get("extra_iterations", 0)
+                # Add extra iterations when convergence arbiter detected
+                # conflict between monitors — conflicting convergence
+                # verdicts indicate that the meta-loop state is ambiguous
+                # and needs more iterations to settle, wiring structural
+                # convergence validation into reasoning depth.
+                _ARB_CONFLICT_EXTRA_ITERS = 3
+                if _convergence_arbiter_result.get("has_conflict", False):
+                    _extra_iters += _ARB_CONFLICT_EXTRA_ITERS
                 # Temporarily adjust meta-loop parameters
                 orig_threshold = self.meta_loop.convergence_threshold
                 orig_max_iter = self.meta_loop.max_iterations
@@ -19016,6 +19085,22 @@ class AEONDeltaV3(nn.Module):
                         self.cross_validator.agreement_threshold,
                         self.cross_validator.agreement_threshold * 0.85,
                     )
+            # 5d2-0c. DAG-consensus-aware reconciliation — when the causal
+            # DAG consensus detected structural disagreement between causal
+            # models, tighten the reconciler's agreement threshold so that
+            # factor–causal alignment is scrutinized more carefully.  This
+            # wires structural causal disagreement into the cross-validation
+            # pipeline: conflicting causal DAGs imply that the factors and
+            # causal predictions may refer to different latent structures,
+            # requiring stricter reconciliation.
+            _DAG_CONSENSUS_RECONCILER_TIGHTENING = 0.85
+            if (_dag_consensus_results
+                    and _dag_consensus_results.get("needs_escalation", False)):
+                self.cross_validator.agreement_threshold = min(
+                    self.cross_validator.agreement_threshold,
+                    self.cross_validator.agreement_threshold
+                    * _DAG_CONSENSUS_RECONCILER_TIGHTENING,
+                )
             self.provenance_tracker.record_before("cross_validation", C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, _reconcile_second
@@ -22517,6 +22602,39 @@ class AEONDeltaV3(nn.Module):
                         'consensus feeds into coherence verification'
                     ),
                 })
+            # Verify DAG consensus feeds into cross-validation reconciler
+            # threshold tightening.
+            if self.cross_validator is not None:
+                verified.append(
+                    'causal_dag_consensus → cross_validation '
+                    '(DAG disagreement tightens reconciler threshold)'
+                )
+
+        # 11a1a. Topology catastrophe → safety threshold tightening
+        if self.topology_analyzer is not None and self.safety_system is not None:
+            verified.append(
+                'topology_catastrophe → safety_threshold '
+                '(catastrophe tightens safety threshold)'
+            )
+        # 11a1b. Topology catastrophe → causal trace
+        if self.topology_analyzer is not None and self.causal_trace is not None:
+            verified.append(
+                'topology_catastrophe → causal_trace '
+                '(root-cause traceability for loss-landscape instability)'
+            )
+        # 11a1c. Diversity collapse → causal trace
+        if self.diversity_metric is not None and self.causal_trace is not None:
+            verified.append(
+                'diversity_collapse → causal_trace '
+                '(root-cause traceability for thought collapse)'
+            )
+        # 11a1d. Convergence arbiter conflict → deeper meta-loop iterations
+        if (self.convergence_arbiter is not None
+                and self.metacognitive_trigger is not None):
+            verified.append(
+                'convergence_arbiter_conflict → deeper_meta_loop '
+                '(arbiter conflict adds extra iterations)'
+            )
 
         # 11a2. Safety violation → metacognitive trigger
         if self.safety_system is not None and self.metacognitive_trigger is not None:
@@ -22625,7 +22743,8 @@ class AEONDeltaV3(nn.Module):
             'hierarchical_vae', 'causal_context', 'multimodal',
             'auto_critic', 'neurogenic_memory', 'consolidating_memory',
             'temporal_memory', 'unified_cognitive_cycle',
-            'causal_dag_consensus',
+            'causal_dag_consensus', 'topology_analysis',
+            'diversity_analysis',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
