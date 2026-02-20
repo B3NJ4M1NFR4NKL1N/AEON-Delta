@@ -1660,6 +1660,7 @@ class ErrorRecoveryManager:
         tensor_guard: Optional[TensorGuard] = None,
         max_retries: int = 3,
         error_evolution: Optional['CausalErrorEvolutionTracker'] = None,
+        provenance_tracker: Optional['CausalProvenanceTracker'] = None,
     ):
         self.hidden_dim = hidden_dim
         self.audit_log = audit_log or DecisionAuditLog()
@@ -1669,6 +1670,7 @@ class ErrorRecoveryManager:
         self.error_classifier = SemanticErrorClassifier()
         self.max_retries = max(1, max_retries)
         self.error_evolution = error_evolution
+        self.provenance_tracker = provenance_tracker
         self._lock = threading.Lock()
         self._recovery_counts: Dict[str, int] = defaultdict(int)
         self._recovery_history: deque = deque(maxlen=500)
@@ -1715,10 +1717,27 @@ class ErrorRecoveryManager:
         if self.error_evolution is not None:
             evolved_strategy_name = self.error_evolution.get_best_strategy(error_class)
 
+        # Enrich audit entry with provenance attribution so recovery
+        # decisions are traceable to the dominant upstream module that
+        # contributed most to the error state.
+        _provenance_info: Dict[str, Any] = {}
+        if self.provenance_tracker is not None:
+            try:
+                _prov = self.provenance_tracker.compute_attribution()
+                _contribs = _prov.get("contributions", {})
+                _provenance_info["provenance_contributions"] = _contribs
+                if _contribs:
+                    _provenance_info["dominant_provenance_module"] = max(
+                        _contribs, key=_contribs.get,
+                    )
+            except Exception:
+                pass  # provenance enrichment is best-effort
+
         self.audit_log.record("error_recovery", error_class, {
             "context": context,
             "detail": detail,
             "evolved_strategy": evolved_strategy_name,
+            **_provenance_info,
         })
 
         if evolved_strategy_name and evolved_strategy_name in self._strategies:
@@ -13796,6 +13815,7 @@ class UnifiedCognitiveCycle:
         memory_staleness: bool = False,
         recovery_pressure: float = 0.0,
         safety_violation: bool = False,
+        feedback_signal: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -13810,6 +13830,10 @@ class UnifiedCognitiveCycle:
             recovery_pressure: Error recovery pressure ∈ [0, 1].
             safety_violation: Whether the safety system enforced a rollback
                 on the current forward pass.
+            feedback_signal: Optional [B, hidden_dim] tensor from the
+                CognitiveFeedbackBus.  When provided, it is included in
+                the subsystem states for coherence verification so that
+                feedback-loop signals participate in cross-module checks.
 
         Returns:
             Dict with:
@@ -13820,6 +13844,17 @@ class UnifiedCognitiveCycle:
                 - provenance: current attribution snapshot.
                 - root_cause_trace: root-cause info if causal_trace available.
         """
+        # 0. Incorporate feedback signal into subsystem states when provided
+        # so that downstream coherence checks can detect misalignment between
+        # the feedback bus conditioning and the actual module outputs.
+        if feedback_signal is not None:
+            _fb = feedback_signal
+            # Project to match hidden_dim of subsystem states if needed
+            _sample_state = next(iter(subsystem_states.values()), None)
+            if (_sample_state is not None
+                    and _fb.shape[-1] == _sample_state.shape[-1]):
+                subsystem_states = {**subsystem_states, "feedback_bus": _fb}
+
         # 1. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
 
@@ -14806,6 +14841,7 @@ class AEONDeltaV3(nn.Module):
             audit_log=self.audit_log,
             tensor_guard=self.tensor_guard,
             error_evolution=self.error_evolution,
+            provenance_tracker=self.provenance_tracker,
         )
         
         # ===== CONVERGENCE MONITOR =====
@@ -15364,7 +15400,9 @@ class AEONDeltaV3(nn.Module):
                     error_class=error_class,
                     strategy_used=strategy_name,
                     success=recovery_success,
-                    metadata={"detail": detail},
+                    metadata=self._provenance_enriched_metadata({
+                        "detail": detail,
+                    }),
                 )
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
@@ -18084,6 +18122,10 @@ class AEONDeltaV3(nn.Module):
                     error_class="reconciliation_disagreement",
                     strategy_used="cross_validation",
                     success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        "agreement": _agreement_val,
+                        "iterations": reconciliation_results["reconcile_iterations"],
+                    }),
                 )
                 # Also record the low-agreement episode so the
                 # error-evolution-guided tightening (5d2-0b) can
@@ -18097,6 +18139,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="cross_validation_low_agreement",
                     strategy_used="tighten_threshold",
                     success=_reconciliation_converged,
+                    metadata=self._provenance_enriched_metadata({
+                        "agreement": _agreement_val,
+                    }),
                 )
             # Tighten adaptive safety threshold when reconciliation
             # agreement is low — disagreeing modules warrant more
@@ -18867,6 +18912,10 @@ class AEONDeltaV3(nn.Module):
                             error_class="ns_violation_auto_critic",
                             strategy_used="auto_critic",
                             success=revised is not None and torch.isfinite(revised).all(),
+                            metadata=self._provenance_enriched_metadata({
+                                "final_score": critic_result.get("final_score", 0.0),
+                                "trigger": "ns_violation",
+                            }),
                         )
                 # 8b2b. NS violation → feedback bus propagation — escalate
                 # the cached coherence deficit so that the *next* forward
@@ -19377,6 +19426,7 @@ class AEONDeltaV3(nn.Module):
                     memory_staleness=self._memory_stale,
                     recovery_pressure=self._compute_recovery_pressure(),
                     safety_violation=safety_enforced or _ucc_ns_violated,
+                    feedback_signal=self._cached_feedback,
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -19691,6 +19741,53 @@ class AEONDeltaV3(nn.Module):
                         error_class="subsystem",
                         context="ucc_driven_auto_critic",
                         success=False,
+                    )
+            # 8f-ucc-reverify. Post-rerun coherence re-verification — after
+            # the deeper meta-loop and/or auto-critic revised z_out, re-check
+            # cross-module coherence to ensure the refined state is actually
+            # coherent.  Without this, the UCC path accepts improved
+            # convergence without confirming that the revised state aligns
+            # across subsystems, violating the "each component verifies and
+            # reinforces the others" contract.
+            if (self.module_coherence is not None
+                    and (_ucc_deeper_accepted or _any_auto_critic_revised)):
+                try:
+                    _ucc_reverify_states: Dict[str, torch.Tensor] = {
+                        "integrated_output": z_out,
+                        "core_state": C_star,
+                    }
+                    _ucc_reverify = self.module_coherence(_ucc_reverify_states)
+                    if _ucc_reverify.get("needs_recheck", False):
+                        _ucc_rv_score = float(
+                            _ucc_reverify["coherence_score"].mean().item()
+                        )
+                        _ucc_rv_deficit = max(0.0, 1.0 - _ucc_rv_score)
+                        _ucc_rv_boost = max(
+                            0.0, min(1.0 - uncertainty, _ucc_rv_deficit * 0.2)
+                        )
+                        if _ucc_rv_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _ucc_rv_boost)
+                            uncertainty_sources[
+                                "ucc_post_rerun_coherence"
+                            ] = _ucc_rv_boost
+                            high_uncertainty = uncertainty > 0.5
+                        self._cached_coherence_deficit = max(
+                            self._cached_coherence_deficit, _ucc_rv_deficit,
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="post_rerun_coherence_deficit",
+                                strategy_used="deeper_meta_loop",
+                                success=False,
+                                metadata=self._provenance_enriched_metadata({
+                                    "coherence_deficit": _ucc_rv_deficit,
+                                    "phase": "ucc_post_rerun",
+                                }),
+                            )
+                except Exception as _ucc_rv_err:
+                    logger.debug(
+                        "UCC post-rerun coherence re-verification error "
+                        "(non-fatal): %s", _ucc_rv_err,
                     )
             # 8f-ucc-ctx. Record UCC coherence assessment in the
             # CausalContextWindowManager so that cross-temporal reasoning
