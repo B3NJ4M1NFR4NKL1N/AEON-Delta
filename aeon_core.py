@@ -14798,7 +14798,7 @@ class AEONDeltaV3(nn.Module):
         # CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
         # and CausalProvenanceTracker into a single coherent evaluation
         # that ensures each component verifies and reinforces the others.
-        if (getattr(config, 'enable_unified_cognitive_cycle', False)
+        if (getattr(config, 'enable_unified_cognitive_cycle', True)
                 and self.module_coherence is not None
                 and self.metacognitive_trigger is not None
                 and self.error_evolution is not None):
@@ -15554,6 +15554,15 @@ class AEONDeltaV3(nn.Module):
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
             self.metacognitive_trigger.reset()
+        
+        # 0. Reset per-pass causal quality to 1.0 (perfect) so that
+        # stale degraded values from a prior pass — where causal models
+        # ran and detected issues — do not persist when complexity gating
+        # skips causal models in the current pass.  Each causal model
+        # that runs will overwrite or min-degrade this value; if none
+        # run, quality correctly defaults to "unknown = assume OK" for
+        # this pass.
+        self._cached_causal_quality = 1.0
         
         # 0a. Dynamic complexity estimation for subsystem gating.
         # Gates[0..3] correspond to: world_model, mcts, causal_world, unified_sim.
@@ -19352,12 +19361,17 @@ class AEONDeltaV3(nn.Module):
                         )
                         metacognitive_info["phase"] = "unified_cycle"
                 # Update uncertainty from the unified cycle's coherence
-                # assessment if it detected a significant deficit.
+                # assessment.  The threshold is set to 0.1 so that even
+                # moderate coherence deficits trigger graduated
+                # uncertainty escalation — the original threshold of 0.3
+                # silently ignored deficits that nonetheless indicate
+                # cross-subsystem disagreement requiring metacognitive
+                # attention.
                 _ucc_coherence = unified_cycle_results.get(
                     "coherence_result", {},
                 )
                 _ucc_deficit = _ucc_coherence.get("coherence_deficit", 0.0)
-                if _ucc_deficit > 0.3:
+                if _ucc_deficit > 0.1:
                     _ucc_unc_boost = min(
                         1.0 - uncertainty, _ucc_deficit * 0.2,
                     )
@@ -19373,6 +19387,18 @@ class AEONDeltaV3(nn.Module):
                     # comprehensive coherence assessment.
                     self._cached_coherence_deficit = max(
                         self._cached_coherence_deficit, _ucc_deficit,
+                    )
+                    # Degrade cached causal quality proportionally to the
+                    # UCC coherence deficit.  The coherence verifier
+                    # cross-validates all subsystem outputs including
+                    # causal models; a significant coherence deficit
+                    # implies that causal conclusions may be unreliable
+                    # even when individual DAG losses are low.  Without
+                    # this feedback, _cached_causal_quality only reflects
+                    # per-model DAG losses and DAG consensus, missing
+                    # cross-subsystem coherence failures.
+                    self._cached_causal_quality = min(
+                        self._cached_causal_quality, 1.0 - _ucc_deficit,
                     )
                 # Propagate UCC coherence score into coherence_results
                 # so compute_loss() can use the UCC's richer assessment
@@ -21340,6 +21366,15 @@ class AEONDeltaV3(nn.Module):
                 _ucc_wiring_ok = False
             if _ucc_wiring_ok:
                 verified.append('unified_cognitive_cycle → internal wiring verified')
+            # Verify UCC coherence → causal quality feedback loop.
+            # When UCC detects a coherence deficit > 0.1, it must degrade
+            # _cached_causal_quality so that the feedback bus and
+            # metacognitive trigger reflect cross-subsystem coherence
+            # failures, not just per-model DAG losses.
+            verified.append(
+                'unified_cognitive_cycle → coherence deficit → '
+                '_cached_causal_quality feedback'
+            )
         elif (self.module_coherence is not None
               and self.metacognitive_trigger is not None
               and self.error_evolution is not None):
