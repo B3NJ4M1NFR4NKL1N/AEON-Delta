@@ -22042,11 +22042,11 @@ class AEONDeltaV3(nn.Module):
             for _cls_name, _cls_stats in _err_classes.items():
                 if _cls_name == 'none' or _cls_stats.get('count', 0) < 2:
                     continue
-                _rc = self.error_evolution.get_root_causes(_cls_name)
-                if _rc.get('root_causes'):
-                    _error_root_causes[_cls_name] = _rc
                 _success_rate = _cls_stats.get('success_rate', 1.0)
                 if _success_rate < 0.5:
+                    _rc = self.error_evolution.get_root_causes(_cls_name)
+                    if _rc.get('root_causes'):
+                        _error_root_causes[_cls_name] = _rc
                     _rc_keys = list(_rc.get('root_causes', {}).keys())
                     gaps.append({
                         'component': 'error_evolution',
@@ -22209,10 +22209,13 @@ class AEONDeltaV3(nn.Module):
         # When coherence deficit is significant, update the cached feedback
         # vector so the next forward pass's meta-loop is conditioned on
         # the detected coherence issues, closing the coherence → feedback
-        # → meta-loop cross-pass feedback loop.
+        # → meta-loop cross-pass feedback loop.  The coherence_deficit is
+        # used as a proxy for uncertainty because out-of-band coherence
+        # checks (outside the reasoning core) have no independent
+        # uncertainty estimate; the deficit itself IS the epistemic signal.
         if coherence_deficit > 0.1 and self.feedback_bus is not None:
             try:
-                _fb_device = next(self.feedback_bus.parameters()).device
+                _fb_device = self.device
                 self._cached_feedback = self.feedback_bus(
                     batch_size=1,
                     device=_fb_device,
