@@ -21994,6 +21994,78 @@ class AEONDeltaV3(nn.Module):
                 ),
             })
 
+        # --- Runtime coherence verification (bridges wiring → runtime) ---
+        # Call verify_coherence() to include live runtime consistency
+        # results alongside the static wiring checks, so that the
+        # diagnostic report captures both structural and runtime health.
+        _runtime_coherence = self.verify_coherence()
+        _runtime_score = _runtime_coherence.get('coherence_score', 1.0)
+        if _runtime_score < 0.5:
+            gaps.append({
+                'component': 'runtime_coherence',
+                'gap': (
+                    f'Runtime coherence score is {_runtime_score:.2f} '
+                    f'(below 0.5 threshold) — subsystem outputs are '
+                    f'inconsistent at inference time'
+                ),
+                'remediation': (
+                    'Investigate weakest_pair '
+                    f'{_runtime_coherence.get("weakest_pair")} and retrain '
+                    'or recalibrate the divergent subsystems'
+                ),
+            })
+        elif _runtime_coherence.get('needs_recheck', False):
+            gaps.append({
+                'component': 'runtime_coherence',
+                'gap': (
+                    f'Runtime coherence score {_runtime_score:.2f} needs '
+                    f'recheck — borderline consistency detected'
+                ),
+                'remediation': (
+                    'Monitor coherence trend; consider enabling auto_critic '
+                    'for automatic self-correction'
+                ),
+            })
+        else:
+            verified.append(
+                f'runtime_coherence → score={_runtime_score:.2f} (healthy)'
+            )
+
+        # --- Error evolution root-cause analysis ---
+        # Query the error evolution tracker for root causes of the most
+        # frequent error classes so the diagnostic report includes
+        # actionable root-cause information, not just error counts.
+        _error_root_causes: Dict[str, Any] = {}
+        if self.error_evolution is not None:
+            _err_summary = self.error_evolution.get_error_summary()
+            _err_classes = _err_summary.get('error_classes', {})
+            for _cls_name, _cls_stats in _err_classes.items():
+                if _cls_name == 'none' or _cls_stats.get('count', 0) < 2:
+                    continue
+                _success_rate = _cls_stats.get('success_rate', 1.0)
+                if _success_rate < 0.5:
+                    _rc = self.error_evolution.get_root_causes(_cls_name)
+                    if _rc.get('root_causes'):
+                        _error_root_causes[_cls_name] = _rc
+                    _rc_keys = list(_rc.get('root_causes', {}).keys())
+                    gaps.append({
+                        'component': 'error_evolution',
+                        'gap': (
+                            f'Error class "{_cls_name}" has '
+                            f'{_success_rate:.0%} success rate'
+                            + (f' with root causes: {_rc_keys}'
+                               if _rc_keys else
+                               ' (no causal antecedents traced)')
+                        ),
+                        'remediation': (
+                            f'Address root-cause subsystems for '
+                            f'"{_cls_name}" to improve recovery rate'
+                            if _rc_keys else
+                            f'Enable causal tracing for "{_cls_name}" '
+                            f'to identify upstream failure sources'
+                        ),
+                    })
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -22016,8 +22088,10 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.get_error_summary()
                 if self.error_evolution is not None else {}
             ),
+            'error_evolution_root_causes': _error_root_causes,
             'error_recovery_stats': self.error_recovery.get_recovery_stats(),
             'causal_trace_coverage': _coverage,
+            'runtime_coherence': _runtime_coherence,
             'convergence_monitor_history_length': len(
                 self.convergence_monitor.history
             ),
@@ -22085,14 +22159,74 @@ class AEONDeltaV3(nn.Module):
         result["weakest_pair"] = coherence_out.get("_weakest_pair", None)
 
         # --- Trigger meta-cognitive evaluation on low coherence ---
+        coherence_deficit = max(0.0, 1.0 - score)
         if needs_recheck and self.metacognitive_trigger is not None:
-            coherence_deficit = max(0.0, 1.0 - score)
             trigger_result = self.metacognitive_trigger.evaluate(
                 coherence_deficit=coherence_deficit,
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
             )
+
+        # --- Record coherence result in error evolution for learning ---
+        # When coherence is degraded, record the episode so the system
+        # learns from historical coherence failures and can proactively
+        # adjust recovery strategies on future forward passes.
+        if coherence_deficit > 0.3 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='verify_coherence_deficit',
+                strategy_used='metacognitive_trigger' if result.get(
+                    'metacognitive_triggered', False
+                ) else 'none',
+                success=score > 0.5,
+                metadata={
+                    'coherence_score': score,
+                    'coherence_deficit': coherence_deficit,
+                    'needs_recheck': needs_recheck,
+                    'weakest_pair': str(result.get('weakest_pair')),
+                },
+            )
+
+        # --- Record coherence decision in causal trace ---
+        # This bridges verify_coherence into the temporal causal trace
+        # so that root-cause analysis can trace coherence-driven decisions
+        # back to specific subsystem divergences.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                subsystem='verify_coherence',
+                decision=f"score={score:.3f},recheck={needs_recheck}",
+                metadata={
+                    'coherence_score': score,
+                    'coherence_deficit': coherence_deficit,
+                    'metacognitive_triggered': result.get(
+                        'metacognitive_triggered', False
+                    ),
+                },
+                severity='warning' if needs_recheck else 'info',
+            )
+
+        # --- Update feedback bus for cross-pass influence ---
+        # When coherence deficit is significant, update the cached feedback
+        # vector so the next forward pass's meta-loop is conditioned on
+        # the detected coherence issues, closing the coherence → feedback
+        # → meta-loop cross-pass feedback loop.  The coherence_deficit is
+        # used as a proxy for uncertainty because out-of-band coherence
+        # checks (outside the reasoning core) have no independent
+        # uncertainty estimate; the deficit itself IS the epistemic signal.
+        if coherence_deficit > 0.1 and self.feedback_bus is not None:
+            try:
+                _fb_device = self.device
+                self._cached_feedback = self.feedback_bus(
+                    batch_size=1,
+                    device=_fb_device,
+                    coherence_deficit=coherence_deficit,
+                    uncertainty=coherence_deficit,
+                ).detach()
+            except Exception as _fb_err:
+                logger.debug(
+                    "verify_coherence feedback bus update failed "
+                    "(non-fatal): %s", _fb_err,
+                )
 
         return result
 

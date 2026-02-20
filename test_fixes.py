@@ -30742,6 +30742,184 @@ def test_convergence_monitor_detects_divergence():
     print("✅ test_convergence_monitor_detects_divergence PASSED")
 
 
+def test_self_diagnostic_includes_runtime_coherence():
+    """self_diagnostic() includes runtime_coherence results from verify_coherence(),
+    bridging the gap between wiring checks and runtime consistency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    assert 'runtime_coherence' in report, (
+        "self_diagnostic should include runtime_coherence results"
+    )
+    rc = report['runtime_coherence']
+    assert 'coherence_score' in rc, (
+        "runtime_coherence should have coherence_score"
+    )
+    assert 0.0 <= rc['coherence_score'] <= 1.0, (
+        f"coherence_score out of range: {rc['coherence_score']}"
+    )
+    print("✅ test_self_diagnostic_includes_runtime_coherence PASSED")
+
+
+def test_self_diagnostic_includes_error_evolution_root_causes():
+    """self_diagnostic() queries error evolution for root causes of
+    recurring error classes, providing actionable diagnostic info."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed error evolution with repeated failures so root-cause analysis
+    # has data to work with (need count >= 2 and success_rate < 0.5).
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class='test_recurring_failure',
+            strategy_used='fallback',
+            success=False,
+            metadata={'test': True},
+        )
+
+    report = model.self_diagnostic()
+
+    assert 'error_evolution_root_causes' in report, (
+        "self_diagnostic should include error_evolution_root_causes"
+    )
+    assert isinstance(report['error_evolution_root_causes'], dict), (
+        "error_evolution_root_causes should be a dict"
+    )
+    # The seeded error class should appear as a gap with low success rate
+    gap_components = [g.get('component') for g in report['gaps']]
+    assert 'error_evolution' in gap_components, (
+        "Should detect error_evolution gap for recurring failures "
+        f"with low success rate. Found components: {gap_components}"
+    )
+    print("✅ test_self_diagnostic_includes_error_evolution_root_causes PASSED")
+
+
+def test_verify_coherence_records_error_evolution():
+    """verify_coherence() records coherence deficits in error_evolution
+    so the system learns from historical coherence failures."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Populate cached subsystem states with deliberately divergent tensors
+    # to trigger a coherence deficit
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_factor_state = -torch.randn(1, dim) * 10  # Opposite direction
+    model._cached_safety_state = torch.randn(1, dim) * 5
+    model._cached_memory_state = torch.randn(1, dim) * 3
+
+    # Get initial error evolution count
+    initial_summary = model.error_evolution.get_error_summary()
+    initial_count = initial_summary.get('total_recorded', 0)
+
+    result = model.verify_coherence()
+
+    # If coherence was low enough (deficit > 0.3), error evolution should have a new entry
+    coherence_deficit = max(0.0, 1.0 - result['coherence_score'])
+    if coherence_deficit > 0.3:
+        updated_summary = model.error_evolution.get_error_summary()
+        updated_count = updated_summary.get('total_recorded', 0)
+        assert updated_count > initial_count, (
+            f"Error evolution should have recorded coherence deficit "
+            f"(deficit={coherence_deficit:.2f}), but count unchanged: "
+            f"{initial_count} → {updated_count}"
+        )
+    print("✅ test_verify_coherence_records_error_evolution PASSED")
+
+
+def test_verify_coherence_records_causal_trace():
+    """verify_coherence() records decisions in the causal trace so that
+    coherence-driven decisions are traceable to root causes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Populate some cached state
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_factor_state = torch.randn(1, dim)
+
+    # Get initial causal trace count
+    initial_entries = len(model.causal_trace.recent(n=100))
+
+    result = model.verify_coherence()
+
+    # Causal trace should have at least one new entry
+    updated_entries = len(model.causal_trace.recent(n=100))
+    assert updated_entries > initial_entries, (
+        f"Causal trace should record verify_coherence decision, "
+        f"but count unchanged: {initial_entries} → {updated_entries}"
+    )
+    # Verify the latest entry is from verify_coherence
+    latest = model.causal_trace.recent(n=1)[0]
+    assert latest['subsystem'] == 'verify_coherence', (
+        f"Latest causal trace entry should be from verify_coherence, "
+        f"got: {latest['subsystem']}"
+    )
+    print("✅ test_verify_coherence_records_causal_trace PASSED")
+
+
+def test_verify_coherence_updates_feedback_bus():
+    """verify_coherence() updates _cached_feedback when coherence deficit
+    is significant, closing the coherence → feedback → meta-loop loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Ensure no prior cached feedback
+    model._cached_feedback = None
+
+    # Populate cached subsystem states with divergent tensors to
+    # trigger a significant coherence deficit
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.ones(1, dim) * 10
+    model._cached_factor_state = -torch.ones(1, dim) * 10
+    model._cached_safety_state = torch.zeros(1, dim)
+    model._cached_memory_state = torch.randn(1, dim) * 5
+
+    result = model.verify_coherence()
+    coherence_deficit = max(0.0, 1.0 - result['coherence_score'])
+
+    if coherence_deficit > 0.1:
+        # Feedback bus should have been updated
+        assert model._cached_feedback is not None, (
+            f"_cached_feedback should be updated when coherence deficit "
+            f"({coherence_deficit:.2f}) > 0.1, but it's still None"
+        )
+        assert model._cached_feedback.shape[-1] == config.hidden_dim, (
+            f"Feedback should have hidden_dim={config.hidden_dim}, "
+            f"got {model._cached_feedback.shape}"
+        )
+    print("✅ test_verify_coherence_updates_feedback_bus PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -32105,6 +32283,13 @@ if __name__ == '__main__':
     test_provenance_tracks_module_contributions()
     test_self_diagnostic_reports_gaps()
     test_convergence_monitor_detects_divergence()
+    
+    # Architectural Unification — Cross-Module Feedback & Traceability
+    test_self_diagnostic_includes_runtime_coherence()
+    test_self_diagnostic_includes_error_evolution_root_causes()
+    test_verify_coherence_records_error_evolution()
+    test_verify_coherence_records_causal_trace()
+    test_verify_coherence_updates_feedback_bus()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
