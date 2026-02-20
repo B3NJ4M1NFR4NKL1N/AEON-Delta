@@ -2905,7 +2905,7 @@ class AEONConfig:
     ns_violation_threshold: float = 0.5
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
-    enable_provenance_trace_bridge: bool = False
+    enable_provenance_trace_bridge: bool = True
     enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
@@ -13877,9 +13877,9 @@ class UnifiedCognitiveCycle:
     def __init__(
         self,
         convergence_monitor: 'ConvergenceMonitor',
-        coherence_verifier: 'ModuleCoherenceVerifier',
-        error_evolution: 'CausalErrorEvolutionTracker',
-        metacognitive_trigger: 'MetaCognitiveRecursionTrigger',
+        coherence_verifier: Optional['ModuleCoherenceVerifier'],
+        error_evolution: Optional['CausalErrorEvolutionTracker'],
+        metacognitive_trigger: Optional['MetaCognitiveRecursionTrigger'],
         provenance_tracker: 'CausalProvenanceTracker',
         causal_trace: Optional['TemporalCausalTraceBuffer'] = None,
     ):
@@ -13891,12 +13891,14 @@ class UnifiedCognitiveCycle:
         self.causal_trace = causal_trace
 
         # Wire convergence monitor → error evolution automatically.
-        self.convergence_monitor.set_error_evolution(self.error_evolution)
+        if self.error_evolution is not None:
+            self.convergence_monitor.set_error_evolution(self.error_evolution)
         # Wire convergence monitor → provenance tracker so divergence
         # events include per-module attribution (Gap 4).
         self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
         # Wire error evolution → causal trace automatically.
-        self.error_evolution.set_causal_trace(self.causal_trace)
+        if self.error_evolution is not None:
+            self.error_evolution.set_causal_trace(self.causal_trace)
 
     def _provenance_snapshot(self) -> Tuple[Dict[str, float], Optional[str]]:
         """Return (contributions, dominant_module) from the provenance tracker."""
@@ -13970,33 +13972,46 @@ class UnifiedCognitiveCycle:
         # Save the original threshold so it can be restored after this
         # evaluation cycle, preventing unbounded threshold drift across
         # successive forward passes.
-        _err_summary = self.error_evolution.get_error_summary()
-        _original_threshold = self.coherence_verifier.threshold
-        self.coherence_verifier.adapt_threshold(_err_summary)
+        _original_threshold = None
+        if self.error_evolution is not None and self.coherence_verifier is not None:
+            _err_summary = self.error_evolution.get_error_summary()
+            _original_threshold = self.coherence_verifier.threshold
+            self.coherence_verifier.adapt_threshold(_err_summary)
+        else:
+            _err_summary = {}
 
         # 1c. Pre-adapt metacognitive trigger weights from error evolution
         # so that historically problematic signals have higher sensitivity
         # when the trigger evaluates below.  This closes the loop where
         # error evolution data was recorded but not fed back into the
         # trigger's decision weights within the unified cycle.
-        try:
-            self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
-        except Exception as _adapt_err:
-            logger.warning(
-                "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
-                _adapt_err,
-            )
+        if self.metacognitive_trigger is not None and _err_summary:
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
+            except Exception as _adapt_err:
+                logger.warning(
+                    "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
+                    _adapt_err,
+                )
 
         # 2. Cross-module coherence verification.
-        coherence_result = self.coherence_verifier(subsystem_states)
-        coherence_deficit = 1.0 - coherence_result['coherence_score'].mean().item()
-        needs_recheck = coherence_result.get('needs_recheck', False)
+        if self.coherence_verifier is not None:
+            coherence_result = self.coherence_verifier(subsystem_states)
+            coherence_deficit = 1.0 - coherence_result['coherence_score'].mean().item()
+            needs_recheck = coherence_result.get('needs_recheck', False)
+        else:
+            coherence_result = {
+                'coherence_score': torch.tensor(1.0),
+                'needs_recheck': False,
+            }
+            coherence_deficit = 0.0
+            needs_recheck = False
 
         # Record coherence deficit in error evolution if significant.
         # Enrich with provenance attribution so downstream root-cause
         # analysis can identify which module dominated when the deficit
         # occurred (Gap 2: error ↔ provenance correlation).
-        if coherence_deficit > 0.3:
+        if coherence_deficit > 0.3 and self.error_evolution is not None:
             _contributions, _dominant = self._provenance_snapshot()
             self.error_evolution.record_episode(
                 error_class='coherence_deficit',
@@ -14011,17 +14026,43 @@ class UnifiedCognitiveCycle:
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
-        trigger_detail = self.metacognitive_trigger.evaluate(
-            uncertainty=uncertainty,
-            is_diverging=is_diverging,
-            topology_catastrophe=topology_catastrophe,
-            coherence_deficit=coherence_deficit,
-            memory_staleness=memory_staleness,
-            recovery_pressure=recovery_pressure,
-            world_model_surprise=world_model_surprise,
-            causal_quality=causal_quality,
-            safety_violation=safety_violation,
-        )
+        if self.metacognitive_trigger is not None:
+            trigger_detail = self.metacognitive_trigger.evaluate(
+                uncertainty=uncertainty,
+                is_diverging=is_diverging,
+                topology_catastrophe=topology_catastrophe,
+                coherence_deficit=coherence_deficit,
+                memory_staleness=memory_staleness,
+                recovery_pressure=recovery_pressure,
+                world_model_surprise=world_model_surprise,
+                causal_quality=causal_quality,
+                safety_violation=safety_violation,
+            )
+        else:
+            # Fallback: trigger re-reasoning based on convergence and
+            # coherence signals alone so the UCC still functions even
+            # without a dedicated metacognitive trigger.
+            _should_trigger_fallback = (
+                is_diverging or coherence_deficit > 0.5
+                or uncertainty > 0.7 or safety_violation
+                or topology_catastrophe
+            )
+            trigger_detail = {
+                'should_trigger': _should_trigger_fallback,
+                'trigger_score': max(
+                    uncertainty, coherence_deficit,
+                    1.0 if is_diverging else 0.0,
+                ),
+                'triggers_active': (
+                    [s for s, v in [
+                        ('diverging', is_diverging),
+                        ('coherence_deficit', coherence_deficit > 0.5),
+                        ('uncertainty', uncertainty > 0.7),
+                        ('safety_violation', safety_violation),
+                        ('topology_catastrophe', topology_catastrophe),
+                    ] if v]
+                ),
+            }
         should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
 
         # Enrich trigger detail with provenance attribution so
@@ -14074,9 +14115,12 @@ class UnifiedCognitiveCycle:
         # has the lowest coherence so that downstream corrective action
         # can target the specific modules rather than re-running the
         # entire pipeline blindly.
-        weakest_pair = self.coherence_verifier.get_weakest_pair(
-            coherence_result.get('pairwise', {}),
-        )
+        if self.coherence_verifier is not None:
+            weakest_pair = self.coherence_verifier.get_weakest_pair(
+                coherence_result.get('pairwise', {}),
+            )
+        else:
+            weakest_pair = None
 
         # 6c. Error-evolution root-cause enrichment — when re-reasoning
         # is triggered, query the error evolution tracker for historical
@@ -14085,7 +14129,7 @@ class UnifiedCognitiveCycle:
         # that the caller knows not just *that* re-reasoning is needed
         # but *which upstream failure patterns* caused it.
         error_evolution_root_causes: Dict[str, Any] = {}
-        if should_rerun:
+        if should_rerun and self.error_evolution is not None:
             _triggers_active = trigger_detail.get('triggers_active', [])
             for _trig_signal in _triggers_active:
                 _rc = self.error_evolution.get_root_causes(_trig_signal)
@@ -14105,7 +14149,8 @@ class UnifiedCognitiveCycle:
         # The adapted threshold was useful for *this* evaluation cycle
         # but must not persist across successive forward passes; the next
         # pass will re-adapt from the latest error evolution state.
-        self.coherence_verifier.threshold = _original_threshold
+        if _original_threshold is not None and self.coherence_verifier is not None:
+            self.coherence_verifier.threshold = _original_threshold
 
         return {
             'convergence_verdict': convergence_verdict,
@@ -14135,7 +14180,8 @@ class UnifiedCognitiveCycle:
         reasoning core resets the tracker at the start of each pass instead.
         """
         self.convergence_monitor.reset()
-        self.metacognitive_trigger.reset()
+        if self.metacognitive_trigger is not None:
+            self.metacognitive_trigger.reset()
 
 
 # ============================================================================
@@ -14584,7 +14630,7 @@ class AEONDeltaV3(nn.Module):
         
         # ===== AGI COHERENCE LAYER =====
         # Causal hierarchical context
-        if getattr(config, 'enable_causal_context', False):
+        if getattr(config, 'enable_causal_context', True):
             logger.info("Loading CausalContextWindowManager...")
             self.causal_context = CausalContextWindowManager(
                 hidden_dim=config.hidden_dim,
@@ -14600,7 +14646,7 @@ class AEONDeltaV3(nn.Module):
             self.causal_context_proj = None
         
         # Cross-validation reconciler
-        if getattr(config, 'enable_cross_validation', False):
+        if getattr(config, 'enable_cross_validation', True):
             logger.info("Loading CrossValidationReconciler...")
             self.cross_validator = CrossValidationReconciler(
                 hidden_dim=config.hidden_dim,
@@ -14621,7 +14667,7 @@ class AEONDeltaV3(nn.Module):
             self.trust_scorer = None
         
         # Neuro-symbolic consistency checker
-        if getattr(config, 'enable_ns_consistency_check', False):
+        if getattr(config, 'enable_ns_consistency_check', True):
             logger.info("Loading NeuroSymbolicConsistencyChecker...")
             self.ns_consistency_checker = NeuroSymbolicConsistencyChecker(
                 hidden_dim=config.hidden_dim,
@@ -14632,7 +14678,7 @@ class AEONDeltaV3(nn.Module):
             self.ns_consistency_checker = None
         
         # Complexity estimator for dynamic reconfiguration
-        if getattr(config, 'enable_complexity_estimator', False):
+        if getattr(config, 'enable_complexity_estimator', True):
             logger.info("Loading ComplexityEstimator...")
             self.complexity_estimator = ComplexityEstimator(
                 hidden_dim=config.hidden_dim,
@@ -14642,14 +14688,14 @@ class AEONDeltaV3(nn.Module):
             self.complexity_estimator = None
         
         # Temporal causal trace buffer
-        if getattr(config, 'enable_causal_trace', False):
+        if getattr(config, 'enable_causal_trace', True):
             logger.info("Loading TemporalCausalTraceBuffer...")
             self.causal_trace = TemporalCausalTraceBuffer(max_entries=1000)
             # Bridge provenance tracker → causal trace so that significant
             # L2 deltas from module transformations are automatically
             # recorded as causal trace entries, linking per-module
             # attribution into the temporal decision chain.
-            if getattr(config, 'enable_provenance_trace_bridge', False):
+            if getattr(config, 'enable_provenance_trace_bridge', True):
                 self.provenance_tracker.set_causal_trace(self.causal_trace)
         else:
             self.causal_trace = None
@@ -14665,7 +14711,7 @@ class AEONDeltaV3(nn.Module):
             self.meta_recovery = None
         
         # Auto-critic loop — triggers self-critique on NS violations
-        if getattr(config, 'enable_auto_critic', False):
+        if getattr(config, 'enable_auto_critic', True):
             logger.info("Loading AutoCriticLoop...")
             # Use a lightweight generator (identity residual)
             _critic_generator = nn.Sequential(
@@ -14703,7 +14749,7 @@ class AEONDeltaV3(nn.Module):
             self.unified_simulator = None
         
         # ===== MODULE COHERENCE VERIFIER =====
-        if getattr(config, 'enable_module_coherence', False):
+        if getattr(config, 'enable_module_coherence', True):
             logger.info("Loading ModuleCoherenceVerifier...")
             self.module_coherence = ModuleCoherenceVerifier(
                 hidden_dim=config.hidden_dim,
@@ -14713,7 +14759,7 @@ class AEONDeltaV3(nn.Module):
             self.module_coherence = None
         
         # ===== META-COGNITIVE RECURSION TRIGGER =====
-        if getattr(config, 'enable_metacognitive_recursion', False):
+        if getattr(config, 'enable_metacognitive_recursion', True):
             logger.info("Loading MetaCognitiveRecursionTrigger...")
             self.metacognitive_trigger = MetaCognitiveRecursionTrigger(
                 trigger_threshold=config.metacognitive_trigger_threshold,
@@ -14725,7 +14771,7 @@ class AEONDeltaV3(nn.Module):
             self.metacognitive_trigger = None
         
         # ===== CAUSAL ERROR EVOLUTION TRACKER =====
-        if getattr(config, 'enable_error_evolution', False):
+        if getattr(config, 'enable_error_evolution', True):
             logger.info("Loading CausalErrorEvolutionTracker...")
             self.error_evolution = CausalErrorEvolutionTracker(
                 max_history=config.error_evolution_max_history,
@@ -15015,11 +15061,25 @@ class AEONDeltaV3(nn.Module):
         # CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
         # and CausalProvenanceTracker into a single coherent evaluation
         # that ensures each component verifies and reinforces the others.
-        if (getattr(config, 'enable_unified_cognitive_cycle', True)
-                and self.module_coherence is not None
-                and self.metacognitive_trigger is not None
-                and self.error_evolution is not None):
-            logger.info("Loading UnifiedCognitiveCycle...")
+        # The UCC now degrades gracefully: it operates with whatever
+        # subset of components is available rather than requiring all
+        # three optional prerequisites, ensuring the unified orchestration
+        # layer is always active when enabled.
+        if getattr(config, 'enable_unified_cognitive_cycle', True):
+            _ucc_available = [
+                name for name, obj in [
+                    ('module_coherence', self.module_coherence),
+                    ('metacognitive_trigger', self.metacognitive_trigger),
+                    ('error_evolution', self.error_evolution),
+                ] if obj is not None
+            ]
+            if _ucc_available:
+                logger.info(
+                    "Loading UnifiedCognitiveCycle (components: %s)...",
+                    ', '.join(_ucc_available),
+                )
+            else:
+                logger.info("Loading UnifiedCognitiveCycle (convergence-only mode)...")
             self.unified_cognitive_cycle = UnifiedCognitiveCycle(
                 convergence_monitor=self.convergence_monitor,
                 coherence_verifier=self.module_coherence,
@@ -15046,7 +15106,8 @@ class AEONDeltaV3(nn.Module):
                     and _ucc.causal_trace is not self.causal_trace):
                 logger.warning("UCC wiring repair: causal_trace reference mismatch — re-linking")
                 _ucc.causal_trace = self.causal_trace
-                _ucc.error_evolution.set_causal_trace(self.causal_trace)
+                if _ucc.error_evolution is not None:
+                    _ucc.error_evolution.set_causal_trace(self.causal_trace)
         else:
             self.unified_cognitive_cycle = None
         
@@ -19624,6 +19685,7 @@ class AEONDeltaV3(nn.Module):
                     recovery_pressure=self._compute_recovery_pressure(),
                     safety_violation=safety_enforced or _ucc_ns_violated,
                     feedback_signal=self._cached_feedback,
+                    topology_catastrophe=_topo_catastrophe,
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
