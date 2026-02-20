@@ -29287,6 +29287,277 @@ def test_adapt_weights_maps_training_bridge_error_classes():
     print("✅ test_adapt_weights_maps_training_bridge_error_classes PASSED")
 
 
+# =============================================================================
+# Architectural unification tests — validate fixes for gaps identified in the
+# AEON-Delta RMT v3.1 architecture analysis.
+# =============================================================================
+
+
+def test_ucc_evaluate_accepts_topology_catastrophe():
+    """Gap 1: UnifiedCognitiveCycle.evaluate() now accepts topology_catastrophe
+    and forwards it to the MetaCognitiveRecursionTrigger instead of hardcoding
+    False."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
+    ee = CausalErrorEvolutionTracker()
+    # Threshold low enough that a single signal triggers
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
+
+    states = {
+        "a": torch.randn(2, hidden_dim),
+        "b": torch.randn(2, hidden_dim),
+    }
+
+    # Without topology_catastrophe → should not trigger
+    result_no = ucc.evaluate(states, delta_norm=0.01, topology_catastrophe=False)
+    assert "topology_catastrophe" not in result_no["trigger_detail"]["triggers_active"]
+
+    # With topology_catastrophe=True → should trigger that specific signal
+    mt.reset()
+    cm.reset()
+    result_yes = ucc.evaluate(states, delta_norm=0.01, topology_catastrophe=True)
+    assert "topology_catastrophe" in result_yes["trigger_detail"]["triggers_active"], (
+        "topology_catastrophe=True should activate the topology_catastrophe trigger signal "
+        f"but triggers_active={result_yes['trigger_detail']['triggers_active']}"
+    )
+
+    print("✅ test_ucc_evaluate_accepts_topology_catastrophe PASSED")
+
+
+def test_post_integration_metacognitive_includes_safety_violation():
+    """Gap 2: The post-integration metacognitive re-evaluation now includes
+    safety_violation so that safety rollbacks trigger deeper re-reasoning
+    even when detected late in the pipeline."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+
+    # Verify that evaluate() accepts safety_violation
+    result = trigger.evaluate(safety_violation=True)
+    assert "safety_violation" in result["triggers_active"], (
+        "safety_violation=True should activate the safety_violation signal"
+    )
+
+    # Verify the signal contributes to trigger_score
+    trigger.reset()
+    result_no = trigger.evaluate(safety_violation=False)
+    trigger.reset()
+    result_yes = trigger.evaluate(safety_violation=True)
+    assert result_yes["trigger_score"] > result_no["trigger_score"], (
+        "safety_violation should increase trigger_score"
+    )
+
+    print("✅ test_post_integration_metacognitive_includes_safety_violation PASSED")
+
+
+def test_provenance_tracker_set_causal_trace():
+    """Gap 4: CausalProvenanceTracker can be bridged to TemporalCausalTraceBuffer
+    so significant L2 deltas generate trace entries."""
+    from aeon_core import CausalProvenanceTracker, TemporalCausalTraceBuffer
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Before bridging, no trace entries
+    state_before = torch.zeros(2, 32)
+    state_after = torch.ones(2, 32)
+    tracker.record_before("test_module", state_before)
+    tracker.record_after("test_module", state_after)
+    assert len(trace.recent(n=10)) == 0, "No trace entries before bridging"
+
+    # After bridging, significant delta should generate trace entry
+    tracker.set_causal_trace(trace)
+    tracker.record_before("test_module_2", state_before)
+    tracker.record_after("test_module_2", state_after)
+    recent = trace.recent(n=10)
+    assert len(recent) == 1, f"Expected 1 trace entry, got {len(recent)}"
+    assert recent[0]["subsystem"] == "provenance/test_module_2"
+    assert "l2_delta" in recent[0]["metadata"]
+
+    print("✅ test_provenance_tracker_set_causal_trace PASSED")
+
+
+def test_provenance_tracker_trace_threshold():
+    """Gap 4: CausalProvenanceTracker only emits trace entries for deltas
+    above the configured threshold."""
+    from aeon_core import CausalProvenanceTracker, TemporalCausalTraceBuffer
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+    tracker.set_causal_trace(trace)
+
+    # Very small delta (below default 0.01 threshold) — no trace entry
+    state = torch.zeros(2, 32)
+    tiny_change = state + 1e-6
+    tracker.record_before("tiny_module", state)
+    tracker.record_after("tiny_module", tiny_change)
+    assert len(trace.recent(n=10)) == 0, "Tiny delta should not generate trace entry"
+
+    # Large delta — should generate trace entry
+    large_change = state + 10.0
+    tracker.record_before("large_module", state)
+    tracker.record_after("large_module", large_change)
+    recent = trace.recent(n=10)
+    assert len(recent) == 1, "Large delta should generate trace entry"
+    assert recent[0]["subsystem"] == "provenance/large_module"
+
+    print("✅ test_provenance_tracker_trace_threshold PASSED")
+
+
+def test_ucc_evaluate_returns_weakest_pair():
+    """Gap 5: UnifiedCognitiveCycle.evaluate() returns weakest_pair in
+    coherence_result so downstream can target specific modules."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger()
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
+
+    # Use dissimilar states to ensure a weakest pair exists
+    states = {
+        "module_a": torch.randn(2, hidden_dim),
+        "module_b": torch.randn(2, hidden_dim),
+        "module_c": torch.randn(2, hidden_dim),
+    }
+
+    result = ucc.evaluate(states, delta_norm=0.01)
+    assert "weakest_pair" in result["coherence_result"], (
+        "coherence_result should include 'weakest_pair' key"
+    )
+    wp = result["coherence_result"]["weakest_pair"]
+    if wp is not None:
+        assert "modules" in wp, "weakest_pair should have 'modules' key"
+        assert "similarity" in wp, "weakest_pair should have 'similarity' key"
+        assert len(wp["modules"]) == 2, "weakest_pair should identify exactly 2 modules"
+
+    print("✅ test_ucc_evaluate_returns_weakest_pair PASSED")
+
+
+def test_ucc_evaluate_returns_error_evolution_root_causes():
+    """Gap 5: UnifiedCognitiveCycle.evaluate() returns error_evolution_root_causes
+    when re-reasoning is triggered."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
+
+    states = {
+        "a": torch.randn(2, hidden_dim),
+        "b": torch.randn(2, hidden_dim),
+    }
+
+    # Force re-reasoning via safety_violation
+    result = ucc.evaluate(states, delta_norm=0.01, safety_violation=True)
+    assert "error_evolution_root_causes" in result, (
+        "evaluate() should return 'error_evolution_root_causes' key"
+    )
+    # Even if empty (no history), the key should exist
+    assert isinstance(result["error_evolution_root_causes"], dict)
+
+    print("✅ test_ucc_evaluate_returns_error_evolution_root_causes PASSED")
+
+
+def test_ucc_evaluate_returns_causal_chain():
+    """Gap 6: UnifiedCognitiveCycle.evaluate() returns the full causal chain
+    audit trail when re-reasoning is triggered and causal trace is available."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+    import torch
+
+    hidden_dim = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    pt = CausalProvenanceTracker()
+    ct = TemporalCausalTraceBuffer(max_entries=100)
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt, causal_trace=ct)
+
+    states = {
+        "a": torch.randn(2, hidden_dim),
+        "b": torch.randn(2, hidden_dim),
+    }
+
+    # Force re-reasoning via safety_violation
+    result = ucc.evaluate(states, delta_norm=0.01, safety_violation=True)
+    assert "causal_chain" in result, (
+        "evaluate() should return 'causal_chain' key"
+    )
+    # When re-reasoning triggers, causal chain should contain at least the
+    # UCC's own decision entry
+    if result["should_rerun"]:
+        assert isinstance(result["causal_chain"], list)
+        assert len(result["causal_chain"]) >= 1, (
+            "causal_chain should have at least 1 entry when rerun is triggered"
+        )
+
+    print("✅ test_ucc_evaluate_returns_causal_chain PASSED")
+
+
+def test_provenance_trace_bridge_config():
+    """Gap 4: enable_provenance_trace_bridge config option controls whether
+    the provenance tracker bridges to the causal trace."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Default: bridge disabled
+    config_off = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+    )
+    model_off = AEONDeltaV3(config_off)
+    assert getattr(model_off.provenance_tracker, '_causal_trace', None) is None, (
+        "Provenance trace bridge should be disabled by default"
+    )
+
+    # Enabled: bridge active
+    config_on = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_provenance_trace_bridge=True,
+    )
+    model_on = AEONDeltaV3(config_on)
+    assert getattr(model_on.provenance_tracker, '_causal_trace', None) is not None, (
+        "Provenance trace bridge should be active when config is enabled"
+    )
+
+    print("✅ test_provenance_trace_bridge_config PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -30588,6 +30859,17 @@ if __name__ == '__main__':
     test_memory_staleness_uncertainty_scale_configurable()
     test_training_bridge_severity_transfer()
     test_adapt_weights_maps_training_bridge_error_classes()
+    
+    # Architectural unification tests — topology_catastrophe, safety_violation,
+    # provenance-trace bridge, enriched UCC output
+    test_ucc_evaluate_accepts_topology_catastrophe()
+    test_post_integration_metacognitive_includes_safety_violation()
+    test_provenance_tracker_set_causal_trace()
+    test_provenance_tracker_trace_threshold()
+    test_ucc_evaluate_returns_weakest_pair()
+    test_ucc_evaluate_returns_error_evolution_root_causes()
+    test_ucc_evaluate_returns_causal_chain()
+    test_provenance_trace_bridge_config()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
