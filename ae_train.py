@@ -1603,6 +1603,14 @@ class SafeThoughtAETrainerV4:
             provenance_tracker=self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else CausalProvenanceTracker(),
         )
+        # Cache the most recent encoder and VQ output tensors so the
+        # epoch-end UCC evaluation receives real subsystem states instead
+        # of dummy zeros.  This closes the gap where coherence
+        # verification during training used uninformative zero-tensors,
+        # preventing the verifier from detecting actual misalignment.
+        self._last_encoder_state: Optional[torch.Tensor] = None
+        self._last_vq_state: Optional[torch.Tensor] = None
+
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
         
@@ -1711,6 +1719,9 @@ class SafeThoughtAETrainerV4:
         self.provenance.record_before("vq", z)
         quantized, vq_loss, indices, vq_stats = self.model.quantize(z)
         self.provenance.record_after("vq", quantized)
+        # Cache detached subsystem states for epoch-end UCC evaluation
+        self._last_encoder_state = z.detach()
+        self._last_vq_state = quantized.detach()
 
         self.provenance.record_before("decoder", quantized)
         logits = self.model.decode(quantized, tokens)
@@ -1927,8 +1938,12 @@ class SafeThoughtAETrainerV4:
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
-                        "encoder": torch.zeros(1, self.config.z_dim),
-                        "vq": torch.zeros(1, self.config.z_dim),
+                        "encoder": self._last_encoder_state
+                        if self._last_encoder_state is not None
+                        else torch.zeros(1, self.config.z_dim),
+                        "vq": self._last_vq_state
+                        if self._last_vq_state is not None
+                        else torch.zeros(1, self.config.z_dim),
                     },
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
@@ -2052,6 +2067,10 @@ class ContextualRSSMTrainer:
             provenance_tracker=self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else CausalProvenanceTracker(),
         )
+        # Cache the most recent VQ and RSSM output tensors so the
+        # epoch-end UCC evaluation receives real subsystem states.
+        self._last_vq_state: Optional[torch.Tensor] = None
+        self._last_rssm_state: Optional[torch.Tensor] = None
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -2083,6 +2102,9 @@ class ContextualRSSMTrainer:
         if self._tensor_guard is not None:
             pred = self._tensor_guard.sanitize(pred, context="rssm_prediction")
         self.provenance.record_after("rssm", pred)
+        # Cache detached subsystem states for epoch-end UCC evaluation
+        self._last_vq_state = z_context.mean(dim=1).detach()
+        self._last_rssm_state = pred.detach()
         
         # Losses
         mse_loss = F.mse_loss(pred, z_target)
@@ -2272,8 +2294,12 @@ class ContextualRSSMTrainer:
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
-                        "vq": torch.zeros(1, self.config.z_dim),
-                        "rssm": torch.zeros(1, self.config.z_dim),
+                        "vq": self._last_vq_state
+                        if self._last_vq_state is not None
+                        else torch.zeros(1, self.config.z_dim),
+                        "rssm": self._last_rssm_state
+                        if self._last_rssm_state is not None
+                        else torch.zeros(1, self.config.z_dim),
                     },
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
@@ -2821,6 +2847,59 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
         logger.warning(
             f"   ⚠️ Coherence verification failed (non-fatal): {coherence_err}"
         )
+
+    # ===== UNIFIED COGNITIVE CYCLE WIRING VERIFICATION =====
+    # Verify that the UCC components are properly connected: the
+    # convergence monitor must be wired to the error evolution tracker,
+    # and the metacognitive trigger must be present.  This ensures that
+    # uncertainty triggers a meta-cognitive cycle during training.
+    logger.info("\n🔍 Unified Cognitive Cycle wiring verification...")
+    try:
+        _test_ee = CausalErrorEvolutionTracker(max_history=10)
+        _test_cv = ConvergenceMonitor(threshold=1e-5)
+        _test_mcv = ModuleCoherenceVerifier(hidden_dim=config.z_dim, threshold=0.5)
+        _test_mct = MetaCognitiveRecursionTrigger(
+            trigger_threshold=0.5, max_recursions=2,
+        )
+        _test_prov = CausalProvenanceTracker()
+        _test_ucc = UnifiedCognitiveCycle(
+            convergence_monitor=_test_cv,
+            coherence_verifier=_test_mcv,
+            error_evolution=_test_ee,
+            metacognitive_trigger=_test_mct,
+            provenance_tracker=_test_prov,
+        )
+        # Verify wiring: convergence monitor should be linked to
+        # error evolution and provenance tracker.
+        assert _test_cv._error_evolution is _test_ee, (
+            "ConvergenceMonitor not wired to error evolution"
+        )
+        assert _test_cv._provenance_tracker is _test_prov, (
+            "ConvergenceMonitor not wired to provenance tracker"
+        )
+        # Smoke-test: run a cycle with real states from the model
+        with torch.no_grad():
+            _test_z = model.encode(test_batch)
+            _test_q, _, _, _ = model.quantize(_test_z)
+        _test_result = _test_ucc.evaluate(
+            subsystem_states={"encoder": _test_z.detach(), "vq": _test_q.detach()},
+            delta_norm=0.01,
+            uncertainty=0.0,
+        )
+        assert "should_rerun" in _test_result, "UCC evaluate missing should_rerun"
+        assert "coherence_result" in _test_result, "UCC evaluate missing coherence_result"
+        assert _test_ucc.metacognitive_trigger is _test_mct, (
+            "MetaCognitiveRecursionTrigger not wired to UCC"
+        )
+        logger.info("   ✅ UCC wiring: convergence→error_evolution→provenance verified")
+        logger.info(
+            f"   ✅ UCC smoke test: coherence_deficit="
+            f"{_test_result['coherence_result']['coherence_deficit']:.4f}, "
+            f"should_rerun={_test_result['should_rerun']}"
+        )
+    except Exception as ucc_err:
+        issues.append(f"UCC wiring: {ucc_err}")
+        logger.error(f"   ❌ UCC wiring verification failed: {ucc_err}")
     
     if issues:
         logger.error(f"\n⚠️ Обнаружено {len(issues)} проблем!")

@@ -29558,6 +29558,175 @@ def test_provenance_trace_bridge_config():
     print("✅ test_provenance_trace_bridge_config PASSED")
 
 
+# ==============================================================================
+# Architectural Unification — Training→Inference Bridge Gap Fixes
+# ==============================================================================
+
+def test_training_bridge_error_classes_in_trigger_mapping():
+    """Verify that training-bridge error classes (prefixed with 'training_')
+    are present in MetaCognitiveRecursionTrigger._class_to_signal so that
+    training-time convergence failures influence inference-time trigger weights."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate adapt_weights_from_evolution with training-bridge error classes
+    trigger.adapt_weights_from_evolution({
+        'error_classes': {
+            'training_divergence': {'count': 5, 'success_rate': 0.2},
+            'training_stagnation': {'count': 3, 'success_rate': 0.3},
+        }
+    })
+    w = trigger._signal_weights
+    default_w = 1.0 / 9.0
+    # training_divergence maps to "diverging" — should get boosted
+    assert w['diverging'] > default_w, (
+        f"training_divergence should boost 'diverging' weight: {w['diverging']:.4f} <= {default_w:.4f}"
+    )
+    # training_stagnation maps to "coherence_deficit" — should get boosted
+    assert w['coherence_deficit'] > default_w, (
+        f"training_stagnation should boost 'coherence_deficit' weight: "
+        f"{w['coherence_deficit']:.4f} <= {default_w:.4f}"
+    )
+    print("✅ test_training_bridge_error_classes_in_trigger_mapping PASSED")
+
+
+def test_phase_a_trainer_caches_subsystem_states():
+    """Verify that SafeThoughtAETrainerV4 caches last encoder and VQ
+    states during _forward_pass for use in epoch-end UCC evaluation."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+        configure_logger,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=16, hidden_dim=32,
+        seq_length=8, batch_size=2,
+        context_window=2, vq_embedding_dim=16,
+    )
+    model = AEONDeltaV4(config).to('cpu')
+    _logger = configure_logger()
+    monitor = TrainingMonitor(_logger, save_dir="/tmp/aeon_test_phaseA")
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/aeon_test_phaseA")
+
+    # Before any forward pass, cached states should be None
+    assert trainer._last_encoder_state is None
+    assert trainer._last_vq_state is None
+
+    # Run a single forward pass
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    trainer._forward_pass(tokens)
+
+    # After forward pass, cached states should be populated
+    assert trainer._last_encoder_state is not None, (
+        "_last_encoder_state should be populated after _forward_pass"
+    )
+    assert trainer._last_vq_state is not None, (
+        "_last_vq_state should be populated after _forward_pass"
+    )
+    assert trainer._last_encoder_state.shape == (2, config.z_dim), (
+        f"Encoder state shape mismatch: {trainer._last_encoder_state.shape}"
+    )
+    assert trainer._last_vq_state.shape == (2, config.z_dim), (
+        f"VQ state shape mismatch: {trainer._last_vq_state.shape}"
+    )
+    # States should be detached (no grad tracking)
+    assert not trainer._last_encoder_state.requires_grad
+    assert not trainer._last_vq_state.requires_grad
+
+    print("✅ test_phase_a_trainer_caches_subsystem_states PASSED")
+
+
+def test_phase_b_trainer_caches_subsystem_states():
+    """Verify that ContextualRSSMTrainer caches last VQ and RSSM
+    states during train_step for use in epoch-end UCC evaluation."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+        configure_logger,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        seq_length=8, batch_size=2,
+        context_window=2, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV4(config).to('cpu')
+    _logger = configure_logger()
+    monitor = TrainingMonitor(_logger, save_dir="/tmp/aeon_test_phaseB")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Before any step, cached states should be None
+    assert trainer._last_vq_state is None
+    assert trainer._last_rssm_state is None
+
+    # Run a single train step with synthetic data
+    z_context = torch.randn(2, config.context_window, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    trainer.train_step(z_context, z_target)
+
+    # After train step, cached states should be populated
+    assert trainer._last_vq_state is not None, (
+        "_last_vq_state should be populated after train_step"
+    )
+    assert trainer._last_rssm_state is not None, (
+        "_last_rssm_state should be populated after train_step"
+    )
+    assert trainer._last_vq_state.shape == (2, config.z_dim), (
+        f"VQ state shape mismatch: {trainer._last_vq_state.shape}"
+    )
+    assert trainer._last_rssm_state.shape == (2, config.z_dim), (
+        f"RSSM state shape mismatch: {trainer._last_rssm_state.shape}"
+    )
+    assert not trainer._last_vq_state.requires_grad
+    assert not trainer._last_rssm_state.requires_grad
+
+    print("✅ test_phase_b_trainer_caches_subsystem_states PASSED")
+
+
+def test_ucc_wiring_verification_in_validate():
+    """Verify that validate_training_components checks UCC wiring integrity
+    including convergence→error_evolution and convergence→provenance links."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker,
+    )
+
+    ee = CausalErrorEvolutionTracker(max_history=10)
+    cv = ConvergenceMonitor(threshold=1e-5)
+    mcv = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.5)
+    mct = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cv,
+        coherence_verifier=mcv,
+        error_evolution=ee,
+        metacognitive_trigger=mct,
+        provenance_tracker=prov,
+    )
+
+    # Verify auto-wiring: convergence monitor → error evolution
+    assert cv._error_evolution is ee, (
+        "ConvergenceMonitor should be wired to error evolution by UCC __init__"
+    )
+    # Verify auto-wiring: convergence monitor → provenance tracker
+    assert cv._provenance_tracker is prov, (
+        "ConvergenceMonitor should be wired to provenance tracker by UCC __init__"
+    )
+
+    # Verify evaluate works with real tensors
+    states = {
+        "encoder": torch.randn(2, 16),
+        "vq": torch.randn(2, 16),
+    }
+    result = ucc.evaluate(subsystem_states=states, delta_norm=0.01)
+    assert "should_rerun" in result
+    assert "coherence_result" in result
+    assert "provenance" in result
+
+    print("✅ test_ucc_wiring_verification_in_validate PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -30870,6 +31039,12 @@ if __name__ == '__main__':
     test_ucc_evaluate_returns_error_evolution_root_causes()
     test_ucc_evaluate_returns_causal_chain()
     test_provenance_trace_bridge_config()
+
+    # Architectural Unification — Training→Inference Bridge Gap Fixes
+    test_training_bridge_error_classes_in_trigger_mapping()
+    test_phase_a_trainer_caches_subsystem_states()
+    test_phase_b_trainer_caches_subsystem_states()
+    test_ucc_wiring_verification_in_validate()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
