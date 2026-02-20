@@ -108,36 +108,123 @@ except ImportError:
             return tensor
 
     class SemanticErrorClassifier:
-        """Minimal error classifier (fallback when aeon_core unavailable)."""
+        """Keyword-based error classifier (fallback when aeon_core unavailable).
+
+        Classifies runtime errors into the same taxonomy used by
+        ``aeon_core.SemanticErrorClassifier`` so that standalone training
+        error-evolution episodes use meaningful error classes rather than
+        a blanket ``"unknown"`` label.
+        """
+
+        _NUMERICAL_KEYWORDS = frozenset({
+            "nan", "inf", "overflow", "underflow", "divide",
+            "division by zero", "non-finite",
+        })
+        _SHAPE_KEYWORDS = frozenset({
+            "shape", "dimension", "size mismatch", "expected size",
+            "broadcasting", "incompatible",
+        })
+        _RESOURCE_KEYWORDS = frozenset({
+            "cuda", "out of memory", "oom", "device", "memory",
+            "cublas", "cudnn",
+        })
+        _CONVERGENCE_KEYWORDS = frozenset({
+            "converge", "diverge", "iteration", "fixed point",
+            "lipschitz", "contraction",
+        })
 
         def classify(self, error: BaseException) -> tuple:
+            msg = str(error).lower()
+            if any(kw in msg for kw in self._NUMERICAL_KEYWORDS):
+                return ("numerical", str(error))
+            if any(kw in msg for kw in self._SHAPE_KEYWORDS):
+                return ("shape", str(error))
+            if any(kw in msg for kw in self._RESOURCE_KEYWORDS):
+                return ("resource", str(error))
+            if any(kw in msg for kw in self._CONVERGENCE_KEYWORDS):
+                return ("convergence", str(error))
+            if isinstance(error, (ValueError, TypeError)):
+                return ("semantic", str(error))
             return ("unknown", str(error))
 
     class CausalErrorEvolutionTracker:
-        """Lightweight error evolution tracker for standalone training."""
+        """Lightweight error evolution tracker for standalone training.
+
+        Mirrors the interface of ``aeon_core.CausalErrorEvolutionTracker``
+        so that ``bridge_training_errors_to_inference()`` and the fallback
+        ``UnifiedCognitiveCycle`` work identically whether or not
+        aeon_core is installed.
+        """
 
         def __init__(self, max_history: int = 100):
             self._max_history = max_history
             self._episodes: Dict[str, list] = defaultdict(list)
+            self._causal_trace = None
 
         def set_causal_trace(self, trace) -> None:
-            """Accept (and ignore) causal trace wiring for API compatibility."""
-            pass
+            """Attach a causal trace buffer for automatic episode propagation."""
+            self._causal_trace = trace
 
         def get_root_causes(self, error_class: str) -> Dict[str, Any]:
-            return {"root_causes": {}}
+            episodes = self._episodes.get(error_class, [])
+            if not episodes:
+                return {"root_causes": {}, "antecedent_depth": 0.0,
+                        "episodes_with_antecedents": 0}
+            known = set(self._episodes.keys())
+            root_counter: Dict[str, int] = {}
+            total_depth = 0
+            with_ant = 0
+            for ep in episodes:
+                antecedents = ep.get("causal_antecedents", [])
+                if antecedents:
+                    with_ant += 1
+                depth = 0
+                queue = list(antecedents)
+                visited: set = set()
+                while queue:
+                    ant = queue.pop(0)
+                    if ant in visited:
+                        continue
+                    visited.add(ant)
+                    depth += 1
+                    if ant not in known:
+                        root_counter[ant] = root_counter.get(ant, 0) + 1
+                total_depth += depth
+            return {
+                "root_causes": root_counter,
+                "antecedent_depth": total_depth / max(len(episodes), 1),
+                "episodes_with_antecedents": with_ant,
+            }
 
         def record_episode(self, error_class: str, strategy_used: str,
                            success: bool, metadata: Optional[Dict] = None,
+                           causal_antecedents: Optional[list] = None,
                            **kwargs) -> None:
             history = self._episodes[error_class]
             history.append({
                 "strategy": strategy_used,
                 "success": success,
                 "metadata": metadata or {},
+                "causal_antecedents": causal_antecedents or [],
             })
             if len(history) > self._max_history:
                 self._episodes[error_class] = history[-self._max_history:]
+
+        def get_best_strategy(self, error_class: str) -> Optional[str]:
+            """Return historically most successful strategy for an error class."""
+            episodes = self._episodes.get(error_class, [])
+            if not episodes:
+                return None
+            strategy_stats: Dict[str, list] = {}
+            for ep in episodes:
+                s = ep["strategy"]
+                strategy_stats.setdefault(s, []).append(ep["success"])
+            if not strategy_stats:
+                return None
+            return max(
+                strategy_stats,
+                key=lambda s: sum(strategy_stats[s]) / max(len(strategy_stats[s]), 1),
+            )
 
         def get_error_summary(self) -> Dict[str, Any]:
             summary: Dict[str, Any] = {"error_classes": {}}
@@ -166,41 +253,112 @@ except ImportError:
             return summary
 
     class ConvergenceMonitor:
-        """Minimal convergence monitor (fallback when aeon_core unavailable)."""
+        """Convergence monitor (fallback when aeon_core unavailable).
+
+        Tracks contraction ratios, bridges divergence and stagnation
+        events to an attached ``CausalErrorEvolutionTracker``, and
+        provides provenance enrichment — matching the interface of
+        ``aeon_core.ConvergenceMonitor``.
+        """
 
         def __init__(self, threshold: float = 1e-5):
             self.history: list = []
             self._threshold = threshold
+            self._error_evolution = None
+            self._provenance_tracker = None
 
         def reset(self) -> None:
             self.history.clear()
 
         def set_error_evolution(self, tracker) -> None:
-            pass
+            """Attach error evolution tracker for automatic divergence bridging."""
+            self._error_evolution = tracker
 
         def set_provenance_tracker(self, tracker) -> None:
-            pass
+            """Attach provenance tracker for enriching error metadata."""
+            self._provenance_tracker = tracker
+
+        def _bridge_convergence_event(
+            self, error_class: str, strategy: str,
+            success: bool, metadata: Optional[Dict] = None,
+        ) -> None:
+            """Forward a convergence event to the attached error evolution tracker."""
+            tracker = self._error_evolution
+            if tracker is not None:
+                enriched = dict(metadata) if metadata else {}
+                prov = self._provenance_tracker
+                if prov is not None:
+                    try:
+                        snap = prov.compute_attribution()
+                        contribs = snap.get("contributions", {})
+                        enriched["provenance_contributions"] = contribs
+                        if contribs:
+                            enriched["dominant_provenance_module"] = max(
+                                contribs, key=contribs.get,
+                            )
+                    except Exception:
+                        pass
+                tracker.record_episode(
+                    error_class=error_class,
+                    strategy_used=strategy,
+                    success=success,
+                    metadata=enriched,
+                )
 
         def check(self, delta_norm: float) -> Dict[str, Any]:
             self.history.append(delta_norm)
             if len(self.history) < 3:
                 return {"status": "warmup", "certified": False}
-            if delta_norm < self._threshold:
-                return {"status": "converged", "certified": True}
-            if len(self.history) >= 3:
-                ratio = delta_norm / max(self.history[-2], 1e-12)
-                if ratio >= 1.0:
-                    return {"status": "diverging", "certified": False}
-            return {"status": "converging", "certified": False}
+            ratios = [
+                self.history[i] / max(self.history[i - 1], 1e-12)
+                for i in range(1, len(self.history))
+            ]
+            avg_contraction = sum(ratios) / len(ratios)
+            if avg_contraction < 1.0 and delta_norm < self._threshold:
+                self._bridge_convergence_event(
+                    "convergence_success", "nominal", success=True,
+                    metadata={"avg_contraction": avg_contraction,
+                              "delta_norm": delta_norm},
+                )
+                return {"status": "converged", "certified": True,
+                        "contraction_rate": avg_contraction}
+            if avg_contraction >= 1.0:
+                self._bridge_convergence_event(
+                    "convergence_diverging", "meta_loop_rollback",
+                    success=False,
+                    metadata={"avg_contraction": avg_contraction,
+                              "delta_norm": delta_norm},
+                )
+                return {"status": "diverging", "certified": False,
+                        "contraction_rate": avg_contraction}
+            if len(self.history) >= 10 and delta_norm > self._threshold * 10:
+                self._bridge_convergence_event(
+                    "convergence_stagnation", "increase_iterations",
+                    success=False,
+                    metadata={"avg_contraction": avg_contraction,
+                              "delta_norm": delta_norm},
+                )
+            return {"status": "converging", "certified": False,
+                    "contraction_rate": avg_contraction}
 
     class CausalProvenanceTracker:
-        """Minimal provenance tracker (fallback when aeon_core unavailable)."""
+        """Provenance tracker (fallback when aeon_core unavailable).
+
+        Mirrors ``aeon_core.CausalProvenanceTracker`` including
+        ``trace_root_cause()``, ``get_dependency_graph()``, and
+        ``set_causal_trace()`` so that ``UnifiedCognitiveCycle`` and
+        ``validate_training_components()`` work identically with or
+        without aeon_core installed.
+        """
+
+        _NORM_EPSILON = 1e-10
 
         def __init__(self):
             self._deltas: Dict[str, float] = {}
             self._order: list = []
             self._snapshots: Dict[str, torch.Tensor] = {}
-            self._dependencies: list = []
+            self._dependencies: Dict[str, set] = {}
+            self._causal_trace = None
 
         def reset(self) -> None:
             """Clear all recorded state for a new pass."""
@@ -209,6 +367,10 @@ except ImportError:
             self._snapshots.clear()
             self._dependencies.clear()
 
+        def set_causal_trace(self, trace) -> None:
+            """Attach a causal trace buffer for automatic propagation."""
+            self._causal_trace = trace
+
         def record_before(self, module_name: str, state: torch.Tensor) -> None:
             self._snapshots[module_name] = state.detach().clone()
             if module_name not in self._order:
@@ -216,64 +378,249 @@ except ImportError:
 
         def record_after(self, module_name: str, state: torch.Tensor) -> None:
             if module_name in self._snapshots:
-                before = self._snapshots[module_name]
+                before = self._snapshots.pop(module_name)
                 # Handle shape mismatches by truncating to smaller size;
                 # this mirrors TrainingProvenanceTracker.record_after()
                 # and is expected when VQ or projection layers change dim.
                 min_size = min(state.shape[-1], before.shape[-1])
-                self._deltas[module_name] = (
+                new_delta = (
                     state.detach()[..., :min_size] - before[..., :min_size]
                 ).norm().item()
+                self._deltas[module_name] = (
+                    self._deltas.get(module_name, 0.0) + new_delta
+                )
 
-        def record_dependency(self, upstream: str, downstream: str) -> None:
-            self._dependencies.append((upstream, downstream))
+        def record_dependency(self, from_module: str, to_module: str) -> None:
+            self._dependencies.setdefault(to_module, set()).add(from_module)
+
+        def get_dependency_graph(self) -> Dict[str, list]:
+            """Return the inter-module dependency DAG."""
+            return {k: sorted(v) for k, v in self._dependencies.items()}
 
         def compute_attribution(self) -> Dict[str, Any]:
-            # Epsilon prevents division by zero when all deltas are zero
-            _EPSILON = 1e-10
-            total = sum(self._deltas.values()) + _EPSILON
-            contributions = {k: v / total for k, v in self._deltas.items()}
+            deltas: Dict[str, float] = {}
+            for name in self._order:
+                deltas[name] = self._deltas.get(name, 0.0)
+            total = sum(deltas.values()) + self._NORM_EPSILON
+            contributions = {k: v / total for k, v in deltas.items()}
             return {
                 "contributions": contributions,
-                "raw_deltas": dict(self._deltas),
+                "deltas": deltas,
                 "order": list(self._order),
             }
 
+        def trace_root_cause(self, module_name: str) -> Dict[str, Any]:
+            """Trace backward through the dependency DAG to find root causes."""
+            visited: set = set()
+            queue = [module_name]
+            while queue:
+                current = queue.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+                for parent in self._dependencies.get(current, set()):
+                    queue.append(parent)
+            root_modules = [m for m in visited if not self._dependencies.get(m)]
+            contributions = {m: self._deltas.get(m, 0.0) for m in visited}
+            return {
+                "root_modules": sorted(root_modules),
+                "visited": visited,
+                "contributions": contributions,
+            }
+
     class ModuleCoherenceVerifier:
-        """Minimal coherence verifier (fallback when aeon_core unavailable)."""
+        """Coherence verifier (fallback when aeon_core unavailable).
+
+        Computes pairwise cosine similarity between subsystem outputs,
+        matching the interface of ``aeon_core.ModuleCoherenceVerifier``
+        so that standalone training coherence checks produce real scores
+        instead of hardcoded ones.
+        """
+
+        _ADAPT_STEP = 0.05
+        _ADAPT_CAP = 0.9
 
         def __init__(self, hidden_dim: int = 256, threshold: float = 0.5):
             self.threshold = threshold
 
         def __call__(self, states):
-            B = next(iter(states.values())).shape[0] if states else 1
+            names = list(states.keys())
+            if len(names) < 2:
+                B = next(iter(states.values())).shape[0] if states else 1
+                return {
+                    "coherence_score": torch.ones(B),
+                    "pairwise": {},
+                    "needs_recheck": False,
+                }
+            pairwise = {}
+            sims = []
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    sim = torch.nn.functional.cosine_similarity(
+                        states[names[i]], states[names[j]], dim=-1,
+                    )
+                    pairwise[(names[i], names[j])] = sim
+                    sims.append(sim)
+            coherence = torch.stack(sims, dim=-1).mean(dim=-1)
+            needs_recheck = bool(coherence.mean().item() < self.threshold)
             return {
-                "coherence_score": torch.ones(B),
-                "pairwise": {},
-                "needs_recheck": False,
+                "coherence_score": coherence,
+                "pairwise": pairwise,
+                "needs_recheck": needs_recheck,
             }
 
         def adapt_threshold(self, error_summary):
-            pass
+            """Raise threshold when coherence deficits recur with low success."""
+            classes = error_summary.get("error_classes", {})
+            cd_stats = classes.get("coherence_deficit")
+            if cd_stats is None:
+                return
+            if cd_stats.get("count", 0) < 2:
+                return
+            if cd_stats.get("success_rate", 1.0) < 0.5:
+                self.threshold = min(
+                    self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
+                )
+
+        @staticmethod
+        def get_weakest_pair(pairwise):
+            """Identify the subsystem pair with lowest mean similarity."""
+            if not pairwise:
+                return None
+            weakest_key = min(
+                pairwise, key=lambda k: pairwise[k].mean().item(),
+            )
+            return {
+                "pair": weakest_key,
+                "similarity": float(pairwise[weakest_key].mean().item()),
+                "modules": list(weakest_key),
+            }
 
     class MetaCognitiveRecursionTrigger:
-        """Minimal metacognitive trigger (fallback when aeon_core unavailable)."""
+        """Metacognitive trigger (fallback when aeon_core unavailable).
 
-        def __init__(self, **kwargs):
+        Monitors the same nine signals as
+        ``aeon_core.MetaCognitiveRecursionTrigger`` and uses weighted-sum
+        evaluation so that standalone training can detect uncertainty,
+        divergence, and coherence deficits that warrant re-reasoning.
+        """
+
+        _DEFAULT_WEIGHT = 1.0 / 9.0
+
+        def __init__(self, trigger_threshold: float = 0.5,
+                     max_recursions: int = 2,
+                     tightening_factor: float = 0.5,
+                     extra_iterations: int = 10,
+                     surprise_threshold: float = 0.5,
+                     causal_quality_threshold: float = 0.3,
+                     high_uncertainty_override: float = 0.7,
+                     **kwargs):
+            self.trigger_threshold = trigger_threshold
+            self.max_recursions = max(1, max_recursions)
+            self.tightening_factor = max(0.01, min(tightening_factor, 1.0))
+            self.extra_iterations = max(0, extra_iterations)
             self._recursion_count = 0
+            self._surprise_threshold = max(0.0, surprise_threshold)
+            self._causal_quality_threshold = max(0.0, causal_quality_threshold)
+            self._high_uncertainty_override = max(0.0, high_uncertainty_override)
+            self._signal_weights: Dict[str, float] = {
+                "uncertainty": self._DEFAULT_WEIGHT,
+                "diverging": self._DEFAULT_WEIGHT,
+                "topology_catastrophe": self._DEFAULT_WEIGHT,
+                "coherence_deficit": self._DEFAULT_WEIGHT,
+                "memory_staleness": self._DEFAULT_WEIGHT,
+                "recovery_pressure": self._DEFAULT_WEIGHT,
+                "world_model_surprise": self._DEFAULT_WEIGHT,
+                "low_causal_quality": self._DEFAULT_WEIGHT,
+                "safety_violation": self._DEFAULT_WEIGHT,
+            }
 
         def reset(self):
             self._recursion_count = 0
 
-        def evaluate(self, **kwargs):
-            return {"should_trigger": False, "trigger_score": 0.0,
-                    "triggers_active": [], "recursion_count": 0}
+        def evaluate(self, uncertainty: float = 0.0,
+                     is_diverging: bool = False,
+                     topology_catastrophe: bool = False,
+                     coherence_deficit: float = 0.0,
+                     memory_staleness: bool = False,
+                     recovery_pressure: float = 0.0,
+                     world_model_surprise: float = 0.0,
+                     causal_quality: float = 1.0,
+                     safety_violation: bool = False,
+                     **kwargs) -> Dict[str, Any]:
+            can_recurse = self._recursion_count < self.max_recursions
+            signals: Dict[str, float] = {
+                "uncertainty": min(uncertainty, 1.0),
+                "diverging": 1.0 if is_diverging else 0.0,
+                "topology_catastrophe": 1.0 if topology_catastrophe else 0.0,
+                "coherence_deficit": min(coherence_deficit, 1.0),
+                "memory_staleness": 1.0 if memory_staleness else 0.0,
+                "recovery_pressure": min(recovery_pressure, 1.0),
+                "world_model_surprise": (
+                    1.0 if world_model_surprise > self._surprise_threshold else 0.0
+                ),
+                "low_causal_quality": (
+                    1.0 if causal_quality < self._causal_quality_threshold else 0.0
+                ),
+                "safety_violation": 1.0 if safety_violation else 0.0,
+            }
+            trigger_score = sum(
+                self._signal_weights.get(k, 0.0) * v
+                for k, v in signals.items()
+            )
+            triggers_active = [k for k, v in signals.items() if v > 0.0]
+            should_trigger = (
+                (trigger_score >= self.trigger_threshold and can_recurse)
+                or (uncertainty > self._high_uncertainty_override and can_recurse)
+                or (topology_catastrophe and can_recurse)
+            )
+            if should_trigger:
+                self._recursion_count += 1
+            return {
+                "should_trigger": should_trigger,
+                "trigger_score": trigger_score,
+                "tightened_threshold": (
+                    self.trigger_threshold * self.tightening_factor
+                ),
+                "extra_iterations": self.extra_iterations,
+                "triggers_active": triggers_active,
+                "recursion_count": self._recursion_count,
+                "signal_weights": dict(self._signal_weights),
+            }
 
         def adapt_weights_from_evolution(self, error_summary):
-            pass
+            """Adjust signal weights based on historical error-recovery patterns."""
+            error_classes = error_summary.get("error_classes", {})
+            if not error_classes:
+                return
+            _class_to_signal = {
+                "convergence_diverging": "diverging",
+                "convergence_divergence": "diverging",
+                "coherence_deficit": "coherence_deficit",
+                "metacognitive_rerun": "uncertainty",
+                "numerical": "uncertainty",
+                "safety_rollback": "safety_violation",
+            }
+            for cls_name, cls_stats in error_classes.items():
+                signal = _class_to_signal.get(cls_name)
+                if signal is None or signal not in self._signal_weights:
+                    continue
+                success_rate = cls_stats.get("success_rate", 1.0)
+                count = cls_stats.get("count", 0)
+                if count >= 2 and success_rate < 0.5:
+                    self._signal_weights[signal] = min(
+                        0.5, self._signal_weights[signal] + 0.05,
+                    )
 
     class UnifiedCognitiveCycle:
-        """Minimal unified cognitive cycle (fallback when aeon_core unavailable)."""
+        """Unified cognitive cycle (fallback when aeon_core unavailable).
+
+        Orchestrates convergence monitoring, coherence verification,
+        error evolution, metacognitive triggering, and provenance
+        tracking into a single ``evaluate()`` call — matching the
+        interface of ``aeon_core.UnifiedCognitiveCycle`` so that
+        standalone training produces real meta-cognitive decisions.
+        """
 
         def __init__(self, convergence_monitor, coherence_verifier,
                      error_evolution, metacognitive_trigger,
@@ -283,22 +630,133 @@ except ImportError:
             self.error_evolution = error_evolution
             self.metacognitive_trigger = metacognitive_trigger
             self.provenance_tracker = provenance_tracker
+            self.causal_trace = causal_trace
+            # Wire convergence monitor → error evolution automatically.
+            if self.error_evolution is not None:
+                self.convergence_monitor.set_error_evolution(self.error_evolution)
+            # Wire convergence monitor → provenance tracker.
+            self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
+            # Wire error evolution → causal trace.
+            if self.error_evolution is not None and self.causal_trace is not None:
+                self.error_evolution.set_causal_trace(self.causal_trace)
 
-        def evaluate(self, subsystem_states, delta_norm, **kwargs):
+        def _provenance_snapshot(self):
+            snap = self.provenance_tracker.compute_attribution()
+            contribs = snap.get("contributions", {})
+            dominant = max(contribs, key=contribs.get) if contribs else None
+            return contribs, dominant
+
+        def evaluate(self, subsystem_states, delta_norm,
+                     uncertainty=0.0, topology_catastrophe=False,
+                     world_model_surprise=0.0, causal_quality=1.0,
+                     memory_staleness=False, recovery_pressure=0.0,
+                     safety_violation=False, feedback_signal=None,
+                     **kwargs):
+            # 1. Convergence check
+            convergence_verdict = self.convergence_monitor.check(delta_norm)
+
+            # 1b. Adapt coherence threshold from error evolution
+            _original_threshold = None
+            _err_summary = {}
+            if (self.error_evolution is not None
+                    and self.coherence_verifier is not None):
+                _err_summary = self.error_evolution.get_error_summary()
+                _original_threshold = self.coherence_verifier.threshold
+                self.coherence_verifier.adapt_threshold(_err_summary)
+
+            # 1c. Pre-adapt metacognitive trigger weights
+            if self.metacognitive_trigger is not None and _err_summary:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _err_summary,
+                    )
+                except Exception:
+                    pass
+
+            # 2. Coherence verification
+            if self.coherence_verifier is not None and subsystem_states:
+                coherence_result = self.coherence_verifier(subsystem_states)
+                coherence_deficit = (
+                    1.0 - coherence_result["coherence_score"].mean().item()
+                )
+                needs_recheck = coherence_result.get("needs_recheck", False)
+            else:
+                coherence_result = {
+                    "coherence_score": torch.tensor([1.0]),
+                    "needs_recheck": False,
+                }
+                coherence_deficit = 0.0
+                needs_recheck = False
+
+            # Record significant coherence deficits
+            if coherence_deficit > 0.3 and self.error_evolution is not None:
+                _contributions, _dominant = self._provenance_snapshot()
+                self.error_evolution.record_episode(
+                    error_class="coherence_deficit",
+                    strategy_used="meta_rerun",
+                    success=False,
+                    metadata={
+                        "coherence_deficit": coherence_deficit,
+                        "dominant_provenance_module": _dominant,
+                    },
+                )
+
+            # 3. Metacognitive trigger
+            is_diverging = convergence_verdict.get("status") == "diverging"
+            if self.metacognitive_trigger is not None:
+                trigger_detail = self.metacognitive_trigger.evaluate(
+                    uncertainty=uncertainty,
+                    is_diverging=is_diverging,
+                    topology_catastrophe=topology_catastrophe,
+                    coherence_deficit=coherence_deficit,
+                    memory_staleness=memory_staleness,
+                    recovery_pressure=recovery_pressure,
+                    world_model_surprise=world_model_surprise,
+                    causal_quality=causal_quality,
+                    safety_violation=safety_violation,
+                )
+            else:
+                _should = (is_diverging or coherence_deficit > 0.5
+                           or uncertainty > 0.7 or safety_violation
+                           or topology_catastrophe)
+                trigger_detail = {
+                    "should_trigger": _should,
+                    "trigger_score": max(uncertainty, coherence_deficit,
+                                         1.0 if is_diverging else 0.0),
+                    "triggers_active": [s for s, v in [
+                        ("diverging", is_diverging),
+                        ("coherence_deficit", coherence_deficit > 0.5),
+                        ("uncertainty", uncertainty > 0.7),
+                        ("safety_violation", safety_violation),
+                        ("topology_catastrophe", topology_catastrophe),
+                    ] if v],
+                }
+            should_rerun = trigger_detail.get("should_trigger", False) or needs_recheck
+
+            # 4. Provenance snapshot
+            provenance = self.provenance_tracker.compute_attribution()
+
+            # 5. Restore coherence threshold
+            if _original_threshold is not None and self.coherence_verifier is not None:
+                self.coherence_verifier.threshold = _original_threshold
+
             return {
-                "convergence_verdict": {"status": "warmup"},
-                "coherence_result": {"coherence_score": torch.tensor([1.0]),
-                                     "needs_recheck": False,
-                                     "coherence_deficit": 0.0},
-                "should_rerun": False,
-                "trigger_detail": {"should_trigger": False,
-                                   "triggers_active": []},
-                "provenance": {},
+                "convergence_verdict": convergence_verdict,
+                "coherence_result": {
+                    "coherence_score": coherence_result["coherence_score"],
+                    "needs_recheck": needs_recheck,
+                    "coherence_deficit": coherence_deficit,
+                },
+                "should_rerun": should_rerun,
+                "trigger_detail": trigger_detail,
+                "provenance": provenance,
                 "root_cause_trace": {},
             }
 
         def reset(self):
-            pass
+            self.convergence_monitor.reset()
+            if self.metacognitive_trigger is not None:
+                self.metacognitive_trigger.reset()
 
 # --- Токенизатор ---
 try:

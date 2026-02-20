@@ -194,6 +194,7 @@ __all__ = [
     "CrossValidationReconciler", "ExternalDataTrustScorer",
     "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
     "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
+    "CausalDAGConsensus",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
