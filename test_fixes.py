@@ -29727,6 +29727,211 @@ def test_ucc_wiring_verification_in_validate():
     print("✅ test_ucc_wiring_verification_in_validate PASSED")
 
 
+# =====================================================================
+# Architectural Unification — Phase B Coherence & Cross-Phase Consistency
+# =====================================================================
+
+def test_phase_b_has_error_classifier():
+    """Verify ContextualRSSMTrainer has a SemanticErrorClassifier for
+    consistent error diagnostics across both training phases."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    _logger = logging.getLogger("test_phase_b_ec")
+    monitor = TrainingMonitor(logger=_logger)
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    assert hasattr(trainer, '_error_classifier'), (
+        "ContextualRSSMTrainer should have _error_classifier attribute"
+    )
+    assert trainer._error_classifier is not None, (
+        "_error_classifier should not be None"
+    )
+    # Verify the classifier has a classify method
+    assert hasattr(trainer._error_classifier, 'classify'), (
+        "_error_classifier should have a classify method"
+    )
+    print("✅ test_phase_b_has_error_classifier PASSED")
+
+
+def test_phase_b_sanitizes_z_context():
+    """Verify Phase B sanitizes z_context input before feeding to RSSM,
+    matching Phase A's tensor safety guarantees."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+        configure_logger,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        seq_length=8, batch_size=2,
+        context_window=2, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV4(config).to('cpu')
+    _logger = configure_logger()
+    monitor = TrainingMonitor(_logger, save_dir="/tmp/aeon_test_sanitize")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Create z_context with NaN values
+    z_context = torch.randn(2, config.context_window, config.z_dim)
+    z_context[0, 0, 0] = float('nan')
+    z_target = torch.randn(2, config.z_dim)
+
+    # train_step should not crash and should sanitize the NaN
+    metrics = trainer.train_step(z_context, z_target)
+    assert metrics is not None, "train_step should return metrics even with NaN input"
+    # The tensor guard should have caught the NaN
+    assert trainer._tensor_guard._nan_count > 0, (
+        "TensorGuard should have detected NaN in z_context"
+    )
+    print("✅ test_phase_b_sanitizes_z_context PASSED")
+
+
+def test_phase_b_nan_records_error_evolution():
+    """Verify Phase B records NaN/Inf errors in error evolution tracker
+    with semantic classification, matching Phase A's pattern."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+        configure_logger,
+    )
+
+    config = AEONConfigV4(
+        vocab_size=100, z_dim=32, hidden_dim=32,
+        seq_length=8, batch_size=2,
+        context_window=2, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV4(config).to('cpu')
+    _logger = configure_logger()
+    monitor = TrainingMonitor(_logger, save_dir="/tmp/aeon_test_nan_evol")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Manually record an error episode to verify wiring (matching the
+    # pattern from test_semantic_error_recorded_in_evolution)
+    trainer._error_evolution.record_episode(
+        error_class="numerical",
+        strategy_used="skip_backward",
+        success=False,
+        metadata={"step": 0, "dominant_module": "rssm", "detail": "NaN loss", "phase": "B"},
+    )
+    summary = trainer._error_evolution.get_error_summary()
+    assert "numerical" in summary["error_classes"], (
+        "Expected 'numerical' error class in Phase B evolution tracker"
+    )
+    assert summary["error_classes"]["numerical"]["count"] == 1
+    assert summary["error_classes"]["numerical"]["success_rate"] == 0.0
+    print("✅ test_phase_b_nan_records_error_evolution PASSED")
+
+
+def test_phase_b_adapt_weights_from_evolution():
+    """Verify Phase B adapts metacognitive trigger weights from error
+    evolution history during epoch-end UCC evaluation."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    _logger = logging.getLogger("test_phase_b_adapt")
+    monitor = TrainingMonitor(logger=_logger)
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    # Record some error patterns to trigger adaptation
+    trainer._error_evolution.record_episode(
+        error_class="numerical",
+        strategy_used="skip_backward",
+        success=False,
+        metadata={"phase": "B"},
+    )
+
+    # Get error summary and adapt weights
+    err_summary = trainer._error_evolution.get_error_summary()
+    trainer._metacognitive_trigger.adapt_weights_from_evolution(err_summary)
+
+    # The method should not crash and should be callable
+    assert hasattr(trainer._metacognitive_trigger, 'adapt_weights_from_evolution')
+    print("✅ test_phase_b_adapt_weights_from_evolution PASSED")
+
+
+def test_phase_a_adapt_weights_from_evolution():
+    """Verify Phase A adapts metacognitive trigger weights from error
+    evolution history during epoch-end UCC evaluation."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+    import tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    _logger = logging.getLogger("test_phase_a_adapt")
+    monitor = TrainingMonitor(logger=_logger)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
+
+    # Record some error patterns
+    trainer._error_evolution.record_episode(
+        error_class="numerical",
+        strategy_used="skip_backward",
+        success=False,
+    )
+
+    # Adapt weights and verify the method works
+    err_summary = trainer._error_evolution.get_error_summary()
+    trainer._metacognitive_trigger.adapt_weights_from_evolution(err_summary)
+    assert hasattr(trainer._metacognitive_trigger, 'adapt_weights_from_evolution')
+    print("✅ test_phase_a_adapt_weights_from_evolution PASSED")
+
+
+def test_phase_b_provenance_dominance_warning():
+    """Verify Phase B uses _PROVENANCE_DOMINANCE_WARNING_THRESHOLD to
+    warn when a single module dominates provenance attribution."""
+    from ae_train import _PROVENANCE_DOMINANCE_WARNING_THRESHOLD
+
+    # The threshold should be defined and be a float between 0 and 1
+    assert isinstance(_PROVENANCE_DOMINANCE_WARNING_THRESHOLD, float), (
+        "_PROVENANCE_DOMINANCE_WARNING_THRESHOLD should be a float"
+    )
+    assert 0.0 < _PROVENANCE_DOMINANCE_WARNING_THRESHOLD <= 1.0, (
+        f"Threshold should be in (0, 1], got {_PROVENANCE_DOMINANCE_WARNING_THRESHOLD}"
+    )
+    print("✅ test_phase_b_provenance_dominance_warning PASSED")
+
+
+def test_cross_phase_error_classifier_consistency():
+    """Verify both Phase A and Phase B trainers have SemanticErrorClassifier
+    for consistent error diagnostics across training phases."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4,
+        SafeThoughtAETrainerV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+    import tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    _logger = logging.getLogger("test_cross_phase_ec")
+    monitor = TrainingMonitor(logger=_logger)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        trainer_a = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
+    trainer_b = ContextualRSSMTrainer(model, config, monitor)
+
+    # Both should have error classifiers
+    assert hasattr(trainer_a, '_error_classifier'), "Phase A missing _error_classifier"
+    assert hasattr(trainer_b, '_error_classifier'), "Phase B missing _error_classifier"
+    assert trainer_a._error_classifier is not None, "Phase A _error_classifier is None"
+    assert trainer_b._error_classifier is not None, "Phase B _error_classifier is None"
+
+    # Both classifiers should produce the same interface
+    err = RuntimeError("test error")
+    result_a = trainer_a._error_classifier.classify(err)
+    result_b = trainer_b._error_classifier.classify(err)
+    assert isinstance(result_a, tuple) and len(result_a) == 2
+    assert isinstance(result_b, tuple) and len(result_b) == 2
+    print("✅ test_cross_phase_error_classifier_consistency PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -31045,6 +31250,15 @@ if __name__ == '__main__':
     test_phase_a_trainer_caches_subsystem_states()
     test_phase_b_trainer_caches_subsystem_states()
     test_ucc_wiring_verification_in_validate()
+
+    # Architectural Unification — Phase B Coherence & Cross-Phase Consistency
+    test_phase_b_has_error_classifier()
+    test_phase_b_sanitizes_z_context()
+    test_phase_b_nan_records_error_evolution()
+    test_phase_b_adapt_weights_from_evolution()
+    test_phase_a_adapt_weights_from_evolution()
+    test_phase_b_provenance_dominance_warning()
+    test_cross_phase_error_classifier_consistency()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

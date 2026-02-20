@@ -1936,6 +1936,14 @@ class SafeThoughtAETrainerV4:
                 _loss_delta = abs(convergence_verdict.get("trend", 0.0))
                 _uncertainty = min(epoch_metrics.get("perplexity", 0.0) / _PERPLEXITY_UNCERTAINTY_SCALE, 1.0)
                 _is_diverging = convergence_verdict["status"] == "diverging"
+                # Adapt metacognitive trigger weights from accumulated
+                # error-evolution history before UCC evaluation so that
+                # historically problematic failure modes increase trigger
+                # sensitivity during the upcoming evaluation cycle.
+                _err_summary = self._error_evolution.get_error_summary()
+                self._metacognitive_trigger.adapt_weights_from_evolution(
+                    _err_summary,
+                )
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
                         "encoder": self._last_encoder_state
@@ -2050,6 +2058,11 @@ class ContextualRSSMTrainer:
         # matching the safety guarantees of Phase A (SafeThoughtAETrainerV4).
         self.provenance = TrainingProvenanceTracker()
         self._tensor_guard = TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
+        # Error classifier for semantic error categorization — mirrors
+        # Phase A's SemanticErrorClassifier integration so that Phase B
+        # NaN/Inf errors are classified consistently, enabling root-cause
+        # analysis to trace failures across both training phases.
+        self._error_classifier = SemanticErrorClassifier()
 
         # --- Unified Cognitive Cycle integration for Phase B ---
         self._coherence_verifier = ModuleCoherenceVerifier(
@@ -2086,7 +2099,17 @@ class ContextualRSSMTrainer:
         """
         self.model.rssm.train()
         self.provenance.reset()
-        
+
+        # Sanitize z_context input to prevent NaN/Inf from flowing into
+        # the RSSM, matching Phase A's encoder-output sanitization.
+        # Without this, corrupted VQ outputs from Phase A would propagate
+        # unchecked through Phase B, breaking tensor safety consistency.
+        if self._tensor_guard is not None:
+            _orig_shape = z_context.shape
+            _flat = z_context.reshape(-1, z_context.shape[-1])
+            _flat = self._tensor_guard.sanitize(_flat, context="rssm_z_context")
+            z_context = _flat.reshape(_orig_shape)
+
         # Track RSSM prediction provenance using mean-pooled context
         # (the RSSM processes the full [B, K, D] context window, so we
         # mean-pool over K to produce a [B, D] summary for provenance).
@@ -2112,22 +2135,45 @@ class ContextualRSSMTrainer:
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
         
         # Detect NaN/Inf loss OR non-finite RSSM output to prevent
-        # corrupted gradient updates.  When tensor guard is available,
-        # classify the error semantically so root-cause analysis can
-        # trace it to the RSSM component.
+        # corrupted gradient updates.  Classify the error semantically
+        # (matching Phase A) so root-cause analysis can trace it to the
+        # RSSM component and record it in error evolution.
         if _pred_had_nonfinite or torch.isnan(loss) or torch.isinf(loss):
+            _error_detail = "NaN/Inf loss"
+            if self._error_classifier is not None:
+                try:
+                    _err_cls, _err_detail = self._error_classifier.classify(
+                        RuntimeError("NaN/Inf loss in RSSM training step")
+                    )
+                    _error_detail = f"{_err_cls}: {_err_detail}"
+                except Exception as _cls_err:
+                    logger.debug("Error classifier failed: %s", _cls_err)
             _prov = self.provenance.compute_attribution()
             _dominant = None
             _contributions = _prov.get('contributions', {})
             if _contributions:
                 _dominant = max(_contributions, key=_contributions.get)
             logger.warning(
-                f"⚠️ NaN/Inf loss detected in RSSM at step {self.global_step}"
+                f"⚠️ {_error_detail} at RSSM step {self.global_step}"
                 f" (dominant_module={_dominant}), skipping backward pass"
             )
             # Propagate NaN event to convergence monitor so it can
             # detect training instability and recommend corrective action.
             self.convergence_monitor.update(float('nan'))
+            # Record the semantically classified error in error evolution
+            # so training-time failures inform inference-time recovery
+            # strategies — matching Phase A's error recording pattern.
+            self._error_evolution.record_episode(
+                error_class=_error_detail.split(":", 1)[0].strip() if ":" in _error_detail else "numerical",
+                strategy_used="skip_backward",
+                success=False,
+                metadata={
+                    "step": self.global_step,
+                    "dominant_module": _dominant,
+                    "detail": _error_detail,
+                    "phase": "B",
+                },
+            )
             return {
                 "mse_loss": float('nan'), "smooth_l1": float('nan'),
                 "total_loss": float('nan'), "cosine_sim": 0.0,
@@ -2157,10 +2203,22 @@ class ContextualRSSMTrainer:
         _contributions = _prov.get('contributions', {})
         if _contributions and self.global_step % _PROVENANCE_LOG_INTERVAL == 0:
             _dominant = max(_contributions, key=_contributions.get)
+            _max_contrib = _contributions[_dominant]
             logger.debug(
                 f"RSSM step {self.global_step} provenance: dominant={_dominant} "
-                f"({_contributions[_dominant]:.1%})"
+                f"({_max_contrib:.1%})"
             )
+            # Warn if a single module dominates provenance — matching
+            # Phase A's validation warning pattern.  This indicates an
+            # architectural imbalance that may prevent the RSSM from
+            # learning balanced cross-component representations.
+            if _max_contrib > _PROVENANCE_DOMINANCE_WARNING_THRESHOLD:
+                logger.warning(
+                    f"   ⚠️ RSSM step {self.global_step}: module "
+                    f"'{_dominant}' dominates provenance "
+                    f"({_max_contrib:.1%} > "
+                    f"{_PROVENANCE_DOMINANCE_WARNING_THRESHOLD:.0%})"
+                )
         
         return {
             "mse_loss": mse_loss.item(), 
@@ -2292,6 +2350,15 @@ class ContextualRSSMTrainer:
                 _loss_delta = abs(convergence_verdict.get("trend", 0.0))
                 _uncertainty = min(epoch_metrics.get("mse_loss", 0.0) / _MSE_UNCERTAINTY_SCALE, 1.0)
                 _is_diverging = convergence_verdict["status"] == "diverging"
+                # Adapt metacognitive trigger weights from accumulated
+                # error-evolution history so that historically problematic
+                # failure modes increase trigger sensitivity.  This closes
+                # the loop between error evolution and metacognitive
+                # re-reasoning, matching Phase A's implicit wiring via UCC.
+                _err_summary = self._error_evolution.get_error_summary()
+                self._metacognitive_trigger.adapt_weights_from_evolution(
+                    _err_summary,
+                )
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
                         "vq": self._last_vq_state
