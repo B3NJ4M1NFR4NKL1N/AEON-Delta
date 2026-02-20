@@ -32202,6 +32202,199 @@ def test_silent_exception_escalates_uncertainty():
     print("✅ test_silent_exception_escalates_uncertainty PASSED")
 
 
+# ============================================================================
+# AGI Architecture Unification — Provenance completeness tests
+# ============================================================================
+
+
+def test_provenance_tracks_diversity_analysis():
+    """Verify that provenance tracker captures diversity_analysis stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("diversity_analysis", state)
+    tracker.record_after("diversity_analysis", state)
+
+    attribution = tracker.compute_attribution()
+    assert "diversity_analysis" in attribution["order"], (
+        "diversity_analysis should appear in provenance order"
+    )
+    print("✅ test_provenance_tracks_diversity_analysis PASSED")
+
+
+def test_provenance_tracks_topology_analysis():
+    """Verify that provenance tracker captures topology_analysis stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("topology_analysis", state)
+    tracker.record_after("topology_analysis", state)
+
+    attribution = tracker.compute_attribution()
+    assert "topology_analysis" in attribution["order"], (
+        "topology_analysis should appear in provenance order"
+    )
+    print("✅ test_provenance_tracks_topology_analysis PASSED")
+
+
+def test_provenance_tracks_self_report():
+    """Verify that provenance tracker captures self_report stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("self_report", state)
+    tracker.record_after("self_report", state)
+
+    attribution = tracker.compute_attribution()
+    assert "self_report" in attribution["order"], (
+        "self_report should appear in provenance order"
+    )
+    print("✅ test_provenance_tracks_self_report PASSED")
+
+
+def test_provenance_tracks_causal_dag_consensus():
+    """Verify that provenance tracker captures causal_dag_consensus stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("causal_dag_consensus", state)
+    tracker.record_after("causal_dag_consensus", state)
+
+    attribution = tracker.compute_attribution()
+    assert "causal_dag_consensus" in attribution["order"], (
+        "causal_dag_consensus should appear in provenance order"
+    )
+    print("✅ test_provenance_tracks_causal_dag_consensus PASSED")
+
+
+def test_provenance_tracks_memory_subsystems_individually():
+    """Verify that provenance tracker can capture individual memory subsystems."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+
+    # Simulate the full memory pipeline with individual subsystem tracking
+    tracker.record_before("memory", state)
+    state = state + torch.randn(2, 32) * 0.1
+    tracker.record_after("memory", state)
+
+    tracker.record_before("neurogenic_memory", state)
+    state = state + torch.randn(2, 32) * 0.05
+    tracker.record_after("neurogenic_memory", state)
+
+    tracker.record_before("consolidating_memory", state)
+    state = state + torch.randn(2, 32) * 0.03
+    tracker.record_after("consolidating_memory", state)
+
+    tracker.record_before("temporal_memory", state)
+    state = state + torch.randn(2, 32) * 0.02
+    tracker.record_after("temporal_memory", state)
+
+    attribution = tracker.compute_attribution()
+    order = attribution["order"]
+    contribs = attribution["contributions"]
+
+    for sub in ["memory", "neurogenic_memory", "consolidating_memory", "temporal_memory"]:
+        assert sub in order, f"{sub} should appear in provenance order"
+        assert sub in contribs, f"{sub} should appear in provenance contributions"
+
+    # Verify total contribution sums to ~1.0
+    total = sum(contribs.values())
+    assert abs(total - 1.0) < 1e-6, f"Total contributions should be ~1.0, got {total}"
+    print("✅ test_provenance_tracks_memory_subsystems_individually PASSED")
+
+
+def test_provenance_tracks_temporal_knowledge_graph():
+    """Verify that provenance tracker captures temporal_knowledge_graph stage."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(2, 32)
+    tracker.record_before("temporal_knowledge_graph", state)
+    state = state + torch.randn(2, 32) * 0.01
+    tracker.record_after("temporal_knowledge_graph", state)
+
+    attribution = tracker.compute_attribution()
+    assert "temporal_knowledge_graph" in attribution["order"], (
+        "temporal_knowledge_graph should appear in provenance order"
+    )
+    assert attribution["contributions"]["temporal_knowledge_graph"] > 0, (
+        "temporal_knowledge_graph contribution should be positive"
+    )
+    print("✅ test_provenance_tracks_temporal_knowledge_graph PASSED")
+
+
+def test_provenance_new_modules_in_forward_pass():
+    """Verify newly tracked provenance modules appear in model forward output."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_safety_guardrails=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    provenance = outputs.get('provenance', {})
+    order = provenance.get('order', [])
+
+    # diversity_analysis and topology_analysis should now appear
+    assert 'diversity_analysis' in order, (
+        f"diversity_analysis should appear in provenance order, got {order}"
+    )
+    assert 'topology_analysis' in order, (
+        f"topology_analysis should appear in provenance order, got {order}"
+    )
+    # self_report should appear when safety guardrails are enabled
+    assert 'self_report' in order, (
+        f"self_report should appear in provenance order when safety enabled, got {order}"
+    )
+    print("✅ test_provenance_new_modules_in_forward_pass PASSED")
+
+
+def test_pipeline_dependency_modules_have_provenance():
+    """Verify that all always-active modules in _PIPELINE_DEPENDENCIES have
+    provenance tracking in a standard forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_safety_guardrails=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    provenance = outputs.get('provenance', {})
+    order = provenance.get('order', [])
+
+    # Always-active modules that should appear in every forward pass
+    always_active = [
+        'meta_loop', 'slot_binding', 'factor_extraction',
+        'consistency_gate', 'diversity_analysis', 'topology_analysis',
+        'self_report', 'safety', 'memory', 'causal_context',
+    ]
+    missing = [m for m in always_active if m not in order]
+    assert not missing, (
+        f"Expected all always-active modules in provenance, missing: {missing}"
+    )
+    print("✅ test_pipeline_dependency_modules_have_provenance PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
