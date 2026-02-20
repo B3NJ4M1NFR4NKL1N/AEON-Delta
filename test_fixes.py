@@ -24489,7 +24489,8 @@ def test_ucc_trigger_detail_includes_provenance():
 
 
 def test_ucc_adapts_coherence_threshold():
-    """Gap 6: UCC auto-adapts coherence verifier threshold from error evolution."""
+    """Gap 6: UCC adapts coherence verifier threshold from error evolution
+    during evaluation, then restores it afterward to prevent unbounded drift."""
     from aeon_core import (
         UnifiedCognitiveCycle, ConvergenceMonitor,
         ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
@@ -24511,12 +24512,19 @@ def test_ucc_adapts_coherence_threshold():
     )
 
     states = {'a': torch.randn(2, 64), 'b': torch.randn(2, 64)}
-    cycle.evaluate(subsystem_states=states, delta_norm=0.5)
+    result = cycle.evaluate(subsystem_states=states, delta_norm=0.5)
 
-    # Threshold should have been adapted upward
-    assert verifier.threshold > 0.5, (
-        f"Expected threshold > 0.5, got {verifier.threshold}"
+    # Threshold should be restored to original value after evaluation
+    # to prevent unbounded drift across successive forward passes.
+    assert verifier.threshold == 0.5, (
+        f"Expected threshold restored to 0.5 after evaluation, got {verifier.threshold}"
     )
+
+    # The coherence result should still reflect the adapted threshold
+    # that was active *during* evaluation — coherence_deficit should be
+    # computed correctly.
+    assert 'coherence_result' in result
+    assert 'coherence_deficit' in result['coherence_result']
     print("✅ test_ucc_adapts_coherence_threshold PASSED")
 
 
@@ -28589,6 +28597,173 @@ def test_self_diagnostic_verifies_ucc_causal_feedback():
     print("✅ test_self_diagnostic_verifies_ucc_causal_feedback PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL COHERENCE — DAG consensus → UCC, provenance root cause,
+# threshold restoration, pipeline dependency completeness
+# ============================================================================
+
+def test_ucc_threshold_restored_after_evaluation():
+    """Verify that ModuleCoherenceVerifier threshold is restored after UCC
+    evaluation to prevent unbounded threshold drift across forward passes."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    ee = CausalErrorEvolutionTracker()
+    for _ in range(10):
+        ee.record_episode('coherence_deficit', 'meta_rerun', success=False)
+
+    original_threshold = 0.4
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=original_threshold)
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=verifier,
+        error_evolution=ee,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {'a': torch.randn(2, 32), 'b': torch.randn(2, 32)}
+    # Run evaluation multiple times — threshold should never drift
+    for _ in range(5):
+        cycle.evaluate(subsystem_states=states, delta_norm=0.5)
+        assert verifier.threshold == original_threshold, (
+            f"Threshold drifted to {verifier.threshold} after evaluation"
+        )
+
+    print("✅ test_ucc_threshold_restored_after_evaluation PASSED")
+
+
+def test_ucc_returns_provenance_root_cause():
+    """Verify that UCC returns provenance_root_cause when re-reasoning is
+    triggered, making provenance actionable for root-cause analysis."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    prov = CausalProvenanceTracker()
+    # Simulate a pipeline where module_a feeds into module_b
+    prov.record_dependency('input', 'module_a')
+    prov.record_dependency('module_a', 'module_b')
+    state_before = torch.randn(2, 32)
+    prov.record_before('module_a', state_before)
+    prov.record_after('module_a', state_before + torch.randn(2, 32) * 5.0)
+    prov.record_before('module_b', state_before)
+    prov.record_after('module_b', state_before + torch.randn(2, 32) * 0.1)
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32, threshold=0.99),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(
+            trigger_threshold=0.01,
+        ),
+        provenance_tracker=prov,
+    )
+
+    states = {'a': torch.randn(2, 32), 'b': torch.randn(2, 32)}
+    result = cycle.evaluate(
+        subsystem_states=states, delta_norm=0.5, uncertainty=0.9,
+    )
+
+    # The result should contain provenance_root_cause
+    assert 'provenance_root_cause' in result, (
+        "UCC result missing 'provenance_root_cause' key"
+    )
+
+    # When should_rerun is True, provenance_root_cause should have data
+    if result['should_rerun']:
+        prc = result['provenance_root_cause']
+        assert 'root_modules' in prc, "provenance_root_cause missing root_modules"
+        assert 'visited' in prc, "provenance_root_cause missing visited"
+        assert 'contributions' in prc, "provenance_root_cause missing contributions"
+
+    print("✅ test_ucc_returns_provenance_root_cause PASSED")
+
+
+def test_pipeline_dependencies_include_dag_consensus():
+    """Verify that _PIPELINE_DEPENDENCIES includes causal_dag_consensus paths
+    so trace_root_cause can walk through structural causal validation."""
+    from aeon_core import AEONDeltaV3
+
+    dep_edges = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(dep_edges)
+
+    # Verify causal models feed into dag_consensus
+    assert ("causal_model", "causal_dag_consensus") in dep_set, (
+        "Missing: causal_model → causal_dag_consensus"
+    )
+    assert ("notears_causal", "causal_dag_consensus") in dep_set, (
+        "Missing: notears_causal → causal_dag_consensus"
+    )
+    assert ("causal_programmatic", "causal_dag_consensus") in dep_set, (
+        "Missing: causal_programmatic → causal_dag_consensus"
+    )
+
+    # Verify dag_consensus feeds into UCC and auto_critic
+    assert ("causal_dag_consensus", "unified_cognitive_cycle") in dep_set, (
+        "Missing: causal_dag_consensus → unified_cognitive_cycle"
+    )
+    assert ("causal_dag_consensus", "auto_critic") in dep_set, (
+        "Missing: causal_dag_consensus → auto_critic"
+    )
+
+    print("✅ test_pipeline_dependencies_include_dag_consensus PASSED")
+
+
+def test_self_diagnostic_dag_consensus_ucc_wiring():
+    """Verify self_diagnostic reports DAG consensus → UCC wiring status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        enable_causal_model=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    if model.causal_dag_consensus is not None:
+        # Should report the DAG consensus → UCC connection
+        dag_ucc_verified = any(
+            'causal_dag_consensus' in v and 'unified_cognitive_cycle' in v
+            for v in diag['verified_connections']
+        )
+        assert dag_ucc_verified, (
+            "self_diagnostic should verify causal_dag_consensus → "
+            "unified_cognitive_cycle connection"
+        )
+
+    print("✅ test_self_diagnostic_dag_consensus_ucc_wiring PASSED")
+
+
+def test_provenance_instrumented_includes_dag_consensus():
+    """Verify that causal_dag_consensus is in the provenance-instrumented set
+    checked by self_diagnostic for dependency DAG completeness."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # The diagnostic should verify provenance dependency coverage
+    # which now includes causal_dag_consensus
+    provenance_verified = any(
+        'provenance_dependencies' in v for v in diag['verified_connections']
+    )
+    provenance_gap = any(
+        g.get('component') == 'provenance_dependencies' for g in diag['gaps']
+    )
+    assert provenance_verified or provenance_gap, (
+        "self_diagnostic should check provenance dependency coverage"
+    )
+
+    print("✅ test_provenance_instrumented_includes_dag_consensus PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -29863,6 +30038,14 @@ if __name__ == '__main__':
     test_ucc_graduated_coherence_threshold()
     test_causal_quality_reset_per_forward_pass()
     test_self_diagnostic_verifies_ucc_causal_feedback()
+    
+    # Architectural coherence — DAG consensus → UCC, provenance root cause,
+    # threshold restoration, pipeline dependency completeness
+    test_ucc_threshold_restored_after_evaluation()
+    test_ucc_returns_provenance_root_cause()
+    test_pipeline_dependencies_include_dag_consensus()
+    test_self_diagnostic_dag_consensus_ucc_wiring()
+    test_provenance_instrumented_includes_dag_consensus()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

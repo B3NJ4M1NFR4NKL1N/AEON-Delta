@@ -13825,7 +13825,11 @@ class UnifiedCognitiveCycle:
 
         # 1b. Adapt coherence threshold from error evolution history so
         # repeated coherence failures make the verifier stricter (Gap 6).
+        # Save the original threshold so it can be restored after this
+        # evaluation cycle, preventing unbounded threshold drift across
+        # successive forward passes.
         _err_summary = self.error_evolution.get_error_summary()
+        _original_threshold = self.coherence_verifier.threshold
         self.coherence_verifier.adapt_threshold(_err_summary)
 
         # 1c. Pre-adapt metacognitive trigger weights from error evolution
@@ -13906,10 +13910,29 @@ class UnifiedCognitiveCycle:
         # 5. Provenance snapshot.
         provenance = self.provenance_tracker.compute_attribution()
 
+        # 5b. Provenance root-cause enrichment — when re-reasoning is
+        # recommended, walk the provenance dependency DAG backward from
+        # the dominant module to identify which upstream modules had the
+        # largest L2 impact.  This makes provenance *actionable*: instead
+        # of only knowing "re-run needed", the caller knows *which root
+        # modules* to prioritise during deeper reasoning.
+        provenance_root_cause: Dict[str, Any] = {}
+        _prov_dom = _prov_dominant  # from the earlier snapshot
+        if should_rerun and _prov_dom is not None:
+            provenance_root_cause = self.provenance_tracker.trace_root_cause(
+                _prov_dom,
+            )
+
         # 6. Root-cause trace (if available).
         root_cause_trace = {}
         if self.causal_trace is not None and trace_entry_id is not None:
             root_cause_trace = self.causal_trace.trace_root_cause(trace_entry_id)
+
+        # 7. Restore coherence threshold to prevent unbounded drift.
+        # The adapted threshold was useful for *this* evaluation cycle
+        # but must not persist across successive forward passes; the next
+        # pass will re-adapt from the latest error evolution state.
+        self.coherence_verifier.threshold = _original_threshold
 
         return {
             'convergence_verdict': convergence_verdict,
@@ -13921,6 +13944,7 @@ class UnifiedCognitiveCycle:
             'should_rerun': should_rerun,
             'trigger_detail': trigger_detail,
             'provenance': provenance,
+            'provenance_root_cause': provenance_root_cause,
             'root_cause_trace': root_cause_trace,
         }
 
@@ -14025,6 +14049,16 @@ class AEONDeltaV3(nn.Module):
         # closing the self-reflective reasoning loop.
         ("auto_critic", "unified_cognitive_cycle"),
         ("unified_cognitive_cycle", "deeper_meta_loop"),
+        # Causal DAG consensus cross-validates structural causal models
+        # and feeds disagreement into both uncertainty escalation and
+        # the auto-critic for immediate correction.  The consensus
+        # score is also included in the UCC subsystem states so the
+        # coherence verifier can detect structural causal divergence.
+        ("causal_model", "causal_dag_consensus"),
+        ("notears_causal", "causal_dag_consensus"),
+        ("causal_programmatic", "causal_dag_consensus"),
+        ("causal_dag_consensus", "auto_critic"),
+        ("causal_dag_consensus", "unified_cognitive_cycle"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -19308,6 +19342,18 @@ class AEONDeltaV3(nn.Module):
                     and isinstance(_cv_reconciled, torch.Tensor)
                     and _cv_reconciled.shape[-1] == z_out.shape[-1]):
                 _ucc_states["cross_validation"] = _cv_reconciled
+            # Include causal DAG consensus as a subsystem state so the
+            # coherence verifier can detect structural causal divergence.
+            # When multiple causal models disagree, the consensus-scaled
+            # core state will diverge from the integrated output,
+            # signalling a cross-subsystem inconsistency that was
+            # previously invisible to the coherence verifier (Gap 4).
+            if (_dag_consensus_results
+                    and _dag_consensus_results.get("consensus_score") is not None):
+                _consensus_score_val = _dag_consensus_results["consensus_score"]
+                _ucc_states["causal_dag_consensus"] = (
+                    C_star * _consensus_score_val
+                )
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -19333,6 +19379,12 @@ class AEONDeltaV3(nn.Module):
                     "should_rerun", False,
                 )
                 if _ucc_should_rerun:
+                    # Include provenance root-cause info in the audit log
+                    # so that rerun decisions are traceable back to the
+                    # specific upstream modules that dominated the output.
+                    _ucc_prov_rc = unified_cycle_results.get(
+                        "provenance_root_cause", {},
+                    )
                     self.audit_log.record(
                         "unified_cognitive_cycle", "rerun_recommended", {
                             "trigger_detail": {
@@ -19342,6 +19394,9 @@ class AEONDeltaV3(nn.Module):
                                 ).items()
                                 if not isinstance(v, torch.Tensor)
                             },
+                            "provenance_root_modules": _ucc_prov_rc.get(
+                                "root_modules", [],
+                            ),
                         },
                     )
                     # Feed the unified cycle's rerun signal into
@@ -21301,6 +21356,26 @@ class AEONDeltaV3(nn.Module):
             verified.append('causal_dag_consensus → uncertainty → metacognitive_trigger')
             if self.error_evolution is not None:
                 verified.append('causal_dag_consensus → error_evolution (disagreement tracking)')
+            # Verify DAG consensus feeds into UCC subsystem states so the
+            # coherence verifier can detect structural causal divergence.
+            if self.unified_cognitive_cycle is not None:
+                verified.append(
+                    'causal_dag_consensus → unified_cognitive_cycle '
+                    '(subsystem state for coherence verification)'
+                )
+            else:
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': (
+                        'CausalDAGConsensus active but UCC disabled — '
+                        'structural causal disagreement is invisible to '
+                        'the coherence verifier'
+                    ),
+                    'remediation': (
+                        'Enable enable_unified_cognitive_cycle so DAG '
+                        'consensus feeds into coherence verification'
+                    ),
+                })
 
         # 11a2. Safety violation → metacognitive trigger
         if self.safety_system is not None and self.metacognitive_trigger is not None:
@@ -21409,6 +21484,7 @@ class AEONDeltaV3(nn.Module):
             'hierarchical_vae', 'causal_context', 'multimodal',
             'auto_critic', 'neurogenic_memory', 'consolidating_memory',
             'temporal_memory', 'unified_cognitive_cycle',
+            'causal_dag_consensus',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
