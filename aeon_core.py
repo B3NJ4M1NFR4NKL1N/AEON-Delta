@@ -15092,9 +15092,11 @@ class AEONDeltaV3(nn.Module):
         self._cached_self_report_consistency: float = 1.0
 
         # Cached subsystem states for cross-module coherence verification.
-        # These are populated during the reasoning pipeline (record_after
-        # points) and consumed by verify_coherence() to compute pairwise
-        # cosine similarity across subsystem outputs, closing the
+        # These are populated during the reasoning pipeline at each module's
+        # provenance record_after point using .detach() to prevent gradient
+        # tracking (important for memory management since these are retained
+        # across forward passes).  Consumed by verify_coherence() to compute
+        # pairwise cosine similarity across subsystem outputs, closing the
         # coherence verification feedback loop.
         self._cached_meta_loop_state: Optional[torch.Tensor] = None
         self._cached_factor_state: Optional[torch.Tensor] = None
@@ -22295,8 +22297,8 @@ class AEONDeltaV3(nn.Module):
                 subsystem_states[label] = cached
 
         if len(subsystem_states) < 2:
-            # Fewer than 2 subsystem states cached — coherence cannot be
-            # verified.  Report degraded status instead of silently
+            # At least 2 states are required for pairwise cosine similarity
+            # comparison.  Report degraded status instead of silently
             # returning coherence=1.0 which would mask a disconnected
             # verification loop.
             result["coherence_score"] = 0.0
@@ -23067,8 +23069,11 @@ class AEONTrainer:
             if _mc_trigger is not None:
                 try:
                     _mc_trigger.evaluate(recovery_pressure=1.0)
-                except Exception:
-                    pass
+                except Exception as _mc_err:
+                    logger.debug(
+                        "Metacognitive trigger evaluation failed during "
+                        "NaN recovery (non-fatal): %s", _mc_err,
+                    )
             metrics = {k: float('nan') for k in loss_dict}
             metrics['lr'] = float(self.scheduler.get_last_lr()[0])
             metrics['grad_norm'] = 0.0
