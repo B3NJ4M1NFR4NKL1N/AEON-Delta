@@ -12798,6 +12798,45 @@ class TemporalCausalTraceBuffer:
             items = list(self._entries)
         return items[-n:]
 
+    def find(
+        self,
+        subsystem: Optional[str] = None,
+        decision: Optional[str] = None,
+        severity: Optional[str] = None,
+        n: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Query trace entries by subsystem, decision, and/or severity.
+
+        Unlike :meth:`recent`, which is time-bounded, ``find`` scans the
+        full buffer so that early-pipeline events (e.g. memory operations,
+        world model errors) are retrievable even when later entries
+        dominate the tail.  This closes the traceability gap where
+        root-cause events were recorded but unreachable via ``recent()``.
+
+        Args:
+            subsystem: Filter to entries from this subsystem.
+            decision: Filter to entries with this decision label.
+            severity: Filter to entries with this severity level.
+            n: Maximum number of results to return (most recent first).
+
+        Returns:
+            List of matching entries, ordered most-recent-first.
+        """
+        with self._lock:
+            items = list(self._entries)
+        results = []
+        for entry in reversed(items):
+            if subsystem is not None and entry.get("subsystem") != subsystem:
+                continue
+            if decision is not None and entry.get("decision") != decision:
+                continue
+            if severity is not None and entry.get("severity") != severity:
+                continue
+            results.append(entry)
+            if n is not None and len(results) >= n:
+                break
+        return results
+
     def summary(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -13608,6 +13647,19 @@ class MetaCognitiveRecursionTrigger:
             should_trigger = True
             if "uncertainty" not in triggers_active:
                 triggers_active.append("uncertainty")
+
+        # Topology catastrophe override: a catastrophe in the loss
+        # landscape is a severe structural event that always warrants
+        # deeper reasoning, regardless of the composite trigger score.
+        # Without this override, a single topology_catastrophe signal
+        # (weight 1/9) cannot reach typical trigger thresholds (0.3+),
+        # leaving catastrophic topology events unaddressed.
+        if (not should_trigger
+                and topology_catastrophe
+                and can_recurse):
+            should_trigger = True
+            if "topology_catastrophe" not in triggers_active:
+                triggers_active.append("topology_catastrophe")
 
         if should_trigger:
             self._recursion_count += 1
@@ -15086,35 +15138,44 @@ class AEONDeltaV3(nn.Module):
                     ', '.join(_ucc_available),
                 )
             else:
-                logger.info("Loading UnifiedCognitiveCycle (convergence-only mode)...")
-            self.unified_cognitive_cycle = UnifiedCognitiveCycle(
-                convergence_monitor=self.convergence_monitor,
-                coherence_verifier=self.module_coherence,
-                error_evolution=self.error_evolution,
-                metacognitive_trigger=self.metacognitive_trigger,
-                provenance_tracker=self.provenance_tracker,
-                causal_trace=self.causal_trace,
-            )
-            # Post-construction wiring verification: ensure UCC internal
-            # references point to the same instances as model-level
-            # attributes.  This eliminates the diagnostic gaps where
-            # UCC's convergence_monitor, error_evolution, or causal_trace
-            # could diverge from the model's own references.
-            _ucc = self.unified_cognitive_cycle
-            if _ucc.convergence_monitor is not self.convergence_monitor:
-                logger.warning("UCC wiring repair: convergence_monitor reference mismatch — re-linking")
-                _ucc.convergence_monitor = self.convergence_monitor
-            if (self.error_evolution is not None
-                    and getattr(_ucc.convergence_monitor, '_error_evolution', None)
-                    is not self.error_evolution):
-                logger.warning("UCC wiring repair: convergence_monitor.error_evolution mismatch — re-linking")
-                _ucc.convergence_monitor.set_error_evolution(self.error_evolution)
-            if (self.causal_trace is not None
-                    and _ucc.causal_trace is not self.causal_trace):
-                logger.warning("UCC wiring repair: causal_trace reference mismatch — re-linking")
-                _ucc.causal_trace = self.causal_trace
-                if _ucc.error_evolution is not None:
-                    _ucc.error_evolution.set_causal_trace(self.causal_trace)
+                # Without any optional prerequisites the UCC degenerates
+                # into a bare convergence-monitor wrapper that adds no
+                # cross-verification value.  Disable it so that downstream
+                # code does not invoke an empty orchestration layer.
+                logger.info(
+                    "Skipping UnifiedCognitiveCycle: no optional prerequisites "
+                    "(module_coherence, metacognitive_trigger, error_evolution) available"
+                )
+                self.unified_cognitive_cycle = None
+            if _ucc_available:
+                self.unified_cognitive_cycle = UnifiedCognitiveCycle(
+                    convergence_monitor=self.convergence_monitor,
+                    coherence_verifier=self.module_coherence,
+                    error_evolution=self.error_evolution,
+                    metacognitive_trigger=self.metacognitive_trigger,
+                    provenance_tracker=self.provenance_tracker,
+                    causal_trace=self.causal_trace,
+                )
+                # Post-construction wiring verification: ensure UCC internal
+                # references point to the same instances as model-level
+                # attributes.  This eliminates the diagnostic gaps where
+                # UCC's convergence_monitor, error_evolution, or causal_trace
+                # could diverge from the model's own references.
+                _ucc = self.unified_cognitive_cycle
+                if _ucc.convergence_monitor is not self.convergence_monitor:
+                    logger.warning("UCC wiring repair: convergence_monitor reference mismatch — re-linking")
+                    _ucc.convergence_monitor = self.convergence_monitor
+                if (self.error_evolution is not None
+                        and getattr(_ucc.convergence_monitor, '_error_evolution', None)
+                        is not self.error_evolution):
+                    logger.warning("UCC wiring repair: convergence_monitor.error_evolution mismatch — re-linking")
+                    _ucc.convergence_monitor.set_error_evolution(self.error_evolution)
+                if (self.causal_trace is not None
+                        and _ucc.causal_trace is not self.causal_trace):
+                    logger.warning("UCC wiring repair: causal_trace reference mismatch — re-linking")
+                    _ucc.causal_trace = self.causal_trace
+                    if _ucc.error_evolution is not None:
+                        _ucc.error_evolution.set_causal_trace(self.causal_trace)
         else:
             self.unified_cognitive_cycle = None
         
@@ -17915,6 +17976,7 @@ class AEONDeltaV3(nn.Module):
         _causal_world_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 2].any().item()
+            and not high_uncertainty
         )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             self.provenance_tracker.record_before("causal_world_model", C_star)
