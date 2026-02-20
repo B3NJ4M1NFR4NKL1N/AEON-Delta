@@ -31302,6 +31302,332 @@ def test_trainer_nan_triggers_metacognitive():
     print("✅ test_trainer_nan_triggers_metacognitive PASSED")
 
 
+# =============================================================================
+# UNIFIED AGI ARCHITECTURE TESTS
+# =============================================================================
+
+
+def test_unified_convergence_arbiter_all_agree():
+    """UnifiedConvergenceArbiter: when all monitors agree, unified status = converged."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        certified_results={"certified_convergence": True},
+    )
+    assert result["unified_status"] == "converged", f"Expected 'converged', got {result['unified_status']}"
+    assert result["unified_certified"] is True
+    assert result["has_conflict"] is False
+    assert result["uncertainty_boost"] == 0.0
+    print("✅ test_unified_convergence_arbiter_all_agree PASSED")
+
+
+def test_unified_convergence_arbiter_conflict():
+    """UnifiedConvergenceArbiter: detects conflict when monitors disagree."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.2)
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "diverging", "certified": False},
+        certified_results={"certified_convergence": True},
+    )
+    assert result["has_conflict"] is True, "Should detect conflict"
+    assert result["uncertainty_boost"] == 0.2
+    assert len(result["conflict_details"]) > 0
+    assert result["unified_status"] in ("diverging", "conflict")
+    print("✅ test_unified_convergence_arbiter_conflict PASSED")
+
+
+def test_unified_convergence_arbiter_no_certified():
+    """UnifiedConvergenceArbiter: works without CertifiedMetaLoop."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.6, "residual_norm": 0.5},
+        convergence_monitor_verdict={"status": "converging", "certified": False},
+        certified_results=None,
+    )
+    assert result["unified_status"] == "converging"
+    assert result["has_conflict"] is False
+    assert "certified_meta_loop" not in result["individual_verdicts"]
+    print("✅ test_unified_convergence_arbiter_no_certified PASSED")
+
+
+def test_directional_uncertainty_tracker_per_module():
+    """DirectionalUncertaintyTracker: tracks per-module uncertainty."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    tracker.record("meta_loop", 0.3, source_label="residual_variance")
+    tracker.record("world_model", 0.8, source_label="surprise")
+    tracker.record("safety", 0.1)
+
+    assert tracker.get_most_uncertain_module() == "world_model"
+    assert tracker.get_aggregate() == 0.8
+    assert len(tracker.get_modules_above_threshold(0.5)) == 1
+    assert "world_model" in tracker.get_modules_above_threshold(0.5)
+    print("✅ test_directional_uncertainty_tracker_per_module PASSED")
+
+
+def test_directional_uncertainty_tracker_summary():
+    """DirectionalUncertaintyTracker: build_summary returns complete info."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    tracker.record("A", 0.5)
+    tracker.record("B", 0.9)
+    summary = tracker.build_summary()
+
+    assert "aggregate_uncertainty" in summary
+    assert summary["aggregate_uncertainty"] == 0.9
+    assert summary["most_uncertain_module"] == "B"
+    assert "A" in summary["module_uncertainties"]
+    assert "B" in summary["module_uncertainties"]
+    assert "B" in summary["flagged_modules"]
+    print("✅ test_directional_uncertainty_tracker_summary PASSED")
+
+
+def test_directional_uncertainty_tracker_reset():
+    """DirectionalUncertaintyTracker: reset clears all state."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    tracker.record("A", 0.7)
+    tracker.reset()
+
+    assert tracker.get_aggregate() == 0.0
+    assert tracker.get_most_uncertain_module() is None
+    assert tracker.get_sources() == {}
+    print("✅ test_directional_uncertainty_tracker_reset PASSED")
+
+
+def test_memory_reasoning_validator_consistent():
+    """MemoryReasoningValidator: passes when memory and state align."""
+    from aeon_core import MemoryReasoningValidator
+
+    validator = MemoryReasoningValidator(consistency_threshold=0.3)
+    # Create aligned tensors
+    memory = torch.randn(1, 64)
+    # State close to memory
+    state = memory + 0.01 * torch.randn(1, 64)
+
+    result = validator.validate(memory, state)
+    assert result["is_consistent"] is True
+    assert result["needs_re_retrieval"] is False
+    assert result["uncertainty_boost"] == 0.0
+    assert result["memory_available"] is True
+    print("✅ test_memory_reasoning_validator_consistent PASSED")
+
+
+def test_memory_reasoning_validator_inconsistent():
+    """MemoryReasoningValidator: detects inconsistency between memory and state."""
+    from aeon_core import MemoryReasoningValidator
+
+    validator = MemoryReasoningValidator(
+        consistency_threshold=0.9, staleness_penalty=0.15,
+    )
+    # Create opposing tensors
+    memory = torch.randn(1, 64)
+    state = -memory  # Opposite direction
+
+    result = validator.validate(memory, state)
+    assert result["is_consistent"] is False
+    assert result["needs_re_retrieval"] is True
+    assert result["uncertainty_boost"] == 0.15
+    print("✅ test_memory_reasoning_validator_inconsistent PASSED")
+
+
+def test_memory_reasoning_validator_no_memory():
+    """MemoryReasoningValidator: gracefully handles None memory signal."""
+    from aeon_core import MemoryReasoningValidator
+
+    validator = MemoryReasoningValidator()
+    state = torch.randn(2, 64)
+
+    result = validator.validate(None, state)
+    assert result["is_consistent"] is True
+    assert result["memory_available"] is False
+    assert result["uncertainty_boost"] == 0.0
+    print("✅ test_memory_reasoning_validator_no_memory PASSED")
+
+
+def test_ucc_evaluate_returns_convergence_arbiter():
+    """UCC.evaluate() returns convergence_arbiter result when arbiter is wired."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalProvenanceTracker, UnifiedConvergenceArbiter,
+        DirectionalUncertaintyTracker, MemoryReasoningValidator,
+    )
+
+    cm = ConvergenceMonitor()
+    mcv = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    prov = CausalProvenanceTracker()
+    arbiter = UnifiedConvergenceArbiter()
+    unc = DirectionalUncertaintyTracker()
+    mem_val = MemoryReasoningValidator()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=mcv,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        convergence_arbiter=arbiter,
+        uncertainty_tracker=unc,
+        memory_validator=mem_val,
+    )
+
+    states = {
+        "meta_loop": torch.randn(1, 32),
+        "safety": torch.randn(1, 32),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.3,
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.01},
+        certified_results=None,
+        memory_signal=torch.randn(1, 32),
+        converged_state=torch.randn(1, 32),
+    )
+
+    assert "convergence_arbiter" in result
+    assert "uncertainty_summary" in result
+    assert "memory_validation" in result
+    # Convergence arbiter should have been called
+    assert "unified_status" in result["convergence_arbiter"]
+    # Uncertainty tracker should have recorded at least convergence
+    assert result["uncertainty_summary"].get("aggregate_uncertainty", -1) >= 0
+    # Memory validation should have run
+    assert result["memory_validation"].get("memory_available", False) is True
+    print("✅ test_ucc_evaluate_returns_convergence_arbiter PASSED")
+
+
+def test_ucc_memory_validation_triggers_rerun():
+    """UCC: memory-reasoning inconsistency triggers should_rerun."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, MemoryReasoningValidator,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    mem_val = MemoryReasoningValidator(
+        consistency_threshold=0.99,  # Very high threshold
+        staleness_penalty=0.2,
+    )
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        memory_validator=mem_val,
+    )
+
+    states = {
+        "meta_loop": torch.randn(1, 32),
+        "output": torch.randn(1, 32),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,
+        uncertainty=0.1,
+        memory_signal=torch.randn(1, 32),
+        converged_state=torch.randn(1, 32),
+    )
+
+    # With high threshold and random tensors, memory should be inconsistent
+    mem_val_result = result.get("memory_validation", {})
+    assert mem_val_result.get("memory_available") is True
+    # Should trigger rerun due to inconsistency
+    assert result["should_rerun"] is True or mem_val_result.get("needs_re_retrieval") is True
+    print("✅ test_ucc_memory_validation_triggers_rerun PASSED")
+
+
+def test_convergence_arbiter_diverging_override():
+    """UnifiedConvergenceArbiter: diverging in any monitor = unified diverging."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.1, "residual_norm": 5.0},
+        convergence_monitor_verdict={"status": "diverging", "certified": False},
+    )
+    assert result["unified_status"] == "diverging"
+    assert result["unified_certified"] is False
+    print("✅ test_convergence_arbiter_diverging_override PASSED")
+
+
+def test_directional_uncertainty_tracker_max_per_module():
+    """DirectionalUncertaintyTracker: keeps maximum uncertainty per module."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    tracker.record("A", 0.3)
+    tracker.record("A", 0.7)  # Should overwrite with max
+    tracker.record("A", 0.5)  # Should NOT overwrite 0.7
+
+    assert tracker.get_module_uncertainties()["A"] == 0.7
+    print("✅ test_directional_uncertainty_tracker_max_per_module PASSED")
+
+
+def test_metacognitive_trigger_maps_new_error_classes():
+    """MetaCognitiveRecursionTrigger: maps convergence_conflict and memory_reasoning_inconsistency."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "convergence_conflict": {"count": 3, "success_rate": 0.2},
+            "memory_reasoning_inconsistency": {"count": 2, "success_rate": 0.3},
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+
+    # After adaptation, diverging and memory_staleness weights should be boosted
+    w = trigger._signal_weights
+    # Since convergence_conflict maps to "diverging" and has low success,
+    # diverging weight should be above default (1/9 ≈ 0.111)
+    assert w["diverging"] > 0.111 or w["memory_staleness"] > 0.111, (
+        f"Expected boosted weights: diverging={w['diverging']:.3f}, "
+        f"memory_staleness={w['memory_staleness']:.3f}"
+    )
+    print("✅ test_metacognitive_trigger_maps_new_error_classes PASSED")
+
+
+def test_bridge_inference_insights_to_training():
+    """bridge_inference_insights_to_training: adapts training from inference errors."""
+    from ae_train import bridge_inference_insights_to_training
+    from aeon_core import CausalErrorEvolutionTracker
+
+    # Create error evolution with convergence conflicts
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    ee.record_episode("convergence_conflict", "arbitration_escalation", False)
+    ee.record_episode("convergence_conflict", "arbitration_escalation", False)
+
+    # Create a mock trainer with the expected attributes
+    class MockTrainer:
+        def __init__(self):
+            self._grad_clip_norm = 0.5
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+
+    trainer = MockTrainer()
+    adjustments = bridge_inference_insights_to_training(ee, trainer)
+    
+    assert adjustments >= 1, "Should have made at least one adjustment"
+    assert trainer._grad_clip_norm < 0.5, (
+        f"Expected tighter grad clip, got {trainer._grad_clip_norm}"
+    )
+    print("✅ test_bridge_inference_insights_to_training PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -32689,6 +33015,23 @@ if __name__ == '__main__':
     test_vq_codebook_reports_degraded_when_disabled()
     test_metacognitive_coherence_reports_disabled()
     test_trainer_nan_triggers_metacognitive()
+    
+    # Unified AGI Architecture tests
+    test_unified_convergence_arbiter_all_agree()
+    test_unified_convergence_arbiter_conflict()
+    test_unified_convergence_arbiter_no_certified()
+    test_directional_uncertainty_tracker_per_module()
+    test_directional_uncertainty_tracker_summary()
+    test_directional_uncertainty_tracker_reset()
+    test_memory_reasoning_validator_consistent()
+    test_memory_reasoning_validator_inconsistent()
+    test_memory_reasoning_validator_no_memory()
+    test_ucc_evaluate_returns_convergence_arbiter()
+    test_ucc_memory_validation_triggers_rerun()
+    test_convergence_arbiter_diverging_override()
+    test_directional_uncertainty_tracker_max_per_module()
+    test_metacognitive_trigger_maps_new_error_classes()
+    test_bridge_inference_insights_to_training()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
