@@ -735,6 +735,16 @@ async def run_inference(req: InferRequest):
     tps = round(tokens / max(elapsed_ms / 1000, 0.001), 1)
     logging.info(f"✅ {tokens} tokens · {elapsed_ms}ms · {tps} tok/s · status={result.get('status')}")
 
+    # Attach metacognitive state so consumers can assess reasoning
+    # confidence, coherence verdict, and provenance attribution for
+    # every inference call — closing the gap between inference output
+    # and the system's self-reflective assessment.
+    metacognitive = {}
+    try:
+        metacognitive = APP.model.get_metacognitive_state()
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "text": text_out,
@@ -747,6 +757,7 @@ async def run_inference(req: InferRequest):
         "tensorguard": tg,
         "uncertainty": result.get("uncertainty"),
         "causal_decision_chain": result.get("causal_decision_chain", {}),
+        "metacognitive_state": metacognitive,
     }
 
 
@@ -1595,6 +1606,46 @@ async def get_metacognition():
     except Exception as e:
         logging.error(f"Metacognition endpoint error: {e}")
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/metacognition/resolve")
+async def resolve_metacognitive_gaps():
+    """Analyse self-diagnostic gaps and return prioritised, actionable
+    resolution recommendations.
+
+    Each gap identified by ``self_diagnostic()`` is mapped to a concrete
+    configuration change or operational action, enabling automated or
+    semi-automated self-repair.  Gaps are ranked by severity so that
+    critical issues (``None``-valued subsystems) surface first.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        diagnostic = APP.model.self_diagnostic()
+        gaps = diagnostic.get("gaps", [])
+        resolutions = []
+        for gap in gaps:
+            severity = "critical" if " is None" in gap.get("gap", "") else "warning"
+            resolutions.append({
+                "component": gap.get("component", "unknown"),
+                "gap": gap.get("gap", ""),
+                "remediation": gap.get("remediation", ""),
+                "severity": severity,
+            })
+        # Sort critical first
+        resolutions.sort(key=lambda r: 0 if r["severity"] == "critical" else 1)
+        return {
+            "ok": True,
+            "status": diagnostic.get("status"),
+            "total_gaps": len(resolutions),
+            "critical_gaps": sum(1 for r in resolutions if r["severity"] == "critical"),
+            "resolutions": resolutions,
+        }
+    except Exception as e:
+        logging.error(f"Gap resolution endpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/telemetry/metrics")
 async def get_telemetry_metrics():
     """Return a snapshot of all collected telemetry metrics with statistics."""
