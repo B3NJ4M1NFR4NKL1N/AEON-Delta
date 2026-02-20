@@ -2983,6 +2983,7 @@ class AEONConfig:
     # ===== HIERARCHICAL WORLD MODEL =====
     enable_hierarchical_world_model: bool = False
     hierarchical_world_model_blend: float = 0.1
+    wm_cross_divergence_threshold: float = 0.1
 
     # ===== HIERARCHICAL META-LOOP =====
     # Multi-scale meta-loop that routes inputs through fast/medium/deep
@@ -14708,16 +14709,20 @@ class UnifiedCognitiveCycle:
                 self.uncertainty_tracker.record("topology", 0.9)
             if convergence_arbiter_result.get("has_conflict", False):
                 self.uncertainty_tracker.record("convergence_arbiter", 0.6)
-            if auto_critic_quality is not None and auto_critic_quality < 0.5:
-                self.uncertainty_tracker.record(
-                    "auto_critic", 1.0 - auto_critic_quality,
-                    source_label="low_self_assessment",
-                )
-            if executive_health is not None and executive_health < 1.0:
-                self.uncertainty_tracker.record(
-                    "cognitive_executive", 1.0 - executive_health,
-                    source_label="executive_arbitration_deficit",
-                )
+            if auto_critic_quality is not None:
+                _ac_q = max(0.0, min(1.0, auto_critic_quality))
+                if _ac_q < 0.5:
+                    self.uncertainty_tracker.record(
+                        "auto_critic", 1.0 - _ac_q,
+                        source_label="low_self_assessment",
+                    )
+            if executive_health is not None:
+                _eh = max(0.0, min(1.0, executive_health))
+                if _eh < 1.0:
+                    self.uncertainty_tracker.record(
+                        "cognitive_executive", 1.0 - _eh,
+                        source_label="executive_arbitration_deficit",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -18409,13 +18414,16 @@ class AEONDeltaV3(nn.Module):
         if (_wm_predicted is not None
                 and _hwm_predicted is not None
                 and _wm_predicted.shape == _hwm_predicted.shape):
-            _wm_divergence = F.mse_loss(
-                _wm_predicted.detach(), _hwm_predicted.detach(),
-            ).item()
+            # Normalise by element count so the threshold behaves
+            # consistently regardless of prediction dimensionality.
+            _wm_divergence = float(
+                (_wm_predicted.detach() - _hwm_predicted.detach())
+                .pow(2).mean().item()
+            )
             hierarchical_wm_results["wm_cross_divergence"] = _wm_divergence
-            _WM_CROSS_DIVERGENCE_THRESHOLD = 0.1
+            _wm_xv_thresh = self.config.wm_cross_divergence_threshold
             if (math.isfinite(_wm_divergence)
-                    and _wm_divergence > _WM_CROSS_DIVERGENCE_THRESHOLD):
+                    and _wm_divergence > _wm_xv_thresh):
                 _wm_xv_boost = min(
                     1.0 - uncertainty,
                     _wm_divergence * 0.15,
@@ -18446,7 +18454,7 @@ class AEONDeltaV3(nn.Module):
                         severity="warning",
                         metadata={
                             "divergence": _wm_divergence,
-                            "threshold": _WM_CROSS_DIVERGENCE_THRESHOLD,
+                            "threshold": _wm_xv_thresh,
                         },
                     )
 
@@ -20848,6 +20856,12 @@ class AEONDeltaV3(nn.Module):
                     memory_signal=_pre_loop_memory_signal,
                     converged_state=C_star.detach(),
                     auto_critic_quality=_auto_critic_final_score,
+                    # Binary proxy: the executive either produced a
+                    # valid winner (1.0) or failed / was not enabled
+                    # (0.0 / None).  The module exposes no richer
+                    # health metric; urgency scores are subsystem-
+                    # relative and unsuitable as a global health
+                    # indicator.
                     executive_health=(
                         1.0 if executive_results.get("winner") is not None
                         else (0.0 if self.cognitive_executive is not None
