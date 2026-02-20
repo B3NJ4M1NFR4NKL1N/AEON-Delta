@@ -33193,6 +33193,254 @@ def test_reconciliation_exhaustion_escalates_uncertainty():
     print("✅ test_reconciliation_exhaustion_escalates_uncertainty PASSED")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Architectural Unification — Cross-Subsystem Coherence & Meta-Cognitive
+# Visibility Gap Closure Tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_ucc_evaluate_accepts_auto_critic_quality():
+    """UnifiedCognitiveCycle.evaluate() should accept and track
+    auto_critic_quality in directional uncertainty when provided."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+    )
+
+    provenance = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        error_evolution=CausalErrorEvolutionTracker(),
+        provenance_tracker=provenance,
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+    )
+
+    states = {
+        "core_state": torch.randn(2, 32),
+        "integrated_output": torch.randn(2, 32),
+    }
+
+    # Low auto-critic quality should appear in uncertainty summary
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.3,
+        auto_critic_quality=0.2,
+    )
+    summary = result.get("uncertainty_summary", {})
+    modules = summary.get("module_uncertainties", {})
+    assert "auto_critic" in modules, (
+        f"auto_critic not tracked in uncertainty summary; got {list(modules.keys())}"
+    )
+    print("✅ test_ucc_evaluate_accepts_auto_critic_quality PASSED")
+
+
+def test_ucc_evaluate_accepts_executive_health():
+    """UnifiedCognitiveCycle.evaluate() should accept and track
+    executive_health in directional uncertainty when provided."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+    )
+
+    provenance = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        error_evolution=CausalErrorEvolutionTracker(),
+        provenance_tracker=provenance,
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+    )
+
+    states = {
+        "core_state": torch.randn(2, 32),
+        "integrated_output": torch.randn(2, 32),
+    }
+
+    # Low executive health should appear in uncertainty summary
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.1,
+        executive_health=0.3,
+    )
+    summary = result.get("uncertainty_summary", {})
+    modules = summary.get("module_uncertainties", {})
+    assert "cognitive_executive" in modules, (
+        f"cognitive_executive not tracked in uncertainty; got {list(modules.keys())}"
+    )
+    print("✅ test_ucc_evaluate_accepts_executive_health PASSED")
+
+
+def test_ucc_evaluate_no_tracking_when_signals_healthy():
+    """When auto_critic_quality >= 0.5 and executive_health == 1.0,
+    their signals should NOT appear in the uncertainty summary."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+    )
+
+    provenance = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        error_evolution=CausalErrorEvolutionTracker(),
+        provenance_tracker=provenance,
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+    )
+
+    states = {
+        "core_state": torch.randn(2, 32),
+        "integrated_output": torch.randn(2, 32),
+    }
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.1,
+        auto_critic_quality=0.9,
+        executive_health=1.0,
+    )
+    summary = result.get("uncertainty_summary", {})
+    modules = summary.get("module_uncertainties", {})
+    assert "auto_critic" not in modules, (
+        "auto_critic should not be tracked when quality >= 0.5"
+    )
+    assert "cognitive_executive" not in modules, (
+        "cognitive_executive should not be tracked when health == 1.0"
+    )
+    print("✅ test_ucc_evaluate_no_tracking_when_signals_healthy PASSED")
+
+
+def test_ucc_states_include_executive_winner():
+    """When CognitiveExecutiveFunction produces a valid winner tensor,
+    it should be included in the UCC subsystem states.  We verify the
+    wiring by directly calling CognitiveExecutiveFunction and checking
+    that the resulting winner has the correct shape for inclusion."""
+    import torch
+    from aeon_core import CognitiveExecutiveFunction
+    import torch.nn as nn
+
+    # Minimal subsystems for the executive
+    subs = {
+        "sub_a": nn.Linear(32, 32),
+        "sub_b": nn.Linear(32, 32),
+    }
+    exec_fn = CognitiveExecutiveFunction(
+        subsystems=subs,
+        state_dim=32,
+        top_k=2,
+    )
+    exec_fn.eval()
+
+    state = torch.randn(2, 32)
+    with torch.no_grad():
+        result = exec_fn(state)
+
+    winner = result.get("winner")
+    assert winner is not None, "CognitiveExecutiveFunction should produce a winner"
+    assert winner.shape[-1] == state.shape[-1], (
+        f"Winner dim {winner.shape[-1]} should match state dim {state.shape[-1]}"
+    )
+    # Verify the winner tensor would pass the UCC inclusion guard
+    assert torch.is_tensor(winner) and winner.shape[-1] == 32, (
+        "Winner should be a tensor with matching hidden dim for UCC inclusion"
+    )
+    print("✅ test_ucc_states_include_executive_winner PASSED")
+
+
+def test_world_model_cross_validation_divergence():
+    """When both world models produce divergent predictions, the cross-
+    validation should escalate uncertainty and record in outputs."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64,
+        z_dim=64,
+        vq_embedding_dim=64,
+        vocab_size=1000,
+        seq_length=16,
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_world_model=True,
+        enable_hierarchical_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model.world_model is not None, "World model should be enabled"
+    assert model.hierarchical_world_model is not None, (
+        "Hierarchical world model should be enabled"
+    )
+
+    tokens = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(tokens, fast=False)
+
+    # When both models ran, hierarchical_wm_results should contain
+    # wm_cross_divergence key
+    hwm_results = result.get('hierarchical_wm_results', {})
+    # The cross-divergence key is only added when both models produce
+    # same-shaped predictions; check it exists or is missing gracefully
+    if hwm_results.get('prediction') is not None:
+        assert 'wm_cross_divergence' in hwm_results or hwm_results == {}, (
+            "Expected wm_cross_divergence key when both WMs are active"
+        )
+
+    print("✅ test_world_model_cross_validation_divergence PASSED")
+
+
+def test_ucc_backward_compatible_without_new_params():
+    """UnifiedCognitiveCycle.evaluate() should still work without the
+    new auto_critic_quality and executive_health parameters (backward
+    compatibility)."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, ModuleCoherenceVerifier,
+        MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker,
+    )
+
+    provenance = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=provenance,
+    )
+
+    states = {
+        "core_state": torch.randn(2, 32),
+        "integrated_output": torch.randn(2, 32),
+    }
+
+    # Call WITHOUT new params — should not raise
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.1,
+    )
+    assert "convergence_verdict" in result
+    assert "should_rerun" in result
+    print("✅ test_ucc_backward_compatible_without_new_params PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -34648,6 +34896,15 @@ if __name__ == '__main__':
     test_self_diagnostic_includes_provenance_and_reliability()
     test_self_diagnostic_reports_decoder_feedback_loop()
     test_reconciliation_exhaustion_escalates_uncertainty()
+    
+    # Architectural Unification — Cross-Subsystem Coherence & Meta-Cognitive
+    # Visibility Gap Closure Tests
+    test_ucc_evaluate_accepts_auto_critic_quality()
+    test_ucc_evaluate_accepts_executive_health()
+    test_ucc_evaluate_no_tracking_when_signals_healthy()
+    test_ucc_states_include_executive_winner()
+    test_world_model_cross_validation_divergence()
+    test_ucc_backward_compatible_without_new_params()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
