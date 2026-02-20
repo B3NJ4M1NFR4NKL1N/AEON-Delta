@@ -29489,7 +29489,7 @@ def test_ucc_evaluate_returns_error_evolution_root_causes():
 
 
 def test_ucc_evaluate_returns_causal_chain():
-    """Gap 6: UnifiedCognitiveCycle.evaluate() returns the full causal chain
+    """Gap 5: UnifiedCognitiveCycle.evaluate() returns the full causal chain
     audit trail when re-reasoning is triggered and causal trace is available."""
     from aeon_core import (
         UnifiedCognitiveCycle, ConvergenceMonitor,
