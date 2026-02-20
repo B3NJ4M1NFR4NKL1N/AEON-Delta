@@ -6784,40 +6784,70 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "meta_loop_nan": 1.0,
     "rssm_nan": 1.0,
     "integration_nan": 1.0,
+    "topology_catastrophe": 0.9,
+    "pipeline_error": 1.0,
     # Core reasoning (moderate-high)
     "residual_variance": 0.8,
     "coherence_deficit": 0.7,
     "recovery_pressure": 0.7,
+    "certified_convergence_failed": 0.8,
+    "convergence_conflict": 0.7,
     # Subsystem diagnostics (moderate)
     "world_model_error": 0.5,
     "world_model_surprise": 0.5,
+    "world_model_cross_divergence": 0.6,
     "memory_error": 0.5,
     "memory_staleness": 0.5,
+    "unified_memory_error": 0.5,
     "causal_model_error": 0.5,
     "hybrid_reasoning_error": 0.5,
     "hybrid_reasoning_ns_violation": 0.6,
     "multimodal_error": 0.5,
+    "multimodal_nonfinite": 0.8,
     "unified_simulator_divergence": 0.5,
     "diversity_collapse": 0.6,
-    # Soft signals (lower reliability)
-    "mcts_low_confidence": 0.4,
-    "active_learning_curiosity": 0.3,
-    "hvae_kl_divergence": 0.3,
-    "low_memory_trust": 0.4,
+    "causal_context_error": 0.5,
+    "cognitive_executive_error": 0.5,
+    "ns_bridge_error": 0.5,
+    "vq_codebook_collapse": 0.6,
+    "vq_check_error": 0.5,
+    "integrity_anomalies": 0.7,
+    # Self-report & critic
+    "self_report_low_honesty": 0.6,
+    "self_report_low_confidence": 0.5,
     "auto_critic_error": 0.6,
     "auto_critic_low_score": 0.7,
+    # Value network
+    "value_net_low_quality": 0.5,
+    "value_net_error": 0.5,
+    # Causal subsystems
     "causal_programmatic_error": 0.5,
     "causal_dag_disagreement": 0.7,
     "causal_root_cause_count": 0.6,
     "causal_trace_errors": 0.5,
+    # Cross-validation & reconciliation
+    "reconciliation_disagreement": 0.6,
+    "reconciliation_exhausted": 0.7,
     "post_integration_coherence_deficit": 0.7,
     "unified_cycle_coherence": 0.7,
-    "consolidating_memory_error": 0.4,
+    # Meta-learner & evolution
+    "meta_learner_ewc_drift": 0.5,
     "error_evolution_preemptive": 0.6,
-    "hierarchical_wm_error": 0.5,
+    # Hierarchical VAE
+    "hvae_kl_divergence": 0.3,
+    "hvae_error": 0.5,
+    # Memory subsystems
+    "consolidating_memory_error": 0.4,
     "neurogenic_memory_sparse": 0.4,
     "temporal_memory_sparse": 0.4,
-    "pipeline_error": 1.0,
+    "low_memory_trust": 0.4,
+    "hierarchical_wm_error": 0.5,
+    "tkg_retrieval_error": 0.4,
+    # Soft signals (lower reliability)
+    "mcts_low_confidence": 0.4,
+    "mcts_causal_adj_failure": 0.4,
+    "active_learning_curiosity": 0.3,
+    "active_learning_error": 0.4,
 }
 
 
@@ -14854,6 +14884,10 @@ class AEONDeltaV3(nn.Module):
         ("hybrid_reasoning", "hierarchical_vae"),
         ("ns_bridge", "hierarchical_vae"),
         ("hierarchical_vae", "causal_context"),
+        # HVAE selected_level feeds into the unified cognitive cycle so
+        # the coherence verifier can cross-validate abstraction against
+        # the integrated output.
+        ("hierarchical_vae", "unified_cognitive_cycle"),
         ("causal_context", "rssm"),
         ("rssm", "multimodal"),
         ("rssm", "integration"),
@@ -20788,31 +20822,85 @@ class AEONDeltaV3(nn.Module):
             self.uncertainty_tracker.reset()
             # Map uncertainty sources to their originating modules
             _source_module_map = {
+                # Meta-loop & convergence
                 "residual_variance": "meta_loop",
                 "meta_loop_nan": "meta_loop",
                 "certified_convergence_failed": "certified_meta_loop",
                 "convergence_conflict": "convergence",
+                # Vector quantizer
                 "vq_codebook_collapse": "vector_quantizer",
                 "vq_check_error": "vector_quantizer",
+                # Factor & diversity analysis
                 "diversity_collapse": "sparse_factorization",
+                # Self-report
                 "self_report_low_honesty": "self_report",
                 "self_report_low_confidence": "self_report",
+                # Coherence
                 "coherence_deficit": "coherence_verifier",
+                "post_integration_coherence_deficit": "coherence_verifier",
+                "unified_cycle_coherence": "coherence_verifier",
+                # World model
                 "world_model_surprise": "world_model",
                 "world_model_error": "world_model",
+                "world_model_cross_divergence": "world_model",
                 "hierarchical_wm_error": "hierarchical_world_model",
+                # Memory subsystems
                 "memory_error": "memory",
                 "memory_staleness": "memory",
                 "unified_memory_error": "memory",
+                "low_memory_trust": "memory",
+                "neurogenic_memory_sparse": "neurogenic_memory",
+                "temporal_memory_sparse": "temporal_memory",
+                "consolidating_memory_error": "consolidating_memory",
+                # Error recovery & evolution
                 "recovery_pressure": "error_recovery",
-                "topology_catastrophe": "topology_analyzer",
-                "causal_trace_errors": "causal_trace",
-                "causal_context_error": "causal_context",
-                "cognitive_executive_error": "cognitive_executive",
                 "error_evolution_preemptive": "error_evolution",
+                # Topology & safety
+                "topology_catastrophe": "topology_analyzer",
+                # Causal subsystems
+                "causal_trace_errors": "causal_trace",
+                "causal_root_cause_count": "causal_trace",
+                "causal_context_error": "causal_context",
+                "causal_model_error": "causal_model",
+                "causal_programmatic_error": "causal_programmatic",
+                "causal_dag_disagreement": "causal_dag_consensus",
+                # Cognitive executive
+                "cognitive_executive_error": "cognitive_executive",
+                # Value network
                 "value_net_low_quality": "value_network",
                 "value_net_error": "value_network",
+                # Integrity
                 "integrity_anomalies": "integrity_monitor",
+                # Hierarchical VAE
+                "hvae_kl_divergence": "hierarchical_vae",
+                "hvae_error": "hierarchical_vae",
+                # Auto-critic
+                "auto_critic_low_score": "auto_critic",
+                "auto_critic_error": "auto_critic",
+                # Meta-learner
+                "meta_learner_ewc_drift": "meta_learner",
+                # MCTS planner
+                "mcts_low_confidence": "mcts_planner",
+                "mcts_causal_adj_failure": "mcts_planner",
+                # Active learning
+                "active_learning_curiosity": "active_learning_planner",
+                "active_learning_error": "active_learning_planner",
+                # Cross-validation reconciler
+                "reconciliation_disagreement": "cross_validation",
+                "reconciliation_exhausted": "cross_validation",
+                # Hybrid reasoning & NS bridge
+                "hybrid_reasoning_error": "hybrid_reasoning",
+                "hybrid_reasoning_ns_violation": "hybrid_reasoning",
+                "ns_bridge_error": "ns_bridge",
+                "unified_simulator_divergence": "unified_simulator",
+                # Temporal knowledge graph
+                "tkg_retrieval_error": "temporal_knowledge_graph",
+                # Integration & RSSM
+                "rssm_nan": "rssm",
+                "integration_nan": "integration",
+                # Multimodal
+                "multimodal_nonfinite": "multimodal",
+                "multimodal_error": "multimodal",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
@@ -20887,6 +20975,16 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_hwm_pred_ucc)
                     and _hwm_pred_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["hierarchical_world_model"] = _hwm_pred_ucc
+            # Include HVAE selected-level representation so the coherence
+            # verifier can cross-validate hierarchical abstraction against
+            # the integrated output.  Without this, HVAE contributions are
+            # invisible to the coherence verifier despite blending into
+            # C_star, preventing detection of abstraction-level misalignment.
+            _hvae_sel_ucc = hierarchical_vae_results.get("selected_level", None)
+            if (_hvae_sel_ucc is not None
+                    and torch.is_tensor(_hvae_sel_ucc)
+                    and _hvae_sel_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["hierarchical_vae"] = _hvae_sel_ucc
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23133,6 +23231,27 @@ class AEONDeltaV3(nn.Module):
             verified.append('hierarchical_vae → uncertainty (KL + error) → metacognitive')
             if self.causal_trace is not None:
                 verified.append('hierarchical_vae → causal_trace (root-cause traceability)')
+            # Verify HVAE selected-level feeds into UCC subsystem states
+            # so the coherence verifier can cross-validate abstraction
+            # against the integrated output.
+            if self.unified_cognitive_cycle is not None:
+                verified.append(
+                    'hierarchical_vae → unified_cognitive_cycle '
+                    '(subsystem state for coherence verification)'
+                )
+            else:
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': (
+                        'HierarchicalVAE active but UCC disabled — '
+                        'abstraction-level misalignment is invisible to '
+                        'the coherence verifier'
+                    ),
+                    'remediation': (
+                        'Enable enable_unified_cognitive_cycle so HVAE '
+                        'selected_level feeds into coherence verification'
+                    ),
+                })
 
         # 10. MetaLearner → uncertainty feedback loop
         if self.meta_learner is not None:
