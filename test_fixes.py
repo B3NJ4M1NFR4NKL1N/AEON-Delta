@@ -15540,8 +15540,8 @@ def test_safe_trainer_provenance_in_outputs():
     assert 'contributions' in provenance
     assert 'deltas' in provenance
     assert 'order' in provenance
-    # Should have tracked vq and decoder
-    assert len(provenance['order']) == 2
+    # Should have tracked encoder, vq and decoder
+    assert len(provenance['order']) == 3
     assert 'vq' in provenance['contributions']
     assert 'decoder' in provenance['contributions']
 
@@ -28343,8 +28343,8 @@ def test_feedback_bus_self_report_gradient_flow():
 def test_feedback_bus_10_channels():
     """Gap 2: CognitiveFeedbackBus has 10 signal channels (was 9)."""
     from aeon_core import CognitiveFeedbackBus
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 10, (
-        f"Expected 10 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 11, (
+        f"Expected 11 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
     print("✅ test_feedback_bus_10_channels PASSED")
 
