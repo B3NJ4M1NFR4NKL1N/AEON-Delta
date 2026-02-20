@@ -10444,6 +10444,10 @@ class MCTSPlanner(nn.Module):
     - Policy network for action priors
     """
     
+    _MAX_BRANCHING_FACTOR: int = 8
+    _POLICY_PRIOR_WEIGHT: float = 0.8
+    _CAUSAL_BIAS_WEIGHT: float = 0.2
+    
     def __init__(self, state_dim: int, action_dim: int, 
                  hidden_dim: int = 128, num_simulations: int = 50,
                  max_depth: int = 5, c_puct: float = 1.41):
@@ -10479,13 +10483,13 @@ class MCTSPlanner(nn.Module):
         state = node.state
         # Modulate policy priors with causal structure when available
         effective_priors = policy_priors
+        n_actions = min(self.action_dim, self._MAX_BRANCHING_FACTOR)
         if causal_adjacency is not None:
             try:
                 adj = causal_adjacency.detach().float()
                 # Column-sum = total causal influence received per variable
                 causal_influence = adj.sum(dim=0)
                 # Map to action space via truncation or padding
-                n_actions = min(self.action_dim, 8)
                 if causal_influence.numel() >= n_actions:
                     causal_bias = causal_influence[:n_actions]
                 else:
@@ -10498,14 +10502,13 @@ class MCTSPlanner(nn.Module):
                 _cb_max = causal_bias.max()
                 if _cb_max > 0:
                     causal_bias = causal_bias / _cb_max
-                # Blend: 80 % policy prior + 20 % causal bias
                 effective_priors = (
-                    0.8 * effective_priors[:n_actions]
-                    + 0.2 * causal_bias
+                    self._POLICY_PRIOR_WEIGHT * effective_priors[:n_actions]
+                    + self._CAUSAL_BIAS_WEIGHT * causal_bias
                 )
             except Exception:
                 pass  # causal modulation is best-effort
-        for a in range(min(self.action_dim, 8)):  # Limit branching factor
+        for a in range(n_actions):
             prior = effective_priors[a].item()
             # Use world model to predict next state
             with torch.no_grad():
@@ -18118,9 +18121,10 @@ class AEONDeltaV3(nn.Module):
                 # structure is better grounded and quality is reinforced.
                 # This closes Gap 1: memory and causal models now
                 # cross-inform rather than operating independently.
+                _MEMORY_CAUSAL_PENALTY_FACTOR = 0.1
                 _mem_quality = _memory_retrieval_quality
                 if _mem_quality < 1.0 and math.isfinite(self._cached_causal_quality):
-                    _mem_penalty = 0.1 * (1.0 - _mem_quality)
+                    _mem_penalty = _MEMORY_CAUSAL_PENALTY_FACTOR * (1.0 - _mem_quality)
                     self._cached_causal_quality = max(
                         0.0,
                         self._cached_causal_quality - _mem_penalty,

@@ -2170,9 +2170,9 @@ class SafeThoughtAETrainerV4:
         # traced back to their originating component.
         self.provenance.reset()
 
-        # Record encoder input for provenance — tokens are embedded into
-        # a continuous representation, so use the mean-pooled embedding
-        # as a proxy for the encoder's input state.
+        # Record encoder input for provenance — tokens are integer IDs,
+        # so use mean-pooled float representation as a lightweight proxy
+        # for the encoder's input state fingerprint.
         _encoder_input_proxy = tokens.float().mean(dim=-1, keepdim=True)
         self.provenance.record_before("encoder", _encoder_input_proxy)
         z = self.model.encode(tokens)
