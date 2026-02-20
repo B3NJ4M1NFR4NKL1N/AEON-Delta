@@ -21135,12 +21135,15 @@ class AEONDeltaV3(nn.Module):
         # metacognitive cycle: sustained degradation in ANY subsystem
         # now triggers deeper reasoning on subsequent forward passes.
         if not fast:
-            _recent_anomalies = self.integrity_monitor.get_anomalies(n=5)
+            _INTEGRITY_ANOMALY_LOOKBACK = 5
+            _INTEGRITY_ANOMALY_RATE = 0.05
+            _recent_anomalies = self.integrity_monitor.get_anomalies(
+                n=_INTEGRITY_ANOMALY_LOOKBACK,
+            )
             if _recent_anomalies:
                 _anomalous_subs = set(
                     a.get("subsystem", "unknown") for a in _recent_anomalies
                 )
-                _INTEGRITY_ANOMALY_RATE = 0.05
                 _integrity_unc_boost = min(
                     1.0 - uncertainty,
                     _INTEGRITY_ANOMALY_RATE * len(_anomalous_subs),
@@ -22913,7 +22916,8 @@ class AEONDeltaV3(nn.Module):
         # re-evaluation even when instantaneous coherence appears fine.
         _integrity_health = self.integrity_monitor.get_global_health()
         result["integrity_health"] = _integrity_health
-        if _integrity_health < 0.5:
+        _INTEGRITY_HEALTH_RECHECK_THRESHOLD = 0.5
+        if _integrity_health < _INTEGRITY_HEALTH_RECHECK_THRESHOLD:
             result["needs_recheck"] = True
 
         # --- Module coherence verification ---

@@ -3242,18 +3242,22 @@ def bridge_training_errors_to_inference(
     # Bridge training health into inference integrity monitor so that
     # training-time subsystem degradation is visible to the inference
     # pipeline's metacognitive trigger via integrity anomaly detection.
+    _TRAINING_HEALTH_THRESHOLD = 0.5
     if inference_integrity_monitor is not None:
         for cls_name, cls_stats in error_classes.items():
             success_rate = cls_stats.get('success_rate', 1.0)
-            if success_rate < 0.5:
+            if success_rate < _TRAINING_HEALTH_THRESHOLD:
                 try:
                     inference_integrity_monitor.record_health(
                         f"training_{cls_name}",
                         success_rate,
                         {"source": "training_bridge", "count": cls_stats.get("count", 0)},
                     )
-                except Exception:
-                    pass
+                except (AttributeError, TypeError) as _him_err:
+                    logging.getLogger(__name__).debug(
+                        "Integrity monitor bridge failed for %s: %s",
+                        cls_name, _him_err,
+                    )
 
     return bridged
 
