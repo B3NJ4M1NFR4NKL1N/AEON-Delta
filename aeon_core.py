@@ -17476,7 +17476,7 @@ class AEONDeltaV3(nn.Module):
                     if _consolidated_count > 0:
                         self.audit_log.record("memory", "staleness_consolidation", {
                             "consolidated_count": _consolidated_count,
-                            "empty_ratio": _memory_empty_count / max(B, 1),
+                            "empty_ratio": _empty_ratio,
                         })
                 except Exception as _consol_err:
                     logger.warning(f"HierarchicalMemory consolidation during staleness failed: {_consol_err}")
@@ -17497,7 +17497,7 @@ class AEONDeltaV3(nn.Module):
                     strategy_used="uncertainty_escalation",
                     success=True,
                     metadata=self._provenance_enriched_metadata(
-                        {"empty_ratio": _memory_empty_count / max(B, 1)},
+                        {"empty_ratio": _empty_ratio},
                     ),
                 )
         

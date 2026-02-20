@@ -29152,17 +29152,20 @@ def test_proportional_memory_staleness_uncertainty():
     """Gap D: Verify that memory staleness uncertainty boost is proportional
     to the empty retrieval ratio, not a fixed constant.
 
-    Previously, memory staleness always added a fixed 0.15 boost regardless
+    Previously, memory staleness always added a fixed boost regardless
     of how severe the staleness was (55% empty vs 100% empty).
     """
-    # Simulate the proportional boost calculation
-    scale = 0.15
+    from aeon_core import AEONConfig
+
+    # Read the configured scale rather than hardcoding it
+    config = AEONConfig()
+    scale = config.memory_staleness_uncertainty_scale
 
     # Near-total failure (95% empty)
     empty_ratio_high = 0.95
     boost_high = scale * empty_ratio_high
 
-    # Marginal staleness (55% empty, just above the 50% threshold)
+    # Marginal staleness (55% empty, just above the staleness ratio)
     empty_ratio_low = 0.55
     boost_low = scale * empty_ratio_low
 
