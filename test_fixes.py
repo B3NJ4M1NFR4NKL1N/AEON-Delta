@@ -29838,20 +29838,28 @@ def test_phase_b_adapt_weights_from_evolution():
     monitor = TrainingMonitor(logger=_logger)
     trainer = ContextualRSSMTrainer(model, config, monitor)
 
-    # Record some error patterns to trigger adaptation
-    trainer._error_evolution.record_episode(
-        error_class="numerical",
-        strategy_used="skip_backward",
-        success=False,
-        metadata={"phase": "B"},
-    )
+    # Record error patterns with low success rate to trigger adaptation
+    for _ in range(3):
+        trainer._error_evolution.record_episode(
+            error_class="numerical",
+            strategy_used="skip_backward",
+            success=False,
+            metadata={"phase": "B"},
+        )
 
-    # Get error summary and adapt weights
+    # Capture weights before adaptation
+    weights_before = dict(trainer._metacognitive_trigger._signal_weights)
+
+    # Adapt weights
     err_summary = trainer._error_evolution.get_error_summary()
     trainer._metacognitive_trigger.adapt_weights_from_evolution(err_summary)
 
-    # The method should not crash and should be callable
-    assert hasattr(trainer._metacognitive_trigger, 'adapt_weights_from_evolution')
+    # Verify weights changed (numerical maps to uncertainty signal)
+    weights_after = trainer._metacognitive_trigger._signal_weights
+    assert weights_before != weights_after, (
+        "Signal weights should change after adapt_weights_from_evolution "
+        "with recorded error patterns"
+    )
     print("✅ test_phase_b_adapt_weights_from_evolution PASSED")
 
 
@@ -29870,17 +29878,26 @@ def test_phase_a_adapt_weights_from_evolution():
     with tempfile.TemporaryDirectory() as tmpdir:
         trainer = SafeThoughtAETrainerV4(model, config, monitor, tmpdir)
 
-    # Record some error patterns
-    trainer._error_evolution.record_episode(
-        error_class="numerical",
-        strategy_used="skip_backward",
-        success=False,
-    )
+    # Record error patterns with low success rate
+    for _ in range(3):
+        trainer._error_evolution.record_episode(
+            error_class="numerical",
+            strategy_used="skip_backward",
+            success=False,
+        )
 
-    # Adapt weights and verify the method works
+    # Capture weights before adaptation
+    weights_before = dict(trainer._metacognitive_trigger._signal_weights)
+
+    # Adapt weights and verify they changed
     err_summary = trainer._error_evolution.get_error_summary()
     trainer._metacognitive_trigger.adapt_weights_from_evolution(err_summary)
-    assert hasattr(trainer._metacognitive_trigger, 'adapt_weights_from_evolution')
+
+    weights_after = trainer._metacognitive_trigger._signal_weights
+    assert weights_before != weights_after, (
+        "Signal weights should change after adapt_weights_from_evolution "
+        "with recorded error patterns"
+    )
     print("✅ test_phase_a_adapt_weights_from_evolution PASSED")
 
 

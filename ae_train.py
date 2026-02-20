@@ -1642,11 +1642,13 @@ class SafeThoughtAETrainerV4:
         # via the provenance tracker.
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             _error_detail = "NaN/Inf loss"
+            _error_class = "numerical"
             if self._error_classifier is not None:
                 try:
                     _err_cls, _err_detail = self._error_classifier.classify(
                         RuntimeError("NaN/Inf loss in training step")
                     )
+                    _error_class = _err_cls
                     _error_detail = f"{_err_cls}: {_err_detail}"
                 except Exception as exc:
                     logger.debug("Error classifier failed: %s", exc)
@@ -1668,7 +1670,7 @@ class SafeThoughtAETrainerV4:
             # evolution tracker so that training-time failures inform
             # inference-time recovery strategies with semantic context.
             self._error_evolution.record_episode(
-                error_class=_error_detail.split(":", 1)[0].strip() if ":" in _error_detail else "numerical",
+                error_class=_error_class,
                 strategy_used="skip_backward",
                 success=False,
                 metadata={
@@ -2140,11 +2142,13 @@ class ContextualRSSMTrainer:
         # RSSM component and record it in error evolution.
         if _pred_had_nonfinite or torch.isnan(loss) or torch.isinf(loss):
             _error_detail = "NaN/Inf loss"
+            _error_class = "numerical"
             if self._error_classifier is not None:
                 try:
                     _err_cls, _err_detail = self._error_classifier.classify(
                         RuntimeError("NaN/Inf loss in RSSM training step")
                     )
+                    _error_class = _err_cls
                     _error_detail = f"{_err_cls}: {_err_detail}"
                 except Exception as _cls_err:
                     logger.debug("Error classifier failed: %s", _cls_err)
@@ -2164,7 +2168,7 @@ class ContextualRSSMTrainer:
             # so training-time failures inform inference-time recovery
             # strategies — matching Phase A's error recording pattern.
             self._error_evolution.record_episode(
-                error_class=_error_detail.split(":", 1)[0].strip() if ":" in _error_detail else "numerical",
+                error_class=_error_class,
                 strategy_used="skip_backward",
                 success=False,
                 metadata={
