@@ -17126,11 +17126,15 @@ class AEONDeltaV3(nn.Module):
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
         self.provenance_tracker.record_before("diversity_analysis", C_star)
-        diversity_results = self._compute_diversity(factors, B, device, fast)
-        self.provenance_tracker.record_after("diversity_analysis", C_star)
+        try:
+            diversity_results = self._compute_diversity(factors, B, device, fast)
+        finally:
+            self.provenance_tracker.record_after("diversity_analysis", C_star)
         self.provenance_tracker.record_before("topology_analysis", C_star)
-        topo_results = self._compute_topology(factors, iterations, B, device, fast)
-        self.provenance_tracker.record_after("topology_analysis", C_star)
+        try:
+            topo_results = self._compute_topology(factors, iterations, B, device, fast)
+        finally:
+            self.provenance_tracker.record_after("topology_analysis", C_star)
         
         # 3a. Record diversity health — low diversity indicates thought
         # collapse, which is a critical architectural failure mode.
@@ -17199,10 +17203,10 @@ class AEONDeltaV3(nn.Module):
         # specific honesty/confidence/consistency signals.  Since the
         # self-reporter does not modify C_star, the delta is zero, but
         # recording it ensures the module appears in the provenance
-        # execution order and dependency graph.
-        if self_report:
-            self.provenance_tracker.record_before("self_report", C_star)
-            self.provenance_tracker.record_after("self_report", C_star)
+        # execution order and dependency graph.  Recorded unconditionally
+        # so provenance is complete even when self_report is empty.
+        self.provenance_tracker.record_before("self_report", C_star)
+        self.provenance_tracker.record_after("self_report", C_star)
         
         # 5-sr. Self-report-driven uncertainty escalation and safety
         # adaptation — when TransparentSelfReporting produces low
@@ -18923,10 +18927,12 @@ class AEONDeltaV3(nn.Module):
                 _adj_matrices['causal_programmatic'] = causal_prog_results['adjacency']
             if len(_adj_matrices) >= 2:
                 self.provenance_tracker.record_before("causal_dag_consensus", C_star)
-                _dag_consensus_results = self.causal_dag_consensus.evaluate(
-                    _adj_matrices
-                )
-                self.provenance_tracker.record_after("causal_dag_consensus", C_star)
+                try:
+                    _dag_consensus_results = self.causal_dag_consensus.evaluate(
+                        _adj_matrices
+                    )
+                finally:
+                    self.provenance_tracker.record_after("causal_dag_consensus", C_star)
                 _consensus_score = _dag_consensus_results["consensus_score"]
                 if _dag_consensus_results["needs_escalation"]:
                     _dag_unc_boost = _dag_consensus_results["uncertainty_boost"]
