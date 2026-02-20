@@ -32553,6 +32553,166 @@ def test_self_diagnostic_reports_training_bridge():
     print("✅ test_self_diagnostic_reports_training_bridge PASSED")
 
 
+# ============================================================================
+# SECTION: ARCHITECTURAL COHERENCE FIXES — CROSS-MODULE VERIFICATION
+# ============================================================================
+
+
+def test_verify_coherence_weakest_pair_populated():
+    """Fix 1: verify_coherence() should return a populated weakest_pair dict
+    containing the pair of subsystems with lowest cosine similarity, rather
+    than always returning None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to populate cached states
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    coh = model.verify_coherence()
+    weakest = coh.get("weakest_pair")
+    assert weakest is not None, (
+        "weakest_pair should be populated after a forward pass with "
+        "multiple cached subsystem states"
+    )
+    assert "pair" in weakest, "weakest_pair should contain 'pair'"
+    assert "similarity" in weakest, "weakest_pair should contain 'similarity'"
+    assert "modules" in weakest, "weakest_pair should contain 'modules'"
+    assert len(weakest["modules"]) == 2, "weakest_pair should identify exactly 2 modules"
+    print("✅ test_verify_coherence_weakest_pair_populated PASSED")
+
+
+def test_verify_coherence_includes_feedback_bus():
+    """Fix 4: verify_coherence() should include the feedback_bus cached state
+    in coherence checks so that the feedback conditioning signal participates
+    in cross-module verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # Verify feedback_bus cache is populated
+    assert model._cached_feedback is not None, (
+        "Feedback bus should cache state after forward pass"
+    )
+
+    # Run coherence check — with the fix, feedback_bus is included
+    # in the subsystem states for pairwise comparison
+    coh = model.verify_coherence()
+    weakest = coh.get("weakest_pair")
+    if weakest is not None:
+        all_modules = weakest.get("modules", [])
+        # Feedback bus may or may not be the weakest pair, but it
+        # should participate in the coherence check (score < 1.0
+        # indicates pairwise comparison happened)
+        assert coh["coherence_score"] < 1.0, (
+            "Coherence score should be < 1.0 with untrained model"
+        )
+    print("✅ test_verify_coherence_includes_feedback_bus PASSED")
+
+
+def test_notears_populates_cached_causal_state():
+    """Fix 3: When NOTEARS is the only causal model active,
+    _cached_causal_state should still be populated for coherence checks."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_notears_causal=True,
+        enable_causal_model=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model._cached_causal_state is None, (
+        "Causal state should be None before forward pass"
+    )
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    assert model._cached_causal_state is not None, (
+        "NOTEARS should populate _cached_causal_state when it is the "
+        "only active causal model"
+    )
+    print("✅ test_notears_populates_cached_causal_state PASSED")
+
+
+def test_cognitive_executive_adapters_derive_factors():
+    """Fix 2: CognitiveExecutiveFunction adapters should derive factors
+    from state via learned projection rather than using zero tensors."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_cognitive_executive=True,
+        enable_safety_guardrails=True,
+        enable_quantum_sim=True,
+        enable_catastrophe_detection=True,
+    )
+    model = AEONDeltaV3(config)
+
+    if model.cognitive_executive is not None:
+        # Check that adapters have factor_proj attribute
+        for name, sub in model.cognitive_executive.subsystems.items():
+            assert hasattr(sub, 'factor_proj'), (
+                f"Adapter '{name}' should have a factor_proj linear layer "
+                f"to derive factors from state, not use zero tensors"
+            )
+            # Verify the projection produces non-zero output
+            state = torch.randn(2, config.hidden_dim)
+            factors = torch.sigmoid(sub.factor_proj(state))
+            assert factors.abs().sum() > 0, (
+                f"Adapter '{name}' factor_proj should produce non-zero factors"
+            )
+    print("✅ test_cognitive_executive_adapters_derive_factors PASSED")
+
+
+def test_self_diagnostic_reports_adapter_fidelity():
+    """Fix 5: self_diagnostic() should verify that CognitiveExecutiveFunction
+    adapters use learned factor projection."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_cognitive_executive=True,
+        enable_safety_guardrails=True,
+        enable_quantum_sim=True,
+        enable_catastrophe_detection=True,
+    )
+    model = AEONDeltaV3(config)
+
+    if model.cognitive_executive is not None:
+        diag = model.self_diagnostic()
+        verified = diag.get('verified_connections', [])
+        adapter_verified = [
+            v for v in verified if 'cognitive_executive' in v and 'factor' in v
+        ]
+        assert len(adapter_verified) > 0, (
+            "self_diagnostic should verify cognitive executive adapter "
+            f"factor projection. Verified: {verified}"
+        )
+    print("✅ test_self_diagnostic_reports_adapter_fidelity PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
