@@ -2888,6 +2888,9 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
         )
         assert "should_rerun" in _test_result, "UCC evaluate missing should_rerun"
         assert "coherence_result" in _test_result, "UCC evaluate missing coherence_result"
+        assert _test_ucc.metacognitive_trigger is _test_mct, (
+            "MetaCognitiveRecursionTrigger not wired to UCC"
+        )
         logger.info("   ✅ UCC wiring: convergence→error_evolution→provenance verified")
         logger.info(
             f"   ✅ UCC smoke test: coherence_deficit="
