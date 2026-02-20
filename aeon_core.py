@@ -20313,6 +20313,7 @@ class AEONDeltaV3(nn.Module):
                 "error_evolution_preemptive": "error_evolution",
                 "value_net_low_quality": "value_network",
                 "value_net_error": "value_network",
+                "integrity_anomalies": "integrity_monitor",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
@@ -21125,6 +21126,37 @@ class AEONDeltaV3(nn.Module):
         # satisfies the requirement that all outputs are traceable to
         # their first causes.
         
+        # 8h-pre-integrity. SystemIntegrityMonitor anomaly → uncertainty
+        # feed — when the integrity monitor detects recent anomalies
+        # (rapid degradation or below-threshold health in any subsystem),
+        # inject an uncertainty boost proportional to the number of
+        # distinct anomalous subsystems.  This closes the loop between
+        # the integrity monitor's passive health tracking and the active
+        # metacognitive cycle: sustained degradation in ANY subsystem
+        # now triggers deeper reasoning on subsequent forward passes.
+        if not fast:
+            _INTEGRITY_ANOMALY_LOOKBACK = 5
+            _INTEGRITY_ANOMALY_RATE = 0.05
+            _recent_anomalies = self.integrity_monitor.get_anomalies(
+                n=_INTEGRITY_ANOMALY_LOOKBACK,
+            )
+            if _recent_anomalies:
+                _anomalous_subs = set(
+                    a.get("subsystem", "unknown") for a in _recent_anomalies
+                )
+                _integrity_unc_boost = min(
+                    1.0 - uncertainty,
+                    _INTEGRITY_ANOMALY_RATE * len(_anomalous_subs),
+                )
+                # Always record the source when anomalies exist so the
+                # signal is traceable even when uncertainty is saturated.
+                uncertainty_sources["integrity_anomalies"] = max(
+                    _integrity_unc_boost, 1e-6,
+                )
+                if _integrity_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _integrity_unc_boost)
+                    high_uncertainty = uncertainty > 0.5
+        
         # 8h-pre. Final weighted uncertainty re-fusion — all uncertainty
         # sources have now been collected (including post-integration
         # auto-critic errors, causal root-cause counts, and metacognitive
@@ -21251,6 +21283,40 @@ class AEONDeltaV3(nn.Module):
                 if unified_cycle_results else None
             ),
         }
+        
+        # 8h-final. Terminal state consistency validation — run
+        # StateConsistencyValidator.validate_and_recover() on the final
+        # z_out after all corrections (auto-critic, provenance dampening,
+        # safety rollback) to ensure the delivered output is structurally
+        # sound.  If violations are found, the validator applies
+        # deterministic recovery (NaN replacement, clamping) and records
+        # the event in error evolution so the system can learn from
+        # terminal-stage instabilities.  This is the architectural safety
+        # net ensuring that no pathway through the reasoning core can
+        # produce an invalid output tensor.
+        z_out, _terminal_sv = self.state_validator.validate_and_recover(
+            z_out, factors=factors,
+        )
+        if not _terminal_sv["valid"]:
+            self.audit_log.record("state_validator", "terminal_recovery", {
+                "violations": _terminal_sv["violations"],
+                "stats": _terminal_sv.get("stats", {}),
+            }, severity="warning")
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="terminal_state_invalid",
+                    strategy_used="validate_and_recover",
+                    success=_terminal_sv.get("recovered", False),
+                    metadata={"violations": _terminal_sv["violations"]},
+                )
+            self.integrity_monitor.record_health(
+                "terminal_state_validation", 0.0,
+                {"violations": _terminal_sv["violations"]},
+            )
+        else:
+            self.integrity_monitor.record_health(
+                "terminal_state_validation", 1.0,
+            )
         
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
@@ -22815,11 +22881,44 @@ class AEONDeltaV3(nn.Module):
             "weakest_pair": None,
             "metacognitive_triggered": False,
             "provenance_attribution": {},
+            "state_validation": {},
+            "integrity_health": 1.0,
         }
 
         # --- Provenance attribution snapshot ---
         prov = self.provenance_tracker.compute_attribution()
         result["provenance_attribution"] = prov.get("contributions", {})
+
+        # --- State consistency validation on cached meta-loop output ---
+        # Bridges the StateConsistencyValidator into the coherence check
+        # so that non-finite values, shape mismatches, and activation
+        # explosions in cached states are surfaced alongside cross-module
+        # cosine coherence.  Violations escalate needs_recheck so that
+        # the metacognitive trigger fires on structural state issues,
+        # not only cross-module disagreement.
+        if self._cached_meta_loop_state is not None:
+            sv_result = self.state_validator.validate(
+                self._cached_meta_loop_state,
+                factors=getattr(self, '_cached_factor_state', None),
+            )
+            result["state_validation"] = sv_result
+            if not sv_result["valid"]:
+                result["needs_recheck"] = True
+                logger.warning(
+                    "verify_coherence: state_validator violations: %s",
+                    sv_result["violations"],
+                )
+
+        # --- SystemIntegrityMonitor health aggregation ---
+        # Feed the integrity monitor's global health into the coherence
+        # report so that sustained subsystem degradation (tracked over a
+        # sliding window of forward passes) triggers meta-cognitive
+        # re-evaluation even when instantaneous coherence appears fine.
+        _integrity_health = self.integrity_monitor.get_global_health()
+        result["integrity_health"] = _integrity_health
+        _INTEGRITY_HEALTH_RECHECK_THRESHOLD = 0.5
+        if _integrity_health < _INTEGRITY_HEALTH_RECHECK_THRESHOLD:
+            result["needs_recheck"] = True
 
         # --- Module coherence verification ---
         if self.module_coherence is None:
@@ -22856,14 +22955,20 @@ class AEONDeltaV3(nn.Module):
         score = float(_raw_score.mean()) if isinstance(_raw_score, torch.Tensor) else float(_raw_score)
         needs_recheck = bool(coherence_out.get("needs_recheck", False))
         result["coherence_score"] = score
-        result["needs_recheck"] = needs_recheck
+        result["needs_recheck"] = needs_recheck or result.get("needs_recheck", False)
         result["weakest_pair"] = coherence_out.get("_weakest_pair", None)
 
         # --- Trigger meta-cognitive evaluation on low coherence ---
+        # Incorporates integrity_health degradation into the coherence
+        # deficit so that sustained subsystem failures (detected by
+        # SystemIntegrityMonitor) participate in the metacognitive
+        # trigger evaluation alongside instantaneous coherence signals.
         coherence_deficit = max(0.0, 1.0 - score)
-        if needs_recheck and self.metacognitive_trigger is not None:
+        _integrity_deficit = max(0.0, 1.0 - _integrity_health)
+        _effective_deficit = max(coherence_deficit, _integrity_deficit)
+        if result["needs_recheck"] and self.metacognitive_trigger is not None:
             trigger_result = self.metacognitive_trigger.evaluate(
-                coherence_deficit=coherence_deficit,
+                coherence_deficit=_effective_deficit,
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
@@ -23150,6 +23255,15 @@ class AEONDeltaV3(nn.Module):
         lines.append(f"{'DAGConsensus':20s}: {_dag_status:>12}")
         _scb_status = "Enabled" if (self.safety_system is not None and self.auto_critic is not None) else "Disabled"
         lines.append(f"{'SafetyCriticBridge':20s}: {_scb_status:>12}")
+        _arb_status = "Enabled" if self.convergence_arbiter is not None else "Disabled"
+        lines.append(f"{'ConvergenceArbiter':20s}: {_arb_status:>12}")
+        _ut_status = "Enabled" if self.uncertainty_tracker is not None else "Disabled"
+        lines.append(f"{'UncertaintyTracker':20s}: {_ut_status:>12}")
+        _mv_status = "Enabled" if self.memory_validator is not None else "Disabled"
+        lines.append(f"{'MemoryValidator':20s}: {_mv_status:>12}")
+        lines.append(f"{'StateValidator':20s}: {'Enabled':>12}")
+        lines.append(f"{'IntegrityMonitor':20s}: {'Enabled':>12}")
+        lines.append(f"{'ErrorRecovery':20s}: {'Enabled':>12}")
         
         lines.append("-"*70)
         lines.append(f"{'Total':20s}: {self.count_parameters():>12,} params")

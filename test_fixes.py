@@ -31628,6 +31628,193 @@ def test_bridge_inference_insights_to_training():
     print("✅ test_bridge_inference_insights_to_training PASSED")
 
 
+# ============================================================================
+# SECTION: Architectural Coherence Integration Tests
+# ============================================================================
+
+def test_verify_coherence_includes_state_validation():
+    """verify_coherence should include state_validation and integrity_health keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    result = model.verify_coherence()
+    assert "state_validation" in result, "verify_coherence must include state_validation"
+    assert "integrity_health" in result, "verify_coherence must include integrity_health"
+    # integrity_health should be a float in [0, 1]
+    assert isinstance(result["integrity_health"], float)
+    assert 0.0 <= result["integrity_health"] <= 1.0
+    print("✅ test_verify_coherence_includes_state_validation PASSED")
+
+
+def test_verify_coherence_state_validator_triggers_recheck():
+    """When cached meta-loop state has NaN, state_validator should flag violations
+    and needs_recheck should be True."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Inject a NaN-containing cached state to trigger validation failure
+    model._cached_meta_loop_state = torch.tensor(
+        [[float('nan')] * config.hidden_dim]
+    )
+
+    result = model.verify_coherence()
+    sv = result.get("state_validation", {})
+    assert not sv.get("valid", True), "NaN state should fail validation"
+    assert result["needs_recheck"], "NaN state should trigger needs_recheck"
+    print("✅ test_verify_coherence_state_validator_triggers_recheck PASSED")
+
+
+def test_integrity_anomalies_feed_uncertainty():
+    """When SystemIntegrityMonitor has recent anomalies, they should appear
+    as an uncertainty source in the reasoning core outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record a low-health anomaly in integrity monitor
+    model.integrity_monitor.record_health("test_subsystem", 0.1)
+
+    # Run a forward pass and check uncertainty sources
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    with torch.no_grad():
+        out = model(input_ids, decode_mode='inference')
+    # The causal_decision_chain should contain uncertainty_sources
+    cdc = out.get("causal_decision_chain", {})
+    unc_sources = cdc.get("uncertainty_sources", {})
+    assert "integrity_anomalies" in unc_sources, (
+        f"Expected 'integrity_anomalies' in uncertainty sources, got: {list(unc_sources.keys())}"
+    )
+    print("✅ test_integrity_anomalies_feed_uncertainty PASSED")
+
+
+def test_terminal_state_validation_recovers_nan():
+    """Terminal state validation should recover NaN outputs to finite tensors."""
+    from aeon_core import StateConsistencyValidator
+    validator = StateConsistencyValidator(hidden_dim=64)
+
+    # Create a tensor with NaN values
+    C_star = torch.randn(2, 64)
+    C_star[0, :10] = float('nan')
+    C_star[1, 30:40] = float('inf')
+
+    recovered, result = validator.validate_and_recover(C_star)
+    assert not result["valid"], "NaN/Inf tensor should fail validation"
+    assert result.get("recovered", False), "validate_and_recover should set recovered=True"
+    assert torch.isfinite(recovered).all(), "Recovered tensor must be fully finite"
+    assert recovered.shape == (2, 64), "Shape must be preserved"
+    print("✅ test_terminal_state_validation_recovers_nan PASSED")
+
+
+def test_print_architecture_summary_includes_new_components():
+    """print_architecture_summary should include ConvergenceArbiter,
+    UncertaintyTracker, MemoryValidator, StateValidator, IntegrityMonitor,
+    and ErrorRecovery."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    summary = model.print_architecture_summary()
+    for component in [
+        "ConvergenceArbiter", "UncertaintyTracker", "MemoryValidator",
+        "StateValidator", "IntegrityMonitor", "ErrorRecovery",
+    ]:
+        assert component in summary, (
+            f"'{component}' missing from architecture summary"
+        )
+    print("✅ test_print_architecture_summary_includes_new_components PASSED")
+
+
+def test_bridge_training_errors_with_integrity_monitor():
+    """bridge_training_errors_to_inference should record training health
+    in inference_integrity_monitor when provided."""
+    from ae_train import bridge_training_errors_to_inference
+    from aeon_core import CausalErrorEvolutionTracker, SystemIntegrityMonitor
+
+    # Create a mock training convergence monitor
+    class MockTrainerMonitor:
+        def export_error_patterns(self):
+            return {
+                'error_classes': {
+                    'divergence': {
+                        'count': 5,
+                        'success_rate': 0.2,
+                        'best_strategy': 'reduce_lr',
+                        'max_loss_magnitude': 100.0,
+                        'mean_loss_magnitude': 50.0,
+                    },
+                },
+            }
+
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    integrity = SystemIntegrityMonitor(window_size=100)
+
+    bridged = bridge_training_errors_to_inference(
+        trainer_monitor=MockTrainerMonitor(),
+        inference_error_evolution=ee,
+        inference_integrity_monitor=integrity,
+    )
+    assert bridged >= 1, "Should have bridged at least one error class"
+    # Check that training health was recorded in integrity monitor
+    health = integrity.get_subsystem_health("training_divergence")
+    assert health < 1.0, (
+        f"Expected degraded health for training_divergence, got {health}"
+    )
+    print("✅ test_bridge_training_errors_with_integrity_monitor PASSED")
+
+
+def test_verify_coherence_low_integrity_triggers_recheck():
+    """When integrity_health is below 0.5, verify_coherence should set
+    needs_recheck=True even when module coherence score is high."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Degrade integrity monitor by recording many low-health observations
+    for _ in range(10):
+        model.integrity_monitor.record_health("degraded_subsystem", 0.1)
+
+    result = model.verify_coherence()
+    assert result["integrity_health"] < 0.5, (
+        f"Expected low integrity_health, got {result['integrity_health']}"
+    )
+    # needs_recheck should be True due to low integrity health
+    assert result["needs_recheck"], (
+        "Low integrity_health should trigger needs_recheck"
+    )
+    print("✅ test_verify_coherence_low_integrity_triggers_recheck PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -33032,6 +33219,15 @@ if __name__ == '__main__':
     test_directional_uncertainty_tracker_max_per_module()
     test_metacognitive_trigger_maps_new_error_classes()
     test_bridge_inference_insights_to_training()
+    
+    # Architectural coherence integration tests
+    test_verify_coherence_includes_state_validation()
+    test_verify_coherence_state_validator_triggers_recheck()
+    test_integrity_anomalies_feed_uncertainty()
+    test_terminal_state_validation_recovers_nan()
+    test_print_architecture_summary_includes_new_components()
+    test_bridge_training_errors_with_integrity_monitor()
+    test_verify_coherence_low_integrity_triggers_recheck()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
