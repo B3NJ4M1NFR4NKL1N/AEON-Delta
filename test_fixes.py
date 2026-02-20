@@ -11900,12 +11900,9 @@ def test_causal_trace_records_world_model_factors():
         outputs = model(input_ids, fast=False)
 
     # Check causal trace has recorded the world model factor extraction
-    recent = model.causal_trace.recent(n=20)
-    factor_entries = [
-        e for e in recent
-        if e.get('subsystem') == 'causal_world_model'
-        and e.get('decision') == 'factor_extraction'
-    ]
+    factor_entries = model.causal_trace.find(
+        subsystem='causal_world_model', decision='factor_extraction',
+    )
     assert len(factor_entries) > 0, (
         "Causal trace should record CausalWorldModel factor extraction"
     )
@@ -15104,16 +15101,12 @@ def test_subsystem_errors_recorded_in_causal_trace():
         outputs = model(input_ids, fast=False)
 
     # Check that causal trace has an error entry for world_model
-    recent = model.causal_trace.recent(n=20)
-    world_model_errors = [
-        e for e in recent
-        if e.get("subsystem") == "world_model"
-        and e.get("decision") == "subsystem_error"
-        and e.get("severity") == "error"
-    ]
+    world_model_errors = model.causal_trace.find(
+        subsystem="world_model", decision="subsystem_error", severity="error",
+    )
     assert len(world_model_errors) > 0, (
         "World model error should be recorded in causal trace. "
-        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in recent]}"
+        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in model.causal_trace.recent(n=50)]}"
     )
     # Verify the error metadata contains the error description
     assert "Simulated world model failure" in world_model_errors[0].get("metadata", {}).get("error", ""), (
@@ -15141,15 +15134,12 @@ def test_memory_operations_recorded_in_causal_trace():
         outputs = model(input_ids, fast=False)
 
     # Check that causal trace has a memory entry
-    recent = model.causal_trace.recent(n=20)
-    memory_entries = [
-        e for e in recent
-        if e.get("subsystem") == "memory"
-        and e.get("decision") == "retrieve_and_store"
-    ]
+    memory_entries = model.causal_trace.find(
+        subsystem="memory", decision="retrieve_and_store",
+    )
     assert len(memory_entries) > 0, (
         "Memory operations should be recorded in causal trace. "
-        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in recent]}"
+        f"Trace entries: {[(e.get('subsystem'), e.get('decision')) for e in model.causal_trace.recent(n=50)]}"
     )
     # Verify metadata contains expected keys
     meta = memory_entries[0].get("metadata", {})
@@ -30253,15 +30243,17 @@ def test_getattr_defaults_match_config():
 
 
 def test_ucc_init_always_active_when_enabled():
-    """AEONDeltaV3 should create a UnifiedCognitiveCycle even when
-    optional components (module_coherence, metacognitive_trigger,
-    error_evolution) are missing, as long as the config enables it."""
+    """AEONDeltaV3 should create a UnifiedCognitiveCycle when at least one
+    optional component is available and the config enables it.  When ALL
+    optional prerequisites are disabled the UCC is correctly set to None
+    (tested by test_unified_cognitive_cycle_disabled_without_prereqs)."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    # Disable the three optional prerequisites but keep UCC enabled
+    # Enable one optional prerequisite (module_coherence) to verify UCC
+    # is active in partial-prerequisite mode.
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
-        enable_module_coherence=False,
+        enable_module_coherence=True,
         enable_metacognitive_recursion=False,
         enable_error_evolution=False,
         enable_unified_cognitive_cycle=True,
@@ -30269,7 +30261,7 @@ def test_ucc_init_always_active_when_enabled():
     model = AEONDeltaV3(config)
 
     assert model.unified_cognitive_cycle is not None, (
-        "UCC should be instantiated even when optional prerequisites are missing"
+        "UCC should be instantiated when at least one optional prerequisite is available"
     )
 
     # The UCC should still work with its fallback logic
@@ -30281,6 +30273,19 @@ def test_ucc_init_always_active_when_enabled():
     )
     assert 'should_rerun' in result
     assert 'convergence_verdict' in result
+
+    # Verify UCC is None when ALL optional prerequisites are disabled
+    config_none = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
+        enable_unified_cognitive_cycle=True,
+    )
+    model_none = AEONDeltaV3(config_none)
+    assert model_none.unified_cognitive_cycle is None, (
+        "UCC should be None when all optional prerequisites are disabled"
+    )
 
     print("✅ test_ucc_init_always_active_when_enabled PASSED")
 
