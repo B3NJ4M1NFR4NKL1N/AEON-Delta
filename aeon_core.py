@@ -17512,7 +17512,8 @@ class AEONDeltaV3(nn.Module):
             # cross-pass coherence between current reasoning and prior
             # memory context before new memory retrieval occurs.
             if (self._cached_memory_state is not None
-                    and self._cached_memory_state.shape[-1] == C_star.shape[-1]):
+                    and self._cached_memory_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_memory_state.shape[0] == C_star.shape[0]):
                 coherence_states["memory_prior"] = self._cached_memory_state
             coherence_results = self.module_coherence(coherence_states)
             _coherence_deficit = coherence_results.get("needs_recheck", False)
@@ -20267,7 +20268,8 @@ class AEONDeltaV3(nn.Module):
             # other subsystems in the post-integration coherence check.
             if self._cached_memory_state is not None:
                 _mem_st = self._cached_memory_state
-                if _mem_st.shape[-1] == z_out.shape[-1]:
+                if (_mem_st.shape[-1] == z_out.shape[-1]
+                        and _mem_st.shape[0] == z_out.shape[0]):
                     post_states["memory"] = _mem_st
             # Include multimodal grounded state if available — ensures
             # that multimodal grounding is cross-validated against other
