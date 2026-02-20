@@ -6948,7 +6948,7 @@ def _adapt_uncertainty_weights_from_evolution(
         if ec is None or ec not in error_classes:
             continue
         success_rate = error_classes[ec].get("success_rate", 1.0)
-        # Low success → boost (max +30 %), high success → dampen (max −20 %)
+        # Low success → boost (max +30 %), high success → dampen (max −30 %)
         adjustment = 0.3 * (1.0 - 2.0 * success_rate)
         adapted[source_name] = max(0.05, min(1.0, base_weight + adjustment))
     return adapted
@@ -13760,7 +13760,8 @@ class MetaCognitiveRecursionTrigger:
             # Bidirectional: low success → positive adjustment (boost),
             # high success → negative adjustment (dampen).  The neutral
             # point is at success_rate = 0.5 where adjustment = 0.
-            adjustment = max(-1.0, min(1.0, 1.0 - 2.0 * success_rate))
+            # With success_rate ∈ [0, 1], result is naturally in [-1, 1].
+            adjustment = 1.0 - 2.0 * success_rate
             if signal not in _adjustments:
                 _adjustments[signal] = []
             _adjustments[signal].append(adjustment)
