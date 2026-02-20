@@ -2047,10 +2047,16 @@ class SafeThoughtAETrainerV4:
         # convergence failure events include per-module attribution,
         # enabling root-cause analysis from training convergence
         # failures through to the originating component.
-        self.convergence_monitor.set_provenance_tracker(
+        _prov_tracker_a = (
             self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else None
         )
+        if _prov_tracker_a is None:
+            logger.warning(
+                "Phase A: TrainingProvenanceTracker has no _tracker; "
+                "convergence events will lack per-module attribution"
+            )
+        self.convergence_monitor.set_provenance_tracker(_prov_tracker_a)
 
         # --- Unified Cognitive Cycle integration ---
         # Wire convergence monitoring, coherence verification, error
@@ -2559,10 +2565,16 @@ class ContextualRSSMTrainer:
         # Wire provenance tracker to convergence monitor so that Phase B
         # convergence failure events include per-module attribution,
         # matching Phase A's provenance-enriched convergence wiring.
-        self.convergence_monitor.set_provenance_tracker(
+        _prov_tracker_b = (
             self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else None
         )
+        if _prov_tracker_b is None:
+            logger.warning(
+                "Phase B: TrainingProvenanceTracker has no _tracker; "
+                "convergence events will lack per-module attribution"
+            )
+        self.convergence_monitor.set_provenance_tracker(_prov_tracker_b)
 
         # --- Unified Cognitive Cycle integration for Phase B ---
         self._coherence_verifier = ModuleCoherenceVerifier(
@@ -3081,6 +3093,11 @@ class TrainingConvergenceMonitor:
         """
         if self._core_monitor is not None:
             self._core_monitor.set_provenance_tracker(tracker)
+        else:
+            logger.debug(
+                "TrainingConvergenceMonitor: _core_monitor is None; "
+                "provenance tracker not attached"
+            )
 
     def update(self, loss_value: float) -> Dict[str, Any]:
         """Record a loss value and return convergence verdict.
