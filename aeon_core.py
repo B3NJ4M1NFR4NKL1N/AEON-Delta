@@ -5914,8 +5914,11 @@ class CognitiveFeedbackBus(nn.Module):
         - feedback: [B, hidden_dim] dense conditioning vector
     """
     
-    # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 9  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence, causal_quality, recovery_pressure
+    # Number of scalar signal channels aggregated by the bus:
+    #   safety, convergence, uncertainty, health_mean, loss_scale,
+    #   surprise, coherence, causal_quality, recovery_pressure,
+    #   self_report_consistency
+    NUM_SIGNAL_CHANNELS = 10
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5940,6 +5943,7 @@ class CognitiveFeedbackBus(nn.Module):
         coherence_deficit: float = 0.0,
         causal_quality: float = 1.0,
         recovery_pressure: float = 0.0,
+        self_report_consistency: float = 1.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5970,6 +5974,11 @@ class CognitiveFeedbackBus(nn.Module):
                 error recovery has been invoked recently (default: 0.0 = no
                 pressure).  High values signal the system is under stress,
                 biasing the meta-loop toward deeper reasoning.
+            self_report_consistency: Scalar ∈ [0, 1] from the self-report
+                module's consistency gate (default: 1.0 = fully consistent).
+                Low values indicate the reasoning pipeline's internal
+                coherence estimate is poor, biasing the meta-loop toward
+                deeper reasoning to resolve the inconsistency.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -6018,8 +6027,11 @@ class CognitiveFeedbackBus(nn.Module):
         # Recovery pressure (already in [0, 1]; 0.0 = no error recovery stress)
         rp = torch.full((batch_size,), float(recovery_pressure), device=device)
         
+        # Self-report consistency (already in [0, 1]; 1.0 = fully consistent)
+        sr = torch.full((batch_size,), float(self_report_consistency), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr], dim=-1)
         
         return self.projection(signals)
 
@@ -14704,6 +14716,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_surprise: float = 0.0
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
+        self._cached_self_report_consistency: float = 1.0
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16249,6 +16262,9 @@ class AEONDeltaV3(nn.Module):
             # Low internal consistency → tighten safety threshold
             if _sr_consistency is not None and torch.is_tensor(_sr_consistency):
                 _consistency_val = float(_sr_consistency.mean().item())
+                # Cache for feedback bus so next-pass meta-loop conditioning
+                # incorporates self-report consistency state.
+                self._cached_self_report_consistency = _consistency_val
                 if _consistency_val < 0.5:
                     _sr_safety_tightening = max(
                         _SR_CONSISTENCY_SAFETY_MIN,
@@ -16490,6 +16506,7 @@ class AEONDeltaV3(nn.Module):
                 coherence_deficit=self._cached_coherence_deficit,
                 causal_quality=self._cached_causal_quality,
                 recovery_pressure=self._compute_recovery_pressure(),
+                self_report_consistency=self._cached_self_report_consistency,
             ).detach()
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
         # feedback to refine uncertainty for the current pass.  When recovery
@@ -16896,6 +16913,7 @@ class AEONDeltaV3(nn.Module):
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
+                    self_report_consistency=self._cached_self_report_consistency,
                 ).detach()
                 self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
@@ -17661,6 +17679,7 @@ class AEONDeltaV3(nn.Module):
         # end-to-end causal structure learning.
         notears_results: Dict[str, Any] = {}
         if self.notears_causal is not None and not fast:
+            self.provenance_tracker.record_before("notears_causal", C_star)
             notears_input = factors
             if self.notears_proj is not None:
                 notears_input = self.notears_proj(factors)
@@ -17707,6 +17726,7 @@ class AEONDeltaV3(nn.Module):
                         "num_vars": notears_vars.shape[-1],
                     },
                 )
+            self.provenance_tracker.record_after("notears_causal", C_star)
         
         # 5d1c2. CausalProgrammaticModel — Pearl's structural causal model
         # with explicit structural equations and do-calculus support.
@@ -17929,6 +17949,7 @@ class AEONDeltaV3(nn.Module):
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
+                    self_report_consistency=self._cached_self_report_consistency,
                 ).detach()
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions.
@@ -19505,6 +19526,7 @@ class AEONDeltaV3(nn.Module):
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
+                    self_report_consistency=self._cached_self_report_consistency,
                 ).detach()
                 self.provenance_tracker.record_before(
                     "deeper_meta_loop", z_out,
@@ -19765,6 +19787,7 @@ class AEONDeltaV3(nn.Module):
                         coherence_deficit=self._cached_coherence_deficit,
                         causal_quality=self._cached_causal_quality,
                         recovery_pressure=self._compute_recovery_pressure(),
+                        self_report_consistency=self._cached_self_report_consistency,
                     ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
@@ -20100,6 +20123,7 @@ class AEONDeltaV3(nn.Module):
                 coherence_deficit=self._cached_coherence_deficit,
                 causal_quality=self._cached_causal_quality,
                 recovery_pressure=self._compute_recovery_pressure(),
+                self_report_consistency=self._cached_self_report_consistency,
             ).detach()
         
         outputs = {

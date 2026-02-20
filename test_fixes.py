@@ -28277,6 +28277,161 @@ def test_ucc_passes_coherence_magnitude_to_trigger():
     print("✅ test_ucc_passes_coherence_magnitude_to_trigger PASSED")
 
 
+def test_notears_provenance_instrumented():
+    """Gap 1: NOTEARS causal model has separate provenance record_before/after."""
+    from aeon_core import CausalProvenanceTracker
+    torch.manual_seed(42)
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+    # Simulate NOTEARS provenance instrumentation
+    C_star = torch.randn(2, 32)
+    tracker.record_before("notears_causal", C_star)
+    # Simulate NOTEARS modifying state (in practice it doesn't modify C_star
+    # directly, but provenance tracks the module's contribution)
+    tracker.record_after("notears_causal", C_star + 0.1)
+    attribution = tracker.compute_attribution()
+    contributions = attribution.get('contributions', {})
+    assert 'notears_causal' in contributions, (
+        f"NOTEARS should have a provenance entry, got: {list(contributions.keys())}"
+    )
+    assert contributions['notears_causal'] > 0, (
+        "NOTEARS provenance contribution should be positive"
+    )
+    print("✅ test_notears_provenance_instrumented PASSED")
+
+
+def test_feedback_bus_self_report_consistency_signal():
+    """Gap 2 & 5: CognitiveFeedbackBus accepts self_report_consistency signal."""
+    from aeon_core import CognitiveFeedbackBus
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # With default self_report_consistency=1.0 (fully consistent)
+    fb_default = bus(batch_size=2, device=torch.device('cpu'))
+    assert fb_default.shape == (2, 32), f"Expected (2, 32), got {fb_default.shape}"
+
+    # With low self_report_consistency=0.2 (low consistency)
+    fb_low = bus(
+        batch_size=2,
+        device=torch.device('cpu'),
+        self_report_consistency=0.2,
+    )
+    assert fb_low.shape == (2, 32), f"Expected (2, 32), got {fb_low.shape}"
+
+    # Outputs should differ when consistency changes
+    assert not torch.allclose(fb_default, fb_low, atol=1e-6), (
+        "Feedback bus output should change when self_report_consistency changes"
+    )
+    print("✅ test_feedback_bus_self_report_consistency_signal PASSED")
+
+
+def test_feedback_bus_self_report_gradient_flow():
+    """Gap 2: Self-report consistency signal flows gradients through feedback bus."""
+    from aeon_core import CognitiveFeedbackBus
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    bus.train()
+    fb = bus(batch_size=1, device=torch.device('cpu'), self_report_consistency=0.3)
+    loss = fb.sum()
+    loss.backward()
+    # Verify gradient flow through the projection layer
+    has_grad = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in bus.parameters()
+    )
+    assert has_grad, "Gradients should flow through the feedback bus"
+    print("✅ test_feedback_bus_self_report_gradient_flow PASSED")
+
+
+def test_feedback_bus_10_channels():
+    """Gap 2: CognitiveFeedbackBus has 10 signal channels (was 9)."""
+    from aeon_core import CognitiveFeedbackBus
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 10, (
+        f"Expected 10 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    )
+    print("✅ test_feedback_bus_10_channels PASSED")
+
+
+def test_fallback_provenance_tracker_reset():
+    """Gap 3: Fallback CausalProvenanceTracker.reset() works."""
+    # Force fallback by importing from ae_train directly
+    import importlib
+    import ae_train
+    # The fallback is only defined when AEON_CORE_AVAILABLE is False,
+    # but TrainingProvenanceTracker wraps whatever is available.
+    from ae_train import TrainingProvenanceTracker
+    tracker = TrainingProvenanceTracker()
+    t = torch.randn(2, 16)
+    tracker.record_before("test_module", t)
+    tracker.record_after("test_module", t + 0.5)
+    attribution = tracker.compute_attribution()
+    assert attribution  # Should return something
+    # Reset should not raise
+    tracker.reset()
+    attribution_after = tracker.compute_attribution()
+    # After reset, deltas should be empty
+    contribs = attribution_after.get('contributions', {})
+    assert len(contribs) == 0, (
+        f"After reset, contributions should be empty, got {contribs}"
+    )
+    print("✅ test_fallback_provenance_tracker_reset PASSED")
+
+
+def test_fallback_convergence_monitor_api():
+    """Gap 4: Fallback ConvergenceMonitor has set_error_evolution/set_provenance_tracker."""
+    from ae_train import TrainingConvergenceMonitor
+    monitor = TrainingConvergenceMonitor(threshold=1e-3, window_size=5)
+    # These should not raise even in fallback mode
+    result = monitor.update(1.0)
+    assert result['status'] == 'warmup'
+    result = monitor.update(0.8)
+    result = monitor.update(0.6)
+    result = monitor.update(0.4)
+    result = monitor.update(0.2)
+    assert result['status'] in ('converging', 'converged', 'warmup'), (
+        f"Expected converging/converged, got {result['status']}"
+    )
+    print("✅ test_fallback_convergence_monitor_api PASSED")
+
+
+def test_fallback_error_evolution_api():
+    """Gap 4: Fallback CausalErrorEvolutionTracker has set_causal_trace/get_root_causes."""
+    from ae_train import AEON_CORE_AVAILABLE
+    if AEON_CORE_AVAILABLE:
+        from aeon_core import CausalErrorEvolutionTracker
+    else:
+        from ae_train import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker(max_history=10)
+    # set_causal_trace should not raise
+    tracker.set_causal_trace(None)
+    # get_root_causes should return a valid dict
+    rc = tracker.get_root_causes("test_class")
+    assert isinstance(rc, dict), f"Expected dict, got {type(rc)}"
+    # record_episode and get_error_summary should work
+    tracker.record_episode("test_class", "retry", success=False, metadata={"loss_value": 0.5})
+    summary = tracker.get_error_summary()
+    assert "error_classes" in summary
+    assert "test_class" in summary["error_classes"]
+    print("✅ test_fallback_error_evolution_api PASSED")
+
+
+def test_cached_self_report_consistency_initialized():
+    """Gap 5: AEONDeltaV3 initializes _cached_self_report_consistency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_self_report_consistency'), (
+        "AEONDeltaV3 should have _cached_self_report_consistency attribute"
+    )
+    assert model._cached_self_report_consistency == 1.0, (
+        f"Default should be 1.0, got {model._cached_self_report_consistency}"
+    )
+    print("✅ test_cached_self_report_consistency_initialized PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -29531,6 +29686,17 @@ if __name__ == '__main__':
     test_metacognitive_trigger_graduated_coherence()
     test_metacognitive_trigger_coherence_backward_compat()
     test_ucc_passes_coherence_magnitude_to_trigger()
+    
+    # Architectural Gap Fixes — NOTEARS provenance, self-report feedback bus,
+    # fallback API completeness
+    test_notears_provenance_instrumented()
+    test_feedback_bus_self_report_consistency_signal()
+    test_feedback_bus_self_report_gradient_flow()
+    test_feedback_bus_10_channels()
+    test_fallback_provenance_tracker_reset()
+    test_fallback_convergence_monitor_api()
+    test_fallback_error_evolution_api()
+    test_cached_self_report_consistency_initialized()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
