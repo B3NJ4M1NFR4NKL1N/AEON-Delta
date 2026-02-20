@@ -194,6 +194,7 @@ __all__ = [
     "CrossValidationReconciler", "ExternalDataTrustScorer",
     "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
     "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
+    "CausalDAGConsensus",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
@@ -13491,6 +13492,7 @@ class MetaCognitiveRecursionTrigger:
         # learning and metacognitive sensitivity.
         _class_to_signal = {
             "convergence_divergence": "diverging",
+            "convergence_diverging": "diverging",
             "coherence_deficit": "coherence_deficit",
             "post_integration_coherence_deficit": "coherence_deficit",
             "post_auto_critic_coherence_deficit": "coherence_deficit",
