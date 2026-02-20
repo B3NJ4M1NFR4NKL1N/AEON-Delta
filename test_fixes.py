@@ -33693,6 +33693,15 @@ if __name__ == '__main__':
     test_post_coherence_deficit_causal_trace_query()
     test_error_evolution_records_memory_staleness()
     
+    # Architectural Unification — AGI Coherence Gap Closure Tests
+    test_uncertainty_adaptive_meta_loop_iterations()
+    test_uncertainty_adaptive_meta_loop_no_feedback()
+    test_pre_loop_memory_coherence_validation()
+    test_world_model_prediction_verification_loop()
+    test_output_reliability_scoring()
+    test_feedback_bus_causal_traceability()
+    test_self_diagnostic_reports_new_agi_connections()
+    
     # AGI Unification — Architectural gap fix validation tests
     test_consistency_loss_differentiable()
     test_provenance_dominance_dampening()
@@ -34417,15 +34426,6 @@ if __name__ == '__main__':
     test_convergence_monitor_wired_to_provenance()
     test_convergence_monitor_set_provenance_tracker()
     test_self_diagnostic_reports_training_bridge()
-    
-    # Architectural Unification — AGI Coherence Gap Closure Tests
-    test_uncertainty_adaptive_meta_loop_iterations()
-    test_uncertainty_adaptive_meta_loop_no_feedback()
-    test_pre_loop_memory_coherence_validation()
-    test_world_model_prediction_verification_loop()
-    test_output_reliability_scoring()
-    test_feedback_bus_causal_traceability()
-    test_self_diagnostic_reports_new_agi_connections()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

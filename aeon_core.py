@@ -6483,12 +6483,15 @@ class ProvablyConvergentMetaLoop(nn.Module):
         _uncertainty_iter_boost = 0
         if feedback is not None:
             _fb_magnitude = feedback.detach().abs().mean().item()
+            # 0.3 threshold: below this, feedback is normal operating noise;
+            # above indicates meaningful downstream pressure (uncertainty,
+            # safety, coherence deficit) that warrants deeper reasoning.
             if _fb_magnitude > 0.3:
                 _uncertainty_iter_boost = int(
                     min(self.max_iterations, self.max_iterations * _fb_magnitude)
                 )
                 effective_max_iterations = min(
-                    self.max_iterations * 2,
+                    self.max_iterations * 2,  # cap at 2× to prevent runaway
                     self.max_iterations + _uncertainty_iter_boost,
                 )
         
@@ -16529,6 +16532,11 @@ class AEONDeltaV3(nn.Module):
                     _verified_prediction_error = float(
                         F.mse_loss(_prev_pred, z_in.detach()).item()
                     )
+                    # 0.5 threshold: moderate prediction error is expected
+                    # due to input variation; above 0.5 MSE indicates
+                    # significant world-model inaccuracy warranting
+                    # epistemic caution.  Scale factor 0.2 provides
+                    # graduated escalation rather than binary triggering.
                     if _verified_prediction_error > 0.5:
                         _vpe_boost = min(
                             1.0 - uncertainty,
@@ -16781,8 +16789,9 @@ class AEONDeltaV3(nn.Module):
                         "consistency_score", 0.0,
                     )
                     # Attenuate memory contribution proportionally to
-                    # inconsistency — don't discard entirely, as partial
-                    # signal may still be useful.
+                    # inconsistency — minimum 0.1 preserves partial signal
+                    # as even inconsistent memories may contain useful
+                    # priors, while preventing full-strength injection.
                     _attenuation = max(0.1, _mem_consistency)
                     z_conditioned = z_in + (
                         self.config.pre_loop_memory_weight
@@ -21738,7 +21747,11 @@ class AEONDeltaV3(nn.Module):
             # accepting all results.  A score below 0.5 indicates the
             # output was produced under significant epistemic uncertainty
             # or failed self-verification, and should be treated with
-            # caution.
+            # caution.  Multiplicative combination is used so that any
+            # single severe deficiency (e.g. convergence_rate ≈ 0 or
+            # uncertainty ≈ 1) dominates the overall score — this is
+            # appropriate for a safety-first architecture where any
+            # individual failure mode should degrade the trust signal.
             'output_reliability': max(0.0, min(1.0,
                 (1.0 - uncertainty)
                 * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
