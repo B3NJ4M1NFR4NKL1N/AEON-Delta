@@ -70,6 +70,9 @@ try:
         UnifiedCognitiveCycle,
         MetaCognitiveRecursionTrigger,
         ModuleCoherenceVerifier,
+        UnifiedConvergenceArbiter,
+        DirectionalUncertaintyTracker,
+        MemoryReasoningValidator,
     )
     AEON_CORE_AVAILABLE = True
 except ImportError:
@@ -2060,6 +2063,9 @@ class SafeThoughtAETrainerV4:
             metacognitive_trigger=self._metacognitive_trigger,
             provenance_tracker=self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else CausalProvenanceTracker(),
+            convergence_arbiter=UnifiedConvergenceArbiter() if AEON_CORE_AVAILABLE else None,
+            uncertainty_tracker=DirectionalUncertaintyTracker() if AEON_CORE_AVAILABLE else None,
+            memory_validator=None,  # Training has no memory retrieval
         )
         # Cache the most recent encoder and VQ output tensors so the
         # epoch-end UCC evaluation receives real subsystem states instead
@@ -2068,6 +2074,10 @@ class SafeThoughtAETrainerV4:
         # preventing the verifier from detecting actual misalignment.
         self._last_encoder_state: Optional[torch.Tensor] = None
         self._last_vq_state: Optional[torch.Tensor] = None
+        # Bidirectional bridge: stores per-module feedback from
+        # inference-time uncertainty tracking, enabling the training
+        # loop to focus on historically problematic modules.
+        self._inference_module_feedback: Dict[str, float] = {}
 
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
@@ -3222,6 +3232,80 @@ def bridge_training_errors_to_inference(
                     )
             bridged += 1
     return bridged
+
+
+def bridge_inference_insights_to_training(
+    inference_error_evolution: Any,
+    trainer: 'SafeThoughtAETrainerV4',
+    inference_uncertainty_tracker: Any = None,
+) -> int:
+    """Bridge inference-time insights back into training parameters.
+
+    Closes the bidirectional feedback loop between inference and training.
+    When inference discovers recurring error patterns (e.g., coherence
+    deficits, convergence conflicts, memory-reasoning inconsistencies),
+    this function adjusts training hyperparameters to prevent those
+    patterns from recurring.
+
+    This implements the architectural requirement that core inference
+    insights feed back into training objectives, not just the other
+    direction (training→inference).
+
+    Args:
+        inference_error_evolution: The inference pipeline's
+            ``CausalErrorEvolutionTracker`` with accumulated patterns.
+        trainer: The ``SafeThoughtAETrainerV4`` instance whose
+            hyperparameters will be adapted.
+        inference_uncertainty_tracker: Optional ``DirectionalUncertaintyTracker``
+            whose per-module breakdown informs which training components
+            need the most attention.
+
+    Returns:
+        Number of training adjustments applied.
+    """
+    if inference_error_evolution is None or trainer is None:
+        return 0
+
+    adjustments = 0
+    summary = inference_error_evolution.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+
+    # Adapt gradient clipping if convergence conflicts recur
+    _conflict_stats = error_classes.get('convergence_conflict', {})
+    if (_conflict_stats.get('count', 0) >= 2
+            and _conflict_stats.get('success_rate', 1.0) < 0.5):
+        if hasattr(trainer, '_grad_clip_norm'):
+            _old_clip = trainer._grad_clip_norm
+            trainer._grad_clip_norm = max(0.1, _old_clip * 0.9)
+            adjustments += 1
+
+    # Adapt learning rate if coherence deficits recur
+    _coherence_stats = error_classes.get('coherence_deficit', {})
+    _post_coh_stats = error_classes.get('post_integration_coherence_deficit', {})
+    _total_coh_failures = (
+        _coherence_stats.get('count', 0) + _post_coh_stats.get('count', 0)
+    )
+    if _total_coh_failures >= 3:
+        if hasattr(trainer, '_metacognitive_lr_factor'):
+            trainer._metacognitive_lr_factor = max(
+                0.1, trainer._metacognitive_lr_factor * 0.95,
+            )
+            adjustments += 1
+
+    # Use directional uncertainty to identify problematic modules
+    if inference_uncertainty_tracker is not None:
+        try:
+            _summary = inference_uncertainty_tracker.build_summary()
+            _most_uncertain = _summary.get('most_uncertain_module')
+            if _most_uncertain and hasattr(trainer, '_inference_module_feedback'):
+                trainer._inference_module_feedback[_most_uncertain] = (
+                    _summary.get('aggregate_uncertainty', 0.0)
+                )
+                adjustments += 1
+        except Exception:
+            pass
+
+    return adjustments
 
 
 # ==============================================================================

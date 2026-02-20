@@ -195,6 +195,9 @@ __all__ = [
     "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
     "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
     "CausalDAGConsensus",
+    # Unified AGI architecture components
+    "UnifiedConvergenceArbiter", "DirectionalUncertaintyTracker",
+    "MemoryReasoningValidator",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
@@ -13582,6 +13585,10 @@ class MetaCognitiveRecursionTrigger:
             "training_stagnation": "coherence_deficit",
             "training_training_divergence": "diverging",
             "training_training_stagnation": "coherence_deficit",
+            # Convergence arbiter conflict — monitors disagree
+            "convergence_conflict": "diverging",
+            # Memory-reasoning inconsistency
+            "memory_reasoning_inconsistency": "memory_staleness",
         }
 
         # Accumulate boost factors for each signal
@@ -13946,6 +13953,321 @@ class CausalErrorEvolutionTracker:
         }
 
 
+class UnifiedConvergenceArbiter:
+    """Unifies verdicts from multiple convergence monitors into one consistent result.
+
+    The architecture contains three independent convergence detection systems:
+
+    1. :class:`ProvablyConvergentMetaLoop` — fixed-point iteration with residual
+       norm checking.
+    2. :class:`CertifiedMetaLoop` — IBP-based formal verification of Banach
+       fixed-point contraction.
+    3. :class:`ConvergenceMonitor` — sliding-window contraction ratio tracker.
+
+    Without arbitration, a state can pass one monitor but fail another,
+    leading to inconsistent downstream decisions.  This arbiter collects
+    all available verdicts and produces a single unified result using a
+    conservative consensus: convergence is certified only when **all**
+    active monitors agree.
+
+    When monitors disagree, the arbiter flags a ``convergence_conflict``
+    that feeds into the :class:`MetaCognitiveRecursionTrigger` and
+    :class:`CausalErrorEvolutionTracker`, enabling the system to detect
+    and learn from structural inconsistencies between its verification
+    subsystems.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        conflict_uncertainty_boost: Uncertainty added when monitors
+            disagree (default 0.15).
+    """
+
+    def __init__(self, conflict_uncertainty_boost: float = 0.15):
+        self.conflict_uncertainty_boost = max(0.0, conflict_uncertainty_boost)
+
+    def arbitrate(
+        self,
+        meta_loop_results: Dict[str, Any],
+        convergence_monitor_verdict: Dict[str, Any],
+        certified_results: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Produce a unified convergence verdict.
+
+        Args:
+            meta_loop_results: Output of ProvablyConvergentMetaLoop containing
+                ``convergence_rate`` and ``residual_norm``.
+            convergence_monitor_verdict: Output of ConvergenceMonitor.check().
+            certified_results: Optional output of CertifiedMetaLoop containing
+                ``certified_convergence`` and ``certified_error_bound``.
+
+        Returns:
+            Dict with:
+                - unified_status: str — 'converged', 'converging', 'diverging',
+                  or 'conflict'.
+                - unified_certified: bool — True only when all monitors agree
+                  on convergence.
+                - has_conflict: bool — True when monitors disagree.
+                - conflict_details: list of (monitor, verdict) disagreements.
+                - uncertainty_boost: float — additional uncertainty from conflict.
+                - individual_verdicts: dict of per-monitor results.
+        """
+        verdicts: Dict[str, str] = {}
+        certified_flags: Dict[str, bool] = {}
+
+        # 1. ProvablyConvergentMetaLoop verdict
+        ml_rate = meta_loop_results.get("convergence_rate", 0.0)
+        ml_residual = meta_loop_results.get("residual_norm", 1.0)
+        if ml_rate > 0.9 and ml_residual < 0.01:
+            verdicts["meta_loop"] = "converged"
+            certified_flags["meta_loop"] = True
+        elif ml_rate > 0.5:
+            verdicts["meta_loop"] = "converging"
+            certified_flags["meta_loop"] = False
+        else:
+            verdicts["meta_loop"] = "diverging"
+            certified_flags["meta_loop"] = False
+
+        # 2. ConvergenceMonitor verdict
+        cm_status = convergence_monitor_verdict.get("status", "warmup")
+        cm_certified = convergence_monitor_verdict.get("certified", False)
+        verdicts["convergence_monitor"] = cm_status
+        certified_flags["convergence_monitor"] = cm_certified
+
+        # 3. CertifiedMetaLoop verdict (when available)
+        if certified_results is not None:
+            cert_conv = certified_results.get("certified_convergence", False)
+            verdicts["certified_meta_loop"] = "converged" if cert_conv else "not_certified"
+            certified_flags["certified_meta_loop"] = cert_conv
+
+        # Compute consensus
+        all_converged = all(v in ("converged",) for v in verdicts.values())
+        any_diverging = any(v == "diverging" for v in verdicts.values())
+        all_certified = all(certified_flags.values()) and len(certified_flags) > 0
+
+        # Detect conflicts
+        unique_verdicts = set(verdicts.values()) - {"warmup"}
+        has_conflict = len(unique_verdicts) > 1 and not all_converged
+        conflict_details = []
+        if has_conflict:
+            for monitor, verdict in verdicts.items():
+                conflict_details.append({"monitor": monitor, "verdict": verdict})
+
+        # Unified status (conservative)
+        if all_converged:
+            unified_status = "converged"
+        elif any_diverging:
+            unified_status = "diverging"
+        elif has_conflict:
+            unified_status = "conflict"
+        else:
+            unified_status = "converging"
+
+        uncertainty_boost = self.conflict_uncertainty_boost if has_conflict else 0.0
+
+        return {
+            "unified_status": unified_status,
+            "unified_certified": all_certified,
+            "has_conflict": has_conflict,
+            "conflict_details": conflict_details,
+            "uncertainty_boost": uncertainty_boost,
+            "individual_verdicts": verdicts,
+        }
+
+
+class DirectionalUncertaintyTracker:
+    """Tracks per-module uncertainty to enable targeted re-reasoning.
+
+    Standard broadcast uncertainty treats all modules equally: when
+    uncertainty is high, the entire pipeline re-reasons.  This tracker
+    maintains per-module uncertainty contributions so that:
+
+    1. The system can identify **which** module is most uncertain.
+    2. Re-reasoning can target the specific uncertain module rather
+       than re-running everything.
+    3. Uncertainty sources are traceable for root-cause analysis.
+
+    This is a pure-logic utility with no learnable parameters.
+    """
+
+    def __init__(self):
+        self._sources: Dict[str, float] = {}
+        self._module_uncertainties: Dict[str, float] = {}
+
+    def reset(self) -> None:
+        """Clear all tracked uncertainty for a new forward pass."""
+        self._sources.clear()
+        self._module_uncertainties.clear()
+
+    def record(self, module_name: str, uncertainty: float,
+               source_label: Optional[str] = None) -> None:
+        """Record an uncertainty contribution from a specific module.
+
+        Args:
+            module_name: Name of the module contributing uncertainty.
+            uncertainty: Scalar ∈ [0, 1] indicating module-level uncertainty.
+            source_label: Optional descriptive label for the source.
+        """
+        clamped = max(0.0, min(1.0, uncertainty))
+        self._module_uncertainties[module_name] = max(
+            self._module_uncertainties.get(module_name, 0.0), clamped,
+        )
+        label = source_label or module_name
+        self._sources[label] = clamped
+
+    def get_aggregate(self) -> float:
+        """Return the maximum uncertainty across all modules."""
+        if not self._module_uncertainties:
+            return 0.0
+        return max(self._module_uncertainties.values())
+
+    def get_most_uncertain_module(self) -> Optional[str]:
+        """Return the name of the module with the highest uncertainty.
+
+        Returns:
+            Module name, or None if no uncertainty has been recorded.
+        """
+        if not self._module_uncertainties:
+            return None
+        return max(self._module_uncertainties, key=self._module_uncertainties.get)
+
+    def get_sources(self) -> Dict[str, float]:
+        """Return all recorded uncertainty sources with their values."""
+        return dict(self._sources)
+
+    def get_module_uncertainties(self) -> Dict[str, float]:
+        """Return per-module uncertainty mapping."""
+        return dict(self._module_uncertainties)
+
+    def get_modules_above_threshold(self, threshold: float = 0.3) -> List[str]:
+        """Return module names whose uncertainty exceeds the threshold.
+
+        Args:
+            threshold: Uncertainty level above which a module is flagged.
+
+        Returns:
+            List of module names sorted by descending uncertainty.
+        """
+        flagged = [
+            (name, unc) for name, unc in self._module_uncertainties.items()
+            if unc > threshold
+        ]
+        flagged.sort(key=lambda x: x[1], reverse=True)
+        return [name for name, _ in flagged]
+
+    def build_summary(self) -> Dict[str, Any]:
+        """Build a complete uncertainty summary for traceability.
+
+        Returns:
+            Dict with aggregate, most_uncertain_module, sources,
+            module_uncertainties, and flagged_modules.
+        """
+        return {
+            "aggregate_uncertainty": self.get_aggregate(),
+            "most_uncertain_module": self.get_most_uncertain_module(),
+            "sources": self.get_sources(),
+            "module_uncertainties": self.get_module_uncertainties(),
+            "flagged_modules": self.get_modules_above_threshold(),
+        }
+
+
+class MemoryReasoningValidator:
+    """Validates retrieved memories against the converged reasoning state.
+
+    Closes the gap where memories are retrieved once at the start of
+    reasoning and then frozen — never checked for consistency with the
+    final converged state.  This validator compares the pre-loop memory
+    signal against the post-convergence state and flags inconsistencies
+    that may indicate stale or irrelevant memories polluted the reasoning.
+
+    When validation fails, it signals the need for memory re-retrieval
+    or uncertainty escalation, enabling the meta-cognitive cycle to
+    correct memory-reasoning misalignment.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        consistency_threshold: Minimum cosine similarity between memory
+            signal and converged state (default 0.3).
+        staleness_penalty: Uncertainty boost when validation fails
+            (default 0.1).
+    """
+
+    def __init__(
+        self,
+        consistency_threshold: float = 0.3,
+        staleness_penalty: float = 0.1,
+    ):
+        self.consistency_threshold = max(0.0, min(consistency_threshold, 1.0))
+        self.staleness_penalty = max(0.0, staleness_penalty)
+
+    def validate(
+        self,
+        memory_signal: Optional[torch.Tensor],
+        converged_state: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Check if retrieved memories are consistent with the converged state.
+
+        Args:
+            memory_signal: [B, hidden_dim] or [hidden_dim] pre-loop memory
+                retrieval.  None if no memory was retrieved.
+            converged_state: [B, hidden_dim] post-meta-loop converged state.
+
+        Returns:
+            Dict with:
+                - is_consistent: bool — True when memory aligns with reasoning.
+                - consistency_score: float — cosine similarity ∈ [-1, 1].
+                - needs_re_retrieval: bool — True when score < threshold.
+                - uncertainty_boost: float — suggested uncertainty increase.
+                - memory_available: bool — whether memory_signal was provided.
+        """
+        if memory_signal is None:
+            return {
+                "is_consistent": True,
+                "consistency_score": 0.0,
+                "needs_re_retrieval": False,
+                "uncertainty_boost": 0.0,
+                "memory_available": False,
+            }
+
+        # Ensure compatible shapes
+        mem = memory_signal
+        state = converged_state
+        if mem.dim() == 1:
+            mem = mem.unsqueeze(0)
+        if state.dim() > 2:
+            state = state.mean(dim=1)  # collapse sequence dim
+        # Average over batch for consistency check
+        mem_avg = mem.mean(dim=0)
+        state_avg = state.mean(dim=0)
+
+        if mem_avg.shape != state_avg.shape:
+            # Shapes incompatible — cannot validate
+            return {
+                "is_consistent": False,
+                "consistency_score": 0.0,
+                "needs_re_retrieval": True,
+                "uncertainty_boost": self.staleness_penalty,
+                "memory_available": True,
+            }
+
+        similarity = float(F.cosine_similarity(
+            mem_avg.unsqueeze(0), state_avg.unsqueeze(0), dim=-1,
+        ).item())
+
+        is_consistent = similarity >= self.consistency_threshold
+        needs_re_retrieval = not is_consistent
+        uncertainty_boost = 0.0 if is_consistent else self.staleness_penalty
+
+        return {
+            "is_consistent": is_consistent,
+            "consistency_score": similarity,
+            "needs_re_retrieval": needs_re_retrieval,
+            "uncertainty_boost": uncertainty_boost,
+            "memory_available": True,
+        }
+
+
 class UnifiedCognitiveCycle:
     """Orchestrates meta-cognitive components into a single coherent cycle.
 
@@ -13993,6 +14315,9 @@ class UnifiedCognitiveCycle:
         metacognitive_trigger: Optional['MetaCognitiveRecursionTrigger'],
         provenance_tracker: 'CausalProvenanceTracker',
         causal_trace: Optional['TemporalCausalTraceBuffer'] = None,
+        convergence_arbiter: Optional['UnifiedConvergenceArbiter'] = None,
+        uncertainty_tracker: Optional['DirectionalUncertaintyTracker'] = None,
+        memory_validator: Optional['MemoryReasoningValidator'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -14000,6 +14325,9 @@ class UnifiedCognitiveCycle:
         self.metacognitive_trigger = metacognitive_trigger
         self.provenance_tracker = provenance_tracker
         self.causal_trace = causal_trace
+        self.convergence_arbiter = convergence_arbiter
+        self.uncertainty_tracker = uncertainty_tracker
+        self.memory_validator = memory_validator
 
         # Wire convergence monitor → error evolution automatically.
         if self.error_evolution is not None:
@@ -14032,6 +14360,10 @@ class UnifiedCognitiveCycle:
         safety_violation: bool = False,
         feedback_signal: Optional[torch.Tensor] = None,
         topology_catastrophe: bool = False,
+        meta_loop_results: Optional[Dict[str, Any]] = None,
+        certified_results: Optional[Dict[str, Any]] = None,
+        memory_signal: Optional[torch.Tensor] = None,
+        converged_state: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -14263,6 +14595,101 @@ class UnifiedCognitiveCycle:
         if _original_threshold is not None and self.coherence_verifier is not None:
             self.coherence_verifier.threshold = _original_threshold
 
+        # 7b. Unified convergence arbitration — when multiple convergence
+        # monitors are active, produce a single consistent verdict.
+        convergence_arbiter_result: Dict[str, Any] = {}
+        if (self.convergence_arbiter is not None
+                and meta_loop_results is not None):
+            convergence_arbiter_result = self.convergence_arbiter.arbitrate(
+                meta_loop_results=meta_loop_results,
+                convergence_monitor_verdict=convergence_verdict,
+                certified_results=certified_results,
+            )
+            # If monitors conflict, escalate uncertainty and record
+            if convergence_arbiter_result.get("has_conflict", False):
+                _arb_boost = convergence_arbiter_result.get("uncertainty_boost", 0.0)
+                uncertainty = min(1.0, uncertainty + _arb_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='convergence_conflict',
+                        strategy_used='arbitration_escalation',
+                        success=False,
+                        metadata={
+                            'conflict_details': convergence_arbiter_result.get(
+                                "conflict_details", [],
+                            ),
+                        },
+                    )
+                if not should_rerun and self.metacognitive_trigger is not None:
+                    # Conflict alone warrants re-reasoning
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'convergence_conflict'}
+                    )
+
+        # 7c. Directional uncertainty tracking — record per-module
+        # uncertainty so downstream consumers know WHICH module is most
+        # uncertain, enabling targeted re-reasoning.
+        uncertainty_summary: Dict[str, Any] = {}
+        if self.uncertainty_tracker is not None:
+            self.uncertainty_tracker.reset()
+            self.uncertainty_tracker.record("convergence", min(1.0, delta_norm))
+            self.uncertainty_tracker.record("coherence", coherence_deficit)
+            if world_model_surprise > 0:
+                self.uncertainty_tracker.record(
+                    "world_model", min(1.0, world_model_surprise),
+                )
+            if causal_quality < 1.0:
+                self.uncertainty_tracker.record(
+                    "causal_model", 1.0 - causal_quality,
+                )
+            if memory_staleness:
+                self.uncertainty_tracker.record("memory", 0.5)
+            if safety_violation:
+                self.uncertainty_tracker.record("safety", 0.8)
+            if topology_catastrophe:
+                self.uncertainty_tracker.record("topology", 0.9)
+            if convergence_arbiter_result.get("has_conflict", False):
+                self.uncertainty_tracker.record("convergence_arbiter", 0.6)
+            uncertainty_summary = self.uncertainty_tracker.build_summary()
+
+        # 7d. Memory-reasoning validation — check if retrieved memories
+        # are consistent with the converged state.
+        memory_validation: Dict[str, Any] = {}
+        if self.memory_validator is not None and converged_state is not None:
+            memory_validation = self.memory_validator.validate(
+                memory_signal=memory_signal,
+                converged_state=converged_state,
+            )
+            if memory_validation.get("needs_re_retrieval", False):
+                _mem_boost = memory_validation.get("uncertainty_boost", 0.0)
+                uncertainty = min(1.0, uncertainty + _mem_boost)
+                if self.uncertainty_tracker is not None:
+                    self.uncertainty_tracker.record(
+                        "memory_validation", _mem_boost,
+                        source_label="memory_reasoning_inconsistency",
+                    )
+                # Record in error evolution for learning
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='memory_reasoning_inconsistency',
+                        strategy_used='re_retrieval_signal',
+                        success=False,
+                        metadata={
+                            'consistency_score': memory_validation.get(
+                                "consistency_score", 0.0,
+                            ),
+                        },
+                    )
+                # Signal re-reasoning if not already triggered
+                if not should_rerun:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'memory_reasoning_inconsistency'}
+                    )
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -14278,6 +14705,9 @@ class UnifiedCognitiveCycle:
             'root_cause_trace': root_cause_trace,
             'error_evolution_root_causes': error_evolution_root_causes,
             'causal_chain': causal_chain,
+            'convergence_arbiter': convergence_arbiter_result,
+            'uncertainty_summary': uncertainty_summary,
+            'memory_validation': memory_validation,
         }
 
     def reset(self) -> None:
@@ -14293,6 +14723,8 @@ class UnifiedCognitiveCycle:
         self.convergence_monitor.reset()
         if self.metacognitive_trigger is not None:
             self.metacognitive_trigger.reset()
+        if self.uncertainty_tracker is not None:
+            self.uncertainty_tracker.reset()
 
 
 # ============================================================================
@@ -14392,6 +14824,15 @@ class AEONDeltaV3(nn.Module):
         ("causal_programmatic", "causal_dag_consensus"),
         ("causal_dag_consensus", "auto_critic"),
         ("causal_dag_consensus", "unified_cognitive_cycle"),
+        # Unified convergence arbitration sits between all convergence
+        # monitors and the unified cognitive cycle.
+        ("meta_loop", "convergence_arbiter"),
+        ("certified_meta_loop", "convergence_arbiter"),
+        ("convergence_arbiter", "unified_cognitive_cycle"),
+        # Memory-reasoning validation feeds into the UCC
+        ("memory", "memory_validation"),
+        ("meta_loop", "memory_validation"),
+        ("memory_validation", "unified_cognitive_cycle"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -15186,10 +15627,15 @@ class AEONDeltaV3(nn.Module):
         # CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
         # and CausalProvenanceTracker into a single coherent evaluation
         # that ensures each component verifies and reinforces the others.
+        # Now also includes UnifiedConvergenceArbiter, DirectionalUncertaintyTracker,
+        # and MemoryReasoningValidator for complete AGI coherence.
         # The UCC now degrades gracefully: it operates with whatever
         # subset of components is available rather than requiring all
         # three optional prerequisites, ensuring the unified orchestration
         # layer is always active when enabled.
+        self.convergence_arbiter = UnifiedConvergenceArbiter()
+        self.uncertainty_tracker = DirectionalUncertaintyTracker()
+        self.memory_validator = MemoryReasoningValidator()
         if getattr(config, 'enable_unified_cognitive_cycle', True):
             _ucc_available = [
                 name for name, obj in [
@@ -15210,6 +15656,9 @@ class AEONDeltaV3(nn.Module):
                     metacognitive_trigger=self.metacognitive_trigger,
                     provenance_tracker=self.provenance_tracker,
                     causal_trace=self.causal_trace,
+                    convergence_arbiter=self.convergence_arbiter,
+                    uncertainty_tracker=self.uncertainty_tracker,
+                    memory_validator=self.memory_validator,
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -16143,6 +16592,7 @@ class AEONDeltaV3(nn.Module):
         # The result is blended as a lightweight residual into a conditioned
         # input (z_conditioned) while preserving z_in as the safe fallback.
         z_conditioned = z_in
+        _pre_loop_memory_signal: Optional[torch.Tensor] = None
         if memory_retrieval and not fast and (
             self.hierarchical_memory is not None
             or self.neurogenic_memory is not None
@@ -16158,6 +16608,7 @@ class AEONDeltaV3(nn.Module):
                         and _umq_combined.numel() > 0
                         and torch.isfinite(_umq_combined).all()):
                     _umq_expanded = _umq_combined.unsqueeze(0).expand(B, -1).to(device)
+                    _pre_loop_memory_signal = _umq_expanded.detach()
                     z_conditioned = z_in + self.config.pre_loop_memory_weight * _umq_expanded
                     self.audit_log.record("unified_memory", "pre_loop_conditioning", {
                         "num_systems": _umq.get('num_systems_responded', 0),
@@ -16445,6 +16896,42 @@ class AEONDeltaV3(nn.Module):
             or audit_recommends_deeper
             or is_diverging
         )
+
+        # 1a-iii-arb. Unified convergence arbitration — reconcile verdicts
+        # from ProvablyConvergentMetaLoop, ConvergenceMonitor, and
+        # CertifiedMetaLoop into a single consistent result.  When monitors
+        # disagree, escalate uncertainty and flag the conflict for the
+        # metacognitive trigger.
+        _convergence_arbiter_result: Dict[str, Any] = {}
+        if self.convergence_arbiter is not None:
+            _convergence_arbiter_result = self.convergence_arbiter.arbitrate(
+                meta_loop_results=meta_results,
+                convergence_monitor_verdict=convergence_verdict,
+                certified_results=_certified_results if _certified_results else None,
+            )
+            if _convergence_arbiter_result.get("has_conflict", False):
+                _arb_boost = _convergence_arbiter_result.get("uncertainty_boost", 0.0)
+                uncertainty = min(1.0, uncertainty + _arb_boost)
+                uncertainty_sources["convergence_conflict"] = _arb_boost
+                high_uncertainty = uncertainty > 0.5
+                _needs_deeper = True
+                self.audit_log.record("convergence_arbiter", "conflict_detected", {
+                    "individual_verdicts": _convergence_arbiter_result.get(
+                        "individual_verdicts", {},
+                    ),
+                    "uncertainty_boost": _arb_boost,
+                })
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="convergence_conflict",
+                        strategy_used="arbitration_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "conflict_details": _convergence_arbiter_result.get(
+                                "conflict_details", [],
+                            ),
+                        }),
+                    )
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
         adaptive_safety_threshold = self.config.safety_threshold
@@ -19784,7 +20271,46 @@ class AEONDeltaV3(nn.Module):
                         float(max(0.0, min(1.0, 1.0 - _post_cs_val))),
                     )
         
-        # 8f-iii. Unified cognitive cycle evaluation — runs the full
+        # 8f-iii. Directional uncertainty tracking — populate the
+        # per-module uncertainty tracker with all accumulated uncertainty
+        # sources so the UCC and downstream consumers know WHICH module
+        # is most uncertain, enabling targeted re-reasoning.
+        if self.uncertainty_tracker is not None and not fast:
+            self.uncertainty_tracker.reset()
+            # Map uncertainty sources to their originating modules
+            _source_module_map = {
+                "residual_variance": "meta_loop",
+                "meta_loop_nan": "meta_loop",
+                "certified_convergence_failed": "certified_meta_loop",
+                "convergence_conflict": "convergence",
+                "vq_codebook_collapse": "vector_quantizer",
+                "vq_check_error": "vector_quantizer",
+                "diversity_collapse": "sparse_factorization",
+                "self_report_low_honesty": "self_report",
+                "self_report_low_confidence": "self_report",
+                "coherence_deficit": "coherence_verifier",
+                "world_model_surprise": "world_model",
+                "world_model_error": "world_model",
+                "hierarchical_wm_error": "hierarchical_world_model",
+                "memory_error": "memory",
+                "memory_staleness": "memory",
+                "unified_memory_error": "memory",
+                "recovery_pressure": "error_recovery",
+                "topology_catastrophe": "topology_analyzer",
+                "causal_trace_errors": "causal_trace",
+                "causal_context_error": "causal_context",
+                "cognitive_executive_error": "cognitive_executive",
+                "error_evolution_preemptive": "error_evolution",
+                "value_net_low_quality": "value_network",
+                "value_net_error": "value_network",
+            }
+            for src_name, src_val in uncertainty_sources.items():
+                module = _source_module_map.get(src_name, src_name)
+                self.uncertainty_tracker.record(
+                    module, src_val, source_label=src_name,
+                )
+
+        # 8f-iv. Unified cognitive cycle evaluation — runs the full
         # meta-cognitive evaluation cycle orchestrating convergence
         # monitoring, cross-module coherence, error evolution, meta-
         # cognitive recursion trigger, and provenance attribution in a
@@ -19856,6 +20382,10 @@ class AEONDeltaV3(nn.Module):
                     safety_violation=safety_enforced or _ucc_ns_violated,
                     feedback_signal=self._cached_feedback,
                     topology_catastrophe=_topo_catastrophe,
+                    meta_loop_results=meta_results,
+                    certified_results=_certified_results,
+                    memory_signal=_pre_loop_memory_signal,
+                    converged_state=C_star.detach(),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -20792,6 +21322,11 @@ class AEONDeltaV3(nn.Module):
             'dag_consensus_results': _dag_consensus_results,
             'memory_retrieval_quality': self._last_memory_retrieval_quality,
             'unified_cognitive_cycle_results': unified_cycle_results,
+            'convergence_arbiter_results': _convergence_arbiter_result,
+            'directional_uncertainty': (
+                self.uncertainty_tracker.build_summary()
+                if self.uncertainty_tracker is not None else {}
+            ),
         }
         
         return z_out, outputs
