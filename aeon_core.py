@@ -17734,6 +17734,20 @@ class AEONDeltaV3(nn.Module):
                     and self._cached_memory_state.shape[-1] == C_star.shape[-1]
                     and self._cached_memory_state.shape[0] == C_star.shape[0]):
                 coherence_states["memory_prior"] = self._cached_memory_state
+            # Include cached world model and causal model states from the
+            # previous forward pass so that cross-pass coherence captures
+            # drift between the current reasoning state and prior world
+            # model / causal conclusions.  Without these, the coherence
+            # verifier only sees encoder-side modules, missing downstream
+            # subsystem disagreement.
+            if (self._cached_world_model_state is not None
+                    and self._cached_world_model_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_world_model_state.shape[0] == C_star.shape[0]):
+                coherence_states["world_model_prior"] = self._cached_world_model_state
+            if (self._cached_causal_state is not None
+                    and self._cached_causal_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_causal_state.shape[0] == C_star.shape[0]):
+                coherence_states["causal_prior"] = self._cached_causal_state
             coherence_results = self.module_coherence(coherence_states)
             _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Cache coherence deficit for feedback bus on next forward pass
@@ -19534,30 +19548,54 @@ class AEONDeltaV3(nn.Module):
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
         if self.active_learning_planner is not None and self.world_model is not None and not fast:
-            self.active_learning_planner.eval()
-            active_learning_results = self.active_learning_planner.select_action(
-                C_star[0], self.world_model
-            )
-            # 5e-i. Active learning uncertainty feedback — high intrinsic
-            # reward indicates the system is in a highly uncertain region
-            # of state space.  Escalate uncertainty so metacognitive cycles
-            # activate when the exploration signal is strong, closing the
-            # loop between active learning and reasoning depth.
-            # Intrinsic reward is the prediction variance of the
-            # uncertainty model; 0.5 is the median of typical outputs.
-            # Scale 0.1 limits maximum boost to ~0.1 to avoid
-            # over-triggering from exploration noise.
-            _AL_INTRINSIC_THRESHOLD = 0.5
-            _AL_UNCERTAINTY_SCALE = 0.1
-            _al_intrinsic = active_learning_results.get("intrinsic_reward", 0.0)
-            if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
-                if _al_intrinsic > _AL_INTRINSIC_THRESHOLD:
-                    _al_boost = min(
-                        1.0 - uncertainty,
-                        _al_intrinsic * _AL_UNCERTAINTY_SCALE,
+            try:
+                self.provenance_tracker.record_before("active_learning", C_star)
+                self.active_learning_planner.eval()
+                active_learning_results = self.active_learning_planner.select_action(
+                    C_star[0], self.world_model
+                )
+                self.provenance_tracker.record_after("active_learning", C_star)
+                # 5e-i. Active learning uncertainty feedback — high intrinsic
+                # reward indicates the system is in a highly uncertain region
+                # of state space.  Escalate uncertainty so metacognitive cycles
+                # activate when the exploration signal is strong, closing the
+                # loop between active learning and reasoning depth.
+                # Intrinsic reward is the prediction variance of the
+                # uncertainty model; 0.5 is the median of typical outputs.
+                # Scale 0.1 limits maximum boost to ~0.1 to avoid
+                # over-triggering from exploration noise.
+                _AL_INTRINSIC_THRESHOLD = 0.5
+                _AL_UNCERTAINTY_SCALE = 0.1
+                _al_intrinsic = active_learning_results.get("intrinsic_reward", 0.0)
+                if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
+                    if _al_intrinsic > _AL_INTRINSIC_THRESHOLD:
+                        _al_boost = min(
+                            1.0 - uncertainty,
+                            _al_intrinsic * _AL_UNCERTAINTY_SCALE,
+                        )
+                        uncertainty = min(1.0, uncertainty + _al_boost)
+                        uncertainty_sources["active_learning_curiosity"] = _al_boost
+                        high_uncertainty = uncertainty > 0.5
+            except Exception as _al_err:
+                logger.warning(f"ActiveLearningPlanner error (non-fatal): {_al_err}")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="active_learning_planner_forward",
+                    success=False,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="active_learning_error",
+                        strategy_used="skip",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "error": str(_al_err),
+                        }),
                     )
-                    uncertainty = min(1.0, uncertainty + _al_boost)
-                    uncertainty_sources["active_learning_curiosity"] = _al_boost
+                _al_err_boost = min(1.0 - uncertainty, 0.05)
+                if _al_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _al_err_boost)
+                    uncertainty_sources["active_learning_error"] = _al_err_boost
                     high_uncertainty = uncertainty > 0.5
         
         # 5e2. Unified causal simulator — counterfactual reasoning
@@ -19602,6 +19640,17 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _usim_boost)
                     uncertainty_sources["unified_simulator_divergence"] = _usim_boost
                     high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="unified_simulator_divergence",
+                            strategy_used="uncertainty_escalation",
+                            success=False,
+                            metadata=self._provenance_enriched_metadata({
+                                "cf_divergence": _cf_divergence,
+                                "threshold": _UNIFIED_SIM_DIVERGENCE_THRESHOLD,
+                                "uncertainty_boost": _usim_boost,
+                            }),
+                        )
         
         # 5e2-fc. Complexity-gated fallback for unified simulator —
         # cache the counterfactual next_state when it runs; when skipped,
@@ -19739,6 +19788,15 @@ class AEONDeltaV3(nn.Module):
                     context="standalone_ns_bridge_forward",
                     success=False,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ns_bridge_error",
+                        strategy_used="skip",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "error": str(ns_err),
+                        }),
+                    )
                 _ns_err_boost = min(1.0 - uncertainty, 0.05)
                 if _ns_err_boost > 0:
                     uncertainty = min(1.0, uncertainty + _ns_err_boost)
@@ -22188,6 +22246,47 @@ class AEONDeltaV3(nn.Module):
             'generated_ids': generated_ids,
             **outputs
         }
+
+        # ===== POST-OUTPUT COHERENCE VERIFICATION =====
+        # When the reasoning core signals that coherence needs rechecking
+        # (e.g., via UCC should_rerun or coherence deficit), run a final
+        # coherence verification on the output state before returning.
+        # This ensures that every forward pass whose internal subsystems
+        # disagree surfaces a coherence flag, closing the gap where
+        # _forward_impl returned results without a final cross-module check.
+        _ucc_results = outputs.get('unified_cognitive_cycle_results', {})
+        _output_needs_recheck = (
+            _ucc_results.get('should_rerun', False)
+            or outputs.get('coherence_deficit', False)
+        )
+        if (self.module_coherence is not None
+                and _output_needs_recheck
+                and not fast):
+            _final_states: Dict[str, torch.Tensor] = {
+                "output": z_out.detach(),
+            }
+            if self._cached_meta_loop_state is not None:
+                _final_states["meta_loop"] = self._cached_meta_loop_state.detach()
+            if self._cached_decoder_state is not None:
+                _final_states["decoder"] = self._cached_decoder_state.detach()
+            if len(_final_states) >= 2:
+                try:
+                    _final_coh = self.module_coherence(_final_states)
+                    result['post_output_coherence'] = {
+                        'coherence_score': float(
+                            _final_coh['coherence_score'].mean().item()
+                            if isinstance(_final_coh['coherence_score'], torch.Tensor)
+                            else _final_coh['coherence_score']
+                        ),
+                        'needs_recheck': bool(
+                            _final_coh.get('needs_recheck', False)
+                        ),
+                    }
+                except Exception as _poc_err:
+                    logger.debug(
+                        "Post-output coherence verification error "
+                        "(non-fatal): %s", _poc_err,
+                    )
         
         return result
     
