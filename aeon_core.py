@@ -5914,8 +5914,11 @@ class CognitiveFeedbackBus(nn.Module):
         - feedback: [B, hidden_dim] dense conditioning vector
     """
     
-    # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 10  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence, causal_quality, recovery_pressure, self_report_consistency
+    # Number of scalar signal channels aggregated by the bus:
+    #   safety, convergence, uncertainty, health_mean, loss_scale,
+    #   surprise, coherence, causal_quality, recovery_pressure,
+    #   self_report_consistency
+    NUM_SIGNAL_CHANNELS = 10
     
     def __init__(self, hidden_dim: int):
         super().__init__()

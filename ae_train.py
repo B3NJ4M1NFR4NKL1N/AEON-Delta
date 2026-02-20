@@ -217,6 +217,9 @@ except ImportError:
         def record_after(self, module_name: str, state: torch.Tensor) -> None:
             if module_name in self._snapshots:
                 before = self._snapshots[module_name]
+                # Handle shape mismatches by truncating to smaller size;
+                # this mirrors TrainingProvenanceTracker.record_after()
+                # and is expected when VQ or projection layers change dim.
                 min_size = min(state.shape[-1], before.shape[-1])
                 self._deltas[module_name] = (
                     state.detach()[..., :min_size] - before[..., :min_size]
@@ -226,7 +229,9 @@ except ImportError:
             self._dependencies.append((upstream, downstream))
 
         def compute_attribution(self) -> Dict[str, Any]:
-            total = sum(self._deltas.values()) + 1e-10
+            # Epsilon prevents division by zero when all deltas are zero
+            _EPSILON = 1e-10
+            total = sum(self._deltas.values()) + _EPSILON
             contributions = {k: v / total for k, v in self._deltas.items()}
             return {
                 "contributions": contributions,

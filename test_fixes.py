@@ -28280,6 +28280,7 @@ def test_ucc_passes_coherence_magnitude_to_trigger():
 def test_notears_provenance_instrumented():
     """Gap 1: NOTEARS causal model has separate provenance record_before/after."""
     from aeon_core import CausalProvenanceTracker
+    torch.manual_seed(42)
     tracker = CausalProvenanceTracker()
     tracker.reset()
     # Simulate NOTEARS provenance instrumentation
