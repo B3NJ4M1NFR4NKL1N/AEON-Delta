@@ -29531,28 +29531,29 @@ def test_ucc_evaluate_returns_causal_chain():
 
 def test_provenance_trace_bridge_config():
     """Gap 4: enable_provenance_trace_bridge config option controls whether
-    the provenance tracker bridges to the causal trace."""
+    the provenance tracker bridges to the causal trace.  The bridge is
+    enabled by default so root-cause traceability is complete."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    # Default: bridge disabled
-    config_off = AEONConfig(
-        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
-        enable_causal_trace=True,
-    )
-    model_off = AEONDeltaV3(config_off)
-    assert getattr(model_off.provenance_tracker, '_causal_trace', None) is None, (
-        "Provenance trace bridge should be disabled by default"
-    )
-
-    # Enabled: bridge active
+    # Default: bridge enabled (provenance ↔ causal trace connected)
     config_on = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
         enable_causal_trace=True,
-        enable_provenance_trace_bridge=True,
     )
     model_on = AEONDeltaV3(config_on)
     assert getattr(model_on.provenance_tracker, '_causal_trace', None) is not None, (
-        "Provenance trace bridge should be active when config is enabled"
+        "Provenance trace bridge should be active by default"
+    )
+
+    # Explicitly disabled: bridge inactive
+    config_off = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_provenance_trace_bridge=False,
+    )
+    model_off = AEONDeltaV3(config_off)
+    assert getattr(model_off.provenance_tracker, '_causal_trace', None) is None, (
+        "Provenance trace bridge should be disabled when config is False"
     )
 
     print("✅ test_provenance_trace_bridge_config PASSED")
@@ -30049,6 +30050,239 @@ def test_provenance_log_interval_reduced():
         f"Expected provenance log interval ≤ 10, got {_PROVENANCE_LOG_INTERVAL}"
     )
     print("✅ test_provenance_log_interval_reduced PASSED")
+
+
+# ==============================================================================
+# Architectural Coherence — Unified Cognitive Architecture Fixes
+# ==============================================================================
+
+def test_ucc_graceful_degradation_no_coherence_verifier():
+    """UCC should operate without a coherence_verifier by returning
+    a default coherence score of 1.0 (perfect) and still evaluating
+    convergence and trigger signals."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    import torch
+
+    cm = ConvergenceMonitor(threshold=0.01)
+    pt = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+
+    result = ucc.evaluate(
+        subsystem_states={'a': torch.randn(2, 8)},
+        delta_norm=0.1,
+        uncertainty=0.8,
+        safety_violation=True,
+    )
+
+    # Should still produce all required output keys
+    assert 'convergence_verdict' in result
+    assert 'coherence_result' in result
+    assert 'should_rerun' in result
+    assert 'trigger_detail' in result
+    assert 'provenance' in result
+
+    # Coherence score defaults to 1.0 when verifier is absent
+    coh = result['coherence_result']
+    assert coh['coherence_score'].item() == 1.0, (
+        f"Expected default coherence 1.0, got {coh['coherence_score'].item()}"
+    )
+
+    # Fallback trigger should fire on high uncertainty + safety violation
+    assert result['should_rerun'] is True, "UCC should recommend rerun"
+    assert 'uncertainty' in result['trigger_detail']['triggers_active']
+    assert 'safety_violation' in result['trigger_detail']['triggers_active']
+
+    print("✅ test_ucc_graceful_degradation_no_coherence_verifier PASSED")
+
+
+def test_ucc_graceful_degradation_no_trigger():
+    """UCC should operate without a metacognitive_trigger by using
+    a built-in fallback that fires on divergence and high uncertainty."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker,
+    )
+    import torch
+
+    cm = ConvergenceMonitor(threshold=0.01)
+    pt = CausalProvenanceTracker()
+    cv = ModuleCoherenceVerifier(hidden_dim=8, threshold=0.5)
+    ee = CausalErrorEvolutionTracker(max_history=10)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=cv,
+        error_evolution=ee,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+
+    # Low uncertainty, no violations, similar states — should not rerun
+    _shared = torch.randn(2, 8)
+    result_ok = ucc.evaluate(
+        subsystem_states={'a': _shared, 'b': _shared + 0.01 * torch.randn(2, 8)},
+        delta_norm=0.001,
+        uncertainty=0.1,
+    )
+    assert result_ok['should_rerun'] is False, (
+        "Fallback trigger should NOT fire on low uncertainty with coherent states"
+    )
+    # High uncertainty — should trigger fallback
+    result_hi = ucc.evaluate(
+        subsystem_states={'a': torch.randn(2, 8), 'b': torch.randn(2, 8)},
+        delta_norm=0.001,
+        uncertainty=0.9,
+    )
+    assert result_hi['should_rerun'] is True, (
+        "Fallback trigger should fire on high uncertainty"
+    )
+
+    print("✅ test_ucc_graceful_degradation_no_trigger PASSED")
+
+
+def test_ucc_topology_catastrophe_forwarded():
+    """UCC should receive and forward the topology_catastrophe flag
+    so that topology issues trigger meta-cognitive re-reasoning."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+    )
+    import torch
+
+    cm = ConvergenceMonitor(threshold=0.01)
+    pt = CausalProvenanceTracker()
+    cv = ModuleCoherenceVerifier(hidden_dim=8, threshold=0.5)
+    ee = CausalErrorEvolutionTracker(max_history=10)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=0.3)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=cv,
+        error_evolution=ee,
+        metacognitive_trigger=mt,
+        provenance_tracker=pt,
+    )
+
+    # Without topology catastrophe
+    result_no = ucc.evaluate(
+        subsystem_states={'a': torch.randn(2, 8), 'b': torch.randn(2, 8)},
+        delta_norm=0.001,
+        uncertainty=0.0,
+        topology_catastrophe=False,
+    )
+
+    # With topology catastrophe — should trigger
+    ucc.reset()
+    result_yes = ucc.evaluate(
+        subsystem_states={'a': torch.randn(2, 8), 'b': torch.randn(2, 8)},
+        delta_norm=0.001,
+        uncertainty=0.0,
+        topology_catastrophe=True,
+    )
+
+    assert result_yes['should_rerun'] is True, (
+        "Topology catastrophe should trigger re-reasoning"
+    )
+    assert 'topology_catastrophe' in result_yes['trigger_detail'].get(
+        'triggers_active', []
+    ), "topology_catastrophe should appear in active triggers"
+
+    print("✅ test_ucc_topology_catastrophe_forwarded PASSED")
+
+
+def test_provenance_bridge_enabled_by_default():
+    """Provenance-trace bridge should be enabled by default in AEONConfig."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    assert config.enable_provenance_trace_bridge is True, (
+        "enable_provenance_trace_bridge should default to True"
+    )
+
+    print("✅ test_provenance_bridge_enabled_by_default PASSED")
+
+
+def test_getattr_defaults_match_config():
+    """getattr fallback defaults in AEONDeltaV3.__init__ should match
+    the AEONConfig field defaults for features that default to True."""
+    import ast
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Fields that default to True in the config
+    true_fields = [
+        'enable_causal_context', 'enable_cross_validation',
+        'enable_ns_consistency_check', 'enable_complexity_estimator',
+        'enable_causal_trace', 'enable_provenance_trace_bridge',
+        'enable_auto_critic', 'enable_module_coherence',
+        'enable_metacognitive_recursion', 'enable_error_evolution',
+        'enable_unified_cognitive_cycle',
+    ]
+
+    # Verify config defaults
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    for field in true_fields:
+        assert getattr(config, field) is True, (
+            f"Config.{field} should default to True"
+        )
+
+    # Verify getattr patterns in source code use True as fallback
+    source = inspect.getsource(AEONDeltaV3.__init__)
+    for field in true_fields:
+        pattern_false = f"getattr(config, '{field}', False)"
+        assert pattern_false not in source, (
+            f"getattr fallback for '{field}' uses False but config defaults to True"
+        )
+
+    print("✅ test_getattr_defaults_match_config PASSED")
+
+
+def test_ucc_init_always_active_when_enabled():
+    """AEONDeltaV3 should create a UnifiedCognitiveCycle even when
+    optional components (module_coherence, metacognitive_trigger,
+    error_evolution) are missing, as long as the config enables it."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Disable the three optional prerequisites but keep UCC enabled
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_module_coherence=False,
+        enable_metacognitive_recursion=False,
+        enable_error_evolution=False,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.unified_cognitive_cycle is not None, (
+        "UCC should be instantiated even when optional prerequisites are missing"
+    )
+
+    # The UCC should still work with its fallback logic
+    import torch
+    result = model.unified_cognitive_cycle.evaluate(
+        subsystem_states={'test': torch.randn(2, 32)},
+        delta_norm=0.1,
+        uncertainty=0.8,
+    )
+    assert 'should_rerun' in result
+    assert 'convergence_verdict' in result
+
+    print("✅ test_ucc_init_always_active_when_enabled PASSED")
 
 
 if __name__ == '__main__':
@@ -31385,6 +31619,14 @@ if __name__ == '__main__':
     test_dag_consensus_extra_iterations()
     test_rssm_decoder_cross_validation()
     test_provenance_log_interval_reduced()
+    
+    # Architectural Coherence — Unified Cognitive Architecture Fixes
+    test_ucc_graceful_degradation_no_coherence_verifier()
+    test_ucc_graceful_degradation_no_trigger()
+    test_ucc_topology_catastrophe_forwarded()
+    test_provenance_bridge_enabled_by_default()
+    test_getattr_defaults_match_config()
+    test_ucc_init_always_active_when_enabled()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
