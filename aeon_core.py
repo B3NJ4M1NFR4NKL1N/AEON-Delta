@@ -13478,6 +13478,15 @@ class MetaCognitiveRecursionTrigger:
             "post_integration_metacognitive": "uncertainty",
             "high_output_uncertainty": "uncertainty",
             "subsystem": "uncertainty",
+            # Training-bridge error classes — prefixed with "training_"
+            # by bridge_training_errors_to_inference().  Mapping them
+            # ensures that training-time convergence failures influence
+            # inference-time metacognitive trigger weights, closing the
+            # training→inference feedback loop.
+            "training_divergence": "diverging",
+            "training_stagnation": "coherence_deficit",
+            "training_training_divergence": "diverging",
+            "training_training_stagnation": "coherence_deficit",
         }
 
         # Accumulate boost factors for each signal
