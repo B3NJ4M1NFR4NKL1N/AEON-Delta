@@ -32980,6 +32980,219 @@ def test_self_diagnostic_reports_new_agi_connections():
     print("✅ test_self_diagnostic_reports_new_agi_connections PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Decoder-Feedback Loop & Coherence Gap Closure
+# ============================================================================
+
+def test_feedback_bus_output_quality_channel():
+    """Verify CognitiveFeedbackBus accepts and processes the output_quality
+    signal, producing different feedback embeddings for good vs poor outputs."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    bus.eval()
+
+    # Good output quality → one embedding
+    fb_good = bus(batch_size=2, device=torch.device('cpu'), output_quality=1.0)
+    assert fb_good.shape == (2, 32), f"Expected (2, 32), got {fb_good.shape}"
+
+    # Poor output quality → different embedding
+    fb_poor = bus(batch_size=2, device=torch.device('cpu'), output_quality=0.1)
+    assert fb_poor.shape == (2, 32), f"Expected (2, 32), got {fb_poor.shape}"
+
+    # Embeddings should differ when output quality differs
+    diff = (fb_good - fb_poor).abs().sum().item()
+    assert diff > 1e-4, (
+        f"Feedback embeddings should differ for output_quality=1.0 vs 0.1, "
+        f"but L1 diff was only {diff:.6f}"
+    )
+
+    print("✅ test_feedback_bus_output_quality_channel PASSED")
+
+
+def test_compute_loss_caches_output_quality():
+    """Verify that compute_loss() caches _cached_output_quality from LM loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=False,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    # Before compute_loss, default should be 0.0
+    assert model._cached_output_quality == 0.0
+
+    # Run a forward pass to get outputs
+    x = torch.randint(1, 128, (2, 16))
+    result = model(x, decode_mode='train', fast=True)
+
+    # Run compute_loss to trigger caching
+    targets = torch.randint(1, 128, (2, 16))
+    loss_dict = model.compute_loss(result, targets)
+
+    # _cached_output_quality should now be set (sigmoid of LM loss)
+    oq = model._cached_output_quality
+    assert 0.0 <= oq <= 1.0, f"output_quality should be in [0, 1], got {oq}"
+
+    print("✅ test_compute_loss_caches_output_quality PASSED")
+
+
+def test_decoder_state_cached_after_forward():
+    """Verify that _cached_decoder_state is populated after a forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Before forward, should be None
+    assert model._cached_decoder_state is None
+
+    x = torch.randint(1, 128, (2, 16))
+    with torch.no_grad():
+        result = model(x, decode_mode='train', fast=True)
+
+    # After forward, should be populated with [B, hidden_dim]
+    assert model._cached_decoder_state is not None, (
+        "_cached_decoder_state should be populated after forward"
+    )
+    assert model._cached_decoder_state.shape == (2, 32), (
+        f"Expected (2, 32), got {model._cached_decoder_state.shape}"
+    )
+
+    print("✅ test_decoder_state_cached_after_forward PASSED")
+
+
+def test_verify_coherence_includes_decoder_state():
+    """Verify that verify_coherence() includes decoder state in subsystem
+    states for cross-module coherence verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to populate caches
+    x = torch.randint(1, 128, (2, 16))
+    with torch.no_grad():
+        result = model(x, decode_mode='train', fast=True)
+
+    # verify_coherence should now work and include decoder state
+    coherence = model.verify_coherence()
+    assert 'coherence_score' in coherence
+    assert isinstance(coherence['coherence_score'], float)
+
+    print("✅ test_verify_coherence_includes_decoder_state PASSED")
+
+
+def test_self_diagnostic_includes_provenance_and_reliability():
+    """Verify self_diagnostic() includes provenance_attribution and
+    output_reliability keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    diag = model.self_diagnostic()
+
+    assert 'provenance_attribution' in diag, (
+        "self_diagnostic should include provenance_attribution"
+    )
+    assert isinstance(diag['provenance_attribution'], dict)
+
+    assert 'output_reliability' in diag, (
+        "self_diagnostic should include output_reliability"
+    )
+    assert 0.0 <= diag['output_reliability'] <= 1.0, (
+        f"output_reliability should be in [0, 1], got {diag['output_reliability']}"
+    )
+
+    print("✅ test_self_diagnostic_includes_provenance_and_reliability PASSED")
+
+
+def test_self_diagnostic_reports_decoder_feedback_loop():
+    """Verify self_diagnostic() reports decoder quality → feedback bus and
+    decoder state in coherence verification as verified connections."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    diag = model.self_diagnostic()
+    connections = diag['verified_connections']
+
+    # Check decoder quality feedback loop is reported
+    assert any('output_quality' in c and 'feedback_bus' in c for c in connections), (
+        "self_diagnostic should report decoder output_quality → feedback_bus connection"
+    )
+
+    # Check decoder state in coherence verification is reported
+    assert any('decoder' in c.lower() and 'coherence' in c.lower() for c in connections), (
+        "self_diagnostic should report decoder state in coherence verification"
+    )
+
+    print("✅ test_self_diagnostic_reports_decoder_feedback_loop PASSED")
+
+
+def test_reconciliation_exhaustion_escalates_uncertainty():
+    """Verify that CrossValidationReconciler exhaustion (max_reconcile_steps
+    reached) produces an additional uncertainty boost in the forward pass."""
+    from aeon_core import CrossValidationReconciler
+    import torch
+
+    # Create reconciler with very high agreement threshold → will exhaust
+    reconciler = CrossValidationReconciler(
+        hidden_dim=32,
+        num_pillars=8,
+        agreement_threshold=0.99,  # Nearly impossible to achieve
+        max_reconcile_steps=2,
+    )
+    reconciler.eval()
+
+    # Create divergent factor and causal states
+    factor_state = torch.randn(2, 32)
+    causal_state = torch.randn(2, 32) * 5  # Very different
+
+    result = reconciler(factor_state, causal_state)
+
+    # Should have exhausted all steps
+    assert result["reconcile_iterations"] == 2, (
+        f"Expected 2 iterations (exhaustion), got {result['reconcile_iterations']}"
+    )
+    # Agreement should be low
+    assert (result["agreement_score"] < 0.99).any(), (
+        "Agreement should be below threshold after exhaustion"
+    )
+
+    print("✅ test_reconciliation_exhaustion_escalates_uncertainty PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -34426,6 +34639,15 @@ if __name__ == '__main__':
     test_convergence_monitor_wired_to_provenance()
     test_convergence_monitor_set_provenance_tracker()
     test_self_diagnostic_reports_training_bridge()
+    
+    # Architectural Unification — Decoder-Feedback Loop & Coherence Gap Closure
+    test_feedback_bus_output_quality_channel()
+    test_compute_loss_caches_output_quality()
+    test_decoder_state_cached_after_forward()
+    test_verify_coherence_includes_decoder_state()
+    test_self_diagnostic_includes_provenance_and_reliability()
+    test_self_diagnostic_reports_decoder_feedback_loop()
+    test_reconciliation_exhaustion_escalates_uncertainty()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
