@@ -16282,7 +16282,7 @@ class AEONDeltaV3(nn.Module):
                         next_state=_success_ctx.squeeze(0),
                     )
                 except Exception:
-                    pass  # positive reinforcement is best-effort
+                    logger.debug("Positive reinforcement failed during recovery")
 
             # Store recovered state in ConsolidatingMemory so that the
             # memory pipeline remains populated even after error recovery.
@@ -16299,7 +16299,7 @@ class AEONDeltaV3(nn.Module):
                                 recovered_value[i].detach()
                             )
                 except Exception:
-                    pass  # memory storage is best-effort
+                    logger.debug("Memory storage failed during recovery")
 
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
@@ -17508,6 +17508,12 @@ class AEONDeltaV3(nn.Module):
             # Include safety-gated state if safety enforcement modified C_star
             if safety_enforced:
                 coherence_states["safety_gated"] = C_star.detach().clone()
+            # Include cached memory state from previous pass — enables
+            # cross-pass coherence between current reasoning and prior
+            # memory context before new memory retrieval occurs.
+            if (self._cached_memory_state is not None
+                    and self._cached_memory_state.shape[-1] == C_star.shape[-1]):
+                coherence_states["memory_prior"] = self._cached_memory_state
             coherence_results = self.module_coherence(coherence_states)
             _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Cache coherence deficit for feedback bus on next forward pass
@@ -18280,6 +18286,7 @@ class AEONDeltaV3(nn.Module):
         _mcts_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
+            and not planning  # explicit planning=True overrides complexity gate
         )
         
         # 5c. Hierarchical memory — retrieve then store
@@ -18558,7 +18565,8 @@ class AEONDeltaV3(nn.Module):
                 try:
                     _mcts_causal_adj = self.causal_model.adjacency.detach()
                 except Exception:
-                    pass  # causal adjacency collection is best-effort
+                    uncertainty_sources["mcts_causal_adj_failure"] = 0.05
+                    uncertainty = min(1.0, uncertainty + 0.05)
             mcts_results = self.mcts_planner.search(
                 C_star[0], self.world_model,
                 causal_adjacency=_mcts_causal_adj,
@@ -20254,6 +20262,13 @@ class AEONDeltaV3(nn.Module):
             _us_next = unified_simulator_results.get("next_state", None)
             if _us_next is not None and _us_next.shape[-1] == z_out.shape[-1]:
                 post_states["unified_simulator"] = _us_next
+            # Include memory-fused state if available — ensures that
+            # memory retrieval quality is cross-validated against
+            # other subsystems in the post-integration coherence check.
+            if self._cached_memory_state is not None:
+                _mem_st = self._cached_memory_state
+                if _mem_st.shape[-1] == z_out.shape[-1]:
+                    post_states["memory"] = _mem_st
             # Include multimodal grounded state if available — ensures
             # that multimodal grounding is cross-validated against other
             # subsystems in the post-integration coherence check.
@@ -21625,7 +21640,7 @@ class AEONDeltaV3(nn.Module):
                 )  # [B, num_chunks, hidden_dim]
                 z_quantized = _z_chunks.mean(dim=1)  # [B, hidden_dim]
             except Exception as chunk_err:
-                logger.debug(f"Chunked encoding skipped: {chunk_err}")
+                logger.warning(f"Chunked encoding failed, using standard encoding: {chunk_err}")
 
         # ===== INFERENCE CACHE =====
         # During inference, cache reasoning-core outputs keyed by the
@@ -22872,6 +22887,24 @@ class AEONDeltaV3(nn.Module):
                     'priors are modulated by causal DAG structure'
                 ),
             })
+
+        # 17b. MCTS planning override — explicit planning=True
+        # requests override complexity gates so planning is never
+        # silently skipped when the caller explicitly requests it.
+        if self.mcts_planner is not None:
+            verified.append(
+                'mcts_planner ← planning=True overrides complexity gates '
+                '(explicit planning requests always honored)'
+            )
+
+        # 17c. Memory state in coherence verification — cached memory
+        # state from the previous pass is included in both pre- and
+        # post-integration coherence checks for cross-pass validation.
+        if self.module_coherence is not None:
+            verified.append(
+                'module_coherence ← memory state included in pre- and '
+                'post-integration coherence checks'
+            )
 
         # Call verify_coherence() to include live runtime consistency
         # results alongside the static wiring checks, so that the

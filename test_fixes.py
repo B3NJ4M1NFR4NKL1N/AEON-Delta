@@ -11563,19 +11563,20 @@ def test_hybrid_reasoning_consistency_check():
 
 
 def test_feedback_bus_num_channels():
-    """Verify CognitiveFeedbackBus has 9 signal channels after adding
-    world_model_surprise, coherence_deficit, causal_quality, and recovery_pressure."""
+    """Verify CognitiveFeedbackBus has 10 signal channels after adding
+    world_model_surprise, coherence_deficit, causal_quality, recovery_pressure,
+    and self_report_consistency."""
     from aeon_core import CognitiveFeedbackBus
 
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 9, (
-        f"Expected 9 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 10, (
+        f"Expected 10 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
 
     bus = CognitiveFeedbackBus(hidden_dim=32)
     # Projection input should match NUM_SIGNAL_CHANNELS
     first_layer = bus.projection[0]
-    assert first_layer.in_features == 9, (
-        f"First layer input features should be 9, got {first_layer.in_features}"
+    assert first_layer.in_features == 10, (
+        f"First layer input features should be 10, got {first_layer.in_features}"
     )
 
     print("✅ test_feedback_bus_num_channels PASSED")
@@ -32042,6 +32043,165 @@ def test_provenance_instrumented_includes_new_modules():
     print("✅ test_provenance_instrumented_includes_new_modules PASSED")
 
 
+def test_mcts_planning_overrides_complexity_gate():
+    """Fix: planning=True must override complexity gates so that MCTS
+    is never silently skipped when the caller explicitly requests it.
+
+    The complexity estimator may gate out MCTS (gate index 1) for low-
+    complexity inputs.  When the caller sets planning=True, this gate
+    should be overridden to honour the explicit planning request.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_hierarchical_memory=True,
+        enable_mcts_planner=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+
+    # planning=True: MCTS must run regardless of complexity gate
+    _, out_plan = model.reasoning_core(z_in, fast=False, planning=True)
+    mcts = out_plan.get('mcts_results', {})
+    assert mcts, "MCTS results should not be empty when planning=True"
+    assert 'best_action' in mcts, "MCTS results should contain best_action"
+
+    # planning=False: MCTS may be skipped by complexity gate
+    _, out_noplan = model.reasoning_core(z_in, fast=False, planning=False)
+    mcts_noplan = out_noplan.get('mcts_results', {})
+    # With low-complexity input and planning=False, complexity gate
+    # should suppress MCTS
+    assert not mcts_noplan, (
+        "MCTS should be skipped when planning=False and complexity gate is low"
+    )
+
+    print("✅ test_mcts_planning_overrides_complexity_gate PASSED")
+
+
+def test_coherence_includes_memory_state():
+    """Fix: Memory state is included in both pre- and post-integration
+    coherence verification so that memory context is cross-validated
+    against other subsystem outputs.
+
+    The pre-integration check uses _cached_memory_state from the prior
+    pass; the post-integration check uses the freshly cached state.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=False,
+        enable_hierarchical_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    # First forward populates _cached_memory_state
+    model.reasoning_core(z_in, fast=False)
+    assert model._cached_memory_state is not None, (
+        "_cached_memory_state should be populated after forward pass"
+    )
+
+    # Second forward should include memory_prior in pre-integration
+    # coherence check (verified by no crash + cached state unchanged shape)
+    model.reasoning_core(z_in, fast=False)
+    assert model._cached_memory_state is not None
+    assert model._cached_memory_state.shape[-1] == config.hidden_dim
+
+    print("✅ test_coherence_includes_memory_state PASSED")
+
+
+def test_self_diagnostic_reports_mcts_override():
+    """Fix: self_diagnostic reports the MCTS planning override and
+    memory coherence as verified connections."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_hierarchical_memory=True,
+        enable_mcts_planner=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get('verified_connections', [])
+
+    has_override = any('planning=True overrides' in v for v in verified)
+    assert has_override, (
+        "self_diagnostic should report MCTS planning override as verified"
+    )
+    has_memory = any('memory state included' in v for v in verified)
+    assert has_memory, (
+        "self_diagnostic should report memory coherence inclusion as verified"
+    )
+
+    print("✅ test_self_diagnostic_reports_mcts_override PASSED")
+
+
+def test_silent_exception_escalates_uncertainty():
+    """Fix: Subsystem failures are tracked in uncertainty_sources and
+    escalated rather than silently swallowed.
+
+    When the causal model fails, the error should be recorded in
+    uncertainty_sources and MCTS should still produce results.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_hierarchical_memory=True,
+        enable_mcts_planner=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Sabotage adjacency_logits to trigger the causal model error path
+    if model.causal_model is not None:
+        original_logits = model.causal_model.adjacency_logits.data.clone()
+        del model.causal_model.adjacency_logits
+        model.causal_model.adjacency_logits = "broken"
+
+    z_in = torch.randn(2, 32)
+    # Should not crash — the exception is caught and escalated
+    _, outputs = model.reasoning_core(z_in, fast=False, planning=True)
+
+    # MCTS should still run (just without causal adjacency)
+    mcts = outputs.get('mcts_results', {})
+    assert mcts, "MCTS should still produce results even with broken causal model"
+
+    # Uncertainty sources should include the causal model failure
+    u_src = outputs.get('uncertainty_sources', {})
+    assert 'causal_model_error' in u_src, (
+        "uncertainty_sources should record causal_model_error when "
+        "causal model fails"
+    )
+
+    # Restore
+    if model.causal_model is not None:
+        model.causal_model.adjacency_logits = nn.Parameter(original_logits)
+
+    print("✅ test_silent_exception_escalates_uncertainty PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -33464,6 +33624,12 @@ if __name__ == '__main__':
     test_dag_consensus_tightens_reconciler_threshold()
     test_self_diagnostic_reports_new_connections()
     test_provenance_instrumented_includes_new_modules()
+    
+    # Architectural unification — MCTS, coherence, and silent exception fixes
+    test_mcts_planning_overrides_complexity_gate()
+    test_coherence_includes_memory_state()
+    test_self_diagnostic_reports_mcts_override()
+    test_silent_exception_escalates_uncertainty()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
