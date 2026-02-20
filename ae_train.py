@@ -2043,6 +2043,20 @@ class SafeThoughtAETrainerV4:
         # the inference pipeline's tensor safety to the training loop,
         # ensuring numerical consistency across both pipelines.
         self._tensor_guard = TensorGuard(policy=NaNPolicy.WARN, enable_tracking=True)
+        # Wire provenance tracker to convergence monitor so that
+        # convergence failure events include per-module attribution,
+        # enabling root-cause analysis from training convergence
+        # failures through to the originating component.
+        _prov_tracker_a = (
+            self.provenance._tracker
+            if hasattr(self.provenance, '_tracker') else None
+        )
+        if _prov_tracker_a is None:
+            logger.warning(
+                "Phase A: TrainingProvenanceTracker has no _tracker; "
+                "convergence events will lack per-module attribution"
+            )
+        self.convergence_monitor.set_provenance_tracker(_prov_tracker_a)
 
         # --- Unified Cognitive Cycle integration ---
         # Wire convergence monitoring, coherence verification, error
@@ -2078,6 +2092,13 @@ class SafeThoughtAETrainerV4:
         # inference-time uncertainty tracking, enabling the training
         # loop to focus on historically problematic modules.
         self._inference_module_feedback: Dict[str, float] = {}
+        # Expose gradient clip norm and metacognitive LR factor so that
+        # bridge_inference_insights_to_training() can adapt these
+        # parameters when inference discovers recurring error patterns.
+        # Without these, the inference→training bridge is a no-op for
+        # convergence conflicts and coherence deficits.
+        self._grad_clip_norm: float = config.grad_clip_norm
+        self._metacognitive_lr_factor: float = _METACOGNITIVE_LR_FACTOR
 
     def train_step(self, tokens: torch.Tensor) -> Dict[str, Any]:
         """Execute a single training step for the autoencoder.
@@ -2230,10 +2251,12 @@ class SafeThoughtAETrainerV4:
         if self.use_amp:
             self.scaler.unscale_(self.optimizer)
         
-        # ✅ Используем сниженный grad_clip для стабильности
+        # Use the bridgeable _grad_clip_norm so that
+        # bridge_inference_insights_to_training() can tighten clipping
+        # when inference detects recurring convergence conflicts.
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.trainable_params, 
-            self.config.grad_clip_norm  # 0.5 в v4
+            self._grad_clip_norm
         )
         
         if self.use_amp:
@@ -2448,7 +2471,7 @@ class SafeThoughtAETrainerV4:
                     # closes the feedback loop between the cognitive
                     # architecture and the training optimizer.
                     for param_group in self.optimizer.param_groups:
-                        param_group['lr'] *= _METACOGNITIVE_LR_FACTOR
+                        param_group['lr'] *= self._metacognitive_lr_factor
             except Exception as _cycle_err:
                 logger.debug("Unified cognitive cycle evaluation skipped: %s", _cycle_err)
             
@@ -2539,6 +2562,19 @@ class ContextualRSSMTrainer:
         # NaN/Inf errors are classified consistently, enabling root-cause
         # analysis to trace failures across both training phases.
         self._error_classifier = SemanticErrorClassifier()
+        # Wire provenance tracker to convergence monitor so that Phase B
+        # convergence failure events include per-module attribution,
+        # matching Phase A's provenance-enriched convergence wiring.
+        _prov_tracker_b = (
+            self.provenance._tracker
+            if hasattr(self.provenance, '_tracker') else None
+        )
+        if _prov_tracker_b is None:
+            logger.warning(
+                "Phase B: TrainingProvenanceTracker has no _tracker; "
+                "convergence events will lack per-module attribution"
+            )
+        self.convergence_monitor.set_provenance_tracker(_prov_tracker_b)
 
         # --- Unified Cognitive Cycle integration for Phase B ---
         self._coherence_verifier = ModuleCoherenceVerifier(
@@ -2555,11 +2591,20 @@ class ContextualRSSMTrainer:
             metacognitive_trigger=self._metacognitive_trigger,
             provenance_tracker=self.provenance._tracker
             if hasattr(self.provenance, '_tracker') else CausalProvenanceTracker(),
+            convergence_arbiter=UnifiedConvergenceArbiter() if AEON_CORE_AVAILABLE else None,
+            uncertainty_tracker=DirectionalUncertaintyTracker() if AEON_CORE_AVAILABLE else None,
         )
         # Cache the most recent VQ and RSSM output tensors so the
         # epoch-end UCC evaluation receives real subsystem states.
         self._last_vq_state: Optional[torch.Tensor] = None
         self._last_rssm_state: Optional[torch.Tensor] = None
+        # Expose gradient clip norm, metacognitive LR factor, and
+        # inference module feedback so that
+        # bridge_inference_insights_to_training() can adapt Phase B
+        # training parameters, matching Phase A's bridge attributes.
+        self._grad_clip_norm: float = config.grad_clip_norm
+        self._metacognitive_lr_factor: float = _METACOGNITIVE_LR_FACTOR
+        self._inference_module_feedback: Dict[str, float] = {}
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -2665,7 +2710,7 @@ class ContextualRSSMTrainer:
         
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.trainable_params, 
-            self.config.grad_clip_norm
+            self._grad_clip_norm
         )
         
         self.optimizer.step()
@@ -2885,7 +2930,7 @@ class ContextualRSSMTrainer:
                         f"(signals={_active}), adapting training"
                     )
                     for param_group in self.optimizer.param_groups:
-                        param_group['lr'] *= _METACOGNITIVE_LR_FACTOR
+                        param_group['lr'] *= self._metacognitive_lr_factor
             except Exception as _cycle_err:
                 logger.debug("Phase B unified cognitive cycle skipped: %s", _cycle_err)
             
@@ -3029,6 +3074,30 @@ class TrainingConvergenceMonitor:
         # recovery can learn from training-time convergence failures.
         self._error_evolution = error_evolution
         self._core_monitor = ConvergenceMonitor(threshold=threshold)
+        # Wire the core monitor to error evolution so convergence events
+        # from the delegate include provenance attribution metadata,
+        # enabling root-cause analysis to identify which module dominated
+        # when a convergence failure occurred during training.
+        if error_evolution is not None:
+            self._core_monitor.set_error_evolution(error_evolution)
+
+    def set_provenance_tracker(
+        self, tracker: 'CausalProvenanceTracker',
+    ) -> None:
+        """Attach a provenance tracker to the internal core monitor.
+
+        Once attached, convergence events bridged to error evolution
+        include per-module attribution metadata, enabling root-cause
+        analysis to correlate training convergence failures with the
+        dominant upstream module.
+        """
+        if self._core_monitor is not None:
+            self._core_monitor.set_provenance_tracker(tracker)
+        else:
+            logger.debug(
+                "TrainingConvergenceMonitor: _core_monitor is None; "
+                "provenance tracker not attached"
+            )
 
     def update(self, loss_value: float) -> Dict[str, Any]:
         """Record a loss value and return convergence verdict.

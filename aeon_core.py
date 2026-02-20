@@ -23009,6 +23009,45 @@ class AEONDeltaV3(nn.Module):
                         ),
                     })
 
+        # 18. Training-inference bridge readiness — verify that the
+        # inference pipeline exposes the attributes required by
+        # bridge_training_errors_to_inference() and
+        # bridge_inference_insights_to_training() so the bidirectional
+        # feedback loop between training and inference is functional.
+        _bridge_attrs = {
+            'error_evolution': self.error_evolution,
+            'convergence_monitor': self.convergence_monitor,
+            'causal_trace': getattr(self, 'causal_trace', None),
+        }
+        _bridge_ok = True
+        if self.error_evolution is not None:
+            verified.append(
+                'training_bridge → error_evolution ready for '
+                'bridge_training_errors_to_inference()'
+            )
+        else:
+            _bridge_ok = False
+            gaps.append({
+                'component': 'training_bridge',
+                'gap': (
+                    'Error evolution disabled — '
+                    'bridge_training_errors_to_inference() will be a no-op'
+                ),
+                'remediation': (
+                    'Enable enable_error_evolution so training error '
+                    'patterns can inform inference recovery strategies'
+                ),
+            })
+        if self.convergence_monitor is not None:
+            verified.append(
+                'training_bridge → convergence_monitor ready for '
+                'inference-side convergence wiring'
+            )
+        if _bridge_ok:
+            verified.append(
+                'training_bridge → bidirectional feedback loop ready'
+            )
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:

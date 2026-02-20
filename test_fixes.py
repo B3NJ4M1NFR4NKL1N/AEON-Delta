@@ -32395,6 +32395,164 @@ def test_pipeline_dependency_modules_have_provenance():
     print("✅ test_pipeline_dependency_modules_have_provenance PASSED")
 
 
+# ============================================================================
+# SECTION: Unified Cognitive Architecture — Bridge Attribute & Wiring Tests
+# ============================================================================
+
+def test_trainer_has_bridge_attributes():
+    """SafeThoughtAETrainerV4 exposes _grad_clip_norm, _metacognitive_lr_factor,
+    and _inference_module_feedback so bridge_inference_insights_to_training()
+    can adapt training parameters from inference error patterns."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, TrainingMonitor, SafeThoughtAETrainerV4
+    import os, tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"), save_dir=tempfile.mkdtemp())
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, tempfile.mkdtemp())
+
+    assert hasattr(trainer, '_grad_clip_norm'), "Missing _grad_clip_norm"
+    assert hasattr(trainer, '_metacognitive_lr_factor'), "Missing _metacognitive_lr_factor"
+    assert hasattr(trainer, '_inference_module_feedback'), "Missing _inference_module_feedback"
+    assert isinstance(trainer._grad_clip_norm, float)
+    assert isinstance(trainer._metacognitive_lr_factor, float)
+    assert isinstance(trainer._inference_module_feedback, dict)
+    # _grad_clip_norm should match config default
+    assert trainer._grad_clip_norm == config.grad_clip_norm
+    print("✅ test_trainer_has_bridge_attributes PASSED")
+
+
+def test_rssm_trainer_has_bridge_attributes():
+    """ContextualRSSMTrainer exposes _grad_clip_norm, _metacognitive_lr_factor,
+    and _inference_module_feedback for parity with Phase A."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, TrainingMonitor, ContextualRSSMTrainer
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"), save_dir="/tmp/test_rssm")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    assert hasattr(trainer, '_grad_clip_norm'), "Missing _grad_clip_norm"
+    assert hasattr(trainer, '_metacognitive_lr_factor'), "Missing _metacognitive_lr_factor"
+    assert hasattr(trainer, '_inference_module_feedback'), "Missing _inference_module_feedback"
+    assert isinstance(trainer._grad_clip_norm, float)
+    assert isinstance(trainer._metacognitive_lr_factor, float)
+    assert isinstance(trainer._inference_module_feedback, dict)
+    print("✅ test_rssm_trainer_has_bridge_attributes PASSED")
+
+
+def test_rssm_trainer_ucc_has_arbiter_and_tracker():
+    """ContextualRSSMTrainer's UCC should have convergence_arbiter and
+    uncertainty_tracker for parity with Phase A."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, TrainingMonitor, ContextualRSSMTrainer
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"), save_dir="/tmp/test_rssm_ucc")
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    ucc = trainer._unified_cycle
+    # When aeon_core is available, these should be non-None
+    from ae_train import AEON_CORE_AVAILABLE
+    if AEON_CORE_AVAILABLE:
+        assert ucc.convergence_arbiter is not None, (
+            "Phase B UCC missing convergence_arbiter"
+        )
+        assert ucc.uncertainty_tracker is not None, (
+            "Phase B UCC missing uncertainty_tracker"
+        )
+    print("✅ test_rssm_trainer_ucc_has_arbiter_and_tracker PASSED")
+
+
+def test_bridge_adapts_real_trainer():
+    """bridge_inference_insights_to_training() should adapt _grad_clip_norm
+    and _metacognitive_lr_factor on real SafeThoughtAETrainerV4."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, TrainingMonitor,
+        SafeThoughtAETrainerV4, bridge_inference_insights_to_training,
+    )
+    from aeon_core import CausalErrorEvolutionTracker
+    import tempfile
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"), save_dir=tempfile.mkdtemp())
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, tempfile.mkdtemp())
+
+    orig_clip = trainer._grad_clip_norm
+
+    # Simulate inference discovering convergence conflicts
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    ee.record_episode("convergence_conflict", "arbitration_escalation", False)
+    ee.record_episode("convergence_conflict", "arbitration_escalation", False)
+
+    adjustments = bridge_inference_insights_to_training(ee, trainer)
+    assert adjustments >= 1, f"Expected ≥1 adjustment, got {adjustments}"
+    assert trainer._grad_clip_norm < orig_clip, (
+        f"Expected grad_clip to tighten from {orig_clip}, got {trainer._grad_clip_norm}"
+    )
+    print("✅ test_bridge_adapts_real_trainer PASSED")
+
+
+def test_convergence_monitor_wired_to_provenance():
+    """TrainingConvergenceMonitor should wire its _core_monitor to
+    error_evolution so convergence events are bridged automatically."""
+    from ae_train import TrainingConvergenceMonitor
+    from aeon_core import CausalErrorEvolutionTracker
+
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    tcm = TrainingConvergenceMonitor(threshold=1e-5, window_size=10, error_evolution=ee)
+
+    # _core_monitor should be wired to error_evolution
+    assert tcm._core_monitor._error_evolution is ee, (
+        "Core monitor not wired to error_evolution"
+    )
+    print("✅ test_convergence_monitor_wired_to_provenance PASSED")
+
+
+def test_convergence_monitor_set_provenance_tracker():
+    """TrainingConvergenceMonitor.set_provenance_tracker() should wire
+    provenance to the internal core monitor for attribution-enriched
+    convergence events."""
+    from ae_train import TrainingConvergenceMonitor, TrainingProvenanceTracker
+    from aeon_core import CausalErrorEvolutionTracker, CausalProvenanceTracker
+
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    tcm = TrainingConvergenceMonitor(threshold=1e-5, window_size=10, error_evolution=ee)
+    prov = CausalProvenanceTracker()
+
+    tcm.set_provenance_tracker(prov)
+    assert tcm._core_monitor._provenance_tracker is prov, (
+        "Core monitor provenance tracker not wired"
+    )
+    print("✅ test_convergence_monitor_set_provenance_tracker PASSED")
+
+
+def test_self_diagnostic_reports_training_bridge():
+    """self_diagnostic() should report training-inference bridge readiness."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_world_model=False, enable_quantum_sim=False,
+        enable_catastrophe_detection=False, enable_safety_guardrails=False,
+        enable_hierarchical_memory=False, enable_multimodal=False,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    report = model.self_diagnostic()
+    verified = report.get('verified_connections', [])
+
+    # Should contain training bridge readiness
+    bridge_verified = [v for v in verified if 'training_bridge' in v]
+    assert len(bridge_verified) > 0, (
+        f"Expected training_bridge in verified, got: {verified}"
+    )
+    print("✅ test_self_diagnostic_reports_training_bridge PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -33823,6 +33981,15 @@ if __name__ == '__main__':
     test_coherence_includes_memory_state()
     test_self_diagnostic_reports_mcts_override()
     test_silent_exception_escalates_uncertainty()
+    
+    # Unified Cognitive Architecture — Bridge Attribute & Wiring Tests
+    test_trainer_has_bridge_attributes()
+    test_rssm_trainer_has_bridge_attributes()
+    test_rssm_trainer_ucc_has_arbiter_and_tracker()
+    test_bridge_adapts_real_trainer()
+    test_convergence_monitor_wired_to_provenance()
+    test_convergence_monitor_set_provenance_tracker()
+    test_self_diagnostic_reports_training_bridge()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
