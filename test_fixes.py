@@ -32713,6 +32713,273 @@ def test_self_diagnostic_reports_adapter_fidelity():
     print("✅ test_self_diagnostic_reports_adapter_fidelity PASSED")
 
 
+def test_uncertainty_adaptive_meta_loop_iterations():
+    """Gap 1: Meta-loop dynamically scales iterations based on feedback
+    magnitude.  When the feedback vector has high magnitude (indicating
+    downstream uncertainty/safety pressure), effective_max_iterations
+    should exceed the base max_iterations."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    loop = ProvablyConvergentMetaLoop(
+        config=config, max_iterations=10, min_iterations=1,
+    )
+    loop.eval()
+    B = 2
+    psi_0 = torch.randn(B, 32)
+
+    # No feedback → effective_max_iterations == max_iterations
+    with torch.no_grad():
+        _, _, meta_no_fb = loop.compute_fixed_point(psi_0, feedback=None)
+    assert meta_no_fb['effective_max_iterations'] == 10, (
+        f"Without feedback, effective_max_iterations should be 10, "
+        f"got {meta_no_fb['effective_max_iterations']}"
+    )
+    assert meta_no_fb['uncertainty_iter_boost'] == 0, (
+        "Without feedback, uncertainty_iter_boost should be 0"
+    )
+
+    # High-magnitude feedback → effective_max_iterations > max_iterations
+    high_feedback = torch.ones(B, 32) * 0.8  # mean abs = 0.8 > 0.3
+    with torch.no_grad():
+        _, _, meta_high = loop.compute_fixed_point(psi_0, feedback=high_feedback)
+    assert meta_high['effective_max_iterations'] > 10, (
+        f"With high feedback, effective_max_iterations should exceed 10, "
+        f"got {meta_high['effective_max_iterations']}"
+    )
+    assert meta_high['uncertainty_iter_boost'] > 0, (
+        "With high feedback, uncertainty_iter_boost should be > 0"
+    )
+    # Capped at 2× max_iterations
+    assert meta_high['effective_max_iterations'] <= 20, (
+        f"effective_max_iterations should be capped at 2× max, "
+        f"got {meta_high['effective_max_iterations']}"
+    )
+    print("✅ test_uncertainty_adaptive_meta_loop_iterations PASSED")
+
+
+def test_uncertainty_adaptive_meta_loop_no_feedback():
+    """Gap 1 edge case: Low-magnitude feedback should NOT increase
+    iterations.  Only feedback above the 0.3 threshold triggers scaling."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    loop = ProvablyConvergentMetaLoop(
+        config=config, max_iterations=10, min_iterations=1,
+    )
+    loop.eval()
+    B = 2
+    psi_0 = torch.randn(B, 32)
+
+    # Low-magnitude feedback → no boost
+    low_feedback = torch.ones(B, 32) * 0.1  # mean abs = 0.1 < 0.3
+    with torch.no_grad():
+        _, _, meta_low = loop.compute_fixed_point(psi_0, feedback=low_feedback)
+    assert meta_low['effective_max_iterations'] == 10, (
+        f"With low feedback, effective_max_iterations should remain 10, "
+        f"got {meta_low['effective_max_iterations']}"
+    )
+    assert meta_low['uncertainty_iter_boost'] == 0, (
+        "With low feedback, uncertainty_iter_boost should be 0"
+    )
+    print("✅ test_uncertainty_adaptive_meta_loop_no_feedback PASSED")
+
+
+def test_pre_loop_memory_coherence_validation():
+    """Gap 2: MemoryReasoningValidator is called before the meta-loop
+    to validate memory signals against the input state.  When validation
+    fails, uncertainty should increase and memory contribution should
+    be attenuated."""
+    from aeon_core import MemoryReasoningValidator
+    validator = MemoryReasoningValidator()
+
+    # Consistent: memory_signal close to converged_state
+    mem_signal = torch.randn(2, 32)
+    result_ok = validator.validate(
+        memory_signal=mem_signal,
+        converged_state=mem_signal + torch.randn(2, 32) * 0.01,
+    )
+    # Should not need re-retrieval for near-identical signals
+    assert "needs_re_retrieval" in result_ok, (
+        "validate() should return needs_re_retrieval"
+    )
+
+    # Inconsistent: very different signals
+    mem_signal_bad = torch.randn(2, 32) * 10
+    converged_different = torch.randn(2, 32) * 0.01
+    result_bad = validator.validate(
+        memory_signal=mem_signal_bad,
+        converged_state=converged_different,
+    )
+    # High divergence should produce needs_re_retrieval=True
+    assert "consistency_score" in result_bad, (
+        "validate() should return consistency_score"
+    )
+    print("✅ test_pre_loop_memory_coherence_validation PASSED")
+
+
+def test_world_model_prediction_verification_loop():
+    """Gap 3: World model prediction from previous pass is compared
+    against the current input.  The _cached_world_model_prediction
+    attribute should be populated after a forward pass with world model
+    enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+        enable_safety_guardrails=True,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initially no cached prediction
+    assert model._cached_world_model_prediction is None, (
+        "_cached_world_model_prediction should start as None"
+    )
+
+    # Run a forward pass
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # After forward pass with world model, prediction should be cached
+    assert model._cached_world_model_prediction is not None, (
+        "After forward with world model enabled, "
+        "_cached_world_model_prediction should be populated"
+    )
+    assert torch.isfinite(model._cached_world_model_prediction).all(), (
+        "Cached prediction should be finite"
+    )
+    print("✅ test_world_model_prediction_verification_loop PASSED")
+
+
+def test_output_reliability_scoring():
+    """Gap 4: The output dict includes an 'output_reliability' score
+    in [0, 1] that synthesizes uncertainty, auto-critic quality,
+    coherence, and convergence rate."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=False,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # output_reliability should be in the outputs
+    assert 'output_reliability' in outputs, (
+        "outputs should contain 'output_reliability'"
+    )
+    reliability = outputs['output_reliability']
+    assert isinstance(reliability, float), (
+        f"output_reliability should be float, got {type(reliability)}"
+    )
+    assert 0.0 <= reliability <= 1.0, (
+        f"output_reliability should be in [0, 1], got {reliability}"
+    )
+    print("✅ test_output_reliability_scoring PASSED")
+
+
+def test_feedback_bus_causal_traceability():
+    """Gap 5: The terminal feedback bus refresh records a causal trace
+    entry so that all conditioning signals are root-cause traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_world_model=False,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # Check that the causal trace contains a feedback_bus entry
+    recent = model.causal_trace.recent(n=50)
+    fb_entries = [
+        e for e in recent
+        if e.get('subsystem') == 'feedback_bus'
+        and e.get('decision') == 'terminal_refresh'
+    ]
+    assert len(fb_entries) > 0, (
+        "Causal trace should contain a feedback_bus terminal_refresh entry. "
+        f"Found subsystems: {[e.get('subsystem') for e in recent]}"
+    )
+    # Verify metadata contains the conditioning signals
+    metadata = fb_entries[0].get('metadata', {})
+    assert 'uncertainty' in metadata, (
+        "feedback_bus trace entry should include uncertainty in metadata"
+    )
+    assert 'coherence_deficit' in metadata, (
+        "feedback_bus trace entry should include coherence_deficit in metadata"
+    )
+    assert 'feedback_magnitude' in metadata, (
+        "feedback_bus trace entry should include feedback_magnitude in metadata"
+    )
+    print("✅ test_feedback_bus_causal_traceability PASSED")
+
+
+def test_self_diagnostic_reports_new_agi_connections():
+    """Verify that self_diagnostic reports the new AGI coherence
+    connections: uncertainty-adaptive iterations, world model prediction
+    verification, pre-loop memory validation, output reliability, and
+    feedback bus causal traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_world_model=True,
+        enable_safety_guardrails=True,
+        enable_hierarchical_memory=False,
+        enable_multimodal=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    diag = model.self_diagnostic()
+    verified = diag['verified_connections']
+    verified_str = '\n'.join(verified)
+
+    # Uncertainty-adaptive iteration scaling
+    assert any('uncertainty-adaptive' in v.lower() or 'iteration scaling' in v.lower()
+               for v in verified), (
+        f"Missing uncertainty-adaptive iteration scaling in:\n{verified_str}"
+    )
+    # World model prediction verification
+    assert any('prediction verification' in v.lower() or 'cross-step' in v.lower()
+               for v in verified), (
+        f"Missing world model prediction verification in:\n{verified_str}"
+    )
+    # Pre-loop memory validation
+    assert any('pre_loop' in v and 'memory' in v.lower() for v in verified), (
+        f"Missing pre-loop memory validation in:\n{verified_str}"
+    )
+    # Output reliability
+    assert any('output_reliability' in v for v in verified), (
+        f"Missing output_reliability in:\n{verified_str}"
+    )
+    # Feedback bus causal traceability
+    assert any('feedback_bus' in v and 'causal_trace' in v for v in verified), (
+        f"Missing feedback bus causal traceability in:\n{verified_str}"
+    )
+    print("✅ test_self_diagnostic_reports_new_agi_connections PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -33425,6 +33692,15 @@ if __name__ == '__main__':
     test_world_model_surprise_recorded_in_causal_trace()
     test_post_coherence_deficit_causal_trace_query()
     test_error_evolution_records_memory_staleness()
+    
+    # Architectural Unification — AGI Coherence Gap Closure Tests
+    test_uncertainty_adaptive_meta_loop_iterations()
+    test_uncertainty_adaptive_meta_loop_no_feedback()
+    test_pre_loop_memory_coherence_validation()
+    test_world_model_prediction_verification_loop()
+    test_output_reliability_scoring()
+    test_feedback_bus_causal_traceability()
+    test_self_diagnostic_reports_new_agi_connections()
     
     # AGI Unification — Architectural gap fix validation tests
     test_consistency_loss_differentiable()

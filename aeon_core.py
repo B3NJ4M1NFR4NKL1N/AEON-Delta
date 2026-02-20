@@ -6471,13 +6471,37 @@ class ProvablyConvergentMetaLoop(nn.Module):
         # passes z with z_dim != hidden_dim the psi_proj linear aligns dims.
         psi_0 = self.psi_proj(psi_0)  # [B, hidden_dim] (no-op when equal)
         
+        # ── Uncertainty-adaptive iteration scaling ──────────────────────────
+        # When the feedback vector carries high-magnitude signal (indicating
+        # downstream uncertainty/safety pressure from the previous pass),
+        # increase max_iterations proportionally so the meta-loop iterates
+        # deeper on uncertain inputs.  This wires uncertainty → deeper
+        # reasoning at the most fundamental computation level, ensuring
+        # that any uncertainty triggers a more thorough meta-cognitive cycle.
+        # The scaling is capped at 2× the configured max to prevent runaway.
+        effective_max_iterations = self.max_iterations
+        _uncertainty_iter_boost = 0
+        if feedback is not None:
+            _fb_magnitude = feedback.detach().abs().mean().item()
+            # 0.3 threshold: below this, feedback is normal operating noise;
+            # above indicates meaningful downstream pressure (uncertainty,
+            # safety, coherence deficit) that warrants deeper reasoning.
+            if _fb_magnitude > 0.3:
+                _uncertainty_iter_boost = int(
+                    min(self.max_iterations, self.max_iterations * _fb_magnitude)
+                )
+                effective_max_iterations = min(
+                    self.max_iterations * 2,  # cap at 2× to prevent runaway
+                    self.max_iterations + _uncertainty_iter_boost,
+                )
+        
         # Initialize
         C = torch.zeros(B, H, device=device)
         
         C_history = []
         residual_history = []
-        # Bound trajectory to max_iterations to prevent unbounded memory growth
-        convergence_trajectory = deque(maxlen=self.max_iterations)
+        # Bound trajectory to effective_max_iterations to prevent unbounded memory growth
+        convergence_trajectory = deque(maxlen=effective_max_iterations)
         
         converged = torch.zeros(B, dtype=torch.bool, device=device)
         iterations = torch.zeros(B, device=device)
@@ -6486,7 +6510,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
         lip_raw = self.lambda_op.lipschitz_estimate
         lip_const = lip_raw.item() if torch.isfinite(lip_raw) else 1.0
         
-        for iter_idx in range(self.max_iterations):
+        for iter_idx in range(effective_max_iterations):
             C_prev = C.clone()
             
             # Input stabilization
@@ -6580,7 +6604,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'stability_scores': torch.ones(B, device=device),
             'convergence_scores': converged.float(),
             'instability_flags': torch.zeros(B, dtype=torch.bool, device=device),
-            'instability_steps': torch.zeros(B, dtype=torch.long, device=device)
+            'instability_steps': torch.zeros(B, dtype=torch.long, device=device),
+            'effective_max_iterations': effective_max_iterations,
+            'uncertainty_iter_boost': _uncertainty_iter_boost,
         }
         
         # Update EMA
@@ -15559,6 +15585,14 @@ class AEONDeltaV3(nn.Module):
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
 
+        # World model prediction verification — stores the predicted next
+        # state from the current forward pass so the NEXT pass can compare
+        # it against the actual observed state.  This closes the prediction
+        # verification loop: instead of only computing surprise as
+        # MSE(current, predicted), we also verify whether the PREVIOUS
+        # pass's prediction matched the current reality.
+        self._cached_world_model_prediction: Optional[torch.Tensor] = None
+
         # Cached subsystem states for cross-module coherence verification.
         # These are populated during the reasoning pipeline at each module's
         # provenance record_after point using .detach() to prevent gradient
@@ -16482,6 +16516,59 @@ class AEONDeltaV3(nn.Module):
                 metadata={"batch_size": B},
             )
         
+        # 0b-verify. World model prediction verification — compare the
+        # PREVIOUS pass's prediction against the current observed input
+        # to generate a verified prediction error.  High verified error
+        # means the world model's predictive accuracy is poor, which
+        # escalates uncertainty and feeds into the feedback bus so the
+        # meta-loop runs deeper.  This closes the cross-step prediction
+        # verification loop.
+        _verified_prediction_error: float = 0.0
+        if (self._cached_world_model_prediction is not None
+                and not fast):
+            try:
+                _prev_pred = self._cached_world_model_prediction.to(device)
+                if _prev_pred.shape == z_in.shape:
+                    _verified_prediction_error = float(
+                        F.mse_loss(_prev_pred, z_in.detach()).item()
+                    )
+                    # 0.5 threshold: moderate prediction error is expected
+                    # due to input variation; above 0.5 MSE indicates
+                    # significant world-model inaccuracy warranting
+                    # epistemic caution.  Scale factor 0.2 provides
+                    # graduated escalation rather than binary triggering.
+                    if _verified_prediction_error > 0.5:
+                        _vpe_boost = min(
+                            1.0 - uncertainty,
+                            _verified_prediction_error * 0.2,
+                        )
+                        if _vpe_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _vpe_boost)
+                            uncertainty_sources[
+                                "world_model_verified_error"
+                            ] = _vpe_boost
+                            high_uncertainty = uncertainty > 0.5
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "world_model", "prediction_verified",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "verified_error": _verified_prediction_error,
+                            },
+                            severity=(
+                                "warning"
+                                if _verified_prediction_error > 0.5
+                                else "info"
+                            ),
+                        )
+            except Exception as _vpe_err:
+                logger.debug(
+                    "World model prediction verification failed: %s",
+                    _vpe_err,
+                )
+            finally:
+                self._cached_world_model_prediction = None
+
         # 0c. Audit-driven feedback — consult historical decision patterns
         # to adaptively adjust reasoning depth for this forward pass.
         audit_insights = self.audit_log.get_pattern_insights()
@@ -16681,6 +16768,68 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _cc_boost)
                     uncertainty_sources["causal_context_error"] = _cc_boost
                     high_uncertainty = uncertainty > 0.5
+        
+        # 0i. Pre-meta-loop memory coherence validation — validate that
+        # the retrieved memory signal is consistent with the current input
+        # BEFORE feeding it into the meta-loop.  Stale or inconsistent
+        # memories can cause the meta-loop to converge on incorrect
+        # attractors.  When validation fails, the memory contribution is
+        # attenuated and uncertainty is escalated so the meta-loop runs
+        # deeper iterations via the uncertainty-adaptive scaling.
+        if (self.memory_validator is not None
+                and _pre_loop_memory_signal is not None
+                and not fast):
+            try:
+                _pre_mem_validation = self.memory_validator.validate(
+                    memory_signal=_pre_loop_memory_signal,
+                    converged_state=z_in,
+                )
+                if _pre_mem_validation.get("needs_re_retrieval", False):
+                    _mem_consistency = _pre_mem_validation.get(
+                        "consistency_score", 0.0,
+                    )
+                    # Attenuate memory contribution proportionally to
+                    # inconsistency — minimum 0.1 preserves partial signal
+                    # as even inconsistent memories may contain useful
+                    # priors, while preventing full-strength injection.
+                    _attenuation = max(0.1, _mem_consistency)
+                    z_conditioned = z_in + (
+                        self.config.pre_loop_memory_weight
+                        * _attenuation
+                        * _pre_loop_memory_signal
+                    )
+                    _mem_unc_boost = min(
+                        1.0 - uncertainty,
+                        _pre_mem_validation.get("uncertainty_boost", 0.1),
+                    )
+                    if _mem_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _mem_unc_boost)
+                        uncertainty_sources[
+                            "pre_loop_memory_inconsistency"
+                        ] = _mem_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+                    self._memory_stale = True
+                    self.audit_log.record(
+                        "memory_validator", "pre_loop_inconsistency", {
+                            "consistency_score": _mem_consistency,
+                            "attenuation": _attenuation,
+                        },
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "memory_validator",
+                            "pre_loop_memory_inconsistent",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "consistency_score": _mem_consistency,
+                                "attenuation": _attenuation,
+                            },
+                            severity="warning",
+                        )
+            except Exception as _pmv_err:
+                logger.debug(
+                    "Pre-meta-loop memory validation failed: %s", _pmv_err,
+                )
         
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_conditioned)
@@ -18089,6 +18238,7 @@ class AEONDeltaV3(nn.Module):
                     # Low surprise or no value_net: blend
                     C_star = C_star + 0.1 * predicted_next
                 world_model_results['surprise'] = surprise
+                world_model_results['predicted_next'] = predicted_next
                 # Cache mean surprise for the feedback bus on the next
                 # forward pass, closing the cross-step feedback loop so
                 # that high prediction error drives deeper meta-loop
@@ -18097,6 +18247,16 @@ class AEONDeltaV3(nn.Module):
                     _ms = float(surprise.mean().item())
                     if math.isfinite(_ms):
                         self._cached_surprise = _ms
+                # Cache the world model's prediction for cross-step
+                # verification in the NEXT forward pass.  The next pass
+                # will compare this against its actual input to generate
+                # a verified prediction error, closing the prediction
+                # verification loop.
+                if (predicted_next is not None
+                        and torch.isfinite(predicted_next).all()):
+                    self._cached_world_model_prediction = (
+                        predicted_next.detach().clone()
+                    )
             except Exception as wm_err:
                 _world_model_healthy = False
                 logger.warning(f"World model error (non-fatal): {wm_err}")
@@ -21428,6 +21588,7 @@ class AEONDeltaV3(nn.Module):
                 }
                 if unified_cycle_results else None
             ),
+            "world_model_verified_prediction_error": _verified_prediction_error,
         }
         
         # 8h-final. Terminal state consistency validation — run
@@ -21489,6 +21650,35 @@ class AEONDeltaV3(nn.Module):
                 self_report_consistency=self._cached_self_report_consistency,
             ).detach()
         
+        # 8i-trace. Record terminal feedback bus state in the causal trace
+        # so that every conditioning signal feeding into the NEXT pass's
+        # meta-loop is root-cause traceable.  Without this, the feedback
+        # vector is an opaque tensor — callers can see it exists but cannot
+        # trace which specific signals (safety, uncertainty, coherence,
+        # surprise) shaped it.  This entry links the feedback bus output
+        # back to all upstream signals via causal_prerequisites, enabling
+        # complete causal chain reconstruction across forward passes.
+        if self.causal_trace is not None and not fast:
+            self.causal_trace.record(
+                "feedback_bus", "terminal_refresh",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "safety_score": float(
+                        safety_score.mean().item()
+                        if isinstance(safety_score, torch.Tensor)
+                        else safety_score
+                    ),
+                    "uncertainty": uncertainty,
+                    "coherence_deficit": self._cached_coherence_deficit,
+                    "world_model_surprise": self._cached_surprise,
+                    "causal_quality": self._cached_causal_quality,
+                    "convergence_quality": convergence_quality_scalar,
+                    "feedback_magnitude": float(
+                        self._cached_feedback.abs().mean().item()
+                    ),
+                },
+            )
+        
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -21549,6 +21739,25 @@ class AEONDeltaV3(nn.Module):
                 self.uncertainty_tracker.build_summary()
                 if self.uncertainty_tracker is not None else {}
             ),
+            # ── Output reliability score ────────────────────────────────────
+            # Composite reliability ∈ [0, 1] synthesized from uncertainty,
+            # auto-critic quality, coherence, and convergence rate.  This
+            # gives downstream consumers an explicit trust signal so they
+            # can gate decisions on output quality rather than blindly
+            # accepting all results.  A score below 0.5 indicates the
+            # output was produced under significant epistemic uncertainty
+            # or failed self-verification, and should be treated with
+            # caution.  Multiplicative combination is used so that any
+            # single severe deficiency (e.g. convergence_rate ≈ 0 or
+            # uncertainty ≈ 1) dominates the overall score — this is
+            # appropriate for a safety-first architecture where any
+            # individual failure mode should degrade the trust signal.
+            'output_reliability': max(0.0, min(1.0,
+                (1.0 - uncertainty)
+                * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
+                * max(0.0, meta_results.get('convergence_rate', 1.0))
+                * max(0.0, 1.0 - self._cached_coherence_deficit)
+            )),
         }
         
         return z_out, outputs
@@ -22941,6 +23150,50 @@ class AEONDeltaV3(nn.Module):
             verified.append(
                 'mcts_planner ← planning=True overrides complexity gates '
                 '(explicit planning requests always honored)'
+            )
+
+        # 17d. Uncertainty-adaptive meta-loop — feedback magnitude
+        # dynamically scales meta-loop iterations so high uncertainty
+        # triggers deeper reasoning at the core computation level.
+        if self.feedback_bus is not None:
+            verified.append(
+                'feedback_bus → meta_loop.effective_max_iterations '
+                '(uncertainty-adaptive iteration scaling)'
+            )
+
+        # 17e. World model prediction verification — previous pass's
+        # prediction is compared against current input to generate
+        # verified prediction error, closing the cross-step loop.
+        if self.world_model is not None:
+            verified.append(
+                'world_model → _cached_world_model_prediction → '
+                'next_pass_verification (cross-step prediction verification)'
+            )
+
+        # 17f. Pre-loop memory coherence validation — memory signals
+        # are validated before the meta-loop to prevent stale memories
+        # from polluting convergence.
+        if self.memory_validator is not None:
+            verified.append(
+                'memory_validator → pre_loop_validation → '
+                'z_conditioned attenuation (pre-loop memory coherence)'
+            )
+
+        # 17g. Output reliability scoring — composite reliability
+        # synthesized from uncertainty, auto-critic, coherence, and
+        # convergence rate for downstream trust gating.
+        verified.append(
+            'output_reliability → downstream trust gating '
+            '(composite uncertainty × critic × coherence × convergence)'
+        )
+
+        # 17h. Feedback bus causal traceability — terminal feedback
+        # bus state is recorded in the causal trace so all meta-loop
+        # conditioning signals are root-cause traceable.
+        if self.causal_trace is not None and self.feedback_bus is not None:
+            verified.append(
+                'feedback_bus → causal_trace.terminal_refresh '
+                '(feedback conditioning root-cause traceable)'
             )
 
         # 17c. Memory state in coherence verification — cached memory
