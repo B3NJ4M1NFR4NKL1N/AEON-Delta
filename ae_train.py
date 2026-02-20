@@ -120,6 +120,13 @@ except ImportError:
             self._max_history = max_history
             self._episodes: Dict[str, list] = defaultdict(list)
 
+        def set_causal_trace(self, trace) -> None:
+            """Accept (and ignore) causal trace wiring for API compatibility."""
+            pass
+
+        def get_root_causes(self, error_class: str) -> Dict[str, Any]:
+            return {"root_causes": {}}
+
         def record_episode(self, error_class: str, strategy_used: str,
                            success: bool, metadata: Optional[Dict] = None,
                            **kwargs) -> None:
@@ -165,6 +172,15 @@ except ImportError:
             self.history: list = []
             self._threshold = threshold
 
+        def reset(self) -> None:
+            self.history.clear()
+
+        def set_error_evolution(self, tracker) -> None:
+            pass
+
+        def set_provenance_tracker(self, tracker) -> None:
+            pass
+
         def check(self, delta_norm: float) -> Dict[str, Any]:
             self.history.append(delta_norm)
             if len(self.history) < 3:
@@ -183,15 +199,40 @@ except ImportError:
         def __init__(self):
             self._deltas: Dict[str, float] = {}
             self._order: list = []
+            self._snapshots: Dict[str, torch.Tensor] = {}
+            self._dependencies: list = []
+
+        def reset(self) -> None:
+            """Clear all recorded state for a new pass."""
+            self._deltas.clear()
+            self._order.clear()
+            self._snapshots.clear()
+            self._dependencies.clear()
 
         def record_before(self, module_name: str, state: torch.Tensor) -> None:
-            self._order.append(module_name)
+            self._snapshots[module_name] = state.detach().clone()
+            if module_name not in self._order:
+                self._order.append(module_name)
 
         def record_after(self, module_name: str, state: torch.Tensor) -> None:
-            pass
+            if module_name in self._snapshots:
+                before = self._snapshots[module_name]
+                min_size = min(state.shape[-1], before.shape[-1])
+                self._deltas[module_name] = (
+                    state.detach()[..., :min_size] - before[..., :min_size]
+                ).norm().item()
+
+        def record_dependency(self, upstream: str, downstream: str) -> None:
+            self._dependencies.append((upstream, downstream))
 
         def compute_attribution(self) -> Dict[str, Any]:
-            return {"attribution": {}, "raw_deltas": {}, "order": self._order}
+            total = sum(self._deltas.values()) + 1e-10
+            contributions = {k: v / total for k, v in self._deltas.items()}
+            return {
+                "contributions": contributions,
+                "raw_deltas": dict(self._deltas),
+                "order": list(self._order),
+            }
 
     class ModuleCoherenceVerifier:
         """Minimal coherence verifier (fallback when aeon_core unavailable)."""
