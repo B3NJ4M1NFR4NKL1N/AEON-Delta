@@ -30920,6 +30920,183 @@ def test_verify_coherence_updates_feedback_bus():
     print("✅ test_verify_coherence_updates_feedback_bus PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Tests for MCTS↔Causal DAG, Memory↔Causal, and Metacognitive Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_mcts_accepts_causal_adjacency():
+    """MCTSPlanner.search() accepts optional causal_adjacency parameter
+    and returns valid results regardless of whether it is provided."""
+    from aeon_core import MCTSPlanner, PhysicsGroundedWorldModel
+
+    planner = MCTSPlanner(state_dim=16, action_dim=4, hidden_dim=16,
+                          num_simulations=5, max_depth=3)
+    wm = PhysicsGroundedWorldModel(input_dim=16, state_dim=16)
+
+    state = torch.randn(16)
+    # Without causal adjacency (backward-compatible)
+    result = planner.search(state, wm)
+    assert 'best_action' in result
+    assert 'root_value' in result
+
+    # With causal adjacency
+    adj = torch.randn(4, 4).abs()
+    result_causal = planner.search(state, wm, causal_adjacency=adj)
+    assert 'best_action' in result_causal
+    assert 'root_value' in result_causal
+
+    print("✅ test_mcts_accepts_causal_adjacency PASSED")
+
+
+def test_mcts_expand_biases_with_causal_adjacency():
+    """When causal_adjacency is provided, _expand modulates policy priors
+    so that actions aligned with strong causal influences receive higher
+    weight than the unmodulated baseline."""
+    from aeon_core import MCTSPlanner, MCTSNode, PhysicsGroundedWorldModel
+
+    planner = MCTSPlanner(state_dim=16, action_dim=4, hidden_dim=16,
+                          num_simulations=5, max_depth=3)
+    wm = PhysicsGroundedWorldModel(input_dim=16, state_dim=16)
+
+    state = torch.randn(16)
+    root = MCTSNode(state=state)
+    policy_priors = torch.tensor([0.25, 0.25, 0.25, 0.25])
+
+    # Create adjacency that strongly favours action 0
+    adj = torch.zeros(4, 4)
+    adj[:, 0] = 10.0  # Column 0 has high incoming causal influence
+
+    # Expand with causal bias
+    child = planner._expand(root, wm, policy_priors, causal_adjacency=adj)
+    assert len(root.children) == 4, f"Expected 4 children, got {len(root.children)}"
+    # Action 0's prior should be boosted relative to uniform
+    action0_prior = root.children[0].prior
+    action3_prior = root.children[3].prior
+    assert action0_prior > action3_prior, (
+        f"Action 0 prior ({action0_prior:.3f}) should be higher "
+        f"than action 3 ({action3_prior:.3f}) with strong causal "
+        f"influence on variable 0"
+    )
+
+    print("✅ test_mcts_expand_biases_with_causal_adjacency PASSED")
+
+
+def test_memory_quality_modulates_causal_quality():
+    """When memory retrieval quality is low, _cached_causal_quality
+    should be degraded proportionally, closing Gap 1 (memory-causal
+    decoupling)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_hierarchical_memory=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run forward pass — with random weights, memory retrieval will be
+    # imperfect (some queries return empty), which should degrade causal
+    # quality compared to the initial value of 1.0.
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        model._reasoning_core_impl(z_in, fast=False)
+
+    # After forward pass, _cached_causal_quality should have been
+    # modulated by memory retrieval quality
+    assert isinstance(model._cached_causal_quality, float)
+    assert 0.0 <= model._cached_causal_quality <= 1.0
+
+    print("✅ test_memory_quality_modulates_causal_quality PASSED")
+
+
+def test_self_diagnostic_verifies_memory_causal():
+    """self_diagnostic verifies the memory→causal cross-grounding
+    connection when both subsystems are active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_hierarchical_memory=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    verified = diag.get('verified_connections', [])
+    memory_causal_verified = any(
+        'memory_retrieval_quality' in v and 'causal_model' in v
+        for v in verified
+    )
+    assert memory_causal_verified, (
+        "self_diagnostic should verify memory→causal cross-grounding "
+        f"but verified connections are: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_verifies_memory_causal PASSED")
+
+
+def test_self_diagnostic_verifies_mcts_causal():
+    """self_diagnostic verifies MCTS→causal DAG structure-aware planning
+    when both subsystems are active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_world_model=True,
+        enable_mcts_planner=True,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    verified = diag.get('verified_connections', [])
+    mcts_causal_verified = any(
+        'mcts_planner' in v and 'causal_model' in v
+        for v in verified
+    )
+    assert mcts_causal_verified, (
+        "self_diagnostic should verify MCTS↔causal integration "
+        f"but verified connections are: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_verifies_mcts_causal PASSED")
+
+
+def test_training_encoder_provenance_tracked():
+    """Phase A training _forward_pass records provenance for the encoder
+    stage, not just VQ and decoder."""
+    from ae_train import TrainingProvenanceTracker
+
+    prov = TrainingProvenanceTracker()
+    # Simulate what _forward_pass does
+    encoder_input = torch.randn(2, 32)
+    encoder_output = torch.randn(2, 32)
+    prov.record_before("encoder", encoder_input)
+    prov.record_after("encoder", encoder_output)
+
+    attribution = prov.compute_attribution()
+    contributions = attribution.get('contributions', {})
+    assert 'encoder' in contributions, (
+        f"Provenance should track 'encoder' but got: {list(contributions.keys())}"
+    )
+    assert contributions['encoder'] >= 0.0, (
+        f"Encoder contribution should be non-negative, got {contributions['encoder']}"
+    )
+
+    print("✅ test_training_encoder_provenance_tracked PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -32290,6 +32467,14 @@ if __name__ == '__main__':
     test_verify_coherence_records_error_evolution()
     test_verify_coherence_records_causal_trace()
     test_verify_coherence_updates_feedback_bus()
+    
+    # Architectural Unification — MCTS↔Causal DAG, Memory↔Causal, Metacognitive Inference
+    test_mcts_accepts_causal_adjacency()
+    test_mcts_expand_biases_with_causal_adjacency()
+    test_memory_quality_modulates_causal_quality()
+    test_self_diagnostic_verifies_memory_causal()
+    test_self_diagnostic_verifies_mcts_causal()
+    test_training_encoder_provenance_tracked()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

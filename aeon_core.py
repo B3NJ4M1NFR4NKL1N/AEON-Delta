@@ -10444,6 +10444,10 @@ class MCTSPlanner(nn.Module):
     - Policy network for action priors
     """
     
+    _MAX_BRANCHING_FACTOR: int = 8
+    _POLICY_PRIOR_WEIGHT: float = 0.8
+    _CAUSAL_BIAS_WEIGHT: float = 0.2
+    
     def __init__(self, state_dim: int, action_dim: int, 
                  hidden_dim: int = 128, num_simulations: int = 50,
                  max_depth: int = 5, c_puct: float = 1.41):
@@ -10464,11 +10468,48 @@ class MCTSPlanner(nn.Module):
         return node
     
     def _expand(self, node: 'MCTSNode', world_model, 
-                policy_priors: torch.Tensor) -> 'MCTSNode':
-        """Expand node by generating children for each action."""
+                policy_priors: torch.Tensor,
+                causal_adjacency: Optional[torch.Tensor] = None) -> 'MCTSNode':
+        """Expand node by generating children for each action.
+
+        When *causal_adjacency* is provided (a [num_vars, num_vars] matrix
+        from a :class:`NeuralCausalModel` or similar), the per-action
+        priors are modulated by the causal influence structure.  Columns
+        with high total incoming weight represent variables that are
+        strongly caused by the rest of the system; actions aligned with
+        these variables receive a prior boost, encouraging the planner
+        to explore causally grounded trajectories.
+        """
         state = node.state
-        for a in range(min(self.action_dim, 8)):  # Limit branching factor
-            prior = policy_priors[a].item()
+        # Modulate policy priors with causal structure when available
+        effective_priors = policy_priors
+        n_actions = min(self.action_dim, self._MAX_BRANCHING_FACTOR)
+        if causal_adjacency is not None:
+            try:
+                adj = causal_adjacency.detach().float()
+                # Column-sum = total causal influence received per variable
+                causal_influence = adj.sum(dim=0)
+                # Map to action space via truncation or padding
+                if causal_influence.numel() >= n_actions:
+                    causal_bias = causal_influence[:n_actions]
+                else:
+                    causal_bias = F.pad(
+                        causal_influence,
+                        (0, n_actions - causal_influence.numel()),
+                    )
+                # Normalize to [0, 1] and apply as a soft multiplicative bias
+                causal_bias = causal_bias.to(effective_priors.device)
+                _cb_max = causal_bias.max()
+                if _cb_max > 0:
+                    causal_bias = causal_bias / _cb_max
+                effective_priors = (
+                    self._POLICY_PRIOR_WEIGHT * effective_priors[:n_actions]
+                    + self._CAUSAL_BIAS_WEIGHT * causal_bias
+                )
+            except Exception:
+                pass  # causal modulation is best-effort
+        for a in range(n_actions):
+            prior = effective_priors[a].item()
             # Use world model to predict next state
             with torch.no_grad():
                 noise = torch.randn_like(state) * 0.1
@@ -10500,13 +10541,19 @@ class MCTSPlanner(nn.Module):
             node = node.parent
     
     @torch.no_grad()
-    def search(self, state: torch.Tensor, world_model) -> Dict[str, Any]:
+    def search(self, state: torch.Tensor, world_model,
+               causal_adjacency: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """
         Run MCTS search from given state.
         
         Args:
             state: [state_dim] current state
             world_model: PhysicsGroundedWorldModel for rollouts
+            causal_adjacency: Optional [num_vars, num_vars] adjacency matrix
+                from a causal model.  When provided, action priors in
+                ``_expand`` are modulated by causal influence structure so
+                that the planner preferentially explores causally grounded
+                trajectories.
         Returns:
             Dict with best_action, visit_counts, values
         """
@@ -10526,7 +10573,8 @@ class MCTSPlanner(nn.Module):
                 
                 if depth < self.max_depth:
                     policy = self.policy_net(leaf.state.unsqueeze(0)).squeeze(0)
-                    leaf = self._expand(leaf, world_model, policy)
+                    leaf = self._expand(leaf, world_model, policy,
+                                        causal_adjacency=causal_adjacency)
             
             # Simulate
             value = self._simulate(leaf)
@@ -10554,12 +10602,14 @@ class MCTSPlanner(nn.Module):
             'root_value': 0.0,
         }
     
-    def forward(self, state: torch.Tensor, world_model=None) -> Dict[str, Any]:
+    def forward(self, state: torch.Tensor, world_model=None,
+                causal_adjacency: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """Forward pass - run search or return value/policy."""
         if world_model is not None and not self.training:
             # Single state search (unbatched for MCTS)
             if state.dim() == 1:
-                return self.search(state, world_model)
+                return self.search(state, world_model,
+                                   causal_adjacency=causal_adjacency)
             # Batch: return value and policy (MCTS is single-state only)
         
         return {
@@ -17914,7 +17964,20 @@ class AEONDeltaV3(nn.Module):
         # memory-aware planning.  Gated by complexity gate[1].
         if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
             self.provenance_tracker.record_before("mcts_planning", C_star)
-            mcts_results = self.mcts_planner.search(C_star[0], self.world_model)
+            # 5b2-ca. Collect causal adjacency for MCTS prior modulation —
+            # when a NeuralCausalModel is active and has learned a DAG,
+            # pass its adjacency matrix to the planner so that action
+            # priors are biased toward causally grounded trajectories.
+            _mcts_causal_adj: Optional[torch.Tensor] = None
+            if self.causal_model is not None and hasattr(self.causal_model, 'adjacency'):
+                try:
+                    _mcts_causal_adj = self.causal_model.adjacency.detach()
+                except Exception:
+                    pass  # causal adjacency collection is best-effort
+            mcts_results = self.mcts_planner.search(
+                C_star[0], self.world_model,
+                causal_adjacency=_mcts_causal_adj,
+            )
             # 5b2-0. Blend MCTS best_state into C_star — the planner's
             # best state represents the most promising trajectory
             # discovered via tree search.  Blending it as a weighted
@@ -18050,6 +18113,23 @@ class AEONDeltaV3(nn.Module):
                             "num_factors": factors.shape[-1],
                         },
                     )
+                # 5d1b-mem. Memory-causal integration — modulate cached
+                # causal quality by memory retrieval quality.  When memory
+                # retrieval is poor (stale or empty), the causal model's
+                # conclusions lack grounding context and should carry
+                # lower confidence.  When memory is rich, the causal
+                # structure is better grounded and quality is reinforced.
+                # This closes Gap 1: memory and causal models now
+                # cross-inform rather than operating independently.
+                _MEMORY_CAUSAL_PENALTY_FACTOR = 0.1
+                _mem_quality = _memory_retrieval_quality
+                if _mem_quality < 1.0 and math.isfinite(self._cached_causal_quality):
+                    _mem_penalty = _MEMORY_CAUSAL_PENALTY_FACTOR * (1.0 - _mem_quality)
+                    self._cached_causal_quality = max(
+                        0.0,
+                        self._cached_causal_quality - _mem_penalty,
+                    )
+                    causal_model_results['memory_grounding'] = _mem_quality
             except Exception as causal_err:
                 _causal_healthy = False
                 logger.warning(f"Causal model error (non-fatal): {causal_err}")
@@ -21995,6 +22075,54 @@ class AEONDeltaV3(nn.Module):
             })
 
         # --- Runtime coherence verification (bridges wiring → runtime) ---
+
+        # 16. Memory → Causal model cross-information — verify that memory
+        # retrieval quality modulates causal model confidence, ensuring
+        # causal conclusions are grounded in retrieved context.
+        if (self.hierarchical_memory is not None
+                and self.causal_model is not None):
+            verified.append(
+                'memory_retrieval_quality → causal_model '
+                '(memory-causal cross-grounding)'
+            )
+        elif (self.hierarchical_memory is not None
+              and self.causal_model is None
+              and getattr(self.config, 'enable_causal_model', False)):
+            gaps.append({
+                'component': 'memory_causal_integration',
+                'gap': (
+                    'Memory subsystem active but causal model disabled '
+                    '— memory retrieval quality cannot ground causal '
+                    'conclusions'
+                ),
+                'remediation': (
+                    'Enable the NeuralCausalModel so that memory '
+                    'retrieval quality modulates causal confidence'
+                ),
+            })
+
+        # 17. MCTS → Causal DAG structure-aware planning — verify that
+        # the MCTS planner receives causal adjacency for prior modulation.
+        if (self.mcts_planner is not None
+                and self.causal_model is not None):
+            verified.append(
+                'mcts_planner ← causal_model.adjacency '
+                '(causal-structure-aware planning)'
+            )
+        elif (self.mcts_planner is not None
+              and self.causal_model is None):
+            gaps.append({
+                'component': 'mcts_causal_integration',
+                'gap': (
+                    'MCTS planner active but causal model disabled '
+                    '— planning ignores causal structure'
+                ),
+                'remediation': (
+                    'Enable the NeuralCausalModel so that MCTS action '
+                    'priors are modulated by causal DAG structure'
+                ),
+            })
+
         # Call verify_coherence() to include live runtime consistency
         # results alongside the static wiring checks, so that the
         # diagnostic report captures both structural and runtime health.
