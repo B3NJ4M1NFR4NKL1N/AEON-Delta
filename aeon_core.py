@@ -2905,6 +2905,7 @@ class AEONConfig:
     ns_violation_threshold: float = 0.5
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
+    enable_provenance_trace_bridge: bool = False
     enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
@@ -6087,6 +6088,11 @@ class CausalProvenanceTracker:
         self._deltas: Dict[str, float] = {}
         self._timestamps: Dict[str, float] = {}
         self._order: list = []
+        self._causal_trace: Optional['TemporalCausalTraceBuffer'] = None
+        # Threshold above which a module's L2 delta is considered
+        # significant enough to emit a causal trace entry.  This avoids
+        # flooding the trace buffer with trivial identity-like transforms.
+        self._delta_trace_threshold: float = 0.01
     
     def reset(self):
         """Clear all recorded snapshots for a new forward pass."""
@@ -6094,6 +6100,20 @@ class CausalProvenanceTracker:
         self._deltas.clear()
         self._timestamps.clear()
         self._order.clear()
+
+    def set_causal_trace(
+        self, trace: Optional['TemporalCausalTraceBuffer'],
+    ) -> None:
+        """Attach a TemporalCausalTraceBuffer for automatic propagation.
+
+        Once attached, :meth:`record_after` emits a causal trace entry
+        whenever a module's L2 delta exceeds ``_delta_trace_threshold``.
+        This bridges per-module attribution (L2 deltas) into the
+        temporal causal decision chain so that ``trace_root_cause()``
+        on the causal trace buffer can reach back to the specific
+        module transformations that shaped the output.
+        """
+        self._causal_trace = trace
     
     def record_before(self, module_name: str, state: torch.Tensor):
         """Record the state before a module's transformation.
@@ -6126,6 +6146,11 @@ class CausalProvenanceTracker:
         multiple times in the same pass (e.g. consistency gate re-run after
         coherence-deficit recovery), the deltas are summed so that the
         total contribution reflects all invocations.
+
+        When a :class:`TemporalCausalTraceBuffer` is attached via
+        :meth:`set_causal_trace`, significant deltas (above threshold)
+        are automatically emitted as trace entries so that module-level
+        attribution participates in the full causal decision chain.
         """
         if module_name in self._before_states:
             before = self._before_states.pop(module_name)
@@ -6133,6 +6158,18 @@ class CausalProvenanceTracker:
             # Accumulate deltas for repeated invocations
             self._deltas[module_name] = self._deltas.get(module_name, 0.0) + new_delta
             self._timestamps[module_name] = time.monotonic()
+            # Bridge to causal trace for significant transformations
+            _trace = getattr(self, '_causal_trace', None)
+            if _trace is not None and new_delta > self._delta_trace_threshold:
+                _trace.record(
+                    subsystem=f"provenance/{module_name}",
+                    decision=f"delta={new_delta:.6f}",
+                    metadata={
+                        "l2_delta": new_delta,
+                        "cumulative_delta": self._deltas[module_name],
+                    },
+                    severity="info" if new_delta < 1.0 else "warning",
+                )
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -6927,16 +6964,22 @@ class ConvergenceMonitor:
                             enriched['dominant_provenance_module'] = max(
                                 contribs, key=contribs.get,
                             )
-                    except Exception:
-                        pass
+                    except Exception as _prov_err:
+                        logger.debug(
+                            "Provenance enrichment failed (non-fatal): %s",
+                            _prov_err,
+                        )
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
                     success=success,
                     metadata=enriched,
                 )
-            except Exception:
-                pass  # Never let monitoring break the hot path
+            except Exception as _bridge_err:
+                logger.debug(
+                    "Training error bridge record failed (non-fatal): %s",
+                    _bridge_err,
+                )
 
 
 class HierarchicalMetaLoop(nn.Module):
@@ -13842,6 +13885,7 @@ class UnifiedCognitiveCycle:
         recovery_pressure: float = 0.0,
         safety_violation: bool = False,
         feedback_signal: Optional[torch.Tensor] = None,
+        topology_catastrophe: bool = False,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -13860,6 +13904,10 @@ class UnifiedCognitiveCycle:
                 CognitiveFeedbackBus.  When provided, it is included in
                 the subsystem states for coherence verification so that
                 feedback-loop signals participate in cross-module checks.
+            topology_catastrophe: Whether the topology analyzer flagged a
+                catastrophe in the loss landscape.  When True the signal
+                flows into the metacognitive trigger so that topology
+                issues participate in the re-reasoning decision.
 
         Returns:
             Dict with:
@@ -13933,7 +13981,7 @@ class UnifiedCognitiveCycle:
         trigger_detail = self.metacognitive_trigger.evaluate(
             uncertainty=uncertainty,
             is_diverging=is_diverging,
-            topology_catastrophe=False,
+            topology_catastrophe=topology_catastrophe,
             coherence_deficit=coherence_deficit,
             memory_staleness=memory_staleness,
             recovery_pressure=recovery_pressure,
@@ -13989,6 +14037,37 @@ class UnifiedCognitiveCycle:
         if self.causal_trace is not None and trace_entry_id is not None:
             root_cause_trace = self.causal_trace.trace_root_cause(trace_entry_id)
 
+        # 6b. Weakest-pair identification — identify which subsystem pair
+        # has the lowest coherence so that downstream corrective action
+        # can target the specific modules rather than re-running the
+        # entire pipeline blindly.
+        weakest_pair = self.coherence_verifier.get_weakest_pair(
+            coherence_result.get('pairwise', {}),
+        )
+
+        # 6c. Error-evolution root-cause enrichment — when re-reasoning
+        # is triggered, query the error evolution tracker for historical
+        # root causes of each active trigger signal.  This connects the
+        # "why re-reason?" decision to the historical failure chain so
+        # that the caller knows not just *that* re-reasoning is needed
+        # but *which upstream failure patterns* caused it.
+        error_evolution_root_causes: Dict[str, Any] = {}
+        if should_rerun:
+            _triggers_active = trigger_detail.get('triggers_active', [])
+            for _trig_signal in _triggers_active:
+                _rc = self.error_evolution.get_root_causes(_trig_signal)
+                if _rc.get('root_causes'):
+                    error_evolution_root_causes[_trig_signal] = _rc
+
+        # 6d. Full causal chain audit trail — when re-reasoning is
+        # triggered and a causal trace entry was recorded, reconstruct
+        # the complete ordered causal chain leading to the re-reasoning
+        # decision.  This satisfies the requirement that all conclusions
+        # can be traced back to their root causes via an ordered chain.
+        causal_chain: List[Dict[str, Any]] = []
+        if should_rerun and self.causal_trace is not None and trace_entry_id is not None:
+            causal_chain = self.causal_trace.get_causal_chain(trace_entry_id)
+
         # 7. Restore coherence threshold to prevent unbounded drift.
         # The adapted threshold was useful for *this* evaluation cycle
         # but must not persist across successive forward passes; the next
@@ -14001,12 +14080,15 @@ class UnifiedCognitiveCycle:
                 'coherence_score': coherence_result['coherence_score'],
                 'needs_recheck': needs_recheck,
                 'coherence_deficit': coherence_deficit,
+                'weakest_pair': weakest_pair,
             },
             'should_rerun': should_rerun,
             'trigger_detail': trigger_detail,
             'provenance': provenance,
             'provenance_root_cause': provenance_root_cause,
             'root_cause_trace': root_cause_trace,
+            'error_evolution_root_causes': error_evolution_root_causes,
+            'causal_chain': causal_chain,
         }
 
     def reset(self) -> None:
@@ -14530,6 +14612,12 @@ class AEONDeltaV3(nn.Module):
         if getattr(config, 'enable_causal_trace', False):
             logger.info("Loading TemporalCausalTraceBuffer...")
             self.causal_trace = TemporalCausalTraceBuffer(max_entries=1000)
+            # Bridge provenance tracker → causal trace so that significant
+            # L2 deltas from module transformations are automatically
+            # recorded as causal trace entries, linking per-module
+            # attribution into the temporal decision chain.
+            if getattr(config, 'enable_provenance_trace_bridge', False):
+                self.provenance_tracker.set_causal_trace(self.causal_trace)
         else:
             self.causal_trace = None
         
@@ -19935,6 +20023,7 @@ class AEONDeltaV3(nn.Module):
                 recovery_pressure=_post_recovery_pressure,
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
+                safety_violation=safety_enforced,
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
