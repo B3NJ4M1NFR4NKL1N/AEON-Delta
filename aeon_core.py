@@ -15090,6 +15090,20 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
+
+        # Cached subsystem states for cross-module coherence verification.
+        # These are populated during the reasoning pipeline at each module's
+        # provenance record_after point using .detach() to prevent gradient
+        # tracking (important for memory management since these are retained
+        # across forward passes).  Consumed by verify_coherence() to compute
+        # pairwise cosine similarity across subsystem outputs, closing the
+        # coherence verification feedback loop.
+        self._cached_meta_loop_state: Optional[torch.Tensor] = None
+        self._cached_factor_state: Optional[torch.Tensor] = None
+        self._cached_safety_state: Optional[torch.Tensor] = None
+        self._cached_memory_state: Optional[torch.Tensor] = None
+        self._cached_world_model_state: Optional[torch.Tensor] = None
+        self._cached_causal_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16220,6 +16234,7 @@ class AEONDeltaV3(nn.Module):
                 z_conditioned, use_fixed_point=not fast, feedback=prev_feedback,
             )
         self.provenance_tracker.record_after("meta_loop", C_star)
+        self._cached_meta_loop_state = C_star.detach()
         # Restore meta-loop parameters if proactively adjusted by evolved
         # guidance (step 0e) so that subsequent metacognitive re-runs use
         # the original thresholds as their baseline rather than the
@@ -16577,6 +16592,7 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_before("factor_extraction", C_star)
         factors, embedded_factors = self.sparse_factors(C_star)
         self.provenance_tracker.record_after("factor_extraction", embedded_factors)
+        self._cached_factor_state = embedded_factors.detach()
         logger.debug(f"Factors: {factors.shape}")
         
         # 2a. Record factor extraction health — sparsity and finite checks
@@ -16830,6 +16846,7 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.checkpoint("safety", C_star)
         self.progress_tracker.end_phase("safety", success=True)
         self.provenance_tracker.record_after("safety", C_star)
+        self._cached_safety_state = C_star.detach()
         
         # 5a-ib. Cognitive Executive Function — Global Workspace Theory
         # dispatcher that prioritizes subsystems via attention budget and
@@ -17512,6 +17529,7 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
+        self._cached_world_model_state = C_star.detach()
         
         # 5b-fc. Complexity-gated fallback caching for world model —
         # when the world model ran, cache its surprise for future passes
@@ -17928,6 +17946,7 @@ class AEONDeltaV3(nn.Module):
             "empty_ratio": _memory_empty_count / max(B, 1),
         })
         self.provenance_tracker.record_after("memory", C_star)
+        self._cached_memory_state = C_star.detach()
         
         # 5c5-0. Memory retrieval quality tracking — record per-pass memory
         # retrieval statistics for inclusion in the causal decision chain.
@@ -18152,6 +18171,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(causal_err)[:200]},
                     )
             self.provenance_tracker.record_after("causal_model", C_star)
+            self._cached_causal_state = C_star.detach()
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
         # Provides a complementary causal analysis with NOTEARS acyclicity
@@ -22269,12 +22289,20 @@ class AEONDeltaV3(nn.Module):
             ("_cached_factor_state", "factor_extraction"),
             ("_cached_safety_state", "safety"),
             ("_cached_memory_state", "memory"),
+            ("_cached_world_model_state", "world_model"),
+            ("_cached_causal_state", "causal_model"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
                 subsystem_states[label] = cached
 
         if len(subsystem_states) < 2:
+            # At least 2 states are required for pairwise cosine similarity
+            # comparison.  Report degraded status instead of silently
+            # returning coherence=1.0 which would mask a disconnected
+            # verification loop.
+            result["coherence_score"] = 0.0
+            result["needs_recheck"] = True
             return result
 
         coherence_out = self.module_coherence(subsystem_states)
@@ -22351,10 +22379,21 @@ class AEONDeltaV3(nn.Module):
                     uncertainty=coherence_deficit,
                 ).detach()
             except Exception as _fb_err:
-                logger.debug(
-                    "verify_coherence feedback bus update failed "
-                    "(non-fatal): %s", _fb_err,
+                logger.warning(
+                    "verify_coherence feedback bus update failed: %s",
+                    _fb_err,
                 )
+                # Escalate the failure into uncertainty so the next
+                # forward pass's metacognitive trigger is aware that the
+                # cross-pass feedback loop is broken.
+                result["needs_recheck"] = True
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='feedback_bus_failure',
+                        strategy_used='escalate_uncertainty',
+                        success=False,
+                        metadata={'error': str(_fb_err)[:200]},
+                    )
 
         return result
 
@@ -23022,6 +23061,19 @@ class AEONTrainer:
                     success=False,
                     metadata={"step": self.global_step},
                 )
+            # Bridge training NaN to the model's metacognitive trigger so
+            # that inference-time re-reasoning is aware of training
+            # instability.  This closes the training→inference feedback
+            # loop for numerical failures.
+            _mc_trigger = getattr(self.model, 'metacognitive_trigger', None)
+            if _mc_trigger is not None:
+                try:
+                    _mc_trigger.evaluate(recovery_pressure=1.0)
+                except Exception as _mc_err:
+                    logger.debug(
+                        "Metacognitive trigger evaluation failed during "
+                        "NaN recovery (non-fatal): %s", _mc_err,
+                    )
             metrics = {k: float('nan') for k in loss_dict}
             metrics['lr'] = float(self.scheduler.get_last_lr()[0])
             metrics['grad_norm'] = 0.0
@@ -23536,7 +23588,7 @@ class AEONTestSuite:
             vq = self.model.vector_quantizer
             
             if vq is None:
-                return {'vq_codebook': 1.0, 'details': {'skipped': 'VQ disabled'}}
+                return {'vq_codebook': 0.0, 'details': {'skipped': 'VQ disabled', 'degraded': True}}
             
             # Test encoding produces valid indices
             z = torch.randn(4, self.config.z_dim, device=self.model.device)
@@ -23634,9 +23686,9 @@ class AEONTestSuite:
                 else:
                     metrics['coherence_score_valid'] = 0.0
             else:
-                # Module coherence disabled — count as pass (graceful)
-                checks_passed += 1
-                metrics['coherence_score_valid'] = 1.0
+                # Module coherence disabled — report degraded, not healthy
+                metrics['coherence_score_valid'] = 0.0
+                metrics['coherence_disabled'] = True
 
             # --- 4. verify_coherence() returns well-formed report ---
             total_checks += 1

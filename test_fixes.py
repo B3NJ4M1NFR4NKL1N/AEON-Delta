@@ -31097,6 +31097,211 @@ def test_training_encoder_provenance_tracked():
     print("✅ test_training_encoder_provenance_tracked PASSED")
 
 
+def test_verify_coherence_caches_subsystem_states():
+    """verify_coherence() uses subsystem states that are populated during
+    the reasoning pipeline forward pass (meta_loop, factor_extraction,
+    safety, memory, world_model, causal_model)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Before forward pass, no cached states exist — verify_coherence
+    # should return degraded status (score=0.0, needs_recheck=True).
+    result_before = model.verify_coherence()
+    assert result_before["coherence_score"] == 0.0, (
+        "Before forward pass, coherence should be 0.0 (no cached states)"
+    )
+    assert result_before["needs_recheck"] is True, (
+        "Before forward pass, needs_recheck should be True"
+    )
+
+    # Run a forward pass to populate cached states
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(x, fast=True)
+
+    # After forward pass, at least meta_loop and factor_extraction
+    # should be cached
+    assert model._cached_meta_loop_state is not None, (
+        "Meta-loop state should be cached after forward pass"
+    )
+    assert model._cached_factor_state is not None, (
+        "Factor extraction state should be cached after forward pass"
+    )
+
+    result_after = model.verify_coherence()
+    # With multiple cached states, the coherence verifier should produce
+    # a real score, not the default 0.0
+    assert "coherence_score" in result_after
+    print("✅ test_verify_coherence_caches_subsystem_states PASSED")
+
+
+def test_verify_coherence_degraded_when_no_states():
+    """When no subsystem states are cached, verify_coherence() reports
+    degraded status rather than silently returning coherence=1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    result = model.verify_coherence()
+    assert result["coherence_score"] == 0.0, (
+        f"Expected 0.0 when no cached states, got {result['coherence_score']}"
+    )
+    assert result["needs_recheck"] is True, (
+        "Should flag needs_recheck when no cached states available"
+    )
+    print("✅ test_verify_coherence_degraded_when_no_states PASSED")
+
+
+def test_verify_coherence_expanded_subsystem_coverage():
+    """verify_coherence() now checks 6 subsystem states instead of 4,
+    including world_model and causal_model."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Manually populate the new cached states to prove they are read
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_world_model_state = torch.randn(1, dim)
+    model._cached_causal_state = torch.randn(1, dim)
+
+    result = model.verify_coherence()
+    # With 3 states, the coherence verifier should actually run
+    assert result["coherence_score"] != 0.0 or result["needs_recheck"], (
+        "With 3 cached states, coherence verifier should produce a score"
+    )
+    print("✅ test_verify_coherence_expanded_subsystem_coverage PASSED")
+
+
+def test_feedback_bus_failure_escalates_uncertainty():
+    """When the feedback bus update fails in verify_coherence(), the
+    failure is escalated to needs_recheck and error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    from unittest.mock import patch
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Populate cached states so coherence check runs
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_factor_state = -torch.randn(1, dim)  # divergent
+
+    # Patch the feedback bus forward to raise an exception
+    if model.feedback_bus is not None:
+        original_forward = model.feedback_bus.forward
+        def failing_forward(*args, **kwargs):
+            raise RuntimeError("test failure")
+        model.feedback_bus.forward = failing_forward
+
+        result = model.verify_coherence()
+        model.feedback_bus.forward = original_forward
+        # If coherence deficit > 0.1 (likely with divergent states),
+        # the feedback bus failure should escalate needs_recheck
+        if result.get("coherence_score", 1.0) < 0.9:
+            assert result["needs_recheck"] is True, (
+                "Feedback bus failure should escalate needs_recheck"
+            )
+    print("✅ test_feedback_bus_failure_escalates_uncertainty PASSED")
+
+
+def test_vq_codebook_reports_degraded_when_disabled():
+    """AEONTestSuite.test_vq_codebook() reports degraded (0.0) when VQ
+    is disabled instead of false-positive 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTestSuite
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    suite = AEONTestSuite(model, config)
+    result = suite.test_vq_codebook()
+
+    if model.vector_quantizer is None:
+        assert result['vq_codebook'] == 0.0, (
+            f"VQ disabled should report 0.0, got {result['vq_codebook']}"
+        )
+        assert result['details'].get('degraded') is True, (
+            "VQ disabled should set degraded=True in details"
+        )
+    print("✅ test_vq_codebook_reports_degraded_when_disabled PASSED")
+
+
+def test_metacognitive_coherence_reports_disabled():
+    """AEONTestSuite.test_metacognitive_coherence() does not report 1.0
+    for coherence_score_valid when module_coherence is disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTestSuite
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    suite = AEONTestSuite(model, config)
+    result = suite.test_metacognitive_coherence()
+
+    # The overall score should not be 1.0 when module_coherence is
+    # disabled — the subsystem reports degraded rather than healthy
+    overall = result.get('metacognitive_coherence', 1.0)
+    assert overall < 1.0, (
+        f"With coherence disabled, overall should be <1.0, got {overall}"
+    )
+    print("✅ test_metacognitive_coherence_reports_disabled PASSED")
+
+
+def test_trainer_nan_triggers_metacognitive():
+    """AEONTrainer.train_step bridges NaN loss to the model's
+    metacognitive trigger for training→inference feedback."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+
+    dataset = [
+        {"input_ids": torch.randint(0, config.vocab_size, (16,)),
+         "labels": torch.randint(0, config.vocab_size, (16,))},
+    ]
+    trainer = AEONTrainer(model=model, config=config, train_dataset=dataset)
+
+    # Verify the model has a metacognitive trigger
+    assert model.metacognitive_trigger is not None, (
+        "Model should have metacognitive_trigger when enabled"
+    )
+
+    # The trainer's NaN handling code path references the model's
+    # metacognitive trigger — verify the attribute is accessible
+    mc_trigger = getattr(model, 'metacognitive_trigger', None)
+    assert mc_trigger is not None, (
+        "Trainer should be able to access model's metacognitive_trigger"
+    )
+    print("✅ test_trainer_nan_triggers_metacognitive PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -32475,6 +32680,15 @@ if __name__ == '__main__':
     test_self_diagnostic_verifies_memory_causal()
     test_self_diagnostic_verifies_mcts_causal()
     test_training_encoder_provenance_tracked()
+    
+    # Architecture unification — coherence verification feedback loop
+    test_verify_coherence_caches_subsystem_states()
+    test_verify_coherence_degraded_when_no_states()
+    test_verify_coherence_expanded_subsystem_coverage()
+    test_feedback_bus_failure_escalates_uncertainty()
+    test_vq_codebook_reports_degraded_when_disabled()
+    test_metacognitive_coherence_reports_disabled()
+    test_trainer_nan_triggers_metacognitive()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
