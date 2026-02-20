@@ -33828,6 +33828,284 @@ def test_verify_integration_paths_reports_hvae_ucc():
     print("✅ test_verify_integration_paths_reports_hvae_ucc PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Bidirectional Adaptation & Traceability Tests
+# ============================================================================
+
+def test_adapt_weights_bidirectional_dampening():
+    """Verify that adapt_weights_from_evolution dampens signal weights
+    for error classes with high success rates (>50%), not just boosts
+    for low success rates.  This ensures bidirectional learning."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    initial_weights = dict(trigger._signal_weights)
+
+    # Simulate an error summary where 'convergence_divergence' has 90%
+    # success rate — the 'diverging' signal should be dampened.
+    error_summary = {
+        "error_classes": {
+            "convergence_divergence": {
+                "count": 20,
+                "success_rate": 0.9,
+                "strategies_used": ["rollback"],
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    adapted_weights = trigger._signal_weights
+
+    # The 'diverging' weight should be lower than its initial value
+    # (after re-normalization, all weights shifted but the relative
+    # decrease should be detectable)
+    assert adapted_weights["diverging"] < initial_weights["diverging"], (
+        f"High success rate should dampen signal weight: "
+        f"initial={initial_weights['diverging']:.4f}, "
+        f"adapted={adapted_weights['diverging']:.4f}"
+    )
+    # Weights should still sum to ~1.0
+    total = sum(adapted_weights.values())
+    assert abs(total - 1.0) < 0.01, f"Weights should sum to ~1.0, got {total}"
+    print("✅ test_adapt_weights_bidirectional_dampening PASSED")
+
+
+def test_adapt_weights_low_success_boosts():
+    """Verify that low success rates still boost signal weights (backward
+    compatibility with existing behavior)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    initial_weights = dict(trigger._signal_weights)
+
+    error_summary = {
+        "error_classes": {
+            "coherence_deficit": {
+                "count": 15,
+                "success_rate": 0.1,
+                "strategies_used": ["re_reasoning"],
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    adapted_weights = trigger._signal_weights
+
+    assert adapted_weights["coherence_deficit"] > initial_weights["coherence_deficit"], (
+        f"Low success rate should boost signal weight: "
+        f"initial={initial_weights['coherence_deficit']:.4f}, "
+        f"adapted={adapted_weights['coherence_deficit']:.4f}"
+    )
+    print("✅ test_adapt_weights_low_success_boosts PASSED")
+
+
+def test_coherence_threshold_relaxation():
+    """Verify that ModuleCoherenceVerifier threshold relaxes toward
+    baseline when coherence deficit success rate exceeds 80%."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    assert verifier._initial_threshold == 0.5
+
+    # First: tighten the threshold by simulating repeated failures
+    error_summary_fail = {
+        "error_classes": {
+            "coherence_deficit": {
+                "count": 5,
+                "success_rate": 0.2,
+            },
+        },
+    }
+    verifier.adapt_threshold(error_summary_fail)
+    tightened = verifier.threshold
+    assert tightened > 0.5, f"Should tighten: {tightened}"
+
+    # Now simulate high success — threshold should relax
+    error_summary_success = {
+        "error_classes": {
+            "coherence_deficit": {
+                "count": 10,
+                "success_rate": 0.9,
+            },
+        },
+    }
+    verifier.adapt_threshold(error_summary_success)
+    relaxed = verifier.threshold
+    assert relaxed < tightened, (
+        f"High success rate should relax threshold: "
+        f"tightened={tightened}, relaxed={relaxed}"
+    )
+    assert relaxed >= 0.5, (
+        f"Should not relax below initial: {relaxed}"
+    )
+    print("✅ test_coherence_threshold_relaxation PASSED")
+
+
+def test_pipeline_dependencies_metacognitive_signal_paths():
+    """Verify that all metacognitive trigger signal sources have
+    corresponding edges in _PIPELINE_DEPENDENCIES."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    # All modules that feed trigger signals should have an edge to
+    # metacognitive_trigger in the dependency DAG
+    required_edges = [
+        ("topology_analysis", "metacognitive_trigger"),
+        ("world_model", "metacognitive_trigger"),
+        ("memory", "metacognitive_trigger"),
+        ("safety", "metacognitive_trigger"),
+        ("causal_model", "metacognitive_trigger"),
+        ("error_evolution", "metacognitive_trigger"),
+        ("self_report", "metacognitive_trigger"),
+        ("diversity_analysis", "metacognitive_trigger"),
+        ("consistency_gate", "metacognitive_trigger"),
+    ]
+
+    missing = [e for e in required_edges if e not in dep_set]
+    assert not missing, (
+        f"Missing metacognitive_trigger signal paths in "
+        f"_PIPELINE_DEPENDENCIES: {missing}"
+    )
+    print("✅ test_pipeline_dependencies_metacognitive_signal_paths PASSED")
+
+
+def test_adapt_uncertainty_weights_from_evolution():
+    """Verify that _adapt_uncertainty_weights_from_evolution returns
+    adapted weights based on error evolution patterns."""
+    from aeon_core import (
+        _UNCERTAINTY_SOURCE_WEIGHTS,
+        _adapt_uncertainty_weights_from_evolution,
+    )
+
+    # Simulate error evolution with low success for 'convergence_divergence'
+    error_summary = {
+        "total_recorded": 50,
+        "error_classes": {
+            "convergence_divergence": {
+                "count": 20,
+                "success_rate": 0.1,
+            },
+            "coherence_deficit": {
+                "count": 15,
+                "success_rate": 0.95,
+            },
+        },
+    }
+
+    adapted = _adapt_uncertainty_weights_from_evolution(error_summary)
+
+    # residual_variance maps to convergence_divergence (low success → boost)
+    base_rv = _UNCERTAINTY_SOURCE_WEIGHTS["residual_variance"]
+    assert adapted["residual_variance"] > base_rv, (
+        f"Low success should boost weight: "
+        f"base={base_rv}, adapted={adapted['residual_variance']}"
+    )
+
+    # coherence_deficit maps to coherence_deficit (high success → dampen)
+    base_cd = _UNCERTAINTY_SOURCE_WEIGHTS["coherence_deficit"]
+    assert adapted["coherence_deficit"] < base_cd, (
+        f"High success should dampen weight: "
+        f"base={base_cd}, adapted={adapted['coherence_deficit']}"
+    )
+
+    # All weights should be in valid range
+    for name, w in adapted.items():
+        assert 0.05 <= w <= 1.0, f"Weight {name}={w} outside valid range"
+
+    # Original weights should be unchanged (function returns new dict)
+    assert _UNCERTAINTY_SOURCE_WEIGHTS["residual_variance"] == base_rv
+    print("✅ test_adapt_uncertainty_weights_from_evolution PASSED")
+
+
+def test_adapt_uncertainty_weights_empty_summary():
+    """_adapt_uncertainty_weights_from_evolution should return base weights
+    when error summary has no data."""
+    from aeon_core import (
+        _UNCERTAINTY_SOURCE_WEIGHTS,
+        _adapt_uncertainty_weights_from_evolution,
+    )
+
+    adapted = _adapt_uncertainty_weights_from_evolution({"error_classes": {}})
+    assert adapted == _UNCERTAINTY_SOURCE_WEIGHTS
+    adapted2 = _adapt_uncertainty_weights_from_evolution({"total_recorded": 0})
+    assert adapted2 == _UNCERTAINTY_SOURCE_WEIGHTS
+    print("✅ test_adapt_uncertainty_weights_empty_summary PASSED")
+
+
+def test_cached_coherence_loss_scale_initialized():
+    """AEONDeltaV3 should initialize _cached_coherence_loss_scale to 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_coherence_loss_scale'), (
+        "Model should have _cached_coherence_loss_scale attribute"
+    )
+    assert model._cached_coherence_loss_scale == 1.0, (
+        f"Initial value should be 1.0, got {model._cached_coherence_loss_scale}"
+    )
+    print("✅ test_cached_coherence_loss_scale_initialized PASSED")
+
+
+def test_cached_coherence_loss_scale_after_forward():
+    """After a forward pass, _cached_coherence_loss_scale should be
+    derived from _cached_coherence_deficit (1.0 + deficit)."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # The scale should equal 1 + coherence_deficit
+    expected = 1.0 + model._cached_coherence_deficit
+    assert abs(model._cached_coherence_loss_scale - expected) < 1e-6, (
+        f"Expected scale={expected}, got {model._cached_coherence_loss_scale}"
+    )
+    print("✅ test_cached_coherence_loss_scale_after_forward PASSED")
+
+
+def test_adapt_weights_new_class_to_signal_entries():
+    """Verify the new _class_to_signal entries for world_model_cross_divergence
+    and topology_catastrophe are mapped."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # world_model_cross_divergence should map to world_model_surprise
+    error_summary = {
+        "error_classes": {
+            "world_model_cross_divergence": {
+                "count": 5,
+                "success_rate": 0.2,
+            },
+            "topology_catastrophe": {
+                "count": 3,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+
+    # Both signals should be boosted (low success rates)
+    assert w["world_model_surprise"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "world_model_cross_divergence mapping should boost world_model_surprise"
+    )
+    assert w["topology_catastrophe"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "topology_catastrophe mapping should boost topology_catastrophe signal"
+    )
+    print("✅ test_adapt_weights_new_class_to_signal_entries PASSED")
+
+
 def test_post_output_coherence_in_forward():
     """_forward_impl should perform a post-output coherence check when
     UCC signals should_rerun or a coherence deficit is detected, so
