@@ -17125,8 +17125,16 @@ class AEONDeltaV3(nn.Module):
         
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
-        diversity_results = self._compute_diversity(factors, B, device, fast)
-        topo_results = self._compute_topology(factors, iterations, B, device, fast)
+        self.provenance_tracker.record_before("diversity_analysis", C_star)
+        try:
+            diversity_results = self._compute_diversity(factors, B, device, fast)
+        finally:
+            self.provenance_tracker.record_after("diversity_analysis", C_star)
+        self.provenance_tracker.record_before("topology_analysis", C_star)
+        try:
+            topo_results = self._compute_topology(factors, iterations, B, device, fast)
+        finally:
+            self.provenance_tracker.record_after("topology_analysis", C_star)
         
         # 3a. Record diversity health — low diversity indicates thought
         # collapse, which is a critical architectural failure mode.
@@ -17189,6 +17197,16 @@ class AEONDeltaV3(nn.Module):
         safety_score, self_report = self._compute_safety(
             C_star, factors, diversity_results, topo_results, B, device
         )
+        # 5-sr-prov. Self-report provenance — record the self-report
+        # output as a provenance entry so that root-cause analysis can
+        # trace self-report-driven uncertainty escalation back to the
+        # specific honesty/confidence/consistency signals.  Since the
+        # self-reporter does not modify C_star, the delta is zero, but
+        # recording it ensures the module appears in the provenance
+        # execution order and dependency graph.  Recorded unconditionally
+        # so provenance is complete even when self_report is empty.
+        self.provenance_tracker.record_before("self_report", C_star)
+        self.provenance_tracker.record_after("self_report", C_star)
         
         # 5-sr. Self-report-driven uncertainty escalation and safety
         # adaptation — when TransparentSelfReporting produces low
@@ -18421,6 +18439,7 @@ class AEONDeltaV3(nn.Module):
         # back as a residual, closing the loop so that previously
         # learned patterns actively influence ongoing reasoning.
         if self.neurogenic_memory is not None and not fast:
+            self.provenance_tracker.record_before("neurogenic_memory", C_star)
             _neuro_retrieval_empty = 0
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
@@ -18453,12 +18472,14 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _neuro_boost)
                 uncertainty_sources["neurogenic_memory_sparse"] = _neuro_boost
                 high_uncertainty = uncertainty > 0.5
+            self.provenance_tracker.record_after("neurogenic_memory", C_star)
         
         # 5c3. Consolidating memory — store current states and retrieve
         # semantic prototypes for context enrichment.  This connects the
         # three-stage consolidation pipeline (working → episodic → semantic)
         # into the main reasoning flow.
         if self.consolidating_memory is not None and not fast:
+            self.provenance_tracker.record_before("consolidating_memory", C_star)
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
                     self.consolidating_memory.store(C_star[i].detach())
@@ -18469,6 +18490,7 @@ class AEONDeltaV3(nn.Module):
                 if semantic_items:
                     vecs = torch.stack([v for v, _s in semantic_items])
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
+            self.provenance_tracker.record_after("consolidating_memory", C_star)
         
         # 5c4. Temporal memory — store current states with importance-based
         # retention and retrieve temporally-relevant patterns.  Each stored
@@ -18477,6 +18499,7 @@ class AEONDeltaV3(nn.Module):
         # exponentially unless their importance compensates for temporal
         # distance.  High-importance states effectively "remember" longer.
         if self.temporal_memory is not None and not fast:
+            self.provenance_tracker.record_before("temporal_memory", C_star)
             _temporal_weight = self.config.temporal_memory_retrieval_weight
             _temporal_k = self.config.temporal_memory_retrieval_k
             _temporal_retrieval_empty = 0
@@ -18510,6 +18533,7 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _temporal_boost)
                 uncertainty_sources["temporal_memory_sparse"] = _temporal_boost
                 high_uncertainty = uncertainty > 0.5
+            self.provenance_tracker.record_after("temporal_memory", C_star)
         
         # Record memory subsystem health — covers hierarchical, neurogenic,
         # consolidating, and temporal memory stages.
@@ -18902,9 +18926,13 @@ class AEONDeltaV3(nn.Module):
             if causal_prog_results and 'adjacency' in causal_prog_results:
                 _adj_matrices['causal_programmatic'] = causal_prog_results['adjacency']
             if len(_adj_matrices) >= 2:
-                _dag_consensus_results = self.causal_dag_consensus.evaluate(
-                    _adj_matrices
-                )
+                self.provenance_tracker.record_before("causal_dag_consensus", C_star)
+                try:
+                    _dag_consensus_results = self.causal_dag_consensus.evaluate(
+                        _adj_matrices
+                    )
+                finally:
+                    self.provenance_tracker.record_after("causal_dag_consensus", C_star)
                 _consensus_score = _dag_consensus_results["consensus_score"]
                 if _dag_consensus_results["needs_escalation"]:
                     _dag_unc_boost = _dag_consensus_results["uncertainty_boost"]
@@ -19417,6 +19445,7 @@ class AEONDeltaV3(nn.Module):
         # C_star with cross-temporal symbolic context so that conclusions
         # are grounded in persistent symbolic memory.
         if self.temporal_knowledge_graph is not None and not fast:
+            self.provenance_tracker.record_before("temporal_knowledge_graph", C_star)
             if len(self.temporal_knowledge_graph) > 0:
                 try:
                     _tkg_retrieved = self.temporal_knowledge_graph.retrieve_relevant(
@@ -19458,6 +19487,7 @@ class AEONDeltaV3(nn.Module):
                         uncertainty = min(1.0, uncertainty + _tkg_err_boost)
                         uncertainty_sources["tkg_retrieval_error"] = _tkg_err_boost
                         high_uncertainty = uncertainty > 0.5
+            self.provenance_tracker.record_after("temporal_knowledge_graph", C_star)
 
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
