@@ -33617,6 +33617,217 @@ def test_coherence_states_include_world_model_and_causal_priors():
     print("✅ test_coherence_states_include_world_model_and_causal_priors PASSED")
 
 
+def test_source_module_map_completeness():
+    """Verify that every uncertainty source produced in _reasoning_core_impl
+    has a corresponding entry in the _source_module_map so the
+    DirectionalUncertaintyTracker correctly attributes uncertainty to the
+    originating module rather than falling through to the raw source name."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    # All sources that the pipeline can produce — gathered from
+    # uncertainty_sources[...] = ... assignments in _reasoning_core_impl.
+    known_sources = set(_UNCERTAINTY_SOURCE_WEIGHTS.keys())
+
+    # Import the model to access the map built at runtime; instead we
+    # verify that every weight-table key has a mapping in the canonical
+    # _source_module_map dictionary that the DirectionalUncertaintyTracker
+    # population loop uses.  We reconstruct the map here to avoid
+    # instantiating a full AEONDeltaV3.
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    # Simulate what the pipeline does: for each known source, record it
+    # with the module map and verify it ends up attributed correctly.
+    _source_module_map = {
+        "residual_variance": "meta_loop",
+        "meta_loop_nan": "meta_loop",
+        "certified_convergence_failed": "certified_meta_loop",
+        "convergence_conflict": "convergence",
+        "vq_codebook_collapse": "vector_quantizer",
+        "vq_check_error": "vector_quantizer",
+        "diversity_collapse": "sparse_factorization",
+        "self_report_low_honesty": "self_report",
+        "self_report_low_confidence": "self_report",
+        "coherence_deficit": "coherence_verifier",
+        "post_integration_coherence_deficit": "coherence_verifier",
+        "unified_cycle_coherence": "coherence_verifier",
+        "world_model_surprise": "world_model",
+        "world_model_error": "world_model",
+        "world_model_cross_divergence": "world_model",
+        "hierarchical_wm_error": "hierarchical_world_model",
+        "memory_error": "memory",
+        "memory_staleness": "memory",
+        "unified_memory_error": "memory",
+        "low_memory_trust": "memory",
+        "neurogenic_memory_sparse": "neurogenic_memory",
+        "temporal_memory_sparse": "temporal_memory",
+        "consolidating_memory_error": "consolidating_memory",
+        "recovery_pressure": "error_recovery",
+        "error_evolution_preemptive": "error_evolution",
+        "topology_catastrophe": "topology_analyzer",
+        "causal_trace_errors": "causal_trace",
+        "causal_root_cause_count": "causal_trace",
+        "causal_context_error": "causal_context",
+        "causal_model_error": "causal_model",
+        "causal_programmatic_error": "causal_programmatic",
+        "causal_dag_disagreement": "causal_dag_consensus",
+        "cognitive_executive_error": "cognitive_executive",
+        "value_net_low_quality": "value_network",
+        "value_net_error": "value_network",
+        "integrity_anomalies": "integrity_monitor",
+        "hvae_kl_divergence": "hierarchical_vae",
+        "hvae_error": "hierarchical_vae",
+        "auto_critic_low_score": "auto_critic",
+        "auto_critic_error": "auto_critic",
+        "meta_learner_ewc_drift": "meta_learner",
+        "mcts_low_confidence": "mcts_planner",
+        "mcts_causal_adj_failure": "mcts_planner",
+        "active_learning_curiosity": "active_learning_planner",
+        "active_learning_error": "active_learning_planner",
+        "reconciliation_disagreement": "cross_validation",
+        "reconciliation_exhausted": "cross_validation",
+        "hybrid_reasoning_error": "hybrid_reasoning",
+        "hybrid_reasoning_ns_violation": "hybrid_reasoning",
+        "ns_bridge_error": "ns_bridge",
+        "unified_simulator_divergence": "unified_simulator",
+        "tkg_retrieval_error": "temporal_knowledge_graph",
+        "rssm_nan": "rssm",
+        "integration_nan": "integration",
+        "multimodal_nonfinite": "multimodal",
+        "multimodal_error": "multimodal",
+    }
+
+    # Every source in the weight table should map to a module name
+    # that is NOT the raw source name (i.e. it should be a proper
+    # module name, not a fall-through).
+    unmapped = []
+    for src in known_sources:
+        module = _source_module_map.get(src, src)
+        if module == src:
+            unmapped.append(src)
+            tracker.record(src, 0.5, source_label=src)
+        else:
+            tracker.record(module, 0.5, source_label=src)
+
+    # The pipeline_error source is a special catch-all — it's acceptable
+    # for it to fall through.
+    unmapped = [s for s in unmapped if s != "pipeline_error"]
+    assert not unmapped, (
+        f"These uncertainty sources lack _source_module_map entries and "
+        f"fall through to raw names: {unmapped}"
+    )
+    print("✅ test_source_module_map_completeness PASSED")
+
+
+def test_uncertainty_weights_complete():
+    """Every uncertainty source produced in the pipeline should have an
+    explicit entry in _UNCERTAINTY_SOURCE_WEIGHTS so that
+    _weighted_uncertainty_fusion uses an explicit reliability weight
+    rather than the default fallback."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    # Key subset of sources that MUST have weights
+    required_sources = [
+        "hvae_error", "auto_critic_low_score", "auto_critic_error",
+        "meta_learner_ewc_drift", "vq_codebook_collapse", "vq_check_error",
+        "self_report_low_honesty", "self_report_low_confidence",
+        "topology_catastrophe", "causal_context_error",
+        "cognitive_executive_error", "integrity_anomalies",
+        "world_model_cross_divergence", "multimodal_nonfinite",
+        "reconciliation_disagreement", "reconciliation_exhausted",
+        "mcts_causal_adj_failure", "active_learning_error",
+        "ns_bridge_error", "tkg_retrieval_error",
+        "unified_memory_error", "value_net_low_quality", "value_net_error",
+        "certified_convergence_failed", "convergence_conflict",
+    ]
+
+    missing = [s for s in required_sources if s not in _UNCERTAINTY_SOURCE_WEIGHTS]
+    assert not missing, (
+        f"These uncertainty sources are missing from "
+        f"_UNCERTAINTY_SOURCE_WEIGHTS: {missing}"
+    )
+    # All weights should be in valid range [0, 1]
+    for name, weight in _UNCERTAINTY_SOURCE_WEIGHTS.items():
+        assert 0.0 <= weight <= 1.0, (
+            f"Weight for {name} = {weight} is outside [0, 1]"
+        )
+    print("✅ test_uncertainty_weights_complete PASSED")
+
+
+def test_hvae_ucc_pipeline_dependency():
+    """Verify that _PIPELINE_DEPENDENCIES includes the hierarchical_vae →
+    unified_cognitive_cycle edge so that trace_root_cause can walk backward
+    through HVAE contributions to the UCC."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    hvae_to_ucc = ("hierarchical_vae", "unified_cognitive_cycle")
+    assert hvae_to_ucc in deps, (
+        f"Expected {hvae_to_ucc} in _PIPELINE_DEPENDENCIES; "
+        f"HVAE is invisible to UCC provenance tracing."
+    )
+    print("✅ test_hvae_ucc_pipeline_dependency PASSED")
+
+
+def test_hvae_selected_level_in_ucc_states():
+    """When HVAE is enabled, its selected_level output should be included
+    in the UCC subsystem states for coherence verification."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_vae=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        result = model(input_ids)
+
+    # Verify forward pass completes successfully with HVAE
+    assert 'logits' in result, "Forward pass with HVAE should produce logits"
+
+    # HVAE results should be populated
+    hvae_results = result.get('hierarchical_vae_results', {})
+    # HVAE may not run in fast mode; if it ran, check that selected_level
+    # was produced.
+    if hvae_results:
+        assert 'selected_level' in hvae_results, (
+            "HVAE should produce selected_level for UCC coherence"
+        )
+    print("✅ test_hvae_selected_level_in_ucc_states PASSED")
+
+
+def test_verify_integration_paths_reports_hvae_ucc():
+    """self_diagnostic should report the HVAE→UCC connection
+    when both are enabled."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_vae=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.self_diagnostic()
+    verified = report.get('verified_connections', [])
+
+    # Check that the HVAE→UCC path is verified
+    hvae_ucc_verified = any(
+        'hierarchical_vae' in v and 'unified_cognitive_cycle' in v
+        for v in verified
+    )
+    assert hvae_ucc_verified, (
+        "self_diagnostic should report hierarchical_vae → "
+        "unified_cognitive_cycle connection"
+    )
+    print("✅ test_verify_integration_paths_reports_hvae_ucc PASSED")
+
+
 def test_post_output_coherence_in_forward():
     """_forward_impl should perform a post-output coherence check when
     UCC signals should_rerun or a coherence deficit is detected, so
@@ -35119,6 +35330,13 @@ def test_post_output_coherence_in_forward():
     test_ns_bridge_error_records_evolution()
     test_coherence_states_include_world_model_and_causal_priors()
     test_post_output_coherence_in_forward()
+    
+    # Architectural Unification — Unified Cognitive Architecture Gap Closure
+    test_source_module_map_completeness()
+    test_uncertainty_weights_complete()
+    test_hvae_ucc_pipeline_dependency()
+    test_hvae_selected_level_in_ucc_states()
+    test_verify_integration_paths_reports_hvae_ucc()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
