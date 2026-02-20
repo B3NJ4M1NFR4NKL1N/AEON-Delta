@@ -6886,6 +6886,74 @@ def _weighted_uncertainty_fusion(
     return max(0.0, min(1.0, fused))
 
 
+def _adapt_uncertainty_weights_from_evolution(
+    error_summary: Dict[str, Any],
+    source_to_error_class: Optional[Dict[str, str]] = None,
+) -> Dict[str, float]:
+    """Return an adapted copy of ``_UNCERTAINTY_SOURCE_WEIGHTS``.
+
+    Uncertainty sources whose associated error class has a *low* success
+    rate are boosted (they are reliable indicators of real problems),
+    while sources whose error class has a *high* success rate are
+    dampened (the system recovers well, so the signal is less critical).
+
+    The mapping from uncertainty-source name to error class is provided
+    by *source_to_error_class*; when ``None`` a built-in canonical
+    mapping is used.  The function returns a **new** dict and never
+    mutates the module-level ``_UNCERTAINTY_SOURCE_WEIGHTS``.
+
+    Args:
+        error_summary: Output of
+            ``CausalErrorEvolutionTracker.get_error_summary()``.
+        source_to_error_class: Optional mapping from uncertainty source
+            name to the error-evolution class that governs its weight.
+
+    Returns:
+        Adapted weight table suitable for passing to
+        ``_weighted_uncertainty_fusion(weight_table=...)``.
+    """
+    _default_map: Dict[str, str] = {
+        "residual_variance": "convergence_divergence",
+        "meta_loop_nan": "numerical",
+        "rssm_nan": "numerical",
+        "integration_nan": "numerical",
+        "topology_catastrophe": "topology_catastrophe",
+        "coherence_deficit": "coherence_deficit",
+        "post_integration_coherence_deficit": "post_integration_coherence_deficit",
+        "unified_cycle_coherence": "unified_cycle_rerun",
+        "world_model_surprise": "world_model_prediction_error",
+        "world_model_error": "world_model_prediction_error",
+        "world_model_cross_divergence": "world_model_cross_divergence",
+        "memory_staleness": "memory_staleness",
+        "memory_error": "memory_subsystem",
+        "causal_dag_disagreement": "causal_dag_disagreement",
+        "reconciliation_disagreement": "reconciliation_disagreement",
+        "reconciliation_exhausted": "reconciliation_disagreement",
+        "auto_critic_low_score": "auto_critic_low_quality",
+        "auto_critic_error": "auto_critic_low_quality",
+        "diversity_collapse": "diversity_collapse",
+        "recovery_pressure": "subsystem",
+        "convergence_conflict": "convergence_conflict",
+        "safety_violation": "safety_rollback",
+    }
+    mapping = source_to_error_class if source_to_error_class is not None else _default_map
+
+    error_classes = error_summary.get("error_classes", {})
+    if not error_classes:
+        return dict(_UNCERTAINTY_SOURCE_WEIGHTS)
+
+    adapted = dict(_UNCERTAINTY_SOURCE_WEIGHTS)
+    for source_name, base_weight in _UNCERTAINTY_SOURCE_WEIGHTS.items():
+        ec = mapping.get(source_name)
+        if ec is None or ec not in error_classes:
+            continue
+        success_rate = error_classes[ec].get("success_rate", 1.0)
+        # Low success → boost (max +30 %), high success → dampen (max −30 %)
+        adjustment = 0.3 * (1.0 - 2.0 * success_rate)
+        adapted[source_name] = max(0.05, min(1.0, base_weight + adjustment))
+    return adapted
+
+
 class ConvergenceMonitor:
     """
     Certifiable convergence monitor for meta-loop iterations.
@@ -13275,10 +13343,12 @@ class ModuleCoherenceVerifier(nn.Module):
     # Adaptive threshold constants
     _ADAPT_STEP: float = 0.05
     _ADAPT_CAP: float = 0.9
+    _RELAX_STEP: float = 0.02  # gradual relaxation when coherence improves
 
     def __init__(self, hidden_dim: int = 256, threshold: float = 0.5):
         super().__init__()
         self.threshold = threshold
+        self._initial_threshold = threshold  # store baseline for relaxation
         # Lightweight projection so each subsystem signal occupies
         # a comparable subspace before similarity comparison.
         self.proj = nn.Linear(hidden_dim, hidden_dim)
@@ -13330,13 +13400,16 @@ class ModuleCoherenceVerifier(nn.Module):
         }
 
     def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
-        """Raise threshold when coherence deficits recur with low success.
+        """Adapt threshold bidirectionally based on coherence error history.
 
         Inspects the ``coherence_deficit`` error class in the supplied
         error summary.  When the success rate is below 50 % and at least
         two episodes have been recorded, the threshold is tightened by a
         small step (capped at 0.9) so the system becomes stricter after
-        repeated failures.
+        repeated failures.  Conversely, when the success rate exceeds
+        80 %, the threshold is gradually relaxed toward the initial
+        baseline, preventing monotonic inflation of strictness after
+        transient coherence issues are resolved.
 
         Args:
             error_summary: Output of
@@ -13348,9 +13421,16 @@ class ModuleCoherenceVerifier(nn.Module):
             return
         if cd_stats.get("count", 0) < 2:
             return
-        if cd_stats.get("success_rate", 1.0) < 0.5:
+        success_rate = cd_stats.get("success_rate", 1.0)
+        if success_rate < 0.5:
             self.threshold = min(
                 self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
+            )
+        elif success_rate > 0.8 and self.threshold > self._initial_threshold:
+            # Gradually relax toward baseline when coherence is healthy
+            self.threshold = max(
+                self._initial_threshold,
+                self.threshold - self._RELAX_STEP,
             )
 
     @staticmethod
@@ -13597,7 +13677,12 @@ class MetaCognitiveRecursionTrigger:
         Error classes with low success rates get higher weights so that
         their associated trigger signals are more likely to fire,
         driving the system to reason deeper on historically problematic
-        failure modes.
+        failure modes.  Conversely, error classes with *high* success
+        rates dampen their signal weights, allowing the system to
+        de-prioritise well-handled failure modes and redistribute
+        metacognitive budget toward persistent problems.  This
+        bidirectional adaptation closes the feedback loop between error
+        evolution learning and metacognitive sensitivity.
 
         Args:
             error_summary: Output of ``CausalErrorEvolutionTracker.get_error_summary()``.
@@ -13657,24 +13742,43 @@ class MetaCognitiveRecursionTrigger:
             "convergence_conflict": "diverging",
             # Memory-reasoning inconsistency
             "memory_reasoning_inconsistency": "memory_staleness",
+            # World-model and memory signals — ensure prediction-error
+            # and memory-failure history can dampen or boost the
+            # corresponding trigger signals.
+            "world_model_cross_divergence": "world_model_surprise",
+            "topology_catastrophe": "topology_catastrophe",
         }
 
-        # Accumulate boost factors for each signal
-        _boosts: Dict[str, float] = {}
+        # Accumulate boost/dampen factors for each signal.
+        # Low success rates boost weight; high success rates dampen it.
+        _adjustments: Dict[str, List[float]] = {}
         for cls_name, stats in error_classes.items():
             signal = _class_to_signal.get(cls_name)
             if signal is None:
                 continue
             success_rate = stats.get("success_rate", 1.0)
-            # Low success rate → higher boost (max 2x the default weight)
-            boost = max(0.0, 1.0 - success_rate)
-            _boosts[signal] = _boosts.get(signal, 0.0) + boost
+            # Bidirectional: low success → positive adjustment (boost),
+            # high success → negative adjustment (dampen).  The neutral
+            # point is at success_rate = 0.5 where adjustment = 0.
+            # With success_rate ∈ [0, 1], result is naturally in [-1, 1].
+            adjustment = 1.0 - 2.0 * success_rate
+            if signal not in _adjustments:
+                _adjustments[signal] = []
+            _adjustments[signal].append(adjustment)
 
-        # Apply boosts and re-normalize so weights still sum to ~1.0
+        # Aggregate per-signal adjustments (mean across contributing
+        # error classes) and apply to weights.
         raw_weights = dict(self._signal_weights)
-        for signal, boost in _boosts.items():
+        for signal, adj_list in _adjustments.items():
             if signal in raw_weights:
-                raw_weights[signal] = self._DEFAULT_WEIGHT * (1.0 + boost)
+                mean_adj = sum(adj_list) / len(adj_list)
+                # Scale: full negative adjustment halves the weight,
+                # full positive adjustment doubles it.
+                scale = 1.0 + mean_adj
+                raw_weights[signal] = max(
+                    self._DEFAULT_WEIGHT * 0.1,
+                    self._DEFAULT_WEIGHT * scale,
+                )
 
         total = sum(raw_weights.values())
         if total > 0:
@@ -14952,6 +15056,22 @@ class AEONDeltaV3(nn.Module):
         # Convergence arbiter conflict adds extra iterations to the
         # deeper meta-loop for more thorough reasoning.
         ("convergence_arbiter", "deeper_meta_loop"),
+        # ── Signal paths to metacognitive trigger ──────────────────
+        # All nine metacognitive trigger inputs must be traceable
+        # through the dependency DAG so that trace_root_cause() can
+        # attribute re-reasoning decisions to their originating modules.
+        ("topology_analysis", "metacognitive_trigger"),
+        ("world_model", "metacognitive_trigger"),
+        ("memory", "metacognitive_trigger"),
+        ("safety", "metacognitive_trigger"),
+        ("causal_model", "metacognitive_trigger"),
+        # Error evolution adapts trigger weights — this edge closes the
+        # feedback loop so that historical error patterns are traceable
+        # to metacognitive sensitivity changes.
+        ("error_evolution", "metacognitive_trigger"),
+        # Self-report confidence feeds back into the trigger via
+        # uncertainty escalation; make this path explicit.
+        ("self_report", "metacognitive_trigger"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -15661,6 +15781,14 @@ class AEONDeltaV3(nn.Module):
         # iterations → more thorough reasoning.  Initialised to 1.0
         # (perfect quality) so the first pass uses neutral feedback.
         self._cached_output_quality: float = 1.0
+
+        # Coherence-based loss scale — caches a scaling factor derived from
+        # the inference coherence deficit so the trainer can read it to
+        # modulate training loss emphasis.  When coherence is poor (high
+        # deficit), this value increases above 1.0, signalling the trainer
+        # to weight the loss more heavily — closing the bidirectional
+        # inference→training feedback loop.  Initialised to 1.0 (neutral).
+        self._cached_coherence_loss_scale: float = 1.0
 
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
@@ -21791,8 +21919,20 @@ class AEONDeltaV3(nn.Module):
         # processing).  Re-run the weighted fusion to produce a properly
         # calibrated final uncertainty scalar instead of the raw additive
         # accumulation that resulted from sources added after step 8b3a.
+        # Uses adaptive weights when error evolution data is available,
+        # so the system learns which uncertainty signals are predictive.
         if uncertainty_sources:
-            uncertainty = _weighted_uncertainty_fusion(uncertainty_sources)
+            _adapted_weights = None
+            if self.error_evolution is not None:
+                _err_sum = self.error_evolution.get_error_summary()
+                if _err_sum.get("total_recorded", 0) > 0:
+                    _adapted_weights = _adapt_uncertainty_weights_from_evolution(
+                        _err_sum,
+                    )
+            uncertainty = _weighted_uncertainty_fusion(
+                uncertainty_sources,
+                weight_table=_adapted_weights,
+            )
             high_uncertainty = uncertainty > 0.5
         
         _provenance = self.provenance_tracker.compute_attribution()
@@ -22002,6 +22142,12 @@ class AEONDeltaV3(nn.Module):
                 },
             )
         
+        # 8i-scale. Derive coherence-based loss scale for the trainer.
+        # When inference coherence is poor, increase the loss scale so
+        # the trainer puts more emphasis on this batch — closing the
+        # bidirectional inference→training feedback loop.
+        self._cached_coherence_loss_scale = 1.0 + self._cached_coherence_deficit
+
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -24683,6 +24829,16 @@ class AEONTrainer:
             )
             
             total_loss = loss_dict['total_loss']
+
+        # Apply inference coherence loss scale — when the model reports
+        # high coherence deficit, increase the loss so the trainer
+        # focuses on improving coherence.  This closes the
+        # inference→training feedback loop.
+        _coherence_loss_scale = getattr(
+            self.model, '_cached_coherence_loss_scale', 1.0,
+        )
+        if _coherence_loss_scale != 1.0:
+            total_loss = total_loss * _coherence_loss_scale
         
         # Skip backward pass on NaN/Inf to prevent gradient corruption
         if torch.isnan(total_loss) or torch.isinf(total_loss):
