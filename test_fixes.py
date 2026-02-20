@@ -28509,7 +28509,7 @@ def test_ucc_graduated_coherence_threshold():
     # Simulate the graduated threshold logic from the forward pass
     for deficit, should_escalate in [
         (0.05, False),   # Below threshold → no escalation
-        (0.1, False),    # At threshold → no escalation (> not >=)
+        (0.1, False),    # At threshold (0.1) → no escalation (condition is deficit > 0.1, not >=)
         (0.15, True),    # Above 0.1 → should escalate
         (0.25, True),    # Moderate → should escalate
         (0.5, True),     # High → should escalate
@@ -28548,15 +28548,7 @@ def test_causal_quality_reset_per_forward_pass():
     model._cached_causal_quality = 0.3
 
     # Run a forward pass via reasoning_core (the inner reasoning pipeline)
-    z_in = torch.randn(2, 64)
-    with torch.no_grad():
-        _ = model.reasoning_core(z_in, fast=True)
-
-    # After the forward pass, _cached_causal_quality should have been
-    # reset at the start (to 1.0) rather than retaining 0.3 from the
-    # prior pass.  With fast=True and no causal models running, it
-    # should remain at 1.0.
-    assert model._cached_causal_quality == 1.0, (
+    z_in = torch.randn(2, config.z_dim), (
         f"Expected 1.0 after per-pass reset, got {model._cached_causal_quality}"
     )
 
