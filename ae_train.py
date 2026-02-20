@@ -3134,6 +3134,7 @@ def bridge_training_errors_to_inference(
     inference_error_evolution: Any,
     causal_trace: Any = None,
     inference_convergence_monitor: Any = None,
+    inference_integrity_monitor: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -3153,6 +3154,10 @@ def bridge_training_errors_to_inference(
     inference-time divergence/stagnation events automatically flow
     into the same error-evolution system.
 
+    When *inference_integrity_monitor* is provided, training-time
+    subsystem health degradation is recorded so that the inference
+    pipeline's metacognitive trigger can factor in training instabilities.
+
     Args:
         trainer_monitor: The training convergence monitor that has
             accumulated error episodes during training.
@@ -3162,6 +3167,8 @@ def bridge_training_errors_to_inference(
             recording bridged episodes as causal trace entries.
         inference_convergence_monitor: Optional inference-side
             ``ConvergenceMonitor`` to wire for automatic bridging.
+        inference_integrity_monitor: Optional inference-side
+            ``SystemIntegrityMonitor`` to record training health.
 
     Returns:
         Number of error episodes bridged.
@@ -3231,6 +3238,23 @@ def bridge_training_errors_to_inference(
                         _ct_err,
                     )
             bridged += 1
+
+    # Bridge training health into inference integrity monitor so that
+    # training-time subsystem degradation is visible to the inference
+    # pipeline's metacognitive trigger via integrity anomaly detection.
+    if inference_integrity_monitor is not None:
+        for cls_name, cls_stats in error_classes.items():
+            success_rate = cls_stats.get('success_rate', 1.0)
+            if success_rate < 0.5:
+                try:
+                    inference_integrity_monitor.record_health(
+                        f"training_{cls_name}",
+                        success_rate,
+                        {"source": "training_bridge", "count": cls_stats.get("count", 0)},
+                    )
+                except Exception:
+                    pass
+
     return bridged
 
 
