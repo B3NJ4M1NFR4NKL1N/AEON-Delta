@@ -13458,7 +13458,7 @@ class MetaCognitiveRecursionTrigger:
         # to full weight at 1.0, so higher deficits contribute more.
         _cd_signal = 0.0
         if _cd > _COHERENCE_DEFICIT_THRESHOLD:
-            _cd_signal = min(1.0, (_cd - _COHERENCE_DEFICIT_THRESHOLD) / max(1.0 - _COHERENCE_DEFICIT_THRESHOLD, 1e-6))
+            _cd_signal = min(1.0, (_cd - _COHERENCE_DEFICIT_THRESHOLD) / (1.0 - _COHERENCE_DEFICIT_THRESHOLD))
         signal_values = {
             "uncertainty": w["uncertainty"] * float(uncertainty > 0.5),
             "diverging": w["diverging"] * float(is_diverging),
