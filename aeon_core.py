@@ -23068,7 +23068,6 @@ class AEONDeltaV3(nn.Module):
             _has_proj = all(
                 hasattr(sub, 'factor_proj')
                 for sub in self.cognitive_executive.subsystems.values()
-                if hasattr(sub, 'factor_proj') or hasattr(sub, 'system')
             )
             if _has_proj:
                 verified.append(
@@ -23190,7 +23189,11 @@ class AEONDeltaV3(nn.Module):
 
         # Collect cached subsystem states that are available.  The
         # coherence verifier computes pairwise cosine similarity, so
-        # we need at least two states.
+        # we need at least two states.  The feedback_bus state is
+        # included so that the cross-pass feedback conditioning signal
+        # participates in coherence verification — if feedback diverges
+        # from the reasoning state, it indicates the feedback loop is
+        # not properly reinforcing the pipeline's conclusions.
         subsystem_states: Dict[str, torch.Tensor] = {}
         for attr_name, label in [
             ("_cached_meta_loop_state", "meta_loop"),
