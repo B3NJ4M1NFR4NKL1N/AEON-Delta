@@ -22026,6 +22026,76 @@ class AEONDeltaV3(nn.Module):
             'trainable_parameters': self.count_trainable_parameters(),
         }
 
+    @torch.no_grad()
+    def verify_coherence(self) -> Dict[str, Any]:
+        """Run a live coherence check across all active subsystems.
+
+        Unlike ``self_diagnostic()`` which checks *wiring* (are modules
+        connected?), this method checks *runtime consistency* by feeding
+        cached subsystem states through the ModuleCoherenceVerifier and
+        returning an actionable report.  If the coherence score falls
+        below threshold, the method triggers a meta-cognitive evaluation
+        so that the next forward pass can self-correct.
+
+        Returns:
+            Dict with ``coherence_score``, ``needs_recheck``,
+            ``weakest_pair``, ``metacognitive_triggered``, and
+            ``provenance_attribution`` keys.
+        """
+        result: Dict[str, Any] = {
+            "coherence_score": 1.0,
+            "needs_recheck": False,
+            "weakest_pair": None,
+            "metacognitive_triggered": False,
+            "provenance_attribution": {},
+        }
+
+        # --- Provenance attribution snapshot ---
+        prov = self.provenance_tracker.compute_attribution()
+        result["provenance_attribution"] = prov.get("contributions", {})
+
+        # --- Module coherence verification ---
+        if self.module_coherence is None:
+            return result
+
+        # Collect cached subsystem states that are available.  The
+        # coherence verifier computes pairwise cosine similarity, so
+        # we need at least two states.
+        subsystem_states: Dict[str, torch.Tensor] = {}
+        for attr_name, label in [
+            ("_cached_meta_loop_state", "meta_loop"),
+            ("_cached_factor_state", "factor_extraction"),
+            ("_cached_safety_state", "safety"),
+            ("_cached_memory_state", "memory"),
+        ]:
+            cached = getattr(self, attr_name, None)
+            if cached is not None and isinstance(cached, torch.Tensor):
+                subsystem_states[label] = cached
+
+        if len(subsystem_states) < 2:
+            return result
+
+        coherence_out = self.module_coherence(subsystem_states)
+
+        _raw_score = coherence_out.get("coherence_score", 1.0)
+        score = float(_raw_score.mean()) if isinstance(_raw_score, torch.Tensor) else float(_raw_score)
+        needs_recheck = bool(coherence_out.get("needs_recheck", False))
+        result["coherence_score"] = score
+        result["needs_recheck"] = needs_recheck
+        result["weakest_pair"] = coherence_out.get("_weakest_pair", None)
+
+        # --- Trigger meta-cognitive evaluation on low coherence ---
+        if needs_recheck and self.metacognitive_trigger is not None:
+            coherence_deficit = max(0.0, 1.0 - score)
+            trigger_result = self.metacognitive_trigger.evaluate(
+                coherence_deficit=coherence_deficit,
+            )
+            result["metacognitive_triggered"] = trigger_result.get(
+                "should_trigger", False
+            )
+
+        return result
+
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
 
@@ -22797,6 +22867,17 @@ class AEONTrainer:
                 metadata={"step": self.global_step, "loss": loss_val},
             )
         
+        # ===== TRAINING → MODEL META-COGNITIVE BRIDGE =====
+        # Sync the trainer's convergence verdict to the model's own
+        # convergence monitor so that inference-time UnifiedCognitiveCycle
+        # and MetaCognitiveRecursionTrigger benefit from training-time
+        # convergence dynamics.  This closes the training→inference
+        # feedback loop: training divergence/stagnation patterns become
+        # visible to inference-time meta-cognitive orchestration.
+        _model_conv_monitor = getattr(self.model, 'convergence_monitor', None)
+        if _model_conv_monitor is not None and _model_conv_monitor is not self.convergence_monitor:
+            _model_conv_monitor.check(loss_val)
+        
         # Convert to float
         metrics = {
             k: float(v.item()) if isinstance(v, torch.Tensor) else float(v)
@@ -23232,6 +23313,89 @@ class AEONTestSuite:
             self.errors.append(f"VQ codebook test failed: {e}")
             return {'vq_codebook': 0.0, 'error': str(e)}
     
+    def test_metacognitive_coherence(self) -> Dict[str, float]:
+        """Test meta-cognitive subsystem coherence.
+
+        Validates that:
+        1. The convergence monitor tracks loss history correctly.
+        2. The provenance tracker records non-empty attribution after
+           a forward pass.
+        3. The module coherence verifier (if enabled) produces a valid
+           coherence score in [0, 1].
+        4. The ``verify_coherence()`` method returns a well-formed report.
+
+        Returns:
+            Dict with ``metacognitive_coherence`` score in [0, 1].
+        """
+        try:
+            metrics = {}
+            checks_passed = 0
+            total_checks = 0
+
+            # --- 1. Convergence monitor tracks history ---
+            total_checks += 1
+            cm = self.model.convergence_monitor
+            initial_len = len(cm.history)
+            cm.check(1.0)
+            cm.check(0.9)
+            if len(cm.history) > initial_len:
+                checks_passed += 1
+                metrics['convergence_history_grows'] = 1.0
+            else:
+                metrics['convergence_history_grows'] = 0.0
+
+            # --- 2. Provenance tracker records attribution ---
+            total_checks += 1
+            pt = self.model.provenance_tracker
+            pt.record_before("test_module")
+            dummy = torch.randn(2, self.model.config.hidden_dim)
+            pt.record_after("test_module", dummy)
+            attr = pt.compute_attribution()
+            if attr.get('contributions'):
+                checks_passed += 1
+                metrics['provenance_attribution_nonempty'] = 1.0
+            else:
+                metrics['provenance_attribution_nonempty'] = 0.0
+
+            # --- 3. Module coherence verifier produces valid score ---
+            total_checks += 1
+            mc = getattr(self.model, 'module_coherence', None)
+            if mc is not None:
+                s1 = torch.randn(1, self.model.config.hidden_dim)
+                s2 = torch.randn(1, self.model.config.hidden_dim)
+                coh_out = mc({"state_a": s1, "state_b": s2})
+                _raw = coh_out.get('coherence_score', -1.0)
+                coh_score = float(_raw.mean()) if isinstance(_raw, torch.Tensor) else float(_raw)
+                if 0.0 <= coh_score <= 1.0:
+                    checks_passed += 1
+                    metrics['coherence_score_valid'] = 1.0
+                else:
+                    metrics['coherence_score_valid'] = 0.0
+            else:
+                # Module coherence disabled — count as pass (graceful)
+                checks_passed += 1
+                metrics['coherence_score_valid'] = 1.0
+
+            # --- 4. verify_coherence() returns well-formed report ---
+            total_checks += 1
+            vc = self.model.verify_coherence()
+            if (
+                'coherence_score' in vc
+                and 'needs_recheck' in vc
+                and 'provenance_attribution' in vc
+            ):
+                checks_passed += 1
+                metrics['verify_coherence_wellformed'] = 1.0
+            else:
+                metrics['verify_coherence_wellformed'] = 0.0
+
+            overall = checks_passed / max(total_checks, 1)
+            return {'metacognitive_coherence': overall, 'details': metrics}
+
+        except Exception as e:
+            self.errors.append(f"Metacognitive coherence test failed: {e}")
+            return {'metacognitive_coherence': 0.0, 'error': str(e)}
+
     def run_all_tests(self) -> Dict[str, Any]:
         """Run all tests."""
         self.errors = []
@@ -23245,6 +23409,7 @@ class AEONTestSuite:
         results['weight_tying'] = self.test_weight_tying()
         results['gradient_flow'] = self.test_gradient_flow()
         results['vq_codebook'] = self.test_vq_codebook()
+        results['metacognitive_coherence'] = self.test_metacognitive_coherence()
         
         # Summary
         logger.info("\n" + "="*60)
