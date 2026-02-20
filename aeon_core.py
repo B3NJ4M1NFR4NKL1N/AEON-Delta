@@ -5948,8 +5948,8 @@ class CognitiveFeedbackBus(nn.Module):
     # Number of scalar signal channels aggregated by the bus:
     #   safety, convergence, uncertainty, health_mean, loss_scale,
     #   surprise, coherence, causal_quality, recovery_pressure,
-    #   self_report_consistency
-    NUM_SIGNAL_CHANNELS = 10
+    #   self_report_consistency, output_quality
+    NUM_SIGNAL_CHANNELS = 11
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5975,6 +5975,7 @@ class CognitiveFeedbackBus(nn.Module):
         causal_quality: float = 1.0,
         recovery_pressure: float = 0.0,
         self_report_consistency: float = 1.0,
+        output_quality: float = 1.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -6010,6 +6011,13 @@ class CognitiveFeedbackBus(nn.Module):
                 Low values indicate the reasoning pipeline's internal
                 coherence estimate is poor, biasing the meta-loop toward
                 deeper reasoning to resolve the inconsistency.
+            output_quality: Scalar ∈ [0, 1] measuring decoder/LM output
+                quality from the previous training step (default: 1.0 =
+                perfect output).  Derived from the LM loss via sigmoid
+                mapping; low values indicate the decoder produced poor
+                outputs, biasing the meta-loop toward deeper reasoning so
+                the next forward pass generates better representations
+                for decoding.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -6061,8 +6069,11 @@ class CognitiveFeedbackBus(nn.Module):
         # Self-report consistency (already in [0, 1]; 1.0 = fully consistent)
         sr = torch.full((batch_size,), float(self_report_consistency), device=device)
         
+        # Output quality (already in [0, 1]; 1.0 = perfect decoder output)
+        oq = torch.full((batch_size,), float(output_quality), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr, oq], dim=-1)
         
         return self.projection(signals)
 
@@ -15584,6 +15595,14 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
+        # Decoder/output quality feedback — caches the LM loss from the
+        # most recent compute_loss() call so the CognitiveFeedbackBus
+        # can incorporate output quality into the next forward pass's
+        # meta-loop trajectory.  This closes the loop: poor decoder
+        # output → higher feedback magnitude → deeper meta-loop
+        # iterations → more thorough reasoning.  Initialised to 1.0
+        # (perfect quality) so the first pass uses neutral feedback.
+        self._cached_output_quality: float = 1.0
 
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
@@ -15606,6 +15625,11 @@ class AEONDeltaV3(nn.Module):
         self._cached_memory_state: Optional[torch.Tensor] = None
         self._cached_world_model_state: Optional[torch.Tensor] = None
         self._cached_causal_state: Optional[torch.Tensor] = None
+        # Decoder output embedding — cached after each forward pass so
+        # verify_coherence() can cross-validate decoder output against
+        # upstream reasoning states, closing the decoder ↔ reasoning
+        # consistency verification loop.
+        self._cached_decoder_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -17647,6 +17671,7 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 recovery_pressure=self._compute_recovery_pressure(),
                 self_report_consistency=self._cached_self_report_consistency,
+            output_quality=self._cached_output_quality,
             ).detach()
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
         # feedback to refine uncertainty for the current pass.  When recovery
@@ -18115,6 +18140,7 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
+                output_quality=self._cached_output_quality,
                 ).detach()
                 self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
@@ -19236,6 +19262,7 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
+                output_quality=self._cached_output_quality,
                 ).detach()
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions.
@@ -19367,6 +19394,10 @@ class AEONDeltaV3(nn.Module):
             # Tighten adaptive safety threshold when reconciliation
             # agreement is low — disagreeing modules warrant more
             # protective safety behavior.
+            _reconciliation_converged = (
+                reconciliation_results["reconcile_iterations"]
+                < self.config.cross_validation_max_steps
+            )
             if _agreement_val < self.config.cross_validation_agreement:
                 adaptive_safety_threshold = min(
                     adaptive_safety_threshold,
@@ -19385,6 +19416,28 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _reconcile_unc_boost)
                     uncertainty_sources["reconciliation_disagreement"] = _reconcile_unc_boost
                     high_uncertainty = uncertainty > 0.5
+                # 5d2-exhaust. Reconciliation exhaustion escalation — when
+                # the reconciler exhausted max_reconcile_steps without
+                # converging, the factor-causal disagreement is
+                # irreconcilable at this reasoning depth.  Apply an
+                # additional uncertainty boost proportional to the
+                # remaining deficit so the metacognitive trigger fires
+                # more aggressively, linking reconciliation failure
+                # directly to deeper re-reasoning.  The 2× multiplier
+                # doubles the escalation rate vs. regular disagreement
+                # because exhaustion indicates the reconciliation
+                # mechanism itself failed — a qualitatively worse signal
+                # than low agreement that converged.
+                _EXHAUST_ESCALATION_MULTIPLIER = 2.0
+                if not _reconciliation_converged:
+                    _exhaust_boost = min(
+                        1.0 - uncertainty,
+                        _RECONCILE_UNCERTAINTY_SCALE * _EXHAUST_ESCALATION_MULTIPLIER * (1.0 - _agreement_val),
+                    )
+                    if _exhaust_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _exhaust_boost)
+                        uncertainty_sources["reconciliation_exhausted"] = _exhaust_boost
+                        high_uncertainty = uncertainty > 0.5
         
         # 5d3. Causal-aware planning annotation — when both MCTS planning
         # and causal model results are available, annotate the MCTS output
@@ -20937,6 +20990,7 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
+                output_quality=self._cached_output_quality,
                 ).detach()
                 self.provenance_tracker.record_before(
                     "deeper_meta_loop", z_out,
@@ -21246,6 +21300,7 @@ class AEONDeltaV3(nn.Module):
                         causal_quality=self._cached_causal_quality,
                         recovery_pressure=self._compute_recovery_pressure(),
                         self_report_consistency=self._cached_self_report_consistency,
+                    output_quality=self._cached_output_quality,
                     ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
@@ -21648,6 +21703,7 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 recovery_pressure=self._compute_recovery_pressure(),
                 self_report_consistency=self._cached_self_report_consistency,
+            output_quality=self._cached_output_quality,
             ).detach()
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
@@ -21759,7 +21815,12 @@ class AEONDeltaV3(nn.Module):
                 * max(0.0, 1.0 - self._cached_coherence_deficit)
             )),
         }
-        
+
+        # Cache decoder output embedding for cross-module coherence
+        # verification in verify_coherence(), closing the decoder ↔
+        # reasoning consistency loop.
+        self._cached_decoder_state = z_out.detach()
+
         return z_out, outputs
     
     def forward(
@@ -22317,7 +22378,31 @@ class AEONDeltaV3(nn.Module):
         # condition the next forward pass's meta-loop on training loss
         # dynamics, closing the training → inference feedback loop.
         self._last_convergence_loss_scale = _convergence_loss_scale
-        
+
+        # Cache output quality (inverse of LM loss, clamped to [0, 1])
+        # so the CognitiveFeedbackBus can feed decoder output quality
+        # into the next forward pass's meta-loop.  High LM loss → low
+        # quality → higher feedback magnitude → deeper reasoning.
+        # Sigmoid mapping: σ(scale × (loss − center)), where center is
+        # the typical mid-training LM loss (≈2.0 for most vocabularies)
+        # and scale controls transition steepness.  Losses above center
+        # degrade quality below 0.5; the fallback (5.0) represents a
+        # very poor loss used when the actual loss is non-finite.
+        _OUTPUT_QUALITY_SIGMOID_SCALE = 0.5    # Transition steepness
+        _OUTPUT_QUALITY_SIGMOID_CENTER = 2.0   # Typical mid-training LM loss
+        _OUTPUT_QUALITY_FALLBACK_LOSS = 5.0    # Fallback for non-finite loss
+        _lm_loss_val = (
+            float(lm_loss.detach().item())
+            if torch.isfinite(lm_loss)
+            else _OUTPUT_QUALITY_FALLBACK_LOSS
+        )
+        self._cached_output_quality = 1.0 / (
+            1.0 + math.exp(
+                _OUTPUT_QUALITY_SIGMOID_SCALE
+                * (_lm_loss_val - _OUTPUT_QUALITY_SIGMOID_CENTER)
+            )
+        )
+
         # Record convergence-adaptive loss scaling in causal trace so
         # that training dynamics are traceable alongside inference.
         if self.causal_trace is not None and _convergence_loss_scale != 1.0:
@@ -23205,6 +23290,26 @@ class AEONDeltaV3(nn.Module):
                 'post-integration coherence checks'
             )
 
+        # 17d. Decoder output quality → feedback bus cross-pass loop —
+        # verify that _cached_output_quality is wired from compute_loss()
+        # into the feedback bus so decoder performance feeds back into
+        # meta-loop depth for the next forward pass.
+        if self.feedback_bus is not None:
+            verified.append(
+                'compute_loss → _cached_output_quality → feedback_bus '
+                '→ meta_loop (decoder quality cross-pass feedback)'
+            )
+
+        # 17e. Decoder state in coherence verification — cached decoder
+        # output participates in pairwise coherence checks so that
+        # reasoning-decoder consistency is verified alongside upstream
+        # module coherence.
+        if self.module_coherence is not None:
+            verified.append(
+                'module_coherence ← decoder state included in '
+                'coherence verification'
+            )
+
         # Call verify_coherence() to include live runtime consistency
         # results alongside the static wiring checks, so that the
         # diagnostic report captures both structural and runtime health.
@@ -23373,6 +23478,22 @@ class AEONDeltaV3(nn.Module):
             'audit_pattern_insights': self.audit_log.get_pattern_insights(),
             'total_parameters': self.count_parameters(),
             'trainable_parameters': self.count_trainable_parameters(),
+            # Provenance attribution from the most recent forward pass,
+            # exposing which modules dominated the output so external
+            # consumers can trace conclusions back to root causes.
+            'provenance_attribution': (
+                self.provenance_tracker.compute_attribution()
+                .get('contributions', {})
+            ),
+            # Composite output reliability from the last forward pass,
+            # synthesized from uncertainty, convergence, coherence, and
+            # auto-critic quality.  Exposes the system's self-assessed
+            # trust level for downstream decision gating.
+            'output_reliability': max(0.0, min(1.0,
+                (1.0 - getattr(self, '_cached_coherence_deficit', 0.0))
+                * (1.0 - getattr(self, '_cached_surprise', 0.0))
+                * getattr(self, '_cached_output_quality', 1.0)
+            )),
         }
 
     @torch.no_grad()
@@ -23456,6 +23577,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_world_model_state", "world_model"),
             ("_cached_causal_state", "causal_model"),
             ("_cached_feedback", "feedback_bus"),
+            ("_cached_decoder_state", "decoder"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
