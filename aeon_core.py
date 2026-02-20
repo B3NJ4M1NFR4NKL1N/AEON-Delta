@@ -14884,7 +14884,7 @@ class AEONDeltaV3(nn.Module):
         ("hybrid_reasoning", "hierarchical_vae"),
         ("ns_bridge", "hierarchical_vae"),
         ("hierarchical_vae", "causal_context"),
-        # HVAE selected-level feeds into the unified cognitive cycle so
+        # HVAE selected_level feeds into the unified cognitive cycle so
         # the coherence verifier can cross-validate abstraction against
         # the integrated output.
         ("hierarchical_vae", "unified_cognitive_cycle"),
@@ -23249,7 +23249,7 @@ class AEONDeltaV3(nn.Module):
                     ),
                     'remediation': (
                         'Enable enable_unified_cognitive_cycle so HVAE '
-                        'selected-level feeds into coherence verification'
+                        'selected_level feeds into coherence verification'
                     ),
                 })
 
