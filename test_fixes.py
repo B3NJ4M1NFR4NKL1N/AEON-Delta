@@ -33023,8 +33023,8 @@ def test_compute_loss_caches_output_quality():
     model = AEONDeltaV3(config)
     model.train()
 
-    # Before compute_loss, default should be 0.0
-    assert model._cached_output_quality == 0.0
+    # Before compute_loss, default should be 1.0 (perfect quality)
+    assert model._cached_output_quality == 1.0
 
     # Run a forward pass to get outputs
     x = torch.randint(1, 128, (2, 16))

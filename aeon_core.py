@@ -15600,9 +15600,9 @@ class AEONDeltaV3(nn.Module):
         # can incorporate output quality into the next forward pass's
         # meta-loop trajectory.  This closes the loop: poor decoder
         # output → higher feedback magnitude → deeper meta-loop
-        # iterations → more thorough reasoning.  Initialised to 0.0
+        # iterations → more thorough reasoning.  Initialised to 1.0
         # (perfect quality) so the first pass uses neutral feedback.
-        self._cached_output_quality: float = 0.0
+        self._cached_output_quality: float = 1.0
 
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
@@ -19423,11 +19423,16 @@ class AEONDeltaV3(nn.Module):
                 # additional uncertainty boost proportional to the
                 # remaining deficit so the metacognitive trigger fires
                 # more aggressively, linking reconciliation failure
-                # directly to deeper re-reasoning.
+                # directly to deeper re-reasoning.  The 2× multiplier
+                # doubles the escalation rate vs. regular disagreement
+                # because exhaustion indicates the reconciliation
+                # mechanism itself failed — a qualitatively worse signal
+                # than low agreement that converged.
+                _EXHAUST_ESCALATION_MULTIPLIER = 2.0
                 if not _reconciliation_converged:
                     _exhaust_boost = min(
                         1.0 - uncertainty,
-                        _RECONCILE_UNCERTAINTY_SCALE * 2.0 * (1.0 - _agreement_val),
+                        _RECONCILE_UNCERTAINTY_SCALE * _EXHAUST_ESCALATION_MULTIPLIER * (1.0 - _agreement_val),
                     )
                     if _exhaust_boost > 0:
                         uncertainty = min(1.0, uncertainty + _exhaust_boost)
@@ -22378,10 +22383,25 @@ class AEONDeltaV3(nn.Module):
         # so the CognitiveFeedbackBus can feed decoder output quality
         # into the next forward pass's meta-loop.  High LM loss → low
         # quality → higher feedback magnitude → deeper reasoning.
-        # Sigmoid mapping with center at 2.0 (typical mid-training LM
-        # loss); losses above this degrade quality below 0.5.
-        _lm_loss_val = float(lm_loss.detach().item()) if torch.isfinite(lm_loss) else 5.0
-        self._cached_output_quality = 1.0 / (1.0 + math.exp(0.5 * (_lm_loss_val - 2.0)))
+        # Sigmoid mapping: σ(scale × (loss − center)), where center is
+        # the typical mid-training LM loss (≈2.0 for most vocabularies)
+        # and scale controls transition steepness.  Losses above center
+        # degrade quality below 0.5; the fallback (5.0) represents a
+        # very poor loss used when the actual loss is non-finite.
+        _OUTPUT_QUALITY_SIGMOID_SCALE = 0.5    # Transition steepness
+        _OUTPUT_QUALITY_SIGMOID_CENTER = 2.0   # Typical mid-training LM loss
+        _OUTPUT_QUALITY_FALLBACK_LOSS = 5.0    # Fallback for non-finite loss
+        _lm_loss_val = (
+            float(lm_loss.detach().item())
+            if torch.isfinite(lm_loss)
+            else _OUTPUT_QUALITY_FALLBACK_LOSS
+        )
+        self._cached_output_quality = 1.0 / (
+            1.0 + math.exp(
+                _OUTPUT_QUALITY_SIGMOID_SCALE
+                * (_lm_loss_val - _OUTPUT_QUALITY_SIGMOID_CENTER)
+            )
+        )
 
         # Record convergence-adaptive loss scaling in causal trace so
         # that training dynamics are traceable alongside inference.
