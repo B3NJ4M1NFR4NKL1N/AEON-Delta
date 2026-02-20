@@ -3035,6 +3035,13 @@ class AEONConfig:
     # triggers meta-cognitive cycles, and all conclusions are traceable.
     enable_full_coherence: bool = False
 
+    # ===== MEMORY STALENESS UNCERTAINTY =====
+    # Maximum scale factor for memory-staleness-driven uncertainty boost.
+    # The actual boost is proportional to the empty retrieval ratio,
+    # e.g. scale * empty_ratio, so near-total memory failure escalates
+    # more than marginal staleness.
+    memory_staleness_uncertainty_scale: float = 0.15
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -13391,12 +13398,17 @@ class MetaCognitiveRecursionTrigger:
         if not error_classes:
             return
 
-        # Map error classes to the trigger signals they most relate to
+        # Map error classes to the trigger signals they most relate to.
+        # Every error class recorded via record_episode() should appear
+        # here so that its success/failure history feeds back into the
+        # trigger weights, closing the loop between error evolution
+        # learning and metacognitive sensitivity.
         _class_to_signal = {
             "convergence_divergence": "diverging",
             "coherence_deficit": "coherence_deficit",
             "post_integration_coherence_deficit": "coherence_deficit",
             "post_auto_critic_coherence_deficit": "coherence_deficit",
+            "post_rerun_coherence_deficit": "coherence_deficit",
             "metacognitive_rerun": "uncertainty",
             "numerical": "uncertainty",
             "safety_rollback": "safety_violation",
@@ -13409,6 +13421,20 @@ class MetaCognitiveRecursionTrigger:
             "convergence_success": "uncertainty",
             "certified_convergence_failure": "uncertainty",
             "safety_critic_revision": "safety_violation",
+            # Previously unmapped error classes — adding them ensures
+            # that all recorded failure modes influence trigger weights.
+            "vq_codebook_collapse": "uncertainty",
+            "diversity_collapse": "uncertainty",
+            "memory_staleness": "memory_staleness",
+            "memory_subsystem": "memory_staleness",
+            "critical_uncertainty": "uncertainty",
+            "auto_critic_low_quality": "uncertainty",
+            "ns_violation_auto_critic": "safety_violation",
+            "cross_validation_low_agreement": "coherence_deficit",
+            "unified_cycle_rerun": "uncertainty",
+            "post_integration_metacognitive": "uncertainty",
+            "high_output_uncertainty": "uncertainty",
+            "subsystem": "uncertainty",
         }
 
         # Accumulate boost factors for each signal
@@ -16208,7 +16234,9 @@ class AEONDeltaV3(nn.Module):
                             error_class="vq_codebook_collapse",
                             strategy_used="uncertainty_escalation",
                             success=False,
-                            metadata={"usage_rate": _vq_utilization},
+                            metadata=self._provenance_enriched_metadata(
+                                {"usage_rate": _vq_utilization},
+                            ),
                         )
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
@@ -16638,6 +16666,16 @@ class AEONDeltaV3(nn.Module):
                     error_class="coherence_deficit",
                     strategy_used="metacognitive_recursion",
                     success=False,
+                )
+            # 5a-iii-adapt. Adapt coherence threshold from error evolution
+            # history so repeated coherence failures make the verifier
+            # stricter within the main forward pass, not only inside the
+            # UnifiedCognitiveCycle.  This closes the gap where pre-UCC
+            # coherence checks used a stale threshold that ignored
+            # historical failure patterns.
+            if self.error_evolution is not None:
+                self.module_coherence.adapt_threshold(
+                    self.error_evolution.get_error_summary()
                 )
             self.audit_log.record("module_coherence", "verified", {
                 "coherence_score": float(coherence_results["coherence_score"].mean().item()),
@@ -17417,8 +17455,14 @@ class AEONDeltaV3(nn.Module):
         # deferring to the next pass's metacognitive trigger.  This closes
         # the feedback loop so that memory gaps trigger corrective depth
         # in the same reasoning cycle that discovered them.
-        _STALENESS_UNCERTAINTY_BOOST = 0.15
+        # The boost is proportional to the empty retrieval ratio so that
+        # near-total memory failure (100 % empty) escalates more than
+        # marginal staleness (e.g. 55 % empty), replacing the previous
+        # fixed boost that treated all degrees of staleness identically.
+        _STALENESS_UNCERTAINTY_SCALE = self.config.memory_staleness_uncertainty_scale
         if self._memory_stale and not fast:
+            _empty_ratio = _memory_empty_count / max(B, 1)
+            _STALENESS_UNCERTAINTY_BOOST = _STALENESS_UNCERTAINTY_SCALE * _empty_ratio
             # 5c1b-0. Active memory consolidation — when staleness is
             # detected, explicitly trigger consolidation to promote
             # important items from the replay buffer into episodic memory.
@@ -17432,7 +17476,7 @@ class AEONDeltaV3(nn.Module):
                     if _consolidated_count > 0:
                         self.audit_log.record("memory", "staleness_consolidation", {
                             "consolidated_count": _consolidated_count,
-                            "empty_ratio": _memory_empty_count / max(B, 1),
+                            "empty_ratio": _empty_ratio,
                         })
                 except Exception as _consol_err:
                     logger.warning(f"HierarchicalMemory consolidation during staleness failed: {_consol_err}")
@@ -17452,7 +17496,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="memory_staleness",
                     strategy_used="uncertainty_escalation",
                     success=True,
-                    metadata={"empty_ratio": _memory_empty_count / max(B, 1)},
+                    metadata=self._provenance_enriched_metadata(
+                        {"empty_ratio": _empty_ratio},
+                    ),
                 )
         
         # 5c2. Neurogenic memory — consolidate important states and

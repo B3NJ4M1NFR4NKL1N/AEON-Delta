@@ -2589,6 +2589,16 @@ def bridge_training_errors_to_inference(
         count = cls_stats.get('count', 0)
         success_rate = cls_stats.get('success_rate', 1.0)
         if count > 0 and success_rate < 1.0:
+            # Compute a severity indicator from loss magnitude so the
+            # inference-side metacognitive trigger can distinguish mild
+            # training hiccups from catastrophic divergence.  Severity
+            # is clamped to [0, 1] with log-scaling to avoid outlier
+            # dominance.
+            _max_loss = cls_stats.get('max_loss_magnitude')
+            _mean_loss = cls_stats.get('mean_loss_magnitude')
+            _severity = 0.0
+            if _max_loss is not None and _max_loss > 0:
+                _severity = min(1.0, math.log1p(_max_loss) / 10.0)
             inference_error_evolution.record_episode(
                 error_class=f"training_{cls_name}",
                 strategy_used=cls_stats.get('best_strategy', 'unknown'),
@@ -2597,8 +2607,9 @@ def bridge_training_errors_to_inference(
                     'source': 'training_bridge',
                     'training_count': count,
                     'training_success_rate': success_rate,
-                    'max_loss_magnitude': cls_stats.get('max_loss_magnitude'),
-                    'mean_loss_magnitude': cls_stats.get('mean_loss_magnitude'),
+                    'max_loss_magnitude': _max_loss,
+                    'mean_loss_magnitude': _mean_loss,
+                    'severity': _severity,
                 },
             )
             # Record bridge event in causal trace so inference-time
