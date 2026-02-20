@@ -13391,6 +13391,7 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: int = 10,
         surprise_threshold: float = 0.5,
         causal_quality_threshold: float = 0.3,
+        high_uncertainty_override: float = 0.7,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
@@ -13405,6 +13406,9 @@ class MetaCognitiveRecursionTrigger:
         # Low causal quality (high DAG loss) indicates structural issues
         # in the causal model that deeper reasoning may resolve.
         self._causal_quality_threshold = max(0.0, causal_quality_threshold)
+        # Uncertainty level above which a meta-cognitive cycle is forced
+        # regardless of the composite trigger score.
+        self._high_uncertainty_override = max(0.0, high_uncertainty_override)
         # Adaptive signal weights — initialized uniformly; can be
         # adjusted by adapt_weights_from_evolution().
         self._signal_weights: Dict[str, float] = {
@@ -13593,14 +13597,13 @@ class MetaCognitiveRecursionTrigger:
         should_trigger = trigger_score >= self.trigger_threshold and can_recurse
 
         # High-uncertainty override: when uncertainty alone is
-        # sufficiently high (> 0.7), force a meta-cognitive cycle even
-        # if the composite score doesn't reach trigger_threshold.
-        # This implements the architectural requirement that *any*
+        # sufficiently high, force a meta-cognitive cycle even if the
+        # composite score doesn't reach trigger_threshold.  This
+        # implements the architectural requirement that *any*
         # significant uncertainty triggers meta-cognitive re-reasoning,
         # not just composite multi-signal events.
-        _HIGH_UNCERTAINTY_OVERRIDE = 0.7
         if (not should_trigger
-                and uncertainty > _HIGH_UNCERTAINTY_OVERRIDE
+                and uncertainty > self._high_uncertainty_override
                 and can_recurse):
             should_trigger = True
             if "uncertainty" not in triggers_active:
@@ -16298,7 +16301,7 @@ class AEONDeltaV3(nn.Module):
         if high_uncertainty and not fast:
             logger.debug(
                 f"High uncertainty detected ({uncertainty:.3f}); "
-                "meta-cognitive cycle will be triggered downstream"
+                "meta-cognitive cycle will activate via metacognitive trigger"
             )
             self.audit_log.record("uncertainty", "high", {
                 "uncertainty": uncertainty,

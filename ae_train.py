@@ -2241,7 +2241,8 @@ class ContextualRSSMTrainer:
                 ).item()
                 if not math.isfinite(_decoder_cross_loss):
                     _decoder_valid = False
-            except Exception:
+            except Exception as _decoder_err:
+                logger.debug("Decoder cross-validation failed: %s", _decoder_err)
                 _decoder_cross_loss = float('nan')
                 _decoder_valid = False
 
@@ -3288,8 +3289,8 @@ def main(
         trainer_B._provenance.record(
             "phase_transition",
             {"phase": "A_to_B",
-             "phaseA_best_loss": best_loss_A,
-             "phaseA_bridged_errors": _phaseA_bridged,
+             "phase_a_best_loss": best_loss_A,
+             "phase_a_bridged_errors": _phaseA_bridged,
              "z_sequences_count": len(z_sequences),
              "total_pairs": sum(
                  max(0, seq.size(0) - config.context_window)
