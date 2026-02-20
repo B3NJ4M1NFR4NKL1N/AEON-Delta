@@ -15380,11 +15380,12 @@ class AEONDeltaV3(nn.Module):
                         super().__init__()
                         self.system = system
                         self.cfg = cfg
+                        self.factor_proj = nn.Linear(cfg.hidden_dim, cfg.num_pillars)
                     def forward(self, state):
                         B = state.shape[0]
                         device = state.device
                         action_emb = torch.zeros(B, self.cfg.action_dim, device=device)
-                        factors = torch.zeros(B, self.cfg.num_pillars, device=device)
+                        factors = torch.sigmoid(self.factor_proj(state))
                         div = {'diversity': torch.zeros(B, device=device)}
                         topo = {'potential': torch.zeros(B, device=device)}
                         score = self.system(action_emb, state, factors, div, topo)
@@ -15396,8 +15397,9 @@ class AEONDeltaV3(nn.Module):
                         super().__init__()
                         self.metric = metric
                         self.cfg = cfg
+                        self.factor_proj = nn.Linear(cfg.hidden_dim, cfg.num_pillars)
                     def forward(self, state):
-                        factors = torch.zeros(state.shape[0], self.cfg.num_pillars, device=state.device)
+                        factors = torch.sigmoid(self.factor_proj(state))
                         result = self.metric(factors)
                         return state * result['diversity'].unsqueeze(-1).clamp(min=0.01)
                 _exec_subsystems['diversity'] = _DiversityAdapter(self.diversity_metric, config)
@@ -15407,8 +15409,9 @@ class AEONDeltaV3(nn.Module):
                         super().__init__()
                         self.analyzer = analyzer
                         self.cfg = cfg
+                        self.factor_proj = nn.Linear(cfg.hidden_dim, cfg.num_pillars)
                     def forward(self, state):
-                        factors = torch.zeros(state.shape[0], self.cfg.num_pillars, device=state.device)
+                        factors = torch.sigmoid(self.factor_proj(state))
                         iterations = torch.ones(state.shape[0], device=state.device)
                         result = self.analyzer(factors, iterations)
                         safe_mask = ~result['catastrophes']
@@ -18826,6 +18829,12 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
             self.provenance_tracker.record_after("notears_causal", C_star)
+            # Populate _cached_causal_state when NOTEARS is the only
+            # causal model active so that verify_coherence() can include
+            # causal state in cross-module coherence checks even when
+            # NeuralCausalModel is disabled.
+            if self._cached_causal_state is None:
+                self._cached_causal_state = C_star.detach()
         
         # 5d1c2. CausalProgrammaticModel — Pearl's structural causal model
         # with explicit structural equations and do-calculus support.
@@ -18881,6 +18890,11 @@ class AEONDeltaV3(nn.Module):
                             "num_vars": _prog_vars.shape[-1],
                         },
                     )
+                # Populate _cached_causal_state when CausalProgrammaticModel
+                # is the only causal model that ran, so verify_coherence()
+                # includes causal reasoning in cross-module coherence checks.
+                if self._cached_causal_state is None:
+                    self._cached_causal_state = C_star.detach()
             except Exception as prog_err:
                 _causal_healthy = False
                 logger.warning(f"CausalProgrammaticModel error (non-fatal): {prog_err}")
@@ -23048,6 +23062,33 @@ class AEONDeltaV3(nn.Module):
                 'training_bridge → bidirectional feedback loop ready'
             )
 
+        # 21. CognitiveExecutiveFunction adapter fidelity — verify that
+        # adapters derive factors from state rather than using zero tensors.
+        if self.cognitive_executive is not None:
+            _has_proj = all(
+                hasattr(sub, 'factor_proj')
+                for sub in self.cognitive_executive.subsystems.values()
+                if hasattr(sub, 'factor_proj') or hasattr(sub, 'system')
+            )
+            if _has_proj:
+                verified.append(
+                    'cognitive_executive → adapters derive factors from '
+                    'state via learned projection'
+                )
+            else:
+                gaps.append({
+                    'component': 'cognitive_executive_adapters',
+                    'gap': (
+                        'CognitiveExecutiveFunction adapters use zero '
+                        'tensors for factors — subsystems receive no '
+                        'signal from the reasoning state'
+                    ),
+                    'remediation': (
+                        'Add factor_proj (Linear) to each adapter so '
+                        'factors are derived from the state tensor'
+                    ),
+                })
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -23158,6 +23199,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_memory_state", "memory"),
             ("_cached_world_model_state", "world_model"),
             ("_cached_causal_state", "causal_model"),
+            ("_cached_feedback", "feedback_bus"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
@@ -23179,7 +23221,9 @@ class AEONDeltaV3(nn.Module):
         needs_recheck = bool(coherence_out.get("needs_recheck", False))
         result["coherence_score"] = score
         result["needs_recheck"] = needs_recheck or result.get("needs_recheck", False)
-        result["weakest_pair"] = coherence_out.get("_weakest_pair", None)
+        _pairwise_data = coherence_out.get("pairwise", {})
+        _weakest = self.module_coherence.get_weakest_pair(_pairwise_data)
+        result["weakest_pair"] = _weakest
 
         # --- Trigger meta-cognitive evaluation on low coherence ---
         # Incorporates integrity_health degradation into the coherence
