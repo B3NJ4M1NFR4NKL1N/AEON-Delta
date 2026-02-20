@@ -19351,6 +19351,9 @@ class AEONDeltaV3(nn.Module):
             if (_dag_consensus_results
                     and _dag_consensus_results.get("consensus_score") is not None):
                 _consensus_score_val = _dag_consensus_results["consensus_score"]
+                # C_star is the converged thought state from the meta-loop;
+                # scaling it by consensus produces a divergent signal when
+                # causal models disagree.
                 _ucc_states["causal_dag_consensus"] = (
                     C_star * _consensus_score_val
                 )
