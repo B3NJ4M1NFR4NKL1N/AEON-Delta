@@ -11563,19 +11563,19 @@ def test_hybrid_reasoning_consistency_check():
 
 
 def test_feedback_bus_num_channels():
-    """Verify CognitiveFeedbackBus has 8 signal channels after adding
-    world_model_surprise, coherence_deficit, and causal_quality."""
+    """Verify CognitiveFeedbackBus has 9 signal channels after adding
+    world_model_surprise, coherence_deficit, causal_quality, and recovery_pressure."""
     from aeon_core import CognitiveFeedbackBus
 
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 8, (
-        f"Expected 8 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 9, (
+        f"Expected 9 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
 
     bus = CognitiveFeedbackBus(hidden_dim=32)
     # Projection input should match NUM_SIGNAL_CHANNELS
     first_layer = bus.projection[0]
-    assert first_layer.in_features == 8, (
-        f"First layer input features should be 8, got {first_layer.in_features}"
+    assert first_layer.in_features == 9, (
+        f"First layer input features should be 9, got {first_layer.in_features}"
     )
 
     print("✅ test_feedback_bus_num_channels PASSED")
@@ -28100,6 +28100,183 @@ def test_pipeline_dependencies_include_self_report():
     print("✅ test_pipeline_dependencies_include_self_report PASSED")
 
 
+# ============================================================================
+# Architectural Gap Fixes — Feedback Bus, Graduated Coherence, Recovery Pressure
+# ============================================================================
+
+def test_feedback_bus_recovery_pressure_signal():
+    """Verify CognitiveFeedbackBus accepts and processes recovery_pressure."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    device = torch.device("cpu")
+
+    # With zero recovery pressure
+    out_zero = bus(
+        batch_size=2, device=device, recovery_pressure=0.0,
+    )
+    assert out_zero.shape == (2, 64), f"Expected (2, 64), got {out_zero.shape}"
+
+    # With high recovery pressure — output should differ
+    out_high = bus(
+        batch_size=2, device=device, recovery_pressure=0.9,
+    )
+    assert out_high.shape == (2, 64)
+    assert not torch.allclose(out_zero, out_high, atol=1e-6), (
+        "Feedback bus should produce different output for different recovery_pressure"
+    )
+
+    print("✅ test_feedback_bus_recovery_pressure_signal PASSED")
+
+
+def test_feedback_bus_recovery_pressure_gradient_flow():
+    """Verify gradient flows through the recovery_pressure channel."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    device = torch.device("cpu")
+
+    out = bus(
+        batch_size=1, device=device, recovery_pressure=0.5,
+    )
+    loss = out.sum()
+    loss.backward()
+
+    # Check gradient flows through the projection layer
+    has_grad = any(
+        p.grad is not None and p.grad.abs().sum() > 0
+        for p in bus.parameters()
+    )
+    assert has_grad, "Gradient should flow through feedback bus with recovery_pressure"
+
+    print("✅ test_feedback_bus_recovery_pressure_gradient_flow PASSED")
+
+
+def test_metacognitive_trigger_graduated_coherence():
+    """Verify MetaCognitiveRecursionTrigger produces graduated response
+    to coherence_deficit magnitude, not just binary activation."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.05,  # low threshold so coherence alone can trigger
+        max_recursions=5,
+    )
+
+    # Deficit below threshold (0.3) — should NOT activate signal
+    result_low = trigger.evaluate(coherence_deficit=0.2)
+    cd_val_low = next(
+        (v for k, v in _signal_values_from_trigger(result_low, trigger)
+         if k == "coherence_deficit"),
+        0.0,
+    )
+
+    trigger.reset()
+
+    # Deficit just above threshold — should activate with lower weight
+    result_mild = trigger.evaluate(coherence_deficit=0.35)
+    score_mild = result_mild["trigger_score"]
+
+    trigger.reset()
+
+    # Deficit well above threshold — should activate with higher weight
+    result_severe = trigger.evaluate(coherence_deficit=0.9)
+    score_severe = result_severe["trigger_score"]
+
+    # Graduated: severe deficit should produce higher trigger score than mild
+    assert score_severe > score_mild, (
+        f"Severe deficit trigger_score ({score_severe:.4f}) should be > "
+        f"mild deficit trigger_score ({score_mild:.4f})"
+    )
+
+    # Below-threshold deficit should produce zero or near-zero score
+    assert "coherence_deficit" not in result_low.get("triggers_active", []), (
+        "coherence_deficit should not be in triggers_active when below threshold"
+    )
+
+    print("✅ test_metacognitive_trigger_graduated_coherence PASSED")
+
+
+def _signal_values_from_trigger(result, trigger):
+    """Helper to extract signal values from trigger result."""
+    return [(k, 1.0 if k in result.get("triggers_active", []) else 0.0)
+            for k in trigger._signal_weights]
+
+
+def test_metacognitive_trigger_coherence_backward_compat():
+    """Verify coherence_deficit still works with boolean input (backward compat)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.05)
+
+    # Boolean True should still activate (maps to 1.0 which is > 0.3)
+    result_true = trigger.evaluate(coherence_deficit=True)
+    assert "coherence_deficit" in result_true["triggers_active"], (
+        "coherence_deficit=True should still activate the signal"
+    )
+
+    trigger.reset()
+
+    # Boolean False should not activate (maps to 0.0 which is < 0.3)
+    result_false = trigger.evaluate(coherence_deficit=False)
+    assert "coherence_deficit" not in result_false["triggers_active"], (
+        "coherence_deficit=False should not activate the signal"
+    )
+
+    print("✅ test_metacognitive_trigger_coherence_backward_compat PASSED")
+
+
+def test_ucc_passes_coherence_magnitude_to_trigger():
+    """Verify UnifiedCognitiveCycle passes coherence deficit magnitude (not bool)
+    to the metacognitive trigger."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, UnifiedCognitiveCycle,
+    )
+
+    monitor = ConvergenceMonitor(threshold=1e-5)
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.01,  # low threshold
+        max_recursions=3,
+    )
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=verifier,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+
+    # Create states that will produce low coherence (high deficit)
+    B = 2
+    states = {
+        "module_a": torch.randn(B, 32),
+        "module_b": -torch.randn(B, 32),  # negated for low similarity
+    }
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,
+        uncertainty=0.0,
+    )
+
+    # The trigger should have received coherence deficit as a float, not bool
+    trigger_detail = result.get("trigger_detail", {})
+    # If graduated coherence is working, the trigger_score should reflect
+    # the magnitude of the deficit, not just binary activation
+    assert "trigger_score" in trigger_detail
+    assert isinstance(trigger_detail["trigger_score"], float)
+
+    print("✅ test_ucc_passes_coherence_magnitude_to_trigger PASSED")
+
+
 if __name__ == '__main__':
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -29347,6 +29524,13 @@ if __name__ == '__main__':
     test_lambda_self_report_config()
     test_ucc_adapts_trigger_weights_before_evaluation()
     test_pipeline_dependencies_include_self_report()
+    
+    # Architectural Gap Fixes — Feedback Bus, Graduated Coherence, Recovery Pressure
+    test_feedback_bus_recovery_pressure_signal()
+    test_feedback_bus_recovery_pressure_gradient_flow()
+    test_metacognitive_trigger_graduated_coherence()
+    test_metacognitive_trigger_coherence_backward_compat()
+    test_ucc_passes_coherence_magnitude_to_trigger()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

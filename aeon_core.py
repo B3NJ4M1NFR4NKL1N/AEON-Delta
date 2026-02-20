@@ -5915,7 +5915,7 @@ class CognitiveFeedbackBus(nn.Module):
     """
     
     # Number of scalar signal channels aggregated by the bus
-    NUM_SIGNAL_CHANNELS = 8  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence, causal_quality
+    NUM_SIGNAL_CHANNELS = 9  # safety, convergence, uncertainty, health_mean, loss_scale, surprise, coherence, causal_quality, recovery_pressure
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -5939,6 +5939,7 @@ class CognitiveFeedbackBus(nn.Module):
         world_model_surprise: float = 0.0,
         coherence_deficit: float = 0.0,
         causal_quality: float = 1.0,
+        recovery_pressure: float = 0.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -5965,6 +5966,10 @@ class CognitiveFeedbackBus(nn.Module):
                 causal structure learning (default: 1.0 = perfect).  Derived
                 from DAG loss; low values indicate the causal model has poor
                 acyclicity, biasing the meta-loop toward deeper reasoning.
+            recovery_pressure: Scalar ∈ [0, 1] indicating how frequently
+                error recovery has been invoked recently (default: 0.0 = no
+                pressure).  High values signal the system is under stress,
+                biasing the meta-loop toward deeper reasoning.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -6010,8 +6015,11 @@ class CognitiveFeedbackBus(nn.Module):
         # Causal quality (already in [0, 1]; 1.0 = perfect DAG structure)
         cq = torch.full((batch_size,), float(causal_quality), device=device)
         
+        # Recovery pressure (already in [0, 1]; 0.0 = no error recovery stress)
+        rp = torch.full((batch_size,), float(recovery_pressure), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd, cq], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp], dim=-1)
         
         return self.projection(signals)
 
@@ -13398,7 +13406,7 @@ class MetaCognitiveRecursionTrigger:
         uncertainty: float = 0.0,
         is_diverging: bool = False,
         topology_catastrophe: bool = False,
-        coherence_deficit: bool = False,
+        coherence_deficit: float = 0.0,
         memory_staleness: bool = False,
         recovery_pressure: float = 0.0,
         world_model_surprise: float = 0.0,
@@ -13411,7 +13419,12 @@ class MetaCognitiveRecursionTrigger:
             uncertainty: Scalar ∈ [0, 1] from residual variance estimation.
             is_diverging: True if ConvergenceMonitor detected divergence.
             topology_catastrophe: True if topology analyzer flagged catastrophe.
-            coherence_deficit: True if ModuleCoherenceVerifier found low coherence.
+            coherence_deficit: Scalar ∈ [0, 1] indicating cross-module
+                coherence deficit magnitude.  Values > 0.3 activate the
+                signal; higher values contribute proportionally more weight
+                (up to the signal's adaptive weight), enabling graduated
+                metacognitive reactions.  Also accepts bool for backward
+                compatibility (True maps to 1.0, False to 0.0).
             memory_staleness: True if memory retrieval returned empty or
                 low-relevance results, indicating the system lacks grounding
                 context and should reason more deeply.
@@ -13437,12 +13450,20 @@ class MetaCognitiveRecursionTrigger:
                 - triggers_active: list of signal names that fired.
                 - signal_weights: current adaptive weights per signal.
         """
+        # Normalize coherence_deficit to float for graduated response
+        _cd = float(coherence_deficit)
+        _COHERENCE_DEFICIT_THRESHOLD = 0.3
         w = self._signal_weights
+        # Graduated coherence deficit: scale linearly from 0 at threshold
+        # to full weight at 1.0, so higher deficits contribute more.
+        _cd_signal = 0.0
+        if _cd > _COHERENCE_DEFICIT_THRESHOLD:
+            _cd_signal = min(1.0, (_cd - _COHERENCE_DEFICIT_THRESHOLD) / (1.0 - _COHERENCE_DEFICIT_THRESHOLD))
         signal_values = {
             "uncertainty": w["uncertainty"] * float(uncertainty > 0.5),
             "diverging": w["diverging"] * float(is_diverging),
             "topology_catastrophe": w["topology_catastrophe"] * float(topology_catastrophe),
-            "coherence_deficit": w["coherence_deficit"] * float(coherence_deficit),
+            "coherence_deficit": w["coherence_deficit"] * _cd_signal,
             "memory_staleness": w["memory_staleness"] * float(memory_staleness),
             "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
             "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
@@ -13836,7 +13857,7 @@ class UnifiedCognitiveCycle:
             uncertainty=uncertainty,
             is_diverging=is_diverging,
             topology_catastrophe=False,
-            coherence_deficit=coherence_deficit > 0.3,
+            coherence_deficit=coherence_deficit,
             memory_staleness=memory_staleness,
             recovery_pressure=recovery_pressure,
             world_model_surprise=world_model_surprise,
@@ -16468,8 +16489,8 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 coherence_deficit=self._cached_coherence_deficit,
                 causal_quality=self._cached_causal_quality,
+                recovery_pressure=self._compute_recovery_pressure(),
             ).detach()
-        
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
         # feedback to refine uncertainty for the current pass.  When recovery
         # health is degraded (many past errors), escalate uncertainty so that
@@ -16774,7 +16795,7 @@ class AEONDeltaV3(nn.Module):
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
                 topology_catastrophe=_topo_catastrophe_flag,
-                coherence_deficit=_coherence_deficit,
+                coherence_deficit=self._cached_coherence_deficit,
                 memory_staleness=self._memory_stale,
                 recovery_pressure=_recovery_pressure,
                 world_model_surprise=self._cached_surprise,
@@ -16874,6 +16895,7 @@ class AEONDeltaV3(nn.Module):
                     world_model_surprise=self._cached_surprise,
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
+                    recovery_pressure=self._compute_recovery_pressure(),
                 ).detach()
                 self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
@@ -17906,6 +17928,7 @@ class AEONDeltaV3(nn.Module):
                     world_model_surprise=self._cached_surprise,
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
+                    recovery_pressure=self._compute_recovery_pressure(),
                 ).detach()
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions.
@@ -19481,6 +19504,7 @@ class AEONDeltaV3(nn.Module):
                     world_model_surprise=self._cached_surprise,
                     coherence_deficit=self._cached_coherence_deficit,
                     causal_quality=self._cached_causal_quality,
+                    recovery_pressure=self._compute_recovery_pressure(),
                 ).detach()
                 self.provenance_tracker.record_before(
                     "deeper_meta_loop", z_out,
@@ -19643,9 +19667,7 @@ class AEONDeltaV3(nn.Module):
             _post_topo_catastrophe_flag = bool(
                 topo_results.get('catastrophes', torch.zeros(1)).any().item()
             )
-            _post_coherence_deficit = coherence_results.get(
-                "needs_recheck", False,
-            ) if coherence_results else False
+            _post_coherence_deficit = self._cached_coherence_deficit
             # Escalate coherence deficit when NS violations were detected,
             # so that neuro-symbolic reasoning failures feed back into the
             # metacognitive trigger evaluation for deeper re-reasoning.
@@ -19654,7 +19676,7 @@ class AEONDeltaV3(nn.Module):
                 if ns_consistency_results else 0
             )
             if _ns_violations_count > 0:
-                _post_coherence_deficit = True
+                _post_coherence_deficit = max(_post_coherence_deficit, 0.5)
             metacognitive_info_post = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -19742,6 +19764,7 @@ class AEONDeltaV3(nn.Module):
                         world_model_surprise=self._cached_surprise,
                         coherence_deficit=self._cached_coherence_deficit,
                         causal_quality=self._cached_causal_quality,
+                        recovery_pressure=self._compute_recovery_pressure(),
                     ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
@@ -20076,6 +20099,7 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 coherence_deficit=self._cached_coherence_deficit,
                 causal_quality=self._cached_causal_quality,
+                recovery_pressure=self._compute_recovery_pressure(),
             ).detach()
         
         outputs = {
