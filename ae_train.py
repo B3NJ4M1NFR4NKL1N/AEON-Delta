@@ -2872,7 +2872,18 @@ class SafeThoughtAETrainerV4:
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
             except Exception as _cycle_err:
-                logger.debug("Unified cognitive cycle evaluation skipped: %s", _cycle_err)
+                logger.warning("Unified cognitive cycle evaluation failed: %s", _cycle_err)
+                # Record the UCC failure in error evolution so that
+                # training-time metacognitive failures are visible to the
+                # inference pipeline via bridge_training_errors_to_inference,
+                # rather than being silently swallowed.
+                if self._error_evolution is not None:
+                    self._error_evolution.record_episode(
+                        error_class='training_ucc_failure',
+                        strategy_used='skip_and_continue',
+                        success=False,
+                        metadata={'error': str(_cycle_err)[:200]},
+                    )
             
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
@@ -3356,7 +3367,17 @@ class ContextualRSSMTrainer:
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
             except Exception as _cycle_err:
-                logger.debug("Phase B unified cognitive cycle skipped: %s", _cycle_err)
+                logger.warning("Phase B unified cognitive cycle failed: %s", _cycle_err)
+                if self._error_evolution is not None:
+                    self._error_evolution.record_episode(
+                        error_class='training_ucc_failure',
+                        strategy_used='skip_and_continue',
+                        success=False,
+                        metadata={
+                            'error': str(_cycle_err)[:200],
+                            'phase': 'B',
+                        },
+                    )
             
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
