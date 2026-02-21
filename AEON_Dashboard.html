@@ -1164,6 +1164,14 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
           <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Recon / VQ</div><div style="font-family:var(--display);font-size:13px;color:var(--text2)" id="v4-loss-split">—</div></div>
           <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Accuracy</div><div style="font-family:var(--display);font-size:14px;color:var(--green)" id="v4-acc">—</div></div>
         </div>
+        <!-- Adaptive Intelligence row -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Adaptive LR</div><div style="font-family:var(--display);font-size:13px;color:var(--accent)" id="v4-ada-lr">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Adaptive Clip</div><div style="font-family:var(--display);font-size:13px;color:var(--warn)" id="v4-ada-gc">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Adaptations</div><div style="font-family:var(--display);font-size:14px;color:var(--purple)" id="v4-ada-count">0</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Loss Trend</div><div style="font-family:var(--display);font-size:13px" id="v4-ada-trend">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Meta-Cognitive</div><div style="font-family:var(--display);font-size:12px" id="v4-ada-meta">idle</div></div>
+        </div>
       </div>
       <!-- Completion summary -->
       <div id="v4-done" style="display:none;margin-top:12px;padding:12px;background:rgba(0,212,100,0.08);border-radius:8px;border:1px solid rgba(0,212,100,0.2)">
@@ -1244,6 +1252,96 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
         </div>
       </div>
       <canvas id="v4-loss-split-chart" height="110"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Adaptive Intelligence & Data Analysis ────────────────────────── -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🧠 Adaptive Intelligence</div>
+      <div id="v4-ada-panel" style="margin-top:8px">
+        <div style="font-size:11px;color:var(--text3)">Adaptive parameters will appear when training starts…</div>
+      </div>
+      <div id="v4-ada-active" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">
+          <div style="padding:8px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Learning Rate Schedule</div>
+            <div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="v4-ada-lr-detail">—</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px" id="v4-ada-lr-reason">—</div>
+          </div>
+          <div style="padding:8px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Gradient Clip Adaptation</div>
+            <div style="font-family:var(--display);font-size:16px;color:var(--warn)" id="v4-ada-gc-detail">—</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px" id="v4-ada-gc-reason">—</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;padding:8px;background:var(--surface2);border-radius:6px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Recent Adaptations</div>
+          <div id="v4-ada-history" style="font-size:11px;color:var(--text2);max-height:80px;overflow-y:auto">No adaptations yet</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">📊 Data Analysis</div>
+      <div id="v4-data-panel" style="margin-top:8px">
+        <div style="font-size:11px;color:var(--text3)">Data analysis will appear after file is loaded…</div>
+      </div>
+      <div id="v4-data-active" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Samples</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--accent)" id="v4-da-samples">—</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Vocab Coverage</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--green)" id="v4-da-vocab">—</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Padding Ratio</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--warn)" id="v4-da-padding">—</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Documents</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--purple)" id="v4-da-docs">—</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Avg Chunks/Doc</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--text2)" id="v4-da-chunks">—</div>
+          </div>
+          <div style="text-align:center;padding:6px;background:var(--surface2);border-radius:6px">
+            <div style="font-size:10px;color:var(--text3)">Token Std</div>
+            <div style="font-family:var(--display);font-size:15px;color:var(--text2)" id="v4-da-std">—</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;padding:6px;background:var(--surface2);border-radius:6px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Parameter Adjustments</div>
+          <div id="v4-da-changes" style="font-size:11px;color:var(--green)">No adjustments needed</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Adaptive LR Chart ─────────────────────────────────────────────── -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Adaptive Learning Rate</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--accent)">── LR</span>
+        </div>
+      </div>
+      <canvas id="v4-ada-lr-chart" height="110"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <div class="chart-title">Adaptive Grad Clip</div>
+        <div style="display:flex;gap:12px;font-size:10px;color:var(--text3)">
+          <span style="color:var(--warn)">── clip</span>
+        </div>
+      </div>
+      <canvas id="v4-ada-gc-chart" height="110"></canvas>
     </div>
   </div>
 
@@ -2002,7 +2100,7 @@ function go(panel) {
   if(panel === 'metacognition' && S.modelReady) loadMetacognition();
   if(panel === 'provenance' && S.modelReady) loadProvenance();
   if(panel === 'causaltrace' && S.modelReady) loadCausalTrace();
-  if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); }, 100); }
+  if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); v4DrawAdaptiveCharts(); }, 100); }
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -3538,6 +3636,7 @@ const V4 = {
   pollTimer: null,
   metricsA: { total: [], recon: [], vq: [], codebook: [], accuracy: [], grad_norm: [] },
   metricsB: { mse: [], cosine: [], grad_norm: [] },
+  adaptive: { lr: [], grad_clip: [] },
   logs: [],
   filterLevel: '',
 };
@@ -3665,6 +3764,7 @@ async function v4Start() {
   // Reset chart data
   V4.metricsA = { total: [], recon: [], vq: [], codebook: [], accuracy: [], grad_norm: [] };
   V4.metricsB = { mse: [], cosine: [], grad_norm: [] };
+  V4.adaptive = { lr: [], grad_clip: [] };
   V4.logs = [];
   v4ClearLogs();
 
@@ -3826,6 +3926,79 @@ function v4HandleProgress(prog) {
     accEl.textContent = prog.accuracy.toFixed(1) + '%';
   }
 
+  // ── Adaptive Intelligence indicators ─────────────────────────
+  if (prog.adaptive_lr !== undefined && prog.adaptive_lr !== null) {
+    const adaLrEl = document.getElementById('v4-ada-lr');
+    if (adaLrEl) adaLrEl.textContent = prog.adaptive_lr.toExponential(2);
+    const adaLrDetail = document.getElementById('v4-ada-lr-detail');
+    if (adaLrDetail) adaLrDetail.textContent = prog.adaptive_lr.toExponential(2);
+    V4.adaptive.lr.push(prog.adaptive_lr);
+    // Show adaptive panel
+    const adaPanel = document.getElementById('v4-ada-panel');
+    const adaActive = document.getElementById('v4-ada-active');
+    if (adaPanel) adaPanel.style.display = 'none';
+    if (adaActive) adaActive.style.display = 'block';
+  }
+  if (prog.adaptive_grad_clip !== undefined && prog.adaptive_grad_clip !== null) {
+    const adaGcEl = document.getElementById('v4-ada-gc');
+    if (adaGcEl) adaGcEl.textContent = prog.adaptive_grad_clip.toFixed(3);
+    const adaGcDetail = document.getElementById('v4-ada-gc-detail');
+    if (adaGcDetail) adaGcDetail.textContent = prog.adaptive_grad_clip.toFixed(3);
+    V4.adaptive.grad_clip.push(prog.adaptive_grad_clip);
+  }
+  if (prog.adaptive_total_adaptations !== undefined) {
+    const adaCountEl = document.getElementById('v4-ada-count');
+    if (adaCountEl) {
+      adaCountEl.textContent = prog.adaptive_total_adaptations;
+      adaCountEl.style.color = prog.adaptive_total_adaptations > 0 ? 'var(--accent)' : 'var(--text3)';
+    }
+  }
+  if (prog.loss_trend !== undefined && prog.loss_trend !== null) {
+    const trendEl = document.getElementById('v4-ada-trend');
+    if (trendEl) {
+      const t = prog.loss_trend;
+      trendEl.textContent = (t >= 0 ? '+' : '') + t.toFixed(6);
+      trendEl.style.color = t < -1e-4 ? 'var(--green)' : t > 1e-3 ? 'var(--danger)' : 'var(--text2)';
+    }
+  }
+  // Meta-cognitive status
+  const metaEl = document.getElementById('v4-ada-meta');
+  if (metaEl) {
+    const cs = prog.convergence_status || 'idle';
+    const metaLabels = { warmup:'warming up', converging:'monitoring', converged:'✅ converged', stagnating:'⚠ adapting', diverging:'🔴 recovering' };
+    metaEl.textContent = metaLabels[cs] || cs;
+    const metaColors = { warmup:'var(--text3)', converging:'var(--accent)', converged:'var(--green)', stagnating:'var(--warn)', diverging:'var(--danger)' };
+    metaEl.style.color = metaColors[cs] || 'var(--text2)';
+  }
+
+  // Data analysis
+  if (prog.data_analysis) {
+    const da = prog.data_analysis;
+    const dataPanel = document.getElementById('v4-data-panel');
+    const dataActive = document.getElementById('v4-data-active');
+    if (dataPanel) dataPanel.style.display = 'none';
+    if (dataActive) dataActive.style.display = 'block';
+    const daSamples = document.getElementById('v4-da-samples');
+    if (daSamples && da.n_samples) daSamples.textContent = da.n_samples.toLocaleString();
+    const daVocab = document.getElementById('v4-da-vocab');
+    if (daVocab && da.vocab_coverage !== undefined) daVocab.textContent = (da.vocab_coverage * 100).toFixed(1) + '%';
+    const daPad = document.getElementById('v4-da-padding');
+    if (daPad && da.padding_ratio !== undefined) daPad.textContent = (da.padding_ratio * 100).toFixed(1) + '%';
+    const daDocs = document.getElementById('v4-da-docs');
+    if (daDocs) daDocs.textContent = da.n_documents || '—';
+    const daChunks = document.getElementById('v4-da-chunks');
+    if (daChunks && da.avg_chunks_per_doc !== undefined) daChunks.textContent = da.avg_chunks_per_doc.toFixed(1);
+    const daStd = document.getElementById('v4-da-std');
+    if (daStd && da.token_std !== undefined) daStd.textContent = da.token_std.toFixed(0);
+  }
+  if (prog.adaptive_changes && prog.adaptive_changes.length > 0) {
+    const daChanges = document.getElementById('v4-da-changes');
+    if (daChanges) daChanges.innerHTML = prog.adaptive_changes.map(c => `<div style="margin:2px 0">• ${c}</div>`).join('');
+  }
+
+  // Draw adaptive charts
+  v4DrawAdaptiveCharts();
+
   if (prog.done && !prog.active) {
     v4ShowDone(prog);
     if (V4.sse) V4.sse.close();
@@ -3833,7 +4006,7 @@ function v4HandleProgress(prog) {
 }
 
 function v4HandleMetrics(data) {
-  // data = { new_A: [{total, recon, vq, codebook_%, accuracy_%, grad_norm},...], new_B: [{mse_loss, cosine_sim, grad_norm},...] }
+  // data = { new_A: [{total, recon, vq, codebook_%, accuracy_%, grad_norm},...], new_B: [{mse_loss, cosine_sim, grad_norm},...], adaptive_state: {...} }
   const newA = data.new_A || [];
   const newB = data.new_B || [];
   for (const m of newA) {
@@ -3849,7 +4022,27 @@ function v4HandleMetrics(data) {
     if (m.cosine_sim  !== undefined) V4.metricsB.cosine.push(m.cosine_sim);
     if (m.grad_norm   !== undefined) V4.metricsB.grad_norm.push(m.grad_norm);
   }
+  // Adaptive state from SSE
+  if (data.adaptive_state) {
+    const as = data.adaptive_state;
+    if (as.recent_adaptations && as.recent_adaptations.length > 0) {
+      const histEl = document.getElementById('v4-ada-history');
+      if (histEl) {
+        histEl.innerHTML = as.recent_adaptations.map(a => {
+          const adj = a.adjustments || {};
+          const parts = Object.entries(adj).filter(([k]) => !k.endsWith('_reason')).map(([k,v]) => `${k}=${typeof v === 'number' ? v.toFixed(4) : v}`);
+          return `<div style="margin:1px 0;color:var(--accent)">ep${a.epoch}: ${parts.join(', ')}</div>`;
+        }).join('');
+      }
+    }
+    const lrReasonEl = document.getElementById('v4-ada-lr-reason');
+    if (lrReasonEl && as.recent_adaptations && as.recent_adaptations.length > 0) {
+      const last = as.recent_adaptations[as.recent_adaptations.length - 1];
+      lrReasonEl.textContent = last.adjustments?.lr_reason || last.adjustments?.gc_reason || '—';
+    }
+  }
   v4DrawCharts();
+  v4DrawAdaptiveCharts();
 }
 
 function v4DrawCharts() {
@@ -3879,6 +4072,11 @@ function v4DrawCharts() {
     'Loss Components',
     ['Recon', 'VQ']
   );
+}
+
+function v4DrawAdaptiveCharts() {
+  v4DrawSingleLine('v4-ada-lr-chart', V4.adaptive.lr, 'var(--accent)', 'Adaptive LR');
+  v4DrawSingleLine('v4-ada-gc-chart', V4.adaptive.grad_clip, 'var(--warn)', 'Adaptive Grad Clip');
 }
 
 function v4DrawMultiLine(canvasId, seriesArr, colors, title, labels) {

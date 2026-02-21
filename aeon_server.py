@@ -227,6 +227,8 @@ class AppState:
     v4_upload_dir: str           = "./training_data"
     v4_trained_model: Optional[Any] = None      # trained AEONDeltaV4 instance
     v4_trained_model_path: Optional[str] = None # path to saved v4 checkpoint
+    v4_adaptive_state: dict      = {}           # adaptive controller telemetry
+    v4_data_analysis: dict       = {}           # data characteristics analysis
 
 APP = AppState()
 
@@ -2647,6 +2649,26 @@ def _v4_training_loop(req: V4TrainRequest):
         logging.info(f"   tokens shape:   {list(tokens.shape)}")
         APP.v4_progress["n_samples"] = tokens.shape[0]
 
+        # ── Adaptive data analysis ────────────────────────────────
+        try:
+            analyzer = ae.DataCharacteristicsAnalyzer(config)
+            analysis = analyzer.analyze(
+                tokens,
+                documents if req.document_aware else None,
+            )
+            APP.v4_data_analysis = analysis
+            data_stats = analysis.get('stats', {})
+            recommendations = analysis.get('recommendations', {})
+            changes = analyzer.apply_recommendations(config, recommendations)
+            if changes:
+                logging.info(f"🔄 Adaptive parameter adjustments ({len(changes)}):")
+                for c in changes:
+                    logging.info(f"   • {c}")
+            APP.v4_progress["data_analysis"] = data_stats
+            APP.v4_progress["adaptive_changes"] = changes
+        except Exception as _da_err:
+            logging.warning(f"Data analysis skipped: {_da_err}")
+
         # ── Build model ───────────────────────────────────────────
         APP.v4_progress["phase"] = "model_init"
         try:
@@ -2769,6 +2791,14 @@ def _v4_training_loop(req: V4TrainRequest):
                     "convergence_status": _detect_convergence(APP.v4_metrics_history.get("phase_A", []), epoch),
                     "convergence_velocity": _compute_velocity(APP.v4_metrics_history.get("phase_A", [])),
                 })
+                # Expose adaptive controller state to dashboard
+                if hasattr(self_t, 'adaptive_controller'):
+                    _ac_state = self_t.adaptive_controller.get_state()
+                    APP.v4_adaptive_state = _ac_state
+                    APP.v4_progress["adaptive_lr"] = _ac_state.get("current_lr")
+                    APP.v4_progress["adaptive_grad_clip"] = _ac_state.get("current_grad_clip")
+                    APP.v4_progress["adaptive_total_adaptations"] = _ac_state.get("total_adaptations", 0)
+                    APP.v4_progress["loss_trend"] = _ac_state.get("loss_trend", 0.0)
                 if epoch_metrics["total"] < self_t.best_loss:
                     self_t.best_loss = epoch_metrics["total"]
                     self_t.best_model_state = _copy.deepcopy(self_t.model.state_dict())
@@ -2888,6 +2918,14 @@ def _v4_training_loop(req: V4TrainRequest):
                     "convergence_status": _detect_convergence(APP.v4_metrics_history.get("phase_B", []), epoch),
                     "convergence_velocity": _compute_velocity(APP.v4_metrics_history.get("phase_B", [])),
                 })
+                # Expose Phase B adaptive controller state
+                if hasattr(self_t, 'adaptive_controller'):
+                    _ac_state = self_t.adaptive_controller.get_state()
+                    APP.v4_adaptive_state = _ac_state
+                    APP.v4_progress["adaptive_lr"] = _ac_state.get("current_lr")
+                    APP.v4_progress["adaptive_grad_clip"] = _ac_state.get("current_grad_clip")
+                    APP.v4_progress["adaptive_total_adaptations"] = _ac_state.get("total_adaptations", 0)
+                    APP.v4_progress["loss_trend"] = _ac_state.get("loss_trend", 0.0)
                 if epoch_metrics["mse_loss"] < self_t.best_loss:
                     self_t.best_loss = epoch_metrics["mse_loss"]
                     self_t.best_model_state = _copy.deepcopy(self_t.model.rssm.state_dict())
@@ -2992,6 +3030,8 @@ async def v4_get_progress():
         "metrics_history": APP.v4_metrics_history,
         "ae_train_available": AE_TRAIN_LOADED,
         "ae_train_error": AE_TRAIN_ERROR if not AE_TRAIN_LOADED else None,
+        "adaptive_state": APP.v4_adaptive_state,
+        "data_analysis": APP.v4_data_analysis,
     }
 
 
@@ -3022,6 +3062,17 @@ async def v4_get_config():
     """Return the current V4TrainRequest schema with defaults and descriptions."""
     schema = V4TrainRequest.model_json_schema()
     return {"ok": True, "schema": schema}
+
+
+@app.get("/api/train/v4/adaptive")
+async def v4_get_adaptive():
+    """Adaptive training controller state and data analysis."""
+    return {
+        "ok": True,
+        "adaptive_state": APP.v4_adaptive_state,
+        "data_analysis": APP.v4_data_analysis,
+        "adaptive_changes": APP.v4_progress.get("adaptive_changes", []),
+    }
 
 
 @app.get("/api/train/v4/logs")
@@ -3070,7 +3121,7 @@ async def v4_stream():
             new_A = hist.get("phase_A", [])[sent_epochs_A:]
             new_B = hist.get("phase_B", [])[sent_epochs_B:]
             if new_A or new_B:
-                yield f"data: {json.dumps({'type': 'metrics', 'data': {'new_A': new_A, 'new_B': new_B}})}\n\n"
+                yield f"data: {json.dumps({'type': 'metrics', 'data': {'new_A': new_A, 'new_B': new_B, 'adaptive_state': APP.v4_adaptive_state}})}\n\n"
             sent_epochs_A = len(hist.get("phase_A", []))
             sent_epochs_B = len(hist.get("phase_B", []))
 
