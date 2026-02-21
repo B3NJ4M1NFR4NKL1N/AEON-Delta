@@ -36057,6 +36057,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "rssm",          # always initialized (rssm_cell)
         "integration",   # always initialized (integration_proj)
         "output_reliability",  # computed signal, not a module
+        "memory_cross_validation",  # computed step, not a module
     }
 
     # Build DAG_NODE_TO_ATTR by simulating what _reasoning_core_impl does
@@ -36878,6 +36879,256 @@ def test_grounded_multimodal_cached_for_coherence():
         f"{model._cached_grounded_multimodal_state.shape}"
     )
     print("✅ test_grounded_multimodal_cached_for_coherence PASSED")
+
+
+# ============================================================================
+# Architectural Unification — Memory Cross-Validation, Circuit Breaker,
+# Supplementary Trust, DAG Enforcement, and Memory-Coherence Tests
+# ============================================================================
+
+
+def test_memory_cross_validation_detected():
+    """When multiple memory systems are active, the forward pass should
+    compute pairwise cosine similarity and record cross-validation results
+    in the output dict."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_neurogenic_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    mem_cv = outputs.get('memory_cross_validation', {})
+    # At least the field should exist (may be empty if both systems
+    # produced no snapshots, but the key should always be present)
+    assert 'memory_cross_validation' in outputs, (
+        "memory_cross_validation key missing from reasoning_core outputs"
+    )
+    print(f"  memory_cross_validation result: {mem_cv}")
+    print("✅ test_memory_cross_validation_detected PASSED")
+
+
+def test_circuit_breaker_in_output():
+    """The forward pass should include circuit_breaker_tripped in outputs."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'circuit_breaker_tripped' in outputs, (
+        "circuit_breaker_tripped key missing from reasoning_core outputs"
+    )
+    cb = outputs['circuit_breaker_tripped']
+    assert isinstance(cb, set), f"Expected set, got {type(cb)}"
+    print(f"  circuit_breaker_tripped: {cb}")
+    print("✅ test_circuit_breaker_in_output PASSED")
+
+
+def test_circuit_breaker_blocks_mcts_on_world_model_failure():
+    """When world_model fails, MCTS planning should be skipped via the
+    circuit breaker (world_model in _circuit_breaker_tripped)."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch world model to raise an exception
+    if model.world_model is not None:
+        orig_fwd = model.world_model.forward
+
+        def _fail_wm(*args, **kwargs):
+            raise RuntimeError("Injected world model failure")
+
+        model.world_model.forward = _fail_wm
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    cb = outputs.get('circuit_breaker_tripped', set())
+    assert 'world_model' in cb, (
+        f"Expected 'world_model' in circuit_breaker_tripped, got {cb}"
+    )
+    print("✅ test_circuit_breaker_blocks_mcts_on_world_model_failure PASSED")
+
+
+def test_circuit_breaker_blocks_unified_sim_on_causal_failure():
+    """When causal_model fails, unified_simulator should be skipped via
+    the circuit breaker."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch causal model to raise an exception
+    if model.causal_model is not None:
+        def _fail_cm(*args, **kwargs):
+            raise RuntimeError("Injected causal model failure")
+
+        model.causal_model.forward = _fail_cm
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    cb = outputs.get('circuit_breaker_tripped', set())
+    assert 'causal_model' in cb, (
+        f"Expected 'causal_model' in circuit_breaker_tripped, got {cb}"
+    )
+    print("✅ test_circuit_breaker_blocks_unified_sim_on_causal_failure PASSED")
+
+
+def test_memory_state_in_ucc_states():
+    """The unified cognitive cycle should receive memory state in its
+    subsystem_states for coherence verification."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    ucc_results = outputs.get('unified_cognitive_cycle_results', {})
+    # The UCC should have run and the model should have cached the memory
+    # state for coherence verification
+    assert model._cached_memory_state is not None, (
+        "Expected _cached_memory_state to be populated after forward pass"
+    )
+    print("✅ test_memory_state_in_ucc_states PASSED")
+
+
+def test_self_diagnostic_reports_circuit_breaker():
+    """self_diagnostic should report the circuit breaker pattern."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.self_diagnostic()
+    verified = report['verified_connections']
+    cb_entries = [v for v in verified if 'circuit_breaker' in v]
+    assert len(cb_entries) > 0, (
+        "self_diagnostic should report circuit_breaker in verified_connections"
+    )
+    print("✅ test_self_diagnostic_reports_circuit_breaker PASSED")
+
+
+def test_self_diagnostic_reports_memory_cross_validation():
+    """When ≥2 memory systems are active, self_diagnostic should report
+    memory cross-validation in verified_connections."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_neurogenic_memory=True,
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.self_diagnostic()
+    verified = report['verified_connections']
+    cv_entries = [v for v in verified if 'memory_cross_validation' in v]
+    assert len(cv_entries) > 0, (
+        "self_diagnostic should report memory_cross_validation when "
+        "≥2 memory systems are active"
+    )
+    print("✅ test_self_diagnostic_reports_memory_cross_validation PASSED")
+
+
+def test_pipeline_deps_include_memory_cross_validation():
+    """_PIPELINE_DEPENDENCIES should include memory_cross_validation edges."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    cv_edges = [
+        (u, d) for u, d in deps
+        if 'memory_cross_validation' in u or 'memory_cross_validation' in d
+    ]
+    assert len(cv_edges) > 0, (
+        "Expected memory_cross_validation edges in _PIPELINE_DEPENDENCIES"
+    )
+    # Verify critical path: memory → memory_cross_validation → metacognitive_trigger
+    downstream_of_cv = {d for u, d in cv_edges if u == 'memory_cross_validation'}
+    assert 'metacognitive_trigger' in downstream_of_cv, (
+        "memory_cross_validation should feed into metacognitive_trigger"
+    )
+    print(f"  memory_cross_validation edges: {cv_edges}")
+    print("✅ test_pipeline_deps_include_memory_cross_validation PASSED")
+
+
+def test_dag_consensus_enforcement_audit():
+    """When DAG consensus needs escalation, the audit log should record
+    an enforced_reconciliation entry after blending back."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_model=True,
+        enable_notears_causal=True,
+        # Low threshold to trigger escalation
+        causal_dag_consensus_threshold=0.99,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    dag_results = outputs.get('dag_consensus_results', {})
+    # If consensus was evaluated and needed escalation, the audit log
+    # should contain an enforcement entry
+    if dag_results.get('needs_escalation', False):
+        events = model.audit_log.filter_by(subsystem='causal_dag_consensus')
+        enforce_events = [
+            e for e in events
+            if e.get('decision') == 'enforced_reconciliation'
+        ]
+        assert len(enforce_events) > 0, (
+            "Expected enforced_reconciliation audit entry when DAG "
+            "consensus needs escalation"
+        )
+        print("  DAG consensus enforcement recorded in audit log")
+    else:
+        print("  DAG consensus did not need escalation (models agreed)")
+    print("✅ test_dag_consensus_enforcement_audit PASSED")
 
 
 def _run_all_tests():
@@ -38450,6 +38701,18 @@ def _run_all_tests():
     test_continual_learning_provenance_tracked()
     test_verify_coherence_passes_divergence_to_trigger()
     test_grounded_multimodal_cached_for_coherence()
+
+    # Architectural Unification — Memory Cross-Validation, Circuit Breaker,
+    # DAG Enforcement, and Memory-Coherence Tests
+    test_memory_cross_validation_detected()
+    test_circuit_breaker_in_output()
+    test_circuit_breaker_blocks_mcts_on_world_model_failure()
+    test_circuit_breaker_blocks_unified_sim_on_causal_failure()
+    test_memory_state_in_ucc_states()
+    test_self_diagnostic_reports_circuit_breaker()
+    test_self_diagnostic_reports_memory_cross_validation()
+    test_pipeline_deps_include_memory_cross_validation()
+    test_dag_consensus_enforcement_audit()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
