@@ -34432,6 +34432,187 @@ def test_post_output_coherence_in_forward():
             "be computed in _forward_impl"
         )
     print("✅ test_post_output_coherence_in_forward PASSED")
+
+
+# ============================================================================
+# Architectural Unification — Complexity Gating Traceability Tests
+# ============================================================================
+
+def test_complexity_gated_skip_recorded_in_causal_trace():
+    """When complexity gates deactivate a subsystem, the causal trace should
+    record a 'complexity_gated_skip' entry so trace_root_cause() can attribute
+    downstream quality changes to the skip decision."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_complexity_estimator=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force all complexity gates to OFF (zeros) to simulate low-complexity
+    # gating, then run the reasoning core.
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        # Monkey-patch the complexity estimator to return all-zero gates
+        if model.complexity_estimator is not None:
+            orig_fwd = model.complexity_estimator.forward
+
+            def _zero_gates(x):
+                result = orig_fwd(x)
+                result['subsystem_gates'] = torch.zeros_like(
+                    result['subsystem_gates']
+                )
+                return result
+
+            model.complexity_estimator.forward = _zero_gates
+
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert model.causal_trace is not None
+    recent = model.causal_trace.recent(n=100)
+    skip_entries = [
+        e for e in recent
+        if e.get("decision") == "complexity_gated_skip"
+    ]
+    # At least one subsystem should have recorded a skip
+    assert len(skip_entries) > 0, (
+        "Expected at least one complexity_gated_skip entry in causal trace "
+        f"when all gates are off. Got entries: "
+        f"{[e['subsystem'] + ':' + e['decision'] for e in recent[:10]]}"
+    )
+    # Verify the skip entry has the expected metadata structure
+    for entry in skip_entries:
+        assert "gate_index" in entry.get("metadata", {}), (
+            f"complexity_gated_skip entry for {entry['subsystem']} "
+            "should include gate_index in metadata"
+        )
+    print("✅ test_complexity_gated_skip_recorded_in_causal_trace PASSED")
+
+
+def test_pipeline_dependencies_include_complexity_estimator():
+    """_PIPELINE_DEPENDENCIES should include edges from complexity_estimator
+    to the subsystems it gates, enabling trace_root_cause() to attribute
+    downstream quality changes to complexity gating decisions."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    expected_edges = [
+        ("input", "complexity_estimator"),
+        ("complexity_estimator", "world_model"),
+        ("complexity_estimator", "mcts_planning"),
+        ("complexity_estimator", "causal_world_model"),
+        ("complexity_estimator", "unified_simulator"),
+    ]
+    for u, d in expected_edges:
+        assert (u, d) in dep_set, (
+            f"Missing pipeline dependency edge ({u}, {d})"
+        )
+    print("✅ test_pipeline_dependencies_include_complexity_estimator PASSED")
+
+
+def test_pipeline_dependencies_include_output_reliability_path():
+    """_PIPELINE_DEPENDENCIES should include edges for the output reliability
+    feedback path: auto_critic → output_reliability → metacognitive_trigger
+    and decoder → unified_cognitive_cycle."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    expected_edges = [
+        ("auto_critic", "output_reliability"),
+        ("output_reliability", "metacognitive_trigger"),
+        ("integration", "decoder"),
+        ("decoder", "unified_cognitive_cycle"),
+    ]
+    for u, d in expected_edges:
+        assert (u, d) in dep_set, (
+            f"Missing pipeline dependency edge ({u}, {d})"
+        )
+    print("✅ test_pipeline_dependencies_include_output_reliability_path PASSED")
+
+
+def test_adapt_uncertainty_weights_default_map_complete():
+    """The _default_map in _adapt_uncertainty_weights_from_evolution should
+    cover ALL keys in _UNCERTAINTY_SOURCE_WEIGHTS so that every uncertainty
+    source can have its weight adapted by historical error-recovery patterns."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS, _adapt_uncertainty_weights_from_evolution
+
+    # Call with an empty summary to get the default map applied
+    result = _adapt_uncertainty_weights_from_evolution({})
+    # All source weights should still be present
+    for key in _UNCERTAINTY_SOURCE_WEIGHTS:
+        assert key in result, (
+            f"Adapted weights missing key '{key}' from _UNCERTAINTY_SOURCE_WEIGHTS"
+        )
+
+    # Now verify that a non-trivial error_summary actually adapts
+    # a previously-unmapped source
+    error_summary = {
+        "error_classes": {
+            "numerical": {"success_rate": 0.1, "count": 10},
+            "subsystem": {"success_rate": 0.9, "count": 5},
+            "memory_subsystem": {"success_rate": 0.2, "count": 8},
+            "certified_convergence_failure": {"success_rate": 0.3, "count": 3},
+            "low_causal_quality": {"success_rate": 0.4, "count": 4},
+            "vq_codebook_collapse": {"success_rate": 0.1, "count": 6},
+            "mcts_low_confidence": {"success_rate": 0.8, "count": 2},
+            "world_model_prediction_error": {"success_rate": 0.5, "count": 7},
+            "ns_violation_auto_critic": {"success_rate": 0.6, "count": 1},
+        }
+    }
+    adapted = _adapt_uncertainty_weights_from_evolution(error_summary)
+
+    # Check that previously-unmapped sources are now adapted
+    # (different from their default values due to error_summary)
+    changed_count = sum(
+        1 for k in _UNCERTAINTY_SOURCE_WEIGHTS
+        if abs(adapted[k] - _UNCERTAINTY_SOURCE_WEIGHTS[k]) > 1e-6
+    )
+    assert changed_count > 22, (
+        f"Expected more than 22 adapted sources (the original count), "
+        f"got {changed_count}. The new _default_map entries should enable "
+        "adaptation of previously-unmapped uncertainty sources."
+    )
+    print("✅ test_adapt_uncertainty_weights_default_map_complete PASSED")
+
+
+def test_source_module_map_covers_pipeline_error():
+    """_source_module_map inside _reasoning_core_impl should include
+    'pipeline_error' so that structural pipeline errors are attributed
+    to their originating module in the directional uncertainty tracker."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS, AEONDeltaV3
+
+    # Verify that 'pipeline_error' exists in the weights
+    assert "pipeline_error" in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        "'pipeline_error' should be in _UNCERTAINTY_SOURCE_WEIGHTS"
+    )
+
+    # Verify via static analysis that _source_module_map (inside
+    # _reasoning_core_impl) maps pipeline_error to a module.
+    # We check the source code directly since the map is local.
+    import inspect
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"pipeline_error"' in source, (
+        "'pipeline_error' should be in _source_module_map inside "
+        "_reasoning_core_impl"
+    )
+    # Verify it maps to 'integration' (the pipeline-level module)
+    idx = source.index('"pipeline_error"')
+    context = source[idx:idx + 60]
+    assert "integration" in context, (
+        "'pipeline_error' should map to 'integration' in _source_module_map"
+    )
+    print("✅ test_source_module_map_covers_pipeline_error PASSED")
+
+
+def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
     test_tensor_hash_collision_resistance()
@@ -35911,6 +36092,13 @@ def test_post_output_coherence_in_forward():
     test_hvae_ucc_pipeline_dependency()
     test_hvae_selected_level_in_ucc_states()
     test_verify_integration_paths_reports_hvae_ucc()
+    
+    # Architectural Unification — Complexity Gating Traceability Tests
+    test_complexity_gated_skip_recorded_in_causal_trace()
+    test_pipeline_dependencies_include_complexity_estimator()
+    test_pipeline_dependencies_include_output_reliability_path()
+    test_adapt_uncertainty_weights_default_map_complete()
+    test_source_module_map_covers_pipeline_error()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

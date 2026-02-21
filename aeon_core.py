@@ -6938,6 +6938,45 @@ def _adapt_uncertainty_weights_from_evolution(
         "recovery_pressure": "subsystem",
         "convergence_conflict": "convergence_conflict",
         "safety_violation": "safety_rollback",
+        # --- Previously unmapped sources: completing the adaptive
+        # feedback loop so all uncertainty sources can have their
+        # weights adjusted by historical error-recovery success rates.
+        "certified_convergence_failed": "certified_convergence_failure",
+        "pipeline_error": "numerical",
+        "causal_model_error": "low_causal_quality",
+        "causal_programmatic_error": "causal_programmatic_forward",
+        "causal_context_error": "low_causal_quality",
+        "causal_root_cause_count": "low_causal_quality",
+        "causal_trace_errors": "low_causal_quality",
+        "hybrid_reasoning_error": "subsystem",
+        "hybrid_reasoning_ns_violation": "ns_violation_auto_critic",
+        "ns_bridge_error": "subsystem",
+        "unified_simulator_divergence": "subsystem",
+        "unified_memory_error": "memory_subsystem",
+        "low_memory_trust": "memory_subsystem",
+        "neurogenic_memory_sparse": "memory_subsystem",
+        "temporal_memory_sparse": "memory_subsystem",
+        "consolidating_memory_error": "memory_subsystem",
+        "cognitive_executive_error": "subsystem",
+        "value_net_low_quality": "subsystem",
+        "value_net_error": "subsystem",
+        "integrity_anomalies": "subsystem",
+        "hvae_kl_divergence": "subsystem",
+        "hvae_error": "subsystem",
+        "self_report_low_honesty": "subsystem",
+        "self_report_low_confidence": "subsystem",
+        "meta_learner_ewc_drift": "subsystem",
+        "error_evolution_preemptive": "subsystem",
+        "multimodal_error": "subsystem",
+        "multimodal_nonfinite": "numerical",
+        "vq_codebook_collapse": "vq_codebook_collapse",
+        "vq_check_error": "vq_codebook_collapse",
+        "mcts_low_confidence": "mcts_low_confidence",
+        "mcts_causal_adj_failure": "mcts_low_confidence",
+        "active_learning_curiosity": "subsystem",
+        "active_learning_error": "subsystem",
+        "tkg_retrieval_error": "subsystem",
+        "hierarchical_wm_error": "world_model_prediction_error",
     }
     mapping = source_to_error_class if source_to_error_class is not None else _default_map
 
@@ -15117,6 +15156,26 @@ class AEONDeltaV3(nn.Module):
         # Self-report confidence feeds back into the trigger via
         # uncertainty escalation; make this path explicit.
         ("self_report", "metacognitive_trigger"),
+        # ── Complexity gating paths ────────────────────────────────
+        # The complexity estimator gates expensive subsystems; these
+        # edges ensure trace_root_cause() can attribute downstream
+        # quality changes to complexity-gated skip decisions.
+        ("input", "complexity_estimator"),
+        ("complexity_estimator", "world_model"),
+        ("complexity_estimator", "mcts_planning"),
+        ("complexity_estimator", "causal_world_model"),
+        ("complexity_estimator", "unified_simulator"),
+        # ── Output reliability feedback path ───────────────────────
+        # The auto-critic's quality assessment feeds into the output
+        # reliability signal which in turn drives metacognitive
+        # re-reasoning on low-trust outputs.
+        ("auto_critic", "output_reliability"),
+        ("output_reliability", "metacognitive_trigger"),
+        # Decoder state feeds into the UCC for coherence verification
+        # so that decoding-stage divergence triggers meta-cognitive
+        # re-evaluation.
+        ("integration", "decoder"),
+        ("decoder", "unified_cognitive_cycle"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -18482,6 +18541,12 @@ class AEONDeltaV3(nn.Module):
         )
         self.provenance_tracker.record_before("world_model", C_star)
         _world_model_healthy = True
+        if _world_model_should_skip and self.causal_trace is not None:
+            self.causal_trace.record(
+                "world_model", "complexity_gated_skip",
+                causal_prerequisites=[input_trace_id],
+                metadata={"gate_index": 0, "high_uncertainty": high_uncertainty},
+            )
         if self.world_model is not None and not fast and not _world_model_should_skip:
             try:
                 world_model_results = self.world_model(
@@ -18799,6 +18864,12 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 1].any().item()
             and not planning  # explicit planning=True overrides complexity gate
         )
+        if _mcts_should_skip and self.causal_trace is not None:
+            self.causal_trace.record(
+                "mcts_planning", "complexity_gated_skip",
+                causal_prerequisites=[input_trace_id],
+                metadata={"gate_index": 1, "planning": planning},
+            )
         
         # 5c. Hierarchical memory — retrieve then store
         memory_retrieved = None
@@ -19152,6 +19223,12 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 2].any().item()
             and not high_uncertainty
         )
+        if _causal_world_should_skip and self.causal_trace is not None:
+            self.causal_trace.record(
+                "causal_world_model", "complexity_gated_skip",
+                causal_prerequisites=[input_trace_id],
+                metadata={"gate_index": 2, "high_uncertainty": high_uncertainty},
+            )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             self.provenance_tracker.record_before("causal_world_model", C_star)
             causal_world_results = self.causal_world_model(C_star)
@@ -19812,6 +19889,12 @@ class AEONDeltaV3(nn.Module):
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
         )
+        if _unified_sim_should_skip and self.causal_trace is not None:
+            self.causal_trace.record(
+                "unified_simulator", "complexity_gated_skip",
+                causal_prerequisites=[input_trace_id],
+                metadata={"gate_index": 3},
+            )
         if self.unified_simulator is not None and not fast and not _unified_sim_should_skip:
             self.provenance_tracker.record_before("unified_simulator", C_star)
             unified_simulator_results = self.unified_simulator(C_star)
@@ -21074,6 +21157,8 @@ class AEONDeltaV3(nn.Module):
                 # Multimodal
                 "multimodal_nonfinite": "multimodal",
                 "multimodal_error": "multimodal",
+                # Pipeline-level structural error
+                "pipeline_error": "integration",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
