@@ -745,7 +745,7 @@ async def run_inference(req: InferRequest):
     except Exception:
         pass
 
-    # Recovery statistics so consumers can assess error-handling health
+    # Recovery statistics for consumers to assess error-handling health
     recovery_stats = {}
     try:
         recovery_stats = APP.model.error_recovery.get_recovery_stats()
