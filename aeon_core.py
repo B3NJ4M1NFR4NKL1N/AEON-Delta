@@ -23274,9 +23274,33 @@ class AEONDeltaV3(nn.Module):
             _post_coh_score = float(
                 _post_coh_results["coherence_score"].mean().item()
             )
-            # Update coherence results with post-revision measurement
-            coherence_results = _post_coh_results
-            _coherence_deficit = _post_coh_results.get("needs_recheck", False)
+            # Merge post-integration coherence with pre-integration results:
+            # use the lower of pre/post coherence scores (conservative), and
+            # union all pairwise comparisons so downstream consumers retain
+            # both pre-integration pairs (e.g. input vs meta_loop) and
+            # post-integration pairs (z_out vs core_state).
+            if coherence_results:
+                _pre_score = coherence_results.get("coherence_score",
+                    torch.ones(1))
+                coherence_results = {
+                    "coherence_score": torch.min(
+                        _pre_score, _post_coh_results["coherence_score"]),
+                    "pairwise": {
+                        **coherence_results.get("pairwise", {}),
+                        **_post_coh_results.get("pairwise", {}),
+                    },
+                    "needs_recheck": (
+                        coherence_results.get("needs_recheck", False)
+                        or _post_coh_results.get("needs_recheck", False)
+                    ),
+                    "_weakest_pair": _post_coh_results.get(
+                        "_weakest_pair",
+                        coherence_results.get("_weakest_pair"),
+                    ),
+                }
+            else:
+                coherence_results = _post_coh_results
+            _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Update cached coherence deficit for next pass's feedback bus
             self._cached_coherence_deficit = float(
                 max(0.0, min(1.0, 1.0 - _post_coh_score))
