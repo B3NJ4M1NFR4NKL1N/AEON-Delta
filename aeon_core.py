@@ -15120,6 +15120,14 @@ class AEONDeltaV3(nn.Module):
         ("mcts_planning", "causal_model"),
         ("causal_world_model", "causal_model"),
         ("causal_model", "causal_programmatic"),
+        # Active learning planner sits between MCTS/causal planning and
+        # the unified simulator, feeding curiosity-driven exploration
+        # signals into downstream reasoning.  These edges ensure
+        # trace_root_cause() can attribute uncertainty escalation and
+        # downstream quality changes to active-learning decisions.
+        ("mcts_planning", "active_learning"),
+        ("world_model", "active_learning"),
+        ("active_learning", "metacognitive_trigger"),
         ("causal_programmatic", "unified_simulator"),
         ("causal_programmatic", "hybrid_reasoning"),
         ("unified_simulator", "hybrid_reasoning"),
@@ -16952,6 +16960,7 @@ class AEONDeltaV3(nn.Module):
             "hierarchical_vae": "hierarchical_vae",
             "auto_critic": "auto_critic",
             "mcts_planning": "mcts_planner",
+            "active_learning": "active_learning_planner",
             "cognitive_executive": "cognitive_executive",
             "causal_dag_consensus": "causal_dag_consensus",
             "certified_meta_loop": "certified_meta_loop",
@@ -24437,6 +24446,7 @@ class AEONDeltaV3(nn.Module):
             'temporal_memory', 'unified_cognitive_cycle',
             'causal_dag_consensus', 'topology_analysis',
             'diversity_analysis', 'memory_trust',
+            'active_learning',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
