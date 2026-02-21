@@ -7040,6 +7040,7 @@ class ConvergenceMonitor:
         self.history: deque = deque(maxlen=10)
         self._error_evolution: Optional['CausalErrorEvolutionTracker'] = None
         self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
+        self._secondary_signals: Dict[str, float] = {}
 
     def set_error_evolution(
         self, tracker: Optional['CausalErrorEvolutionTracker'],
@@ -7067,9 +7068,31 @@ class ConvergenceMonitor:
         """
         self._provenance_tracker = tracker
 
+    def record_secondary_signal(self, name: str, value: float) -> None:
+        """Record an auxiliary convergence signal.
+
+        Secondary signals (e.g. coherence deficit, memory staleness,
+        safety violations) are incorporated into the convergence
+        verdict produced by :meth:`check`.  When any secondary signal
+        exceeds 0.5, the verdict is degraded from 'converged' to
+        'converging' and certification is withheld, ensuring that
+        residual-norm convergence alone cannot certify the system when
+        auxiliary subsystems indicate instability.
+
+        Args:
+            name: Descriptive label (e.g. ``'coherence_deficit'``).
+            value: Signal magnitude ∈ [0, 1].  Higher means worse.
+        """
+        self._secondary_signals[name] = max(0.0, min(1.0, value))
+
+    def get_secondary_signals(self) -> Dict[str, float]:
+        """Return a copy of the current secondary signals."""
+        return dict(self._secondary_signals)
+
     def reset(self):
         """Clear recorded history."""
         self.history.clear()
+        self._secondary_signals.clear()
 
     def check(self, delta_norm: float) -> Dict[str, Any]:
         """
@@ -7089,7 +7112,10 @@ class ConvergenceMonitor:
         self.history.append(delta_norm)
 
         if len(self.history) < 3:
-            return {'status': 'warmup', 'certified': False}
+            verdict = {'status': 'warmup', 'certified': False}
+            if self._secondary_signals:
+                verdict['secondary_signals'] = dict(self._secondary_signals)
+            return verdict
 
         ratios = [
             self.history[i] / max(self.history[i - 1], 1e-12)
@@ -7097,23 +7123,59 @@ class ConvergenceMonitor:
         ]
         avg_contraction = float(np.mean(ratios))
 
+        # Check whether any secondary signal is above the instability
+        # threshold — if so, residual convergence alone is insufficient
+        # to certify the system as fully converged.
+        _SECONDARY_INSTABILITY_THRESHOLD = 0.5
+        _secondary_degraded = any(
+            v > _SECONDARY_INSTABILITY_THRESHOLD
+            for v in self._secondary_signals.values()
+        )
+
         if avg_contraction < 1.0 and delta_norm < self.threshold:
-            verdict = {
-                'status': 'converged',
-                'certified': True,
-                'contraction_rate': avg_contraction,
-                'confidence': 1.0 - avg_contraction,
-            }
-            # Record successful convergence so error-evolution can
-            # reinforce parameter states that led to good outcomes,
-            # not only learn from failures.
-            self._bridge_convergence_event(
-                'convergence_success',
-                'nominal',
-                success=True,
-                metadata={'avg_contraction': avg_contraction,
-                          'delta_norm': delta_norm},
-            )
+            if _secondary_degraded:
+                # Residual converged but auxiliary subsystems indicate
+                # instability — downgrade to 'converging' and withhold
+                # certification so the meta-cognitive cycle continues.
+                _degrading_signals = {
+                    k: v for k, v in self._secondary_signals.items()
+                    if v > _SECONDARY_INSTABILITY_THRESHOLD
+                }
+                verdict = {
+                    'status': 'converging',
+                    'certified': False,
+                    'contraction_rate': avg_contraction,
+                    'confidence': 1.0 - avg_contraction,
+                    'secondary_degraded': True,
+                    'degrading_signals': _degrading_signals,
+                }
+                self._bridge_convergence_event(
+                    'convergence_secondary_degraded',
+                    'withhold_certification',
+                    success=False,
+                    metadata={
+                        'avg_contraction': avg_contraction,
+                        'delta_norm': delta_norm,
+                        'degrading_signals': _degrading_signals,
+                    },
+                )
+            else:
+                verdict = {
+                    'status': 'converged',
+                    'certified': True,
+                    'contraction_rate': avg_contraction,
+                    'confidence': 1.0 - avg_contraction,
+                }
+                # Record successful convergence so error-evolution can
+                # reinforce parameter states that led to good outcomes,
+                # not only learn from failures.
+                self._bridge_convergence_event(
+                    'convergence_success',
+                    'nominal',
+                    success=True,
+                    metadata={'avg_contraction': avg_contraction,
+                              'delta_norm': delta_norm},
+                )
         elif avg_contraction >= 1.0:
             verdict = {
                 'status': 'diverging',
@@ -7143,6 +7205,9 @@ class ConvergenceMonitor:
                     metadata={'avg_contraction': avg_contraction,
                               'delta_norm': delta_norm},
                 )
+        # Include secondary signals in every verdict for traceability.
+        if self._secondary_signals:
+            verdict['secondary_signals'] = dict(self._secondary_signals)
         return verdict
 
     # ---- internal helper ---------------------------------------------------
@@ -17642,9 +17707,25 @@ class AEONDeltaV3(nn.Module):
         # window monitor to detect sustained divergence across forward
         # passes.  A 'diverging' verdict triggers deeper meta-cognitive
         # processing downstream.
+        # Before checking, record auxiliary secondary signals so the
+        # convergence verdict reflects cross-subsystem health, not only
+        # residual norm.  This ensures that residual convergence alone
+        # cannot certify the system when coherence, memory, or safety
+        # subsystems indicate instability.
         residual_norm_scalar = meta_results.get("residual_norm", 1.0)
         if not math.isfinite(residual_norm_scalar):
             residual_norm_scalar = 1.0  # safe fallback
+        self.convergence_monitor.record_secondary_signal(
+            "coherence_deficit", self._cached_coherence_deficit,
+        )
+        if self._memory_stale:
+            self.convergence_monitor.record_secondary_signal(
+                "memory_staleness", 0.6,
+            )
+        if self._cached_causal_quality < 1.0:
+            self.convergence_monitor.record_secondary_signal(
+                "causal_quality_deficit", 1.0 - self._cached_causal_quality,
+            )
         convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
         is_diverging = convergence_verdict.get('status') == 'diverging'
         if is_diverging and not fast:
@@ -17928,6 +18009,35 @@ class AEONDeltaV3(nn.Module):
                                 {"usage_rate": _vq_utilization},
                             ),
                         )
+                    # Invoke auto-critic for immediate correction when
+                    # VQ codebook collapse is detected, consistent with
+                    # the topology catastrophe path (step 5a-iv-topo-
+                    # critic).  Uncertainty escalation alone defers
+                    # correction to the metacognitive cycle; direct
+                    # auto-critic invocation provides immediate self-
+                    # correction of the collapsed representation.
+                    if self.auto_critic is not None:
+                        try:
+                            _vq_critic = self.auto_critic(C_star)
+                            _vq_revised = _vq_critic.get("candidate", None)
+                            if (_vq_revised is not None
+                                    and torch.isfinite(_vq_revised).all()
+                                    and _vq_revised.shape == C_star.shape):
+                                C_star = _vq_revised
+                            self.audit_log.record(
+                                "auto_critic", "vq_collapse_revision", {
+                                    "revised": _vq_revised is not None,
+                                    "usage_rate": _vq_utilization,
+                                    "critic_score": _vq_critic.get(
+                                        "final_score", 0.0,
+                                    ),
+                                },
+                            )
+                        except Exception as _vq_ac_err:
+                            logger.debug(
+                                "VQ collapse auto-critic failed: %s",
+                                _vq_ac_err,
+                            )
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
                 _vq_err_boost = min(1.0 - uncertainty, 0.05)
@@ -18882,6 +18992,17 @@ class AEONDeltaV3(nn.Module):
                 _ARB_CONFLICT_EXTRA_ITERS = 3
                 if _convergence_arbiter_result.get("has_conflict", False):
                     _extra_iters += _ARB_CONFLICT_EXTRA_ITERS
+                # Add extra iterations when recovery pressure is high —
+                # frequent recent errors indicate the system is unstable
+                # and needs deeper reasoning to settle, wiring error
+                # recovery history directly into reasoning depth.
+                _recovery_pressure = self._compute_recovery_pressure()
+                if _recovery_pressure > 0.3:
+                    _RECOVERY_PRESSURE_MAX_EXTRA = 2
+                    _recovery_extra = max(
+                        1, int(_recovery_pressure * _RECOVERY_PRESSURE_MAX_EXTRA),
+                    )
+                    _extra_iters += _recovery_extra
                 # Temporarily adjust meta-loop parameters
                 orig_threshold = self.meta_loop.convergence_threshold
                 orig_max_iter = self.meta_loop.max_iterations
@@ -25560,6 +25681,32 @@ class AEONDeltaV3(nn.Module):
                 'check triggers re-retrieval on mismatch'
             )
 
+        # --- Extension points (defined but not instantiated in the pipeline) ---
+        # These classes are defined in the module for architectural
+        # completeness but are not instantiated in AEONDeltaV3.__init__
+        # or called in the forward pass.  They serve as documented
+        # extension points for future integration.
+        _extension_point_classes = [
+            ('Task2VecMetaLearner',
+             'Task embedding for zero-shot task adaptation'),
+            ('ParallelCognitivePipeline',
+             'Concurrent subsystem execution for latency reduction'),
+            ('HierarchicalCognitiveArchitecture',
+             'Multi-level cognitive organization with executive control'),
+            ('LatentDynamicsModel',
+             'Latent-space dynamics prediction for planning'),
+            ('CuriosityDrivenExploration',
+             'Intrinsic curiosity for active exploration — '
+             'ActiveLearningPlanner extends MCTSPlanner with curiosity'),
+        ]
+        _extension_points: List[Dict[str, str]] = []
+        for _ep_cls, _ep_desc in _extension_point_classes:
+            _extension_points.append({
+                'class': _ep_cls,
+                'description': _ep_desc,
+                'status': 'available_not_integrated',
+            })
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -25608,6 +25755,7 @@ class AEONDeltaV3(nn.Module):
                 * (1.0 - getattr(self, '_cached_surprise', 0.0))
                 * getattr(self, '_cached_output_quality', 1.0)
             )),
+            'extension_points': _extension_points,
         }
 
     @torch.no_grad()
