@@ -14246,8 +14246,12 @@ class CausalErrorEvolutionTracker:
             if len(self._episodes[error_class]) > self._max_history:
                 self._episodes[error_class] = self._episodes[error_class][-self._max_history:]
             self._total_recorded += 1
-        # Propagate to causal trace when connected
-        if self._causal_trace is not None:
+        # Propagate to causal trace when connected.  Skip the "none"
+        # error class (routine success bookkeeping) to avoid diluting
+        # the trace buffer with entries that carry no causal signal —
+        # this keeps pipeline-stage entries (e.g. multimodal, integration)
+        # within the ``recent(n)`` window for root-cause queries.
+        if self._causal_trace is not None and error_class != "none":
             self._causal_trace.record(
                 subsystem=f"error_evolution/{error_class}",
                 decision=f"{strategy_used}:{'ok' if success else 'fail'}",
@@ -15609,7 +15613,7 @@ class AEONDeltaV3(nn.Module):
         # ===== COMPOSITIONAL SLOT ATTENTION =====
         logger.info("Loading CompositionalSlotAttention...")
         self.slot_binder = CompositionalSlotAttention(
-            num_slots=7,
+            num_slots=config.num_pillars,
             slot_dim=config.hidden_dim,
             num_heads=4,
         ).to(self.device)
@@ -18149,7 +18153,7 @@ class AEONDeltaV3(nn.Module):
         # pooling preserves permutation invariance across slots and
         # avoids introducing additional learnable parameters.
         self.provenance_tracker.record_before("slot_binding", C_star)
-        slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, 7, hidden_dim]
+        slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, num_pillars, hidden_dim]
         C_star = C_star + slot_assignments.mean(dim=1)
         self.provenance_tracker.record_after("slot_binding", C_star)
         # Register slot binding output in causal context so that
