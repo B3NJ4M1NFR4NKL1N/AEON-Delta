@@ -38852,6 +38852,167 @@ def test_self_diagnostic_reports_memory_quality_feedback():
     print("✅ test_self_diagnostic_reports_memory_quality_feedback PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification — Provenance API, Feedback Bus Observability,
+# Trainer Convergence Wiring Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_get_metacognitive_state_includes_feedback_bus():
+    """get_metacognitive_state() must include feedback_bus state."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    state = model.get_metacognitive_state()
+
+    assert "feedback_bus" in state, (
+        "get_metacognitive_state must include 'feedback_bus' key"
+    )
+    fb = state["feedback_bus"]
+    assert "available" in fb
+    assert fb["available"] is True, "feedback_bus should be available"
+    assert "has_cached_signal" in fb
+    assert "cached_signal_norm" in fb
+
+    print("✅ test_get_metacognitive_state_includes_feedback_bus PASSED")
+
+
+def test_feedback_bus_state_reflects_cached_signal():
+    """feedback_bus state must reflect None vs populated cached feedback."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Initially no cached feedback
+    state = model.get_metacognitive_state()
+    assert state["feedback_bus"]["has_cached_signal"] is False
+    assert state["feedback_bus"]["cached_signal_norm"] is None
+
+    # Simulate a cached feedback signal
+    model._cached_feedback = torch.randn(1, 32)
+    state = model.get_metacognitive_state()
+    assert state["feedback_bus"]["has_cached_signal"] is True
+    assert state["feedback_bus"]["cached_signal_norm"] is not None
+    assert state["feedback_bus"]["cached_signal_norm"] > 0
+
+    print("✅ test_feedback_bus_state_reflects_cached_signal PASSED")
+
+
+def test_self_diagnostic_reports_feedback_bus_observability():
+    """self_diagnostic must verify feedback bus observability wiring."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+    verified = report["verified_connections"]
+    joined = " ".join(verified)
+
+    assert "feedback_bus" in joined and "get_metacognitive_state" in joined, (
+        f"self_diagnostic should verify feedback bus observability; "
+        f"verified connections: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_reports_feedback_bus_observability PASSED")
+
+
+def test_trainer_wires_convergence_to_error_evolution():
+    """AEONTrainer must wire convergence_monitor to model's error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    trainer = AEONTrainer(model, config)
+
+    # Verify convergence monitor is wired to error evolution
+    assert trainer.convergence_monitor._error_evolution is not None, (
+        "Trainer convergence_monitor must be wired to model's error_evolution"
+    )
+    assert trainer.convergence_monitor._error_evolution is model.error_evolution, (
+        "Trainer convergence_monitor must reference the same error_evolution"
+    )
+
+    print("✅ test_trainer_wires_convergence_to_error_evolution PASSED")
+
+
+def test_trainer_wires_convergence_to_provenance():
+    """AEONTrainer must wire convergence_monitor to model's provenance_tracker."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    trainer = AEONTrainer(model, config)
+
+    # Verify convergence monitor is wired to provenance tracker
+    assert trainer.convergence_monitor._provenance_tracker is not None, (
+        "Trainer convergence_monitor must be wired to model's provenance_tracker"
+    )
+    assert trainer.convergence_monitor._provenance_tracker is model.provenance_tracker, (
+        "Trainer convergence_monitor must reference the same provenance_tracker"
+    )
+
+    print("✅ test_trainer_wires_convergence_to_provenance PASSED")
+
+
+def test_server_provenance_endpoint_exists():
+    """The /api/provenance endpoint must be registered in the server app."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+
+    routes = [r.path for r in aeon_server.app.routes]
+    assert "/api/provenance" in routes, (
+        f"/api/provenance endpoint must exist; routes: {routes}"
+    )
+
+    print("✅ test_server_provenance_endpoint_exists PASSED")
+
+
+def test_server_provenance_root_cause_endpoint_exists():
+    """The /api/provenance/root_cause endpoint must be registered."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+
+    routes = [r.path for r in aeon_server.app.routes]
+    assert "/api/provenance/root_cause/{module_name}" in routes, (
+        f"/api/provenance/root_cause/{{module_name}} endpoint must exist; "
+        f"routes: {routes}"
+    )
+
+    print("✅ test_server_provenance_root_cause_endpoint_exists PASSED")
+
+
+def test_server_causal_trace_endpoint_exists():
+    """The /api/causal_trace endpoint must be registered in the server app."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+
+    routes = [r.path for r in aeon_server.app.routes]
+    assert "/api/causal_trace" in routes, (
+        f"/api/causal_trace endpoint must exist; routes: {routes}"
+    )
+
+    print("✅ test_server_causal_trace_endpoint_exists PASSED")
+
+
+def test_server_causal_trace_root_cause_endpoint_exists():
+    """The /api/causal_trace/root_cause endpoint must be registered."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+
+    routes = [r.path for r in aeon_server.app.routes]
+    assert "/api/causal_trace/root_cause/{entry_id}" in routes, (
+        f"/api/causal_trace/root_cause/{{entry_id}} endpoint must exist; "
+        f"routes: {routes}"
+    )
+
+    print("✅ test_server_causal_trace_root_cause_endpoint_exists PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -40501,6 +40662,17 @@ def _run_all_tests():
     test_self_diagnostic_reports_unconditional_safety()
     test_self_diagnostic_reports_unconditional_coherence()
     test_self_diagnostic_reports_memory_quality_feedback()
+
+    # Architectural Unification — Provenance API, Feedback Bus, Trainer Wiring
+    test_get_metacognitive_state_includes_feedback_bus()
+    test_feedback_bus_state_reflects_cached_signal()
+    test_self_diagnostic_reports_feedback_bus_observability()
+    test_trainer_wires_convergence_to_error_evolution()
+    test_trainer_wires_convergence_to_provenance()
+    test_server_provenance_endpoint_exists()
+    test_server_provenance_root_cause_endpoint_exists()
+    test_server_causal_trace_endpoint_exists()
+    test_server_causal_trace_root_cause_endpoint_exists()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

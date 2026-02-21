@@ -1711,6 +1711,133 @@ async def get_observability_traces(last_n: int = 100):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  CAUSAL PROVENANCE & TRACEABILITY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/provenance")
+async def get_provenance():
+    """Return the current causal provenance attribution snapshot.
+
+    Exposes the per-module L2 delta contributions computed by
+    ``CausalProvenanceTracker.compute_attribution()`` so that external
+    consumers can trace which modules were most responsible for the
+    output state.  This closes the API gap where provenance data was
+    computed internally but not accessible outside the model.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        attribution = APP.model.provenance_tracker.compute_attribution()
+        return {
+            "ok": True,
+            "attribution": {
+                "contributions": attribution.get("contributions", {}),
+                "deltas": attribution.get("deltas", {}),
+                "order": attribution.get("order", []),
+            },
+        }
+    except Exception as e:
+        logging.error(f"Provenance endpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/provenance/root_cause/{module_name}")
+async def get_provenance_root_cause(module_name: str):
+    """Trace root causes backward from a named module through the
+    provenance dependency DAG.
+
+    Invokes ``CausalProvenanceTracker.trace_root_cause()`` for the
+    specified module, returning the upstream modules that had the
+    largest L2 impact.  This enables external root-cause analysis:
+    given a module that dominated the output, identify which upstream
+    transformations shaped its behaviour.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        root_cause = APP.model.provenance_tracker.trace_root_cause(
+            module_name,
+        )
+        return {"ok": True, "module": module_name, "root_cause": root_cause}
+    except Exception as e:
+        logging.error(f"Provenance root-cause endpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/causal_trace")
+async def get_causal_trace(last_n: int = 50):
+    """Return recent entries from the temporal causal trace buffer.
+
+    Unlike ``/api/observability/traces`` which returns audit-log entries,
+    this endpoint exposes the ``TemporalCausalTraceBuffer`` — the
+    subsystem-level causal decision chain that records every module's
+    reasoning decisions with timestamps and severity.  This closes the
+    traceability gap where causal trace data was recorded internally
+    but only audit-log traces were exposed via the API.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        trace = getattr(APP.model, "causal_trace", None)
+        if trace is None:
+            return {
+                "ok": True,
+                "available": False,
+                "reason": "Causal trace not enabled",
+            }
+        entries = list(trace._entries)[-last_n:]
+        # Convert entries to serialisable dicts
+        serialised = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                serialised.append({
+                    k: v for k, v in entry.items()
+                    if not isinstance(v, (bytes, memoryview))
+                })
+            else:
+                serialised.append(str(entry))
+        return {
+            "ok": True,
+            "available": True,
+            "count": len(serialised),
+            "entries": serialised,
+        }
+    except Exception as e:
+        logging.error(f"Causal trace endpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/causal_trace/root_cause/{entry_id}")
+async def get_causal_trace_root_cause(entry_id: str):
+    """Trace root causes for a specific causal trace entry.
+
+    Invokes ``TemporalCausalTraceBuffer.trace_root_cause()`` for the
+    given entry ID, returning the ordered causal chain that led to
+    the decision.  This satisfies the requirement that all conclusions
+    can be traced back to their root causes.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        trace = getattr(APP.model, "causal_trace", None)
+        if trace is None:
+            return {
+                "ok": True,
+                "available": False,
+                "reason": "Causal trace not enabled",
+            }
+        root_cause = trace.trace_root_cause(entry_id)
+        return {
+            "ok": True,
+            "entry_id": entry_id,
+            "root_cause": root_cause,
+        }
+    except Exception as e:
+        logging.error(f"Causal trace root-cause endpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  VQ-VAE CODEBOOK
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/vq/codebook")
