@@ -13558,6 +13558,11 @@ class CausalDAGConsensus:
                 - needs_escalation: bool — True when consensus < threshold.
                 - uncertainty_boost: float — suggested uncertainty increase.
                 - num_models: int — number of models compared.
+                - reconciled_adjacency: Tensor — weighted-average consensus
+                  DAG (flattened).  Each model is weighted inversely by its
+                  mean distance to other models, so models that agree with
+                  the majority contribute more.  Only present when
+                  num_models ≥ 2.
         """
         names = list(adjacency_matrices.keys())
         n = len(names)
