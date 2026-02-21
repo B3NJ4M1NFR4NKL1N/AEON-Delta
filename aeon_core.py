@@ -15586,6 +15586,13 @@ class AEONDeltaV3(nn.Module):
             self.continual_learning = ContinualLearningCore(
                 base_model=self.encoder,
             ).to(self.device)
+            # Override the lateral adapter dimension to match the config's
+            # hidden_dim — ContinualLearningCore falls back to 256 when
+            # the base_model lacks a .config attribute (e.g. SSMThoughtEncoder).
+            if self.continual_learning.lateral_adapter.in_features != config.hidden_dim:
+                self.continual_learning.lateral_adapter = nn.Linear(
+                    config.hidden_dim, config.hidden_dim,
+                ).to(self.device)
         else:
             self.continual_learning = None
 

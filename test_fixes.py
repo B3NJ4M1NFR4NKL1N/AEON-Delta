@@ -36338,6 +36338,352 @@ def test_causal_trace_find_meta_loop():
     print("✅ test_causal_trace_find_meta_loop PASSED")
 
 
+# ============================================================================
+# Architectural Unification — ContinualLearningCore, GroundedMultimodalLearning,
+# and Encoder-Reasoning Normalization Bridge Tests
+# ============================================================================
+
+
+def test_continual_learning_config_and_init():
+    """ContinualLearningCore is initialized when enable_continual_learning=True
+    and wired into the pipeline with lateral adapter enrichment."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_continual_learning=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.continual_learning is not None, (
+        "ContinualLearningCore should be initialized when "
+        "enable_continual_learning=True"
+    )
+    # Verify lateral adapter has correct dimensions
+    assert model.continual_learning.lateral_adapter.in_features == 32
+    assert model.continual_learning.lateral_adapter.out_features == 32
+    # Verify pipeline dependency edges exist
+    _deps = model._PIPELINE_DEPENDENCIES
+    _dep_pairs = [(u, d) for u, d in _deps]
+    assert ("encoder", "continual_learning") in _dep_pairs
+    assert ("continual_learning", "vq") in _dep_pairs
+
+    print("✅ test_continual_learning_config_and_init PASSED")
+
+
+def test_continual_learning_disabled_by_default():
+    """ContinualLearningCore should be None when not enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert model.continual_learning is None
+    print("✅ test_continual_learning_disabled_by_default PASSED")
+
+
+def test_continual_learning_forward_enrichment():
+    """When ContinualLearningCore is active, the encoder output should be
+    enriched by the lateral adapter during forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_continual_learning=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    # Forward should complete without error
+    assert 'logits' in outputs
+    assert outputs['logits'].shape[0] == 2
+    print("✅ test_continual_learning_forward_enrichment PASSED")
+
+
+def test_grounded_multimodal_config_and_init():
+    """GroundedMultimodalLearning is initialized when
+    enable_grounded_multimodal=True and wired into the pipeline."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.grounded_multimodal is not None, (
+        "GroundedMultimodalLearning should be initialized when "
+        "enable_grounded_multimodal=True"
+    )
+    # Verify pipeline dependency edges
+    _dep_pairs = [(u, d) for u, d in model._PIPELINE_DEPENDENCIES]
+    assert ("multimodal", "grounded_multimodal") in _dep_pairs
+    assert ("grounded_multimodal", "integration") in _dep_pairs
+
+    print("✅ test_grounded_multimodal_config_and_init PASSED")
+
+
+def test_grounded_multimodal_disabled_by_default():
+    """GroundedMultimodalLearning should be None when not enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert model.grounded_multimodal is None
+    print("✅ test_grounded_multimodal_disabled_by_default PASSED")
+
+
+def test_grounded_multimodal_forward_produces_results():
+    """When GroundedMultimodalLearning is active, forward pass should
+    produce grounded_multimodal_results in outputs."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    assert 'grounded_multimodal_results' in outputs
+    print("✅ test_grounded_multimodal_forward_produces_results PASSED")
+
+
+def test_grounded_multimodal_loss_in_compute_loss():
+    """compute_loss should include grounded_mm_loss when
+    GroundedMultimodalLearning is active."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    outputs = model(input_ids, decode_mode='train')
+    labels = torch.randint(0, 100, (2, 16))
+    loss_dict = model.compute_loss(outputs, labels)
+
+    assert 'grounded_mm_loss' in loss_dict, (
+        "compute_loss should return grounded_mm_loss"
+    )
+    print("✅ test_grounded_multimodal_loss_in_compute_loss PASSED")
+
+
+def test_encoder_reasoning_norm_default_enabled():
+    """Encoder-reasoning normalization bridge should be enabled by
+    default and present as a LayerNorm module."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch.nn as nn
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.encoder_reasoning_norm is not None, (
+        "encoder_reasoning_norm should be enabled by default"
+    )
+    assert isinstance(model.encoder_reasoning_norm, nn.LayerNorm)
+    assert model.encoder_reasoning_norm.normalized_shape == (32,)
+    print("✅ test_encoder_reasoning_norm_default_enabled PASSED")
+
+
+def test_encoder_reasoning_norm_can_be_disabled():
+    """Encoder-reasoning normalization bridge can be disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_encoder_reasoning_norm=False,
+    )
+    model = AEONDeltaV3(config)
+    assert model.encoder_reasoning_norm is None
+    print("✅ test_encoder_reasoning_norm_can_be_disabled PASSED")
+
+
+def test_encoder_reasoning_norm_forward_pass():
+    """Forward pass should work correctly with encoder-reasoning norm."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_encoder_reasoning_norm=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    assert 'logits' in outputs
+    assert outputs['logits'].shape[0] == 2
+    print("✅ test_encoder_reasoning_norm_forward_pass PASSED")
+
+
+def test_self_diagnostic_reports_continual_learning():
+    """self_diagnostic should report continual_learning as active
+    when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_continual_learning=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    assert 'continual_learning' in report['active_modules'], (
+        "self_diagnostic should list continual_learning as active"
+    )
+    # Should have a verified connection for continual learning
+    cl_verified = [
+        v for v in report['verified_connections']
+        if 'continual_learning' in v
+    ]
+    assert len(cl_verified) > 0, (
+        "self_diagnostic should verify continual_learning connection"
+    )
+    print("✅ test_self_diagnostic_reports_continual_learning PASSED")
+
+
+def test_self_diagnostic_reports_grounded_multimodal():
+    """self_diagnostic should report grounded_multimodal as active
+    when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    assert 'grounded_multimodal' in report['active_modules'], (
+        "self_diagnostic should list grounded_multimodal as active"
+    )
+    gm_verified = [
+        v for v in report['verified_connections']
+        if 'grounded_multimodal' in v
+    ]
+    assert len(gm_verified) > 0, (
+        "self_diagnostic should verify grounded_multimodal connection"
+    )
+    print("✅ test_self_diagnostic_reports_grounded_multimodal PASSED")
+
+
+def test_self_diagnostic_reports_encoder_reasoning_norm():
+    """self_diagnostic should report encoder_reasoning_norm as active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+
+    assert 'encoder_reasoning_norm' in report['active_modules'], (
+        "self_diagnostic should list encoder_reasoning_norm as active"
+    )
+    norm_verified = [
+        v for v in report['verified_connections']
+        if 'encoder_reasoning_norm' in v
+    ]
+    assert len(norm_verified) > 0, (
+        "self_diagnostic should verify encoder_reasoning_norm connection"
+    )
+    print("✅ test_self_diagnostic_reports_encoder_reasoning_norm PASSED")
+
+
+def test_full_coherence_enables_new_modules():
+    """enable_full_coherence should activate continual_learning and
+    grounded_multimodal alongside all other coherence features."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_full_coherence=True,
+    )
+    assert config.enable_continual_learning is True, (
+        "enable_full_coherence should activate enable_continual_learning"
+    )
+    assert config.enable_grounded_multimodal is True, (
+        "enable_full_coherence should activate enable_grounded_multimodal"
+    )
+    print("✅ test_full_coherence_enables_new_modules PASSED")
+
+
+def test_pipeline_deps_include_new_modules():
+    """_PIPELINE_DEPENDENCIES should include edges for continual_learning,
+    grounded_multimodal, and encoder_reasoning_norm."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_pairs = [(u, d) for u, d in deps]
+
+    assert ("encoder", "continual_learning") in dep_pairs
+    assert ("continual_learning", "vq") in dep_pairs
+    assert ("multimodal", "grounded_multimodal") in dep_pairs
+    assert ("grounded_multimodal", "integration") in dep_pairs
+    assert ("vq", "encoder_reasoning_norm") in dep_pairs
+    assert ("encoder_reasoning_norm", "meta_loop") in dep_pairs
+
+    print("✅ test_pipeline_deps_include_new_modules PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -37883,6 +38229,23 @@ def _run_all_tests():
     test_reconciled_adjacency_cached()
     test_post_coherence_includes_world_model()
     test_causal_trace_find_meta_loop()
+
+    # Architectural Unification — New Module Integration Tests
+    test_continual_learning_config_and_init()
+    test_continual_learning_disabled_by_default()
+    test_continual_learning_forward_enrichment()
+    test_grounded_multimodal_config_and_init()
+    test_grounded_multimodal_disabled_by_default()
+    test_grounded_multimodal_forward_produces_results()
+    test_grounded_multimodal_loss_in_compute_loss()
+    test_encoder_reasoning_norm_default_enabled()
+    test_encoder_reasoning_norm_can_be_disabled()
+    test_encoder_reasoning_norm_forward_pass()
+    test_self_diagnostic_reports_continual_learning()
+    test_self_diagnostic_reports_grounded_multimodal()
+    test_self_diagnostic_reports_encoder_reasoning_norm()
+    test_full_coherence_enables_new_modules()
+    test_pipeline_deps_include_new_modules()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
