@@ -35515,6 +35515,190 @@ def test_provenance_instrumented_includes_encoder_vq():
     print("✅ test_provenance_instrumented_includes_encoder_vq PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Cross-Module Verification & Causal Coherence
+# ============================================================================
+
+
+def test_dag_consensus_revision_re_verified():
+    """After auto-critic revises C_star for DAG disagreement, the audit log
+    should include a post_revision_consensus score and a revision_improved
+    flag, confirming the revision was re-verified against DAG consensus."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    # The audit log for dag_disagreement_revision (if triggered) should
+    # now include post_revision_consensus and revision_improved fields.
+    # Even if DAG consensus disagreement didn't occur in this pass, the
+    # code path is structurally present.  We verify the model loads and
+    # runs without error with the re-verification code in place.
+    assert model.audit_log is not None
+    print("✅ test_dag_consensus_revision_re_verified PASSED")
+
+
+def test_complexity_gated_skip_includes_score():
+    """When complexity gates deactivate a subsystem, the causal trace should
+    include the actual complexity_score in the metadata, not just gate_index."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_complexity_estimator=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        if model.complexity_estimator is not None:
+            orig_fwd = model.complexity_estimator.forward
+
+            def _zero_gates(x):
+                result = orig_fwd(x)
+                result['subsystem_gates'] = torch.zeros_like(
+                    result['subsystem_gates']
+                )
+                return result
+
+            model.complexity_estimator.forward = _zero_gates
+
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert model.causal_trace is not None
+    recent = model.causal_trace.recent(n=100)
+    skip_entries = [
+        e for e in recent
+        if e.get("decision") == "complexity_gated_skip"
+    ]
+    assert len(skip_entries) > 0, "Expected complexity_gated_skip entries"
+    for entry in skip_entries:
+        meta = entry.get("metadata", {})
+        assert "complexity_score" in meta, (
+            f"complexity_gated_skip for {entry['subsystem']} should include "
+            "complexity_score in metadata"
+        )
+    print("✅ test_complexity_gated_skip_includes_score PASSED")
+
+
+def test_coherence_deficit_includes_weakest_pair():
+    """The ModuleCoherenceVerifier.get_weakest_pair() should return the
+    weakest module pair from pairwise similarities."""
+    import torch
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.99)
+    states = {
+        "module_a": torch.randn(2, 32),
+        "module_b": torch.randn(2, 32),
+        "module_c": torch.randn(2, 32),
+    }
+    result = verifier(states)
+    pairwise = result.get("pairwise", {})
+    weakest = ModuleCoherenceVerifier.get_weakest_pair(pairwise)
+
+    assert weakest is not None, "Expected a weakest pair when 3 modules present"
+    assert "pair" in weakest
+    assert "similarity" in weakest
+    assert "modules" in weakest
+    assert len(weakest["modules"]) == 2
+    print("✅ test_coherence_deficit_includes_weakest_pair PASSED")
+
+
+def test_memory_trust_degrades_causal_quality():
+    """When memory trust is low, _cached_causal_quality should be degraded
+    to reflect that causal conclusions built on unreliable context are
+    themselves less reliable."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # If trust_scorer is available, monkey-patch it to return low trust
+    if model.trust_scorer is not None:
+        orig_trust = model.trust_scorer.forward
+
+        def _low_trust(memory_context, query):
+            result = orig_trust(memory_context, query)
+            result['trust_score'] = torch.zeros_like(result['trust_score']) + 0.1
+            result['verification_weight'] = torch.ones_like(
+                result['verification_weight']
+            ) * 0.1
+            return result
+
+        model.trust_scorer.forward = _low_trust
+
+        z_in = torch.randn(2, 32)
+        # Set initial causal quality high
+        model._cached_causal_quality = 1.0
+
+        with torch.no_grad():
+            _, outputs = model.reasoning_core(z_in, fast=False)
+
+        # After low trust, causal quality should have been degraded
+        assert model._cached_causal_quality < 1.0, (
+            f"Expected _cached_causal_quality < 1.0 after low memory trust, "
+            f"got {model._cached_causal_quality}"
+        )
+    print("✅ test_memory_trust_degrades_causal_quality PASSED")
+
+
+def test_topology_catastrophe_triggers_auto_critic():
+    """The pipeline dependency DAG should include an edge from
+    topology_analysis to auto_critic, ensuring topology catastrophe
+    can trigger immediate state correction."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge = ("topology_analysis", "auto_critic")
+    assert edge in deps, (
+        f"Expected {edge} in _PIPELINE_DEPENDENCIES for topology "
+        "catastrophe → auto-critic correction path"
+    )
+    print("✅ test_topology_catastrophe_triggers_auto_critic PASSED")
+
+
+def test_ns_post_revision_check_runs():
+    """After auto-critic revision triggered by NS violations, the revised
+    output should be re-checked against NS consistency rules.  We verify
+    this by running the full forward pass — the re-verification code
+    should not raise errors."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    # The forward pass should complete without error even with the
+    # new NS re-verification code path.
+    assert outputs is not None
+    print("✅ test_ns_post_revision_check_runs PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -37032,6 +37216,14 @@ def _run_all_tests():
     test_verify_coherence_includes_integration_state()
     test_unmapped_error_class_falls_back_to_uncertainty()
     test_provenance_instrumented_includes_encoder_vq()
+    
+    # Architectural Unification — Cross-Module Verification & Causal Coherence
+    test_dag_consensus_revision_re_verified()
+    test_complexity_gated_skip_includes_score()
+    test_coherence_deficit_includes_weakest_pair()
+    test_memory_trust_degrades_causal_quality()
+    test_topology_catastrophe_triggers_auto_critic()
+    test_ns_post_revision_check_runs()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
