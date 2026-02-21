@@ -720,8 +720,8 @@ async def run_inference(req: InferRequest):
     audit = {}
     try:
         audit = APP.model.get_audit_summary()
-    except Exception:
-        pass
+    except Exception as audit_err:
+        logging.warning("Audit summary unavailable: %s", audit_err)
     tg = {}
     try:
         tg = {
@@ -729,8 +729,8 @@ async def run_inference(req: InferRequest):
             "inf_count": APP.model.tensor_guard._inf_count,
             "sanitize_count": APP.model.tensor_guard._sanitize_count,
         }
-    except Exception:
-        pass
+    except Exception as tg_err:
+        logging.warning("TensorGuard stats unavailable: %s", tg_err)
 
     text_out = result.get("text", "")
     tokens = len(text_out.split())
@@ -744,15 +744,15 @@ async def run_inference(req: InferRequest):
     metacognitive = {}
     try:
         metacognitive = APP.model.get_metacognitive_state()
-    except Exception:
-        pass
+    except Exception as mc_err:
+        logging.warning("Metacognitive state unavailable: %s", mc_err)
 
     # Recovery statistics for consumers to assess error-handling health
     recovery_stats = {}
     try:
         recovery_stats = APP.model.error_recovery.get_recovery_stats()
-    except Exception:
-        pass
+    except Exception as rs_err:
+        logging.warning("Recovery stats unavailable: %s", rs_err)
 
     return {
         "ok": True,

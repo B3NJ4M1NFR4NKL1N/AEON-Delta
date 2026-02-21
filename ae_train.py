@@ -4416,6 +4416,60 @@ def main(
 
     trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
 
+    # ===== End-of-training unified cognitive cycle evaluation =====
+    # Run a final UCC evaluation after both phases complete to verify
+    # that the trained model maintains cross-module coherence.  Without
+    # this check, training could silently produce a model whose
+    # subsystems are internally inconsistent, violating the architectural
+    # requirement that each component verifies and reinforces the others.
+    try:
+        _final_ucc = trainer_B._unified_cycle
+        _final_result = _final_ucc.evaluate(
+            subsystem_states={
+                "encoder": trainer_B._last_vq_state
+                if trainer_B._last_vq_state is not None
+                else torch.zeros(1, config.z_dim),
+                "rssm": trainer_B._last_rssm_state
+                if trainer_B._last_rssm_state is not None
+                else torch.zeros(1, config.z_dim),
+            },
+            delta_norm=0.0,
+            uncertainty=0.0,
+        )
+        _coherence = 1.0 - _final_result["coherence_result"]["coherence_deficit"]
+        logger.info(
+            f"🧠 End-of-training UCC evaluation: "
+            f"coherence={_coherence:.4f}, "
+            f"converged={_final_result['convergence_verdict']}, "
+            f"should_rerun={_final_result['should_rerun']}"
+        )
+        if _final_result["should_rerun"]:
+            logger.warning(
+                "⚠️  End-of-training UCC recommends re-reasoning — "
+                "model coherence may be suboptimal"
+            )
+    except Exception as _ucc_err:
+        logger.warning(
+            "End-of-training UCC evaluation failed (non-fatal): %s",
+            _ucc_err,
+        )
+
+    # ===== Bidirectional bridge: inference insights → training =====
+    # Close the feedback loop by bridging Phase B's accumulated error
+    # evolution back to the trainer's hyperparameters.  This ensures
+    # that any uncertainty discovered during training triggers parameter
+    # adaptation, fulfilling the requirement that uncertainty triggers
+    # a meta-cognitive cycle.
+    _inference_adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=trainer_B._error_evolution,
+        trainer=trainer_B,
+    )
+    if _inference_adjustments:
+        logger.info(
+            f"🔗 Applied {_inference_adjustments} inference→training "
+            f"adjustment(s) from Phase B error evolution"
+        )
+
     # ===== Сохранение =====
     final_path = os.path.join(output_dir, "aeon_v4_final.pt")
     
