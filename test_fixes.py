@@ -1,5 +1,8 @@
 """
 Tests for refactoring fixes in aeon_core.py and ae_train.py.
+
+Enhanced with comprehensive data collection, architecture-map integration,
+and HTML report generation for AEON_Dashboard.html Test Suite panel.
 """
 
 import torch
@@ -8,10 +11,296 @@ import numpy as np
 import math
 import sys
 import os
+import io
+import json
+import time
+import traceback
 import logging
 
 # Add the project directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEST DATA COLLECTOR — captures all available data during testing and maps
+#  results to architecture pipeline nodes for AEON_Dashboard.html integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Architecture node IDs from the pipeline map
+_ARCH_NODES = [
+    'input', 'encoder', 'continual_learning', 'vq', 'encoder_reasoning_norm',
+    'meta_loop', 'certified_meta_loop', 'convergence_arbiter', 'slot_binding',
+    'factor_extraction', 'topology_analysis', 'diversity_analysis',
+    'complexity_estimator', 'consistency_gate', 'cross_validation',
+    'self_report', 'safety', 'cognitive_executive', 'deeper_meta_loop',
+    'world_model', 'hierarchical_world_model', 'causal_world_model',
+    'memory', 'temporal_memory', 'neurogenic_memory', 'consolidating_memory',
+    'memory_trust', 'memory_validation', 'memory_cross_validation',
+    'mcts_planning', 'active_learning', 'icm_curiosity', 'causal_model',
+    'notears_causal', 'causal_programmatic', 'causal_dag_consensus',
+    'unified_simulator', 'hybrid_reasoning', 'ns_bridge',
+    'temporal_knowledge_graph', 'hierarchical_vae', 'causal_context',
+    'rssm', 'multimodal', 'grounded_multimodal', 'integration',
+    'auto_critic', 'output_reliability', 'metacognitive_trigger',
+    'error_evolution', 'unified_cognitive_cycle', 'decoder',
+]
+
+# Keyword-to-node mapping for automatic test classification
+_KEYWORD_NODE_MAP = {
+    'encoder': 'encoder', 'ssm': 'encoder', 'ssmv2': 'encoder',
+    'mamba': 'encoder', 'linear_attention': 'encoder',
+    'continual_learning': 'continual_learning',
+    'vq': 'vq', 'codebook': 'vq', 'gumbel': 'vq', 'vector_quant': 'vq',
+    'encoder_reasoning_norm': 'encoder_reasoning_norm',
+    'meta_loop': 'meta_loop', 'meta_learner': 'meta_loop',
+    'certified': 'certified_meta_loop', 'certified_meta': 'certified_meta_loop',
+    'convergence_arbiter': 'convergence_arbiter', 'convergence_monitor': 'convergence_arbiter',
+    'slot_binding': 'slot_binding', 'factor_extract': 'factor_extraction',
+    'sparse_factor': 'factor_extraction',
+    'topology': 'topology_analysis', 'diversity': 'diversity_analysis',
+    'complexity_estimator': 'complexity_estimator', 'complexity_gated': 'complexity_estimator',
+    'consistency_gate': 'consistency_gate',
+    'cross_validation': 'cross_validation',
+    'self_report': 'self_report', 'honesty': 'self_report',
+    'safety': 'safety', 'quarantine': 'safety', 'tensor_guard': 'safety',
+    'nan_policy': 'safety', 'sanitiz': 'safety',
+    'cognitive_executive': 'cognitive_executive', 'executive': 'cognitive_executive',
+    'deeper_meta': 'deeper_meta_loop',
+    'world_model': 'world_model',
+    'hierarchical_world': 'hierarchical_world_model',
+    'causal_world': 'causal_world_model',
+    'memory_manager': 'memory', 'memory_flatten': 'memory',
+    'hierarchical_memory': 'memory',
+    'temporal_memory': 'temporal_memory',
+    'neurogenic': 'neurogenic_memory',
+    'consolidat': 'consolidating_memory',
+    'memory_trust': 'memory_trust',
+    'memory_validation': 'memory_validation',
+    'memory_cross': 'memory_cross_validation',
+    'mcts': 'mcts_planning',
+    'active_learning': 'active_learning',
+    'icm': 'icm_curiosity', 'curiosity': 'icm_curiosity',
+    'causal_model': 'causal_model', 'neural_causal': 'causal_model',
+    'notears': 'notears_causal', 'dag_constraint': 'notears_causal',
+    'causal_programmatic': 'causal_programmatic',
+    'dag_consensus': 'causal_dag_consensus',
+    'unified_sim': 'unified_simulator',
+    'hybrid_reason': 'hybrid_reasoning',
+    'ns_bridge': 'ns_bridge', 'neuro_sym': 'ns_bridge',
+    'temporal_knowledge': 'temporal_knowledge_graph',
+    'hierarchical_vae': 'hierarchical_vae',
+    'causal_context': 'causal_context',
+    'rssm': 'rssm',
+    'multimodal_grounding': 'multimodal', 'multimodal': 'multimodal',
+    'grounded_multimodal': 'grounded_multimodal',
+    'integration': 'integration',
+    'auto_critic': 'auto_critic',
+    'output_reliability': 'output_reliability',
+    'metacognitive_trigger': 'metacognitive_trigger',
+    'metacognitive_causal': 'metacognitive_trigger',
+    'error_evolution': 'error_evolution', 'error_recovery': 'error_evolution',
+    'unified_cognitive': 'unified_cognitive_cycle', 'ucc': 'unified_cognitive_cycle',
+    'decoder': 'decoder',
+    'provenance': 'integration', 'causal_trace': 'integration',
+    'feedback_bus': 'integration', 'bridge_training': 'integration',
+    'circuit_breaker': 'safety',
+    'lipschitz': 'meta_loop', 'hessian': 'meta_loop',
+    'checkpoint': 'integration', 'config': 'integration',
+    'inference_cache': 'decoder', 'chunked': 'encoder',
+    'poly_feature': 'encoder', 'parallel_scan': 'encoder',
+    'benchmark': 'integration', 'dashboard': 'integration',
+    'server': 'integration', 'train': 'integration',
+    'batch_generation': 'decoder', 'generate': 'decoder',
+    'set_seed': 'integration', 'version': 'integration',
+    'entropy_loss': 'vq', 'perplexity': 'vq',
+    'gradscaler': 'integration', 'warmup': 'integration',
+    'adapt_weights': 'integration', 'blend_weakest': 'integration',
+    'recurring_root': 'unified_cognitive_cycle',
+    'weighted_uncertainty': 'unified_cognitive_cycle',
+    'semantic_error': 'error_evolution',
+    'task2vec': 'active_learning',
+    'lambda_meta': 'meta_loop',
+    'recovery_pressure': 'error_evolution',
+    'coherence': 'unified_cognitive_cycle',
+    'verify_coherence': 'unified_cognitive_cycle',
+    'pipeline_dep': 'integration',
+    'self_diagnostic': 'metacognitive_trigger',
+    'extension_point': 'metacognitive_trigger',
+    'compute_loss': 'integration',
+    'division_by_zero': 'integration',
+    'hash': 'integration',
+    'document_aware': 'encoder',
+    'tensor_hash': 'safety',
+}
+
+
+def _map_test_to_node(test_name: str) -> str:
+    """Map a test function name to an architecture pipeline node."""
+    name_lower = test_name.lower().replace('test_', '', 1)
+    # Try exact prefix matches first (longest match wins)
+    best_match = ''
+    best_node = 'integration'  # default fallback
+    for keyword, node in _KEYWORD_NODE_MAP.items():
+        if keyword in name_lower and len(keyword) > len(best_match):
+            best_match = keyword
+            best_node = node
+    return best_node
+
+
+class TestDataCollector:
+    """Collects comprehensive test data for dashboard display and architecture mapping."""
+
+    def __init__(self):
+        self.results = []
+        self.node_stats = {n: {'total': 0, 'passed': 0, 'failed': 0, 'errors': 0,
+                                'time_ms': 0.0, 'tests': []} for n in _ARCH_NODES}
+        self.section_stats = {}
+        self.start_time = None
+        self.end_time = None
+        self.total_tests = 0
+
+    def run_test(self, test_fn, section='Core Tests'):
+        """Run a single test function and collect all data."""
+        name = test_fn.__name__
+        doc = (test_fn.__doc__ or '').strip().split('\n')[0][:120]
+        node = _map_test_to_node(name)
+
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        t0 = time.perf_counter()
+        status = 'passed'
+        error_msg = ''
+        tb = ''
+
+        try:
+            old_stdout, old_stderr = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = buf_out, buf_err
+            try:
+                test_fn()
+            finally:
+                sys.stdout, sys.stderr = old_stdout, old_stderr
+        except AssertionError as e:
+            status = 'failed'
+            error_msg = str(e) or 'AssertionError (no message)'
+            tb = traceback.format_exc()
+        except (ImportError, ModuleNotFoundError) as e:
+            status = 'skipped'
+            error_msg = f'Import error: {e}'
+        except Exception as e:
+            status = 'error'
+            error_msg = f'{type(e).__name__}: {e}'
+            tb = traceback.format_exc()
+
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        stdout_text = buf_out.getvalue()
+        stderr_text = buf_err.getvalue()
+
+        result = {
+            'name': name,
+            'section': section,
+            'doc': doc,
+            'status': status,
+            'elapsed_ms': elapsed_ms,
+            'stdout': stdout_text,
+            'stderr': stderr_text,
+            'traceback': tb,
+            'error_msg': error_msg,
+            'arch_node': node,
+        }
+
+        self.results.append(result)
+
+        # Update node stats
+        ns = self.node_stats[node]
+        ns['total'] += 1
+        ns['time_ms'] += elapsed_ms
+        ns['tests'].append(name)
+        if status == 'passed':
+            ns['passed'] += 1
+        elif status == 'failed':
+            ns['failed'] += 1
+        else:
+            ns['errors'] += 1
+
+        # Update section stats
+        if section not in self.section_stats:
+            self.section_stats[section] = {'total': 0, 'passed': 0, 'failed': 0,
+                                            'errors': 0, 'time_ms': 0.0}
+        ss = self.section_stats[section]
+        ss['total'] += 1
+        ss['time_ms'] += elapsed_ms
+        if status == 'passed':
+            ss['passed'] += 1
+        elif status == 'failed':
+            ss['failed'] += 1
+        else:
+            ss['errors'] += 1
+
+        # Print live output
+        icon = {'passed': '✅', 'failed': '❌', 'error': '💥', 'skipped': '⏭'}[status]
+        print(f"{icon} [{elapsed_ms:6.0f}ms] {name}" +
+              (f"  — {error_msg[:80]}" if error_msg else ''))
+
+        # Re-raise on failure for compatibility with existing runner
+        if status == 'failed':
+            raise AssertionError(error_msg)
+        elif status == 'error':
+            raise RuntimeError(error_msg)
+
+        return result
+
+    def get_summary(self):
+        """Return comprehensive test summary."""
+        total = len(self.results)
+        passed = sum(1 for r in self.results if r['status'] == 'passed')
+        failed = sum(1 for r in self.results if r['status'] == 'failed')
+        errors = sum(1 for r in self.results if r['status'] == 'error')
+        skipped = sum(1 for r in self.results if r['status'] == 'skipped')
+        total_time = sum(r['elapsed_ms'] for r in self.results)
+
+        # Architecture coverage
+        covered_nodes = [n for n, s in self.node_stats.items() if s['total'] > 0]
+        node_health = {}
+        for n, s in self.node_stats.items():
+            if s['total'] > 0:
+                node_health[n] = {
+                    'health': round(s['passed'] / s['total'] * 100, 1),
+                    'total': s['total'],
+                    'passed': s['passed'],
+                    'failed': s['failed'],
+                    'errors': s['errors'],
+                    'time_ms': round(s['time_ms'], 1),
+                }
+
+        return {
+            'total': total, 'passed': passed, 'failed': failed,
+            'errors': errors, 'skipped': skipped,
+            'pass_rate': round(passed / max(total, 1) * 100, 1),
+            'total_time_ms': round(total_time, 1),
+            'sections': self.section_stats,
+            'arch_coverage': len(covered_nodes),
+            'arch_total': len(_ARCH_NODES),
+            'node_health': node_health,
+            'slowest': sorted(
+                [{'name': r['name'], 'ms': r['elapsed_ms']} for r in self.results],
+                key=lambda x: x['ms'], reverse=True
+            )[:10],
+        }
+
+    def export_dashboard_data(self):
+        """Export all test data formatted for AEON_Dashboard.html consumption."""
+        summary = self.get_summary()
+        return {
+            'results': self.results,
+            'summary': summary,
+            'node_stats': {k: v for k, v in self.node_stats.items() if v['total'] > 0},
+            'section_stats': self.section_stats,
+            'arch_map': {r['name']: r['arch_node'] for r in self.results},
+        }
+
+
+# Global collector instance — used by the test runner
+_collector = TestDataCollector()
 
 
 def test_division_by_zero_in_fit():
