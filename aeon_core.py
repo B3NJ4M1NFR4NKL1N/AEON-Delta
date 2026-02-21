@@ -1746,8 +1746,10 @@ class ErrorRecoveryManager:
 
         if evolved_strategy_name and evolved_strategy_name in self._strategies:
             strategy = self._strategies[evolved_strategy_name]
+            _strategy_name = evolved_strategy_name
         else:
             strategy = self._strategies.get(error_class, self._recover_unknown)
+            _strategy_name = error_class if error_class in self._strategies else "unknown"
 
         last_exc: Optional[BaseException] = None
         for attempt in range(self.max_retries):
@@ -1761,6 +1763,20 @@ class ErrorRecoveryManager:
                         "success": success,
                         "attempts": attempt + 1,
                     })
+                # Feed outcome back to error evolution so the system
+                # learns which recovery strategies work for each error
+                # class, closing the recovery→evolution feedback loop.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class=error_class,
+                        strategy_used=_strategy_name,
+                        success=success,
+                        metadata={
+                            "context": context,
+                            "attempts": attempt + 1,
+                            **_provenance_info,
+                        },
+                    )
                 return success, value
             except Exception as retry_error:
                 last_exc = retry_error
@@ -1776,6 +1792,22 @@ class ErrorRecoveryManager:
                 "success": False,
                 "attempts": self.max_retries,
             })
+        # Record exhausted-retry failure in error evolution so the
+        # system learns from unrecoverable errors and can adapt its
+        # strategy selection over time.
+        if self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class=error_class,
+                strategy_used=_strategy_name,
+                success=False,
+                metadata={
+                    "context": context,
+                    "attempts": self.max_retries,
+                    "exhausted_retries": True,
+                    "last_error": str(last_exc),
+                    **_provenance_info,
+                },
+            )
         self.audit_log.record("error_recovery", "exhausted_retries", {
             "context": context,
             "error_class": error_class,
@@ -16264,6 +16296,10 @@ class AEONDeltaV3(nn.Module):
         # cross-validate perceptual-grounding consistency against
         # other subsystem outputs.
         self._cached_grounded_multimodal_state: Optional[torch.Tensor] = None
+        # Auto-critic output — cached so cross-pass coherence verification
+        # can detect drift between the auto-critic's self-assessment and
+        # upstream reasoning states, closing the critic ↔ reasoning loop.
+        self._cached_auto_critic_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -18638,6 +18674,14 @@ class AEONDeltaV3(nn.Module):
                     and self._cached_causal_state.shape[-1] == C_star.shape[-1]
                     and self._cached_causal_state.shape[0] == C_star.shape[0]):
                 coherence_states["causal_prior"] = self._cached_causal_state
+            # Include cached auto-critic state from the previous forward
+            # pass so coherence verification detects drift between the
+            # critic's self-assessment and the current reasoning state,
+            # closing the critic ↔ reasoning cross-pass validation loop.
+            if (self._cached_auto_critic_state is not None
+                    and self._cached_auto_critic_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_auto_critic_state.shape[0] == C_star.shape[0]):
+                coherence_states["auto_critic_prior"] = self._cached_auto_critic_state
             try:
                 coherence_results = self.module_coherence(coherence_states)
             except (RuntimeError, ValueError, TypeError) as _coh_err:
@@ -21818,6 +21862,7 @@ class AEONDeltaV3(nn.Module):
                 z_out = revised
                 _any_auto_critic_revised = True
             self.provenance_tracker.record_after("auto_critic", z_out)
+            self._cached_auto_critic_state = z_out.detach()
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
             # Feed auto-critic quality into uncertainty_sources so
@@ -26130,6 +26175,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_integration_state", "integration"),
             ("_cached_executive_state", "cognitive_executive"),
             ("_cached_grounded_multimodal_state", "grounded_multimodal"),
+            ("_cached_auto_critic_state", "auto_critic"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):

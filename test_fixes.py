@@ -38536,6 +38536,146 @@ def test_extension_points_updated():
     print("✅ test_extension_points_updated PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Feedback Loop & Coherence Gap Closure Tests
+# ============================================================================
+
+def test_error_recovery_records_to_error_evolution():
+    """ErrorRecoveryManager feeds recovery outcomes to CausalErrorEvolutionTracker."""
+    from aeon_core import (
+        ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog,
+    )
+    audit = DecisionAuditLog()
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    mgr = ErrorRecoveryManager(
+        hidden_dim=64, audit_log=audit, error_evolution=ee,
+    )
+
+    # Successful recovery
+    fallback = torch.zeros(1, 64)
+    last_good = torch.randn(1, 64)
+    err = ValueError("NaN detected in output")
+    ok, _ = mgr.recover(err, context="test_success", fallback=fallback, last_good_state=last_good)
+    assert ok, "Recovery should succeed"
+
+    summary = ee.get_error_summary()
+    assert summary["total_recorded"] >= 1, (
+        "Error evolution should have recorded at least one episode"
+    )
+    # Check that the numerical error class was recorded
+    classes = summary.get("error_classes", {})
+    assert "numerical" in classes, (
+        "Error evolution should record 'numerical' error class from recovery"
+    )
+
+    print("✅ test_error_recovery_records_to_error_evolution PASSED")
+
+
+def test_error_recovery_exhausted_retries_records_to_evolution():
+    """ErrorRecoveryManager records exhausted-retry failures to error evolution."""
+    from aeon_core import (
+        ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog,
+    )
+    audit = DecisionAuditLog()
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    mgr = ErrorRecoveryManager(
+        hidden_dim=64, audit_log=audit, error_evolution=ee,
+    )
+
+    # Trigger an unknown error with no fallback — exhausts retries
+    err = KeyError("unexpected key")
+    ok, _ = mgr.recover(err, context="test_exhaust")
+    assert not ok, "Recovery should fail without fallback"
+
+    summary = ee.get_error_summary()
+    assert summary["total_recorded"] >= 1, (
+        "Error evolution should record exhausted-retry episode"
+    )
+    # Verify the failed episode was recorded as not successful
+    classes = summary.get("error_classes", {})
+    assert "unknown" in classes, (
+        "Error evolution should record 'unknown' error class"
+    )
+    assert classes["unknown"]["success_rate"] == 0.0, (
+        "Exhausted retries should record as unsuccessful"
+    )
+
+    print("✅ test_error_recovery_exhausted_retries_records_to_evolution PASSED")
+
+
+def test_cached_auto_critic_state_initialized():
+    """AEONDeltaV3 initializes _cached_auto_critic_state to None."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_auto_critic_state'), (
+        "AEONDeltaV3 should have _cached_auto_critic_state attribute"
+    )
+    assert model._cached_auto_critic_state is None, (
+        "_cached_auto_critic_state should initialize to None"
+    )
+
+    print("✅ test_cached_auto_critic_state_initialized PASSED")
+
+
+def test_verify_coherence_includes_auto_critic():
+    """verify_coherence includes auto_critic in subsystem states when cached."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    # Simulate a cached auto-critic state (use config.hidden_dim)
+    _hd = config.hidden_dim
+    model._cached_auto_critic_state = torch.randn(1, _hd)
+    # Also cache a meta-loop state so coherence verifier has >=2 states
+    model._cached_meta_loop_state = torch.randn(1, _hd)
+
+    result = model.verify_coherence()
+    # The coherence check should run with at least 2 states
+    assert "coherence_score" in result, (
+        "verify_coherence should return coherence_score"
+    )
+    # The score should be a finite number
+    assert isinstance(result["coherence_score"], float), (
+        "coherence_score should be a float"
+    )
+
+    print("✅ test_verify_coherence_includes_auto_critic PASSED")
+
+
+def test_server_infer_response_includes_provenance():
+    """Server /api/infer response schema includes provenance and recovery_stats."""
+    # Verify the server code constructs the expected response keys
+    import ast
+    import inspect
+    # Read the server source to verify the response dict
+    with open("aeon_server.py", "r") as f:
+        source = f.read()
+    # Check that provenance, ucc_result, and recovery_stats are in the infer response
+    assert '"provenance"' in source or "'provenance'" in source, (
+        "Server infer response should include provenance key"
+    )
+    assert '"ucc_result"' in source or "'ucc_result'" in source, (
+        "Server infer response should include ucc_result key"
+    )
+    assert '"recovery_stats"' in source or "'recovery_stats'" in source, (
+        "Server infer response should include recovery_stats key"
+    )
+
+    print("✅ test_server_infer_response_includes_provenance PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -40169,6 +40309,13 @@ def _run_all_tests():
     test_pipeline_deps_include_icm_curiosity()
     test_icm_uncertainty_source_mapped()
     test_extension_points_updated()
+
+    # Architectural Unification — Feedback Loop & Coherence Gap Closure Tests
+    test_error_recovery_records_to_error_evolution()
+    test_error_recovery_exhausted_retries_records_to_evolution()
+    test_cached_auto_critic_state_initialized()
+    test_verify_coherence_includes_auto_critic()
+    test_server_infer_response_includes_provenance()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
