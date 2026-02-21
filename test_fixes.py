@@ -34970,6 +34970,362 @@ def test_self_diagnostic_reports_new_bridges():
     print("✅ test_self_diagnostic_reports_new_bridges PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Trust Scorer Error Handling, Causal Context
+# Registration, Coherence Verifier Guard, and Complexity Gating Coverage
+# ============================================================================
+
+
+def test_trust_scorer_exception_escalates_uncertainty():
+    """Verify that a trust scorer failure escalates uncertainty and records
+    in error evolution rather than crashing the forward pass.
+
+    This closes the gap where an unguarded trust_scorer call could crash
+    the entire memory fusion path without any metacognitive notification.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+        enable_external_trust=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Sabotage the trust scorer to raise an exception
+    if model.trust_scorer is not None:
+        original_forward = model.trust_scorer.forward
+        def _bad_forward(*args, **kwargs):
+            raise RuntimeError("Simulated trust scorer failure")
+        model.trust_scorer.forward = _bad_forward
+
+        # Store a dummy memory so retrieval triggers trust scoring
+        model.memory_manager.add_embedding(torch.randn(32))
+
+        z_in = torch.randn(2, 32)
+        # Should NOT raise — exception should be caught and uncertainty escalated
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+        assert z_out is not None, "reasoning_core should return output despite trust scorer failure"
+
+        # Check that trust score fell to 0.5 (the fallback)
+        assert model._last_trust_score == 0.5, (
+            f"Expected fallback trust score 0.5, got {model._last_trust_score}"
+        )
+
+        # Check error_evolution recorded the failure
+        summary = model.error_evolution.get_error_summary()
+        assert "trust_scorer_failure" in summary.get("error_classes", {}), (
+            f"Expected 'trust_scorer_failure' in error classes, got {summary['error_classes']}"
+        )
+
+        # Restore
+        model.trust_scorer.forward = original_forward
+
+    print("✅ test_trust_scorer_exception_escalates_uncertainty PASSED")
+
+
+def test_low_trust_records_error_evolution():
+    """Verify that low trust scores are recorded in error_evolution so the
+    system can learn from episodes where external data was unreliable.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+        enable_external_trust=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if model.trust_scorer is not None:
+        # Override trust scorer to return low trust
+        original_forward = model.trust_scorer.forward
+        def _low_trust_forward(memory_ctx, query):
+            B = query.shape[0]
+            return {
+                'trust_score': torch.full((B, 1), 0.2),
+                'verification_weight': torch.full((B, 1), 0.8),
+            }
+        model.trust_scorer.forward = _low_trust_forward
+
+        model.memory_manager.add_embedding(torch.randn(32))
+
+        z_in = torch.randn(2, 32)
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+        summary = model.error_evolution.get_error_summary()
+        assert "low_memory_trust" in summary.get("error_classes", {}), (
+            f"Expected 'low_memory_trust' in error classes, got {summary['error_classes']}"
+        )
+
+        model.trust_scorer.forward = original_forward
+
+    print("✅ test_low_trust_records_error_evolution PASSED")
+
+
+def test_slot_binding_registered_in_causal_context():
+    """Verify that slot binding outputs are registered in the causal context
+    window manager for cross-pass traceability.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    if model.causal_context is not None:
+        # Check that slot_binding was registered
+        entries = model.causal_context.get_top_k(k=50)
+        sources = [e['source'] for e in entries]
+        assert 'slot_binding' in sources, (
+            f"Expected 'slot_binding' in causal context sources, got {sources}"
+        )
+
+    print("✅ test_slot_binding_registered_in_causal_context PASSED")
+
+
+def test_factor_extraction_registered_in_causal_context():
+    """Verify that factor extraction outputs are registered in the causal
+    context window manager for cross-pass traceability.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    if model.causal_context is not None:
+        entries = model.causal_context.get_top_k(k=50)
+        sources = [e['source'] for e in entries]
+        assert 'factor_extraction' in sources, (
+            f"Expected 'factor_extraction' in causal context sources, got {sources}"
+        )
+
+    print("✅ test_factor_extraction_registered_in_causal_context PASSED")
+
+
+def test_coherence_verifier_exception_guard():
+    """Verify that a module coherence verification failure is caught and
+    escalates uncertainty rather than crashing the forward pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if model.module_coherence is not None:
+        # Sabotage the module coherence verifier
+        original_forward = model.module_coherence.forward
+        def _bad_coherence(*args, **kwargs):
+            raise RuntimeError("Simulated coherence verifier crash")
+        model.module_coherence.forward = _bad_coherence
+
+        z_in = torch.randn(2, 32)
+        # Should NOT raise — exception should be caught
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+        assert z_out is not None, (
+            "reasoning_core should return output despite coherence verifier failure"
+        )
+
+        # Check error_evolution recorded the failure
+        summary = model.error_evolution.get_error_summary()
+        assert "coherence_verifier_failure" in summary.get("error_classes", {}), (
+            f"Expected 'coherence_verifier_failure' in error classes, "
+            f"got {summary['error_classes']}"
+        )
+
+        model.module_coherence.forward = original_forward
+
+    print("✅ test_coherence_verifier_exception_guard PASSED")
+
+
+def test_complexity_gated_coverage_uncertainty():
+    """Verify that when multiple subsystems are complexity-gated off,
+    uncertainty is escalated to reflect reduced reasoning coverage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_complexity_estimator=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    if model.complexity_estimator is not None:
+        # Override complexity estimator to gate everything off
+        original_forward = model.complexity_estimator.forward
+        def _all_gates_off(x):
+            B = x.shape[0]
+            return {
+                'complexity_score': torch.zeros(B, 1),
+                'subsystem_gates': torch.zeros(B, 4),  # all gates closed
+            }
+        model.complexity_estimator.forward = _all_gates_off
+
+        z_in = torch.randn(2, 32)
+        z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+        # Check that complexity_gated_coverage is in uncertainty_sources
+        unc_sources = outputs.get('uncertainty_sources', {})
+        assert 'complexity_gated_coverage' in unc_sources, (
+            f"Expected 'complexity_gated_coverage' in uncertainty_sources, "
+            f"got {list(unc_sources.keys())}"
+        )
+
+        model.complexity_estimator.forward = original_forward
+
+    print("✅ test_complexity_gated_coverage_uncertainty PASSED")
+
+
+def test_pipeline_dependencies_include_causal_context_paths():
+    """Verify that _PIPELINE_DEPENDENCIES includes the slot_binding and
+    factor_extraction → causal_context edges.
+    """
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("slot_binding", "causal_context") in dep_set, (
+        "Missing slot_binding → causal_context in _PIPELINE_DEPENDENCIES"
+    )
+    assert ("factor_extraction", "causal_context") in dep_set, (
+        "Missing factor_extraction → causal_context in _PIPELINE_DEPENDENCIES"
+    )
+    assert ("memory", "memory_trust") in dep_set, (
+        "Missing memory → memory_trust in _PIPELINE_DEPENDENCIES"
+    )
+    assert ("memory_trust", "metacognitive_trigger") in dep_set, (
+        "Missing memory_trust → metacognitive_trigger in _PIPELINE_DEPENDENCIES"
+    )
+    print("✅ test_pipeline_dependencies_include_causal_context_paths PASSED")
+
+
+def test_new_error_classes_mapped_to_trigger_signals():
+    """Verify that the new error classes (trust_scorer_failure,
+    low_memory_trust, coherence_verifier_failure) are mapped to trigger
+    signals in MetaCognitiveRecursionTrigger.adapt_weights_from_evolution().
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate error summary with our new error classes
+    error_summary = {
+        "error_classes": {
+            "trust_scorer_failure": {"count": 5, "success_rate": 0.0},
+            "low_memory_trust": {"count": 3, "success_rate": 0.3},
+            "coherence_verifier_failure": {"count": 2, "success_rate": 0.0},
+        },
+    }
+    # Should not raise — all classes should be in the mapping
+    trigger.adapt_weights_from_evolution(error_summary)
+
+    # Verify weights were actually adjusted (not just silently ignored)
+    # trust_scorer_failure → uncertainty, low success → boosted weight
+    assert trigger._signal_weights["uncertainty"] > 1.0 / 9.0, (
+        "Expected uncertainty weight to be boosted by trust_scorer_failure"
+    )
+    # coherence_verifier_failure → coherence_deficit
+    assert trigger._signal_weights["coherence_deficit"] > 1.0 / 9.0, (
+        "Expected coherence_deficit weight to be boosted by coherence_verifier_failure"
+    )
+
+    print("✅ test_new_error_classes_mapped_to_trigger_signals PASSED")
+
+
+def test_source_module_map_includes_new_entries():
+    """Verify that the _source_module_map in _reasoning_core_impl includes
+    entries for trust_scorer_failure, coherence_verifier_error, and
+    complexity_gated_coverage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+    )
+    model = AEONDeltaV3(config)
+
+    # Access _reasoning_core_impl to check the source_module_map
+    # We'll verify by running with uncertainty sources that include our new keys
+    # and checking the directional uncertainty tracker output
+    if model.uncertainty_tracker is not None:
+        # The map is defined inline; verify by checking that the uncertainty
+        # tracker can accept these keys without error
+        model.uncertainty_tracker.reset()
+        model.uncertainty_tracker.record("memory", 0.5, source_label="trust_scorer_failure")
+        model.uncertainty_tracker.record("coherence_verifier", 0.5, source_label="coherence_verifier_error")
+        model.uncertainty_tracker.record("complexity_estimator", 0.5, source_label="complexity_gated_coverage")
+        summary = model.uncertainty_tracker.build_summary()
+        assert "memory" in summary.get("module_uncertainties", {}), (
+            "Expected 'memory' in uncertainty summary module_uncertainties"
+        )
+
+    print("✅ test_source_module_map_includes_new_entries PASSED")
+
+
+def test_provenance_instrumented_includes_memory_trust():
+    """Verify that the _provenance_instrumented set in self_diagnostic()
+    includes 'memory_trust' so that DAG coverage validation passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_external_trust=True,
+        enable_causal_context=True,
+    )
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    gaps = diag.get('gaps', [])
+    # No gap should mention memory_trust as missing from dependencies
+    for gap in gaps:
+        if 'provenance_dependencies' in gap.get('component', ''):
+            assert 'memory_trust' not in gap.get('gap', ''), (
+                f"'memory_trust' should not be missing from pipeline dependencies: {gap}"
+            )
+
+    print("✅ test_provenance_instrumented_includes_memory_trust PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()

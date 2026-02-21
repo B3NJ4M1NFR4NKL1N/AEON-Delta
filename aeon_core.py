@@ -13833,6 +13833,13 @@ class MetaCognitiveRecursionTrigger:
             # Cycle consistency — encoder-decoder divergence indicates
             # information fidelity loss in the reasoning pipeline.
             "cycle_consistency_violation": "coherence_deficit",
+            # Trust scorer failure — memory verification subsystem error
+            # feeds into uncertainty so metacognitive cycles compensate.
+            "trust_scorer_failure": "uncertainty",
+            "low_memory_trust": "memory_staleness",
+            # Coherence verifier failure — the verification subsystem
+            # itself failed, escalating uncertainty.
+            "coherence_verifier_failure": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15213,6 +15220,20 @@ class AEONDeltaV3(nn.Module):
         # re-evaluation.
         ("integration", "decoder"),
         ("decoder", "unified_cognitive_cycle"),
+        # ── Causal context registration paths ──────────────────────
+        # Slot binding and factor extraction outputs are registered in
+        # the causal context window so that cross-pass retrieval can
+        # access compositional bindings and extracted factors.  These
+        # edges ensure trace_root_cause() can attribute causal context
+        # content to the originating decomposition/extraction modules.
+        ("slot_binding", "causal_context"),
+        ("factor_extraction", "causal_context"),
+        # ── Trust scorer feedback path ─────────────────────────────
+        # Low memory trust feeds into uncertainty escalation and error
+        # evolution, enabling metacognitive re-reasoning when external
+        # data is unreliable.
+        ("memory", "memory_trust"),
+        ("memory_trust", "metacognitive_trigger"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -16334,29 +16355,59 @@ class AEONDeltaV3(nn.Module):
             # dampens the memory contribution to prevent unverified
             # external knowledge from corrupting the reasoning state.
             if self.trust_scorer is not None:
-                trust_result = self.trust_scorer(memory_context, C_star)
-                trust_score = trust_result['trust_score']  # [B, 1]
-                verification_weight = trust_result['verification_weight']  # [B, 1]
-                memory_context = memory_context * trust_score
-                self._last_trust_score = float(trust_score.mean().item())
-                self._last_verification_weight = float(
-                    verification_weight.mean().item()
-                )
-                logger.debug(
-                    f"Memory trust: mean={self._last_trust_score:.3f}, "
-                    f"verification_weight={self._last_verification_weight:.3f}"
-                )
-                # Record trust score in causal trace so that root-cause
-                # analysis can link memory trust levels to downstream
-                # reasoning decisions, closing the trust→traceability gap.
-                if self.causal_trace is not None:
-                    self.causal_trace.record(
-                        "memory_trust", "scored",
-                        metadata={
-                            "mean_trust": self._last_trust_score,
-                            "verification_weight": self._last_verification_weight,
-                        },
+                try:
+                    trust_result = self.trust_scorer(memory_context, C_star)
+                    trust_score = trust_result['trust_score']  # [B, 1]
+                    verification_weight = trust_result['verification_weight']  # [B, 1]
+                    memory_context = memory_context * trust_score
+                    self._last_trust_score = float(trust_score.mean().item())
+                    self._last_verification_weight = float(
+                        verification_weight.mean().item()
                     )
+                    logger.debug(
+                        f"Memory trust: mean={self._last_trust_score:.3f}, "
+                        f"verification_weight={self._last_verification_weight:.3f}"
+                    )
+                    # Record trust score in causal trace so that root-cause
+                    # analysis can link memory trust levels to downstream
+                    # reasoning decisions, closing the trust→traceability gap.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "memory_trust", "scored",
+                            metadata={
+                                "mean_trust": self._last_trust_score,
+                                "verification_weight": self._last_verification_weight,
+                            },
+                        )
+                    # Record low trust in error evolution so the system
+                    # learns from episodes where external data was
+                    # unreliable, enabling adaptive recovery strategies.
+                    _LOW_TRUST_THRESHOLD = 0.5
+                    _LOW_TRUST_SUCCESS_THRESHOLD = 0.3
+                    if (self._last_trust_score < _LOW_TRUST_THRESHOLD
+                            and self.error_evolution is not None):
+                        self.error_evolution.record_episode(
+                            error_class="low_memory_trust",
+                            strategy_used="trust_dampening",
+                            success=self._last_trust_score > _LOW_TRUST_SUCCESS_THRESHOLD,
+                            metadata={
+                                "mean_trust": self._last_trust_score,
+                                "verification_weight": self._last_verification_weight,
+                            },
+                        )
+                except (RuntimeError, ValueError, TypeError) as trust_err:
+                    logger.warning(
+                        "TrustScorer failed (non-fatal): %s", trust_err,
+                    )
+                    self._last_trust_score = 0.5
+                    self._last_verification_weight = 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="trust_scorer_failure",
+                            strategy_used="uncertainty_escalation",
+                            success=False,
+                            metadata={"error": str(trust_err)[:200]},
+                        )
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
@@ -17615,12 +17666,39 @@ class AEONDeltaV3(nn.Module):
         slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, 7, hidden_dim]
         C_star = C_star + slot_assignments.mean(dim=1)
         self.provenance_tracker.record_after("slot_binding", C_star)
+        # Register slot binding output in causal context so that
+        # cross-pass retrieval can access which compositional bindings
+        # were active, enabling root-cause traceability through the
+        # slot decomposition stage.
+        if self.causal_context is not None:
+            # Mean over slots (dim=1) then batch (dim=0) to produce a
+            # single [hidden_dim] embedding suitable for the context store.
+            self.causal_context.add(
+                source="slot_binding",
+                embedding=slot_assignments.mean(dim=1).mean(dim=0).detach(),
+                relevance=0.5,
+                causal_weight=0.5,
+                tier="short_term",
+            )
         
         # 2. Extract factors
         self.provenance_tracker.record_before("factor_extraction", C_star)
         factors, embedded_factors = self.sparse_factors(C_star)
         self.provenance_tracker.record_after("factor_extraction", embedded_factors)
         self._cached_factor_state = embedded_factors.detach()
+        # Register factor embeddings in causal context so that
+        # downstream cross-pass coherence checks and root-cause
+        # analysis can access the extracted causal factors.
+        if self.causal_context is not None:
+            # Mean over batch (dim=0) to produce a single [hidden_dim]
+            # embedding for the context store.
+            self.causal_context.add(
+                source="factor_extraction",
+                embedding=embedded_factors.mean(dim=0).detach(),
+                relevance=0.5,
+                causal_weight=0.5,
+                tier="short_term",
+            )
         logger.debug(f"Factors: {factors.shape}")
         
         # 2a. Record factor extraction health — sparsity and finite checks
@@ -18065,7 +18143,32 @@ class AEONDeltaV3(nn.Module):
                     and self._cached_causal_state.shape[-1] == C_star.shape[-1]
                     and self._cached_causal_state.shape[0] == C_star.shape[0]):
                 coherence_states["causal_prior"] = self._cached_causal_state
-            coherence_results = self.module_coherence(coherence_states)
+            try:
+                coherence_results = self.module_coherence(coherence_states)
+            except (RuntimeError, ValueError, TypeError) as _coh_err:
+                logger.warning(
+                    "Module coherence verification failed (non-fatal): %s",
+                    _coh_err,
+                )
+                coherence_results = {
+                    'coherence_score': torch.tensor(0.0),
+                    'needs_recheck': True,
+                    'pairwise': {},
+                }
+                # Escalate uncertainty so that metacognitive cycles
+                # activate when the coherence verifier itself fails,
+                # preventing silent degradation of the verification loop.
+                _COHERENCE_ERROR_UNCERTAINTY_BOOST = 0.15
+                uncertainty = min(1.0, uncertainty + _COHERENCE_ERROR_UNCERTAINTY_BOOST)
+                uncertainty_sources["coherence_verifier_error"] = _COHERENCE_ERROR_UNCERTAINTY_BOOST
+                high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="coherence_verifier_failure",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata={"error": str(_coh_err)[:200]},
+                    )
             _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Cache coherence deficit for feedback bus on next forward pass
             _coherence_score = coherence_results.get("coherence_score", None)
@@ -20057,6 +20160,34 @@ class AEONDeltaV3(nn.Module):
                     "decay_factor": _decay,
                 })
         
+        # 5e2-g. Aggregate complexity-gated coverage uncertainty — when
+        # multiple subsystems are skipped by the complexity estimator, the
+        # system's reasoning coverage is reduced and conclusions are less
+        # thoroughly verified.  Escalate uncertainty proportionally to the
+        # number of skipped subsystems so that metacognitive cycles can
+        # compensate with deeper reasoning on the remaining active modules.
+        if _complexity_gates is not None and not fast:
+            _gated_skips = [
+                _world_model_should_skip,
+                (
+                    _complexity_gates is not None
+                    and not _complexity_gates[:, 1].any().item()
+                ),
+                (
+                    _complexity_gates is not None
+                    and not _complexity_gates[:, 2].any().item()
+                ),
+                _unified_sim_should_skip,
+            ]
+            _num_skipped = sum(1 for s in _gated_skips if s)
+            _MIN_SKIPPED_FOR_COVERAGE = 2
+            if _num_skipped >= _MIN_SKIPPED_FOR_COVERAGE:
+                _COVERAGE_UNCERTAINTY_SCALE = 0.05
+                _coverage_boost = _num_skipped * _COVERAGE_UNCERTAINTY_SCALE
+                uncertainty = min(1.0, uncertainty + _coverage_boost)
+                uncertainty_sources["complexity_gated_coverage"] = _coverage_boost
+                high_uncertainty = uncertainty > 0.5
+        
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
         _hybrid_healthy = True
@@ -21250,6 +21381,11 @@ class AEONDeltaV3(nn.Module):
                 "multimodal_error": "multimodal",
                 # Pipeline-level structural error
                 "pipeline_error": "integration",
+                # Trust scorer & coherence verifier failures
+                "trust_scorer_failure": "memory",
+                "coherence_verifier_error": "coherence_verifier",
+                # Complexity-gated coverage reduction
+                "complexity_gated_coverage": "complexity_estimator",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
@@ -24049,7 +24185,7 @@ class AEONDeltaV3(nn.Module):
             'auto_critic', 'neurogenic_memory', 'consolidating_memory',
             'temporal_memory', 'unified_cognitive_cycle',
             'causal_dag_consensus', 'topology_analysis',
-            'diversity_analysis',
+            'diversity_analysis', 'memory_trust',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
