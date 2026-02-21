@@ -25813,6 +25813,16 @@ class AEONDeltaV3(nn.Module):
                 '(VQ collapse root-cause traceable)'
             )
 
+        # 17f-e. feedback_bus → get_metacognitive_state observability —
+        # the feedback bus cached signal norm is now included in the
+        # metacognitive state snapshot so external consumers can observe
+        # how feedback conditioning influences reasoning.
+        if self.feedback_bus is not None:
+            verified.append(
+                'feedback_bus → get_metacognitive_state '
+                '(feedback bus state externally observable)'
+            )
+
         # Call verify_coherence() to include live runtime consistency
         # results alongside the static wiring checks, so that the
         # diagnostic report captures both structural and runtime health.
@@ -26603,6 +26613,23 @@ class AEONDeltaV3(nn.Module):
         # --- Recovery pressure ---
         _recovery_pressure = self._compute_recovery_pressure()
 
+        # --- Feedback bus state ---
+        # The CognitiveFeedbackBus aggregates downstream signals (safety,
+        # convergence, uncertainty) into a conditioning vector fed back
+        # into the meta-loop.  Exposing its cached state makes the
+        # feedback loop observable, closing the gap where the bus
+        # influenced reasoning but its contribution was invisible.
+        feedback_bus_state: Dict[str, Any] = {"available": False}
+        if self.feedback_bus is not None:
+            _fb = self._cached_feedback
+            feedback_bus_state = {
+                "available": True,
+                "has_cached_signal": _fb is not None,
+                "cached_signal_norm": (
+                    float(_fb.norm().item()) if _fb is not None else None
+                ),
+            }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
@@ -26615,6 +26642,7 @@ class AEONDeltaV3(nn.Module):
             "convergence_arbiter": convergence_arbiter_state,
             "uncertainty_tracker": uncertainty_tracker_state,
             "memory_validator": memory_validator_state,
+            "feedback_bus": feedback_bus_state,
             "recovery_pressure": _recovery_pressure,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
@@ -27099,6 +27127,23 @@ class AEONTrainer:
             threshold=config.convergence_threshold,
         )
         self._error_evolution = _model_error_evolution
+        # Wire the convergence monitor to the model's error evolution
+        # tracker so that training-time divergence and stagnation events
+        # are automatically recorded and inform inference-time
+        # metacognitive triggers.  Without this wiring the monitor
+        # detects issues but never propagates them.
+        if _model_error_evolution is not None:
+            self.convergence_monitor.set_error_evolution(
+                _model_error_evolution,
+            )
+        # Wire the convergence monitor to the model's provenance tracker
+        # so that training convergence events include per-module
+        # attribution, enabling root-cause analysis of training issues.
+        _model_provenance = getattr(model, 'provenance_tracker', None)
+        if _model_provenance is not None:
+            self.convergence_monitor.set_provenance_tracker(
+                _model_provenance,
+            )
         
         logger.info("✅ AEONTrainer initialized")
     
