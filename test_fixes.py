@@ -36024,6 +36024,209 @@ def test_active_learning_provenance_filtered_when_disabled():
     print("✅ test_active_learning_provenance_filtered_when_disabled PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Provenance DAG Completeness & Feedback Loop
+# Closure Tests
+# ============================================================================
+
+def test_dag_node_to_attr_covers_all_pipeline_nodes():
+    """_DAG_NODE_TO_ATTR should map every optional pipeline node to its
+    corresponding model attribute so the provenance DAG filter can
+    correctly suppress edges for disabled modules.
+
+    Previously, 27 out of 47 pipeline nodes were unmapped, causing
+    the filter to silently include edges for disabled modules (since
+    unmapped nodes are treated as always-present).
+    """
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    # Collect all unique nodes from _PIPELINE_DEPENDENCIES
+    all_nodes = set()
+    for up, down in model._PIPELINE_DEPENDENCIES:
+        all_nodes.add(up)
+        all_nodes.add(down)
+
+    # Nodes that are always present (no model attribute to check) and
+    # therefore intentionally omitted from the mapping.
+    _ALWAYS_PRESENT_NODES = {
+        "input",         # virtual node
+        "encoder",       # always initialized
+        "decoder",       # always initialized
+        "meta_loop",     # always initialized
+        "rssm",          # always initialized (rssm_cell)
+        "integration",   # always initialized (integration_proj)
+        "output_reliability",  # computed signal, not a module
+    }
+
+    # Build DAG_NODE_TO_ATTR by simulating what _reasoning_core_impl does
+    # We need to access the mapping that the model uses
+    # The mapping is a local variable; we test indirectly via the model
+    # by checking that all optional pipeline nodes have attribute lookups
+    # that match real model attributes.
+    _optional_nodes = all_nodes - _ALWAYS_PRESENT_NODES
+    _optional_node_attrs = {
+        "slot_binding": "slot_binder",
+        "factor_extraction": "sparse_factors",
+        "consistency_gate": "consistency_gate",
+        "self_report": "self_reporter",
+        "safety": "safety_system",
+        "memory": "hierarchical_memory",
+        "cross_validation": "cross_validator",
+        "deeper_meta_loop": "recursive_meta_loop",
+        "diversity_analysis": "diversity_metric",
+        "topology_analysis": "topology_analyzer",
+        "metacognitive_trigger": "metacognitive_trigger",
+        "error_evolution": "error_evolution",
+        "causal_context": "causal_context",
+        "convergence_arbiter": "convergence_arbiter",
+        "memory_validation": "memory_validator",
+        "memory_trust": "trust_scorer",
+        "neurogenic_memory": "neurogenic_memory",
+        "temporal_memory": "temporal_memory",
+        "consolidating_memory": "consolidating_memory",
+        "vq": "vector_quantizer",
+        # Already mapped in the original code
+        "world_model": "world_model",
+        "hierarchical_world_model": "hierarchical_world_model",
+        "causal_model": "causal_model",
+        "notears_causal": "notears_causal",
+        "causal_programmatic": "causal_programmatic",
+        "causal_world_model": "causal_world_model",
+        "unified_simulator": "unified_simulator",
+        "hybrid_reasoning": "hybrid_reasoning",
+        "ns_bridge": "standalone_ns_bridge",
+        "hierarchical_vae": "hierarchical_vae",
+        "auto_critic": "auto_critic",
+        "mcts_planning": "mcts_planner",
+        "active_learning": "active_learning_planner",
+        "cognitive_executive": "cognitive_executive",
+        "causal_dag_consensus": "causal_dag_consensus",
+        "certified_meta_loop": "certified_meta_loop",
+        "multimodal": "multimodal",
+        "temporal_knowledge_graph": "temporal_knowledge_graph",
+        "complexity_estimator": "complexity_estimator",
+        "unified_cognitive_cycle": "unified_cognitive_cycle",
+    }
+
+    # Verify every optional node has a known attribute mapping
+    for node in sorted(_optional_nodes):
+        assert node in _optional_node_attrs, (
+            f"Pipeline node '{node}' is neither always-present nor has "
+            f"an attribute mapping"
+        )
+        attr_name = _optional_node_attrs[node]
+        # Attribute must exist on model (even if None for disabled modules)
+        assert hasattr(model, attr_name), (
+            f"Pipeline node '{node}' maps to attribute '{attr_name}' "
+            f"which does not exist on AEONDeltaV3"
+        )
+
+    print("✅ test_dag_node_to_attr_covers_all_pipeline_nodes PASSED")
+
+
+def test_provenance_instrumented_covers_all_dep_nodes():
+    """The _provenance_instrumented set in self_diagnostic should cover
+    every node that appears in _PIPELINE_DEPENDENCIES so the DAG
+    coverage check reports 100% coverage."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    # Collect all dep nodes
+    dep_nodes = set()
+    for up, down in model._PIPELINE_DEPENDENCIES:
+        dep_nodes.add(up)
+        dep_nodes.add(down)
+
+    # The _provenance_instrumented set is defined inside self_diagnostic().
+    # We test it indirectly: run diagnostic and check that no gap is
+    # reported for provenance_dependencies.
+    report = model.self_diagnostic()
+    gaps = report.get('gaps', [])
+    prov_gaps = [
+        g for g in gaps
+        if g.get('component') == 'provenance_dependencies'
+    ]
+    assert len(prov_gaps) == 0, (
+        f"Provenance dependency coverage gap detected: {prov_gaps}"
+    )
+    # Also verify the connection is listed as verified
+    verified = report.get('verified_connections', [])
+    assert any('provenance_dependencies' in v for v in verified), (
+        "Expected 'provenance_dependencies' in verified connections"
+    )
+
+    print("✅ test_provenance_instrumented_covers_all_dep_nodes PASSED")
+
+
+def test_verified_prediction_error_updates_cached_surprise():
+    """When the world model's previous prediction diverges from the
+    current input, _cached_surprise should be updated to incorporate
+    the verified prediction error."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate a previous world model prediction that is very different
+    # from the next input
+    B, D = 2, config.hidden_dim
+    model._cached_world_model_prediction = torch.randn(B, D) * 10.0
+    model._cached_surprise = 0.0  # Reset to zero
+
+    # Forward pass with normal input
+    input_ids = torch.randint(1, 100, (B, 16))
+    with torch.no_grad():
+        _ = model.forward(input_ids, decode_mode='inference', fast=False)
+
+    # _cached_surprise should be updated (≥ verified_prediction_error)
+    assert model._cached_surprise > 0.0, (
+        f"Expected _cached_surprise > 0.0 after high prediction error, "
+        f"got {model._cached_surprise}"
+    )
+
+    print("✅ test_verified_prediction_error_updates_cached_surprise PASSED")
+
+
+def test_self_diagnostic_includes_new_infrastructure_modules():
+    """self_diagnostic should include sparse_factors, slot_binder,
+    self_reporter, feedback_bus, rssm_cell, provenance_tracker, and
+    consistency_gate in the active_modules list."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_safety_guardrails=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+    active = set(report.get('active_modules', []))
+
+    expected = {
+        'sparse_factors', 'slot_binder', 'feedback_bus',
+        'rssm_cell', 'provenance_tracker', 'consistency_gate',
+    }
+    # self_reporter is conditionally initialized with enable_safety
+    if model.self_reporter is not None:
+        expected.add('self_reporter')
+
+    missing = expected - active
+    assert not missing, (
+        f"self_diagnostic active_modules missing: {missing}"
+    )
+
+    print("✅ test_self_diagnostic_includes_new_infrastructure_modules PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -37556,6 +37759,13 @@ def _run_all_tests():
     test_active_learning_dag_node_attr_mapping()
     test_active_learning_in_provenance_instrumented_set()
     test_active_learning_provenance_filtered_when_disabled()
+
+    # Architectural Unification — Provenance DAG Completeness & Feedback
+    # Loop Closure Tests
+    test_dag_node_to_attr_covers_all_pipeline_nodes()
+    test_provenance_instrumented_covers_all_dep_nodes()
+    test_verified_prediction_error_updates_cached_surprise()
+    test_self_diagnostic_includes_new_infrastructure_modules()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

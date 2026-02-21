@@ -16968,6 +16968,30 @@ class AEONDeltaV3(nn.Module):
             "temporal_knowledge_graph": "temporal_knowledge_graph",
             "complexity_estimator": "complexity_estimator",
             "unified_cognitive_cycle": "unified_cognitive_cycle",
+            # ── Nodes previously missing from the mapping ──────────
+            # Without these entries the provenance DAG silently
+            # dropped edges referencing unmapped nodes, breaking
+            # trace_root_cause() for roughly half the pipeline.
+            "slot_binding": "slot_binder",
+            "factor_extraction": "sparse_factors",
+            "consistency_gate": "consistency_gate",
+            "self_report": "self_reporter",
+            "safety": "safety_system",
+            "memory": "hierarchical_memory",
+            "cross_validation": "cross_validator",
+            "deeper_meta_loop": "recursive_meta_loop",
+            "diversity_analysis": "diversity_metric",
+            "topology_analysis": "topology_analyzer",
+            "metacognitive_trigger": "metacognitive_trigger",
+            "error_evolution": "error_evolution",
+            "causal_context": "causal_context",
+            "convergence_arbiter": "convergence_arbiter",
+            "memory_validation": "memory_validator",
+            "memory_trust": "trust_scorer",
+            "neurogenic_memory": "neurogenic_memory",
+            "temporal_memory": "temporal_memory",
+            "consolidating_memory": "consolidating_memory",
+            "vq": "vector_quantizer",
         }
         for _up, _down in self._PIPELINE_DEPENDENCIES:
             # Skip edge if either node maps to a disabled (None) module
@@ -17069,6 +17093,14 @@ class AEONDeltaV3(nn.Module):
                                 "world_model_verified_error"
                             ] = _vpe_boost
                             high_uncertainty = uncertainty > 0.5
+                    # Incorporate verified prediction error into the
+                    # surprise cache so the feedback bus's
+                    # world_model_surprise channel reflects cross-step
+                    # prediction accuracy, not just same-step surprise.
+                    self._cached_surprise = max(
+                        self._cached_surprise,
+                        _verified_prediction_error,
+                    )
                     if self.causal_trace is not None:
                         self.causal_trace.record(
                             "world_model", "prediction_verified",
@@ -24120,6 +24152,13 @@ class AEONDeltaV3(nn.Module):
             'integrity_monitor': getattr(self, 'integrity_monitor', None),
             'execution_guard': getattr(self, 'execution_guard', None),
             'progress_tracker': getattr(self, 'progress_tracker', None),
+            'sparse_factors': getattr(self, 'sparse_factors', None),
+            'slot_binder': getattr(self, 'slot_binder', None),
+            'self_reporter': getattr(self, 'self_reporter', None),
+            'feedback_bus': getattr(self, 'feedback_bus', None),
+            'rssm_cell': getattr(self, 'rssm_cell', None),
+            'provenance_tracker': getattr(self, 'provenance_tracker', None),
+            'consistency_gate': getattr(self, 'consistency_gate', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -24447,6 +24486,12 @@ class AEONDeltaV3(nn.Module):
             'causal_dag_consensus', 'topology_analysis',
             'diversity_analysis', 'memory_trust',
             'active_learning',
+            # Nodes previously missing from the instrumented set:
+            'input', 'decoder', 'self_report', 'cross_validation',
+            'notears_causal', 'deeper_meta_loop', 'metacognitive_trigger',
+            'error_evolution', 'convergence_arbiter', 'memory_validation',
+            'complexity_estimator', 'output_reliability',
+            'temporal_knowledge_graph',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
