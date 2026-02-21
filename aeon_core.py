@@ -6010,6 +6010,13 @@ class CognitiveFeedbackBus(nn.Module):
         - uncertainty: scalar or [B] from residual variance estimation
         - subsystem_health: [B, num_subsystems] from integrity monitor
     
+    Dynamic signal extension:
+        New signal channels can be registered at runtime via
+        :meth:`register_signal`.  Registered signals are appended after the
+        12 core channels and the projection layer is rebuilt to accommodate
+        the wider input.  This allows downstream modules to inject feedback
+        without modifying the core channel layout.
+    
     Output:
         - feedback: [B, hidden_dim] dense conditioning vector
     """
@@ -6023,12 +6030,39 @@ class CognitiveFeedbackBus(nn.Module):
     def __init__(self, hidden_dim: int):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self._extra_signals: Dict[str, float] = {}
+        self._build_projection(self.NUM_SIGNAL_CHANNELS)
+    
+    def _build_projection(self, num_channels: int) -> None:
+        """(Re)build the projection layer for *num_channels* input signals."""
         self.projection = nn.Sequential(
-            nn.Linear(self.NUM_SIGNAL_CHANNELS, hidden_dim // 4),
+            nn.Linear(num_channels, self.hidden_dim // 4),
             nn.GELU(),
-            nn.Linear(hidden_dim // 4, hidden_dim),
+            nn.Linear(self.hidden_dim // 4, self.hidden_dim),
             nn.Tanh(),  # Bound output to [-1, 1] for stable conditioning
         )
+    
+    def register_signal(self, name: str, default: float = 0.0) -> None:
+        """Register a new dynamic signal channel.
+        
+        The projection layer is rebuilt to accept the wider input.
+        Existing weights for core channels are *not* preserved across
+        rebuilds because the bus is typically re-initialized together
+        with the rest of the model.
+        
+        Args:
+            name: Unique signal name (e.g. ``"my_module_quality"``).
+            default: Neutral default value for the signal.
+        """
+        if name in self._extra_signals:
+            return  # already registered
+        self._extra_signals[name] = default
+        self._build_projection(self.NUM_SIGNAL_CHANNELS + len(self._extra_signals))
+    
+    @property
+    def total_channels(self) -> int:
+        """Total number of signal channels (core + dynamic)."""
+        return self.NUM_SIGNAL_CHANNELS + len(self._extra_signals)
     
     def forward(
         self,
@@ -6046,6 +6080,7 @@ class CognitiveFeedbackBus(nn.Module):
         self_report_consistency: float = 1.0,
         output_quality: float = 1.0,
         memory_quality: float = 1.0,
+        extra_signals: Optional[Dict[str, float]] = None,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -6094,6 +6129,10 @@ class CognitiveFeedbackBus(nn.Module):
                 memory retrieval returned sparse or stale contexts,
                 biasing the meta-loop toward deeper reasoning to
                 compensate for weak memory grounding.
+            extra_signals: Optional dict mapping dynamically registered
+                signal names to their current scalar values.  Signals
+                not present in this dict fall back to their registered
+                defaults.  Unregistered names are silently ignored.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -6152,7 +6191,21 @@ class CognitiveFeedbackBus(nn.Module):
         mq = torch.full((batch_size,), float(memory_quality), device=device)
         
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr, oq, mq], dim=-1)
+        core_signals = [s, c, u, h, ls, ws, cd, cq, rp, sr, oq, mq]
+        
+        # Append dynamically registered signals in registration order
+        _merged_extra = dict(self._extra_signals)  # start from defaults
+        if extra_signals:
+            for k, v in extra_signals.items():
+                if k in _merged_extra:
+                    _merged_extra[k] = v
+        for _name in self._extra_signals:
+            _val = float(_merged_extra[_name])
+            core_signals.append(
+                torch.full((batch_size,), _val, device=device)
+            )
+        
+        signals = torch.stack(core_signals, dim=-1)
         
         return self.projection(signals)
 
@@ -27541,6 +27594,43 @@ class AEONDeltaV3(nn.Module):
                         logger.info("Restored metacognitive signal weights")
                 except Exception as cog_err:
                     logger.warning(f"Failed to load cognitive state (non-fatal): {cog_err}")
+            
+            # Training error pattern bridge — import training-time error
+            # patterns from a companion v4 checkpoint so the inference
+            # pipeline's error evolution tracker is seeded with training
+            # divergence/stagnation patterns.  Without this, the inference
+            # metacognitive trigger cannot leverage training-phase failure
+            # modes, leaving the system blind to recurring patterns that
+            # were already discovered during training.
+            training_patterns_path = save_dir / "training_error_patterns.json"
+            if training_patterns_path.exists() and self.error_evolution is not None:
+                try:
+                    with open(training_patterns_path, 'r') as f:
+                        _patterns = json.load(f)
+                    _bridged = 0
+                    for _phase_label, _phase_data in _patterns.items():
+                        for _cls, _cls_data in _phase_data.get("error_classes", {}).items():
+                            _prefixed = f"training_{_cls}"
+                            self.error_evolution.record_episode(
+                                error_class=_prefixed,
+                                strategy_used=_cls_data.get("last_strategy", "unknown"),
+                                success=_cls_data.get("success_rate", 0.0) > 0.5,
+                                metadata={
+                                    "source": f"checkpoint_{_phase_label}",
+                                    "count": _cls_data.get("count", 0),
+                                },
+                            )
+                            _bridged += 1
+                    if _bridged:
+                        logger.info(
+                            f"Bridged {_bridged} training error pattern(s) "
+                            f"into inference error evolution"
+                        )
+                except Exception as bridge_err:
+                    logger.warning(
+                        f"Failed to bridge training error patterns "
+                        f"(non-fatal): {bridge_err}"
+                    )
             
             logger.info(f"✅ State loaded from {save_dir}")
             return True

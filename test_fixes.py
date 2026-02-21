@@ -39929,6 +39929,162 @@ def test_module_coherence_verifier_docstring_updated():
     print("✅ test_module_coherence_verifier_docstring_updated PASSED")
 
 
+def test_feedback_bus_dynamic_signal_registration():
+    """Verify CognitiveFeedbackBus supports dynamic signal registration.
+
+    After calling register_signal(), total_channels increases by one
+    and the projection layer is rebuilt to accept the wider input.
+    """
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    assert bus.total_channels == 12, (
+        f"Expected 12 core channels, got {bus.total_channels}"
+    )
+
+    bus.register_signal("custom_quality", default=0.5)
+    assert bus.total_channels == 13, (
+        f"Expected 13 channels after register, got {bus.total_channels}"
+    )
+
+    # Verify idempotent
+    bus.register_signal("custom_quality", default=0.5)
+    assert bus.total_channels == 13, "Duplicate register should be no-op"
+
+    # Verify forward works with extra signal
+    bus.eval()
+    fb = bus(
+        batch_size=2, device=torch.device('cpu'),
+        extra_signals={"custom_quality": 0.9},
+    )
+    assert fb.shape == (2, 32), f"Expected (2, 32), got {fb.shape}"
+    assert torch.isfinite(fb).all(), "Feedback must be finite"
+
+    print("✅ test_feedback_bus_dynamic_signal_registration PASSED")
+
+
+def test_feedback_bus_extra_signals_backward_compat():
+    """CognitiveFeedbackBus forward works without extra_signals kwarg.
+
+    Existing callers that do not pass extra_signals should continue to
+    work unchanged — the default (None) must be handled gracefully.
+    """
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    bus.eval()
+
+    # Baseline: no extra_signals at all
+    fb1 = bus(batch_size=1, device=torch.device('cpu'))
+    assert fb1.shape == (1, 64), f"Expected (1, 64), got {fb1.shape}"
+    assert torch.isfinite(fb1).all(), "Feedback must be finite"
+
+    # With extra_signals=None explicitly
+    fb2 = bus(batch_size=1, device=torch.device('cpu'), extra_signals=None)
+    assert torch.equal(fb1, fb2), "None should behave identically to omitted"
+
+    print("✅ test_feedback_bus_extra_signals_backward_compat PASSED")
+
+
+def test_load_state_bridges_training_error_patterns():
+    """AEONDeltaV3.load_state imports training error patterns from checkpoint.
+
+    The load_state method should look for a training_error_patterns.json
+    file and bridge its contents into the error evolution tracker.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.load_state)
+
+    assert "training_error_patterns" in source, (
+        "load_state must reference training_error_patterns for bridge import"
+    )
+    assert "training_patterns_path" in source, (
+        "load_state must define training_patterns_path for error pattern import"
+    )
+    assert "record_episode" in source, (
+        "load_state must call record_episode to bridge training errors"
+    )
+
+    print("✅ test_load_state_bridges_training_error_patterns PASSED")
+
+
+def test_ae_train_end_of_training_ucc_evaluation():
+    """ae_train.main() runs a UCC evaluation after Phase B completes.
+
+    The end-of-training UCC evaluation verifies that the trained model
+    maintains cross-module coherence before saving the checkpoint.
+    """
+    import inspect
+    import ae_train
+
+    source = inspect.getsource(ae_train.main)
+
+    assert "End-of-training UCC evaluation" in source, (
+        "main() must include end-of-training UCC evaluation"
+    )
+    assert "_final_ucc" in source, (
+        "main() must create _final_ucc for end-of-training evaluation"
+    )
+    assert "_final_result" in source, (
+        "main() must capture _final_result from UCC evaluation"
+    )
+
+    print("✅ test_ae_train_end_of_training_ucc_evaluation PASSED")
+
+
+def test_ae_train_wires_inference_insights_bridge():
+    """ae_train.main() calls bridge_inference_insights_to_training().
+
+    The bidirectional feedback loop must be closed by calling the
+    inference→training bridge function after Phase B completes.
+    """
+    import inspect
+    import ae_train
+
+    source = inspect.getsource(ae_train.main)
+
+    assert "bridge_inference_insights_to_training" in source, (
+        "main() must call bridge_inference_insights_to_training to "
+        "close the bidirectional feedback loop"
+    )
+    assert "_inference_adjustments" in source, (
+        "main() must capture adjustment count from inference bridge"
+    )
+
+    print("✅ test_ae_train_wires_inference_insights_bridge PASSED")
+
+
+def test_server_infer_logs_metacognitive_errors():
+    """aeon_server /api/infer logs metacognitive state failures instead
+    of silently swallowing them."""
+    import inspect
+    import aeon_server
+
+    source = inspect.getsource(aeon_server.run_inference)
+
+    assert "logging.warning" in source, (
+        "/api/infer must log warnings instead of bare 'pass' on "
+        "metacognitive/audit/recovery failures"
+    )
+
+    # Verify no bare 'pass' in the error handlers for audit/metacognitive/recovery
+    # (the old pattern was 'except Exception:\n        pass')
+    lines = source.split('\n')
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == 'pass' and i > 0:
+            prev = lines[i - 1].strip()
+            if prev.startswith('except'):
+                assert False, (
+                    f"Found bare 'except ... pass' at line ~{i}: "
+                    f"'{prev}' / '{stripped}' — should log instead"
+                )
+
+    print("✅ test_server_infer_logs_metacognitive_errors PASSED")
+
+
 def test_adapt_weights_maps_new_error_classes():
     """adapt_weights_from_evolution maps feedback_bus_failure,
     verify_coherence_deficit, and training_ucc_failure error classes."""
@@ -41652,6 +41808,15 @@ def test_adapt_weights_maps_new_error_classes():
     test_ae_train_ucc_failure_records_error_evolution()
     test_module_coherence_verifier_docstring_updated()
     test_adapt_weights_maps_new_error_classes()
+
+    # Architectural Unification — Bidirectional Bridge Wiring,
+    # Dynamic Feedback Bus, and Checkpoint Error Pattern Import Tests
+    test_feedback_bus_dynamic_signal_registration()
+    test_feedback_bus_extra_signals_backward_compat()
+    test_load_state_bridges_training_error_patterns()
+    test_ae_train_end_of_training_ucc_evaluation()
+    test_ae_train_wires_inference_insights_bridge()
+    test_server_infer_logs_metacognitive_errors()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
