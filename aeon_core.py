@@ -23263,6 +23263,13 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_post_hr_conc)
                     and _post_hr_conc.shape[-1] == z_out.shape[-1]):
                 _post_coherence_states["hybrid_reasoning"] = _post_hr_conc
+            # Include multimodal grounded state when available, matching
+            # the earlier post-integration coherence check (step 7b) so
+            # that unconditional re-verification preserves full subsystem
+            # coverage.
+            if self.multimodal is not None:
+                if z_rssm.shape[-1] == z_out.shape[-1]:
+                    _post_coherence_states["multimodal"] = z_rssm
             _post_coh_results = self.module_coherence(_post_coherence_states)
             _post_coh_score = float(
                 _post_coh_results["coherence_score"].mean().item()
