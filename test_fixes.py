@@ -39088,7 +39088,299 @@ def test_dashboard_go_function_wires_new_panels():
     print("✅ test_dashboard_go_function_wires_new_panels PASSED")
 
 
-def _run_all_tests():
+# ============================================================================
+# Architectural Unification — Provenance Feedback, Weakest-Pair Correction,
+# Recurring Root Causes, and Provenance Uncertainty Boost Tests
+# ============================================================================
+
+def test_provenance_uncertainty_boost_no_data():
+    """CausalProvenanceTracker.get_provenance_uncertainty_boost returns
+    zero boost when no modules have been recorded."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    result = tracker.get_provenance_uncertainty_boost()
+    assert result["boost"] == 0.0, f"Expected 0.0 boost, got {result['boost']}"
+    assert result["dominant_module"] is None
+    assert result["concentration"] == 0.0
+    print("✅ test_provenance_uncertainty_boost_no_data PASSED")
+
+
+def test_provenance_uncertainty_boost_dominant_module():
+    """CausalProvenanceTracker.get_provenance_uncertainty_boost returns
+    positive boost when a single module dominates the output."""
+    import torch
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+
+    # Module A: large delta (dominates)
+    state_before = torch.zeros(1, 64)
+    state_after_a = torch.ones(1, 64) * 10.0
+    tracker.record_before("module_a", state_before)
+    tracker.record_after("module_a", state_after_a)
+
+    # Module B: small delta
+    state_after_b = state_after_a + 0.001
+    tracker.record_before("module_b", state_after_a)
+    tracker.record_after("module_b", state_after_b)
+
+    result = tracker.get_provenance_uncertainty_boost()
+    assert result["boost"] > 0.0, f"Expected positive boost, got {result['boost']}"
+    assert result["dominant_module"] == "module_a"
+    assert result["concentration"] > 0.5, "Expected high concentration"
+    print("✅ test_provenance_uncertainty_boost_dominant_module PASSED")
+
+
+def test_provenance_uncertainty_boost_balanced():
+    """CausalProvenanceTracker.get_provenance_uncertainty_boost returns
+    zero boost when contributions are balanced (both below threshold)."""
+    import torch
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+
+    # Three modules with similar deltas — each ≈ 0.33, below default 0.4
+    state = torch.zeros(1, 64)
+    delta = torch.ones(1, 64)
+    tracker.record_before("module_a", state)
+    tracker.record_after("module_a", state + delta)
+    tracker.record_before("module_b", state + delta)
+    tracker.record_after("module_b", state + 2 * delta)
+    tracker.record_before("module_c", state + 2 * delta)
+    tracker.record_after("module_c", state + 3 * delta)
+
+    result = tracker.get_provenance_uncertainty_boost()
+    assert result["boost"] == 0.0, f"Expected 0.0 boost for balanced, got {result['boost']}"
+    print("✅ test_provenance_uncertainty_boost_balanced PASSED")
+
+
+def test_adapt_weights_from_provenance_exists():
+    """MetaCognitiveRecursionTrigger.adapt_weights_from_provenance
+    adjusts signal weights based on provenance attribution."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Capture initial weights
+    initial_weights = dict(trigger._signal_weights)
+
+    # Simulate provenance where 'meta_loop' dominates
+    provenance = {
+        "contributions": {
+            "meta_loop": 0.8,
+            "safety": 0.1,
+            "memory": 0.05,
+            "factor_extraction": 0.05,
+        },
+        "deltas": {"meta_loop": 5.0, "safety": 0.5, "memory": 0.3, "factor_extraction": 0.2},
+    }
+
+    trigger.adapt_weights_from_provenance(provenance)
+
+    # The 'diverging' signal (mapped from 'meta_loop') should have increased
+    assert trigger._signal_weights["diverging"] > initial_weights["diverging"], (
+        f"Expected 'diverging' weight to increase from {initial_weights['diverging']}, "
+        f"got {trigger._signal_weights['diverging']}"
+    )
+    # Weights should still sum to ~1.0
+    total = sum(trigger._signal_weights.values())
+    assert abs(total - 1.0) < 1e-6, f"Weights should sum to 1.0, got {total}"
+    print("✅ test_adapt_weights_from_provenance_exists PASSED")
+
+
+def test_adapt_weights_from_provenance_empty():
+    """adapt_weights_from_provenance is a no-op with empty contributions."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    initial_weights = dict(trigger._signal_weights)
+
+    trigger.adapt_weights_from_provenance({"contributions": {}})
+
+    assert trigger._signal_weights == initial_weights, "Empty provenance should not change weights"
+    print("✅ test_adapt_weights_from_provenance_empty PASSED")
+
+
+def test_blend_weakest_pair_basic():
+    """ModuleCoherenceVerifier.blend_weakest_pair blends the two
+    most divergent module states toward their mean."""
+    import torch
+    from aeon_core import ModuleCoherenceVerifier
+
+    states = {
+        "module_a": torch.zeros(2, 4),
+        "module_b": torch.ones(2, 4),
+        "module_c": torch.ones(2, 4) * 0.5,
+    }
+    weakest_info = {
+        "pair": ("module_a", "module_b"),
+        "similarity": 0.1,
+        "modules": ["module_a", "module_b"],
+    }
+    result = ModuleCoherenceVerifier.blend_weakest_pair(states, weakest_info, blend_alpha=0.5)
+    # After blending toward mean (0.5), module_a should increase from 0
+    assert result["module_a"].mean().item() > 0.0, "module_a should be blended toward mean"
+    # module_b should decrease from 1
+    assert result["module_b"].mean().item() < 1.0, "module_b should be blended toward mean"
+    # module_c should be unchanged
+    assert torch.allclose(result["module_c"], states["module_c"]), "module_c should be unchanged"
+    print("✅ test_blend_weakest_pair_basic PASSED")
+
+
+def test_blend_weakest_pair_none():
+    """blend_weakest_pair returns states unchanged when weakest_info is None."""
+    import torch
+    from aeon_core import ModuleCoherenceVerifier
+
+    states = {"a": torch.ones(2, 4), "b": torch.zeros(2, 4)}
+    result = ModuleCoherenceVerifier.blend_weakest_pair(states, None)
+    assert torch.allclose(result["a"], states["a"])
+    assert torch.allclose(result["b"], states["b"])
+    print("✅ test_blend_weakest_pair_none PASSED")
+
+
+def test_blend_weakest_pair_missing_module():
+    """blend_weakest_pair returns states unchanged when weakest pair
+    modules are not present in states."""
+    import torch
+    from aeon_core import ModuleCoherenceVerifier
+
+    states = {"a": torch.ones(2, 4)}
+    weakest_info = {"modules": ["x", "y"], "similarity": 0.1}
+    result = ModuleCoherenceVerifier.blend_weakest_pair(states, weakest_info)
+    assert torch.allclose(result["a"], states["a"])
+    print("✅ test_blend_weakest_pair_missing_module PASSED")
+
+
+def test_recurring_root_causes_empty():
+    """TemporalCausalTraceBuffer.get_recurring_root_causes returns
+    empty data when no error/warning entries exist."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer()
+    # Record an info entry (should not be counted)
+    trace.record("test_sub", "ok", severity="info")
+    result = trace.get_recurring_root_causes()
+    assert result["top_subsystem"] is None
+    assert result["total_traces"] == 0
+    assert result["subsystem_counts"] == {}
+    print("✅ test_recurring_root_causes_empty PASSED")
+
+
+def test_recurring_root_causes_with_warnings():
+    """TemporalCausalTraceBuffer.get_recurring_root_causes identifies
+    recurring root-cause subsystems from warning entries."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer()
+
+    # Create a chain: root_entry → warning_entry
+    root_id = trace.record("memory", "stale_data", severity="info")
+    warn_id = trace.record(
+        "coherence_deficit", "detected",
+        causal_prerequisites=[root_id],
+        severity="warning",
+    )
+    # Another warning from the same root
+    warn_id2 = trace.record(
+        "metacognitive_recursion", "triggered",
+        causal_prerequisites=[root_id],
+        severity="warning",
+    )
+
+    result = trace.get_recurring_root_causes()
+    assert result["top_subsystem"] is not None, "Should identify a top subsystem"
+    assert result["total_traces"] == 2, f"Expected 2 warning entries, got {result['total_traces']}"
+    print("✅ test_recurring_root_causes_with_warnings PASSED")
+
+
+def test_recurring_root_causes_severity_filter():
+    """get_recurring_root_causes respects severity_filter parameter."""
+    from aeon_core import TemporalCausalTraceBuffer
+    trace = TemporalCausalTraceBuffer()
+    trace.record("safety", "violation", severity="error")
+    trace.record("memory", "stale", severity="warning")
+
+    # Filter to only errors
+    result = trace.get_recurring_root_causes(severity_filter="error")
+    assert result["total_traces"] == 1
+    print("✅ test_recurring_root_causes_severity_filter PASSED")
+
+
+def test_ucc_evaluate_returns_recurring_root_causes():
+    """UnifiedCognitiveCycle.evaluate() includes recurring_root_causes
+    in its output dict."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, TemporalCausalTraceBuffer,
+    )
+    monitor = ConvergenceMonitor()
+    tracker = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=tracker,
+        causal_trace=trace,
+    )
+    states = {"a": torch.randn(2, 64), "b": torch.randn(2, 64)}
+    result = ucc.evaluate(subsystem_states=states, delta_norm=0.001)
+    assert "recurring_root_causes" in result, "UCC evaluate must return recurring_root_causes"
+    print("✅ test_ucc_evaluate_returns_recurring_root_causes PASSED")
+
+
+def test_provenance_to_signal_mapping_complete():
+    """MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL maps to
+    valid signal weight keys."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    valid_signals = set(trigger._signal_weights.keys())
+    for module, signal in trigger._PROVENANCE_TO_SIGNAL.items():
+        assert signal in valid_signals, (
+            f"Provenance module '{module}' maps to invalid signal '{signal}'. "
+            f"Valid signals: {valid_signals}"
+        )
+    print("✅ test_provenance_to_signal_mapping_complete PASSED")
+
+
+def test_provenance_concentration_in_forward_path():
+    """The forward path wires provenance concentration uncertainty into
+    the metacognitive trigger call by checking the source code for the
+    expected pattern."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "get_provenance_uncertainty_boost" in src, (
+        "Forward path must call get_provenance_uncertainty_boost"
+    )
+    assert "adapt_weights_from_provenance" in src, (
+        "Forward path must call adapt_weights_from_provenance"
+    )
+    print("✅ test_provenance_concentration_in_forward_path PASSED")
+
+
+def test_weakest_pair_blend_in_ucc_path():
+    """The forward path wires weakest-pair blending into the UCC
+    processing block by checking source code."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "blend_weakest_pair" in src, (
+        "UCC path must call blend_weakest_pair for targeted correction"
+    )
+    assert "weakest_pair_blended" in src, (
+        "UCC path must audit-log the weakest-pair blending"
+    )
+    print("✅ test_weakest_pair_blend_in_ucc_path PASSED")
+
+
+def test_recurring_root_cause_in_ucc_audit():
+    """The forward path logs recurring root-cause data from the UCC
+    into the audit trail."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "recurring_root_cause" in src, (
+        "UCC processing must log recurring root causes in audit"
+    )
+    print("✅ test_recurring_root_cause_in_ucc_audit PASSED")
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
     test_tensor_hash_collision_resistance()
@@ -40755,6 +41047,25 @@ def _run_all_tests():
     test_dashboard_causal_trace_panel_exists()
     test_dashboard_metacognition_summary_on_main_dashboard()
     test_dashboard_go_function_wires_new_panels()
+
+    # Architectural Unification — Provenance Feedback, Weakest-Pair
+    # Correction, Recurring Root Causes, and Provenance Uncertainty Boost
+    test_provenance_uncertainty_boost_no_data()
+    test_provenance_uncertainty_boost_dominant_module()
+    test_provenance_uncertainty_boost_balanced()
+    test_adapt_weights_from_provenance_exists()
+    test_adapt_weights_from_provenance_empty()
+    test_blend_weakest_pair_basic()
+    test_blend_weakest_pair_none()
+    test_blend_weakest_pair_missing_module()
+    test_recurring_root_causes_empty()
+    test_recurring_root_causes_with_warnings()
+    test_recurring_root_causes_severity_filter()
+    test_ucc_evaluate_returns_recurring_root_causes()
+    test_provenance_to_signal_mapping_complete()
+    test_provenance_concentration_in_forward_path()
+    test_weakest_pair_blend_in_ucc_path()
+    test_recurring_root_cause_in_ucc_audit()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

@@ -6357,6 +6357,64 @@ class CausalProvenanceTracker:
             'contributions': contributions,
         }
 
+    def get_provenance_uncertainty_boost(
+        self,
+        dominance_threshold: float = 0.4,
+        max_boost: float = 0.15,
+    ) -> Dict[str, Any]:
+        """Compute an uncertainty boost from provenance concentration.
+
+        When a single module accounts for a disproportionately large
+        fraction of the total output change (above ``dominance_threshold``),
+        the reasoning pipeline is fragile — a single subsystem is driving
+        the conclusion without sufficient cross-validation from others.
+
+        This method converts that concentration into an uncertainty signal
+        so that downstream metacognitive triggers can activate deeper
+        reasoning when provenance is unhealthy.
+
+        Args:
+            dominance_threshold: Contribution fraction above which a
+                module is considered dominant.  Default 0.4 means a single
+                module accounts for >40 % of total output change.
+            max_boost: Maximum uncertainty boost to return.  Default 0.15
+                provides a moderate signal without overwhelming other
+                uncertainty sources.
+
+        Returns:
+            Dict with:
+                - boost: float ∈ [0, max_boost] — uncertainty boost.
+                - dominant_module: str or None — name of the dominant module.
+                - concentration: float — Herfindahl-like concentration index.
+        """
+        attribution = self.compute_attribution()
+        contributions = attribution.get('contributions', {})
+        if not contributions:
+            return {"boost": 0.0, "dominant_module": None, "concentration": 0.0}
+
+        # Herfindahl-like concentration: sum of squared contributions.
+        # Uniform distribution → 1/N; single-module dominance → 1.0.
+        concentration = sum(v ** 2 for v in contributions.values())
+
+        dominant_module = max(contributions, key=contributions.get)
+        dominant_fraction = contributions[dominant_module]
+
+        boost = 0.0
+        if dominant_fraction > dominance_threshold:
+            # Scale linearly from 0 at threshold to max_boost at 1.0
+            boost = min(
+                max_boost,
+                (dominant_fraction - dominance_threshold)
+                / (1.0 - dominance_threshold)
+                * max_boost,
+            )
+
+        return {
+            "boost": boost,
+            "dominant_module": dominant_module if boost > 0 else None,
+            "concentration": concentration,
+        }
+
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
@@ -13308,6 +13366,66 @@ class TemporalCausalTraceBuffer:
             "chain": chain,
         }
 
+    def get_recurring_root_causes(
+        self,
+        n_recent: int = 20,
+        severity_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Identify subsystems that recurrently appear as root causes.
+
+        Scans the ``n_recent`` most recent entries for error/warning
+        severity events, traces each back to its root causes, and
+        tallies how often each subsystem appears.  Subsystems that
+        recur frequently indicate systemic issues that deeper reasoning
+        should prioritise.
+
+        This converts the causal trace from a passive audit trail into
+        an actionable signal: downstream consumers (e.g. the
+        :class:`UnifiedCognitiveCycle`) can use the recurrence counts
+        to guide targeted re-reasoning.
+
+        Args:
+            n_recent: Number of recent entries to scan.
+            severity_filter: If provided, only scan entries with this
+                severity (e.g. ``"warning"``).  If None, scans both
+                ``"error"`` and ``"warning"`` entries.
+
+        Returns:
+            Dict with:
+                - subsystem_counts: {subsystem: int} occurrence count.
+                - top_subsystem: str or None — most recurrent root-cause
+                  subsystem.
+                - total_traces: int — number of entries analysed.
+        """
+        recent = self.recent(n=n_recent)
+        if severity_filter is not None:
+            candidates = [
+                e for e in recent if e.get("severity") == severity_filter
+            ]
+        else:
+            candidates = [
+                e for e in recent
+                if e.get("severity") in ("error", "warning")
+            ]
+
+        subsystem_counts: Dict[str, int] = {}
+        for entry in candidates:
+            rc = self.trace_root_cause(entry["id"])
+            for root in rc.get("root_causes", []):
+                sub = root.get("subsystem", "unknown")
+                subsystem_counts[sub] = subsystem_counts.get(sub, 0) + 1
+
+        top_subsystem = (
+            max(subsystem_counts, key=subsystem_counts.get)
+            if subsystem_counts
+            else None
+        )
+        return {
+            "subsystem_counts": subsystem_counts,
+            "top_subsystem": top_subsystem,
+            "total_traces": len(candidates),
+        }
+
 
 class CrossValidationReconciler(nn.Module):
     """
@@ -13713,6 +13831,52 @@ class ModuleCoherenceVerifier(nn.Module):
             "modules": list(weakest_key),
         }
 
+    @staticmethod
+    def blend_weakest_pair(
+        states: Dict[str, torch.Tensor],
+        weakest_info: Optional[Dict[str, Any]],
+        blend_alpha: float = 0.3,
+    ) -> Dict[str, torch.Tensor]:
+        """Apply targeted correction to the weakest subsystem pair.
+
+        Instead of uniformly re-running correction on all modules, this
+        method blends the two most divergent subsystem outputs toward
+        their mean, reducing the specific disagreement that lowered
+        coherence.  This closes the gap where coherence detection only
+        escalated uncertainty without attempting targeted repair.
+
+        The blend is conservative (``blend_alpha`` defaults to 0.3) so
+        that module-specific information is preserved while reducing
+        inter-module divergence.
+
+        Args:
+            states: Subsystem name → [B, hidden_dim] tensor dict.
+            weakest_info: Output of :meth:`get_weakest_pair`, or None.
+            blend_alpha: Fraction to blend toward the pair mean.
+                0 = no change, 1 = replace both with their mean.
+
+        Returns:
+            Updated states dict with the weakest pair blended.
+            If weakest_info is None or the pair modules are missing,
+            the original states are returned unchanged.
+        """
+        if weakest_info is None:
+            return states
+        modules = weakest_info.get("modules", [])
+        if len(modules) < 2:
+            return states
+        name_a, name_b = modules[0], modules[1]
+        if name_a not in states or name_b not in states:
+            return states
+        state_a = states[name_a]
+        state_b = states[name_b]
+        # Compute the midpoint and blend each toward it
+        midpoint = (state_a + state_b) * 0.5
+        states = dict(states)  # shallow copy to avoid mutation
+        states[name_a] = state_a + blend_alpha * (midpoint - state_a)
+        states[name_b] = state_b + blend_alpha * (midpoint - state_b)
+        return states
+
 
 class CausalDAGConsensus:
     """Cross-validates causal DAG structures from multiple causal models.
@@ -14091,6 +14255,82 @@ class MetaCognitiveRecursionTrigger:
         total = sum(raw_weights.values())
         if total > 0:
             self._signal_weights = {k: v / total for k, v in raw_weights.items()}
+
+    # ------------------------------------------------------------------
+    # Provenance-driven weight adaptation
+    # ------------------------------------------------------------------
+
+    # Maps provenance module names to the trigger signal they most
+    # influence.  This bridges the CausalProvenanceTracker's per-module
+    # attribution into the metacognitive trigger's sensitivity weights
+    # so that modules dominating the output also dominate the trigger
+    # decision — closing the feedback loop where provenance data was
+    # recorded but never influenced re-reasoning decisions.
+    _PROVENANCE_TO_SIGNAL: Dict[str, str] = {
+        "meta_loop": "diverging",
+        "deeper_meta_loop": "diverging",
+        "certified_meta_loop": "diverging",
+        "safety": "safety_violation",
+        "self_report": "safety_violation",
+        "consistency_gate": "coherence_deficit",
+        "world_model": "world_model_surprise",
+        "hierarchical_world_model": "world_model_surprise",
+        "causal_model": "low_causal_quality",
+        "notears_causal": "low_causal_quality",
+        "causal_programmatic": "low_causal_quality",
+        "memory": "memory_staleness",
+        "factor_extraction": "coherence_deficit",
+        "auto_critic": "uncertainty",
+        "topology_analysis": "topology_catastrophe",
+    }
+
+    def adapt_weights_from_provenance(
+        self,
+        provenance_attribution: Dict[str, Any],
+        scale: float = 0.3,
+    ) -> None:
+        """Adjust signal weights based on provenance attribution.
+
+        When a module contributes disproportionately to the output (high
+        L2 delta fraction), the corresponding trigger signal weight is
+        boosted so that the metacognitive trigger is more sensitive to
+        signals from that dominant module.  This closes the feedback loop
+        where provenance data was a write-only audit trail: now, modules
+        that dominate the output also dominate re-reasoning decisions.
+
+        The adjustment is additive and small (controlled by ``scale``) to
+        avoid oscillation.  Weights are re-normalised after adjustment.
+
+        Args:
+            provenance_attribution: Output of
+                ``CausalProvenanceTracker.compute_attribution()``.
+            scale: Maximum fractional weight boost for a fully dominant
+                module (contribution = 1.0).  Default 0.3 provides
+                moderate adaptation without destabilising the trigger.
+        """
+        contributions = provenance_attribution.get("contributions", {})
+        if not contributions:
+            return
+
+        # Compute mean contribution for reference (uniform = 1/N)
+        _n = max(len(contributions), 1)
+        _mean = 1.0 / _n
+
+        raw_weights = dict(self._signal_weights)
+        for module_name, contrib in contributions.items():
+            signal = self._PROVENANCE_TO_SIGNAL.get(module_name)
+            if signal is None or signal not in raw_weights:
+                continue
+            # Boost proportional to how far above mean this module is
+            excess = max(0.0, contrib - _mean)
+            boost = excess * scale
+            raw_weights[signal] = raw_weights[signal] + boost
+
+        total = sum(raw_weights.values())
+        if total > 0:
+            self._signal_weights = {
+                k: v / total for k, v in raw_weights.items()
+            }
 
     def evaluate(
         self,
@@ -15242,6 +15482,16 @@ class UnifiedCognitiveCycle:
                     | {'low_output_reliability'}
                 )
 
+        # 7f. Recurring root-cause analysis — query the causal trace for
+        # subsystems that recurrently appear as root causes in recent
+        # error/warning events.  This converts the causal trace from a
+        # passive audit trail into an actionable signal: the caller can
+        # use recurrence counts to guide targeted re-reasoning toward
+        # persistently problematic modules.
+        recurring_root_causes: Dict[str, Any] = {}
+        if self.causal_trace is not None:
+            recurring_root_causes = self.causal_trace.get_recurring_root_causes()
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -15260,6 +15510,7 @@ class UnifiedCognitiveCycle:
             'convergence_arbiter': convergence_arbiter_result,
             'uncertainty_summary': uncertainty_summary,
             'memory_validation': memory_validation,
+            'recurring_root_causes': recurring_root_causes,
         }
 
     def reset(self) -> None:
@@ -19069,6 +19320,41 @@ class AEONDeltaV3(nn.Module):
                         _causal_trace_uncertainty_boost
                     )
                     high_uncertainty = uncertainty > 0.5
+            # 5a-iv-a2. Provenance concentration uncertainty — when a
+            # single module dominates the output (high L2 delta fraction),
+            # the reasoning pipeline is fragile and conclusions may lack
+            # cross-module validation.  This converts provenance
+            # concentration into an uncertainty signal, closing the gap
+            # where provenance data was a write-only audit trail that
+            # never influenced re-reasoning decisions.
+            _prov_unc = self.provenance_tracker.get_provenance_uncertainty_boost()
+            _prov_boost = _prov_unc.get("boost", 0.0)
+            if _prov_boost > 0:
+                uncertainty = min(1.0, uncertainty + _prov_boost)
+                uncertainty_sources["provenance_concentration"] = _prov_boost
+                high_uncertainty = uncertainty > 0.5
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "provenance_tracker", "concentration_warning",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "dominant_module": _prov_unc.get("dominant_module"),
+                            "concentration": _prov_unc.get("concentration", 0.0),
+                            "uncertainty_boost": _prov_boost,
+                        },
+                        severity="warning",
+                    )
+            # 5a-iv-a3. Provenance-driven trigger weight adaptation —
+            # feed per-module attribution into the metacognitive trigger
+            # so that modules dominating the output also dominate the
+            # re-reasoning decision.  This closes the feedback loop where
+            # provenance data was recorded but never influenced trigger
+            # sensitivity: now, disproportionate module influence
+            # increases the corresponding trigger signal weight.
+            _prov_attrib = self.provenance_tracker.compute_attribution()
+            self.metacognitive_trigger.adapt_weights_from_provenance(
+                _prov_attrib,
+            )
             self.provenance_tracker.record_before("metacognitive_trigger", C_star)
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
@@ -22615,6 +22901,26 @@ class AEONDeltaV3(nn.Module):
                             ).get("trigger_score", 0.0)
                         )
                         metacognitive_info["phase"] = "unified_cycle"
+                    # 8f-iv-blend. Targeted weakest-pair correction — when
+                    # the UCC identifies a weakest subsystem pair from the
+                    # coherence result, blend the two divergent states
+                    # toward their mean to reduce specific disagreement.
+                    # This closes the gap where coherence detection only
+                    # escalated uncertainty without attempting targeted
+                    # repair of the identified incoherence.
+                    _ucc_weakest = unified_cycle_results.get(
+                        "coherence_result", {},
+                    ).get("weakest_pair", None)
+                    if _ucc_weakest is not None and self.module_coherence is not None:
+                        _ucc_states = ModuleCoherenceVerifier.blend_weakest_pair(
+                            _ucc_states, _ucc_weakest,
+                        )
+                        self.audit_log.record(
+                            "module_coherence", "weakest_pair_blended", {
+                                "modules": _ucc_weakest.get("modules", []),
+                                "similarity": _ucc_weakest.get("similarity", 0.0),
+                            },
+                        )
                 # 8f-dir-unc. Extract directional uncertainty from UCC —
                 # propagate the most uncertain module and flagged modules
                 # into the audit log and uncertainty_sources so that
@@ -22787,6 +23093,29 @@ class AEONDeltaV3(nn.Module):
                             k: v.get("root_causes", {})
                             for k, v in _ucc_root_causes.items()
                         },
+                    },
+                )
+            # 8f-ucc-recurring. Recurring root-cause feedback — log the
+            # most persistent root-cause subsystems from the causal trace
+            # so that downstream diagnostics and training supervision can
+            # identify systemic architectural weaknesses, not just
+            # per-pass anomalies.  This closes the gap where root-cause
+            # analysis was per-event but never aggregated across events
+            # to detect persistent patterns.
+            _ucc_recurring = unified_cycle_results.get(
+                "recurring_root_causes", {},
+            )
+            _ucc_top_recurrent = _ucc_recurring.get("top_subsystem", None)
+            if _ucc_top_recurrent is not None:
+                self.audit_log.record(
+                    "unified_cognitive_cycle", "recurring_root_cause", {
+                        "top_subsystem": _ucc_top_recurrent,
+                        "subsystem_counts": _ucc_recurring.get(
+                            "subsystem_counts", {},
+                        ),
+                        "total_traces": _ucc_recurring.get(
+                            "total_traces", 0,
+                        ),
                     },
                 )
             # 8f-ucc-deeper. UCC-driven deeper meta-loop re-reasoning —
