@@ -39013,6 +39013,81 @@ def test_server_causal_trace_root_cause_endpoint_exists():
     print("✅ test_server_causal_trace_root_cause_endpoint_exists PASSED")
 
 
+def test_dashboard_metacognition_panel_exists():
+    """The dashboard must contain a Metacognition panel wired to /api/metacognition."""
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AEON_Dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    assert 'id="panel-metacognition"' in html, "panel-metacognition must exist in dashboard"
+    assert "go('metacognition')" in html, "Navigation item for metacognition must exist"
+    assert "/api/metacognition" in html, "Dashboard must call /api/metacognition endpoint"
+    assert "/api/metacognition/resolve" in html, "Dashboard must call /api/metacognition/resolve endpoint"
+    assert "loadMetacognition" in html, "loadMetacognition function must exist"
+    assert "resolveMetaGaps" in html, "resolveMetaGaps function must exist"
+
+    print("✅ test_dashboard_metacognition_panel_exists PASSED")
+
+
+def test_dashboard_provenance_panel_exists():
+    """The dashboard must contain a Causal Provenance panel wired to /api/provenance."""
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AEON_Dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    assert 'id="panel-provenance"' in html, "panel-provenance must exist in dashboard"
+    assert "go('provenance')" in html, "Navigation item for provenance must exist"
+    assert "/api/provenance'" in html or "/api/provenance`" in html, "Dashboard must call /api/provenance endpoint"
+    assert "/api/provenance/root_cause/" in html, "Dashboard must call /api/provenance/root_cause endpoint"
+    assert "loadProvenance" in html, "loadProvenance function must exist"
+    assert "loadProvenanceRootCause" in html, "loadProvenanceRootCause function must exist"
+
+    print("✅ test_dashboard_provenance_panel_exists PASSED")
+
+
+def test_dashboard_causal_trace_panel_exists():
+    """The dashboard must contain a Causal Trace panel wired to /api/causal_trace."""
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AEON_Dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    assert 'id="panel-causaltrace"' in html, "panel-causaltrace must exist in dashboard"
+    assert "go('causaltrace')" in html, "Navigation item for causaltrace must exist"
+    assert "/api/causal_trace" in html, "Dashboard must call /api/causal_trace endpoint"
+    assert "/api/causal_trace/root_cause/" in html, "Dashboard must call /api/causal_trace/root_cause endpoint"
+    assert "loadCausalTrace" in html, "loadCausalTrace function must exist"
+    assert "loadCausalTraceRootCause" in html, "loadCausalTraceRootCause function must exist"
+
+    print("✅ test_dashboard_causal_trace_panel_exists PASSED")
+
+
+def test_dashboard_metacognition_summary_on_main_dashboard():
+    """The main dashboard must show metacognition and provenance summary cards."""
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AEON_Dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    assert 'id="d-mc-status"' in html, "Metacognition status summary card must exist on dashboard"
+    assert 'id="d-mc-gaps"' in html, "Metacognition gaps summary card must exist on dashboard"
+    assert 'id="d-prov-modules"' in html, "Provenance modules summary card must exist on dashboard"
+    assert 'id="d-ct-status"' in html, "Causal trace status summary card must exist on dashboard"
+
+    print("✅ test_dashboard_metacognition_summary_on_main_dashboard PASSED")
+
+
+def test_dashboard_go_function_wires_new_panels():
+    """The go() panel-switch function must lazy-load the new panels."""
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AEON_Dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    assert "panel === 'metacognition'" in html, "go() must handle metacognition panel"
+    assert "panel === 'provenance'" in html, "go() must handle provenance panel"
+    assert "panel === 'causaltrace'" in html, "go() must handle causaltrace panel"
+
+    print("✅ test_dashboard_go_function_wires_new_panels PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -40673,6 +40748,13 @@ def _run_all_tests():
     test_server_provenance_root_cause_endpoint_exists()
     test_server_causal_trace_endpoint_exists()
     test_server_causal_trace_root_cause_endpoint_exists()
+
+    # Dashboard Monitoring Architecture — Panel Wiring Tests
+    test_dashboard_metacognition_panel_exists()
+    test_dashboard_provenance_panel_exists()
+    test_dashboard_causal_trace_panel_exists()
+    test_dashboard_metacognition_summary_on_main_dashboard()
+    test_dashboard_go_function_wires_new_panels()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
