@@ -6357,6 +6357,50 @@ class CausalProvenanceTracker:
             'contributions': contributions,
         }
 
+    # ------------------------------------------------------------------
+    # Cross-pass provenance snapshot history
+    # ------------------------------------------------------------------
+
+    def commit_snapshot(self) -> Dict[str, Any]:
+        """Save the current attribution as a historical snapshot.
+
+        Call this once per forward pass (after the UCC evaluation) to
+        build a sliding-window history of per-module attribution.  The
+        history enables trend analysis: if a single module's contribution
+        is monotonically increasing, it may be dominating the pipeline
+        (a sign of architectural imbalance).
+
+        Returns:
+            The snapshot dict that was committed (same format as
+            :meth:`compute_attribution`).
+        """
+        if not hasattr(self, '_snapshot_history'):
+            self._snapshot_history: list = []
+        snapshot = self.compute_attribution()
+        snapshot['timestamp'] = time.monotonic()
+        self._snapshot_history.append(snapshot)
+        # Keep a bounded window to avoid unbounded memory growth
+        _MAX_SNAPSHOTS = 50
+        if len(self._snapshot_history) > _MAX_SNAPSHOTS:
+            self._snapshot_history = self._snapshot_history[-_MAX_SNAPSHOTS:]
+        return snapshot
+
+    def get_provenance_trend(self, module_name: str) -> List[float]:
+        """Return the contribution trend for a specific module.
+
+        Args:
+            module_name: Module whose contribution trend is requested.
+
+        Returns:
+            List of contribution fractions from oldest to newest snapshot.
+            Empty list if no snapshots have been committed.
+        """
+        history: list = getattr(self, '_snapshot_history', [])
+        return [
+            s.get('contributions', {}).get(module_name, 0.0)
+            for s in history
+        ]
+
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
@@ -16310,7 +16354,21 @@ class AEONDeltaV3(nn.Module):
         # can detect drift between the auto-critic's self-assessment and
         # upstream reasoning states, closing the critic ↔ reasoning loop.
         self._cached_auto_critic_state: Optional[torch.Tensor] = None
-        
+
+        # Generate-path UCC signal cache — these scalars and tensors are
+        # populated during _reasoning_core_impl so that the generate()
+        # method's UCC evaluation receives the same rich signal set as
+        # the primary reasoning-core UCC call, closing the gap where
+        # generate() only received a sparse subset of UCC inputs.
+        self._cached_topo_catastrophe: bool = False
+        self._cached_safety_enforced: bool = False
+        self._cached_auto_critic_score: Optional[float] = None
+        self._cached_executive_health: Optional[float] = None
+        self._cached_memory_signal: Optional[torch.Tensor] = None
+        self._cached_converged_state: Optional[torch.Tensor] = None
+        self._cached_meta_results: Optional[Dict[str, Any]] = None
+        self._cached_certified_results: Optional[Dict[str, Any]] = None
+
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
         # to detect structural disagreement.  Active whenever ≥2 causal
@@ -16519,13 +16577,34 @@ class AEONDeltaV3(nn.Module):
     def _compute_recovery_pressure(self) -> float:
         """Compute recovery pressure scalar ∈ [0, 1] from ErrorRecoveryManager.
 
-        Returns a value proportional to the total number of recovery events,
-        capped at 1.0.  A rate of ``_RECOVERY_PRESSURE_RATE`` (0.1) means
-        approximately 10 recovery events saturate the pressure to 1.0.
+        Incorporates both the total recovery count and per-class failure
+        rates from the detailed recovery history.  When failure-dominated
+        classes exist the pressure is boosted so that the metacognitive
+        trigger and UCC receive a signal that reflects *quality* of
+        recovery, not just *quantity* of events.
+
+        Returns a value proportional to the total number of recovery events
+        and weighted by failure rate, capped at 1.0.  A rate of
+        ``_RECOVERY_PRESSURE_RATE`` (0.1) means approximately 10 recovery
+        events saturate the base pressure to 1.0.
         """
         stats = self.error_recovery.get_recovery_stats()
         total = stats.get("total", 0)
-        return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
+        base_pressure = min(1.0, total * self._RECOVERY_PRESSURE_RATE)
+
+        # Boost pressure when failure rate is high — recovery attempts
+        # that consistently fail indicate a deeper systemic issue.
+        failures = stats.get("failures", 0)
+        successes = stats.get("successes", 0)
+        total_history = failures + successes
+        if total_history > 0:
+            failure_rate = failures / total_history
+            # Blend: 70% base count + 30% failure rate for balanced signal
+            pressure = 0.7 * base_pressure + 0.3 * failure_rate
+        else:
+            pressure = base_pressure
+
+        return min(1.0, pressure)
 
     @staticmethod
     def _encode_state_for_recovery(
@@ -22419,6 +22498,30 @@ class AEONDeltaV3(nn.Module):
         # with a unified orchestrator that ensures each component
         # verifies and reinforces the others.  The result is stored
         # in the output for downstream analysis and decision-making.
+
+        # 8f-bridge. Bridge error recovery history into error evolution
+        # so that per-class recovery patterns (which errors fail most
+        # often) influence metacognitive trigger weights via the error
+        # evolution → adapt_weights_from_evolution() pathway.  Without
+        # this bridge, recovery events are recorded in
+        # ErrorRecoveryManager but never flow into the learning loop.
+        if self.error_evolution is not None:
+            _recovery_stats = self.error_recovery.get_recovery_stats()
+            _recovery_by_class = _recovery_stats.get("by_class", {})
+            _recovery_failures = _recovery_stats.get("failures", 0)
+            if _recovery_failures > 0:
+                for _cls, _cnt in _recovery_by_class.items():
+                    if _cnt > 0:
+                        self.error_evolution.record_episode(
+                            error_class=_cls,
+                            strategy_used="error_recovery_bridge",
+                            success=(_recovery_stats.get("successes", 0) > _recovery_failures),
+                            metadata={
+                                "recovery_count": _cnt,
+                                "total_failures": _recovery_failures,
+                            },
+                        )
+
         unified_cycle_results: Dict[str, Any] = {}
         if self.unified_cognitive_cycle is not None and not fast:
             # Gather subsystem state tensors for coherence verification
@@ -23806,8 +23909,44 @@ class AEONDeltaV3(nn.Module):
         # reasoning consistency loop.
         self._cached_decoder_state = z_out.detach()
 
+        # Cache UCC-relevant signals for the generate() path so that
+        # generate()'s UCC evaluation receives the same rich signal
+        # set as the primary reasoning-core call.
+        # These variables are all defined earlier in _reasoning_core_impl:
+        #   safety_enforced (line ~18444), meta_results (line ~17785),
+        #   _certified_results (line ~17958), C_star (line ~17785),
+        #   _pre_loop_memory_signal (line ~17634), executive_results
+        #   (line ~18580), _auto_critic_final_score (line ~21587),
+        #   _topo_catastrophe (line ~21890).
+        try:
+            self._cached_topo_catastrophe = _topo_catastrophe
+        except NameError:
+            self._cached_topo_catastrophe = False
+        self._cached_safety_enforced = safety_enforced
+        self._cached_auto_critic_score = _auto_critic_final_score
+        self._cached_meta_results = meta_results
+        self._cached_certified_results = _certified_results
+        self._cached_converged_state = C_star.detach()
+        self._cached_memory_signal = (
+            _pre_loop_memory_signal.detach()
+            if _pre_loop_memory_signal is not None else None
+        )
+        if executive_results and executive_results.get("winner") is not None:
+            self._cached_executive_health = max(0.0, min(1.0,
+                executive_results.get("meta_stats", {}).get("mean", 1.0)
+            ))
+        elif self.cognitive_executive is not None:
+            self._cached_executive_health = 0.0
+        else:
+            self._cached_executive_health = None
+
         # _cached_output_quality was already set at step 8i-oq above
         # with the current pass's fresh value; no need to re-cache here.
+
+        # Commit a provenance snapshot so that cross-pass provenance
+        # trends can be analyzed (e.g. detecting a single module that
+        # is monotonically dominating the pipeline attribution).
+        self.provenance_tracker.commit_snapshot()
 
         return z_out, outputs
     
@@ -24928,6 +25067,21 @@ class AEONDeltaV3(nn.Module):
                         _gen_ucc_states["meta_loop"] = self._cached_meta_loop_state
                     if self._cached_decoder_state is not None:
                         _gen_ucc_states["decoder"] = self._cached_decoder_state
+                    # Include additional cached subsystem states so the
+                    # generate-path coherence check matches the richness
+                    # of the primary reasoning-core UCC evaluation.
+                    if self._cached_factor_state is not None:
+                        _gen_ucc_states["factor_embedding"] = self._cached_factor_state
+                    if self._cached_safety_state is not None:
+                        _gen_ucc_states["safety"] = self._cached_safety_state
+                    if self._cached_memory_state is not None:
+                        _gen_ucc_states["memory"] = self._cached_memory_state
+                    if self._cached_world_model_state is not None:
+                        _gen_ucc_states["world_model"] = self._cached_world_model_state
+                    if self._cached_executive_state is not None:
+                        _gen_ucc_states["cognitive_executive"] = self._cached_executive_state
+                    if self._cached_integration_state is not None:
+                        _gen_ucc_states["integration"] = self._cached_integration_state
                     if len(_gen_ucc_states) >= 2:
                         _gen_ucc_result = self.unified_cognitive_cycle.evaluate(
                             subsystem_states=_gen_ucc_states,
@@ -24937,7 +25091,15 @@ class AEONDeltaV3(nn.Module):
                             causal_quality=self._cached_causal_quality,
                             memory_staleness=self._memory_stale,
                             recovery_pressure=self._compute_recovery_pressure(),
+                            safety_violation=self._cached_safety_enforced,
                             feedback_signal=self._cached_feedback,
+                            topology_catastrophe=self._cached_topo_catastrophe,
+                            meta_loop_results=self._cached_meta_results,
+                            certified_results=self._cached_certified_results,
+                            memory_signal=self._cached_memory_signal,
+                            converged_state=self._cached_converged_state,
+                            auto_critic_quality=self._cached_auto_critic_score,
+                            executive_health=self._cached_executive_health,
                             output_reliability=max(0.0, min(1.0,
                                 (1.0 - _gen_uncertainty)
                                 * max(0.0, 1.0 - self._cached_coherence_deficit)
