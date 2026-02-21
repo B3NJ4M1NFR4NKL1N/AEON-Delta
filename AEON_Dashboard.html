@@ -2963,7 +2963,7 @@ const FEEDBACK_EDGE_SET = new Set([
 
 function _pipelineNodePositions() {
   const positions = {};
-  const svgW = 1500, startX = 40, tierGap = 78;
+  const startX = 40, tierGap = 78;
   let colX = startX;
   PIPELINE_TIERS.forEach((tier, ti) => {
     const nodes = tier.nodes;
@@ -2975,14 +2975,6 @@ function _pipelineNodePositions() {
     colX += tierGap;
   });
   return positions;
-}
-
-function _svgLine(x1, y1, x2, y2, cls, markerId) {
-  // Use a curved path for better readability
-  const dx = x2 - x1, dy = y2 - y1;
-  const cx1 = x1 + dx * 0.4, cy1 = y1;
-  const cx2 = x1 + dx * 0.6, cy2 = y2;
-  return `<path d="M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}" class="${cls}" marker-end="url(#${markerId})"/>`;
 }
 
 function buildPipeline() {
@@ -2999,7 +2991,7 @@ function buildPipeline() {
     const p1 = pos[from], p2 = pos[to];
     if (!p1 || !p2) return;
     const key = `${from}→${to}`;
-    const isFeedback = FEEDBACK_EDGE_SET.has(key) || (p1.tierIdx > p2.tierIdx);
+    const isFeedback = FEEDBACK_EDGE_SET.has(key);
     const cls = isFeedback ? 'p-edge feedback' : 'p-edge';
     edgesHtml += `<path d="M${p1.x+40},${p1.y} C${p1.x+40+(p2.x-p1.x-80)*0.4},${p1.y} ${p1.x+40+(p2.x-p1.x-80)*0.6+40},${p2.y} ${p2.x-40},${p2.y}" class="${cls}" data-from="${from}" data-to="${to}" marker-end="url(#arrow)"/>`;
   });
@@ -3124,7 +3116,7 @@ function updatePipelineHealth(modules, stageHealth) {
     if (!pulse) return;
 
     // Try to match module data from server
-    const mod = modMap[id] || modMap[id.replace(/_/g, '')] || null;
+    const mod = modMap[id] || null;
     const sh = stageHealth ? stageHealth[id] : null;
 
     if (mod) {
@@ -3148,10 +3140,14 @@ function updatePipelineHealth(modules, stageHealth) {
       pulse.setAttribute('opacity', '0.4');
     }
 
-    // Add param count to sub-label if available
+    // Append param count to sub-label if available
     if (mod && mod.params) {
       const subText = node.querySelector('.p-node-sub');
-      if (subText) subText.textContent = fmtP(mod.params);
+      if (subText) {
+        const origSub = subText.dataset.orig || subText.textContent;
+        subText.dataset.orig = origSub;
+        subText.textContent = origSub + ' · ' + fmtP(mod.params);
+      }
     }
   });
 }
@@ -3335,7 +3331,11 @@ async function loadArch() {
 }
 
 // Build pipeline on first visit
-setTimeout(() => { if (!_pipelineBuilt) buildPipeline(); }, 200);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { if (!_pipelineBuilt) buildPipeline(); });
+} else {
+  if (!_pipelineBuilt) buildPipeline();
+}
 
 // ─── MODULE INSPECTOR ─────────────────────────────────────────────────────────
 async function loadModules() {
