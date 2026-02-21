@@ -6939,7 +6939,7 @@ def _adapt_uncertainty_weights_from_evolution(
         "convergence_conflict": "convergence_conflict",
         "safety_violation": "safety_rollback",
         # --- Previously unmapped sources: completing the adaptive
-        # feedback loop so ALL uncertainty sources can have their
+        # feedback loop so all uncertainty sources can have their
         # weights adjusted by historical error-recovery success rates.
         "certified_convergence_failed": "certified_convergence_failure",
         "pipeline_error": "numerical",
