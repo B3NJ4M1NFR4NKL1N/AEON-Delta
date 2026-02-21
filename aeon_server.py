@@ -745,6 +745,13 @@ async def run_inference(req: InferRequest):
     except Exception:
         pass
 
+    # Recovery statistics so consumers can assess error-handling health
+    recovery_stats = {}
+    try:
+        recovery_stats = APP.model.error_recovery.get_recovery_stats()
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "text": text_out,
@@ -758,6 +765,9 @@ async def run_inference(req: InferRequest):
         "uncertainty": result.get("uncertainty"),
         "causal_decision_chain": result.get("causal_decision_chain", {}),
         "metacognitive_state": metacognitive,
+        "provenance": result.get("provenance", {}),
+        "ucc_result": result.get("ucc_result", {}),
+        "recovery_stats": recovery_stats,
     }
 
 
