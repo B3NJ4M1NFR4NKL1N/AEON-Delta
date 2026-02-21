@@ -15993,12 +15993,6 @@ class AEONDeltaV3(nn.Module):
         # consistency verification loop.
         self._cached_decoder_state: Optional[torch.Tensor] = None
         self._cached_integration_state: Optional[torch.Tensor] = None
-        # Topology and diversity analysis outputs — cached so that
-        # verify_coherence() can cross-validate loss-landscape and
-        # thought-diversity signals against other subsystem states,
-        # completing the coherence verification surface.
-        self._cached_topology_state: Optional[torch.Tensor] = None
-        self._cached_diversity_state: Optional[torch.Tensor] = None
         self._cached_executive_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
@@ -16719,8 +16713,11 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass  # non-critical — best-effort adaptation
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Post-error trigger adaptation failed: %s",
+                        _adapt_err,
+                    )
 
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
