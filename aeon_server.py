@@ -1785,8 +1785,9 @@ async def get_causal_trace(last_n: int = 50):
                 "available": False,
                 "reason": "Causal trace not enabled",
             }
-        entries = list(trace._entries)[-last_n:]
-        # Convert entries to serialisable dicts
+        entries = trace.recent(last_n)
+        # Convert entries to serialisable dicts; binary fields (bytes,
+        # memoryview) are excluded because they are not JSON-serialisable.
         serialised = []
         for entry in entries:
             if isinstance(entry, dict):
