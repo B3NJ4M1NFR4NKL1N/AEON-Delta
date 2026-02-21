@@ -2128,7 +2128,7 @@ async def get_architecture():
                 "sub_count": sub_count,
             })
 
-        # Pipeline stage health summary
+        # Pipeline stage health summary — all modules
         stage_health = {}
         stage_map = {
             "embedding": "Input Embedding",
@@ -2139,6 +2139,43 @@ async def get_architecture():
             "causal_model": "Causal Model",
             "safety_system": "Safety",
             "decoder": "Decoder",
+            "certified_meta_loop": "Certified Meta-Loop",
+            "convergence_monitor": "Convergence Monitor",
+            "topology_analyzer": "Topology Analyzer",
+            "diversity_metric": "Diversity Metric",
+            "sparse_factorization": "Sparse Factorization",
+            "causal_factor_extractor": "Causal Factor Extractor",
+            "self_reporting": "Self-Reporting",
+            "planning_module": "Planning Module",
+            "world_model": "World Model",
+            "rssm": "RSSM",
+            "multimodal_grounding": "Multimodal Grounding",
+            "hierarchical_memory": "Hierarchical Memory",
+            "ntm": "Neural Turing Machine",
+            "temporal_memory": "Temporal Memory",
+            "neurogenic_memory": "Neurogenic Memory",
+            "consolidating_memory": "Consolidating Memory",
+            "meta_learner": "Meta Learner",
+            "continual_learning": "Continual Learning",
+            "neural_causal_model": "Neural Causal Model",
+            "notears_causal": "NOTEARS Causal",
+            "causal_world_model": "Causal World Model",
+            "causal_programmatic": "Causal Programmatic",
+            "cognitive_feedback_bus": "Cognitive Feedback",
+            "physics_world_model": "Physics World Model",
+            "latent_dynamics": "Latent Dynamics",
+            "curiosity_module": "Curiosity Module",
+            "hierarchical_vae": "Hierarchical VAE",
+            "cognitive_executive": "Cognitive Executive",
+            "auto_critic": "Auto-Critic",
+            "ns_bridge": "Neuro-Symbolic Bridge",
+            "hybrid_reasoning": "Hybrid Reasoning",
+            "unified_simulator": "Unified Simulator",
+            "cross_validation_reconciler": "Cross-Validation",
+            "complexity_estimator": "Complexity Estimator",
+            "module_coherence_verifier": "Module Coherence",
+            "value_network": "Value Network",
+            "policy_network": "Policy Network",
         }
         for m in modules:
             label = stage_map.get(m["name"], m["name"])
@@ -2154,6 +2191,11 @@ async def get_architecture():
                 "memory_mb": m["memory_mb"],
             }
 
+        # Pipeline dependency graph from model
+        pipeline_deps = []
+        if hasattr(APP.model, '_PIPELINE_DEPENDENCIES'):
+            pipeline_deps = [[u, d] for u, d in APP.model._PIPELINE_DEPENDENCIES]
+
         total_memory_mb = round(sum(m["memory_mb"] for m in modules), 3)
 
         return {
@@ -2165,6 +2207,7 @@ async def get_architecture():
             "total_memory_mb": total_memory_mb,
             "modules": modules,
             "stage_health": stage_health,
+            "pipeline_dependencies": pipeline_deps,
             "config": {
                 "encoder_backend": APP.config.encoder_backend,
                 "decoder_backend": APP.config.decoder_backend,

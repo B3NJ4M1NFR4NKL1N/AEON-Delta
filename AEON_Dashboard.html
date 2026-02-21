@@ -216,19 +216,42 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .chart-title{font-size:12px;color:var(--text2);font-weight:600;}
 canvas{display:block;width:100%;}
 
-/* ARCH FLOW */
-.arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:20px;overflow-x:auto;margin-bottom:18px;}
-.flow{display:flex;align-items:center;gap:0;min-width:900px;}
-.fn{background:var(--bg2);border:1px solid var(--border2);border-radius:7px;padding:8px 12px;font-size:11px;text-align:center;white-space:nowrap;transition:all 0.18s;cursor:default;}
-.fn:hover{transform:scale(1.05);z-index:2;box-shadow:0 0 12px rgba(0,212,255,0.15);}
-.fn .fn-n{font-weight:600;}
-.fn .fn-s{font-size:9px;color:var(--text3);margin-top:2px;}
-.fn.hot{border-color:var(--accent);color:var(--accent);background:rgba(0,212,255,0.05);}
-.fn.warm{border-color:var(--purple);color:#a78bfa;background:rgba(124,58,237,0.05);}
-.fn.cool{border-color:var(--green);color:var(--green);background:rgba(16,185,129,0.05);}
-.fa{color:var(--text3);font-size:15px;padding:0 5px;flex-shrink:0;}
-.fb{display:flex;flex-direction:column;gap:5px;}
-.fb .fn{font-size:10px;padding:5px 8px;}
+/* ARCH FLOW — UNIFIED INTERACTIVE PIPELINE v2 */
+.arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:20px;overflow:auto;margin-bottom:18px;position:relative;}
+.pipeline-svg{width:100%;min-width:1620px;display:block;}
+.pipeline-svg .p-edge{fill:none;stroke:var(--border2);stroke-width:1.2;opacity:0.5;transition:stroke 0.3s,opacity 0.3s,stroke-width 0.3s;}
+.pipeline-svg .p-edge.active{stroke:var(--accent);opacity:0.9;stroke-width:1.8;}
+.pipeline-svg .p-edge.feedback{stroke-dasharray:5 3;opacity:0.4;}
+.pipeline-svg .p-edge.feedback.active{opacity:0.7;}
+.pipeline-svg .p-edge-flow{fill:none;stroke:var(--accent);stroke-width:2;opacity:0;stroke-dasharray:6 4;}
+.pipeline-svg .p-edge-flow.active{opacity:0.7;animation:edgeFlow 1.5s linear infinite;}
+@keyframes edgeFlow{to{stroke-dashoffset:-20}}
+.p-node{cursor:pointer;transition:transform 0.15s;}
+.p-node:hover{transform:scale(1.08);}
+.p-node:hover .p-node-bg{stroke:var(--accent);stroke-width:2;filter:drop-shadow(0 0 6px rgba(0,212,255,0.3));}
+.p-node .p-node-bg{fill:var(--bg2);stroke:var(--border2);stroke-width:1;rx:6;ry:6;transition:all 0.2s;}
+.p-node.selected .p-node-bg{stroke:var(--accent);stroke-width:2;fill:rgba(0,212,255,0.06);}
+.p-node .p-node-label{fill:var(--text);font-size:9px;font-family:var(--mono);font-weight:600;text-anchor:middle;pointer-events:none;}
+.p-node .p-node-sub{fill:var(--text3);font-size:7px;font-family:var(--mono);text-anchor:middle;pointer-events:none;}
+.p-node .p-node-pulse{transition:all 0.3s;}
+.p-node.tier-input .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
+.p-node.tier-output .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
+.p-node.tier-meta .p-node-bg{stroke:var(--purple);fill:rgba(124,58,237,0.04);}
+.p-node.tier-safety .p-node-bg{stroke:var(--warn);fill:rgba(245,158,11,0.04);}
+.p-node.tier-memory .p-node-bg{stroke:var(--green);fill:rgba(16,185,129,0.04);}
+.p-node.tier-causal .p-node-bg{stroke:#f472b6;fill:rgba(244,114,182,0.04);}
+.p-tier-label{fill:var(--text3);font-size:8px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;opacity:0.5;}
+.p-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:9px;color:var(--text3);}
+.p-legend-item{display:flex;align-items:center;gap:5px;}
+.p-legend-dot{width:8px;height:8px;border-radius:50%;}
+.pipeline-controls{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
+.pipeline-controls .pc-filter{padding:3px 9px;border-radius:10px;border:1px solid var(--border);font-size:10px;cursor:pointer;color:var(--text3);transition:all 0.12s;user-select:none;font-family:var(--mono);background:transparent;}
+.pipeline-controls .pc-filter.active{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
+.pipeline-controls .pc-filter:hover{border-color:var(--accent);color:var(--text);}
+.pipeline-zoom{display:flex;align-items:center;gap:4px;}
+.pipeline-zoom button{background:var(--surface3);border:1px solid var(--border);color:var(--text3);width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;}
+.pipeline-zoom button:hover{color:var(--accent);border-color:var(--accent);}
+.pipeline-zoom span{font-size:10px;color:var(--text3);min-width:36px;text-align:center;}
 
 /* BENCHMARK BARS */
 .bench-bar{display:flex;align-items:center;gap:8px;margin:4px 0;}
@@ -552,54 +575,68 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ ARCHITECTURE ══ -->
 <div class="panel" id="panel-architecture">
   <div class="ph">
-    <div><div class="ph-title">Architecture — Real-Time Diagnostics</div><div class="ph-sub">Interactive pipeline visualization · per-module health · gradient flow · memory profiling</div></div>
+    <div><div class="ph-title">Architecture — Real-Time Diagnostics</div><div class="ph-sub">Unified interactive pipeline · 52 modules · per-module health · gradient flow · monitoring integration</div></div>
     <div class="btns">
       <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
         <input type="checkbox" id="arch-auto-refresh" onchange="toggleArchAutoRefresh()" style="accent-color:var(--accent)"> Auto-refresh
       </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
+        <input type="checkbox" id="arch-show-feedback" onchange="pipelineToggleFeedback()" style="accent-color:var(--purple)" checked> Feedback loops
+      </label>
       <button class="btn btn-secondary" onclick="loadArch()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="pipelineResetZoom()">⊡ Reset View</button>
     </div>
   </div>
 
   <!-- Summary cards -->
-  <div class="arch-summary-grid">
+  <div class="arch-summary-grid" style="grid-template-columns:repeat(6,1fr)">
     <div class="card"><div class="ct">Total Parameters</div><div class="cv ca" id="arch-total-params">—</div></div>
     <div class="card"><div class="ct">Trainable</div><div class="cv cg" id="arch-train-params">—</div></div>
     <div class="card"><div class="ct">Frozen</div><div class="cv" style="color:var(--text3)" id="arch-frozen-params">—</div></div>
     <div class="card"><div class="ct">Memory</div><div class="cv cp" id="arch-total-mem">—</div><div class="cm-t">model weights</div></div>
+    <div class="card"><div class="ct">Pipeline Nodes</div><div class="cv ca" id="arch-node-count">52</div><div class="cm-t">active modules</div></div>
+    <div class="card"><div class="ct">Health</div><div class="cv cg" id="arch-health-pct">—</div><div class="cm-t">healthy modules</div></div>
   </div>
 
-  <!-- Interactive Data Flow Pipeline -->
-  <div class="arch-wrap">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">Interactive Data Flow Pipeline</div>
-      <div style="display:flex;gap:12px;font-size:9px;color:var(--text3)">
-        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:3px"></span>Healthy</span>
-        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--warn);margin-right:3px"></span>Warning</span>
-        <span><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--danger);margin-right:3px"></span>Error</span>
-      </div>
+  <!-- Pipeline Tier Filter Controls -->
+  <div class="pipeline-controls">
+    <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-right:4px">Filter:</span>
+    <button class="pc-filter active" data-tier="all" onclick="pipelineFilter('all',this)">All</button>
+    <button class="pc-filter" data-tier="encoding" onclick="pipelineFilter('encoding',this)">Encoding</button>
+    <button class="pc-filter" data-tier="meta" onclick="pipelineFilter('meta',this)">Meta-Reasoning</button>
+    <button class="pc-filter" data-tier="analysis" onclick="pipelineFilter('analysis',this)">Analysis</button>
+    <button class="pc-filter" data-tier="safety" onclick="pipelineFilter('safety',this)">Safety</button>
+    <button class="pc-filter" data-tier="memory" onclick="pipelineFilter('memory',this)">Memory</button>
+    <button class="pc-filter" data-tier="causal" onclick="pipelineFilter('causal',this)">Causal</button>
+    <button class="pc-filter" data-tier="reasoning" onclick="pipelineFilter('reasoning',this)">Reasoning</button>
+    <button class="pc-filter" data-tier="integration" onclick="pipelineFilter('integration',this)">Integration</button>
+    <div style="flex:1"></div>
+    <div class="pipeline-zoom">
+      <button onclick="pipelineZoom(-0.1)">−</button>
+      <span id="pipeline-zoom-val">100%</span>
+      <button onclick="pipelineZoom(0.1)">+</button>
     </div>
-    <div class="flow" id="arch-flow">
-      <div class="fn hot arch-node" id="arch-n-input"><div class="arch-pulse off"></div><div class="fn-n">Input IDs</div><div class="fn-s">[B, L]</div></div>
-      <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-encoder" onclick="archShowDetail('encoder')"><div class="arch-pulse off"></div><div class="fn-n">Encoder</div><div class="fn-s" id="a-enc">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-enc-p"></div></div>
-      <div class="fa">→</div>
-      <div class="fn warm arch-node" id="arch-n-vq" onclick="archShowDetail('vector_quantizer')"><div class="arch-pulse off"></div><div class="fn-n">VQ-VAE</div><div class="fn-s" id="a-vq">8192 codes</div><div class="fn-s" style="color:var(--purple);font-size:8px" id="a-vq-p"></div></div>
-      <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-meta" onclick="archShowDetail('meta_loop')"><div class="arch-pulse off"></div><div class="fn-n">Meta-Loop</div><div class="fn-s" id="a-ml">Banach FP · N iter</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-ml-p"></div></div>
-      <div class="fa">→</div>
-      <div class="fb">
-        <div class="fn arch-node" id="arch-n-memory" onclick="archShowDetail('memory_manager')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-mem">Memory Systems</span></div>
-        <div class="fn arch-node" id="arch-n-causal" onclick="archShowDetail('causal_model')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-caus">Causal Models</span></div>
-        <div class="fn arch-node" id="arch-n-safety" onclick="archShowDetail('safety_system')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span>Safety + Topology</span></div>
-        <div class="fn arch-node" id="arch-n-plan" onclick="archShowDetail('planning')"><div class="arch-pulse off" style="top:2px;right:2px;width:4px;height:4px"></div><span id="a-plan">Planning</span></div>
-      </div>
-      <div class="fa">→</div>
-      <div class="fn cool arch-node" id="arch-n-cstar"><div class="arch-pulse off"></div><div class="fn-n">C_star</div><div class="fn-s">Core State</div></div>
-      <div class="fa">→</div>
-      <div class="fn arch-node" id="arch-n-decoder" onclick="archShowDetail('decoder')"><div class="arch-pulse off"></div><div class="fn-n">Decoder</div><div class="fn-s" id="a-dec">SSM</div><div class="fn-s" style="color:var(--accent);font-size:8px" id="a-dec-p"></div></div>
-      <div class="fa">→</div>
-      <div class="fn hot arch-node" id="arch-n-output"><div class="arch-pulse off"></div><div class="fn-n">Logits</div><div class="fn-s" id="a-out">[B,L,V]</div></div>
+  </div>
+
+  <!-- Unified Interactive Data Flow Pipeline -->
+  <div class="arch-wrap" id="arch-pipeline-wrap">
+    <svg id="pipeline-svg" class="pipeline-svg" viewBox="0 0 1620 950" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--text3)" opacity="0.5"/></marker>
+        <marker id="arrow-active" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--accent)" opacity="0.8"/></marker>
+        <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <g id="pipeline-edges"></g>
+      <g id="pipeline-nodes"></g>
+      <g id="pipeline-tier-labels"></g>
+    </svg>
+    <div class="p-legend">
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--green)"></div> Healthy</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--warn)"></div> Warning</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--danger)"></div> Error</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--text3)"></div> Uninitialized</div>
+      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--text3)" stroke-width="1.2"/></svg> Data flow</div>
+      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--purple)" stroke-width="1.2" stroke-dasharray="4 2"/></svg> Feedback loop</div>
     </div>
   </div>
 
@@ -607,7 +644,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="card" id="arch-detail-card" style="display:none;margin-bottom:14px;border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div class="ct" id="arch-detail-title">Module Detail</div>
-      <button class="btn btn-ghost" onclick="document.getElementById('arch-detail-card').style.display='none'" style="padding:2px 8px;font-size:10px">✕ Close</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('arch-detail-card').style.display='none';pipelineDeselectAll()" style="padding:2px 8px;font-size:10px">✕ Close</button>
     </div>
     <div id="arch-detail-content" style="font-size:11px">—</div>
   </div>
@@ -629,8 +666,8 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
   <!-- Pipeline Stage Health Overview -->
   <div class="card">
-    <div class="ct">Pipeline Stage Health Overview</div>
-    <div id="arch-stage-health" style="margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
+    <div class="ct">Pipeline Stage Health Overview — All Modules</div>
+    <div id="arch-stage-health" style="margin-top:10px;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;font-size:11px">
       <div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>
     </div>
   </div>
@@ -2759,17 +2796,365 @@ function drawCodebook(vq) {
     `${vq.used_codes||vq.active_codes||'?'} active / ${n} total codes · ${utilRatio!=null?(utilRatio*100).toFixed(1)+'%':''} utilized`;
 }
 
-// ─── ARCHITECTURE ─────────────────────────────────────────────────────────────
+// ─── ARCHITECTURE — UNIFIED INTERACTIVE PIPELINE v2 ──────────────────────────
 let _archAutoRefreshTimer = null;
 let _archData = null;
+let _pipelineZoom = 1;
+let _pipelineSelectedNode = null;
+let _pipelineBuilt = false;
+
+// Full pipeline node definitions with tier grouping and layout positions
+const PIPELINE_TIERS = [
+  { id:'input_layer', label:'INPUT', color:'var(--accent)', nodes:[
+    {id:'input',label:'Input IDs',sub:'[B, L]'}
+  ]},
+  { id:'encoding', label:'ENCODING', color:'var(--accent)', nodes:[
+    {id:'encoder',label:'Encoder',sub:'SSM'},
+    {id:'continual_learning',label:'Continual Learning',sub:'cross-task'}
+  ]},
+  { id:'quantization', label:'QUANTIZATION', color:'#a78bfa', nodes:[
+    {id:'vq',label:'VQ-VAE',sub:'codebook'},
+    {id:'encoder_reasoning_norm',label:'Enc→Reason Norm',sub:'LayerNorm'}
+  ]},
+  { id:'meta', label:'META-REASONING', color:'#a78bfa', nodes:[
+    {id:'meta_loop',label:'Meta-Loop',sub:'Banach FP'},
+    {id:'certified_meta_loop',label:'Certified Meta',sub:'IBP verify'},
+    {id:'convergence_arbiter',label:'Conv. Arbiter',sub:'unified'}
+  ]},
+  { id:'decomposition', label:'DECOMPOSITION', color:'var(--accent)', nodes:[
+    {id:'slot_binding',label:'Slot Binding',sub:'compositional'},
+    {id:'factor_extraction',label:'Factor Extract',sub:'sparse'}
+  ]},
+  { id:'analysis', label:'ANALYSIS', color:'var(--warn)', nodes:[
+    {id:'topology_analysis',label:'Topology',sub:'catastrophe'},
+    {id:'diversity_analysis',label:'Diversity',sub:'entanglement'},
+    {id:'complexity_estimator',label:'Complexity Est.',sub:'gating'},
+    {id:'consistency_gate',label:'Consistency Gate',sub:'neuro-sym'},
+    {id:'cross_validation',label:'Cross-Validation',sub:'reconciler'}
+  ]},
+  { id:'safety', label:'SAFETY & TRUST', color:'var(--warn)', nodes:[
+    {id:'self_report',label:'Self-Report',sub:'honesty gate'},
+    {id:'safety',label:'Safety System',sub:'multi-level'}
+  ]},
+  { id:'executive', label:'EXECUTIVE', color:'#a78bfa', nodes:[
+    {id:'cognitive_executive',label:'Cog. Executive',sub:'attention'},
+    {id:'deeper_meta_loop',label:'Deeper Meta',sub:'recursive'}
+  ]},
+  { id:'world', label:'WORLD MODELS', color:'var(--accent)', nodes:[
+    {id:'world_model',label:'World Model',sub:'physics'},
+    {id:'hierarchical_world_model',label:'Hierarchical WM',sub:'multi-level'},
+    {id:'causal_world_model',label:'Causal WM',sub:'interventional'}
+  ]},
+  { id:'memory', label:'MEMORY SYSTEMS', color:'var(--green)', nodes:[
+    {id:'memory',label:'Memory Manager',sub:'unified'},
+    {id:'temporal_memory',label:'Temporal Memory',sub:'episodic'},
+    {id:'neurogenic_memory',label:'Neurogenic Mem.',sub:'growing'},
+    {id:'consolidating_memory',label:'Consolidating',sub:'sleep'},
+    {id:'memory_trust',label:'Memory Trust',sub:'scorer'},
+    {id:'memory_validation',label:'Mem. Validation',sub:'reasoning'},
+    {id:'memory_cross_validation',label:'Mem. Cross-Val',sub:'subsystem'}
+  ]},
+  { id:'planning', label:'PLANNING', color:'var(--green)', nodes:[
+    {id:'mcts_planning',label:'MCTS Planner',sub:'tree search'},
+    {id:'active_learning',label:'Active Learning',sub:'exploration'},
+    {id:'icm_curiosity',label:'ICM Curiosity',sub:'intrinsic'}
+  ]},
+  { id:'causal', label:'CAUSAL MODELS', color:'#f472b6', nodes:[
+    {id:'causal_model',label:'Neural Causal',sub:'SCM'},
+    {id:'notears_causal',label:'NOTEARS',sub:'DAG learn'},
+    {id:'causal_programmatic',label:'Causal Program.',sub:'symbolic'},
+    {id:'causal_dag_consensus',label:'DAG Consensus',sub:'multi-model'}
+  ]},
+  { id:'reasoning', label:'REASONING', color:'#f472b6', nodes:[
+    {id:'unified_simulator',label:'Unified Simulator',sub:'causal sim'},
+    {id:'hybrid_reasoning',label:'Hybrid Reasoning',sub:'engine'},
+    {id:'ns_bridge',label:'NS Bridge',sub:'neuro-sym'},
+    {id:'temporal_knowledge_graph',label:'Temporal KG',sub:'knowledge'}
+  ]},
+  { id:'abstraction', label:'ABSTRACTION', color:'#a78bfa', nodes:[
+    {id:'hierarchical_vae',label:'Hierarchical VAE',sub:'multi-scale'},
+    {id:'causal_context',label:'Causal Context',sub:'window mgr'}
+  ]},
+  { id:'dynamics', label:'STATE & DYNAMICS', color:'var(--accent)', nodes:[
+    {id:'rssm',label:'RSSM',sub:'recurrent SSM'},
+    {id:'multimodal',label:'Multimodal',sub:'grounding'},
+    {id:'grounded_multimodal',label:'Grounded MM',sub:'CLIP'}
+  ]},
+  { id:'integration', label:'INTEGRATION', color:'var(--accent)', nodes:[
+    {id:'integration',label:'Integration',sub:'fusion'},
+    {id:'auto_critic',label:'Auto-Critic',sub:'self-revise'},
+    {id:'output_reliability',label:'Output Reliability',sub:'trust'}
+  ]},
+  { id:'metacognition', label:'META-COGNITION', color:'#a78bfa', nodes:[
+    {id:'metacognitive_trigger',label:'MetaCog Trigger',sub:'re-reason'},
+    {id:'error_evolution',label:'Error Evolution',sub:'tracker'},
+    {id:'unified_cognitive_cycle',label:'UCC',sub:'coherence'}
+  ]},
+  { id:'output', label:'OUTPUT', color:'var(--accent)', nodes:[
+    {id:'decoder',label:'Decoder',sub:'SSM'}
+  ]}
+];
+
+// Pipeline edges — from _PIPELINE_DEPENDENCIES
+const PIPELINE_EDGES = [
+  ['input','encoder'],['encoder','vq'],['vq','meta_loop'],['input','meta_loop'],
+  ['meta_loop','certified_meta_loop'],['meta_loop','slot_binding'],['certified_meta_loop','slot_binding'],
+  ['slot_binding','factor_extraction'],['factor_extraction','consistency_gate'],
+  ['consistency_gate','safety'],['consistency_gate','self_report'],['self_report','safety'],
+  ['safety','cognitive_executive'],['safety','world_model'],['cognitive_executive','world_model'],
+  ['world_model','hierarchical_world_model'],['world_model','memory'],['hierarchical_world_model','memory'],
+  ['memory','mcts_planning'],['memory','causal_world_model'],['memory','causal_model'],
+  ['mcts_planning','causal_model'],['causal_world_model','causal_model'],['causal_model','causal_programmatic'],
+  ['mcts_planning','active_learning'],['world_model','active_learning'],
+  ['active_learning','icm_curiosity'],['icm_curiosity','metacognitive_trigger'],
+  ['active_learning','metacognitive_trigger'],
+  ['causal_programmatic','unified_simulator'],['causal_programmatic','hybrid_reasoning'],
+  ['unified_simulator','hybrid_reasoning'],['hybrid_reasoning','ns_bridge'],
+  ['hybrid_reasoning','hierarchical_vae'],['ns_bridge','hierarchical_vae'],
+  ['hierarchical_vae','causal_context'],['hierarchical_vae','unified_cognitive_cycle'],
+  ['causal_context','rssm'],['rssm','multimodal'],['rssm','integration'],
+  ['multimodal','integration'],['integration','auto_critic'],
+  ['factor_extraction','cross_validation'],['causal_model','cross_validation'],
+  ['causal_model','notears_causal'],['notears_causal','causal_programmatic'],
+  ['ns_bridge','temporal_knowledge_graph'],
+  ['memory','temporal_memory'],['memory','neurogenic_memory'],['memory','consolidating_memory'],
+  ['neurogenic_memory','causal_context'],['consolidating_memory','causal_context'],
+  ['temporal_memory','causal_context'],['cross_validation','unified_simulator'],
+  ['consistency_gate','metacognitive_trigger'],
+  ['metacognitive_trigger','deeper_meta_loop'],['deeper_meta_loop','world_model'],
+  ['safety','auto_critic'],['causal_model','auto_critic'],
+  ['auto_critic','unified_cognitive_cycle'],['unified_cognitive_cycle','deeper_meta_loop'],
+  ['causal_model','causal_dag_consensus'],['notears_causal','causal_dag_consensus'],
+  ['causal_programmatic','causal_dag_consensus'],
+  ['causal_dag_consensus','auto_critic'],['causal_dag_consensus','unified_cognitive_cycle'],
+  ['meta_loop','convergence_arbiter'],['certified_meta_loop','convergence_arbiter'],
+  ['convergence_arbiter','unified_cognitive_cycle'],
+  ['memory','memory_validation'],['meta_loop','memory_validation'],
+  ['memory_validation','unified_cognitive_cycle'],
+  ['factor_extraction','topology_analysis'],['topology_analysis','safety'],
+  ['topology_analysis','auto_critic'],
+  ['factor_extraction','diversity_analysis'],['diversity_analysis','metacognitive_trigger'],
+  ['causal_dag_consensus','cross_validation'],['convergence_arbiter','deeper_meta_loop'],
+  ['topology_analysis','metacognitive_trigger'],['world_model','metacognitive_trigger'],
+  ['memory','metacognitive_trigger'],['safety','metacognitive_trigger'],
+  ['causal_model','metacognitive_trigger'],['error_evolution','metacognitive_trigger'],
+  ['self_report','metacognitive_trigger'],
+  ['input','complexity_estimator'],['complexity_estimator','world_model'],
+  ['complexity_estimator','mcts_planning'],['complexity_estimator','causal_world_model'],
+  ['complexity_estimator','unified_simulator'],
+  ['auto_critic','output_reliability'],['output_reliability','metacognitive_trigger'],
+  ['integration','decoder'],['decoder','unified_cognitive_cycle'],
+  ['slot_binding','causal_context'],['factor_extraction','causal_context'],
+  ['memory','memory_trust'],['memory_trust','metacognitive_trigger'],
+  ['encoder','continual_learning'],['continual_learning','vq'],
+  ['multimodal','grounded_multimodal'],['grounded_multimodal','integration'],
+  ['vq','encoder_reasoning_norm'],['encoder_reasoning_norm','meta_loop'],
+  ['neurogenic_memory','memory_cross_validation'],['consolidating_memory','memory_cross_validation'],
+  ['temporal_memory','memory_cross_validation'],['memory','memory_cross_validation'],
+  ['memory_cross_validation','metacognitive_trigger']
+];
+
+// Feedback edges (go backward in the pipeline)
+const FEEDBACK_EDGE_SET = new Set([
+  'deeper_meta_loop→world_model','unified_cognitive_cycle→deeper_meta_loop',
+  'metacognitive_trigger→deeper_meta_loop','decoder→unified_cognitive_cycle',
+  'auto_critic→unified_cognitive_cycle','convergence_arbiter→deeper_meta_loop'
+]);
+
+function _pipelineNodePositions() {
+  const positions = {};
+  const startX = 40, tierGap = 78;
+  let colX = startX;
+  PIPELINE_TIERS.forEach((tier, ti) => {
+    const nodes = tier.nodes;
+    const tierH = nodes.length * 44;
+    const startY = Math.max(20, (950 - tierH) / 2);
+    nodes.forEach((n, ni) => {
+      positions[n.id] = { x: colX + 50, y: startY + ni * 44 + 18, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
+    });
+    colX += tierGap;
+  });
+  return positions;
+}
+
+function buildPipeline() {
+  const svg = document.getElementById('pipeline-svg');
+  if (!svg) return;
+  const pos = _pipelineNodePositions();
+  const edgesG = document.getElementById('pipeline-edges');
+  const nodesG = document.getElementById('pipeline-nodes');
+  const labelsG = document.getElementById('pipeline-tier-labels');
+
+  // Draw edges
+  let edgesHtml = '';
+  PIPELINE_EDGES.forEach(([from, to]) => {
+    const p1 = pos[from], p2 = pos[to];
+    if (!p1 || !p2) return;
+    const key = `${from}→${to}`;
+    const isFeedback = FEEDBACK_EDGE_SET.has(key);
+    const cls = isFeedback ? 'p-edge feedback' : 'p-edge';
+    edgesHtml += `<path d="M${p1.x+40},${p1.y} C${p1.x+40+(p2.x-p1.x-80)*0.4},${p1.y} ${p1.x+40+(p2.x-p1.x-80)*0.6+40},${p2.y} ${p2.x-40},${p2.y}" class="${cls}" data-from="${from}" data-to="${to}" marker-end="url(#arrow)"/>`;
+  });
+  edgesG.innerHTML = edgesHtml;
+
+  // Draw tier labels
+  let labelsHtml = '';
+  const tierXs = {};
+  PIPELINE_TIERS.forEach(tier => {
+    const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
+    if (!tNodes.length) return;
+    const x = tNodes[0].x;
+    const minY = Math.min(...tNodes.map(n => n.y));
+    tierXs[tier.id] = x;
+    labelsHtml += `<text x="${x}" y="${minY - 14}" class="p-tier-label" fill="${tier.color}">${tier.label}</text>`;
+  });
+  labelsG.innerHTML = labelsHtml;
+
+  // Draw nodes
+  let nodesHtml = '';
+  const nodeW = 80, nodeH = 30;
+  for (const [id, p] of Object.entries(pos)) {
+    const tierClass = p.tier.includes('meta') || p.tier === 'executive' || p.tier === 'abstraction' || p.tier === 'metacognition' ? 'tier-meta' :
+                      p.tier.includes('safety') || p.tier === 'analysis' ? 'tier-safety' :
+                      p.tier.includes('memory') || p.tier === 'planning' ? 'tier-memory' :
+                      p.tier.includes('causal') || p.tier === 'reasoning' ? 'tier-causal' :
+                      p.tier === 'input_layer' || p.tier === 'output' ? 'tier-input' : '';
+    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - nodeW/2},${p.y - nodeH/2})">
+      <rect class="p-node-bg" width="${nodeW}" height="${nodeH}" rx="6" ry="6"/>
+      <circle class="p-node-pulse" cx="${nodeW-5}" cy="5" r="3" fill="var(--text3)" opacity="0.4"/>
+      <text class="p-node-label" x="${nodeW/2}" y="${nodeH/2 - 2}" dy="0">${p.label}</text>
+      <text class="p-node-sub" x="${nodeW/2}" y="${nodeH/2 + 8}">${p.sub}</text>
+    </g>`;
+  }
+  nodesG.innerHTML = nodesHtml;
+  _pipelineBuilt = true;
+}
+
+function pipelineSelectNode(id) {
+  _pipelineSelectedNode = id;
+  // Highlight selected node
+  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => n.classList.remove('selected'));
+  const node = document.querySelector(`#pipeline-nodes .p-node[data-id="${id}"]`);
+  if (node) node.classList.add('selected');
+
+  // Highlight connected edges
+  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
+    e.classList.remove('active');
+    if (e.dataset.from === id || e.dataset.to === id) e.classList.add('active');
+  });
+
+  // Show detail
+  archShowDetail(id);
+}
+
+function pipelineDeselectAll() {
+  _pipelineSelectedNode = null;
+  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => n.classList.remove('selected'));
+  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => e.classList.remove('active'));
+}
+
+function pipelineFilter(tier, btn) {
+  document.querySelectorAll('.pipeline-controls .pc-filter').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
+    const pos = _pipelineNodePositions();
+    const nodeId = n.dataset.id;
+    const nodePos = pos[nodeId];
+    if (!nodePos) return;
+    if (tier === 'all') { n.style.opacity = '1'; return; }
+    const match = nodePos.tier.includes(tier) ||
+      (tier === 'encoding' && ['input_layer','encoding','quantization'].includes(nodePos.tier)) ||
+      (tier === 'meta' && ['meta','executive','decomposition','metacognition'].includes(nodePos.tier)) ||
+      (tier === 'analysis' && nodePos.tier === 'analysis') ||
+      (tier === 'safety' && nodePos.tier === 'safety') ||
+      (tier === 'memory' && nodePos.tier === 'memory') ||
+      (tier === 'causal' && nodePos.tier === 'causal') ||
+      (tier === 'reasoning' && ['reasoning','abstraction'].includes(nodePos.tier)) ||
+      (tier === 'integration' && ['integration','dynamics','output'].includes(nodePos.tier));
+    n.style.opacity = match ? '1' : '0.15';
+  });
+  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
+    if (tier === 'all') { e.style.opacity = ''; return; }
+    e.style.opacity = '0.08';
+  });
+}
+
+function pipelineToggleFeedback() {
+  const show = document.getElementById('arch-show-feedback')?.checked;
+  document.querySelectorAll('#pipeline-edges .p-edge.feedback').forEach(e => {
+    e.style.display = show ? '' : 'none';
+  });
+}
+
+function pipelineZoom(delta) {
+  _pipelineZoom = Math.max(0.4, Math.min(2, _pipelineZoom + delta));
+  const svg = document.getElementById('pipeline-svg');
+  if (svg) svg.style.transform = `scale(${_pipelineZoom})`;
+  if (svg) svg.style.transformOrigin = 'top left';
+  const lbl = document.getElementById('pipeline-zoom-val');
+  if (lbl) lbl.textContent = Math.round(_pipelineZoom * 100) + '%';
+}
+
+function pipelineResetZoom() {
+  _pipelineZoom = 1;
+  const svg = document.getElementById('pipeline-svg');
+  if (svg) { svg.style.transform = ''; svg.style.transformOrigin = ''; }
+  const lbl = document.getElementById('pipeline-zoom-val');
+  if (lbl) lbl.textContent = '100%';
+  pipelineFilter('all', document.querySelector('.pc-filter[data-tier="all"]'));
+  pipelineDeselectAll();
+}
+
+function updatePipelineHealth(modules, stageHealth) {
+  if (!_pipelineBuilt) return;
+  const modMap = {};
+  (modules || []).forEach(m => modMap[m.name] = m);
+
+  document.querySelectorAll('#pipeline-nodes .p-node').forEach(node => {
+    const id = node.dataset.id;
+    const pulse = node.querySelector('.p-node-pulse');
+    if (!pulse) return;
+
+    // Try to match module data from server
+    const mod = modMap[id] || null;
+    const sh = stageHealth ? stageHealth[id] : null;
+
+    if (mod) {
+      const healthy = !mod.has_nan && !mod.has_inf;
+      const gradOk = !mod.grad_stats?.has_nan && !mod.grad_stats?.has_inf;
+      if (healthy && gradOk) {
+        pulse.setAttribute('fill', 'var(--green)');
+        pulse.setAttribute('opacity', '1');
+      } else if (mod.has_nan || mod.has_inf) {
+        pulse.setAttribute('fill', 'var(--danger)');
+        pulse.setAttribute('opacity', '1');
+      } else {
+        pulse.setAttribute('fill', 'var(--warn)');
+        pulse.setAttribute('opacity', '1');
+      }
+    } else if (sh) {
+      pulse.setAttribute('fill', sh.healthy ? 'var(--green)' : 'var(--danger)');
+      pulse.setAttribute('opacity', '1');
+    } else {
+      pulse.setAttribute('fill', 'var(--text3)');
+      pulse.setAttribute('opacity', '0.4');
+    }
+
+    // Append param count to sub-label if available
+    if (mod && mod.params) {
+      const subText = node.querySelector('.p-node-sub');
+      if (subText) {
+        const origSub = subText.dataset.orig || subText.textContent;
+        subText.dataset.orig = origSub;
+        subText.textContent = origSub + ' · ' + fmtP(mod.params);
+      }
+    }
+  });
+}
 
 function resetArchPipeline() {
-  document.querySelectorAll('#arch-flow .arch-pulse').forEach(p => p.className = 'arch-pulse off');
-  ['arch-total-params','arch-train-params','arch-frozen-params','arch-total-mem'].forEach(id => {
+  ['arch-total-params','arch-train-params','arch-frozen-params','arch-total-mem','arch-health-pct'].forEach(id => {
     const el = document.getElementById(id); if(el) el.textContent = '—';
-  });
-  ['a-enc-p','a-vq-p','a-ml-p','a-dec-p'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.textContent = '';
   });
   const shDiv = document.getElementById('arch-stage-health');
   if(shDiv) shDiv.innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>';
@@ -2778,6 +3163,13 @@ function resetArchPipeline() {
   const summary = document.getElementById('arch-summary');
   if(summary) summary.textContent = 'Initialize model first';
   _archData = null;
+  // Reset pipeline node pulses
+  if (_pipelineBuilt) {
+    document.querySelectorAll('#pipeline-nodes .p-node-pulse').forEach(p => {
+      p.setAttribute('fill', 'var(--text3)');
+      p.setAttribute('opacity', '0.4');
+    });
+  }
 }
 
 function toggleArchAutoRefresh() {
@@ -2792,14 +3184,56 @@ function fmtP(n) {
 }
 
 function archShowDetail(name) {
-  if (!_archData) return;
+  if (!_archData) {
+    // Show static pipeline info even without model data
+    const card = document.getElementById('arch-detail-card');
+    card.style.display = '';
+    document.getElementById('arch-detail-title').textContent = name;
+    // Find tier info
+    let tierInfo = '';
+    for (const tier of PIPELINE_TIERS) {
+      const node = tier.nodes.find(n => n.id === name);
+      if (node) { tierInfo = `<div style="margin-bottom:6px"><span style="color:var(--text3)">Tier:</span> <span style="color:${tier.color}">${tier.label}</span> · <span style="color:var(--text3)">Role:</span> ${node.sub}</div>`; break; }
+    }
+    // Count connections
+    const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
+    const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
+    document.getElementById('arch-detail-content').innerHTML = `
+      ${tierInfo}
+      <div style="margin-bottom:6px"><span style="color:var(--text3)">Upstream (${upstream.length}):</span> <span style="color:var(--accent)">${upstream.join(', ') || 'none'}</span></div>
+      <div><span style="color:var(--text3)">Downstream (${downstream.length}):</span> <span style="color:var(--green)">${downstream.join(', ') || 'none'}</span></div>
+      <div style="margin-top:8px;color:var(--text3);font-style:italic">Initialize model for parameter & health details</div>
+    `;
+    return;
+  }
   const m = (_archData.modules || []).find(x => x.name === name);
-  if (!m) return;
+  if (!m) {
+    // Node exists in pipeline but not as a direct named_children module
+    const card = document.getElementById('arch-detail-card');
+    card.style.display = '';
+    document.getElementById('arch-detail-title').textContent = name;
+    const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
+    const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
+    let tierInfo = '';
+    for (const tier of PIPELINE_TIERS) {
+      const node = tier.nodes.find(n => n.id === name);
+      if (node) { tierInfo = `<span style="color:${tier.color}">${tier.label}</span> · ${node.sub}`; break; }
+    }
+    document.getElementById('arch-detail-content').innerHTML = `
+      <div style="margin-bottom:6px"><span style="color:var(--text3)">Tier:</span> ${tierInfo}</div>
+      <div style="margin-bottom:6px"><span style="color:var(--text3)">Upstream (${upstream.length}):</span> <span style="color:var(--accent)">${upstream.join(', ')}</span></div>
+      <div><span style="color:var(--text3)">Downstream (${downstream.length}):</span> <span style="color:var(--green)">${downstream.join(', ')}</span></div>
+      <div style="margin-top:8px;color:var(--text3)">This is a logical pipeline stage (sub-component or internal module)</div>
+    `;
+    return;
+  }
   const card = document.getElementById('arch-detail-card');
   card.style.display = '';
   document.getElementById('arch-detail-title').textContent = `${m.name} (${m.type})`;
   const ws = m.weight_stats || {};
   const gs = m.grad_stats || {};
+  const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
+  const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
   document.getElementById('arch-detail-content').innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
       <div><span style="color:var(--text3)">Params:</span> <span style="color:var(--accent)">${fmtP(m.params)}</span></div>
@@ -2811,6 +3245,8 @@ function archShowDetail(name) {
       <div><span style="color:var(--text3)">NaN:</span> ${m.has_nan?'<span style="color:var(--danger)">YES ⚠</span>':'<span style="color:var(--green)">No</span>'}</div>
       <div><span style="color:var(--text3)">Inf:</span> ${m.has_inf?'<span style="color:var(--danger)">YES ⚠</span>':'<span style="color:var(--green)">No</span>'}</div>
     </div>
+    <div style="margin-bottom:8px"><span style="color:var(--text3)">Upstream (${upstream.length}):</span> <span style="color:var(--accent)">${upstream.join(', ') || 'none'}</span></div>
+    <div style="margin-bottom:8px"><span style="color:var(--text3)">Downstream (${downstream.length}):</span> <span style="color:var(--green)">${downstream.join(', ') || 'none'}</span></div>
     ${Object.keys(ws).length ? `<div style="margin-bottom:8px"><strong style="color:var(--text2)">Weight Stats:</strong>
       <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:4px;font-size:10px">
         <div><span style="color:var(--text3)">mean:</span> <span style="color:var(--accent)">${ws.mean}</span></div>
@@ -2838,12 +3274,6 @@ async function loadArch() {
     const d = await api('GET', '/api/architecture');
     _archData = d;
     document.getElementById('arch-summary').textContent = d.summary || '—';
-    const cfg = d.config || {};
-    document.getElementById('a-enc').textContent = cfg.encoder_backend?.toUpperCase() || '—';
-    document.getElementById('a-dec').textContent = cfg.decoder_backend?.toUpperCase() || '—';
-    document.getElementById('a-vq').textContent = `${cfg.vq_num_embeddings?.toLocaleString() || '—'} codes`;
-    document.getElementById('a-ml').textContent = `Banach FP · ${cfg.max_iterations || '?'} iter`;
-    document.getElementById('a-out').textContent = `[B,${cfg.seq_length||'?'},${cfg.vocab_size||'V'}]`;
 
     // Summary cards
     document.getElementById('arch-total-params').textContent = fmtP(d.total_parameters);
@@ -2851,34 +3281,18 @@ async function loadArch() {
     document.getElementById('arch-frozen-params').textContent = fmtP(d.frozen_parameters);
     document.getElementById('arch-total-mem').textContent = d.total_memory_mb ? d.total_memory_mb.toFixed(1)+' MB' : '—';
 
-    // Per-node param annotations
     const modules = d.modules || [];
-    const modMap = {};
-    modules.forEach(m => modMap[m.name] = m);
-    if(modMap.encoder) { const el = document.getElementById('a-enc-p'); if(el) el.textContent = fmtP(modMap.encoder.params); }
-    if(modMap.vector_quantizer) { const el = document.getElementById('a-vq-p'); if(el) el.textContent = fmtP(modMap.vector_quantizer.params); }
-    if(modMap.meta_loop) { const el = document.getElementById('a-ml-p'); if(el) el.textContent = fmtP(modMap.meta_loop.params); }
-    if(modMap.decoder) { const el = document.getElementById('a-dec-p'); if(el) el.textContent = fmtP(modMap.decoder.params); }
-
-    // Update pipeline node health indicators
     const stageHealth = d.stage_health || {};
-    const nodeMap = {
-      'encoder': 'arch-n-encoder', 'vector_quantizer': 'arch-n-vq',
-      'meta_loop': 'arch-n-meta', 'memory_manager': 'arch-n-memory',
-      'causal_model': 'arch-n-causal', 'safety_system': 'arch-n-safety',
-      'decoder': 'arch-n-decoder', 'embedding': 'arch-n-input',
-    };
-    for (const [modName, nodeId] of Object.entries(nodeMap)) {
-      const node = document.getElementById(nodeId);
-      if (!node) continue;
-      const pulse = node.querySelector('.arch-pulse');
-      if (!pulse) continue;
-      const sh = stageHealth[modName];
-      if (sh) {
-        const cls = sh.healthy ? 'ok' : (sh.has_nan || sh.has_inf ? 'err' : 'warn');
-        pulse.className = 'arch-pulse ' + cls;
-      }
-    }
+    const healthyCount = Object.values(stageHealth).filter(sh => sh.healthy).length;
+    const totalStages = Object.keys(stageHealth).length;
+    const el = document.getElementById('arch-health-pct');
+    if (el) el.textContent = totalStages > 0 ? Math.round(healthyCount / totalStages * 100) + '%' : '—';
+    const nc = document.getElementById('arch-node-count');
+    if (nc) nc.textContent = modules.length || '52';
+
+    // Update SVG pipeline health indicators
+    if (!_pipelineBuilt) buildPipeline();
+    updatePipelineHealth(modules, stageHealth);
 
     // Module table (extended)
     const total = d.total_parameters || 1;
@@ -2887,7 +3301,7 @@ async function loadArch() {
       const healthBadge = m.has_nan ? '<span class="badge br">NaN</span>' :
                           m.has_inf ? '<span class="badge br">Inf</span>' :
                           '<span class="badge bg">OK</span>';
-      return `<tr style="cursor:pointer" onclick="archShowDetail('${m.name}')">
+      return `<tr style="cursor:pointer" onclick="pipelineSelectNode('${m.name}');archShowDetail('${m.name}')">
         <td style="color:var(--accent)">${m.name}</td>
         <td style="color:var(--purple);font-size:10px">${m.type}</td>
         <td style="font-family:var(--display);color:var(--text)">${fmtP(m.params)}</td>
@@ -2899,21 +3313,28 @@ async function loadArch() {
       </tr>`;
     }).join('');
 
-    // Pipeline Stage Health overview
+    // Pipeline Stage Health overview — all modules
     const shDiv = document.getElementById('arch-stage-health');
     const shEntries = Object.entries(stageHealth);
     if (shEntries.length) {
       shDiv.innerHTML = shEntries.map(([k, sh]) => {
         const clr = sh.healthy ? 'var(--green)' : 'var(--danger)';
         const icon = sh.healthy ? '✓' : (sh.has_nan ? '⚠ NaN' : sh.has_inf ? '⚠ Inf' : '⚠');
-        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">${sh.label || k}</div>
-          <div style="font-size:14px;font-weight:700;color:${clr}">${icon}</div>
-          <div style="font-size:9px;color:var(--text3);margin-top:4px">${fmtP(sh.params)} · ${sh.memory_mb?.toFixed(1)} MB</div>
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center;cursor:pointer" onclick="pipelineSelectNode('${k}')">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${sh.label || k}">${sh.label || k}</div>
+          <div style="font-size:13px;font-weight:700;color:${clr}">${icon}</div>
+          <div style="font-size:8px;color:var(--text3);margin-top:3px">${fmtP(sh.params)} · ${sh.memory_mb?.toFixed(1)} MB</div>
         </div>`;
       }).join('');
     }
   } catch(e) { log('ERROR', 'arch', e.message); }
+}
+
+// Build pipeline on first visit
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { if (!_pipelineBuilt) buildPipeline(); });
+} else {
+  if (!_pipelineBuilt) buildPipeline();
 }
 
 // ─── MODULE INSPECTOR ─────────────────────────────────────────────────────────
