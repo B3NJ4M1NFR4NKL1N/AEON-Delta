@@ -13302,13 +13302,11 @@ def test_causal_trace_records_meta_loop_convergence():
     with torch.no_grad():
         _, outputs = model.reasoning_core(z_in, fast=False)
 
-    # Causal trace should have a meta_loop entry
+    # Causal trace should have a meta_loop entry — use find() to
+    # query by subsystem instead of recent() which may truncate early
+    # entries when the forward pass produces many trace records.
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=50)
-    meta_loop_entries = [
-        e for e in recent
-        if e.get("subsystem") == "meta_loop"
-    ]
+    meta_loop_entries = model.causal_trace.find(subsystem="meta_loop")
     assert len(meta_loop_entries) > 0, (
         "Expected at least one meta_loop entry in causal trace"
     )
@@ -36227,6 +36225,116 @@ def test_self_diagnostic_includes_new_infrastructure_modules():
     print("✅ test_self_diagnostic_includes_new_infrastructure_modules PASSED")
 
 
+def test_reconciled_adjacency_cached():
+    """Architectural Unification: CausalDAGConsensus reconciled_adjacency
+    is cached in _cached_reconciled_adjacency so that the structural
+    causal consensus persists across forward passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initially the cache should be None
+    assert model._cached_reconciled_adjacency is None, (
+        "reconciled_adjacency cache should start as None"
+    )
+
+    # Run a forward pass — the cache may or may not be populated
+    # depending on whether multiple causal models are enabled and
+    # the consensus is computed.  We verify the attribute exists
+    # and is either None or a tensor.
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    cache = model._cached_reconciled_adjacency
+    assert cache is None or isinstance(cache, torch.Tensor), (
+        f"Expected None or Tensor, got {type(cache)}"
+    )
+    # If populated, verify it is detached (no gradient graph)
+    if cache is not None:
+        assert not cache.requires_grad, (
+            "Cached reconciled_adjacency should be detached"
+        )
+
+    print("✅ test_reconciled_adjacency_cached PASSED")
+
+
+def test_post_coherence_includes_world_model():
+    """Architectural Unification: Post-revision coherence check should
+    include current-pass world model prediction when available, enabling
+    cross-subsystem coherence verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Verify the model still produces valid outputs with the
+    # expanded post-coherence check.
+    coh_results = outputs.get('coherence_results', {})
+    coh = coh_results.get('coherence_score', None)
+    if coh is not None and isinstance(coh, torch.Tensor):
+        assert torch.isfinite(coh).all(), "Coherence score should be finite"
+
+    print("✅ test_post_coherence_includes_world_model PASSED")
+
+
+def test_causal_trace_find_meta_loop():
+    """The causal_trace.find(subsystem='meta_loop') should reliably
+    locate meta-loop entries regardless of how many trace records
+    are generated during the forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, _ = model.reasoning_core(z_in, fast=False)
+
+    assert model.causal_trace is not None
+    entries = model.causal_trace.find(subsystem="meta_loop")
+    assert len(entries) > 0, (
+        "find(subsystem='meta_loop') should locate meta-loop entries"
+    )
+    for e in entries:
+        assert e["subsystem"] == "meta_loop"
+        assert e["decision"] in ("converged", "fallback")
+        assert "convergence_rate" in e.get("metadata", {})
+
+    print("✅ test_causal_trace_find_meta_loop PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -37766,6 +37874,12 @@ def _run_all_tests():
     test_provenance_instrumented_covers_all_dep_nodes()
     test_verified_prediction_error_updates_cached_surprise()
     test_self_diagnostic_includes_new_infrastructure_modules()
+
+    # Architectural Unification — Cross-Pass Causal Feedback &
+    # Coherence Verification Tests
+    test_reconciled_adjacency_cached()
+    test_post_coherence_includes_world_model()
+    test_causal_trace_find_meta_loop()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

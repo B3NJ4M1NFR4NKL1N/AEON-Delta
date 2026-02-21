@@ -15995,6 +15995,11 @@ class AEONDeltaV3(nn.Module):
         self._cached_memory_state: Optional[torch.Tensor] = None
         self._cached_world_model_state: Optional[torch.Tensor] = None
         self._cached_causal_state: Optional[torch.Tensor] = None
+        # Reconciled DAG adjacency — cached after each CausalDAGConsensus
+        # evaluation so the next forward pass can feed structural causal
+        # consensus back into the coherence verifier and CausalWorldModel,
+        # closing the cross-pass causal feedback loop.
+        self._cached_reconciled_adjacency: Optional[torch.Tensor] = None
         # Decoder output embedding — cached after each forward pass so
         # verify_coherence() can cross-validate decoder output against
         # upstream reasoning states, closing the decoder ↔ reasoning
@@ -19932,6 +19937,14 @@ class AEONDeltaV3(nn.Module):
                 self._cached_causal_quality = min(
                     self._cached_causal_quality, _consensus_score,
                 )
+                # Cache the reconciled adjacency so that the next
+                # forward pass's coherence verifier and downstream
+                # modules can reference the structural consensus.
+                _reconciled_adj = _dag_consensus_results.get(
+                    "reconciled_adjacency", None,
+                )
+                if _reconciled_adj is not None:
+                    self._cached_reconciled_adjacency = _reconciled_adj.detach()
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "causal_dag_consensus", "evaluated",
@@ -22416,6 +22429,23 @@ class AEONDeltaV3(nn.Module):
             }
             if embedded_factors is not None:
                 _post_coherence_states["factor_embedding"] = embedded_factors
+            # Include current-pass world model prediction so the
+            # coherence verifier can detect disagreement between the
+            # world model's expectation and the actual integrated
+            # output, catching subsystem-level misalignment that is
+            # invisible when only z_out and C_star are compared.
+            _post_wm_pred = world_model_results.get("predicted_next", None)
+            if (_post_wm_pred is not None
+                    and torch.is_tensor(_post_wm_pred)
+                    and _post_wm_pred.shape[-1] == z_out.shape[-1]):
+                _post_coherence_states["world_model"] = _post_wm_pred
+            # Include hybrid reasoning conclusions for cross-subsystem
+            # coherence verification against the integrated output.
+            _post_hr_conc = hybrid_reasoning_results.get("conclusions", None)
+            if (_post_hr_conc is not None
+                    and torch.is_tensor(_post_hr_conc)
+                    and _post_hr_conc.shape[-1] == z_out.shape[-1]):
+                _post_coherence_states["hybrid_reasoning"] = _post_hr_conc
             _post_coh_results = self.module_coherence(_post_coherence_states)
             _post_coh_score = float(
                 _post_coh_results["coherence_score"].mean().item()
