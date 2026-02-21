@@ -18524,6 +18524,46 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
+                # 5a-iv-a1. Post-deeper-loop coherence re-verification —
+                # after accepting the deeper meta-loop result, re-verify
+                # cross-module coherence to confirm that deeper reasoning
+                # actually improved the state.  Without this, the system
+                # accepts improved convergence without confirming that the
+                # refined state aligns across subsystems.
+                _deeper_coherence_ok = True
+                if (self.module_coherence is not None
+                        and _metacog_accepted):
+                    try:
+                        _deeper_states: Dict[str, torch.Tensor] = {
+                            "deeper_meta_loop": C_star,
+                        }
+                        if self._cached_safety_state is not None:
+                            _deeper_states["safety"] = self._cached_safety_state
+                        if len(_deeper_states) >= 2:
+                            _deeper_coh = self.module_coherence(_deeper_states)
+                            if _deeper_coh.get("needs_recheck", False):
+                                _deeper_coherence_ok = False
+                                _deeper_deficit = max(
+                                    0.0,
+                                    1.0 - float(
+                                        _deeper_coh["coherence_score"].mean().item()
+                                    ),
+                                )
+                                _deeper_boost = max(
+                                    0.0,
+                                    min(1.0 - uncertainty, _deeper_deficit * 0.15),
+                                )
+                                if _deeper_boost > 0:
+                                    uncertainty = min(1.0, uncertainty + _deeper_boost)
+                                    uncertainty_sources[
+                                        "post_deeper_coherence"
+                                    ] = _deeper_boost
+                                    high_uncertainty = uncertainty > 0.5
+                    except Exception as _deeper_coh_err:
+                        logger.debug(
+                            "Post-deeper coherence re-verification error "
+                            "(non-fatal): %s", _deeper_coh_err,
+                        )
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
@@ -23262,6 +23302,35 @@ class AEONDeltaV3(nn.Module):
             logger.warning("⚠️  NaN/Inf in total_loss, using fallback")
             total_loss = lm_loss
         
+        # ===== LOSS → ERROR EVOLUTION BRIDGE =====
+        # Feed loss magnitude and composition back to the error evolution
+        # tracker so that training loss patterns inform runtime metacognitive
+        # recovery.  High component losses indicate subsystem-specific
+        # training difficulties that should sensitise the metacognitive
+        # trigger for the corresponding signal on future inference passes.
+        if self.error_evolution is not None:
+            _lm_val = float(lm_loss.detach().item()) if torch.isfinite(lm_loss) else 0.0
+            _HIGH_LM_LOSS_THRESHOLD = 4.0
+            if _lm_val > _HIGH_LM_LOSS_THRESHOLD:
+                self.error_evolution.record_episode(
+                    error_class='high_training_loss',
+                    strategy_used='loss_adaptive_scaling',
+                    success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        'lm_loss': _lm_val,
+                        'convergence_loss_scale': _convergence_loss_scale,
+                        'uncertainty_loss_scale': _uncertainty_loss_scale,
+                    }),
+                )
+            _coh_val = float(coherence_loss.detach().item()) if torch.is_tensor(coherence_loss) and torch.isfinite(coherence_loss) else 0.0
+            if _coh_val > 0.5:
+                self.error_evolution.record_episode(
+                    error_class='high_coherence_loss',
+                    strategy_used='coherence_weight_boost',
+                    success=False,
+                    metadata={'coherence_loss': _coh_val},
+                )
+
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
         
@@ -23443,12 +23512,56 @@ class AEONDeltaV3(nn.Module):
             # Cleanup
             generated_text = ' '.join(generated_text.split())
             
+            # ===== GENERATION PROVENANCE & UCC EVALUATION =====
+            # Record generation decision in provenance tracker and causal
+            # trace so that generate() outputs are fully traceable.  This
+            # closes the gap where generate() was a thin wrapper around
+            # forward() with no generation-specific provenance.
+            _gen_provenance: Dict[str, Any] = {}
+            if self.provenance_tracker is not None:
+                _gen_provenance = self.provenance_tracker.compute_attribution()
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "generate", "completed",
+                    metadata={
+                        "uncertainty": float(_gen_uncertainty),
+                        "temperature": temperature,
+                        "regenerated": _uncertainty_regenerated,
+                        "text_length": len(generated_text),
+                    },
+                )
+            # Run UCC evaluation on the generated output so that generation
+            # quality is verified through the same meta-cognitive cycle as
+            # inference, enabling post-generation coherence checks.
+            _gen_ucc_result: Dict[str, Any] = {}
+            if (self.unified_cognitive_cycle is not None
+                    and self._cached_meta_loop_state is not None):
+                try:
+                    _gen_ucc_states: Dict[str, torch.Tensor] = {}
+                    if self._cached_meta_loop_state is not None:
+                        _gen_ucc_states["meta_loop"] = self._cached_meta_loop_state
+                    if self._cached_decoder_state is not None:
+                        _gen_ucc_states["decoder"] = self._cached_decoder_state
+                    if len(_gen_ucc_states) >= 2:
+                        _gen_ucc_result = self.unified_cognitive_cycle.evaluate(
+                            subsystem_states=_gen_ucc_states,
+                            delta_norm=outputs.get('residual_norm', 0.0),
+                            uncertainty=_gen_uncertainty,
+                        )
+                except Exception as _gen_ucc_err:
+                    logger.debug(
+                        "Generate UCC evaluation error (non-fatal): %s",
+                        _gen_ucc_err,
+                    )
+
             return {
                 'text': generated_text,
                 'status': 'ok',
                 'reason': None,
                 'uncertainty': _gen_uncertainty,
                 'causal_decision_chain': outputs.get('causal_decision_chain', {}),
+                'provenance': _gen_provenance,
+                'ucc_result': _gen_ucc_result,
             }
         
         except Exception as e:
@@ -23474,6 +23587,52 @@ class AEONDeltaV3(nn.Module):
                 'error_class': error_class,
             }
     
+    def bridge_training_loss_to_error_evolution(
+        self,
+        loss_dict: Dict[str, Any],
+    ) -> None:
+        """Bridge training loss components to the error evolution tracker.
+
+        Called by the trainer after each training step to feed loss magnitude
+        and composition into the runtime error evolution system.  This closes
+        the training→inference feedback loop: training-time loss patterns
+        (e.g. persistent high coherence loss) sensitise the metacognitive
+        trigger for corresponding signals on future inference passes.
+
+        Args:
+            loss_dict: Dict returned by :meth:`compute_loss` containing
+                individual loss components and scaling factors.
+        """
+        if self.error_evolution is None:
+            return
+        _total = loss_dict.get('total_loss', None)
+        if _total is not None and torch.is_tensor(_total):
+            _total_val = float(_total.detach().item()) if torch.isfinite(_total) else 0.0
+        else:
+            _total_val = 0.0
+        _HIGH_TOTAL_LOSS_THRESHOLD = 5.0
+        if _total_val > _HIGH_TOTAL_LOSS_THRESHOLD:
+            self.error_evolution.record_episode(
+                error_class='high_total_training_loss',
+                strategy_used='training_bridge',
+                success=False,
+                metadata={
+                    'total_loss': _total_val,
+                    'lm_loss': float(loss_dict.get('lm_loss', torch.tensor(0.0)).detach().item()),
+                    'coherence_loss': float(loss_dict.get('coherence_loss', torch.tensor(0.0)).detach().item()),
+                },
+            )
+        _ucc_loss = loss_dict.get('ucc_loss', None)
+        if _ucc_loss is not None and torch.is_tensor(_ucc_loss):
+            _ucc_val = float(_ucc_loss.detach().item()) if torch.isfinite(_ucc_loss) else 0.0
+            if _ucc_val > 0.5:
+                self.error_evolution.record_episode(
+                    error_class='high_ucc_training_loss',
+                    strategy_used='training_bridge',
+                    success=False,
+                    metadata={'ucc_loss': _ucc_val},
+                )
+
     def count_parameters(self) -> int:
         """Total parameters."""
         return sum(p.numel() for p in self.parameters())
@@ -23969,6 +24128,33 @@ class AEONDeltaV3(nn.Module):
             })
 
         # --- Runtime coherence verification (bridges wiring → runtime) ---
+
+        # 15b. compute_loss → error_evolution bridge
+        if self.error_evolution is not None:
+            verified.append(
+                'compute_loss → error_evolution '
+                '(training loss patterns inform runtime metacognitive recovery)'
+            )
+            verified.append(
+                'bridge_training_loss_to_error_evolution → error_evolution '
+                '(explicit trainer-to-inference loss bridge)'
+            )
+
+        # 15c. generate → provenance + UCC evaluation
+        if (self.provenance_tracker is not None
+                and self.unified_cognitive_cycle is not None):
+            verified.append(
+                'generate → provenance + UCC '
+                '(generation decisions are traceable and coherence-verified)'
+            )
+
+        # 15d. Post-deeper-loop coherence re-verification
+        if (self.module_coherence is not None
+                and self.metacognitive_trigger is not None):
+            verified.append(
+                'deeper_meta_loop → module_coherence '
+                '(post-deeper re-verification closes coherence gap)'
+            )
 
         # 16. Memory → Causal model cross-information — verify that memory
         # retrieval quality modulates causal model confidence, ensuring
