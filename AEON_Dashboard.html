@@ -436,10 +436,9 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="nav-group">
     <div class="nav-label">Monitoring</div>
     <div class="nav-item" onclick="go('logs')"><span class="nav-icon">≡</span> Live Logs <span class="nav-badge" id="log-badge">0</span></div>
-    <div class="nav-item" onclick="go('audit')"><span class="nav-icon">◐</span> Audit Trail</div>
+    <div class="nav-item" onclick="go('audit')"><span class="nav-icon">◐</span> Audit & Observability</div>
     <div class="nav-item" onclick="go('monitor')"><span class="nav-icon">◌</span> System Monitor</div>
     <div class="nav-item" onclick="go('tg')"><span class="nav-icon">🛡</span> TensorGuard</div>
-    <div class="nav-item" onclick="go('observability')"><span class="nav-icon">◎</span> Observability</div>
   </div>
   <div class="nav-group">
     <div class="nav-label">Tools</div>
@@ -1347,11 +1346,12 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- KPI row -->
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g5" style="margin-bottom:14px">
     <div class="card ca"><div class="ct">Total</div><div class="cv ca" id="ts-total">—</div><div class="cm-t" id="ts-total-m">not run</div></div>
     <div class="card cg"><div class="ct">Passed</div><div class="cv cg" id="ts-pass">—</div><div class="cm-t" id="ts-pass-rate">—</div></div>
     <div class="card cd"><div class="ct">Failed</div><div class="cv" style="color:var(--danger)" id="ts-fail">—</div><div class="cm-t" id="ts-fail-m">—</div></div>
     <div class="card cw"><div class="ct">Errors/Skip</div><div class="cv cw" id="ts-errors">—</div><div class="cm-t" id="ts-time">—</div></div>
+    <div class="card cp"><div class="ct">Arch Coverage</div><div class="cv cp" id="ts-arch-cov">—</div><div class="cm-t" id="ts-arch-cov-m">pipeline nodes</div></div>
   </div>
 
   <!-- Progress bar -->
@@ -1372,48 +1372,63 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     </div>
   </div>
 
-  <!-- Tabs: Sections | Results | Log -->
-  <div style="display:flex;gap:0;border-bottom:1px solid var(--bord);margin-bottom:12px" id="ts-tabs">
-    <button class="ts-tab active" onclick="tsTab('sections')" id="ts-tab-sections">📂 Sections (49)</button>
-    <button class="ts-tab" onclick="tsTab('results')" id="ts-tab-results">📊 Results</button>
-    <button class="ts-tab" onclick="tsTab('log')" id="ts-tab-log">📄 Log</button>
-    <button class="ts-tab" onclick="tsTab('failures')" id="ts-tab-failures">❌ Failures</button>
-    <select id="ts-filter-section" onchange="tsFilterSection()" style="margin-left:auto;font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:2px 6px">
+  <!-- Unified controls bar (single level — no sub-tabs) -->
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+    <input type="text" id="ts-search" placeholder="Search tests…" oninput="tsFilterResults()" style="flex:1;min-width:160px;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px">
+    <select id="ts-filter-status" onchange="tsFilterResults()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+      <option value="">All status</option>
+      <option value="passed">✅ Passed</option>
+      <option value="failed">❌ Failed</option>
+      <option value="error">💥 Error</option>
+      <option value="skipped">⏭ Skipped</option>
+    </select>
+    <select id="ts-filter-section" onchange="tsFilterSection()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
       <option value="">All sections</option>
+    </select>
+    <select id="ts-filter-node" onchange="tsFilterByNode()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+      <option value="">All nodes</option>
     </select>
   </div>
 
-  <!-- SECTIONS tab -->
-  <div id="ts-pane-sections">
-    <div id="ts-catalogue" style="max-height:520px;overflow-y:auto">
-      <div style="color:var(--text3);font-size:12px">Click ⟳ Catalogue to load test tree</div>
+  <!-- Architecture Map — Interactive test coverage overlay -->
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--purple)">
+    <div class="ct">⬡ Architecture Test Coverage Map — Interactive Pipeline Health</div>
+    <div id="ts-arch-map" style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;font-size:10px">
+      <div style="color:var(--text3);text-align:center;padding:12px;grid-column:1/-1">Run tests to visualise architecture coverage</div>
+    </div>
+    <div id="ts-arch-detail" style="display:none;margin-top:10px;padding:10px;background:var(--surface2);border-radius:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Unified flat layout: Catalogue + Results + Failures + Log in sections -->
+  <div class="g2" style="margin-bottom:14px">
+    <!-- Left: Test Catalogue & Results -->
+    <div class="card" style="max-height:520px;overflow-y:auto">
+      <div class="ct">📂 Test Catalogue & Results</div>
+      <div id="ts-catalogue" style="margin-top:8px">
+        <div style="color:var(--text3);font-size:12px">Click ⟳ Catalogue to load test tree</div>
+      </div>
+    </div>
+    <!-- Right: Failures & Detailed Data -->
+    <div class="card" style="max-height:520px;overflow-y:auto">
+      <div class="ct">❌ Failures & Detailed Data</div>
+      <div id="ts-failures-list" style="margin-top:8px">
+        <div style="color:var(--text3);font-size:12px">No failures yet</div>
+      </div>
+      <div id="ts-results-list" style="margin-top:8px;font-size:11px"></div>
     </div>
   </div>
 
-  <!-- RESULTS tab -->
-  <div id="ts-pane-results" style="display:none">
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <input type="text" id="ts-search" placeholder="Search tests…" oninput="tsFilterResults()" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px">
-      <select id="ts-filter-status" onchange="tsFilterResults()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
-        <option value="">All status</option>
-        <option value="passed">✅ Passed</option>
-        <option value="failed">❌ Failed</option>
-        <option value="error">💥 Error</option>
-        <option value="skipped">⏭ Skipped</option>
-      </select>
-    </div>
-    <div id="ts-results-list" style="max-height:500px;overflow-y:auto;font-size:11px"></div>
-  </div>
-
-  <!-- LOG tab -->
-  <div id="ts-pane-log" style="display:none">
-    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+  <!-- Full log output -->
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div class="ct" style="margin:0">📄 Full Test Log</div>
+      <div style="flex:1"></div>
       <label style="font-size:11px;color:var(--text3)">Format:</label>
       <select id="ts-log-display-fmt" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
         <option value="full">Full (stdout + traceback)</option>
         <option value="brief">Brief (one-liner)</option>
       </select>
-      <label style="font-size:11px;color:var(--text3);margin-left:auto">Show:</label>
+      <label style="font-size:11px;color:var(--text3)">Show:</label>
       <select id="ts-log-show" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
         <option value="all">All</option>
         <option value="passed">Passed only</option>
@@ -1422,14 +1437,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       </select>
       <button class="btn btn-secondary" onclick="tsCopyLog()" style="font-size:10px;padding:3px 8px">📋 Copy</button>
     </div>
-    <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--bord);border-radius:6px;padding:12px;max-height:500px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
-  </div>
-
-  <!-- FAILURES tab -->
-  <div id="ts-pane-failures" style="display:none">
-    <div id="ts-failures-list" style="max-height:520px;overflow-y:auto">
-      <div style="color:var(--text3);font-size:12px">No failures yet</div>
-    </div>
+    <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--bord);border-radius:6px;padding:12px;max-height:320px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
   </div>
 </div>
 
@@ -1637,10 +1645,10 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="log-wrap" id="log-box"></div>
 </div>
 
-<!-- ══ AUDIT ══ -->
+<!-- ══ AUDIT & OBSERVABILITY (Unified Monitoring) ══ -->
 <div class="panel" id="panel-audit">
   <div class="ph">
-    <div><div class="ph-title">Audit Trail</div><div class="ph-sub">model.audit_log · model.get_recent_decisions() · model.get_pattern_insights()</div></div>
+    <div><div class="ph-title">Audit Trail & Observability</div><div class="ph-sub">Unified monitoring · audit_log · telemetry · structured logging · traces</div></div>
     <div class="btns">
       <select id="au-sub" onchange="loadAudit()" style="font-size:12px;padding:5px 8px">
         <option value="">All subsystems</option>
@@ -1658,23 +1666,61 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
         <option value="warning">warning</option>
         <option value="critical">critical</option>
       </select>
-      <button class="btn btn-secondary" onclick="loadAudit()">↻ Refresh</button>
-      <button class="btn btn-ghost" onclick="exportAudit()">↓ Export</button>
+      <button class="btn btn-secondary" onclick="loadAudit();loadObservability()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="exportAudit()">↓ Export Audit</button>
+      <button class="btn btn-ghost" onclick="exportTelemetry()">↓ Export Telemetry</button>
     </div>
   </div>
+
+  <!-- Combined KPI row — Audit + Observability -->
   <div class="g4" style="margin-bottom:14px">
-    <div class="card ca"><div class="ct">Total</div><div class="cv ca" id="au-total">0</div></div>
+    <div class="card ca"><div class="ct">Audit Total</div><div class="cv ca" id="au-total">0</div></div>
     <div class="card cg"><div class="ct">Info</div><div class="cv cg" id="au-info">0</div></div>
     <div class="card cw"><div class="ct">Warnings</div><div class="cv cw" id="au-warn">0</div></div>
     <div class="card cd"><div class="ct">Critical</div><div class="cv" style="color:var(--danger)" id="au-crit">0</div></div>
   </div>
+
+  <div class="g4" style="margin-bottom:14px">
+    <div class="card ca"><div class="ct">Structured Logging</div><div class="cv ca" id="obs-sl" style="font-size:16px">OFF</div><div class="cm-t">JSON-formatted logs with correlation IDs</div></div>
+    <div class="card cp"><div class="ct">Academic Mode</div><div class="cv cp" id="obs-am" style="font-size:16px">OFF</div><div class="cm-t">Exhaustive debug-level logging</div></div>
+    <div class="card cg"><div class="ct">Telemetry</div><div class="cv cg" id="obs-tel" style="font-size:16px">OFF</div><div class="cm-t">Metrics collection active</div></div>
+    <div class="card cw"><div class="ct">Metrics Count</div><div class="cv cw" id="obs-mc">0</div><div class="cm-t">distinct metric types</div></div>
+  </div>
+
+  <!-- Audit Trail table -->
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);overflow:hidden;max-height:380px;overflow-y:auto;margin-bottom:14px">
     <table class="tbl" id="au-tbl">
       <thead><tr><th>Time</th><th>Subsystem</th><th>Severity</th><th>Decision</th><th>Meta</th></tr></thead>
       <tbody id="au-tbody"><tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">Initialize model and run inference to generate audit entries</td></tr></tbody>
     </table>
   </div>
-  <div class="card"><div class="ct">Pattern Insights (model.audit_log.get_pattern_insights())</div><div id="au-insights" style="margin-top:8px;font-size:12px;color:var(--text3)">Insufficient data</div></div>
+
+  <!-- Telemetry + Traces + Insights -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">Telemetry Metrics Snapshot</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+        <table class="tbl" id="obs-metrics-tbl">
+          <thead><tr><th>Metric</th><th>Count</th><th>Mean</th><th>Min</th><th>Max</th><th>Latest</th></tr></thead>
+          <tbody id="obs-metrics-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No metrics recorded yet</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">Recent Trace Events</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+        <table class="tbl" id="obs-traces-tbl">
+          <thead><tr><th>Time</th><th>Subsystem</th><th>Decision</th><th>Severity</th></tr></thead>
+          <tbody id="obs-traces-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No traces yet — initialize model and run inference</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="g2">
+    <div class="card"><div class="ct">Pattern Insights (model.audit_log.get_pattern_insights())</div><div id="au-insights" style="margin-top:8px;font-size:12px;color:var(--text3)">Insufficient data</div></div>
+    <div class="card"><div class="ct">Telemetry Counters</div><div id="obs-counters" style="margin-top:8px;font-size:12px;color:var(--text3)">No counters recorded</div></div>
+  </div>
 </div>
 
 <!-- ══ MONITOR ══ -->
@@ -1729,45 +1775,17 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 </div>
 
-<!-- ══ OBSERVABILITY ══ -->
+<!-- ══ OBSERVABILITY (redirects to Audit & Observability) ══ -->
 <div class="panel" id="panel-observability">
   <div class="ph">
-    <div><div class="ph-title">Observability & Telemetry</div><div class="ph-sub">Structured logging · Metrics · Distributed tracing · Academic mode</div></div>
+    <div><div class="ph-title">Observability & Telemetry</div><div class="ph-sub">Merged into Audit Trail & Observability — click below to navigate</div></div>
     <div class="btns">
+      <button class="btn btn-primary" onclick="go('audit')">→ Open Audit & Observability</button>
       <button class="btn btn-secondary" onclick="loadObservability()">↻ Refresh</button>
       <button class="btn btn-ghost" onclick="exportTelemetry()">↓ Export</button>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:14px">
-    <div class="card ca"><div class="ct">Structured Logging</div><div class="cv ca" id="obs-sl" style="font-size:16px">OFF</div><div class="cm-t">JSON-formatted logs with correlation IDs</div></div>
-    <div class="card cp"><div class="ct">Academic Mode</div><div class="cv cp" id="obs-am" style="font-size:16px">OFF</div><div class="cm-t">Exhaustive debug-level logging</div></div>
-    <div class="card cg"><div class="ct">Telemetry</div><div class="cv cg" id="obs-tel" style="font-size:16px">OFF</div><div class="cm-t">Metrics collection active</div></div>
-    <div class="card cw"><div class="ct">Metrics Count</div><div class="cv cw" id="obs-mc">0</div><div class="cm-t">distinct metric types</div></div>
-  </div>
-  <div class="g2" style="margin-bottom:14px">
-    <div class="card">
-      <div class="ct">Telemetry Metrics Snapshot</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
-        <table class="tbl" id="obs-metrics-tbl">
-          <thead><tr><th>Metric</th><th>Count</th><th>Mean</th><th>Min</th><th>Max</th><th>Latest</th></tr></thead>
-          <tbody id="obs-metrics-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No metrics recorded yet</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="ct">Recent Trace Events</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
-        <table class="tbl" id="obs-traces-tbl">
-          <thead><tr><th>Time</th><th>Subsystem</th><th>Decision</th><th>Severity</th></tr></thead>
-          <tbody id="obs-traces-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No traces yet — initialize model and run inference</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="ct">Telemetry Counters</div>
-    <div id="obs-counters" style="margin-top:8px;font-size:12px;color:var(--text3)">No counters recorded</div>
-  </div>
+  <div class="alert alert-blue" style="margin-top:14px"><span>◎</span><div><strong>Observability & Telemetry data is now displayed in the unified Audit Trail & Observability panel.</strong> All monitoring data — audit trail, structured logging, telemetry metrics, traces, and counters — is consolidated in one view for comprehensive system monitoring.</div></div>
 </div>
 
 <!-- ══ METACOGNITION ══ -->
@@ -1974,13 +1992,13 @@ function go(panel) {
   if(panel === 'architecture') { if(S.modelReady) loadArch(); else resetArchPipeline(); }
   if(panel === 'monitor') loadHealth();
   if(panel === 'tg' && S.modelReady) loadTG();
-  if(panel === 'audit' && S.modelReady) loadAudit();
+  if(panel === 'audit' && S.modelReady) { loadAudit(); loadObservability(); }
   if(panel === 'modules' && S.modelReady) loadModules();
   if(panel === 'vq' && S.modelReady) loadVQ();
-  if(panel === 'testsuite') refreshTests();
+  if(panel === 'testsuite') { refreshTests(); tsRenderArchMap(); }
   if(panel === 'benchmark') refreshBenchmark();
   if(panel === 'codegen') genCode();
-  if(panel === 'observability') loadObservability();
+  if(panel === 'observability') { go('audit'); return; }
   if(panel === 'metacognition' && S.modelReady) loadMetacognition();
   if(panel === 'provenance' && S.modelReady) loadProvenance();
   if(panel === 'causaltrace' && S.modelReady) loadCausalTrace();
@@ -4283,6 +4301,7 @@ const TS = {
   filterSection: '',
   filterStatus: '',
   filterSearch: '',
+  filterNode: '',
 };
 
 // ── Format toggle ──────────────────────────────────────────────
@@ -4292,16 +4311,184 @@ function tsToggleFormat() {
     TS.logFormat === 'full' ? '📋 Full Log' : '📄 Brief Log';
 }
 
-// ── Tab navigation ─────────────────────────────────────────────
+// ── Tab navigation (flattened — all sections visible) ───────
 function tsTab(name) {
+  // Backward compatibility: flat layout shows all panes simultaneously,
+  // so this function just refreshes all views regardless of the tab name.
   TS.activeTab = name;
-  ['sections','results','log','failures'].forEach(t => {
-    document.getElementById(`ts-pane-${t}`).style.display = t === name ? '' : 'none';
-    document.getElementById(`ts-tab-${t}`).classList.toggle('active', t === name);
+  tsFilterResults();
+  tsRenderLog();
+  tsRenderFailures();
+}
+
+// ── Filter by architecture node ────────────────────────────────
+function tsFilterByNode() {
+  TS.filterNode = document.getElementById('ts-filter-node')?.value || '';
+  tsFilterResults();
+  tsBuildCatalogueUI();
+}
+
+// ── Architecture Map Rendering ─────────────────────────────────
+function tsRenderArchMap() {
+  const map = document.getElementById('ts-arch-map');
+  const detail = document.getElementById('ts-arch-detail');
+  if (!map) return;
+
+  // Collect node stats from test results
+  const nodeStats = {};
+  const ARCH_NODES = [
+    'input','encoder','continual_learning','vq','encoder_reasoning_norm',
+    'meta_loop','certified_meta_loop','convergence_arbiter','slot_binding',
+    'factor_extraction','topology_analysis','diversity_analysis',
+    'complexity_estimator','consistency_gate','cross_validation',
+    'self_report','safety','cognitive_executive','deeper_meta_loop',
+    'world_model','hierarchical_world_model','causal_world_model',
+    'memory','temporal_memory','neurogenic_memory','consolidating_memory',
+    'memory_trust','memory_validation','memory_cross_validation',
+    'mcts_planning','active_learning','icm_curiosity','causal_model',
+    'notears_causal','causal_programmatic','causal_dag_consensus',
+    'unified_simulator','hybrid_reasoning','ns_bridge',
+    'temporal_knowledge_graph','hierarchical_vae','causal_context',
+    'rssm','multimodal','grounded_multimodal','integration',
+    'auto_critic','output_reliability','metacognitive_trigger',
+    'error_evolution','unified_cognitive_cycle','decoder'
+  ];
+  ARCH_NODES.forEach(n => { nodeStats[n] = {total:0,passed:0,failed:0,errors:0,tests:[]}; });
+
+  // Map tests to nodes using keyword matching
+  TS.results.forEach(r => {
+    const node = r.arch_node || _mapTestToNode(r.name);
+    if (nodeStats[node]) {
+      nodeStats[node].total++;
+      nodeStats[node].tests.push(r.name);
+      if (r.status === 'passed') nodeStats[node].passed++;
+      else if (r.status === 'failed') nodeStats[node].failed++;
+      else nodeStats[node].errors++;
+    }
   });
-  if (name === 'results') tsFilterResults();
-  if (name === 'log')     tsRenderLog();
-  if (name === 'failures') tsRenderFailures();
+
+  // Populate node filter dropdown
+  const nodeSel = document.getElementById('ts-filter-node');
+  if (nodeSel) {
+    const currentVal = nodeSel.value;
+    nodeSel.innerHTML = '<option value="">All nodes</option>';
+    ARCH_NODES.filter(n => nodeStats[n].total > 0).forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n;
+      opt.textContent = `${n} (${nodeStats[n].total})`;
+      nodeSel.appendChild(opt);
+    });
+    nodeSel.value = currentVal;
+  }
+
+  if (!TS.results.length) {
+    map.innerHTML = '<div style="color:var(--text3);text-align:center;padding:12px;grid-column:1/-1">Run tests to visualise architecture coverage</div>';
+    return;
+  }
+
+  // Update arch coverage KPI
+  const coveredNodes = ARCH_NODES.filter(n => nodeStats[n].total > 0);
+  const covEl = document.getElementById('ts-arch-cov');
+  const covMEl = document.getElementById('ts-arch-cov-m');
+  if (covEl) covEl.textContent = `${coveredNodes.length}/${ARCH_NODES.length}`;
+  if (covMEl) covMEl.textContent = `${Math.round(coveredNodes.length/ARCH_NODES.length*100)}% pipeline coverage`;
+
+  // Render interactive architecture map tiles
+  map.innerHTML = ARCH_NODES.filter(n => nodeStats[n].total > 0).map(n => {
+    const s = nodeStats[n];
+    const health = s.total > 0 ? Math.round(s.passed / s.total * 100) : 0;
+    const color = s.failed > 0 || s.errors > 0 ? 'var(--danger)' : health === 100 ? 'var(--green)' : 'var(--warn)';
+    const bgColor = s.failed > 0 || s.errors > 0 ? 'rgba(239,68,68,.08)' : health === 100 ? 'rgba(16,185,129,.08)' : 'rgba(245,158,11,.08)';
+    return `<div class="ts-arch-node" onclick="tsShowArchNodeDetail('${n}')" style="background:${bgColor};border:1px solid ${color}30;border-radius:6px;padding:6px 8px;cursor:pointer;text-align:center;transition:.15s" onmouseover="this.style.borderColor='${color}'" onmouseout="this.style.borderColor='${color}30'">
+      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">${n.replace(/_/g,' ')}</div>
+      <div style="font-size:16px;font-weight:700;color:${color}">${health}%</div>
+      <div style="font-size:9px;color:var(--text3)">${s.passed}✅ ${s.failed}❌ ${s.errors}💥</div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text3);grid-column:1/-1;text-align:center;padding:12px">No test results yet</div>';
+}
+
+function _mapTestToNode(name) {
+  const lower = name.toLowerCase().replace('test_','');
+  const MAP = {
+    'encoder':'encoder','ssm':'encoder','mamba':'encoder','linear_attention':'encoder',
+    'continual_learning':'continual_learning','vq':'vq','codebook':'vq',
+    'meta_loop':'meta_loop','meta_learner':'meta_loop','certified':'certified_meta_loop',
+    'convergence_arbiter':'convergence_arbiter','convergence_monitor':'convergence_arbiter',
+    'topology':'topology_analysis','diversity':'diversity_analysis',
+    'complexity':'complexity_estimator','consistency_gate':'consistency_gate',
+    'cross_validation':'cross_validation','self_report':'self_report',
+    'safety':'safety','quarantine':'safety','tensor_guard':'safety',
+    'circuit_breaker':'safety','executive':'cognitive_executive',
+    'deeper_meta':'deeper_meta_loop','world_model':'world_model',
+    'memory':'memory','hierarchical_memory':'memory',
+    'temporal_memory':'temporal_memory','neurogenic':'neurogenic_memory',
+    'memory_trust':'memory_trust','memory_validation':'memory_validation',
+    'memory_cross':'memory_cross_validation',
+    'mcts':'mcts_planning','active_learning':'active_learning',
+    'icm':'icm_curiosity','curiosity':'icm_curiosity',
+    'causal_model':'causal_model','neural_causal':'causal_model',
+    'notears':'notears_causal','dag_consensus':'causal_dag_consensus',
+    'unified_sim':'unified_simulator','hybrid_reason':'hybrid_reasoning',
+    'ns_bridge':'ns_bridge','temporal_knowledge':'temporal_knowledge_graph',
+    'hierarchical_vae':'hierarchical_vae','causal_context':'causal_context',
+    'rssm':'rssm','multimodal':'multimodal','grounded_multimodal':'grounded_multimodal',
+    'auto_critic':'auto_critic','output_reliability':'output_reliability',
+    'metacognitive_trigger':'metacognitive_trigger','error_evolution':'error_evolution',
+    'error_recovery':'error_evolution','ucc':'unified_cognitive_cycle',
+    'unified_cognitive':'unified_cognitive_cycle','coherence':'unified_cognitive_cycle',
+    'decoder':'decoder','generate':'decoder','inference_cache':'decoder',
+    'provenance':'integration','causal_trace':'integration',
+    'feedback_bus':'integration','bridge_training':'integration',
+    'lipschitz':'meta_loop','hessian':'meta_loop',
+    'entropy_loss':'vq','perplexity':'vq',
+    'sparse_factor':'factor_extraction','slot_binding':'slot_binding',
+    'task2vec':'active_learning','self_diagnostic':'metacognitive_trigger',
+    'extension_point':'metacognitive_trigger','recovery_pressure':'error_evolution',
+    'weighted_uncertainty':'unified_cognitive_cycle',
+  };
+  // 'integration' is the default fallback as it represents the fusion/pipeline
+  // layer where tests that span multiple subsystems or test cross-cutting
+  // concerns (config, checkpoints, provenance, bridges) naturally belong.
+  let best='', bestNode='integration';
+  for (const [kw, node] of Object.entries(MAP)) {
+    if (lower.includes(kw) && kw.length > best.length) { best=kw; bestNode=node; }
+  }
+  return bestNode;
+}
+
+function tsShowArchNodeDetail(nodeId) {
+  const detail = document.getElementById('ts-arch-detail');
+  if (!detail) return;
+
+  const nodeTests = TS.results.filter(r => (r.arch_node || _mapTestToNode(r.name)) === nodeId);
+  if (!nodeTests.length) { detail.style.display='none'; return; }
+
+  detail.style.display = 'block';
+  const passed = nodeTests.filter(r=>r.status==='passed').length;
+  const failed = nodeTests.filter(r=>r.status==='failed').length;
+  const errors = nodeTests.filter(r=>r.status==='error').length;
+  const totalMs = nodeTests.reduce((s,r)=>s+r.elapsed_ms,0);
+
+  detail.innerHTML = `<div style="display:flex;justify-content:space-between;margin-bottom:8px">
+    <strong style="color:var(--accent)">${nodeId.replace(/_/g,' ').toUpperCase()}</strong>
+    <span style="color:var(--text3)">${nodeTests.length} tests · ${totalMs.toFixed(0)}ms</span>
+    <button class="btn btn-ghost" onclick="document.getElementById('ts-arch-detail').style.display='none'" style="padding:2px 8px;font-size:10px">✕</button>
+  </div>
+  <div style="display:flex;gap:12px;margin-bottom:8px;font-size:11px">
+    <span style="color:var(--green)">✅ ${passed} passed</span>
+    <span style="color:var(--danger)">❌ ${failed} failed</span>
+    <span style="color:var(--warn)">💥 ${errors} errors</span>
+  </div>
+  <div style="max-height:200px;overflow-y:auto">` +
+  nodeTests.map(r => {
+    const icon = {passed:'✅',failed:'❌',error:'💥',skipped:'⏭'}[r.status]||'?';
+    return `<div style="display:flex;gap:6px;padding:3px 0;font-size:10px;border-bottom:1px solid var(--border)">
+      <span>${icon}</span>
+      <span style="flex:1;color:var(--text)">${r.name}</span>
+      <span style="color:var(--text3)">${r.elapsed_ms?.toFixed(0)||0}ms</span>
+      ${r.error_msg ? `<span style="color:var(--danger);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(r.error_msg)}">${escHtml(r.error_msg.slice(0,60))}</span>` : ''}
+    </div>`;
+  }).join('') + '</div>';
 }
 
 // ── Load catalogue ─────────────────────────────────────────────
@@ -4409,8 +4596,10 @@ async function tsRunOne(name) {
       else TS.results.push(d.result);
       tsBuildCatalogueUI();
       tsUpdateKPIs();
-      if (TS.activeTab === 'results') tsFilterResults();
-      if (TS.activeTab === 'log') tsRenderLog();
+      tsFilterResults();
+      tsRenderLog();
+      tsRenderFailures();
+      tsRenderArchMap();
     }
   } catch(e) { log('ERROR','tests', e.message); }
 }
@@ -4476,8 +4665,9 @@ function tsStartPolling(total) {
 
       tsUpdateKPIs();
       tsBuildCatalogueUI();
-      if (TS.activeTab === 'results') tsFilterResults();
-      if (TS.activeTab === 'failures') tsRenderFailures();
+      tsFilterResults();
+      tsRenderFailures();
+      tsRenderArchMap();
 
       if (!p.active && p.done) {
         clearInterval(TS.pollTimer);
@@ -4491,6 +4681,7 @@ function tsStartPolling(total) {
         document.getElementById('ts-stop-btn').style.display = 'none';
         tsRenderLog();
         tsRenderFailures();
+        tsRenderArchMap();
         log('INFO','tests', `✅ Run complete · ${TS.summary.passed||0} passed · ${TS.summary.failed||0} failed`);
       }
     } catch(e) {}
@@ -4525,9 +4716,11 @@ function tsFilterResults() {
   const q = (document.getElementById('ts-search')?.value || '').toLowerCase();
   const st = document.getElementById('ts-filter-status')?.value || '';
   const sec = TS.filterSection;
+  const nodeFilter = TS.filterNode || '';
   let rs = TS.results.filter(r => {
     if (st && r.status !== st) return false;
     if (sec && r.section !== sec) return false;
+    if (nodeFilter && (r.arch_node || _mapTestToNode(r.name)) !== nodeFilter) return false;
     if (q && !r.name.toLowerCase().includes(q) && !(r.section||'').toLowerCase().includes(q)) return false;
     return true;
   });
@@ -4536,10 +4729,12 @@ function tsFilterResults() {
   el.innerHTML = rs.map(r => {
     const icon = {passed:'✅',failed:'❌',error:'💥',skipped:'⏭'}[r.status]||'?';
     const hasDetail = r.error_msg || r.stdout || r.log_full;
+    const archNode = r.arch_node || _mapTestToNode(r.name);
     return `<div class="ts-result-card ${r.status}" onclick="this.classList.toggle('expanded')">
       <div class="ts-rc-hdr">
         <span>${icon}</span>
         <span class="ts-rc-name">${r.name}</span>
+        <span style="font-size:9px;color:var(--purple);background:var(--purple-dim);padding:1px 5px;border-radius:3px">${archNode}</span>
         <span class="ts-rc-ms">${r.elapsed_ms?.toFixed(0)||0}ms</span>
         ${hasDetail ? '<span style="font-size:10px;color:var(--text3)">▾</span>' : ''}
       </div>
@@ -4547,6 +4742,8 @@ function tsFilterResults() {
       ${r.doc ? `<div style="font-size:10px;color:var(--text3);margin-top:3px">${r.doc}</div>` : ''}
       ${r.error_msg ? `<div class="ts-rc-err">${escHtml(r.error_msg)}</div>` : ''}
       <div class="ts-rc-detail">
+        ${r.stdout?.trim() ? `<div class="ts-log-block"><strong>stdout:</strong>\n${escHtml(r.stdout)}</div>` : ''}
+        ${r.stderr?.trim() ? `<div class="ts-log-block" style="color:var(--warn)"><strong>stderr:</strong>\n${escHtml(r.stderr)}</div>` : ''}
         ${r.log_full ? `<div class="ts-log-block">${escHtml(r.log_full)}</div>` :
           r.log_brief ? `<div class="ts-log-block">${escHtml(r.log_brief)}</div>` : ''}
         ${r.traceback ? `<div class="ts-log-block" style="color:var(--warn)">${escHtml(r.traceback)}</div>` : ''}
@@ -4557,7 +4754,8 @@ function tsFilterResults() {
 
 function tsFilterSection() {
   TS.filterSection = document.getElementById('ts-filter-section')?.value || '';
-  if (TS.activeTab === 'results') tsFilterResults();
+  tsFilterResults();
+  tsBuildCatalogueUI();
 }
 
 // ── Log view ───────────────────────────────────────────────────
