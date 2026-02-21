@@ -15186,7 +15186,7 @@ class AEONDeltaV3(nn.Module):
         ("factor_extraction", "topology_analysis"),
         ("topology_analysis", "safety"),
         # Topology catastrophe triggers auto-critic for immediate
-        # correction of the destabilised reasoning state.
+        # correction of the destabilized reasoning state.
         ("topology_analysis", "auto_critic"),
         # Diversity collapse feeds into causal trace for root-cause
         # traceability of thought collapse events.
@@ -18491,7 +18491,7 @@ class AEONDeltaV3(nn.Module):
                 # correction when a topology catastrophe is detected.
                 # Uncertainty escalation alone defers correction to the
                 # metacognitive cycle; direct auto-critic invocation
-                # provides immediate self-correction of the destabilised
+                # provides immediate self-correction of the destabilized
                 # state, closing the gap between catastrophe detection
                 # and active correction.
                 if self.auto_critic is not None:
