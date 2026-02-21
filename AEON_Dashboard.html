@@ -4313,7 +4313,8 @@ function tsToggleFormat() {
 
 // ── Tab navigation (flattened — all sections visible) ───────
 function tsTab(name) {
-  // Legacy compatibility — all panes are now always visible in flat layout
+  // Backward compatibility: flat layout shows all panes simultaneously,
+  // so this function just refreshes all views regardless of the tab name.
   TS.activeTab = name;
   tsFilterResults();
   tsRenderLog();
@@ -4445,6 +4446,9 @@ function _mapTestToNode(name) {
     'extension_point':'metacognitive_trigger','recovery_pressure':'error_evolution',
     'weighted_uncertainty':'unified_cognitive_cycle',
   };
+  // 'integration' is the default fallback as it represents the fusion/pipeline
+  // layer where tests that span multiple subsystems or test cross-cutting
+  // concerns (config, checkpoints, provenance, bridges) naturally belong.
   let best='', bestNode='integration';
   for (const [kw, node] of Object.entries(MAP)) {
     if (lower.includes(kw) && kw.length > best.length) { best=kw; bestNode=node; }

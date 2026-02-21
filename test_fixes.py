@@ -137,7 +137,8 @@ _KEYWORD_NODE_MAP = {
 def _map_test_to_node(test_name: str) -> str:
     """Map a test function name to an architecture pipeline node."""
     name_lower = test_name.lower().replace('test_', '', 1)
-    # Try exact prefix matches first (longest match wins)
+    # 'integration' is the default fallback: tests spanning multiple subsystems
+    # or testing cross-cutting concerns (config, checkpoints, provenance) map here.
     best_match = ''
     best_node = 'integration'  # default fallback
     for keyword, node in _KEYWORD_NODE_MAP.items():
