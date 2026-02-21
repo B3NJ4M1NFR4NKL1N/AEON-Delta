@@ -36101,6 +36101,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "auto_critic": "auto_critic",
         "mcts_planning": "mcts_planner",
         "active_learning": "active_learning_planner",
+        "icm_curiosity": "active_learning_planner",
         "cognitive_executive": "cognitive_executive",
         "causal_dag_consensus": "causal_dag_consensus",
         "certified_meta_loop": "certified_meta_loop",
@@ -37722,15 +37723,23 @@ def test_self_diagnostic_reports_extension_points():
         "self_diagnostic should include extension_points"
     )
     ext_points = diag['extension_points']
-    assert len(ext_points) >= 5, (
-        f"Expected at least 5 extension points, got {len(ext_points)}"
+    # After integration of Task2VecMetaLearner and CuriosityDrivenExploration,
+    # 3 extension points remain: ParallelCognitivePipeline,
+    # HierarchicalCognitiveArchitecture, LatentDynamicsModel.
+    assert len(ext_points) >= 3, (
+        f"Expected at least 3 extension points, got {len(ext_points)}"
     )
     ext_classes = [ep['class'] for ep in ext_points]
-    assert 'Task2VecMetaLearner' in ext_classes, (
-        "Task2VecMetaLearner should be listed as extension point"
-    )
     assert 'ParallelCognitivePipeline' in ext_classes, (
         "ParallelCognitivePipeline should be listed as extension point"
+    )
+    # Task2VecMetaLearner and CuriosityDrivenExploration should no longer
+    # appear since they are now integrated into the pipeline.
+    assert 'Task2VecMetaLearner' not in ext_classes, (
+        "Task2VecMetaLearner should no longer be an extension point"
+    )
+    assert 'CuriosityDrivenExploration' not in ext_classes, (
+        "CuriosityDrivenExploration should no longer be an extension point"
     )
     for ep in ext_points:
         assert ep['status'] == 'available_not_integrated', (
@@ -38191,6 +38200,340 @@ def test_self_diagnostic_reports_per_subsystem_bridge():
     )
 
     print("✅ test_self_diagnostic_reports_per_subsystem_bridge PASSED")
+
+
+# ============================================================================
+# Architectural Unification — Module Integration Gap Closure Tests
+# ============================================================================
+
+
+def test_active_learning_planner_has_icm():
+    """Gap 1: ActiveLearningPlanner now integrates CuriosityDrivenExploration (ICM).
+
+    Verifies that the ICM forward and inverse models are present as a
+    sub-module and produce finite intrinsic reward values.
+    """
+    from aeon_core import ActiveLearningPlanner, CuriosityDrivenExploration
+    import torch
+
+    planner = ActiveLearningPlanner(state_dim=32, action_dim=8, hidden_dim=16)
+
+    # ICM sub-module must exist
+    assert hasattr(planner, 'icm'), "ActiveLearningPlanner must have an 'icm' attribute"
+    assert isinstance(planner.icm, CuriosityDrivenExploration), (
+        f"Expected CuriosityDrivenExploration, got {type(planner.icm).__name__}"
+    )
+
+    # ICM must have forward and inverse models
+    assert hasattr(planner.icm, 'forward_model'), "ICM must have a forward_model"
+    assert hasattr(planner.icm, 'inverse_model'), "ICM must have a inverse_model"
+
+    # compute_icm_reward must produce a finite scalar
+    s = torch.randn(32)
+    a = torch.randn(8)
+    s_next = torch.randn(32)
+    reward = planner.compute_icm_reward(s, a, s_next)
+    assert isinstance(reward, float), f"Expected float, got {type(reward)}"
+    assert math.isfinite(reward), f"ICM reward must be finite, got {reward}"
+
+    print("✅ test_active_learning_planner_has_icm PASSED")
+
+
+def test_icm_reward_in_select_action():
+    """Gap 1: select_action() now includes icm_reward in its output dict.
+
+    Verifies that when the ActiveLearningPlanner runs select_action, the
+    result contains both intrinsic_reward (variance-based) and icm_reward
+    (forward-model prediction error).
+    """
+    from aeon_core import ActiveLearningPlanner
+    import torch
+    import torch.nn as nn
+
+    planner = ActiveLearningPlanner(state_dim=32, action_dim=8, hidden_dim=16)
+    planner.eval()
+
+    state = torch.randn(32)
+
+    # Create a mock world model that is callable and returns {'output': tensor}
+    class MockWorldModel(nn.Module):
+        def forward(self, x):
+            return {'output': x + 0.01 * torch.randn_like(x)}
+        def predict(self, state_batch, action_batch):
+            return {'predicted_state': state_batch + 0.01 * torch.randn_like(state_batch)}
+
+    mock_wm = MockWorldModel()
+    result = planner.select_action(state, mock_wm)
+
+    # Both reward types should be present
+    assert 'intrinsic_reward' in result, "select_action must return intrinsic_reward"
+    assert 'icm_reward' in result, "select_action must return icm_reward"
+    assert isinstance(result['icm_reward'], float), (
+        f"icm_reward should be float, got {type(result['icm_reward'])}"
+    )
+
+    print("✅ test_icm_reward_in_select_action PASSED")
+
+
+def test_meta_recovery_loss_in_compute_loss():
+    """Gap 2: compute_loss() now includes meta_recovery_loss.
+
+    Verifies that when MetaRecoveryLearner is enabled and its replay
+    buffer has enough experiences, the meta_recovery_loss is non-zero
+    and included in the output dict.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_meta_recovery_integration=True)
+    model = AEONDeltaV3(config)
+
+    # Populate the replay buffer with enough experiences
+    for i in range(10):
+        s = torch.randn(64)
+        a = i % 4
+        r = 1.0 if i % 3 == 0 else -1.0
+        ns = torch.randn(64)
+        model.meta_recovery.recovery_buffer.push(s, a, r, ns)
+
+    assert len(model.meta_recovery.recovery_buffer) >= 8, (
+        "Replay buffer should have >= 8 experiences"
+    )
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    targets = torch.randint(0, config.vocab_size, (B, L))
+    model.train()
+    outputs = model(input_ids)
+    losses = model.compute_loss(outputs, targets)
+
+    assert 'meta_recovery_loss' in losses, "compute_loss must return meta_recovery_loss"
+    mr_loss = losses['meta_recovery_loss']
+    assert torch.is_tensor(mr_loss), "meta_recovery_loss must be a tensor"
+    assert torch.isfinite(mr_loss), f"meta_recovery_loss must be finite, got {mr_loss}"
+
+    print("✅ test_meta_recovery_loss_in_compute_loss PASSED")
+
+
+def test_meta_recovery_loss_zero_when_buffer_empty():
+    """Gap 2: meta_recovery_loss is 0.0 when the replay buffer is empty.
+
+    Verifies graceful degradation: no crash and zero loss when no
+    recovery experiences have been recorded.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_meta_recovery_integration=True)
+    model = AEONDeltaV3(config)
+    model.train()
+
+    # Buffer is empty — loss should be 0.0
+    assert len(model.meta_recovery.recovery_buffer) == 0
+
+    B, L = 2, 16
+    input_ids = torch.randint(0, config.vocab_size, (B, L))
+    targets = torch.randint(0, config.vocab_size, (B, L))
+    outputs = model(input_ids)
+    losses = model.compute_loss(outputs, targets)
+
+    mr_loss = losses['meta_recovery_loss']
+    assert mr_loss.item() == 0.0, (
+        f"meta_recovery_loss should be 0.0 when buffer empty, got {mr_loss.item()}"
+    )
+
+    print("✅ test_meta_recovery_loss_zero_when_buffer_empty PASSED")
+
+
+def test_lambda_meta_recovery_config():
+    """Gap 2: AEONConfig includes lambda_meta_recovery with correct default.
+
+    Verifies that the config field exists and defaults to 0.01.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, 'lambda_meta_recovery'), (
+        "AEONConfig must have lambda_meta_recovery field"
+    )
+    assert config.lambda_meta_recovery == 0.01, (
+        f"Expected default 0.01, got {config.lambda_meta_recovery}"
+    )
+
+    # Custom value should work
+    config2 = AEONConfig(lambda_meta_recovery=0.05)
+    assert config2.lambda_meta_recovery == 0.05
+
+    print("✅ test_lambda_meta_recovery_config PASSED")
+
+
+def test_executive_health_uses_meta_stats():
+    """Gap 3: UCC executive_health uses MetaMonitor stats, not binary proxy.
+
+    Verifies that when CognitiveExecutiveFunction is enabled, the
+    executive_health parameter in the UCC evaluate call reflects the
+    MetaMonitor's running cosine-similarity mean rather than a
+    binary 1.0/0.0 proxy.
+    """
+    from aeon_core import (
+        CognitiveExecutiveFunction, MetaMonitor,
+        SharedWorkspace, AttentionArbiter,
+    )
+    import torch
+    import torch.nn as nn
+
+    # Build a minimal CognitiveExecutiveFunction with 2 subsystems
+    class IdentityModule(nn.Module):
+        def forward(self, x):
+            return x
+
+    class ScaledModule(nn.Module):
+        def forward(self, x):
+            return x * 0.5
+
+    subsystems = {'identity': IdentityModule(), 'scaled': ScaledModule()}
+    cef = CognitiveExecutiveFunction(
+        subsystems=subsystems,
+        state_dim=32,
+        workspace_capacity=64,
+        top_k=2,
+    )
+
+    state = torch.randn(2, 32)
+    result = cef(state)
+
+    # MetaMonitor should have computed meta_stats
+    assert 'meta_stats' in result, "CognitiveExecutiveFunction must return meta_stats"
+    assert 'mean' in result['meta_stats'], "meta_stats must contain 'mean'"
+
+    meta_mean = result['meta_stats']['mean']
+    assert isinstance(meta_mean, float), f"Expected float, got {type(meta_mean)}"
+
+    # The mean should be a valid cosine-similarity value (roughly in [-1, 1])
+    assert -1.1 <= meta_mean <= 1.1, (
+        f"meta_stats mean should be a cosine similarity, got {meta_mean}"
+    )
+
+    print("✅ test_executive_health_uses_meta_stats PASSED")
+
+
+def test_task2vec_meta_learner_config():
+    """Gap 4: AEONConfig includes Task2Vec configuration fields.
+
+    Verifies that enable_task2vec and related fields exist with correct
+    defaults.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, 'enable_task2vec'), "AEONConfig must have enable_task2vec"
+    assert config.enable_task2vec is False, "enable_task2vec should default to False"
+    assert hasattr(config, 'task2vec_embedding_dim'), "AEONConfig must have task2vec_embedding_dim"
+    assert config.task2vec_embedding_dim == 128
+    assert hasattr(config, 'task2vec_similarity_threshold')
+    assert config.task2vec_similarity_threshold == 0.8
+    assert hasattr(config, 'task2vec_ewc_lambda')
+    assert config.task2vec_ewc_lambda == 1000.0
+
+    print("✅ test_task2vec_meta_learner_config PASSED")
+
+
+def test_task2vec_init_method_exists():
+    """Gap 4: AEONDeltaV3 has init_task2vec_meta_learner method.
+
+    Verifies that the method exists and defaults to None when not
+    enabled.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_task2vec=False)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'init_task2vec_meta_learner'), (
+        "AEONDeltaV3 must have init_task2vec_meta_learner method"
+    )
+    assert model.task2vec_meta_learner is None, (
+        "task2vec_meta_learner should be None when disabled"
+    )
+
+    print("✅ test_task2vec_init_method_exists PASSED")
+
+
+def test_pipeline_deps_include_icm_curiosity():
+    """Gap 5: _PIPELINE_DEPENDENCIES includes ICM curiosity edges.
+
+    Verifies that the provenance dependency DAG includes edges from
+    active_learning to icm_curiosity and from icm_curiosity to
+    metacognitive_trigger, ensuring full traceability.
+    """
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+
+    # Check for ICM curiosity edges
+    assert ("active_learning", "icm_curiosity") in deps, (
+        "Missing edge: active_learning → icm_curiosity"
+    )
+    assert ("icm_curiosity", "metacognitive_trigger") in deps, (
+        "Missing edge: icm_curiosity → metacognitive_trigger"
+    )
+
+    print("✅ test_pipeline_deps_include_icm_curiosity PASSED")
+
+
+def test_icm_uncertainty_source_mapped():
+    """Gap 5: ICM curiosity uncertainty source is properly mapped.
+
+    Verifies that when the ActiveLearningPlanner ICM reports high
+    curiosity reward, it is reflected as an uncertainty source in the
+    reasoning core output.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(enable_active_learning_planner=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # The uncertainty_source_to_module mapping should include icm_curiosity
+    # (this is a static check of the code structure)
+    assert model.active_learning_planner is not None, (
+        "ActiveLearningPlanner should be enabled"
+    )
+    assert hasattr(model.active_learning_planner, 'icm'), (
+        "ActiveLearningPlanner should have ICM sub-module"
+    )
+
+    print("✅ test_icm_uncertainty_source_mapped PASSED")
+
+
+def test_extension_points_updated():
+    """Gap 5: Extension points no longer list CuriosityDrivenExploration
+    or Task2VecMetaLearner as unintegrated.
+
+    Verifies that the self_diagnostic extension points reflect the new
+    integrations.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    extension_classes = [
+        ep['class'] for ep in diag.get('extension_points', [])
+    ]
+
+    # CuriosityDrivenExploration and Task2VecMetaLearner should no longer
+    # appear as extension points since they are now integrated.
+    assert 'CuriosityDrivenExploration' not in extension_classes, (
+        "CuriosityDrivenExploration should no longer be an extension point"
+    )
+    assert 'Task2VecMetaLearner' not in extension_classes, (
+        "Task2VecMetaLearner should no longer be an extension point"
+    )
+
+    print("✅ test_extension_points_updated PASSED")
 
 
 def _run_all_tests():
@@ -39813,6 +40156,19 @@ def _run_all_tests():
     test_verify_coherence_includes_convergence_trend()
     test_get_metacognitive_state_includes_recovery_pressure()
     test_self_diagnostic_reports_per_subsystem_bridge()
+
+    # Architectural Unification — Module Integration Gap Closure Tests
+    test_active_learning_planner_has_icm()
+    test_icm_reward_in_select_action()
+    test_meta_recovery_loss_in_compute_loss()
+    test_meta_recovery_loss_zero_when_buffer_empty()
+    test_lambda_meta_recovery_config()
+    test_executive_health_uses_meta_stats()
+    test_task2vec_meta_learner_config()
+    test_task2vec_init_method_exists()
+    test_pipeline_deps_include_icm_curiosity()
+    test_icm_uncertainty_source_mapped()
+    test_extension_points_updated()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

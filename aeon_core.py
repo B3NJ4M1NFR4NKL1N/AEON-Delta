@@ -2848,6 +2848,10 @@ class AEONConfig:
     meta_num_inner_steps: int = 5
     meta_ewc_lambda: float = 1000.0
     meta_task_buffer_size: int = 100
+    enable_task2vec: bool = False
+    task2vec_embedding_dim: int = 128
+    task2vec_similarity_threshold: float = 0.8
+    task2vec_ewc_lambda: float = 1000.0
     
     # ===== CAUSAL & PLANNING =====
     enable_causal_model: bool = False
@@ -2946,6 +2950,7 @@ class AEONConfig:
     unified_simulator_blend: float = 0.1
     hybrid_reasoning_blend: float = 0.1
     meta_recovery_error_penalty: float = -1.0
+    lambda_meta_recovery: float = 0.01
 
     # ===== MODULE COHERENCE & META-COGNITIVE RECURSION =====
     # These four features form the core meta-cognitive loop that ensures
@@ -11025,6 +11030,17 @@ class ActiveLearningPlanner(MCTSPlanner):
             nn.Linear(hidden_dim, state_dim),
         )
 
+        # ICM-based curiosity module (Pathak et al., 2017) — provides a
+        # principled intrinsic reward based on forward-model prediction
+        # error, complementing the variance-based uncertainty model above.
+        # The ICM's inverse model focuses the representation on
+        # controllable state features, yielding richer exploration than
+        # raw variance alone.
+        self.icm = CuriosityDrivenExploration(
+            state_dim=state_dim,
+            action_dim=action_dim,
+        )
+
     def compute_intrinsic_reward(self, state: torch.Tensor) -> float:
         """
         Compute intrinsic curiosity reward as prediction variance.
@@ -11038,6 +11054,32 @@ class ActiveLearningPlanner(MCTSPlanner):
         with torch.no_grad():
             pred = self.uncertainty_model(state.unsqueeze(0))
             return pred.var().item()
+
+    def compute_icm_reward(
+        self,
+        s_t: torch.Tensor,
+        a_t: torch.Tensor,
+        s_next: torch.Tensor,
+    ) -> float:
+        """Compute ICM-based intrinsic reward (forward-model prediction error).
+
+        Complements :meth:`compute_intrinsic_reward` (variance-based) with
+        a principled prediction-error signal from
+        :class:`CuriosityDrivenExploration`.
+
+        Args:
+            s_t: [state_dim] current state.
+            a_t: [action_dim] action taken.
+            s_next: [state_dim] observed next state.
+
+        Returns:
+            Scalar ICM intrinsic reward (MSE prediction error).
+        """
+        with torch.no_grad():
+            reward = self.icm.intrinsic_reward(
+                s_t.unsqueeze(0), a_t.unsqueeze(0), s_next.unsqueeze(0),
+            )
+            return float(reward.item())
 
     def _simulate(self, node: 'MCTSNode') -> float:
         """
@@ -11065,10 +11107,30 @@ class ActiveLearningPlanner(MCTSPlanner):
             safety_fn: optional callable returning True if a state is safe.
 
         Returns:
-            Dict with best_action, intrinsic_reward, and search results.
+            Dict with best_action, intrinsic_reward, icm_reward, and search
+            results.
         """
         result = self.search(state, world_model)
-        result['intrinsic_reward'] = self.compute_intrinsic_reward(state)
+        intrinsic = self.compute_intrinsic_reward(state)
+        result['intrinsic_reward'] = intrinsic
+        # ICM reward: use the MCTS best action and world-model predicted
+        # next state so that ICM reward reflects the actual chosen action.
+        best_action = result.get('best_action')
+        if best_action is not None:
+            try:
+                with torch.no_grad():
+                    _next = world_model.predict(
+                        state.unsqueeze(0),
+                        best_action.unsqueeze(0) if best_action.dim() == 1 else best_action,
+                    )
+                    _s_next = _next['predicted_state'].squeeze(0) if isinstance(_next, dict) else _next.squeeze(0)
+                result['icm_reward'] = self.compute_icm_reward(
+                    state, best_action, _s_next,
+                )
+            except Exception:
+                result['icm_reward'] = 0.0
+        else:
+            result['icm_reward'] = 0.0
         return result
 
 
@@ -15230,6 +15292,11 @@ class AEONDeltaV3(nn.Module):
         # downstream quality changes to active-learning decisions.
         ("mcts_planning", "active_learning"),
         ("world_model", "active_learning"),
+        # ICM curiosity reward enriches active learning decisions; this
+        # edge ensures trace_root_cause() can attribute exploration
+        # quality to the ICM forward/inverse model predictions.
+        ("active_learning", "icm_curiosity"),
+        ("icm_curiosity", "metacognitive_trigger"),
         ("active_learning", "metacognitive_trigger"),
         ("causal_programmatic", "unified_simulator"),
         ("causal_programmatic", "hybrid_reasoning"),
@@ -15694,6 +15761,12 @@ class AEONDeltaV3(nn.Module):
         
         # ===== META-LEARNING =====
         self.meta_learner = None  # Initialized post-construction via init_meta_learner()
+        # Task2Vec meta-learner: O(1) task adaptation via Fisher Information
+        # embeddings.  Complements MAML-style MetaLearner with zero-shot
+        # task identification through nearest-neighbor lookup in task
+        # embedding space.  Initialized post-construction via
+        # init_task2vec_meta_learner() because it requires self reference.
+        self.task2vec_meta_learner = None
         
         # ===== CAUSAL MODEL =====
         if getattr(config, 'enable_causal_model', False):
@@ -16355,6 +16428,10 @@ class AEONDeltaV3(nn.Module):
         # pipeline in most usage scenarios.
         if config.enable_meta_learning and self.meta_learner is None:
             self.init_meta_learner()
+        
+        # Auto-initialize Task2Vec meta-learner when enabled.
+        if getattr(config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
+            self.init_task2vec_meta_learner()
         
         # Print summary
         self.print_architecture_summary()
@@ -17146,6 +17223,10 @@ class AEONDeltaV3(nn.Module):
             "auto_critic": "auto_critic",
             "mcts_planning": "mcts_planner",
             "active_learning": "active_learning_planner",
+            # ICM curiosity is a sub-module of active_learning_planner;
+            # the icm_curiosity node maps to the same attribute so the
+            # DAG correctly reflects that both are gated together.
+            "icm_curiosity": "active_learning_planner",
             "cognitive_executive": "cognitive_executive",
             "causal_dag_consensus": "causal_dag_consensus",
             "certified_meta_loop": "certified_meta_loop",
@@ -20715,6 +20796,24 @@ class AEONDeltaV3(nn.Module):
                         uncertainty = min(1.0, uncertainty + _al_boost)
                         uncertainty_sources["active_learning_curiosity"] = _al_boost
                         high_uncertainty = uncertainty > 0.5
+                # 5e-ii. ICM curiosity feedback — the forward-model
+                # prediction error from CuriosityDrivenExploration
+                # provides a principled novelty signal.  High ICM reward
+                # indicates the transition dynamics are poorly modelled,
+                # warranting deeper reasoning.
+                _ICM_INTRINSIC_THRESHOLD = 0.3
+                _ICM_UNCERTAINTY_SCALE = 0.05
+                _icm_reward = active_learning_results.get("icm_reward", 0.0)
+                if isinstance(_icm_reward, (int, float)) and math.isfinite(_icm_reward):
+                    if _icm_reward > _ICM_INTRINSIC_THRESHOLD:
+                        _icm_boost = min(
+                            1.0 - uncertainty,
+                            _icm_reward * _ICM_UNCERTAINTY_SCALE,
+                        )
+                        if _icm_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _icm_boost)
+                            uncertainty_sources["icm_curiosity"] = _icm_boost
+                            high_uncertainty = uncertainty > 0.5
             except Exception as _al_err:
                 logger.warning(f"ActiveLearningPlanner error (non-fatal): {_al_err}")
                 self.error_recovery.record_event(
@@ -22205,6 +22304,8 @@ class AEONDeltaV3(nn.Module):
                 # Active learning
                 "active_learning_curiosity": "active_learning_planner",
                 "active_learning_error": "active_learning_planner",
+                # ICM curiosity (sub-module of active_learning_planner)
+                "icm_curiosity": "active_learning_planner",
                 # Cross-validation reconciler
                 "reconciliation_disagreement": "cross_validation",
                 "reconciliation_exhausted": "cross_validation",
@@ -22372,14 +22473,19 @@ class AEONDeltaV3(nn.Module):
                     memory_signal=_pre_loop_memory_signal,
                     converged_state=C_star.detach(),
                     auto_critic_quality=_auto_critic_final_score,
-                    # Binary proxy: the executive either produced a
-                    # valid winner (1.0) or failed / was not enabled
-                    # (0.0 / None).  The module exposes no richer
-                    # health metric; urgency scores are subsystem-
-                    # relative and unsuitable as a global health
-                    # indicator.
+                    # Cognitive executive health derived from the Global
+                    # Workspace Theory MetaMonitor's running statistics.
+                    # When the meta_stats mean is high, the workspace
+                    # winner is aligned with the input state; low values
+                    # indicate the executive is selecting poorly aligned
+                    # hypotheses, warranting deeper meta-cognitive review.
+                    # Falls back to the binary proxy when meta_stats is
+                    # unavailable.
                     executive_health=(
-                        1.0 if executive_results.get("winner") is not None
+                        max(0.0, min(1.0, executive_results.get(
+                            "meta_stats", {},
+                        ).get("mean", 1.0)))
+                        if executive_results.get("winner") is not None
                         else (0.0 if self.cognitive_executive is not None
                               else None)
                     ),
@@ -24286,6 +24392,41 @@ class AEONDeltaV3(nn.Module):
             if torch.is_tensor(_gm_loss) and _gm_loss.requires_grad:
                 grounded_mm_loss = 0.01 * _gm_loss
 
+        # ===== 19. META-RECOVERY POLICY LOSS =====
+        # When MetaRecoveryLearner is enabled and its replay buffer has
+        # enough experiences, sample a mini-batch and compute the
+        # actor-critic loss so the recovery policy actually learns from
+        # accumulated (state, action, reward, next_state) tuples.
+        # Without this, the replay buffer is populated (lines 16856,
+        # 16972, 21936) but never consumed — the learner remains static.
+        meta_recovery_loss = torch.tensor(0.0, device=self.device)
+        _META_RECOVERY_MIN_BUFFER = 8
+        _META_RECOVERY_BATCH_SIZE = 8
+        if (self.meta_recovery is not None
+                and self.training
+                and len(self.meta_recovery.recovery_buffer) >= _META_RECOVERY_MIN_BUFFER):
+            try:
+                _batch = self.meta_recovery.recovery_buffer.sample(
+                    _META_RECOVERY_BATCH_SIZE,
+                )
+                if _batch:
+                    _states = torch.stack([b[0] for b in _batch]).to(self.device)
+                    _actions = torch.tensor(
+                        [b[1] for b in _batch], dtype=torch.long, device=self.device,
+                    )
+                    _rewards = torch.tensor(
+                        [b[2] for b in _batch], dtype=torch.float32, device=self.device,
+                    )
+                    _next_states = torch.stack([b[3] for b in _batch]).to(self.device)
+                    meta_recovery_loss = self.meta_recovery.compute_loss(
+                        _states, _actions, _rewards, _next_states,
+                    )
+                    if not torch.isfinite(meta_recovery_loss):
+                        meta_recovery_loss = torch.tensor(0.0, device=self.device)
+            except Exception as _mr_err:
+                logger.debug("Meta-recovery loss computation failed: %s", _mr_err)
+                meta_recovery_loss = torch.tensor(0.0, device=self.device)
+
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
@@ -24427,6 +24568,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_self_report * self_report_loss +
             self.config.lambda_cycle_consistency * cycle_consistency_loss +
             grounded_mm_loss +
+            getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             reg_loss
         )
         
@@ -24489,6 +24631,7 @@ class AEONDeltaV3(nn.Module):
             'self_report_loss': self_report_loss,
             'cycle_consistency_loss': cycle_consistency_loss,
             'grounded_mm_loss': grounded_mm_loss,
+            'meta_recovery_loss': meta_recovery_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
@@ -24902,6 +25045,7 @@ class AEONDeltaV3(nn.Module):
             'cognitive_executive': getattr(self, 'cognitive_executive', None),
             'causal_context': getattr(self, 'causal_context', None),
             'meta_learner': getattr(self, 'meta_learner', None),
+            'task2vec_meta_learner': getattr(self, 'task2vec_meta_learner', None),
             'multimodal': getattr(self, 'multimodal', None),
             'mcts_planner': getattr(self, 'mcts_planner', None),
             'active_learning_planner': getattr(self, 'active_learning_planner', None),
@@ -25269,6 +25413,7 @@ class AEONDeltaV3(nn.Module):
             'temporal_knowledge_graph',
             'continual_learning', 'grounded_multimodal',
             'encoder_reasoning_norm',
+            'icm_curiosity', 'memory_cross_validation',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
@@ -25794,18 +25939,16 @@ class AEONDeltaV3(nn.Module):
         # or called in the forward pass.  They serve as documented
         # extension points for future integration.
         _extension_point_classes = [
-            ('Task2VecMetaLearner',
-             'Task embedding for zero-shot task adaptation'),
             ('ParallelCognitivePipeline',
              'Concurrent subsystem execution for latency reduction'),
             ('HierarchicalCognitiveArchitecture',
              'Multi-level cognitive organization with executive control'),
             ('LatentDynamicsModel',
              'Latent-space dynamics prediction for planning'),
-            ('CuriosityDrivenExploration',
-             'Intrinsic curiosity for active exploration — '
-             'ActiveLearningPlanner extends MCTSPlanner with curiosity'),
         ]
+        # Previously extension-only classes now integrated:
+        #  - Task2VecMetaLearner: wired via init_task2vec_meta_learner()
+        #  - CuriosityDrivenExploration: wired into ActiveLearningPlanner.icm
         _extension_points: List[Dict[str, str]] = []
         for _ep_cls, _ep_desc in _extension_point_classes:
             _extension_points.append({
@@ -26346,6 +26489,24 @@ class AEONDeltaV3(nn.Module):
                 task_buffer_size=self.config.meta_task_buffer_size,
             )
             logger.info("✅ MetaLearner initialized")
+
+    def init_task2vec_meta_learner(self):
+        """Initialize the Task2VecMetaLearner post-construction.
+
+        Requires ``self`` reference because the learner wraps the model's
+        parameters for Fisher Information computation.  When initialized,
+        the Task2Vec module enables O(1) task adaptation via nearest-
+        neighbor lookup in Fisher-embedding space, complementing the
+        MAML-style MetaLearner's gradient-based inner-loop adaptation.
+        """
+        if getattr(self.config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
+            self.task2vec_meta_learner = Task2VecMetaLearner(
+                model=self,
+                embedding_dim=getattr(self.config, 'task2vec_embedding_dim', 128),
+                similarity_threshold=getattr(self.config, 'task2vec_similarity_threshold', 0.8),
+                ewc_lambda=getattr(self.config, 'task2vec_ewc_lambda', 1000.0),
+            )
+            logger.info("✅ Task2VecMetaLearner initialized")
     
     def print_architecture_summary(self):
         """Print architecture summary and return it as a string."""
@@ -26402,6 +26563,7 @@ class AEONDeltaV3(nn.Module):
             ("CausalProgrammatic", self.causal_programmatic),
             ("NSBridge", self.standalone_ns_bridge),
             ("HierarchicalWM", self.hierarchical_world_model),
+            ("Task2VecMeta", self.task2vec_meta_learner),
         ]
         
         for name, module in modules:
