@@ -7191,6 +7191,16 @@ class ConvergenceMonitor:
                     _bridge_err,
                 )
 
+    def is_diverging(self) -> bool:
+        """Return True if the most recent convergence check indicated divergence."""
+        if len(self.history) < 3:
+            return False
+        ratios = [
+            self.history[i] / max(self.history[i - 1], 1e-12)
+            for i in range(1, len(self.history))
+        ]
+        return float(np.mean(ratios)) >= 1.0
+
 
 class HierarchicalMetaLoop(nn.Module):
     """
@@ -16099,6 +16109,10 @@ class AEONDeltaV3(nn.Module):
         self._cached_decoder_state: Optional[torch.Tensor] = None
         self._cached_integration_state: Optional[torch.Tensor] = None
         self._cached_executive_state: Optional[torch.Tensor] = None
+        # Grounded multimodal output — cached so verify_coherence can
+        # cross-validate perceptual-grounding consistency against
+        # other subsystem outputs.
+        self._cached_grounded_multimodal_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -17112,8 +17126,19 @@ class AEONDeltaV3(nn.Module):
         # DAG and attribution order for root-cause traceability.
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
+        # Register continual_learning stage as a placeholder when active.
+        # Actual enrichment happens in _forward_impl before the reset,
+        # but the module needs to be in the provenance order for
+        # dependency DAG traceability.
+        if self.continual_learning is not None:
+            self.provenance_tracker.record_before("continual_learning", z_in)
+            self.provenance_tracker.record_after("continual_learning", z_in)
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
+        # Register encoder_reasoning_norm stage when active.
+        if self.encoder_reasoning_norm is not None:
+            self.provenance_tracker.record_before("encoder_reasoning_norm", z_in)
+            self.provenance_tracker.record_after("encoder_reasoning_norm", z_in)
         
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
@@ -20968,6 +20993,7 @@ class AEONDeltaV3(nn.Module):
         # to keep perceptual and linguistic representations aligned.
         _grounded_mm_results: Dict[str, Any] = {}
         if self.grounded_multimodal is not None and not fast:
+            self.provenance_tracker.record_before("grounded_multimodal", z_rssm)
             try:
                 # Use the original encoder output as a proxy for vision
                 # features and the current reasoning state as language.
@@ -20986,6 +21012,8 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     f"GroundedMultimodalLearning error (non-fatal): {gm_err}"
                 )
+            self.provenance_tracker.record_after("grounded_multimodal", z_rssm)
+            self._cached_grounded_multimodal_state = z_rssm.detach()
         
         # 8. Integration with residual and normalization
         self.provenance_tracker.record_before("integration", z_rssm)
@@ -21869,6 +21897,15 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_hvae_sel_ucc)
                     and _hvae_sel_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["hierarchical_vae"] = _hvae_sel_ucc
+            # Include grounded multimodal language embedding so the
+            # coherence verifier can cross-validate perceptual grounding
+            # against other subsystem outputs, ensuring that the CLIP-style
+            # contrastive signal remains consistent with the reasoning state.
+            _gm_lang_ucc = _grounded_mm_results.get("language", None)
+            if (_gm_lang_ucc is not None
+                    and torch.is_tensor(_gm_lang_ucc)
+                    and _gm_lang_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["grounded_multimodal"] = _gm_lang_ucc
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -25275,6 +25312,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_decoder_state", "decoder"),
             ("_cached_integration_state", "integration"),
             ("_cached_executive_state", "cognitive_executive"),
+            ("_cached_grounded_multimodal_state", "grounded_multimodal"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
@@ -25314,16 +25352,26 @@ class AEONDeltaV3(nn.Module):
         _integrity_deficit = max(0.0, 1.0 - _integrity_health)
         _effective_deficit = max(coherence_deficit, _integrity_deficit)
         if result["needs_recheck"] and self.metacognitive_trigger is not None:
+            # Incorporate convergence monitor divergence state so that
+            # out-of-band coherence checks can detect sustained divergence
+            # and route it into the metacognitive trigger.
+            _is_diverging = (
+                hasattr(self, 'convergence_monitor')
+                and hasattr(self.convergence_monitor, 'is_diverging')
+                and self.convergence_monitor.is_diverging()
+            )
             trigger_result = self.metacognitive_trigger.evaluate(
                 coherence_deficit=_effective_deficit,
                 uncertainty=max(
                     _effective_deficit,
                     1.0 - result.get("output_reliability", 1.0),
                 ),
+                is_diverging=_is_diverging,
                 world_model_surprise=getattr(self, '_cached_surprise', 0.0),
                 recovery_pressure=self._compute_recovery_pressure()
                     if hasattr(self, '_compute_recovery_pressure') else 0.0,
                 causal_quality=getattr(self, '_cached_causal_quality', 1.0),
+                memory_staleness=getattr(self, '_memory_stale', False),
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
