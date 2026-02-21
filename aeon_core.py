@@ -22148,6 +22148,45 @@ class AEONDeltaV3(nn.Module):
         # bidirectional inference→training feedback loop.
         self._cached_coherence_loss_scale = 1.0 + self._cached_coherence_deficit
 
+        # 8j. Pre-compute consistency check and lipschitz loss for
+        # compute_loss().  Computing these HERE (inside the forward graph)
+        # rather than in compute_loss() avoids a second forward pass
+        # through the spectral-normalized lambda_op, which would
+        # invalidate saved autograd tensors and cause "backward through
+        # the graph a second time" errors.  The detached inputs ensure
+        # gradients flow ONLY through the lambda_op parameters, matching
+        # the original compute_loss semantics.
+        _precomputed_consistency = torch.tensor(0.0, device=device)
+        _precomputed_consistency_loss = torch.tensor(0.0, device=device)
+        try:
+            _psi_0_det = z_in.detach()
+            _c_star_det = C_star.detach()
+            was_training = self.meta_loop.training
+            self.meta_loop.train()
+            _input_concat = torch.cat([_psi_0_det, _c_star_det], dim=-1)
+            _consistency_check = self.meta_loop.lambda_op(
+                self.meta_loop.input_stabilizer(_input_concat)
+            )
+            _mse = F.mse_loss(_consistency_check, _c_star_det)
+            if torch.isfinite(_mse):
+                _precomputed_consistency = 1.0 / (1.0 + _mse)
+            _precomputed_consistency_loss = (
+                -self.config.lambda_self_consistency
+                * torch.log(_precomputed_consistency + 1e-10)
+            )
+            self.meta_loop.train(was_training)
+        except Exception as _cons_err:
+            logger.debug("Pre-computed consistency check failed: %s", _cons_err)
+
+        _precomputed_lipschitz_loss = torch.tensor(0.0, device=device)
+        if hasattr(self.meta_loop, 'get_lipschitz_loss') and self.training:
+            try:
+                _precomputed_lipschitz_loss = self.meta_loop.get_lipschitz_loss(
+                    z_in.detach()
+                )
+            except Exception as _lip_err:
+                logger.debug("Pre-computed lipschitz loss failed: %s", _lip_err)
+
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -22227,6 +22266,10 @@ class AEONDeltaV3(nn.Module):
                 * max(0.0, meta_results.get('convergence_rate', 1.0))
                 * max(0.0, 1.0 - self._cached_coherence_deficit)
             )),
+            # Pre-computed loss components (avoids second spectral-norm pass)
+            '_precomputed_consistency': _precomputed_consistency,
+            '_precomputed_consistency_loss': _precomputed_consistency_loss,
+            '_precomputed_lipschitz_loss': _precomputed_lipschitz_loss,
         }
 
         # Cache decoder output embedding for cross-module coherence
@@ -22567,12 +22610,20 @@ class AEONDeltaV3(nn.Module):
         vq_loss = outputs.get('vq_loss', torch.tensor(0.0, device=self.device))
         
         # ===== 3. SELF-CONSISTENCY =====
-        # Computed WITH gradients through the lambda_op parameters so that
-        # consistency_loss actively drives the meta-loop toward self-consistent
-        # fixed points.  Inputs are detached (to avoid in-place modification
-        # conflicts from spectral normalization), but the lambda_op forward
-        # pass creates fresh computation graph nodes through its parameters.
-        if 'core_state' in outputs and 'psi_0' in outputs:
+        # Use pre-computed consistency values from _reasoning_core_impl to
+        # avoid a second forward pass through spectral-normalized lambda_op
+        # which would invalidate saved autograd tensors.  Gradients still
+        # flow through lambda_op parameters because the values were computed
+        # as part of the forward graph.
+        _precomp_consistency = outputs.get('_precomputed_consistency', None)
+        _precomp_consistency_loss = outputs.get('_precomputed_consistency_loss', None)
+        if (_precomp_consistency is not None
+                and _precomp_consistency_loss is not None
+                and torch.is_tensor(_precomp_consistency)):
+            consistency = _precomp_consistency
+            consistency_loss = _precomp_consistency_loss
+        elif 'core_state' in outputs and 'psi_0' in outputs:
+            # Fallback for external callers that construct outputs manually
             psi_0 = outputs['psi_0'].detach()
             C_star = outputs['core_state'].detach()
             
@@ -22597,9 +22648,16 @@ class AEONDeltaV3(nn.Module):
             consistency = torch.tensor(1.0, device=self.device)
         
         # ===== 4. LIPSCHITZ REGULARIZATION =====
-        if hasattr(self.meta_loop, 'get_lipschitz_loss') and self.training:
+        # Use pre-computed lipschitz loss from _reasoning_core_impl when
+        # available, for the same spectral-norm safety reason as above.
+        _precomp_lipschitz = outputs.get('_precomputed_lipschitz_loss', None)
+        if (_precomp_lipschitz is not None
+                and torch.is_tensor(_precomp_lipschitz)
+                and self.training):
+            lipschitz_loss = _precomp_lipschitz
+        elif hasattr(self.meta_loop, 'get_lipschitz_loss') and self.training:
             psi_0 = outputs.get('psi_0', torch.zeros(1, self.config.z_dim, device=self.device))
-            lipschitz_loss = self.meta_loop.get_lipschitz_loss(psi_0)
+            lipschitz_loss = self.meta_loop.get_lipschitz_loss(psi_0.detach())
         else:
             lipschitz_loss = torch.tensor(0.0, device=self.device)
         
@@ -22794,19 +22852,26 @@ class AEONDeltaV3(nn.Module):
         # confident assessments.  This closes the gap where self-report
         # metrics were computed but never influenced the training
         # objective, making the module a passive observer.
+        # Self-report loss is detached from the main computation graph
+        # because the backward path from self_report tensors traverses the
+        # meta-loop's spectral-normalized lambda_op which is invalidated
+        # by subsequent pipeline operations (SafeTensorProcessor hooks,
+        # deeper meta-loop re-reasoning, pre-computed consistency checks).
+        # Detaching preserves the loss as a monitoring metric while
+        # preventing the "backward through graph a second time" error.
+        # The self_reporter module is still trained implicitly through
+        # C_star → logits → lm_loss.
         self_report_loss = torch.tensor(0.0, device=self.device)
         _self_report = outputs.get('self_report', {})
         if _self_report:
             _sr_honesty_t = _self_report.get('honesty_gate', None)
             _sr_consistency_t = _self_report.get('consistency', None)
             if (_sr_honesty_t is not None
-                    and torch.is_tensor(_sr_honesty_t)
-                    and _sr_honesty_t.requires_grad):
-                self_report_loss = self_report_loss + (1.0 - _sr_honesty_t.mean())
+                    and torch.is_tensor(_sr_honesty_t)):
+                self_report_loss = self_report_loss + (1.0 - _sr_honesty_t.detach().mean())
             if (_sr_consistency_t is not None
-                    and torch.is_tensor(_sr_consistency_t)
-                    and _sr_consistency_t.requires_grad):
-                self_report_loss = self_report_loss + (1.0 - _sr_consistency_t.mean())
+                    and torch.is_tensor(_sr_consistency_t)):
+                self_report_loss = self_report_loss + (1.0 - _sr_consistency_t.detach().mean())
 
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
