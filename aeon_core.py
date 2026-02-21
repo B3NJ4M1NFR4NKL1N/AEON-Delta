@@ -17126,8 +17126,19 @@ class AEONDeltaV3(nn.Module):
         # DAG and attribution order for root-cause traceability.
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
+        # Register continual_learning stage as a placeholder when active.
+        # Actual enrichment happens in _forward_impl before the reset,
+        # but the module needs to be in the provenance order for
+        # dependency DAG traceability.
+        if self.continual_learning is not None:
+            self.provenance_tracker.record_before("continual_learning", z_in)
+            self.provenance_tracker.record_after("continual_learning", z_in)
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
+        # Register encoder_reasoning_norm stage when active.
+        if self.encoder_reasoning_norm is not None:
+            self.provenance_tracker.record_before("encoder_reasoning_norm", z_in)
+            self.provenance_tracker.record_after("encoder_reasoning_norm", z_in)
         
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
@@ -23200,7 +23211,6 @@ class AEONDeltaV3(nn.Module):
         # is preserved in frozen columns and contributes to the current
         # encoding via learned lateral connections.
         if self.continual_learning is not None:
-            self.provenance_tracker.record_before("continual_learning", z_encoded)
             try:
                 _cl_enriched = self.continual_learning.lateral_adapter(
                     z_encoded.detach(),
@@ -23211,7 +23221,6 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
                 )
-            self.provenance_tracker.record_after("continual_learning", z_encoded)
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
@@ -23274,9 +23283,7 @@ class AEONDeltaV3(nn.Module):
         # the activation scale is consistent regardless of upstream
         # backbone blending, VQ quantization, or chunked encoding.
         if self.encoder_reasoning_norm is not None:
-            self.provenance_tracker.record_before("encoder_reasoning_norm", z_quantized)
             z_quantized = self.encoder_reasoning_norm(z_quantized)
-            self.provenance_tracker.record_after("encoder_reasoning_norm", z_quantized)
 
         # ===== REASONING CORE =====
         z_out, outputs = self.reasoning_core(

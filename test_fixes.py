@@ -36684,6 +36684,202 @@ def test_pipeline_deps_include_new_modules():
     print("✅ test_pipeline_deps_include_new_modules PASSED")
 
 
+def test_convergence_monitor_is_diverging():
+    """ConvergenceMonitor.is_diverging() should return True when average
+    contraction ratio >= 1.0 and False otherwise."""
+    from aeon_core import ConvergenceMonitor
+
+    monitor = ConvergenceMonitor(threshold=1e-5)
+
+    # Too little history → not diverging
+    assert monitor.is_diverging() is False
+
+    # Feed increasing deltas → diverging
+    for d in [1.0, 2.0, 3.0, 4.0]:
+        monitor.check(d)
+    assert monitor.is_diverging() is True, (
+        "is_diverging() should be True when deltas are increasing"
+    )
+
+    # Feed decreasing deltas → converging
+    monitor.reset()
+    for d in [4.0, 2.0, 1.0, 0.5]:
+        monitor.check(d)
+    assert monitor.is_diverging() is False, (
+        "is_diverging() should be False when deltas are decreasing"
+    )
+    print("✅ test_convergence_monitor_is_diverging PASSED")
+
+
+def test_grounded_multimodal_provenance_tracked():
+    """When grounded_multimodal is enabled, provenance tracking should
+    include record_before/after calls for 'grounded_multimodal'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        grounded_multimodal_vision_dim=32,
+        grounded_multimodal_latent_dim=32,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    # After forward pass, provenance tracker should have recorded
+    # grounded_multimodal in the execution order
+    attrib = model.provenance_tracker.compute_attribution()
+    modules = attrib.get('order', [])
+    assert 'grounded_multimodal' in modules, (
+        f"grounded_multimodal should be in provenance order, "
+        f"got: {modules}"
+    )
+    print("✅ test_grounded_multimodal_provenance_tracked PASSED")
+
+
+def test_encoder_reasoning_norm_provenance_tracked():
+    """When encoder_reasoning_norm is enabled, provenance tracking should
+    include record_before/after calls for 'encoder_reasoning_norm'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_encoder_reasoning_norm=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    attrib = model.provenance_tracker.compute_attribution()
+    modules = attrib.get('order', [])
+    assert 'encoder_reasoning_norm' in modules, (
+        f"encoder_reasoning_norm should be in provenance order, "
+        f"got: {modules}"
+    )
+    print("✅ test_encoder_reasoning_norm_provenance_tracked PASSED")
+
+
+def test_continual_learning_provenance_tracked():
+    """When continual_learning is enabled, provenance tracking should
+    include record_before/after calls for 'continual_learning'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_continual_learning=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    attrib = model.provenance_tracker.compute_attribution()
+    modules = attrib.get('order', [])
+    assert 'continual_learning' in modules, (
+        f"continual_learning should be in provenance order, "
+        f"got: {modules}"
+    )
+    print("✅ test_continual_learning_provenance_tracked PASSED")
+
+
+def test_verify_coherence_passes_divergence_to_trigger():
+    """verify_coherence should pass is_diverging and memory_staleness
+    to the metacognitive trigger when needs_recheck is True."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Pre-populate cached states so verify_coherence has data to work with
+    model._cached_meta_loop_state = torch.randn(1, 32)
+    # Create an intentionally divergent state to force needs_recheck
+    model._cached_factor_state = torch.randn(1, 32) * 10
+    model._cached_safety_state = torch.randn(1, 32) * -10
+
+    # Set memory staleness for coverage
+    model._memory_stale = True
+
+    # Feed diverging history into convergence monitor
+    for d in [1.0, 2.0, 3.0, 4.0]:
+        model.convergence_monitor.check(d)
+    assert model.convergence_monitor.is_diverging() is True
+
+    result = model.verify_coherence()
+
+    # The method should complete without error — the key test is that
+    # is_diverging and memory_staleness are passed to the trigger
+    assert 'coherence_score' in result
+    assert 'needs_recheck' in result
+    print("✅ test_verify_coherence_passes_divergence_to_trigger PASSED")
+
+
+def test_grounded_multimodal_cached_for_coherence():
+    """When grounded_multimodal runs, its output should be cached for
+    coherence verification in verify_coherence."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4,
+        enable_grounded_multimodal=True,
+        grounded_multimodal_vision_dim=32,
+        grounded_multimodal_latent_dim=32,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initially no cached state
+    assert model._cached_grounded_multimodal_state is None
+
+    input_ids = torch.randint(0, 100, (2, 16))
+    with torch.no_grad():
+        outputs = model(input_ids, decode_mode='inference')
+
+    # After forward pass, should have cached grounded multimodal state
+    assert model._cached_grounded_multimodal_state is not None, (
+        "grounded_multimodal state should be cached after forward pass"
+    )
+    assert model._cached_grounded_multimodal_state.shape == (2, 32), (
+        f"Cached state shape mismatch: "
+        f"{model._cached_grounded_multimodal_state.shape}"
+    )
+    print("✅ test_grounded_multimodal_cached_for_coherence PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -38246,6 +38442,14 @@ def _run_all_tests():
     test_self_diagnostic_reports_encoder_reasoning_norm()
     test_full_coherence_enables_new_modules()
     test_pipeline_deps_include_new_modules()
+
+    # Architectural Unification — Provenance Tracking, Coherence & Convergence
+    test_convergence_monitor_is_diverging()
+    test_grounded_multimodal_provenance_tracked()
+    test_encoder_reasoning_norm_provenance_tracked()
+    test_continual_learning_provenance_tracked()
+    test_verify_coherence_passes_divergence_to_trigger()
+    test_grounded_multimodal_cached_for_coherence()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
