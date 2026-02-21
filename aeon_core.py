@@ -16382,18 +16382,20 @@ class AEONDeltaV3(nn.Module):
                     # Record low trust in error evolution so the system
                     # learns from episodes where external data was
                     # unreliable, enabling adaptive recovery strategies.
-                    if (self._last_trust_score < 0.5
+                    _LOW_TRUST_THRESHOLD = 0.5
+                    _LOW_TRUST_SUCCESS_THRESHOLD = 0.3
+                    if (self._last_trust_score < _LOW_TRUST_THRESHOLD
                             and self.error_evolution is not None):
                         self.error_evolution.record_episode(
                             error_class="low_memory_trust",
                             strategy_used="trust_dampening",
-                            success=self._last_trust_score > 0.3,
+                            success=self._last_trust_score > _LOW_TRUST_SUCCESS_THRESHOLD,
                             metadata={
                                 "mean_trust": self._last_trust_score,
                                 "verification_weight": self._last_verification_weight,
                             },
                         )
-                except Exception as trust_err:
+                except (RuntimeError, ValueError, TypeError) as trust_err:
                     logger.warning(
                         "TrustScorer failed (non-fatal): %s", trust_err,
                     )
@@ -17669,6 +17671,8 @@ class AEONDeltaV3(nn.Module):
         # were active, enabling root-cause traceability through the
         # slot decomposition stage.
         if self.causal_context is not None:
+            # Mean over slots (dim=1) then batch (dim=0) to produce a
+            # single [hidden_dim] embedding suitable for the context store.
             self.causal_context.add(
                 source="slot_binding",
                 embedding=slot_assignments.mean(dim=1).mean(dim=0).detach(),
@@ -17686,6 +17690,8 @@ class AEONDeltaV3(nn.Module):
         # downstream cross-pass coherence checks and root-cause
         # analysis can access the extracted causal factors.
         if self.causal_context is not None:
+            # Mean over batch (dim=0) to produce a single [hidden_dim]
+            # embedding for the context store.
             self.causal_context.add(
                 source="factor_extraction",
                 embedding=embedded_factors.mean(dim=0).detach(),
@@ -18139,7 +18145,7 @@ class AEONDeltaV3(nn.Module):
                 coherence_states["causal_prior"] = self._cached_causal_state
             try:
                 coherence_results = self.module_coherence(coherence_states)
-            except Exception as _coh_err:
+            except (RuntimeError, ValueError, TypeError) as _coh_err:
                 logger.warning(
                     "Module coherence verification failed (non-fatal): %s",
                     _coh_err,
@@ -18152,9 +18158,9 @@ class AEONDeltaV3(nn.Module):
                 # Escalate uncertainty so that metacognitive cycles
                 # activate when the coherence verifier itself fails,
                 # preventing silent degradation of the verification loop.
-                _coh_err_boost = 0.15
-                uncertainty = min(1.0, uncertainty + _coh_err_boost)
-                uncertainty_sources["coherence_verifier_error"] = _coh_err_boost
+                _COHERENCE_ERROR_UNCERTAINTY_BOOST = 0.15
+                uncertainty = min(1.0, uncertainty + _COHERENCE_ERROR_UNCERTAINTY_BOOST)
+                uncertainty_sources["coherence_verifier_error"] = _COHERENCE_ERROR_UNCERTAINTY_BOOST
                 high_uncertainty = uncertainty > 0.5
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
@@ -20174,7 +20180,8 @@ class AEONDeltaV3(nn.Module):
                 _unified_sim_should_skip,
             ]
             _num_skipped = sum(1 for s in _gated_skips if s)
-            if _num_skipped >= 2:
+            _MIN_SKIPPED_FOR_COVERAGE = 2
+            if _num_skipped >= _MIN_SKIPPED_FOR_COVERAGE:
                 _COVERAGE_UNCERTAINTY_SCALE = 0.05
                 _coverage_boost = _num_skipped * _COVERAGE_UNCERTAINTY_SCALE
                 uncertainty = min(1.0, uncertainty + _coverage_boost)
