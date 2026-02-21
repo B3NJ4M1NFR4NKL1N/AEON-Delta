@@ -23322,7 +23322,9 @@ class AEONDeltaV3(nn.Module):
                         'uncertainty_loss_scale': _uncertainty_loss_scale,
                     }),
                 )
-            _coh_val = float(coherence_loss.detach().item()) if torch.is_tensor(coherence_loss) and torch.isfinite(coherence_loss) else 0.0
+            _coh_val = 0.0
+            if torch.is_tensor(coherence_loss) and torch.isfinite(coherence_loss):
+                _coh_val = float(coherence_loss.detach().item())
             if _coh_val > 0.5:
                 self.error_evolution.record_episode(
                     error_class='high_coherence_loss',
@@ -23618,8 +23620,8 @@ class AEONDeltaV3(nn.Module):
                 success=False,
                 metadata={
                     'total_loss': _total_val,
-                    'lm_loss': float(loss_dict.get('lm_loss', torch.tensor(0.0)).detach().item()),
-                    'coherence_loss': float(loss_dict.get('coherence_loss', torch.tensor(0.0)).detach().item()),
+                    'lm_loss': float(loss_dict['lm_loss'].detach().item()) if torch.is_tensor(loss_dict.get('lm_loss')) else 0.0,
+                    'coherence_loss': float(loss_dict['coherence_loss'].detach().item()) if torch.is_tensor(loss_dict.get('coherence_loss')) else 0.0,
                 },
             )
         _ucc_loss = loss_dict.get('ucc_loss', None)
