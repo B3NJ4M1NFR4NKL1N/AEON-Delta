@@ -25935,6 +25935,30 @@ class AEONDeltaV3(nn.Module):
         if result["output_reliability"] < self.config.output_reliability_recheck_threshold:
             result["needs_recheck"] = True
 
+        # --- Convergence history summary ---
+        # Include recent convergence trajectory so out-of-band callers can
+        # assess whether the system is trending toward or away from
+        # convergence, complementing the snapshot coherence score with a
+        # temporal perspective.  Placed before module coherence checks so
+        # that convergence info is always available even when the coherence
+        # verifier is disabled or returns early.
+        _conv_history = list(self.convergence_monitor.history)
+        if _conv_history:
+            result["convergence_trend"] = {
+                "recent_norms": _conv_history[-5:],
+                "is_diverging": self.convergence_monitor.is_diverging(),
+                "history_length": len(_conv_history),
+            }
+
+        # --- Causal DAG reconciled adjacency ---
+        # When multiple causal models are active and a reconciled adjacency
+        # matrix has been cached, include the consensus score so that out-
+        # of-band coherence checks can detect structural causal divergence
+        # that may not surface in pairwise cosine similarity.
+        result["reconciled_adjacency_available"] = (
+            self._cached_reconciled_adjacency is not None
+        )
+
         # --- Module coherence verification ---
         if self.module_coherence is None:
             return result
@@ -26145,29 +26169,6 @@ class AEONDeltaV3(nn.Module):
             _most_uncertain = _dir_unc_summary.get("most_uncertain_module")
             if _most_uncertain is not None:
                 result["most_uncertain_module"] = _most_uncertain
-
-        # --- Convergence history summary ---
-        # Include recent convergence trajectory so out-of-band callers can
-        # assess whether the system is trending toward or away from
-        # convergence, complementing the snapshot coherence score with a
-        # temporal perspective.
-        _conv_history = list(self.convergence_monitor.history)
-        if _conv_history:
-            result["convergence_trend"] = {
-                "recent_norms": _conv_history[-5:],
-                "is_diverging": self.convergence_monitor.is_diverging(),
-                "history_length": len(_conv_history),
-            }
-
-        # --- Causal DAG reconciled adjacency ---
-        # When multiple causal models are active and a reconciled adjacency
-        # matrix has been cached, include the consensus score so that out-
-        # of-band coherence checks can detect structural causal divergence
-        # that may not surface in pairwise cosine similarity.
-        if self._cached_reconciled_adjacency is not None:
-            result["reconciled_adjacency_available"] = True
-        else:
-            result["reconciled_adjacency_available"] = False
 
         return result
 
