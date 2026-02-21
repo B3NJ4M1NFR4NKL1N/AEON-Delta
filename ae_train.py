@@ -4461,7 +4461,7 @@ def main(
     # adaptation, fulfilling the requirement that uncertainty triggers
     # a meta-cognitive cycle.
     _inference_adjustments = bridge_inference_insights_to_training(
-        inference_error_evolution=trainer_B._error_evolution,
+        inference_error_evolution=getattr(trainer_B, '_error_evolution', None),
         trainer=trainer_B,
     )
     if _inference_adjustments:
