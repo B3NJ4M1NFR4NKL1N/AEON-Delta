@@ -36107,6 +36107,9 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "temporal_knowledge_graph": "temporal_knowledge_graph",
         "complexity_estimator": "complexity_estimator",
         "unified_cognitive_cycle": "unified_cognitive_cycle",
+        "continual_learning": "continual_learning",
+        "grounded_multimodal": "grounded_multimodal",
+        "encoder_reasoning_norm": "encoder_reasoning_norm",
     }
 
     # Verify every optional node has a known attribute mapping
