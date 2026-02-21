@@ -21744,14 +21744,15 @@ class AEONDeltaV3(nn.Module):
                     _retry_validation = self.state_validator.validate(
                         z_out, factors=factors,
                     )
-                    integration_healthy = (
-                        _retry_validation["valid"] and output_valid
-                    )
+                    integration_healthy = _retry_validation["valid"] and output_valid
                     self.integrity_monitor.record_health(
                         "integration",
                         1.0 if integration_healthy else 0.0,
-                        {"retry": True, "state_valid": _retry_validation["valid"],
-                         "output_valid": output_valid},
+                        {
+                            "retry": True,
+                            "state_valid": _retry_validation["valid"],
+                            "output_valid": output_valid,
+                        },
                     )
                 self.provenance_tracker.record_after(
                     "integration_retry_critic", z_out,
