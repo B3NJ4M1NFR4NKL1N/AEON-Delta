@@ -15185,6 +15185,9 @@ class AEONDeltaV3(nn.Module):
         # loss-landscape instability is both traceable and actionable.
         ("factor_extraction", "topology_analysis"),
         ("topology_analysis", "safety"),
+        # Topology catastrophe triggers auto-critic for immediate
+        # correction of the destabilized reasoning state.
+        ("topology_analysis", "auto_critic"),
         # Diversity collapse feeds into causal trace for root-cause
         # traceability of thought collapse events.
         ("factor_extraction", "diversity_analysis"),
@@ -16407,6 +16410,20 @@ class AEONDeltaV3(nn.Module):
                                 "verification_weight": self._last_verification_weight,
                             },
                         )
+                    # Degrade causal quality when memory trust is low so
+                    # that downstream causal conclusions built on unreliable
+                    # retrieved context are marked as lower quality.  This
+                    # closes the gap where trust affects memory contribution
+                    # but not causal quality assessment.
+                    if self._last_trust_score < _LOW_TRUST_THRESHOLD:
+                        _trust_penalty = (
+                            (_LOW_TRUST_THRESHOLD - self._last_trust_score)
+                            * 0.2
+                        )
+                        self._cached_causal_quality = max(
+                            0.0,
+                            self._cached_causal_quality - _trust_penalty,
+                        )
                 except (RuntimeError, ValueError, TypeError) as trust_err:
                     logger.warning(
                         "TrustScorer failed (non-fatal): %s", trust_err,
@@ -16932,9 +16949,13 @@ class AEONDeltaV3(nn.Module):
         # When complexity is low, expensive subsystems are skipped.
         complexity_info: Dict[str, Any] = {}
         _complexity_gates: Optional[torch.Tensor] = None
+        _complexity_score_val: Optional[float] = None
         if self.complexity_estimator is not None and not fast:
             complexity_info = self.complexity_estimator(z_in)
             _complexity_gates = complexity_info.get('subsystem_gates', None)
+            _complexity_score_val = float(
+                complexity_info['complexity_score'].mean().item()
+            )
             # Validate complexity gates — NaN/Inf gates would silently
             # degrade all gated subsystems.  Replace non-finite gates with
             # ones (fully enabled) so subsystems run rather than fail.
@@ -16942,7 +16963,7 @@ class AEONDeltaV3(nn.Module):
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
             logger.debug(
-                f"Complexity: {complexity_info['complexity_score'].mean().item():.3f}"
+                f"Complexity: {_complexity_score_val:.3f}"
             )
         
         # 0b. Record causal trace for input
@@ -18466,6 +18487,34 @@ class AEONDeltaV3(nn.Module):
                             "safety_tightened": self.safety_system is not None,
                         },
                     )
+                # 5a-iv-topo-critic. Invoke auto-critic for immediate
+                # correction when a topology catastrophe is detected.
+                # Uncertainty escalation alone defers correction to the
+                # metacognitive cycle; direct auto-critic invocation
+                # provides immediate self-correction of the destabilized
+                # state, closing the gap between catastrophe detection
+                # and active correction.
+                if self.auto_critic is not None:
+                    try:
+                        _topo_critic = self.auto_critic(C_star)
+                        _topo_revised = _topo_critic.get("candidate", None)
+                        if (_topo_revised is not None
+                                and torch.isfinite(_topo_revised).all()
+                                and _topo_revised.shape == C_star.shape):
+                            C_star = _topo_revised
+                        self.audit_log.record(
+                            "auto_critic", "topology_catastrophe_revision", {
+                                "revised": _topo_revised is not None,
+                                "critic_score": _topo_critic.get(
+                                    "final_score", 0.0,
+                                ),
+                            },
+                        )
+                    except Exception as _topo_ac_err:
+                        logger.debug(
+                            "Topology-catastrophe auto-critic failed "
+                            "(non-fatal): %s", _topo_ac_err,
+                        )
             # Adapt signal weights from error evolution history before
             # evaluating, so historically problematic failure modes
             # increase trigger sensitivity.
@@ -18763,7 +18812,11 @@ class AEONDeltaV3(nn.Module):
             self.causal_trace.record(
                 "world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
-                metadata={"gate_index": 0, "high_uncertainty": high_uncertainty},
+                metadata={
+                    "gate_index": 0,
+                    "high_uncertainty": high_uncertainty,
+                    "complexity_score": _complexity_score_val,
+                },
             )
         if self.world_model is not None and not fast and not _world_model_should_skip:
             try:
@@ -19086,7 +19139,11 @@ class AEONDeltaV3(nn.Module):
             self.causal_trace.record(
                 "mcts_planning", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
-                metadata={"gate_index": 1, "planning": planning},
+                metadata={
+                    "gate_index": 1,
+                    "planning": planning,
+                    "complexity_score": _complexity_score_val,
+                },
             )
         
         # 5c. Hierarchical memory — retrieve then store
@@ -19445,7 +19502,11 @@ class AEONDeltaV3(nn.Module):
             self.causal_trace.record(
                 "causal_world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
-                metadata={"gate_index": 2, "high_uncertainty": high_uncertainty},
+                metadata={
+                    "gate_index": 2,
+                    "high_uncertainty": high_uncertainty,
+                    "complexity_score": _complexity_score_val,
+                },
             )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             self.provenance_tracker.record_before("causal_world_model", C_star)
@@ -19807,9 +19868,38 @@ class AEONDeltaV3(nn.Module):
                         self.provenance_tracker.record_after(
                             "auto_critic_dag", C_star,
                         )
+                        # 5d1c-dag2a. Re-verify consensus after revision —
+                        # re-evaluate the DAG consensus on the revised
+                        # state to confirm the auto-critic actually
+                        # improved structural agreement.  Without this,
+                        # the revision is accepted blindly and may still
+                        # violate the constraints that triggered it.
+                        _post_revision_consensus = _consensus_score
+                        if _dag_revised is not None and _adj_matrices:
+                            try:
+                                _post_dag = self.causal_dag_consensus.evaluate(
+                                    _adj_matrices,
+                                )
+                                _post_revision_consensus = _post_dag[
+                                    "consensus_score"
+                                ]
+                                if _post_revision_consensus < _consensus_score:
+                                    uncertainty = min(
+                                        1.0, uncertainty + 0.05,
+                                    )
+                                    uncertainty_sources[
+                                        "dag_revision_degraded"
+                                    ] = 0.05
+                                    high_uncertainty = uncertainty > 0.5
+                            except Exception:
+                                pass
                         self.audit_log.record(
                             "auto_critic", "dag_disagreement_revision", {
                                 "consensus_score": _consensus_score,
+                                "post_revision_consensus": _post_revision_consensus,
+                                "revision_improved": (
+                                    _post_revision_consensus > _consensus_score
+                                ),
                                 "revised": _dag_revised is not None,
                                 "critic_score": _dag_critic.get(
                                     "final_score", 0.0,
@@ -20111,7 +20201,10 @@ class AEONDeltaV3(nn.Module):
             self.causal_trace.record(
                 "unified_simulator", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
-                metadata={"gate_index": 3},
+                metadata={
+                    "gate_index": 3,
+                    "complexity_score": _complexity_score_val,
+                },
             )
         if self.unified_simulator is not None and not fast and not _unified_sim_should_skip:
             self.provenance_tracker.record_before("unified_simulator", C_star)
@@ -20870,6 +20963,37 @@ class AEONDeltaV3(nn.Module):
                                 "trigger": "ns_violation",
                             }),
                         )
+                # 8b3a. Post-auto-critic NS re-verification — re-check
+                # NS consistency on the revised z_out to confirm the
+                # auto-critic actually resolved the violations.  Without
+                # this, the revision is accepted without verifying it
+                # still satisfies neuro-symbolic constraints.
+                if (_any_auto_critic_revised
+                        and self.ns_consistency_checker is not None):
+                    try:
+                        _post_ns = self.ns_consistency_checker(z_out, rules_proxy)
+                        _post_violations = _post_ns[
+                            "num_violations"
+                        ].sum().item()
+                        if _post_violations > 0:
+                            _post_ns_boost = min(
+                                1.0 - uncertainty, 0.1,
+                            )
+                            uncertainty = min(
+                                1.0, uncertainty + _post_ns_boost,
+                            )
+                            uncertainty_sources[
+                                "ns_post_revision_violations"
+                            ] = _post_ns_boost
+                            high_uncertainty = uncertainty > 0.5
+                        self.audit_log.record(
+                            "ns_consistency", "post_revision_check", {
+                                "post_violations": int(_post_violations),
+                                "revision_resolved": _post_violations == 0,
+                            },
+                        )
+                    except Exception:
+                        pass
                 # 8b2b. NS violation → feedback bus propagation — escalate
                 # the cached coherence deficit so that the *next* forward
                 # pass's meta-loop is conditioned on symbolic consistency
@@ -21052,6 +21176,11 @@ class AEONDeltaV3(nn.Module):
                 _ac_post_states["world_model"] = _ac_wm
             if len(_ac_post_states) >= 2:
                 _ac_post_coh = self.module_coherence(_ac_post_states)
+                # Identify the weakest subsystem pair for root-cause
+                # attribution of the coherence deficit.
+                _ac_weakest_pair = ModuleCoherenceVerifier.get_weakest_pair(
+                    _ac_post_coh.get("pairwise", {}),
+                )
                 if _ac_post_coh.get("needs_recheck", False):
                     _ac_coh_score = float(
                         _ac_post_coh["coherence_score"].mean().item()
@@ -21075,14 +21204,24 @@ class AEONDeltaV3(nn.Module):
                     # Record post-auto-critic coherence deficit in error
                     # evolution so the system can learn from repeated
                     # auto-critic revisions that still fail coherence.
+                    # Include the weakest pair so root-cause analysis can
+                    # trace the deficit to the specific module interaction.
+                    _ac_deficit_meta: Dict[str, Any] = {
+                        "coherence_deficit": _ac_coh_deficit,
+                    }
+                    if _ac_weakest_pair is not None:
+                        _ac_deficit_meta["weakest_pair"] = (
+                            _ac_weakest_pair["modules"]
+                        )
+                        _ac_deficit_meta["weakest_similarity"] = (
+                            _ac_weakest_pair["similarity"]
+                        )
                     if self.error_evolution is not None:
                         self.error_evolution.record_episode(
                             error_class="post_auto_critic_coherence_deficit",
                             strategy_used="auto_critic",
                             success=False,
-                            metadata={
-                                "coherence_deficit": _ac_coh_deficit,
-                            },
+                            metadata=_ac_deficit_meta,
                         )
                 self.audit_log.record(
                     "module_coherence_post_auto_critic", "verified", {
@@ -21091,6 +21230,10 @@ class AEONDeltaV3(nn.Module):
                         ),
                         "needs_recheck": _ac_post_coh.get(
                             "needs_recheck", False,
+                        ),
+                        "weakest_pair": (
+                            _ac_weakest_pair["modules"]
+                            if _ac_weakest_pair is not None else None
                         ),
                     },
                 )
