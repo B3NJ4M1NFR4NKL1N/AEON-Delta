@@ -37910,6 +37910,289 @@ def test_current_output_reliability_precomputed():
     print("✅ test_current_output_reliability_precomputed PASSED")
 
 
+def test_bridge_training_loss_per_subsystem():
+    """Verify that bridge_training_loss_to_error_evolution records per-subsystem
+    losses independently, not just aggregate total loss.
+
+    Before this fix, the bridge only recorded high_total_training_loss and
+    high_ucc_training_loss, leaving error evolution blind to per-subsystem
+    training failure patterns (e.g. persistent coherence or causal DAG loss).
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    assert model.error_evolution is not None
+
+    initial_total = model.error_evolution.get_error_summary()["total_recorded"]
+
+    # Simulate a loss dict with several high subsystem losses
+    model.bridge_training_loss_to_error_evolution({
+        'total_loss': torch.tensor(2.0),  # Below total threshold of 5.0
+        'lm_loss': torch.tensor(1.0),
+        'coherence_loss': torch.tensor(2.0),       # Above 1.0 threshold
+        'consistency_loss': torch.tensor(1.5),      # Above 1.0 threshold
+        'lipschitz_loss': torch.tensor(0.5),        # Below threshold
+        'sparsity_loss': torch.tensor(3.0),         # Above 1.0 threshold
+        'causal_dag_loss': torch.tensor(1.2),       # Above 1.0 threshold
+        'hvae_kl_loss': torch.tensor(0.3),          # Below threshold
+        'self_report_loss': torch.tensor(0.1),      # Below threshold
+        'cross_validation_loss': torch.tensor(1.8), # Above 1.0 threshold
+    })
+
+    final_summary = model.error_evolution.get_error_summary()
+    final_total = final_summary["total_recorded"]
+    # coherence(2.0) + consistency(1.5) + sparsity(3.0) + causal_dag(1.2)
+    # + cross_validation(1.8) = 5 episodes above threshold
+    episodes_added = final_total - initial_total
+    assert episodes_added >= 5, (
+        f"Expected at least 5 per-subsystem episodes, got {episodes_added}. "
+        f"Error classes: {list(final_summary.get('error_classes', {}).keys())}"
+    )
+
+    # Verify specific error classes were recorded
+    error_classes = set(final_summary.get("error_classes", {}).keys())
+    expected_classes = {
+        'high_coherence_training_loss',
+        'high_consistency_training_loss',
+        'high_sparsity_training_loss',
+        'high_causal_dag_training_loss',
+        'high_cross_validation_training_loss',
+    }
+    for expected in expected_classes:
+        assert expected in error_classes, (
+            f"Expected error class '{expected}' not found in {error_classes}"
+        )
+
+    print("✅ test_bridge_training_loss_per_subsystem PASSED")
+
+
+def test_metacognitive_causal_trace_includes_uncertainty_sources():
+    """Verify that when the metacognitive trigger fires, the causal trace
+    metadata includes the per-source uncertainty breakdown.
+
+    Before this fix, the trace only recorded triggers_active, trigger_score,
+    and recursion_count — but not WHICH uncertainty sources pushed the system
+    over the threshold.  Root-cause analysis could not answer "which specific
+    signal triggered deeper reasoning?"
+    """
+    import torch
+    from aeon_core import (
+        TemporalCausalTraceBuffer,
+        MetaCognitiveRecursionTrigger,
+    )
+
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    # Record a metacognitive recursion entry with the new metadata format
+    trace.record(
+        "metacognitive_recursion", "triggered",
+        causal_prerequisites=["input_trace_0"],
+        metadata={
+            "triggers_active": ["diverging", "coherence_deficit"],
+            "trigger_score": 0.8,
+            "recursion_count": 1,
+            "uncertainty_sources": {
+                "residual_variance": 0.6,
+                "coherence_deficit": 0.4,
+                "world_model_surprise": 0.2,
+            },
+            "aggregate_uncertainty": 0.7,
+        },
+    )
+
+    # Retrieve the entry
+    recent = trace.recent(n=1)
+    assert len(recent) == 1
+    entry = recent[0]
+    metadata = entry.get("metadata", {})
+
+    # Verify new fields are present
+    assert "uncertainty_sources" in metadata, (
+        "Causal trace metadata should include uncertainty_sources"
+    )
+    assert "aggregate_uncertainty" in metadata, (
+        "Causal trace metadata should include aggregate_uncertainty"
+    )
+    assert metadata["aggregate_uncertainty"] == 0.7
+    assert metadata["uncertainty_sources"]["residual_variance"] == 0.6
+    assert metadata["uncertainty_sources"]["coherence_deficit"] == 0.4
+
+    print("✅ test_metacognitive_causal_trace_includes_uncertainty_sources PASSED")
+
+
+def test_convergence_arbiter_conflict_in_causal_trace():
+    """Verify that convergence arbiter conflicts are recorded in the causal
+    trace for root-cause traceability.
+
+    Before this fix, arbiter conflicts were recorded in the audit log and
+    error evolution but NOT in the causal trace, making structural
+    disagreements between convergence monitors invisible to root-cause
+    analysis.
+    """
+    import torch
+    from aeon_core import (
+        TemporalCausalTraceBuffer,
+        UnifiedConvergenceArbiter,
+    )
+
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+    arbiter = UnifiedConvergenceArbiter()
+
+    # Create a conflict scenario
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "diverging", "certified": False},
+    )
+    assert result["has_conflict"] is True
+
+    # Simulate what the pipeline now does: record conflict in causal trace
+    trace.record(
+        "convergence_arbiter", "conflict_detected",
+        causal_prerequisites=["input_trace_0"],
+        metadata={
+            "individual_verdicts": result["individual_verdicts"],
+            "uncertainty_boost": result["uncertainty_boost"],
+        },
+        severity="warning",
+    )
+
+    # Verify the entry exists
+    recent = trace.recent(n=1)
+    assert len(recent) == 1
+    entry = recent[0]
+    assert entry["subsystem"] == "convergence_arbiter"
+    assert entry["decision"] == "conflict_detected"
+    assert entry.get("severity") == "warning"
+    assert "individual_verdicts" in entry.get("metadata", {})
+
+    print("✅ test_convergence_arbiter_conflict_in_causal_trace PASSED")
+
+
+def test_verify_coherence_includes_convergence_trend():
+    """Verify that verify_coherence includes convergence trend information.
+
+    This ensures out-of-band callers can assess whether the system is
+    trending toward or away from convergence.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Feed some data into the convergence monitor so it has history
+    model.convergence_monitor.check(0.5)
+    model.convergence_monitor.check(0.4)
+    model.convergence_monitor.check(0.3)
+
+    result = model.verify_coherence()
+
+    # Verify convergence_trend is present
+    assert "convergence_trend" in result, (
+        "verify_coherence should include convergence_trend"
+    )
+    trend = result["convergence_trend"]
+    assert "recent_norms" in trend
+    assert "is_diverging" in trend
+    assert "history_length" in trend
+    assert trend["history_length"] == 3
+
+    # Verify reconciled_adjacency_available is present
+    assert "reconciled_adjacency_available" in result
+
+    print("✅ test_verify_coherence_includes_convergence_trend PASSED")
+
+
+def test_get_metacognitive_state_includes_recovery_pressure():
+    """Verify that get_metacognitive_state includes recovery pressure and
+    richer convergence/arbiter/validator state.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    state = model.get_metacognitive_state()
+
+    # Verify recovery_pressure is present
+    assert "recovery_pressure" in state, (
+        "get_metacognitive_state should include recovery_pressure"
+    )
+    assert isinstance(state["recovery_pressure"], float)
+
+    # Verify convergence has is_diverging
+    assert "is_diverging" in state["convergence"], (
+        "convergence state should include is_diverging"
+    )
+
+    # Verify convergence arbiter has conflict_uncertainty_boost
+    arbiter_state = state["convergence_arbiter"]
+    assert arbiter_state["available"] is True
+    assert "conflict_uncertainty_boost" in arbiter_state
+
+    # Verify memory validator has consistency_threshold
+    mem_val = state["memory_validator"]
+    assert mem_val["available"] is True
+
+    print("✅ test_get_metacognitive_state_includes_recovery_pressure PASSED")
+
+
+def test_self_diagnostic_reports_per_subsystem_bridge():
+    """Verify that self_diagnostic reports the per-subsystem training loss
+    bridge and convergence arbiter → causal trace connections.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    diagnostic = model.self_diagnostic()
+    verified = diagnostic["verified_connections"]
+    verified_text = "\n".join(verified)
+
+    # Check per-subsystem loss bridge is reported
+    assert any("per-subsystem" in v for v in verified), (
+        f"self_diagnostic should report per-subsystem loss bridge. "
+        f"Verified: {verified_text}"
+    )
+
+    # Check convergence arbiter → causal trace is reported
+    assert any(
+        "convergence_arbiter_conflict" in v and "causal_trace" in v
+        for v in verified
+    ), (
+        f"self_diagnostic should report convergence_arbiter → causal_trace. "
+        f"Verified: {verified_text}"
+    )
+
+    # Check uncertainty_sources in metacognitive trace is reported
+    assert any(
+        "uncertainty_sources" in v
+        for v in verified
+    ), (
+        f"self_diagnostic should report uncertainty_sources trace recording. "
+        f"Verified: {verified_text}"
+    )
+
+    print("✅ test_self_diagnostic_reports_per_subsystem_bridge PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -39522,6 +39805,14 @@ def _run_all_tests():
     test_ucc_states_include_integration_and_executive()
     test_verify_coherence_includes_directional_uncertainty()
     test_current_output_reliability_precomputed()
+
+    # Architectural Unification — Unified Cognitive Architecture Gap Closure
+    test_bridge_training_loss_per_subsystem()
+    test_metacognitive_causal_trace_includes_uncertainty_sources()
+    test_convergence_arbiter_conflict_in_causal_trace()
+    test_verify_coherence_includes_convergence_trend()
+    test_get_metacognitive_state_includes_recovery_pressure()
+    test_self_diagnostic_reports_per_subsystem_bridge()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

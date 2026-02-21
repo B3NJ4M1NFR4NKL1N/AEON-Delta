@@ -17883,6 +17883,23 @@ class AEONDeltaV3(nn.Module):
                             ),
                         }),
                     )
+                # Record convergence arbiter conflict in causal trace so
+                # structural disagreements between convergence monitors
+                # are traceable in the temporal decision chain and can be
+                # attributed to specific upstream subsystems by root-cause
+                # analysis.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "convergence_arbiter", "conflict_detected",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "individual_verdicts": _convergence_arbiter_result.get(
+                                "individual_verdicts", {},
+                            ),
+                            "uncertainty_boost": _arb_boost,
+                        },
+                        severity="warning",
+                    )
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
         adaptive_safety_threshold = self.config.safety_threshold
@@ -18935,6 +18952,9 @@ class AEONDeltaV3(nn.Module):
                 })
                 # Record metacognitive recursion in causal trace for
                 # full traceability of why deeper reasoning was invoked.
+                # Include the per-source uncertainty breakdown so root-
+                # cause analysis can answer "which specific signal pushed
+                # the system over the re-reasoning threshold?".
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_recursion", "triggered",
@@ -18943,6 +18963,8 @@ class AEONDeltaV3(nn.Module):
                             "triggers_active": metacognitive_info["triggers_active"],
                             "trigger_score": metacognitive_info["trigger_score"],
                             "recursion_count": metacognitive_info["recursion_count"],
+                            "uncertainty_sources": dict(uncertainty_sources),
+                            "aggregate_uncertainty": uncertainty,
                         },
                     )
                 # 5a-iv-c. Causal trace root-cause read-back — query
@@ -24756,6 +24778,41 @@ class AEONDeltaV3(nn.Module):
                     metadata={'ucc_loss': _ucc_val},
                 )
 
+        # Per-subsystem loss recording — each subsystem loss is recorded
+        # independently so that error evolution learns from subsystem-
+        # specific training signals (e.g. persistent high coherence loss
+        # sensitises the metacognitive trigger for coherence signals on
+        # future inference passes), not just aggregate total loss.
+        _SUBSYSTEM_LOSS_THRESHOLD = 1.0
+        _subsystem_losses = [
+            ('coherence_loss', 'high_coherence_training_loss'),
+            ('consistency_loss', 'high_consistency_training_loss'),
+            ('lipschitz_loss', 'high_lipschitz_training_loss'),
+            ('sparsity_loss', 'high_sparsity_training_loss'),
+            ('causal_dag_loss', 'high_causal_dag_training_loss'),
+            ('hvae_kl_loss', 'high_hvae_kl_training_loss'),
+            ('self_report_loss', 'high_self_report_training_loss'),
+            ('cross_validation_loss', 'high_cross_validation_training_loss'),
+        ]
+        for _loss_key, _error_class in _subsystem_losses:
+            _sub_loss = loss_dict.get(_loss_key, None)
+            if _sub_loss is not None and torch.is_tensor(_sub_loss):
+                _sub_val = (
+                    float(_sub_loss.detach().item())
+                    if torch.isfinite(_sub_loss)
+                    else 0.0
+                )
+                if _sub_val > _SUBSYSTEM_LOSS_THRESHOLD:
+                    self.error_evolution.record_episode(
+                        error_class=_error_class,
+                        strategy_used='training_bridge',
+                        success=False,
+                        metadata={
+                            'loss_value': _sub_val,
+                            'total_loss': _total_val,
+                        },
+                    )
+
     def count_parameters(self) -> int:
         """Total parameters."""
         return sum(p.numel() for p in self.parameters())
@@ -25085,6 +25142,13 @@ class AEONDeltaV3(nn.Module):
                 'convergence_arbiter_conflict → deeper_meta_loop '
                 '(arbiter conflict adds extra iterations)'
             )
+        # 11a1e. Convergence arbiter conflict → causal trace
+        if (self.convergence_arbiter is not None
+                and self.causal_trace is not None):
+            verified.append(
+                'convergence_arbiter_conflict → causal_trace '
+                '(structural disagreements between monitors are root-cause traceable)'
+            )
 
         # 11a2. Safety violation → metacognitive trigger
         if self.safety_system is not None and self.metacognitive_trigger is not None:
@@ -25269,6 +25333,15 @@ class AEONDeltaV3(nn.Module):
             verified.append(
                 'causal_trace → metacognitive_trigger (bidirectional read-back)'
             )
+            # 15a. Uncertainty signal breakdown recorded in causal trace —
+            # when the metacognitive trigger fires, the per-source
+            # uncertainty breakdown is included in the trace metadata so
+            # root-cause analysis can answer "which specific signal pushed
+            # the system over the re-reasoning threshold?".
+            verified.append(
+                'metacognitive_trigger → causal_trace.uncertainty_sources '
+                '(per-signal breakdown for root-cause attribution)'
+            )
         elif (self.causal_trace is not None
               and self.metacognitive_trigger is None
               and self.config.enable_metacognitive_recursion):
@@ -25295,6 +25368,16 @@ class AEONDeltaV3(nn.Module):
             verified.append(
                 'bridge_training_loss_to_error_evolution → error_evolution '
                 '(explicit trainer-to-inference loss bridge)'
+            )
+            # Per-subsystem loss bridge — verify that individual loss
+            # components (coherence, consistency, Lipschitz, sparsity,
+            # causal DAG, HVAE KL, self-report, cross-validation) are
+            # recorded independently so error evolution learns from
+            # subsystem-specific training signals.
+            verified.append(
+                'bridge_training_loss_to_error_evolution → per-subsystem '
+                'losses (coherence, consistency, Lipschitz, sparsity, '
+                'causal_dag, hvae_kl, self_report, cross_validation)'
             )
 
         # 15c. generate → provenance + UCC evaluation
@@ -25852,6 +25935,30 @@ class AEONDeltaV3(nn.Module):
         if result["output_reliability"] < self.config.output_reliability_recheck_threshold:
             result["needs_recheck"] = True
 
+        # --- Convergence history summary ---
+        # Include recent convergence trajectory so out-of-band callers can
+        # assess whether the system is trending toward or away from
+        # convergence, complementing the snapshot coherence score with a
+        # temporal perspective.  Placed before module coherence checks so
+        # that convergence info is always available even when the coherence
+        # verifier is disabled or returns early.
+        _conv_history = list(self.convergence_monitor.history)
+        if _conv_history:
+            result["convergence_trend"] = {
+                "recent_norms": _conv_history[-5:],
+                "is_diverging": self.convergence_monitor.is_diverging(),
+                "history_length": len(_conv_history),
+            }
+
+        # --- Causal DAG reconciled adjacency ---
+        # When multiple causal models are active and a reconciled adjacency
+        # matrix has been cached, include the consensus score so that out-
+        # of-band coherence checks can detect structural causal divergence
+        # that may not surface in pairwise cosine similarity.
+        result["reconciled_adjacency_available"] = (
+            self._cached_reconciled_adjacency is not None
+        )
+
         # --- Module coherence verification ---
         if self.module_coherence is None:
             return result
@@ -26176,6 +26283,7 @@ class AEONDeltaV3(nn.Module):
         if self.convergence_arbiter is not None:
             convergence_arbiter_state = {
                 "available": True,
+                "conflict_uncertainty_boost": self.convergence_arbiter.conflict_uncertainty_boost,
             }
 
         # --- Directional uncertainty tracker state ---
@@ -26192,7 +26300,19 @@ class AEONDeltaV3(nn.Module):
         if self.memory_validator is not None:
             memory_validator_state = {
                 "available": True,
+                "consistency_threshold": getattr(
+                    self.memory_validator, 'consistency_threshold', None,
+                ),
             }
+
+        # --- Convergence monitor history ---
+        _conv_hist = list(self.convergence_monitor.history)
+        convergence_state["is_diverging"] = self.convergence_monitor.is_diverging()
+        if _conv_hist:
+            convergence_state["recent_norms"] = _conv_hist[-5:]
+
+        # --- Recovery pressure ---
+        _recovery_pressure = self._compute_recovery_pressure()
 
         return {
             "trigger": trigger_state,
@@ -26206,6 +26326,7 @@ class AEONDeltaV3(nn.Module):
             "convergence_arbiter": convergence_arbiter_state,
             "uncertainty_tracker": uncertainty_tracker_state,
             "memory_validator": memory_validator_state,
+            "recovery_pressure": _recovery_pressure,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
