@@ -2732,6 +2732,8 @@ class AEONConfig:
     lambda_ucc: float = 0.02
     lambda_self_report: float = 0.02
     lambda_cycle_consistency: float = 0.01
+    cycle_consistency_violation_threshold: float = 0.3
+    output_reliability_recheck_threshold: float = 0.5
     
     # ===== AGI COHERENCE FEEDBACK THRESHOLDS =====
     provenance_dominance_threshold: float = 0.6
@@ -22600,7 +22602,8 @@ class AEONDeltaV3(nn.Module):
                         _enc_norm, _out_norm, dim=-1,
                     ).mean().item()
                     _cycle_consistency = max(0.0, min(1.0, (_cos_sim + 1.0) / 2.0))
-                    if _cycle_consistency < 0.3 and self.error_evolution is not None:
+                    _cc_threshold = self.config.cycle_consistency_violation_threshold
+                    if _cycle_consistency < _cc_threshold and self.error_evolution is not None:
                         self.error_evolution.record_episode(
                             error_class='cycle_consistency_violation',
                             strategy_used='uncertainty_escalation',
@@ -22610,8 +22613,8 @@ class AEONDeltaV3(nn.Module):
                                 'cosine_similarity': float(_cos_sim),
                             },
                         )
-            except Exception:
-                pass
+            except (RuntimeError, ValueError) as _cc_err:
+                logger.debug("Cycle-consistency check failed: %s", _cc_err)
         outputs['cycle_consistency'] = _cycle_consistency
 
         # ===== PACKAGE RESULTS =====
@@ -24237,8 +24240,7 @@ class AEONDeltaV3(nn.Module):
         # checks can detect low-trust outputs and trigger re-reasoning.
         _cached_oq = getattr(self, '_cached_output_quality', None)
         result["output_reliability"] = float(_cached_oq) if _cached_oq is not None else 1.0
-        _OUTPUT_RELIABILITY_RECHECK_THRESHOLD = 0.5
-        if result["output_reliability"] < _OUTPUT_RELIABILITY_RECHECK_THRESHOLD:
+        if result["output_reliability"] < self.config.output_reliability_recheck_threshold:
             result["needs_recheck"] = True
 
         # --- Module coherence verification ---
