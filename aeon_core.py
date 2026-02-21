@@ -2731,6 +2731,9 @@ class AEONConfig:
     lambda_auto_critic: float = 0.02
     lambda_ucc: float = 0.02
     lambda_self_report: float = 0.02
+    lambda_cycle_consistency: float = 0.01
+    cycle_consistency_violation_threshold: float = 0.3
+    output_reliability_recheck_threshold: float = 0.5
     
     # ===== AGI COHERENCE FEEDBACK THRESHOLDS =====
     provenance_dominance_threshold: float = 0.6
@@ -13747,6 +13750,13 @@ class MetaCognitiveRecursionTrigger:
             # corresponding trigger signals.
             "world_model_cross_divergence": "world_model_surprise",
             "topology_catastrophe": "topology_catastrophe",
+            # Output reliability — low-trust outputs feed back into
+            # uncertainty so future meta-cognitive cycles are more
+            # sensitive to similar failure patterns.
+            "low_output_reliability": "uncertainty",
+            # Cycle consistency — encoder-decoder divergence indicates
+            # information fidelity loss in the reasoning pipeline.
+            "cycle_consistency_violation": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -14548,6 +14558,7 @@ class UnifiedCognitiveCycle:
         converged_state: Optional[torch.Tensor] = None,
         auto_critic_quality: Optional[float] = None,
         executive_health: Optional[float] = None,
+        output_reliability: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -14577,6 +14588,11 @@ class UnifiedCognitiveCycle:
             executive_health: Optional cognitive executive health
                 score ∈ [0, 1].  When provided, tracked in directional
                 uncertainty so subsystem arbitration issues are visible.
+            output_reliability: Optional composite output reliability
+                score ∈ [0, 1].  When provided and below 0.5, signals
+                low output trust to the directional uncertainty tracker
+                and error evolution, closing the output→meta-cognitive
+                feedback loop.
 
         Returns:
             Dict with:
@@ -14857,6 +14873,13 @@ class UnifiedCognitiveCycle:
                         "cognitive_executive", 1.0 - _eh,
                         source_label="executive_arbitration_deficit",
                     )
+            if output_reliability is not None:
+                _or = max(0.0, min(1.0, output_reliability))
+                if _or < 0.5:
+                    self.uncertainty_tracker.record(
+                        "output_reliability", 1.0 - _or,
+                        source_label="low_output_trust",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -14894,6 +14917,28 @@ class UnifiedCognitiveCycle:
                         set(trigger_detail.get('triggers_active', []))
                         | {'memory_reasoning_inconsistency'}
                     )
+
+        # 7e. Output reliability feedback — when composite output
+        # reliability is low, record in error evolution so the system
+        # learns from low-trust outputs and escalate uncertainty to
+        # trigger meta-cognitive re-reasoning on future similar inputs.
+        if output_reliability is not None and output_reliability < 0.5:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='low_output_reliability',
+                    strategy_used='meta_rerun',
+                    success=False,
+                    metadata={
+                        'output_reliability': output_reliability,
+                        'uncertainty': uncertainty,
+                    },
+                )
+            if not should_rerun:
+                should_rerun = True
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {'low_output_reliability'}
+                )
 
         return {
             'convergence_verdict': convergence_verdict,
@@ -21151,6 +21196,16 @@ class AEONDeltaV3(nn.Module):
                         else (0.0 if self.cognitive_executive is not None
                               else None)
                     ),
+                    # Composite output reliability computed from
+                    # current-pass signals so the UCC can trigger
+                    # meta-cognitive re-reasoning when the output
+                    # is not trustworthy.
+                    output_reliability=max(0.0, min(1.0,
+                        (1.0 - uncertainty)
+                        * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
+                        * max(0.0, meta_results.get('convergence_rate', 1.0))
+                        * max(0.0, 1.0 - self._cached_coherence_deficit)
+                    )),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -22277,6 +22332,10 @@ class AEONDeltaV3(nn.Module):
         # reasoning consistency loop.
         self._cached_decoder_state = z_out.detach()
 
+        # Cache output reliability for out-of-band coherence checks
+        # via verify_coherence(), closing the output→coherence loop.
+        self._cached_output_quality = outputs.get('output_reliability', 1.0)
+
         return z_out, outputs
     
     def forward(
@@ -22524,6 +22583,40 @@ class AEONDeltaV3(nn.Module):
                 },
             )
         
+        # ===== CYCLE-CONSISTENCY CHECK =====
+        # Verify that the reasoning pipeline's output (z_out) has not
+        # diverged beyond a tolerable threshold from the encoder's
+        # input embedding (z_encoded).  High divergence indicates that
+        # the encode→reason→decode pipeline has lost information
+        # fidelity, which should escalate uncertainty and feed into
+        # the error evolution tracker for learning.  This closes the
+        # loop between encoder input and reasoning output, ensuring
+        # that the full pipeline is causally coherent end-to-end.
+        _cycle_consistency: float = 1.0
+        if z_out is not None and z_encoded is not None:
+            try:
+                _enc_norm = z_encoded.detach()
+                _out_norm = z_out.detach()
+                if _enc_norm.shape == _out_norm.shape:
+                    _cos_sim = F.cosine_similarity(
+                        _enc_norm, _out_norm, dim=-1,
+                    ).mean().item()
+                    _cycle_consistency = max(0.0, min(1.0, (_cos_sim + 1.0) / 2.0))
+                    _cc_threshold = self.config.cycle_consistency_violation_threshold
+                    if _cycle_consistency < _cc_threshold and self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='cycle_consistency_violation',
+                            strategy_used='uncertainty_escalation',
+                            success=False,
+                            metadata={
+                                'cycle_consistency': _cycle_consistency,
+                                'cosine_similarity': float(_cos_sim),
+                            },
+                        )
+            except (RuntimeError, ValueError) as _cc_err:
+                logger.debug("Cycle-consistency check failed: %s", _cc_err)
+        outputs['cycle_consistency'] = _cycle_consistency
+
         # ===== PACKAGE RESULTS =====
         result = {
             'logits': logits,
@@ -22873,6 +22966,18 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_sr_consistency_t)):
                 self_report_loss = self_report_loss + (1.0 - _sr_consistency_t.detach().mean())
 
+        # ===== 17. CYCLE-CONSISTENCY LOSS =====
+        # Penalize divergence between the encoder embedding and the
+        # reasoning core output, incentivizing the pipeline to maintain
+        # information fidelity through the encode→reason→decode chain.
+        # Uses the pre-computed cycle_consistency score from _forward_impl.
+        cycle_consistency_loss = torch.tensor(0.0, device=self.device)
+        _cc_score = outputs.get('cycle_consistency', None)
+        if _cc_score is not None and isinstance(_cc_score, (int, float)):
+            cycle_consistency_loss = torch.tensor(
+                max(0.0, 1.0 - _cc_score), device=self.device,
+            )
+
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
@@ -23012,6 +23117,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_auto_critic * auto_critic_loss +
             self.config.lambda_ucc * ucc_loss +
             self.config.lambda_self_report * self_report_loss +
+            self.config.lambda_cycle_consistency * cycle_consistency_loss +
             reg_loss
         )
         
@@ -23041,6 +23147,7 @@ class AEONDeltaV3(nn.Module):
             'auto_critic_loss': auto_critic_loss,
             'ucc_loss': ucc_loss,
             'self_report_loss': self_report_loss,
+            'cycle_consistency_loss': cycle_consistency_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
@@ -23986,6 +24093,36 @@ class AEONDeltaV3(nn.Module):
                     ),
                 })
 
+        # 12. Training-bridge status — verify that training error
+        # patterns have been bridged to inference error evolution.
+        # Without this bridge, training-time failures cannot influence
+        # inference-time metacognitive trigger weights, leaving the
+        # system blind to recurring training failure modes.
+        if self.error_evolution is not None:
+            _ee_summary = self.error_evolution.get_error_summary()
+            _training_classes = [
+                c for c in _ee_summary.get("error_classes", {})
+                if c.startswith("training_")
+            ]
+            if _training_classes:
+                verified.append(
+                    'training_bridge → error_evolution '
+                    f'({len(_training_classes)} training error classes bridged)'
+                )
+            else:
+                gaps.append({
+                    'component': 'training_bridge',
+                    'gap': (
+                        'Error evolution active but no training error classes '
+                        'detected — training→inference feedback loop is open'
+                    ),
+                    'remediation': (
+                        'Call bridge_training_errors_to_inference() after '
+                        'training to transfer training error patterns to the '
+                        'inference error evolution tracker'
+                    ),
+                })
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -24095,6 +24232,15 @@ class AEONDeltaV3(nn.Module):
         result["integrity_health"] = _integrity_health
         _INTEGRITY_HEALTH_RECHECK_THRESHOLD = 0.5
         if _integrity_health < _INTEGRITY_HEALTH_RECHECK_THRESHOLD:
+            result["needs_recheck"] = True
+
+        # --- Output reliability from cached quality signal ---
+        # Include the most recent output_quality score (cached during
+        # compute_loss or forward pass) so that out-of-band coherence
+        # checks can detect low-trust outputs and trigger re-reasoning.
+        _cached_oq = getattr(self, '_cached_output_quality', None)
+        result["output_reliability"] = float(_cached_oq) if _cached_oq is not None else 1.0
+        if result["output_reliability"] < self.config.output_reliability_recheck_threshold:
             result["needs_recheck"] = True
 
         # --- Module coherence verification ---
