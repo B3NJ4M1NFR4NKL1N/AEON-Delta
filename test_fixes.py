@@ -34106,6 +34106,302 @@ def test_adapt_weights_new_class_to_signal_entries():
     print("✅ test_adapt_weights_new_class_to_signal_entries PASSED")
 
 
+def test_ucc_evaluate_accepts_output_reliability():
+    """Gap 1: UnifiedCognitiveCycle.evaluate() should accept and act on
+    output_reliability parameter.  Low reliability (< 0.5) should trigger
+    re-reasoning and record in error evolution."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor,
+        CausalProvenanceTracker,
+        CausalErrorEvolutionTracker,
+        UnifiedCognitiveCycle,
+    )
+    monitor = ConvergenceMonitor()
+    provenance = CausalProvenanceTracker()
+    error_evo = CausalErrorEvolutionTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=error_evo,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+    )
+
+    states = {"meta_loop": torch.randn(2, 32)}
+    # High reliability — should NOT trigger rerun from output_reliability
+    result_high = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        output_reliability=0.9,
+    )
+    # The 'low_output_reliability' should NOT be in triggers
+    triggers = result_high['trigger_detail'].get('triggers_active', [])
+    assert 'low_output_reliability' not in triggers, (
+        "High output_reliability should not trigger low_output_reliability"
+    )
+
+    # Low reliability — should trigger rerun
+    ucc.reset()
+    result_low = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        output_reliability=0.2,
+    )
+    assert result_low['should_rerun'] is True, (
+        "Low output_reliability should trigger re-reasoning"
+    )
+    triggers_low = result_low['trigger_detail'].get('triggers_active', [])
+    assert 'low_output_reliability' in triggers_low, (
+        "low_output_reliability should be in active triggers"
+    )
+
+    # Error evolution should have a record
+    summary = error_evo.get_error_summary()
+    assert 'low_output_reliability' in summary.get('error_classes', {}), (
+        "Error evolution should record low_output_reliability"
+    )
+
+    print("✅ test_ucc_evaluate_accepts_output_reliability PASSED")
+
+
+def test_ucc_output_reliability_backward_compatible():
+    """Gap 1: UCC.evaluate() should still work without output_reliability
+    parameter (backward compatibility)."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor,
+        CausalProvenanceTracker,
+        UnifiedCognitiveCycle,
+    )
+    monitor = ConvergenceMonitor()
+    provenance = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+    )
+
+    states = {"meta_loop": torch.randn(2, 32)}
+    # Should not raise when output_reliability is omitted
+    result = ucc.evaluate(subsystem_states=states, delta_norm=0.01)
+    assert 'should_rerun' in result
+    print("✅ test_ucc_output_reliability_backward_compatible PASSED")
+
+
+def test_cycle_consistency_in_forward():
+    """Gap 2: _forward_impl should compute cycle_consistency between
+    encoder embedding and reasoning output."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        result = model(input_ids)
+
+    assert 'cycle_consistency' in result, (
+        "Forward pass should include cycle_consistency score"
+    )
+    cc = result['cycle_consistency']
+    assert isinstance(cc, float), (
+        f"cycle_consistency should be float, got {type(cc)}"
+    )
+    assert 0.0 <= cc <= 1.0, (
+        f"cycle_consistency should be in [0, 1], got {cc}"
+    )
+    print("✅ test_cycle_consistency_in_forward PASSED")
+
+
+def test_cycle_consistency_loss_in_compute_loss():
+    """Gap 3: compute_loss should include cycle_consistency_loss component."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    input_ids = torch.randint(1, 1000, (2, 16))
+    targets = torch.randint(1, 1000, (2, 16))
+    outputs = model(input_ids)
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'cycle_consistency_loss' in loss_dict, (
+        "compute_loss should return cycle_consistency_loss"
+    )
+    ccl = loss_dict['cycle_consistency_loss']
+    assert torch.is_tensor(ccl), (
+        f"cycle_consistency_loss should be tensor, got {type(ccl)}"
+    )
+    assert torch.isfinite(ccl), (
+        f"cycle_consistency_loss should be finite, got {ccl}"
+    )
+    print("✅ test_cycle_consistency_loss_in_compute_loss PASSED")
+
+
+def test_lambda_cycle_consistency_config():
+    """Gap 3: AEONConfig should have lambda_cycle_consistency parameter."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, 'lambda_cycle_consistency'), (
+        "AEONConfig should have lambda_cycle_consistency"
+    )
+    assert config.lambda_cycle_consistency == 0.01, (
+        f"Default lambda_cycle_consistency should be 0.01, "
+        f"got {config.lambda_cycle_consistency}"
+    )
+    print("✅ test_lambda_cycle_consistency_config PASSED")
+
+
+def test_self_diagnostic_reports_training_bridge():
+    """Gap 4: self_diagnostic() should report training-bridge status."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # Without bridging, should report a gap
+    gaps = diag['gaps']
+    bridge_gaps = [g for g in gaps if g['component'] == 'training_bridge']
+    assert len(bridge_gaps) > 0, (
+        "self_diagnostic should report training_bridge gap when no "
+        "training errors have been bridged"
+    )
+    assert 'bridge_training_errors_to_inference' in bridge_gaps[0]['remediation'], (
+        "Remediation should mention bridge_training_errors_to_inference"
+    )
+    print("✅ test_self_diagnostic_reports_training_bridge PASSED")
+
+
+def test_verify_coherence_includes_output_reliability():
+    """Gap 5: verify_coherence() should include output_reliability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_coherence()
+
+    assert 'output_reliability' in result, (
+        "verify_coherence should include output_reliability"
+    )
+    or_score = result['output_reliability']
+    assert isinstance(or_score, float), (
+        f"output_reliability should be float, got {type(or_score)}"
+    )
+    print("✅ test_verify_coherence_includes_output_reliability PASSED")
+
+
+def test_verify_coherence_low_output_reliability_triggers_recheck():
+    """Gap 5: When cached output quality is low, verify_coherence should
+    set needs_recheck=True."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    # Simulate low output quality
+    model._cached_output_quality = 0.2
+    result = model.verify_coherence()
+
+    assert result['needs_recheck'] is True, (
+        "Low output_reliability should trigger needs_recheck"
+    )
+    assert result['output_reliability'] < 0.5, (
+        f"output_reliability should reflect cached low quality, "
+        f"got {result['output_reliability']}"
+    )
+    print("✅ test_verify_coherence_low_output_reliability_triggers_recheck PASSED")
+
+
+def test_output_reliability_error_class_mapped_to_signal():
+    """Gap 6: low_output_reliability and cycle_consistency_violation
+    should be mapped in MetaCognitiveRecursionTrigger._class_to_signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate error summary with the new error classes
+    error_summary = {
+        "error_classes": {
+            "low_output_reliability": {
+                "count": 5,
+                "success_rate": 0.2,
+            },
+            "cycle_consistency_violation": {
+                "count": 3,
+                "success_rate": 0.3,
+            },
+        }
+    }
+    # This should not raise — both classes should be recognized
+    trigger.adapt_weights_from_evolution(error_summary)
+    # Weights should have been adjusted
+    w = trigger._signal_weights
+    assert "uncertainty" in w, "uncertainty signal should exist"
+    assert "coherence_deficit" in w, "coherence_deficit signal should exist"
+    print("✅ test_output_reliability_error_class_mapped_to_signal PASSED")
+
+
+def test_ucc_directional_uncertainty_tracks_output_reliability():
+    """Gap 1: When output_reliability is low, the directional uncertainty
+    tracker should record it under the 'output_reliability' key."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor,
+        CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+        UnifiedCognitiveCycle,
+    )
+    monitor = ConvergenceMonitor()
+    provenance = CausalProvenanceTracker()
+    unc_tracker = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+        uncertainty_tracker=unc_tracker,
+    )
+
+    states = {"meta_loop": torch.randn(2, 32)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        output_reliability=0.2,
+    )
+
+    summary = result.get('uncertainty_summary', {})
+    per_module = summary.get('module_uncertainties', {})
+    assert 'output_reliability' in per_module, (
+        "Directional uncertainty should track output_reliability"
+    )
+    print("✅ test_ucc_directional_uncertainty_tracks_output_reliability PASSED")
+
+
 def test_post_output_coherence_in_forward():
     """_forward_impl should perform a post-output coherence check when
     UCC signals should_rerun or a coherence deficit is detected, so
