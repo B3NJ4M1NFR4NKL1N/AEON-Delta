@@ -21343,6 +21343,18 @@ class AEONDeltaV3(nn.Module):
                     )
                 # 8b3. AutoCriticLoop — refine z_out when violations detected
                 if self.auto_critic is not None:
+                    # Query provenance attribution before auto-critic so
+                    # root-cause traceability covers NS-violation revisions.
+                    _ns_critic_prov = self.provenance_tracker.compute_attribution()
+                    _ns_critic_dominant = None
+                    _ns_critic_contribs = _ns_critic_prov.get(
+                        "contributions", {},
+                    )
+                    if _ns_critic_contribs:
+                        _ns_critic_dominant = max(
+                            _ns_critic_contribs,
+                            key=_ns_critic_contribs.get,
+                        )
                     self.provenance_tracker.record_before("auto_critic", z_out)
                     critic_result = self.auto_critic(z_out)
                     revised = critic_result.get("candidate", None)
@@ -21369,6 +21381,7 @@ class AEONDeltaV3(nn.Module):
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
                         "trigger": "ns_violation",
+                        "provenance_dominant_module": _ns_critic_dominant,
                     })
                     # Record auto-critic revision in causal trace for
                     # full root-cause traceability of self-corrections.
@@ -21380,6 +21393,8 @@ class AEONDeltaV3(nn.Module):
                                 "final_score": critic_result.get("final_score", 0.0),
                                 "iterations": critic_result.get("iterations", 0),
                                 "revised": revised is not None and torch.isfinite(revised).all(),
+                                "provenance_dominant_module": _ns_critic_dominant,
+                                "provenance_contributions": _ns_critic_contribs,
                             },
                         )
                     # Record NS-violation-triggered auto-critic in error
@@ -21534,6 +21549,22 @@ class AEONDeltaV3(nn.Module):
                 and not fast
                 and _should_trigger_metacognition
                 and not _ns_already_handled):
+            # 8b3-prov. Provenance-guided auto-critic — query provenance
+            # attribution BEFORE invoking the auto-critic so the audit
+            # entry records which upstream module dominated the output
+            # that triggered correction.  This links every self-correction
+            # to its root cause, satisfying the "all conclusions traceable
+            # to root causes" contract.
+            _pre_critic_provenance = self.provenance_tracker.compute_attribution()
+            _pre_critic_dominant = None
+            _pre_critic_contributions = _pre_critic_provenance.get(
+                "contributions", {},
+            )
+            if _pre_critic_contributions:
+                _pre_critic_dominant = max(
+                    _pre_critic_contributions,
+                    key=_pre_critic_contributions.get,
+                )
             self.provenance_tracker.record_before("auto_critic", z_out)
             critic_result = self.auto_critic(z_out)
             revised = critic_result.get("candidate", None)
@@ -21569,6 +21600,7 @@ class AEONDeltaV3(nn.Module):
                 "iterations": critic_result.get("iterations", 0),
                 "final_score": critic_result.get("final_score", 0.0),
                 "trigger": _trigger,
+                "provenance_dominant_module": _pre_critic_dominant,
             })
             # Record uncertainty-triggered auto-critic in causal trace
             # for root-cause traceability of metacognitive self-corrections.
@@ -21580,6 +21612,8 @@ class AEONDeltaV3(nn.Module):
                         "trigger": _trigger,
                         "final_score": critic_result.get("final_score", 0.0),
                         "revised": revised is not None and torch.isfinite(revised).all(),
+                        "provenance_dominant_module": _pre_critic_dominant,
+                        "provenance_contributions": _pre_critic_contributions,
                     },
                 )
             # Record uncertainty-triggered auto-critic in error evolution
@@ -21680,6 +21714,69 @@ class AEONDeltaV3(nn.Module):
         )
         self.progress_tracker.end_phase("integration", success=integration_healthy)
         run_summary = self.progress_tracker.finish_run()
+        
+        # 8c-retry. Integration failure corrective retry — when the
+        # integrated output is invalid, invoke auto-critic as a last-
+        # resort correction and re-validate.  Without this, integration
+        # failures silently propagate bad outputs, violating the "any
+        # uncertainty triggers a meta-cognitive cycle" contract.  The
+        # retry is gated on auto-critic availability and non-fast mode
+        # to avoid infinite loops and overhead in fast inference.
+        if (not integration_healthy
+                and self.auto_critic is not None
+                and not fast
+                and not _any_auto_critic_revised):
+            try:
+                self.provenance_tracker.record_before(
+                    "integration_retry_critic", z_out,
+                )
+                _retry_critic = self.auto_critic(z_out)
+                _retry_revised = _retry_critic.get("candidate", None)
+                if (_retry_revised is not None
+                        and torch.isfinite(_retry_revised).all()
+                        and _retry_revised.shape == z_out.shape):
+                    z_out = _retry_revised
+                    _any_auto_critic_revised = True
+                    # Re-validate the corrected output
+                    output_valid, z_out = self.execution_guard.validate_output(
+                        z_out, stage="integration_retry", fallback=z_rssm,
+                    )
+                    _retry_validation = self.state_validator.validate(
+                        z_out, factors=factors,
+                    )
+                    integration_healthy = (
+                        _retry_validation["valid"] and output_valid
+                    )
+                    self.integrity_monitor.record_health(
+                        "integration",
+                        1.0 if integration_healthy else 0.0,
+                        {"retry": True, "state_valid": _retry_validation["valid"],
+                         "output_valid": output_valid},
+                    )
+                self.provenance_tracker.record_after(
+                    "integration_retry_critic", z_out,
+                )
+                self.audit_log.record(
+                    "auto_critic", "integration_retry", {
+                        "original_valid": False,
+                        "retry_valid": integration_healthy,
+                        "final_score": _retry_critic.get("final_score", 0.0),
+                    },
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="integration_failure_retry",
+                        strategy_used="auto_critic",
+                        success=integration_healthy,
+                        metadata=self._provenance_enriched_metadata({
+                            "retry_score": _retry_critic.get("final_score", 0.0),
+                        }),
+                    )
+            except Exception as _retry_err:
+                logger.debug(
+                    "Integration retry auto-critic failed (non-fatal): %s",
+                    _retry_err,
+                )
         
         # 8d. Positive recovery reinforcement — when the pipeline
         # completes successfully, record a positive reward so that
@@ -22177,6 +22274,34 @@ class AEONDeltaV3(nn.Module):
                             ).get("trigger_score", 0.0)
                         )
                         metacognitive_info["phase"] = "unified_cycle"
+                # 8f-dir-unc. Extract directional uncertainty from UCC —
+                # propagate the most uncertain module and flagged modules
+                # into the audit log and uncertainty_sources so that
+                # downstream consumers (training supervision, diagnostics)
+                # know WHICH module is most uncertain, enabling targeted
+                # re-reasoning rather than generic uncertainty escalation.
+                _ucc_unc_summary = unified_cycle_results.get(
+                    "uncertainty_summary", {},
+                )
+                _ucc_most_uncertain = _ucc_unc_summary.get(
+                    "most_uncertain_module", None,
+                )
+                _ucc_flagged_modules = _ucc_unc_summary.get(
+                    "flagged_modules", [],
+                )
+                if _ucc_most_uncertain is not None:
+                    uncertainty_sources[
+                        "ucc_most_uncertain_module"
+                    ] = _ucc_unc_summary.get("aggregate_uncertainty", 0.0)
+                    self.audit_log.record(
+                        "directional_uncertainty", "ucc_assessment", {
+                            "most_uncertain_module": _ucc_most_uncertain,
+                            "flagged_modules": _ucc_flagged_modules,
+                            "module_uncertainties": _ucc_unc_summary.get(
+                                "module_uncertainties", {},
+                            ),
+                        },
+                    )
                 # Update uncertainty from the unified cycle's coherence
                 # assessment.  The threshold is set to 0.1 so that even
                 # moderate coherence deficits trigger graduated
@@ -22625,6 +22750,16 @@ class AEONDeltaV3(nn.Module):
                 # Invoke auto-critic for self-correction on the final output
                 if self.auto_critic is not None:
                     try:
+                        _post_prov = self.provenance_tracker.compute_attribution()
+                        _post_prov_dominant = None
+                        _post_prov_contribs = _post_prov.get(
+                            "contributions", {},
+                        )
+                        if _post_prov_contribs:
+                            _post_prov_dominant = max(
+                                _post_prov_contribs,
+                                key=_post_prov_contribs.get,
+                            )
                         self.provenance_tracker.record_before("auto_critic", z_out)
                         _post_critic = self.auto_critic(z_out)
                         _post_revised = _post_critic.get("candidate", None)
@@ -22638,6 +22773,7 @@ class AEONDeltaV3(nn.Module):
                             "iterations": _post_critic.get("iterations", 0),
                             "final_score": _post_critic.get("final_score", 0.0),
                             "trigger": "post_integration_metacognitive",
+                            "provenance_dominant_module": _post_prov_dominant,
                         })
                     except Exception as ac_err:
                         logger.warning(
@@ -23049,6 +23185,12 @@ class AEONDeltaV3(nn.Module):
                     "coherence_deficit": unified_cycle_results.get(
                         "coherence_result", {},
                     ).get("coherence_deficit", 0.0),
+                    "most_uncertain_module": unified_cycle_results.get(
+                        "uncertainty_summary", {},
+                    ).get("most_uncertain_module", None),
+                    "flagged_modules": unified_cycle_results.get(
+                        "uncertainty_summary", {},
+                    ).get("flagged_modules", []),
                 }
                 if unified_cycle_results else None
             ),
