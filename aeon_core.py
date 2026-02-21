@@ -24373,6 +24373,15 @@ class AEONDeltaV3(nn.Module):
                             subsystem_states=_gen_ucc_states,
                             delta_norm=outputs.get('residual_norm', 0.0),
                             uncertainty=_gen_uncertainty,
+                            world_model_surprise=self._cached_surprise,
+                            causal_quality=self._cached_causal_quality,
+                            memory_staleness=self._memory_stale,
+                            recovery_pressure=self._compute_recovery_pressure(),
+                            feedback_signal=self._cached_feedback,
+                            output_reliability=max(0.0, min(1.0,
+                                (1.0 - _gen_uncertainty)
+                                * max(0.0, 1.0 - self._cached_coherence_deficit)
+                            )),
                         )
                 except Exception as _gen_ucc_err:
                     logger.debug(
@@ -25391,6 +25400,23 @@ class AEONDeltaV3(nn.Module):
                 'remediation': 'Enable ExternalDataTrustScorer for memory validation',
             })
 
+        # --- Convergence arbiter, uncertainty tracker, memory validator ---
+        if self.convergence_arbiter is not None:
+            verified.append(
+                'convergence_arbiter → unified convergence verdict '
+                'across multiple monitors'
+            )
+        if self.uncertainty_tracker is not None:
+            verified.append(
+                'uncertainty_tracker → per-module directional '
+                'uncertainty enables targeted re-reasoning'
+            )
+        if self.memory_validator is not None:
+            verified.append(
+                'memory_validator → memory-reasoning consistency '
+                'check triggers re-retrieval on mismatch'
+            )
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         if len(_critical_gaps) >= 3:
@@ -25618,6 +25644,24 @@ class AEONDeltaV3(nn.Module):
                 },
             )
 
+        # --- Convergence arbiter reconciliation ---
+        # When the convergence arbiter is available, reconcile the
+        # coherence check against any cached convergence state so that
+        # conflicting convergence signals (e.g. meta-loop says converged
+        # but coherence says inconsistent) are detected and escalated.
+        if self.convergence_arbiter is not None:
+            _conv_verdict = self.convergence_monitor.check(coherence_deficit)
+            _arbiter_result = self.convergence_arbiter.arbitrate(
+                meta_loop_results={},
+                convergence_monitor_verdict=_conv_verdict,
+                certified_results=None,
+            )
+            result["convergence_arbiter"] = _arbiter_result
+            if _arbiter_result.get("has_conflict", False):
+                result["needs_recheck"] = True
+                if not result.get("metacognitive_triggered", False):
+                    result["metacognitive_triggered"] = True
+
         # --- Record coherence decision in causal trace ---
         # This bridges verify_coherence into the temporal causal trace
         # so that root-cause analysis can trace coherence-driven decisions
@@ -25798,6 +25842,29 @@ class AEONDeltaV3(nn.Module):
             "available": self.safety_system is not None and self.auto_critic is not None,
         }
 
+        # --- Convergence arbiter state ---
+        convergence_arbiter_state: Dict[str, Any] = {"available": False}
+        if self.convergence_arbiter is not None:
+            convergence_arbiter_state = {
+                "available": True,
+            }
+
+        # --- Directional uncertainty tracker state ---
+        uncertainty_tracker_state: Dict[str, Any] = {"available": False}
+        if self.uncertainty_tracker is not None:
+            _ut_summary = self.uncertainty_tracker.build_summary()
+            uncertainty_tracker_state = {
+                "available": True,
+                **_ut_summary,
+            }
+
+        # --- Memory reasoning validator state ---
+        memory_validator_state: Dict[str, Any] = {"available": False}
+        if self.memory_validator is not None:
+            memory_validator_state = {
+                "available": True,
+            }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
@@ -25807,6 +25874,9 @@ class AEONDeltaV3(nn.Module):
             "unified_cognitive_cycle": ucc_state,
             "dag_consensus": dag_consensus_state,
             "safety_critic_bridge": safety_critic_bridge_state,
+            "convergence_arbiter": convergence_arbiter_state,
+            "uncertainty_tracker": uncertainty_tracker_state,
+            "memory_validator": memory_validator_state,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
@@ -26505,6 +26575,16 @@ class AEONTrainer:
         _model_conv_monitor = getattr(self.model, 'convergence_monitor', None)
         if _model_conv_monitor is not None and _model_conv_monitor is not self.convergence_monitor:
             _model_conv_monitor.check(loss_val)
+        
+        # ===== TRAINING LOSS → ERROR EVOLUTION BRIDGE =====
+        # Feed per-step loss components into the model's error evolution
+        # tracker so that training-time loss patterns (e.g. persistent
+        # high coherence loss) sensitise the metacognitive trigger for
+        # corresponding signals on future inference passes.  Without
+        # this call the bridge_training_loss_to_error_evolution method
+        # exists but is never invoked, leaving training insights
+        # disconnected from inference-time meta-cognitive orchestration.
+        self.model.bridge_training_loss_to_error_evolution(loss_dict)
         
         # Convert to float
         metrics = {
