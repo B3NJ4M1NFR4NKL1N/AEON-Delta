@@ -6017,8 +6017,8 @@ class CognitiveFeedbackBus(nn.Module):
     # Number of scalar signal channels aggregated by the bus:
     #   safety, convergence, uncertainty, health_mean, loss_scale,
     #   surprise, coherence, causal_quality, recovery_pressure,
-    #   self_report_consistency, output_quality
-    NUM_SIGNAL_CHANNELS = 11
+    #   self_report_consistency, output_quality, memory_quality
+    NUM_SIGNAL_CHANNELS = 12
     
     def __init__(self, hidden_dim: int):
         super().__init__()
@@ -6045,6 +6045,7 @@ class CognitiveFeedbackBus(nn.Module):
         recovery_pressure: float = 0.0,
         self_report_consistency: float = 1.0,
         output_quality: float = 1.0,
+        memory_quality: float = 1.0,
     ) -> torch.Tensor:
         """Aggregate signals into a feedback embedding.
         
@@ -6087,6 +6088,12 @@ class CognitiveFeedbackBus(nn.Module):
                 outputs, biasing the meta-loop toward deeper reasoning so
                 the next forward pass generates better representations
                 for decoding.
+            memory_quality: Scalar ∈ [0, 1] measuring memory retrieval
+                quality from the current or previous forward pass
+                (default: 1.0 = perfect retrieval).  Low values indicate
+                memory retrieval returned sparse or stale contexts,
+                biasing the meta-loop toward deeper reasoning to
+                compensate for weak memory grounding.
         
         Returns:
             feedback: [B, hidden_dim] conditioning vector.
@@ -6141,8 +6148,11 @@ class CognitiveFeedbackBus(nn.Module):
         # Output quality (already in [0, 1]; 1.0 = perfect decoder output)
         oq = torch.full((batch_size,), float(output_quality), device=device)
         
+        # Memory retrieval quality (already in [0, 1]; 1.0 = perfect retrieval)
+        mq = torch.full((batch_size,), float(memory_quality), device=device)
+        
         # Stack into [B, NUM_SIGNAL_CHANNELS]
-        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr, oq], dim=-1)
+        signals = torch.stack([s, c, u, h, ls, ws, cd, cq, rp, sr, oq, mq], dim=-1)
         
         return self.projection(signals)
 
@@ -18147,6 +18157,17 @@ class AEONDeltaV3(nn.Module):
                                 {"usage_rate": _vq_utilization},
                             ),
                         )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "vector_quantizer", "codebook_collapse",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "usage_rate": _vq_utilization,
+                                "uncertainty_boost": _vq_boost,
+                                "threshold": _VQ_COLLAPSE_THRESHOLD,
+                            },
+                            severity="warning",
+                        )
                     # Invoke auto-critic for immediate correction when
                     # VQ codebook collapse is detected, consistent with
                     # the topology catastrophe path (step 5a-iv-topo-
@@ -18622,6 +18643,8 @@ class AEONDeltaV3(nn.Module):
                 recovery_pressure=self._compute_recovery_pressure(),
                 self_report_consistency=self._cached_self_report_consistency,
             output_quality=self._cached_output_quality,
+            memory_quality=self._last_memory_retrieval_quality.get(
+                "retrieval_quality", 1.0),
             ).detach()
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
         # feedback to refine uncertainty for the current pass.  When recovery
@@ -19182,6 +19205,8 @@ class AEONDeltaV3(nn.Module):
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
                 output_quality=self._cached_output_quality,
+                memory_quality=self._last_memory_retrieval_quality.get(
+                    "retrieval_quality", 1.0),
                 ).detach()
                 self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
@@ -20627,6 +20652,7 @@ class AEONDeltaV3(nn.Module):
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
                 output_quality=self._cached_output_quality,
+                memory_quality=_memory_retrieval_quality,
                 ).detach()
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions.
@@ -22811,6 +22837,7 @@ class AEONDeltaV3(nn.Module):
                     recovery_pressure=self._compute_recovery_pressure(),
                     self_report_consistency=self._cached_self_report_consistency,
                 output_quality=self._cached_output_quality,
+                memory_quality=_memory_retrieval_quality,
                 ).detach()
                 self.provenance_tracker.record_before(
                     "deeper_meta_loop", z_out,
@@ -23132,18 +23159,18 @@ class AEONDeltaV3(nn.Module):
                         recovery_pressure=self._compute_recovery_pressure(),
                         self_report_consistency=self._cached_self_report_consistency,
                     output_quality=self._cached_output_quality,
+                    memory_quality=_memory_retrieval_quality,
                     ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
-        # on z_out after ANY auto-critic revision, not only the post-
-        # metacognitive path.  The original safety enforcement (step 5a)
-        # operated on C_star before integration and auto-critic revision,
-        # so the final z_out may have drifted into unsafe territory.  This
-        # closes the safety-reasoning feedback loop unconditionally:
-        # every self-correction is validated by safety, ensuring that no
-        # auto-critic revision path bypasses safety constraints.
+        # on z_out unconditionally (not only after auto-critic or metacog
+        # revision).  The original safety enforcement (step 5a) operated
+        # on C_star before integration, so the final z_out may have
+        # drifted into unsafe territory through ANY integration path.
+        # Running safety validation on every forward pass ensures that no
+        # code path — auto-critic, metacognitive, or normal — can bypass
+        # safety constraints.
         if (self.safety_system is not None
-                and (_post_metacog_triggered or _any_auto_critic_revised)
                 and not fast):
             _post_action_emb = torch.zeros(B, self.config.action_dim, device=device)
             _post_safety = self.safety_system(
@@ -23202,17 +23229,16 @@ class AEONDeltaV3(nn.Module):
                 except Exception as _hm_store_err:
                     logger.debug("Post-critic hierarchical memory store failed: %s", _hm_store_err)
         
-        # 8g-0c. Post-integration coherence re-verification — when
-        # auto-critic or post-metacognitive processing revised z_out,
-        # the coherence score computed in step 5a-iii may be stale
-        # (it was measured on the pre-revision state).  Re-run the
-        # ModuleCoherenceVerifier on the final z_out so that the output
-        # coherence score reflects the actual delivered state.  This
-        # closes the coherence-revision feedback loop: revisions that
-        # improve coherence are captured, and revisions that degrade it
-        # are flagged for the next pass's metacognitive trigger.
+        # 8g-0c. Post-integration coherence re-verification — always
+        # re-verify coherence on the final z_out, not only after
+        # auto-critic or metacognitive revision.  Integration, safety
+        # rollback, and provenance dampening can all shift z_out away
+        # from the state measured in step 5a-iii, so unconditional
+        # re-verification ensures the output coherence score reflects
+        # the actual delivered state.  Revisions that improve coherence
+        # are captured, and degradations are flagged for the next
+        # pass's metacognitive trigger.
         if (self.module_coherence is not None
-                and (_post_metacog_triggered or _any_auto_critic_revised)
                 and not fast):
             _post_coherence_states: Dict[str, torch.Tensor] = {
                 "z_out": z_out,
@@ -23237,13 +23263,44 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_post_hr_conc)
                     and _post_hr_conc.shape[-1] == z_out.shape[-1]):
                 _post_coherence_states["hybrid_reasoning"] = _post_hr_conc
+            # Include multimodal grounded state when available, matching
+            # the earlier post-integration coherence check (step 7b) so
+            # that unconditional re-verification preserves full subsystem
+            # coverage.
+            if self.multimodal is not None:
+                if z_rssm.shape[-1] == z_out.shape[-1]:
+                    _post_coherence_states["multimodal"] = z_rssm
             _post_coh_results = self.module_coherence(_post_coherence_states)
             _post_coh_score = float(
                 _post_coh_results["coherence_score"].mean().item()
             )
-            # Update coherence results with post-revision measurement
-            coherence_results = _post_coh_results
-            _coherence_deficit = _post_coh_results.get("needs_recheck", False)
+            # Merge post-integration coherence with pre-integration results:
+            # use the lower of pre/post coherence scores (conservative), and
+            # union all pairwise comparisons so downstream consumers retain
+            # both pre-integration pairs (e.g. input vs meta_loop) and
+            # post-integration pairs (z_out vs core_state).
+            if coherence_results:
+                _pre_score = coherence_results.get("coherence_score",
+                    torch.ones(1))
+                coherence_results = {
+                    "coherence_score": torch.min(
+                        _pre_score, _post_coh_results["coherence_score"]),
+                    "pairwise": {
+                        **coherence_results.get("pairwise", {}),
+                        **_post_coh_results.get("pairwise", {}),
+                    },
+                    "needs_recheck": (
+                        coherence_results.get("needs_recheck", False)
+                        or _post_coh_results.get("needs_recheck", False)
+                    ),
+                    "_weakest_pair": _post_coh_results.get(
+                        "_weakest_pair",
+                        coherence_results.get("_weakest_pair"),
+                    ),
+                }
+            else:
+                coherence_results = _post_coh_results
+            _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Update cached coherence deficit for next pass's feedback bus
             self._cached_coherence_deficit = float(
                 max(0.0, min(1.0, 1.0 - _post_coh_score))
@@ -23584,6 +23641,7 @@ class AEONDeltaV3(nn.Module):
                 recovery_pressure=self._compute_recovery_pressure(),
                 self_report_consistency=self._cached_self_report_consistency,
             output_quality=_current_output_reliability,
+            memory_quality=_memory_retrieval_quality,
             ).detach()
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
@@ -25719,6 +25777,42 @@ class AEONDeltaV3(nn.Module):
                 'coherence verification'
             )
 
+        # 17f-a. Unconditional post-integration safety re-evaluation —
+        # the safety system re-validates z_out on every non-fast forward
+        # pass, not only when auto-critic or metacognitive revision fires.
+        if self.safety_system is not None:
+            verified.append(
+                'safety_system → unconditional post-integration re-evaluation '
+                '(no code path bypasses safety constraints)'
+            )
+
+        # 17f-b. Unconditional post-integration coherence re-verification —
+        # ModuleCoherenceVerifier runs on the final z_out after all
+        # corrections, ensuring the output coherence score reflects the
+        # delivered state regardless of which revision path was taken.
+        if self.module_coherence is not None:
+            verified.append(
+                'module_coherence → unconditional post-integration re-verification '
+                '(coherence score always reflects delivered state)'
+            )
+
+        # 17f-c. Memory retrieval quality → feedback bus — memory quality
+        # feeds back into the cognitive feedback bus so the meta-loop
+        # adapts reasoning depth based on memory grounding strength.
+        if self.feedback_bus is not None:
+            verified.append(
+                'memory_retrieval_quality → feedback_bus.memory_quality '
+                '→ meta_loop (memory quality cross-pass feedback)'
+            )
+
+        # 17f-d. VQ codebook collapse → causal trace — codebook collapse
+        # events are recorded in the causal trace for root-cause analysis.
+        if self.vector_quantizer is not None and self.causal_trace is not None:
+            verified.append(
+                'vector_quantizer → causal_trace.codebook_collapse '
+                '(VQ collapse root-cause traceable)'
+            )
+
         # Call verify_coherence() to include live runtime consistency
         # results alongside the static wiring checks, so that the
         # diagnostic report captures both structural and runtime health.
@@ -26331,6 +26425,8 @@ class AEONDeltaV3(nn.Module):
                         else 1.0,
                     output_quality=getattr(
                         self, '_cached_output_quality', 1.0),
+                    memory_quality=self._last_memory_retrieval_quality.get(
+                        "retrieval_quality", 1.0),
                 ).detach()
             except Exception as _fb_err:
                 logger.warning(

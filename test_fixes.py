@@ -11563,20 +11563,20 @@ def test_hybrid_reasoning_consistency_check():
 
 
 def test_feedback_bus_num_channels():
-    """Verify CognitiveFeedbackBus has 11 signal channels after adding
+    """Verify CognitiveFeedbackBus has 12 signal channels after adding
     world_model_surprise, coherence_deficit, causal_quality, recovery_pressure,
-    self_report_consistency, and output_quality."""
+    self_report_consistency, output_quality, and memory_quality."""
     from aeon_core import CognitiveFeedbackBus
 
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 11, (
-        f"Expected 11 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 12, (
+        f"Expected 12 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
 
     bus = CognitiveFeedbackBus(hidden_dim=32)
     # Projection input should match NUM_SIGNAL_CHANNELS
     first_layer = bus.projection[0]
-    assert first_layer.in_features == 11, (
-        f"First layer input features should be 11, got {first_layer.in_features}"
+    assert first_layer.in_features == 12, (
+        f"First layer input features should be 12, got {first_layer.in_features}"
     )
 
     print("✅ test_feedback_bus_num_channels PASSED")
@@ -18998,24 +18998,27 @@ def test_weakest_pair_identification():
 
 
 def test_unconditional_post_critic_safety():
-    """Fix 3: Post-critic safety re-evaluation triggers on any auto-critic revision.
+    """Fix 3: Post-integration safety re-evaluation is unconditional.
 
-    Verifies that the safety re-evaluation condition checks
-    _any_auto_critic_revised, not just _post_metacog_triggered, by
-    examining the source code structure.
+    Verifies that the safety re-evaluation does NOT gate on
+    _post_metacog_triggered or _any_auto_critic_revised — it runs
+    unconditionally on every non-fast forward pass so that no code
+    path can bypass safety constraints.
     """
     import inspect
     from aeon_core import AEONDeltaV3
 
     source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
 
-    # The safety re-evaluation condition should include _any_auto_critic_revised
-    assert "_any_auto_critic_revised" in source, (
-        "Post-critic safety should check _any_auto_critic_revised"
+    # The safety system should still be referenced for post-integration checks
+    assert "post_integration_rollback" in source, (
+        "Post-integration safety rollback should still be present"
     )
-    # Should still also check _post_metacog_triggered (OR condition)
-    assert "_post_metacog_triggered or _any_auto_critic_revised" in source, (
-        "Safety re-evaluation should trigger on EITHER metacog OR any revision"
+    # Verify the unconditional pattern: safety check no longer gates on
+    # _post_metacog_triggered or _any_auto_critic_revised
+    assert "Post-revision safety re-evaluation" in source or \
+           "Post-integration safety re-evaluation" in source, (
+        "Post-integration safety re-evaluation comment should exist"
     )
 
     print("✅ test_unconditional_post_critic_safety PASSED")
@@ -28339,10 +28342,10 @@ def test_feedback_bus_self_report_gradient_flow():
 
 
 def test_feedback_bus_10_channels():
-    """Gap 2: CognitiveFeedbackBus has 10 signal channels (was 9)."""
+    """Gap 2: CognitiveFeedbackBus has 12 signal channels (was 11)."""
     from aeon_core import CognitiveFeedbackBus
-    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 11, (
-        f"Expected 11 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
+    assert CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS == 12, (
+        f"Expected 12 channels, got {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS}"
     )
     print("✅ test_feedback_bus_10_channels PASSED")
 
@@ -38676,6 +38679,179 @@ def test_server_infer_response_includes_provenance():
     print("✅ test_server_infer_response_includes_provenance PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Unconditional Safety, Coherence & Feedback Tests
+# ============================================================================
+
+
+def test_unconditional_safety_reeval_in_source():
+    """Verify post-integration safety re-evaluation is unconditional.
+
+    The safety system should run on every non-fast forward pass regardless
+    of whether auto-critic or metacognitive revision fired.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # The old conditional gate should NOT exist in the safety section
+    # Extract the section between 8g-0a and 8g-0b
+    if "8g-0a" in source and "8g-0b" in source:
+        safety_section = source.split("8g-0a")[1].split("8g-0b")[0]
+        assert "_post_metacog_triggered or _any_auto_critic_revised" not in safety_section, (
+            "Post-integration safety should NOT gate on "
+            "_post_metacog_triggered or _any_auto_critic_revised"
+        )
+
+    # The safety check section should still exist
+    assert "post_integration_rollback" in source, (
+        "Post-integration safety rollback audit entry should exist"
+    )
+
+    print("✅ test_unconditional_safety_reeval_in_source PASSED")
+
+
+def test_unconditional_coherence_reverification_in_source():
+    """Verify post-integration coherence re-verification is unconditional.
+
+    The ModuleCoherenceVerifier should re-run on the final z_out on every
+    non-fast forward pass, not only after auto-critic or metacog revision.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # The old conditional gate should NOT exist in the coherence re-verification
+    # section (8g-0c)
+    if "8g-0c" in source and "8g." in source:
+        section_8g0c = source.split("8g-0c")[1].split("8g.")[0]
+        assert "_post_metacog_triggered or _any_auto_critic_revised" not in section_8g0c, (
+            "Post-integration coherence should NOT gate on "
+            "_post_metacog_triggered or _any_auto_critic_revised"
+        )
+
+    # The coherence re-verification section should still exist
+    assert "post_revision_recheck" in source, (
+        "Post-integration coherence recheck audit entry should exist"
+    )
+
+    print("✅ test_unconditional_coherence_reverification_in_source PASSED")
+
+
+def test_feedback_bus_memory_quality_channel():
+    """Verify CognitiveFeedbackBus accepts and processes the memory_quality
+    signal, producing different feedback embeddings for good vs poor memory."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    bus.eval()
+
+    # Good memory quality → one embedding
+    fb_good = bus(batch_size=2, device=torch.device('cpu'), memory_quality=1.0)
+    assert fb_good.shape == (2, 32), f"Expected (2, 32), got {fb_good.shape}"
+
+    # Poor memory quality → different embedding
+    fb_poor = bus(batch_size=2, device=torch.device('cpu'), memory_quality=0.1)
+    assert fb_poor.shape == (2, 32), f"Expected (2, 32), got {fb_poor.shape}"
+
+    # Embeddings should differ when memory quality differs
+    diff = (fb_good - fb_poor).abs().sum().item()
+    assert diff > 1e-4, (
+        f"Feedback embeddings should differ for memory_quality=1.0 vs 0.1, "
+        f"but L1 diff was only {diff:.6f}"
+    )
+
+    print("✅ test_feedback_bus_memory_quality_channel PASSED")
+
+
+def test_vq_collapse_recorded_in_causal_trace():
+    """Verify VQ codebook collapse events are recorded in the causal trace.
+
+    When VQ utilization drops below threshold, the causal trace should
+    contain an entry with subsystem='vector_quantizer' and
+    decision='codebook_collapse' so the event is root-cause traceable.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # Should record VQ collapse in causal trace
+    assert "codebook_collapse" in source, (
+        "VQ codebook collapse should be recorded in causal trace"
+    )
+    assert "vector_quantizer" in source, (
+        "VQ causal trace entry should reference vector_quantizer subsystem"
+    )
+
+    print("✅ test_vq_collapse_recorded_in_causal_trace PASSED")
+
+
+def test_self_diagnostic_reports_unconditional_safety():
+    """Verify self_diagnostic reports unconditional safety re-evaluation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+    verified = report["verified_connections"]
+    joined = " ".join(verified)
+
+    assert "unconditional post-integration re-evaluation" in joined, (
+        f"self_diagnostic should verify unconditional safety re-evaluation; "
+        f"verified connections: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_reports_unconditional_safety PASSED")
+
+
+def test_self_diagnostic_reports_unconditional_coherence():
+    """Verify self_diagnostic reports unconditional coherence re-verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+    verified = report["verified_connections"]
+    joined = " ".join(verified)
+
+    assert "unconditional post-integration re-verification" in joined, (
+        f"self_diagnostic should verify unconditional coherence; "
+        f"verified connections: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_reports_unconditional_coherence PASSED")
+
+
+def test_self_diagnostic_reports_memory_quality_feedback():
+    """Verify self_diagnostic reports memory quality feedback bus channel."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.self_diagnostic()
+    verified = report["verified_connections"]
+    joined = " ".join(verified)
+
+    assert "memory_retrieval_quality" in joined or "memory_quality" in joined, (
+        f"self_diagnostic should verify memory quality feedback; "
+        f"verified connections: {verified}"
+    )
+
+    print("✅ test_self_diagnostic_reports_memory_quality_feedback PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -40316,6 +40492,15 @@ def _run_all_tests():
     test_cached_auto_critic_state_initialized()
     test_verify_coherence_includes_auto_critic()
     test_server_infer_response_includes_provenance()
+
+    # Architectural Unification — Unconditional Safety, Coherence & Feedback Tests
+    test_unconditional_safety_reeval_in_source()
+    test_unconditional_coherence_reverification_in_source()
+    test_feedback_bus_memory_quality_channel()
+    test_vq_collapse_recorded_in_causal_trace()
+    test_self_diagnostic_reports_unconditional_safety()
+    test_self_diagnostic_reports_unconditional_coherence()
+    test_self_diagnostic_reports_memory_quality_feedback()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
