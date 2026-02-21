@@ -40100,6 +40100,169 @@ def test_adapt_weights_maps_new_error_classes():
             f"adapt_weights_from_evolution must map '{cls_name}'"
         )
     print("✅ test_adapt_weights_maps_new_error_classes PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Coherence — Default Value Consistency, Verification Coverage,
+#  and Self-Consistent Fallback Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_diversity_default_above_collapse_threshold():
+    """When diversity metric is disabled, default diversity must be above the
+    collapse threshold to prevent false collapse detection."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    B = 2
+    factors = torch.randn(B, config.num_pillars)
+    result = model._compute_diversity(factors, B, torch.device('cpu'), fast=True)
+    diversity_val = result['diversity'][0].item()
+    assert diversity_val > config.diversity_collapse_threshold, (
+        f"Default diversity {diversity_val} must be above collapse threshold "
+        f"{config.diversity_collapse_threshold} to prevent false collapse detection"
+    )
+    assert result.get('_defaults_used') is True, (
+        "_defaults_used flag must be set when returning defaults"
+    )
+    print("✅ test_diversity_default_above_collapse_threshold PASSED")
+
+
+def test_topology_default_catastrophe_probs_zero():
+    """When topology analyzer is disabled, default catastrophe_probs must be
+    0.0, not 0.5 — absence of evidence is not 50% catastrophe probability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    B = 2
+    factors = torch.randn(B, config.num_pillars)
+    iterations = torch.ones(B)
+    result = model._compute_topology(factors, iterations, B, torch.device('cpu'), fast=True)
+    assert result['catastrophe_probs'].max().item() == 0.0, (
+        f"Default catastrophe_probs must be 0.0, got {result['catastrophe_probs']}"
+    )
+    assert result.get('_defaults_used') is True, (
+        "_defaults_used flag must be set when returning defaults"
+    )
+    print("✅ test_topology_default_catastrophe_probs_zero PASSED")
+
+
+def test_verification_coverage_returns_valid_fraction():
+    """_compute_verification_coverage returns a float in [0, 1]."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    coverage = model._compute_verification_coverage()
+    assert isinstance(coverage, float), (
+        f"verification_coverage must be float, got {type(coverage)}"
+    )
+    assert 0.0 <= coverage <= 1.0, (
+        f"verification_coverage must be in [0,1], got {coverage}"
+    )
+    print("✅ test_verification_coverage_returns_valid_fraction PASSED")
+
+
+def test_verification_coverage_reflects_disabled_modules():
+    """Disabling verification modules reduces verification coverage."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    # Full config with all verification modules
+    full_cfg = AEONConfig(device_str='cpu')
+    full_model = AEONDeltaV3(full_cfg)
+    full_cov = full_model._compute_verification_coverage()
+    # Minimal config with verification modules disabled
+    min_cfg = AEONConfig(
+        device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_unified_cognitive_cycle=False,
+    )
+    min_model = AEONDeltaV3(min_cfg)
+    min_cov = min_model._compute_verification_coverage()
+    assert min_cov < full_cov, (
+        f"Disabling modules must reduce coverage: {min_cov} should be < {full_cov}"
+    )
+    print("✅ test_verification_coverage_reflects_disabled_modules PASSED")
+
+
+def test_output_reliability_scales_with_verification_coverage():
+    """Output reliability computation includes verification coverage factor."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_verification_coverage' in src, (
+        "_reasoning_core_impl must use _verification_coverage in output "
+        "reliability computation"
+    )
+    assert '_compute_verification_coverage' in src, (
+        "_reasoning_core_impl must call _compute_verification_coverage()"
+    )
+    print("✅ test_output_reliability_scales_with_verification_coverage PASSED")
+
+
+def test_forward_includes_verification_coverage_in_output():
+    """The forward pass output dict includes verification_coverage."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(
+        device_str='cpu',
+        hidden_dim=64,
+        z_dim=64,
+        vq_embedding_dim=64,
+        num_pillars=5,
+        vocab_size=256,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    input_ids = torch.randint(0, 100, (1, 8))
+    with torch.no_grad():
+        output = model(input_ids)
+    assert 'verification_coverage' in output, (
+        "Forward output must include 'verification_coverage'"
+    )
+    cov = output['verification_coverage']
+    assert isinstance(cov, float), (
+        f"verification_coverage must be float, got {type(cov)}"
+    )
+    assert 0.0 <= cov <= 1.0, (
+        f"verification_coverage must be in [0,1], got {cov}"
+    )
+    print("✅ test_forward_includes_verification_coverage_in_output PASSED")
+
+
+def test_error_fallback_uses_corrected_defaults():
+    """The error-path fallback outputs use corrected diversity and topology defaults."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    # Check diversity default references the collapse threshold
+    assert "diversity_collapse_threshold" in src, (
+        "Error fallback diversity must reference diversity_collapse_threshold"
+    )
+    # Check fallback dict tags defaults
+    assert "'_defaults_used': True" in src, (
+        "Error fallback must tag defaults with _defaults_used"
+    )
+    # The old hardcoded 0.5 should not appear in any catastrophe_probs
+    # construction in the error fallback
+    lines = src.split('\n')
+    for i, line in enumerate(lines):
+        if 'catastrophe_probs' in line:
+            # Only check lines that construct the tensor (torch.full or torch.zeros)
+            next_lines = lines[i:i+3]
+            combined = ' '.join(next_lines)
+            if 'torch.full' in combined:
+                assert '0.5' not in combined, (
+                    f"catastrophe_probs must not default to 0.5 near line {i}: "
+                    f"{combined.strip()}"
+                )
+    print("✅ test_error_fallback_uses_corrected_defaults PASSED")
+
+
+def _run_all_tests():
+    """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
     test_tensor_hash_collision_resistance()
@@ -41817,6 +41980,16 @@ def test_adapt_weights_maps_new_error_classes():
     test_ae_train_end_of_training_ucc_evaluation()
     test_ae_train_wires_inference_insights_bridge()
     test_server_infer_logs_metacognitive_errors()
+
+    # Architectural Coherence — Default Value Consistency, Verification
+    # Coverage, and Self-Consistent Fallback Tests
+    test_diversity_default_above_collapse_threshold()
+    test_topology_default_catastrophe_probs_zero()
+    test_verification_coverage_returns_valid_fraction()
+    test_verification_coverage_reflects_disabled_modules()
+    test_output_reliability_scales_with_verification_coverage()
+    test_forward_includes_verification_coverage_in_output()
+    test_error_fallback_uses_corrected_defaults()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
