@@ -2875,7 +2875,8 @@ class SafeThoughtAETrainerV4:
                 logger.warning("Unified cognitive cycle evaluation failed: %s", _cycle_err)
                 # Record the UCC failure in error evolution so that
                 # training-time metacognitive failures are visible to the
-                # inference pipeline via bridge_training_errors_to_inference,
+                # inference pipeline via bridge_training_errors_to_inference()
+                # (defined in this module, see ae_train.py line ~3625),
                 # rather than being silently swallowed.
                 if self._error_evolution is not None:
                     self._error_evolution.record_episode(
