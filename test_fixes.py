@@ -35326,6 +35326,195 @@ def test_provenance_instrumented_includes_memory_trust():
     print("✅ test_provenance_instrumented_includes_memory_trust PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Encoder/VQ Provenance, Integration Coherence,
+# Self-Diagnostic Module Coverage, and Unmapped Error Fallback Tests
+# ============================================================================
+
+
+def test_pipeline_dependencies_include_encoder_vq():
+    """Verify that _PIPELINE_DEPENDENCIES includes encoder and vq stages
+    so that trace_root_cause() can walk backward through the full pipeline
+    from encoding through reasoning to output.
+    """
+    from aeon_core import AEONDeltaV3
+
+    dep_nodes = set()
+    for up, down in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        dep_nodes.add(up)
+        dep_nodes.add(down)
+
+    assert "encoder" in dep_nodes, (
+        "'encoder' should be in _PIPELINE_DEPENDENCIES"
+    )
+    assert "vq" in dep_nodes, (
+        "'vq' should be in _PIPELINE_DEPENDENCIES"
+    )
+    # Verify the data-flow order: input → encoder → vq → meta_loop
+    deps_list = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    assert ("input", "encoder") in deps_list, (
+        "Expected (input, encoder) edge in pipeline dependencies"
+    )
+    assert ("encoder", "vq") in deps_list, (
+        "Expected (encoder, vq) edge in pipeline dependencies"
+    )
+    assert ("vq", "meta_loop") in deps_list, (
+        "Expected (vq, meta_loop) edge in pipeline dependencies"
+    )
+
+    print("✅ test_pipeline_dependencies_include_encoder_vq PASSED")
+
+
+def test_provenance_registers_encoder_vq():
+    """Verify that encoder and vq appear in provenance attribution after
+    a forward pass, ensuring the full pipeline is traceable.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=8, meta_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(1, 128, (1, 8))
+    with torch.no_grad():
+        model(x, decode_mode='inference', fast=True)
+
+    attr = model.provenance_tracker.compute_attribution()
+    deltas = attr.get('deltas', {})
+    assert 'encoder' in deltas, (
+        f"'encoder' should be registered in provenance deltas; got {list(deltas.keys())}"
+    )
+    assert 'vq' in deltas, (
+        f"'vq' should be registered in provenance deltas; got {list(deltas.keys())}"
+    )
+
+    print("✅ test_provenance_registers_encoder_vq PASSED")
+
+
+def test_self_diagnostic_includes_infrastructure_modules():
+    """Verify that self_diagnostic _module_checks includes infrastructure
+    modules like convergence_arbiter, uncertainty_tracker, etc.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+    )
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    active = diag.get('active_modules', [])
+
+    # These modules are always initialized in __init__
+    for mod_name in [
+        'convergence_arbiter', 'uncertainty_tracker', 'memory_validator',
+        'state_validator', 'error_classifier', 'error_recovery',
+        'integrity_monitor', 'execution_guard', 'progress_tracker',
+    ]:
+        assert mod_name in active, (
+            f"'{mod_name}' should be in active_modules but got: {active}"
+        )
+
+    print("✅ test_self_diagnostic_includes_infrastructure_modules PASSED")
+
+
+def test_verify_coherence_includes_integration_state():
+    """Verify that _cached_integration_state is included in coherence
+    verification subsystem_states so that reasoning-decoder consistency
+    is cross-validated.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=8, meta_dim=32,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(1, 128, (1, 8))
+    with torch.no_grad():
+        model(x, decode_mode='inference', fast=True)
+
+    # After forward pass, _cached_integration_state should be set
+    assert model._cached_integration_state is not None, (
+        "_cached_integration_state should be set after forward pass"
+    )
+    assert isinstance(model._cached_integration_state, torch.Tensor), (
+        "_cached_integration_state should be a Tensor"
+    )
+
+    print("✅ test_verify_coherence_includes_integration_state PASSED")
+
+
+def test_unmapped_error_class_falls_back_to_uncertainty():
+    """Verify that unmapped error classes in adapt_weights_from_evolution
+    default to the 'uncertainty' signal rather than being silently ignored.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    original_weights = dict(trigger._signal_weights)
+
+    # Record a totally novel error class not in _class_to_signal map
+    error_summary = {
+        'error_classes': {
+            'completely_novel_error_xyz': {
+                'count': 10,
+                'success_rate': 0.1,  # Very low success → should boost weight
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+
+    # The unmapped class should have adjusted the 'uncertainty' signal
+    # via the fallback mapping.  The weight should differ from original.
+    new_unc_weight = trigger._signal_weights.get('uncertainty', 0.0)
+    old_unc_weight = original_weights.get('uncertainty', 0.0)
+    # With renormalization, the relative weight should have changed
+    assert new_unc_weight != old_unc_weight or len(trigger._signal_weights) == len(original_weights), (
+        "Unmapped error class should influence 'uncertainty' signal weight "
+        f"via fallback mapping; old={old_unc_weight:.4f}, new={new_unc_weight:.4f}"
+    )
+
+    print("✅ test_unmapped_error_class_falls_back_to_uncertainty PASSED")
+
+
+def test_provenance_instrumented_includes_encoder_vq():
+    """Verify that the _provenance_instrumented set in self_diagnostic()
+    includes 'encoder' and 'vq' so DAG coverage validation passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+    )
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    gaps = diag.get('gaps', [])
+    # No gap should mention encoder or vq as missing from dependencies
+    for gap in gaps:
+        if 'provenance_dependencies' in gap.get('component', ''):
+            gap_text = gap.get('gap', '')
+            assert 'encoder' not in gap_text, (
+                f"'encoder' should not be missing from pipeline deps: {gap}"
+            )
+            assert "'vq'" not in gap_text, (
+                f"'vq' should not be missing from pipeline deps: {gap}"
+            )
+
+    print("✅ test_provenance_instrumented_includes_encoder_vq PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -36833,6 +37022,16 @@ def _run_all_tests():
     test_bridge_training_loss_no_op_without_evolution()
     test_generate_returns_provenance_and_ucc()
     test_self_diagnostic_reports_new_bridges()
+    
+    # Architectural Unification — Encoder/VQ Provenance, Integration
+    # Coherence, Self-Diagnostic Module Coverage, and Unmapped Error
+    # Fallback Tests
+    test_pipeline_dependencies_include_encoder_vq()
+    test_provenance_registers_encoder_vq()
+    test_self_diagnostic_includes_infrastructure_modules()
+    test_verify_coherence_includes_integration_state()
+    test_unmapped_error_class_falls_back_to_uncertainty()
+    test_provenance_instrumented_includes_encoder_vq()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

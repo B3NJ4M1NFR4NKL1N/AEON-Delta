@@ -13848,7 +13848,15 @@ class MetaCognitiveRecursionTrigger:
         for cls_name, stats in error_classes.items():
             signal = _class_to_signal.get(cls_name)
             if signal is None:
-                continue
+                # Fallback: unmapped error classes default to the
+                # "uncertainty" signal so that novel failure modes still
+                # influence metacognitive sensitivity rather than being
+                # silently ignored.
+                logger.debug(
+                    "adapt_weights_from_evolution: unmapped error class "
+                    "'%s' defaulting to 'uncertainty' signal", cls_name,
+                )
+                signal = "uncertainty"
             success_rate = stats.get("success_rate", 1.0)
             # Bidirectional: low success → positive adjustment (boost),
             # high success → negative adjustment (dampen).  The neutral
@@ -15088,6 +15096,9 @@ class AEONDeltaV3(nn.Module):
     # tracker's dependency DAG so that trace_root_cause() can walk
     # backward through the pipeline.  Each tuple is (upstream, downstream).
     _PIPELINE_DEPENDENCIES: List[Tuple[str, str]] = [
+        ("input", "encoder"),
+        ("encoder", "vq"),
+        ("vq", "meta_loop"),
         ("input", "meta_loop"),
         ("meta_loop", "certified_meta_loop"),
         ("meta_loop", "slot_binding"),
@@ -15978,6 +15989,7 @@ class AEONDeltaV3(nn.Module):
         # upstream reasoning states, closing the decoder ↔ reasoning
         # consistency verification loop.
         self._cached_decoder_state: Optional[torch.Tensor] = None
+        self._cached_integration_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16889,6 +16901,18 @@ class AEONDeltaV3(nn.Module):
         # upstream dependencies once per forward pass.
         for _up, _down in self._PIPELINE_DEPENDENCIES:
             self.provenance_tracker.record_dependency(_up, _down)
+        
+        # 0. Register encoder and VQ stages in the provenance tracker.
+        # These stages run in _forward_impl before the tracker is reset,
+        # so we record them here with the quantized input (z_in) as a
+        # placeholder.  The delta is zero because the encoder converts
+        # discrete tokens to continuous embeddings (incompatible shapes
+        # for L2 delta), but the modules are registered in the dependency
+        # DAG and attribution order for root-cause traceability.
+        self.provenance_tracker.record_before("encoder", z_in)
+        self.provenance_tracker.record_after("encoder", z_in)
+        self.provenance_tracker.record_before("vq", z_in)
+        self.provenance_tracker.record_after("vq", z_in)
         
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
@@ -20646,6 +20670,7 @@ class AEONDeltaV3(nn.Module):
         )
         z_out = self.integration_norm(z_integrated + z_rssm)
         self.provenance_tracker.record_after("integration", z_out)
+        self._cached_integration_state = z_out.detach()
         
         # 8a. Final output sanitization — last line of defense against
         # non-finite values before decoding.  Falls back to z_rssm to
@@ -23861,6 +23886,15 @@ class AEONDeltaV3(nn.Module):
             'active_learning_planner': getattr(self, 'active_learning_planner', None),
             'temporal_knowledge_graph': getattr(self, 'temporal_knowledge_graph', None),
             'causal_dag_consensus': getattr(self, 'causal_dag_consensus', None),
+            'convergence_arbiter': getattr(self, 'convergence_arbiter', None),
+            'uncertainty_tracker': getattr(self, 'uncertainty_tracker', None),
+            'memory_validator': getattr(self, 'memory_validator', None),
+            'state_validator': getattr(self, 'state_validator', None),
+            'error_classifier': getattr(self, 'error_classifier', None),
+            'error_recovery': getattr(self, 'error_recovery', None),
+            'integrity_monitor': getattr(self, 'integrity_monitor', None),
+            'execution_guard': getattr(self, 'execution_guard', None),
+            'progress_tracker': getattr(self, 'progress_tracker', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -24174,6 +24208,7 @@ class AEONDeltaV3(nn.Module):
             _dep_nodes.add(_u)
             _dep_nodes.add(_d)
         _provenance_instrumented = {
+            'encoder', 'vq',
             'meta_loop', 'slot_binding', 'factor_extraction',
             'consistency_gate', 'safety', 'world_model', 'memory',
             'causal_model', 'rssm', 'integration',
@@ -24730,6 +24765,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_causal_state", "causal_model"),
             ("_cached_feedback", "feedback_bus"),
             ("_cached_decoder_state", "decoder"),
+            ("_cached_integration_state", "integration"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
