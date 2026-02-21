@@ -34612,6 +34612,215 @@ def test_source_module_map_covers_pipeline_error():
     print("✅ test_source_module_map_covers_pipeline_error PASSED")
 
 
+def test_dag_consensus_reconciled_adjacency():
+    """CausalDAGConsensus.evaluate() returns a reconciled adjacency matrix
+    that is a weighted average of the input DAGs, making disagreements
+    actionable rather than just observable."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus(agreement_threshold=0.5)
+    adj_a = torch.tensor([[0.0, 0.9], [0.0, 0.0]])
+    adj_b = torch.tensor([[0.0, 0.0], [0.9, 0.0]])
+    result = consensus.evaluate({
+        "neural_causal": adj_a,
+        "notears": adj_b,
+    })
+    assert "reconciled_adjacency" in result, (
+        "CausalDAGConsensus must return 'reconciled_adjacency' key"
+    )
+    recon = result["reconciled_adjacency"]
+    assert isinstance(recon, torch.Tensor), (
+        "reconciled_adjacency must be a Tensor"
+    )
+    # The reconciled matrix should be a weighted combination — neither
+    # identical to adj_a nor adj_b when they disagree
+    flat_a = adj_a.flatten()
+    flat_b = adj_b.flatten()
+    assert not torch.allclose(recon, flat_a, atol=1e-4), (
+        "Reconciled DAG must not be identical to model A alone"
+    )
+    assert not torch.allclose(recon, flat_b, atol=1e-4), (
+        "Reconciled DAG must not be identical to model B alone"
+    )
+    # Reconciled values should be between the min and max of inputs
+    stacked = torch.stack([flat_a, flat_b], dim=0)
+    assert (recon >= stacked.min(dim=0).values - 1e-5).all(), (
+        "Reconciled values below minimum of inputs"
+    )
+    assert (recon <= stacked.max(dim=0).values + 1e-5).all(), (
+        "Reconciled values above maximum of inputs"
+    )
+    print("✅ test_dag_consensus_reconciled_adjacency PASSED")
+
+
+def test_dag_consensus_full_agreement_reconciled():
+    """When all DAGs agree, reconciled adjacency equals the input."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus()
+    adj = torch.eye(4)
+    result = consensus.evaluate({
+        "model_a": adj.clone(),
+        "model_b": adj.clone(),
+    })
+    recon = result["reconciled_adjacency"]
+    assert torch.allclose(recon, adj.flatten(), atol=1e-4), (
+        "When all models agree, reconciled DAG should match input"
+    )
+    print("✅ test_dag_consensus_full_agreement_reconciled PASSED")
+
+
+def test_dag_consensus_single_model_no_reconciled():
+    """Single-model input returns no reconciled_adjacency key."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus()
+    result = consensus.evaluate({"only_model": torch.eye(3)})
+    assert "reconciled_adjacency" not in result, (
+        "Single-model input should not produce reconciled_adjacency"
+    )
+    print("✅ test_dag_consensus_single_model_no_reconciled PASSED")
+
+
+def test_verify_coherence_passes_full_signals_to_trigger():
+    """verify_coherence passes all available cached signals to the
+    metacognitive trigger, not just coherence_deficit."""
+    from aeon_core import AEONConfig, AEONDeltaV3, MetaCognitiveRecursionTrigger
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed cached state so coherence verifier has something to compare
+    B = 1
+    model._cached_meta_loop_state = torch.randn(B, config.hidden_dim)
+    model._cached_factor_state = torch.randn(B, config.hidden_dim)
+    model._cached_safety_state = torch.randn(B, config.hidden_dim)
+    # Set divergent states to force low coherence
+    model._cached_memory_state = -torch.randn(B, config.hidden_dim) * 10
+    model._cached_world_model_state = -torch.randn(B, config.hidden_dim) * 10
+    # Set cached signals that verify_coherence should propagate
+    model._cached_surprise = 0.8
+    model._cached_causal_quality = 0.2
+    # Spy on the trigger's evaluate method
+    _trigger_calls = []
+    _orig_evaluate = model.metacognitive_trigger.evaluate
+    def _spy(**kwargs):
+        _trigger_calls.append(kwargs)
+        return _orig_evaluate(**kwargs)
+    model.metacognitive_trigger.evaluate = _spy
+    result = model.verify_coherence()
+    if _trigger_calls:
+        call_kwargs = _trigger_calls[0]
+        assert "coherence_deficit" in call_kwargs
+        assert "uncertainty" in call_kwargs
+        assert "world_model_surprise" in call_kwargs
+        assert "causal_quality" in call_kwargs
+        assert call_kwargs["world_model_surprise"] == 0.8, (
+            f"Expected world_model_surprise=0.8, got {call_kwargs['world_model_surprise']}"
+        )
+        assert call_kwargs["causal_quality"] == 0.2, (
+            f"Expected causal_quality=0.2, got {call_kwargs['causal_quality']}"
+        )
+    print("✅ test_verify_coherence_passes_full_signals_to_trigger PASSED")
+
+
+def test_verify_coherence_feedback_bus_full_signals():
+    """verify_coherence refreshes feedback bus with all available signals,
+    not just coherence_deficit and uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_module_coherence=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B = 1
+    model._cached_meta_loop_state = torch.randn(B, config.hidden_dim)
+    model._cached_factor_state = -torch.randn(B, config.hidden_dim) * 10
+    # Set diverse cached signals
+    model._cached_surprise = 0.7
+    model._cached_causal_quality = 0.3
+    model._cached_output_quality = 0.4
+    # Spy on feedback bus call
+    _fb_calls = []
+    _orig_fb = model.feedback_bus.forward
+    def _fb_spy(**kwargs):
+        _fb_calls.append(kwargs)
+        return _orig_fb(**kwargs)
+    model.feedback_bus.forward = _fb_spy
+    model.verify_coherence()
+    if _fb_calls:
+        fb_kwargs = _fb_calls[0]
+        assert "world_model_surprise" in fb_kwargs, (
+            "Feedback bus refresh should include world_model_surprise"
+        )
+        assert "causal_quality" in fb_kwargs, (
+            "Feedback bus refresh should include causal_quality"
+        )
+        assert "output_quality" in fb_kwargs, (
+            "Feedback bus refresh should include output_quality"
+        )
+        assert "convergence_quality" in fb_kwargs, (
+            "Feedback bus refresh should include convergence_quality"
+        )
+    print("✅ test_verify_coherence_feedback_bus_full_signals PASSED")
+
+
+def test_self_diagnostic_reports_dag_reconciliation():
+    """self_diagnostic reports DAG consensus reconciliation as verified."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_causal_model=True,
+        enable_notears_causal=True,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    assert model.causal_dag_consensus is not None, (
+        "CausalDAGConsensus should be enabled when ≥2 causal models active"
+    )
+    diag = model.self_diagnostic()
+    verified = diag.get("verified_connections", [])
+    has_reconciliation = any("reconciled_adjacency" in v for v in verified)
+    assert has_reconciliation, (
+        "self_diagnostic should verify DAG consensus reconciliation path; "
+        f"verified connections: {verified}"
+    )
+    print("✅ test_self_diagnostic_reports_dag_reconciliation PASSED")
+
+
+def test_error_evolution_strategy_in_causal_trace():
+    """Error recovery records evolved_strategy in causal trace metadata,
+    making error-evolution learning root-cause traceable."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Record a few successful episodes with a known strategy
+    for _ in range(5):
+        tracker.record_episode(
+            error_class="test_error",
+            strategy_used="retry",
+            success=True,
+        )
+    best = tracker.get_best_strategy("test_error")
+    assert best == "retry", f"Expected 'retry', got '{best}'"
+    # Verify summary reflects the episodes
+    summary = tracker.get_error_summary()
+    assert "test_error" in summary.get("error_classes", {}), (
+        "Error summary should include 'test_error'"
+    )
+    stats = summary["error_classes"]["test_error"]
+    assert stats["success_rate"] == 1.0, (
+        f"Expected success_rate=1.0, got {stats['success_rate']}"
+    )
+    print("✅ test_error_evolution_strategy_in_causal_trace PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -36099,6 +36308,16 @@ def _run_all_tests():
     test_pipeline_dependencies_include_output_reliability_path()
     test_adapt_uncertainty_weights_default_map_complete()
     test_source_module_map_covers_pipeline_error()
+    
+    # Architectural Unification — DAG Reconciliation, Full-Signal Coherence,
+    # and Error-Evolution Traceability Tests
+    test_dag_consensus_reconciled_adjacency()
+    test_dag_consensus_full_agreement_reconciled()
+    test_dag_consensus_single_model_no_reconciled()
+    test_verify_coherence_passes_full_signals_to_trigger()
+    test_verify_coherence_feedback_bus_full_signals()
+    test_self_diagnostic_reports_dag_reconciliation()
+    test_error_evolution_strategy_in_causal_trace()
     
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

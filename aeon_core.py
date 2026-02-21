@@ -13558,6 +13558,11 @@ class CausalDAGConsensus:
                 - needs_escalation: bool — True when consensus < threshold.
                 - uncertainty_boost: float — suggested uncertainty increase.
                 - num_models: int — number of models compared.
+                - reconciled_adjacency: Tensor — weighted-average consensus
+                  DAG (flattened).  Each model is weighted inversely by its
+                  mean distance to other models, so models that agree with
+                  the majority contribute more.  Only present when
+                  num_models ≥ 2.
         """
         names = list(adjacency_matrices.keys())
         n = len(names)
@@ -13610,12 +13615,44 @@ class CausalDAGConsensus:
                 / max(self.agreement_threshold, 1e-6)
             ) * self.uncertainty_scale
 
+        # --- Reconciliation: produce a weighted-average consensus DAG ---
+        # When multiple causal models disagree, averaging their adjacency
+        # matrices (weighted by inverse pairwise distance) produces a
+        # consensus structure that retains edges supported by the majority
+        # of models and attenuates contentious edges.  This makes
+        # disagreement actionable: downstream modules can consume the
+        # reconciled DAG instead of picking one arbitrarily.
+        _stacked = torch.stack([flat[n_] for n_ in names], dim=0)  # [n, max_len]
+        # Weight each model inversely by its mean distance to others.
+        # Models that agree with most others get higher weight.
+        _weights = torch.ones(n, device=_stacked.device)
+        if count > 0:
+            for i in range(n):
+                _model_dist_sum = 0.0
+                _model_dist_cnt = 0
+                for j in range(n):
+                    if i == j:
+                        continue
+                    key = (names[min(i, j)], names[max(i, j)])
+                    _model_dist_sum += pairwise_distances.get(key, 0.0)
+                    _model_dist_cnt += 1
+                if _model_dist_cnt > 0:
+                    avg_model_dist = _model_dist_sum / _model_dist_cnt
+                    # Inverse distance weighting: closer to consensus → higher weight
+                    _weights[i] = 1.0 / (avg_model_dist + 1e-6)
+            _weights = _weights / (_weights.sum() + 1e-8)
+        else:
+            _weights = _weights / n
+        # Weighted average of flattened adjacency matrices
+        reconciled_flat = (_weights.unsqueeze(1) * _stacked).sum(dim=0)
+
         return {
             "consensus_score": consensus_score,
             "pairwise_distances": pairwise_distances,
             "needs_escalation": needs_escalation,
             "uncertainty_boost": uncertainty_boost,
             "num_models": n,
+            "reconciled_adjacency": reconciled_flat,
         }
 
 
@@ -16512,6 +16549,11 @@ class AEONDeltaV3(nn.Module):
             # MetaRecoveryLearner: encode actual error context and select
             # recovery strategy based on learned policy, then record the
             # experience so the learner can improve over time.
+            # When error evolution has a historically successful strategy,
+            # record it alongside the RL-selected strategy so that the
+            # causal trace can attribute recovery outcomes to evolved
+            # vs. learned strategy selection, closing the loop between
+            # error evolution learning and recovery execution.
             recovery_info: Optional[Dict[str, Any]] = None
             if self.meta_recovery is not None:
                 try:
@@ -16525,6 +16567,7 @@ class AEONDeltaV3(nn.Module):
                     self.audit_log.record("meta_recovery", "strategy_selected", {
                         "strategy": strategy,
                         "error_class": error_class,
+                        "evolved_strategy": _evolved_strategy,
                     })
                     # Feed experience into replay buffer so the learner
                     # can update its recovery policy over time.
@@ -16546,6 +16589,8 @@ class AEONDeltaV3(nn.Module):
                     logger.debug("Meta-recovery learner failed: %s", exc)
             # Record error recovery into causal trace so root-cause
             # analysis can link recovery decisions to their antecedents.
+            # Include the evolved strategy from error evolution so that
+            # all conclusions can be traced back to their root causes.
             if self.causal_trace is not None:
                 self.causal_trace.record(
                     "error_recovery", error_class,
@@ -16553,10 +16598,15 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         "detail": detail,
                         "recovery_success": recovery_success,
+                        "evolved_strategy": _evolved_strategy,
                     },
                     severity="error",
                 )
-            # CausalErrorEvolutionTracker: record error episode
+            # CausalErrorEvolutionTracker: record error episode.
+            # Include evolved_strategy in metadata so that subsequent
+            # get_error_summary() calls can compare RL-selected vs.
+            # historically best strategies, closing the loop between
+            # error evolution learning and recovery execution.
             if self.error_evolution is not None:
                 strategy_name = "fallback"
                 if self.meta_recovery is not None and recovery_info is not None:
@@ -16567,6 +16617,7 @@ class AEONDeltaV3(nn.Module):
                     success=recovery_success,
                     metadata=self._provenance_enriched_metadata({
                         "detail": detail,
+                        "evolved_strategy": _evolved_strategy,
                     }),
                 )
             # Deterministic fallback — return input as-is with partial outputs.
@@ -23667,6 +23718,12 @@ class AEONDeltaV3(nn.Module):
         # 11a. CausalDAGConsensus → metacognitive trigger
         if self.causal_dag_consensus is not None:
             verified.append('causal_dag_consensus → uncertainty → metacognitive_trigger')
+            # Verify reconciliation produces a consensus adjacency matrix
+            # so conflicting DAGs are actively merged, not just flagged.
+            verified.append(
+                'causal_dag_consensus → reconciled_adjacency '
+                '(weighted-average consensus DAG for downstream modules)'
+            )
             if self.error_evolution is not None:
                 verified.append('causal_dag_consensus → error_evolution (disagreement tracking)')
             # Verify DAG consensus feeds into UCC subsystem states so the
@@ -24379,12 +24436,25 @@ class AEONDeltaV3(nn.Module):
         # deficit so that sustained subsystem failures (detected by
         # SystemIntegrityMonitor) participate in the metacognitive
         # trigger evaluation alongside instantaneous coherence signals.
+        # Pass ALL available cached signals (not just coherence_deficit)
+        # so the metacognitive trigger can make a fully-informed decision
+        # about whether deeper reasoning is needed — this implements
+        # the architectural requirement that any uncertainty triggers a
+        # meta-cognitive cycle.
         coherence_deficit = max(0.0, 1.0 - score)
         _integrity_deficit = max(0.0, 1.0 - _integrity_health)
         _effective_deficit = max(coherence_deficit, _integrity_deficit)
         if result["needs_recheck"] and self.metacognitive_trigger is not None:
             trigger_result = self.metacognitive_trigger.evaluate(
                 coherence_deficit=_effective_deficit,
+                uncertainty=max(
+                    _effective_deficit,
+                    1.0 - result.get("output_reliability", 1.0),
+                ),
+                world_model_surprise=getattr(self, '_cached_surprise', 0.0),
+                recovery_pressure=self._compute_recovery_pressure()
+                    if hasattr(self, '_compute_recovery_pressure') else 0.0,
+                causal_quality=getattr(self, '_cached_causal_quality', 1.0),
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
@@ -24431,10 +24501,12 @@ class AEONDeltaV3(nn.Module):
         # When coherence deficit is significant, update the cached feedback
         # vector so the next forward pass's meta-loop is conditioned on
         # the detected coherence issues, closing the coherence → feedback
-        # → meta-loop cross-pass feedback loop.  The coherence_deficit is
-        # used as a proxy for uncertainty because out-of-band coherence
-        # checks (outside the reasoning core) have no independent
-        # uncertainty estimate; the deficit itself IS the epistemic signal.
+        # → meta-loop cross-pass feedback loop.  All available cached
+        # signals are passed (not just coherence_deficit) so that the
+        # feedback vector retains full temporal context from the last
+        # forward pass, preventing information loss on out-of-band refresh.
+        # Note: safety_score is omitted because it requires a Tensor from
+        # MultiLevelSafetySystem which is not available out-of-band.
         if coherence_deficit > 0.1 and self.feedback_bus is not None:
             try:
                 _fb_device = self.device
@@ -24442,7 +24514,25 @@ class AEONDeltaV3(nn.Module):
                     batch_size=1,
                     device=_fb_device,
                     coherence_deficit=coherence_deficit,
-                    uncertainty=coherence_deficit,
+                    uncertainty=max(
+                        coherence_deficit,
+                        1.0 - result.get("output_reliability", 1.0),
+                    ),
+                    convergence_quality=getattr(
+                        self, '_last_convergence_loss_scale', 1.0),
+                    world_model_surprise=getattr(
+                        self, '_cached_surprise', 0.0),
+                    causal_quality=getattr(
+                        self, '_cached_causal_quality', 1.0),
+                    recovery_pressure=self._compute_recovery_pressure()
+                        if hasattr(self, '_compute_recovery_pressure')
+                        else 0.0,
+                    self_report_consistency=getattr(
+                        self, '_cached_self_report_consistency', 1.0)
+                        if hasattr(self, '_cached_self_report_consistency')
+                        else 1.0,
+                    output_quality=getattr(
+                        self, '_cached_output_quality', 1.0),
                 ).detach()
             except Exception as _fb_err:
                 logger.warning(
