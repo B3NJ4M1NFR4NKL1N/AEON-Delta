@@ -405,6 +405,12 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="nav-item" onclick="go('vq')"><span class="nav-icon">◈</span> VQ Codebook</div>
   </div>
   <div class="nav-group">
+    <div class="nav-label">Cognition</div>
+    <div class="nav-item" onclick="go('metacognition')"><span class="nav-icon">🧠</span> Metacognition</div>
+    <div class="nav-item" onclick="go('provenance')"><span class="nav-icon">⛓</span> Causal Provenance</div>
+    <div class="nav-item" onclick="go('causaltrace')"><span class="nav-icon">🔍</span> Causal Trace</div>
+  </div>
+  <div class="nav-group">
     <div class="nav-label">Monitoring</div>
     <div class="nav-item" onclick="go('logs')"><span class="nav-icon">≡</span> Live Logs <span class="nav-badge" id="log-badge">0</span></div>
     <div class="nav-item" onclick="go('audit')"><span class="nav-icon">◐</span> Audit Trail</div>
@@ -478,6 +484,24 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
         <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Inf events</div><div style="font-family:var(--display);font-size:22px;color:var(--danger)" id="tg-inf-live">0</div></div>
         <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Sanitized</div><div style="font-family:var(--display);font-size:22px;color:var(--accent)" id="tg-san-live">0</div></div>
       </div>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="ct">🧠 Metacognition</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Status</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-mc-status">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Gaps</div><div style="font-family:var(--display);font-size:16px;color:var(--warn)" id="d-mc-gaps">—</div></div>
+      </div>
+      <div style="margin-top:8px;text-align:center"><button class="btn btn-ghost" style="font-size:10px" onclick="go('metacognition')">View Details →</button></div>
+    </div>
+    <div class="card">
+      <div class="ct">⛓ Causal Provenance</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Modules</div><div style="font-family:var(--display);font-size:16px;color:var(--purple)" id="d-prov-modules">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Trace</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-ct-status">—</div></div>
+      </div>
+      <div style="margin-top:8px;text-align:center"><button class="btn btn-ghost" style="font-size:10px" onclick="go('provenance')">View Details →</button></div>
     </div>
   </div>
   <div class="stitle">Quick Initialize</div>
@@ -1709,6 +1733,108 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 </div>
 
+<!-- ══ METACOGNITION ══ -->
+<div class="panel" id="panel-metacognition">
+  <div class="ph">
+    <div><div class="ph-title">Metacognition</div><div class="ph-sub">MetaCognitiveRecursionTrigger · self_diagnostic() · /api/metacognition</div></div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="loadMetacognition()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="resolveMetaGaps()">🔧 Resolve Gaps</button>
+    </div>
+  </div>
+  <div class="g4" style="margin-bottom:14px">
+    <div class="card ca"><div class="ct">Status</div><div class="cv ca" id="mc-status" style="font-size:16px">—</div><div class="cm-t">self-diagnostic verdict</div></div>
+    <div class="card cg"><div class="ct">Verified</div><div class="cv cg" id="mc-verified">—</div><div class="cm-t">verified subsystems</div></div>
+    <div class="card cw"><div class="ct">Gaps</div><div class="cv cw" id="mc-gaps">—</div><div class="cm-t">detected gaps</div></div>
+    <div class="card cp"><div class="ct">Trace Coverage</div><div class="cv cp" id="mc-trace-cov">—</div><div class="cm-t">causal trace coverage</div></div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🧠 Metacognitive State</div>
+      <div id="mc-state" style="margin-top:8px;font-size:12px;color:var(--text2);max-height:280px;overflow-y:auto"><div style="color:var(--text3)">Initialize model to view metacognitive state</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">🔍 Self-Diagnostic Gaps</div>
+      <div id="mc-gap-list" style="margin-top:8px;font-size:12px;color:var(--text2);max-height:280px;overflow-y:auto"><div style="color:var(--text3)">No gaps detected</div></div>
+    </div>
+  </div>
+  <div class="card" id="mc-resolve-card" style="display:none">
+    <div class="ct">🔧 Gap Resolutions</div>
+    <div class="g4" style="margin-bottom:10px;margin-top:8px">
+      <div class="card cd"><div class="ct">Critical</div><div class="cv" style="color:var(--danger)" id="mc-res-crit">0</div></div>
+      <div class="card cw"><div class="ct">Warnings</div><div class="cv cw" id="mc-res-warn">0</div></div>
+    </div>
+    <div style="overflow-x:auto;max-height:300px;overflow-y:auto">
+      <table class="tbl" id="mc-resolve-tbl">
+        <thead><tr><th>Severity</th><th>Component</th><th>Gap</th><th>Remediation</th></tr></thead>
+        <tbody id="mc-resolve-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CAUSAL PROVENANCE ══ -->
+<div class="panel" id="panel-provenance">
+  <div class="ph">
+    <div><div class="ph-title">Causal Provenance</div><div class="ph-sub">CausalProvenanceTracker · /api/provenance · per-module L2 delta attribution</div></div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="loadProvenance()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="exportProvenance()">↓ Export</button>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">⛓ Module Attribution</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:360px;overflow-y:auto">
+        <table class="tbl" id="prov-attr-tbl">
+          <thead><tr><th>Module</th><th>Contribution</th><th>L2 Delta</th><th>Bar</th></tr></thead>
+          <tbody id="prov-attr-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">Initialize model and run inference to compute provenance</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">🔗 Root Cause Analysis</div>
+      <div style="margin-top:8px">
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="prov-module-sel" style="flex:1;font-size:12px;padding:5px 8px"><option value="">Select module…</option></select>
+          <button class="btn btn-secondary" onclick="loadProvenanceRootCause()">Trace</button>
+        </div>
+        <div id="prov-root-cause" style="font-size:12px;color:var(--text2);max-height:260px;overflow-y:auto"><div style="color:var(--text3)">Select a module and click Trace to view root causes</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CAUSAL TRACE ══ -->
+<div class="panel" id="panel-causaltrace">
+  <div class="ph">
+    <div><div class="ph-title">Causal Trace</div><div class="ph-sub">TemporalCausalTraceBuffer · /api/causal_trace · subsystem-level causal decision chain</div></div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="loadCausalTrace()">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="exportCausalTrace()">↓ Export</button>
+    </div>
+  </div>
+  <div class="g4" style="margin-bottom:14px">
+    <div class="card ca"><div class="ct">Available</div><div class="cv ca" id="ct-available" style="font-size:16px">—</div><div class="cm-t">causal trace status</div></div>
+    <div class="card cg"><div class="ct">Entries</div><div class="cv cg" id="ct-count">0</div><div class="cm-t">trace entries recorded</div></div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🔍 Causal Decision Chain</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:380px;overflow-y:auto">
+        <table class="tbl" id="ct-tbl">
+          <thead><tr><th>Time</th><th>Module</th><th>Decision</th><th>Severity</th><th>Actions</th></tr></thead>
+          <tbody id="ct-tbody"><tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">Enable causal trace and run inference to record decisions</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ct">🔗 Root Cause Chain</div>
+      <div id="ct-root-cause" style="margin-top:8px;font-size:12px;color:var(--text2);max-height:360px;overflow-y:auto"><div style="color:var(--text3)">Click "Trace" on an entry to view its root cause chain</div></div>
+    </div>
+  </div>
+</div>
+
 <!-- ══ CODE GENERATOR ══ -->
 <div class="panel" id="panel-codegen">
   <div class="ph">
@@ -1818,6 +1944,9 @@ function go(panel) {
   if(panel === 'benchmark') refreshBenchmark();
   if(panel === 'codegen') genCode();
   if(panel === 'observability') loadObservability();
+  if(panel === 'metacognition' && S.modelReady) loadMetacognition();
+  if(panel === 'provenance' && S.modelReady) loadProvenance();
+  if(panel === 'causaltrace' && S.modelReady) loadCausalTrace();
   if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); }, 100); }
 }
 
@@ -2581,6 +2710,31 @@ async function refreshDash() {
       const clr = v >= 0.8 ? 'var(--green)' : v >= 0.5 ? 'var(--warn)' : 'var(--danger)';
       return `<div class="ss-item"><div class="ss-dot" style="background:${clr}"></div><div class="ss-name">${k}</div><div class="ss-val">${pct}%</div></div>`;
     }).join('') || '<div style="font-size:11px;color:var(--text3)">No subsystems tracked</div>';
+  } catch(e) {}
+
+  // Metacognition summary
+  try {
+    const mc = await api('GET', '/api/metacognition');
+    if (mc.ok) {
+      const diag = mc.self_diagnostic || {};
+      document.getElementById('d-mc-status').textContent = diag.status || '—';
+      document.getElementById('d-mc-status').style.color = diag.status === 'coherent' ? 'var(--green)' : diag.status === 'degraded' ? 'var(--warn)' : 'var(--danger)';
+      document.getElementById('d-mc-gaps').textContent = diag.gap_count ?? '—';
+    }
+  } catch(e) {}
+
+  // Provenance & Causal Trace summary
+  try {
+    const prov = await api('GET', '/api/provenance');
+    if (prov.ok) {
+      const order = prov.attribution?.order || [];
+      document.getElementById('d-prov-modules').textContent = order.length || '—';
+    }
+  } catch(e) {}
+  try {
+    const ct = await api('GET', '/api/causal_trace?last_n=1');
+    document.getElementById('d-ct-status').textContent = ct.available ? 'ON' : 'OFF';
+    document.getElementById('d-ct-status').style.color = ct.available ? 'var(--green)' : 'var(--text3)';
   } catch(e) {}
 }
 
@@ -4442,6 +4596,198 @@ function exportTelemetry() {
     a.download = `aeon_telemetry_${Date.now()}.json`;
     a.click();
   }).catch(()=>{});
+}
+
+// ─── METACOGNITION ───────────────────────────────────────────────────────────
+async function loadMetacognition() {
+  try {
+    const d = await api('GET', '/api/metacognition');
+    if (!d.ok) return;
+    const diag = d.self_diagnostic || {};
+    const state = d.metacognitive_state || {};
+
+    document.getElementById('mc-status').textContent = diag.status || '—';
+    document.getElementById('mc-status').style.color = diag.status === 'coherent' ? 'var(--green)' : diag.status === 'degraded' ? 'var(--warn)' : 'var(--danger)';
+    document.getElementById('mc-verified').textContent = diag.verified_count ?? '—';
+    document.getElementById('mc-gaps').textContent = diag.gap_count ?? '—';
+    const cov = diag.causal_trace_coverage;
+    document.getElementById('mc-trace-cov').textContent = cov != null ? (typeof cov === 'number' ? (cov * 100).toFixed(0) + '%' : cov) : '—';
+
+    // Metacognitive state
+    const stDiv = document.getElementById('mc-state');
+    const stKeys = Object.keys(state);
+    if (stKeys.length) {
+      stDiv.innerHTML = stKeys.map(k => {
+        const v = state[k];
+        const vStr = typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v);
+        return `<div style="margin-bottom:6px;padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent);font-weight:600">${escHtml(k)}</span>: <span style="color:var(--text2)">${escHtml(vStr).slice(0, 200)}</span></div>`;
+      }).join('');
+    } else {
+      stDiv.innerHTML = '<div style="color:var(--text3)">No metacognitive state available</div>';
+    }
+
+    // Gaps list
+    const gapDiv = document.getElementById('mc-gap-list');
+    const gaps = diag.gaps || [];
+    if (gaps.length) {
+      gapDiv.innerHTML = gaps.map(g => {
+        const sev = (g.gap || '').includes(' is None') ? 'critical' : 'warning';
+        const cls = sev === 'critical' ? 'br' : 'bw';
+        return `<div style="margin-bottom:4px;display:flex;align-items:center;gap:6px"><span class="badge ${cls}">${sev}</span><span style="color:var(--accent)">${escHtml(g.component || '?')}</span><span style="color:var(--text3)">→ ${escHtml(g.gap || '')}</span></div>`;
+      }).join('');
+    } else {
+      gapDiv.innerHTML = '<div style="color:var(--green)">✓ No gaps detected — all subsystems verified</div>';
+    }
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+async function resolveMetaGaps() {
+  try {
+    const d = await api('GET', '/api/metacognition/resolve');
+    if (!d.ok) return;
+    document.getElementById('mc-resolve-card').style.display = 'block';
+    document.getElementById('mc-res-crit').textContent = d.critical_gaps || 0;
+    document.getElementById('mc-res-warn').textContent = (d.total_gaps || 0) - (d.critical_gaps || 0);
+
+    const tbody = document.getElementById('mc-resolve-tbody');
+    const res = d.resolutions || [];
+    if (res.length) {
+      tbody.innerHTML = res.map(r => {
+        const cls = r.severity === 'critical' ? 'br' : 'bw';
+        return `<tr><td><span class="badge ${cls}">${r.severity}</span></td><td style="color:var(--accent)">${escHtml(r.component)}</td><td style="color:var(--text2)">${escHtml(r.gap)}</td><td style="color:var(--text3)">${escHtml(r.remediation)}</td></tr>`;
+      }).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--green);text-align:center;padding:14px">✓ No gaps require resolution</td></tr>';
+    }
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+// ─── CAUSAL PROVENANCE ───────────────────────────────────────────────────────
+let _provenanceData = null;
+
+async function loadProvenance() {
+  try {
+    const d = await api('GET', '/api/provenance');
+    if (!d.ok) return;
+    _provenanceData = d;
+    const attr = d.attribution || {};
+    const contribs = attr.contributions || {};
+    const deltas = attr.deltas || {};
+    const order = attr.order || Object.keys(contribs);
+
+    // Populate module selector
+    const sel = document.getElementById('prov-module-sel');
+    sel.innerHTML = '<option value="">Select module…</option>' + order.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
+
+    // Build attribution table
+    const tbody = document.getElementById('prov-attr-tbody');
+    if (order.length) {
+      const maxContrib = Math.max(...order.map(m => Math.abs(contribs[m] || 0)), 1e-12);
+      tbody.innerHTML = order.map(m => {
+        const c = contribs[m] || 0;
+        const delta = deltas[m] || 0;
+        const pct = Math.abs(c / maxContrib * 100);
+        return `<tr><td style="color:var(--accent)">${escHtml(m)}</td><td>${typeof c === 'number' ? c.toFixed(6) : c}</td><td>${typeof delta === 'number' ? delta.toFixed(6) : delta}</td><td><div style="background:var(--surface3);border-radius:3px;overflow:hidden;height:14px"><div style="background:var(--purple);width:${pct.toFixed(1)}%;height:100%"></div></div></td></tr>`;
+      }).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No attribution data — run inference first</td></tr>';
+    }
+  } catch(e) { log('ERROR', 'provenance', e.message); }
+}
+
+async function loadProvenanceRootCause() {
+  const mod = document.getElementById('prov-module-sel').value;
+  if (!mod) return;
+  try {
+    const d = await api('GET', `/api/provenance/root_cause/${encodeURIComponent(mod)}`);
+    const div = document.getElementById('prov-root-cause');
+    const rc = d.root_cause;
+    if (rc && typeof rc === 'object') {
+      const entries = Array.isArray(rc) ? rc : Object.entries(rc).map(([k, v]) => ({module: k, ...( typeof v === 'object' ? v : {impact: v})}));
+      div.innerHTML = `<div style="font-weight:600;color:var(--accent);margin-bottom:8px">Root causes for: ${escHtml(mod)}</div>` +
+        entries.map((e, i) => {
+          const name = e.module || e.name || `upstream-${i}`;
+          const impact = e.impact ?? e.delta ?? '';
+          return `<div style="margin-bottom:4px;padding:4px 8px;background:var(--surface3);border-radius:4px;display:flex;gap:8px"><span style="color:var(--purple)">↑ ${escHtml(String(name))}</span><span style="color:var(--text3)">impact: ${typeof impact === 'number' ? impact.toFixed(6) : impact}</span></div>`;
+        }).join('');
+    } else {
+      div.innerHTML = `<div style="color:var(--text3)">No root cause data for ${escHtml(mod)}</div>`;
+    }
+  } catch(e) { log('ERROR', 'provenance', e.message); }
+}
+
+function exportProvenance() {
+  if (!_provenanceData) return;
+  const a = document.createElement('a');
+  a.href = 'data:application/json,' + encodeURIComponent(JSON.stringify(_provenanceData, null, 2));
+  a.download = `aeon_provenance_${Date.now()}.json`;
+  a.click();
+}
+
+// ─── CAUSAL TRACE ────────────────────────────────────────────────────────────
+let _causalTraceData = null;
+
+async function loadCausalTrace() {
+  try {
+    const d = await api('GET', '/api/causal_trace?last_n=100');
+    _causalTraceData = d;
+
+    document.getElementById('ct-available').textContent = d.available ? 'ON' : 'OFF';
+    document.getElementById('ct-available').style.color = d.available ? 'var(--green)' : 'var(--text3)';
+    document.getElementById('ct-count').textContent = d.count || 0;
+
+    if (!d.available) {
+      document.getElementById('ct-tbody').innerHTML = `<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">${escHtml(d.reason || 'Causal trace not enabled')}</td></tr>`;
+      return;
+    }
+
+    const entries = d.entries || [];
+    const tbody = document.getElementById('ct-tbody');
+    if (entries.length) {
+      tbody.innerHTML = entries.slice(-100).reverse().map((e, i) => {
+        const ts = e.timestamp || e.time || e.ts || '';
+        const mod = e.module || e.subsystem || e.source || '—';
+        const dec = e.decision || e.msg || e.event || '';
+        const sev = e.severity || 'info';
+        const sevCls = sev === 'critical' || sev === 'error' ? 'color:var(--danger)' : sev === 'warning' ? 'color:var(--warn)' : 'color:var(--text3)';
+        const eid = e.id || e.entry_id || i;
+        return `<tr><td style="color:var(--text3)">${typeof ts === 'number' ? ts.toFixed(2) : escHtml(String(ts))}</td><td style="color:var(--accent)">${escHtml(mod)}</td><td style="color:var(--text2)">${escHtml(String(dec)).slice(0, 80)}</td><td style="${sevCls}">${sev}</td><td><button class="btn btn-ghost" style="padding:2px 6px;font-size:10px" onclick="loadCausalTraceRootCause('${escHtml(String(eid))}')">Trace</button></td></tr>`;
+      }).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">No trace entries recorded yet</td></tr>';
+    }
+  } catch(e) { log('ERROR', 'causal_trace', e.message); }
+}
+
+async function loadCausalTraceRootCause(entryId) {
+  try {
+    const d = await api('GET', `/api/causal_trace/root_cause/${encodeURIComponent(entryId)}`);
+    const div = document.getElementById('ct-root-cause');
+    if (!d.available && d.available !== undefined) {
+      div.innerHTML = `<div style="color:var(--text3)">${escHtml(d.reason || 'Causal trace not enabled')}</div>`;
+      return;
+    }
+    const rc = d.root_cause;
+    if (rc && (Array.isArray(rc) ? rc.length : Object.keys(rc).length)) {
+      const entries = Array.isArray(rc) ? rc : Object.entries(rc).map(([k, v]) => ({step: k, ...(typeof v === 'object' ? v : {detail: v})}));
+      div.innerHTML = `<div style="font-weight:600;color:var(--accent);margin-bottom:8px">Root cause chain for entry: ${escHtml(entryId)}</div>` +
+        entries.map((e, i) => {
+          const label = e.step || e.module || e.source || `step-${i}`;
+          const detail = e.detail || e.decision || e.msg || JSON.stringify(e);
+          return `<div style="margin-bottom:4px;padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--purple)">← ${escHtml(String(label))}</span> <span style="color:var(--text3)">${escHtml(String(detail)).slice(0, 120)}</span></div>`;
+        }).join('');
+    } else {
+      div.innerHTML = `<div style="color:var(--text3)">No root cause chain available for entry ${escHtml(entryId)}</div>`;
+    }
+  } catch(e) { log('ERROR', 'causal_trace', e.message); }
+}
+
+function exportCausalTrace() {
+  if (!_causalTraceData) return;
+  const a = document.createElement('a');
+  a.href = 'data:application/json,' + encodeURIComponent(JSON.stringify(_causalTraceData, null, 2));
+  a.download = `aeon_causal_trace_${Date.now()}.json`;
+  a.click();
 }
 
 // ─── SESSION EXPORT ───────────────────────────────────────────────────────────
