@@ -13425,6 +13425,9 @@ class TemporalCausalTraceBuffer:
             "top_subsystem": top_subsystem,
             "total_traces": len(candidates),
         }
+
+
+class CrossValidationReconciler(nn.Module):
     """
     Cross-validates SparseFactorization and CausalWorldModel interpretations.
 
