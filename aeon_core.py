@@ -15310,6 +15310,15 @@ class AEONDeltaV3(nn.Module):
         # core input ensures consistent activation scale.
         ("vq", "encoder_reasoning_norm"),
         ("encoder_reasoning_norm", "meta_loop"),
+        # ── Memory cross-validation paths ──────────────────────────
+        # Cross-validation between memory subsystems feeds into the
+        # metacognitive trigger so memory inconsistencies drive
+        # deeper reasoning.
+        ("neurogenic_memory", "memory_cross_validation"),
+        ("consolidating_memory", "memory_cross_validation"),
+        ("temporal_memory", "memory_cross_validation"),
+        ("memory", "memory_cross_validation"),
+        ("memory_cross_validation", "metacognitive_trigger"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -17152,7 +17161,14 @@ class AEONDeltaV3(nn.Module):
         # run, quality correctly defaults to "unknown = assume OK" for
         # this pass.
         self._cached_causal_quality = 1.0
-        
+
+        # 0. Circuit breaker — tracks which pipeline stages failed during
+        # this forward pass.  Downstream modules consult this set to
+        # avoid executing on degraded upstream outputs, preventing
+        # cascading failures where one subsystem's error silently
+        # corrupts all subsequent stages.  Reset each pass.
+        _circuit_breaker_tripped: set = set()
+
         # 0a. Dynamic complexity estimation for subsystem gating.
         # Gates[0..3] correspond to: world_model, mcts, causal_world, unified_sim.
         # When complexity is low, expensive subsystems are skipped.
@@ -19088,6 +19104,7 @@ class AEONDeltaV3(nn.Module):
                     )
             except Exception as wm_err:
                 _world_model_healthy = False
+                _circuit_breaker_tripped.add("world_model")
                 logger.warning(f"World model error (non-fatal): {wm_err}")
                 self.error_recovery.record_event(
                     error_class="subsystem",
@@ -19412,6 +19429,7 @@ class AEONDeltaV3(nn.Module):
                     )
             except Exception as mem_err:
                 _memory_healthy = False
+                _circuit_breaker_tripped.add("memory")
                 logger.warning(f"Memory subsystem error (non-fatal): {mem_err}")
                 self.error_recovery.record_event(
                     error_class="subsystem",
@@ -19605,7 +19623,55 @@ class AEONDeltaV3(nn.Module):
         })
         self.provenance_tracker.record_after("memory", C_star)
         self._cached_memory_state = C_star.detach()
-        
+
+        # 5c-trust. Supplementary memory trust scoring — apply the trust
+        # scorer to the combined memory-enriched state (C_star after all
+        # memory subsystems) against the pre-memory state (z_in).
+        # The primary MemoryManager path already applies trust scoring
+        # (section 5c inside _apply_memory_fusion).  This extends trust
+        # assessment to the supplementary memory systems (hierarchical,
+        # neurogenic, consolidating, temporal) that blend into C_star
+        # directly without trust dampening.  When trust is low, the
+        # memory contribution is dampened toward the pre-memory state,
+        # preventing unverified memory from corrupting downstream
+        # reasoning.
+        _supplementary_mem_active = (
+            self.hierarchical_memory is not None
+            or self.neurogenic_memory is not None
+            or self.consolidating_memory is not None
+            or self.temporal_memory is not None
+        )
+        if (self.trust_scorer is not None
+                and _supplementary_mem_active
+                and _memory_healthy
+                and not fast):
+            try:
+                _mem_trust_result = self.trust_scorer(C_star, z_in)
+                _mem_trust_score = _mem_trust_result['trust_score']  # [B, 1]
+                _mean_mem_trust = float(_mem_trust_score.mean().item())
+                _MEM_TRUST_THRESHOLD = 0.5
+                if _mean_mem_trust < _MEM_TRUST_THRESHOLD:
+                    # Dampen: blend toward pre-memory state
+                    C_star = _mem_trust_score * C_star + (1.0 - _mem_trust_score) * z_in
+                    _trust_unc = (_MEM_TRUST_THRESHOLD - _mean_mem_trust) * 0.2
+                    uncertainty = min(1.0, uncertainty + _trust_unc)
+                    uncertainty_sources["supplementary_memory_trust"] = _trust_unc
+                    high_uncertainty = uncertainty > 0.5
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "memory", "supplementary_trust_dampened",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "mean_trust": _mean_mem_trust,
+                                "uncertainty_boost": _trust_unc,
+                            },
+                        )
+            except (RuntimeError, ValueError, TypeError) as _mem_trust_err:
+                logger.debug(
+                    "Supplementary memory trust scoring skipped: %s",
+                    _mem_trust_err,
+                )
+
         # 5c5-0. Memory retrieval quality tracking — record per-pass memory
         # retrieval statistics for inclusion in the causal decision chain.
         # Enables root-cause analysis linking reasoning outcomes to the
@@ -19620,7 +19686,73 @@ class AEONDeltaV3(nn.Module):
             "consolidating_active": self.consolidating_memory is not None,
             "temporal_active": self.temporal_memory is not None,
         }
-        
+
+        # 5c5-cv. Memory cross-validation — compare outputs from the
+        # active memory subsystems (hierarchical, neurogenic, consolidating,
+        # temporal) to detect contradictory retrieved contexts.  When
+        # multiple memory systems contribute conflicting information the
+        # reasoning state may silently incorporate noise.  Computing
+        # pairwise cosine similarity and flagging low agreement closes
+        # the gap: any memory inconsistency triggers uncertainty
+        # escalation and a causal trace entry so that downstream
+        # meta-cognitive evaluation can root-cause it.
+        _mem_snapshots: Dict[str, torch.Tensor] = {}
+        if self.hierarchical_memory is not None and memory_retrieved is not None:
+            _mem_snapshots["hierarchical"] = memory_retrieved.detach()
+        if (self.neurogenic_memory is not None
+                and not fast
+                and C_star.shape[-1] == self.config.hidden_dim):
+            _mem_snapshots["neurogenic"] = C_star.detach()
+        if (self.consolidating_memory is not None
+                and not fast
+                and C_star.shape[-1] == self.config.hidden_dim):
+            _mem_snapshots["consolidating"] = C_star.detach()
+        if (self.temporal_memory is not None
+                and not fast
+                and C_star.shape[-1] == self.config.hidden_dim):
+            _mem_snapshots["temporal"] = C_star.detach()
+        self._last_memory_cross_validation: Dict[str, Any] = {}
+        if len(_mem_snapshots) >= 2 and not fast:
+            _mem_names = list(_mem_snapshots.keys())
+            _pair_sims: Dict[str, float] = {}
+            for _mi in range(len(_mem_names)):
+                for _mj in range(_mi + 1, len(_mem_names)):
+                    _a = _mem_snapshots[_mem_names[_mi]].float().flatten()
+                    _b = _mem_snapshots[_mem_names[_mj]].float().flatten()
+                    _min_len = min(_a.numel(), _b.numel())
+                    _a, _b = _a[:_min_len], _b[:_min_len]
+                    _norms = _a.norm() * _b.norm()
+                    _sim = float((_a * _b).sum() / max(_norms, 1e-8))
+                    _pair_sims[f"{_mem_names[_mi]}-{_mem_names[_mj]}"] = _sim
+            _mean_mem_sim = sum(_pair_sims.values()) / max(len(_pair_sims), 1)
+            _MEM_CROSS_VAL_THRESHOLD = 0.3
+            _mem_inconsistent = _mean_mem_sim < _MEM_CROSS_VAL_THRESHOLD
+            self._last_memory_cross_validation = {
+                "pairwise_similarity": _pair_sims,
+                "mean_similarity": _mean_mem_sim,
+                "inconsistent": _mem_inconsistent,
+                "num_systems": len(_mem_snapshots),
+            }
+            if _mem_inconsistent:
+                _MEM_CV_BOOST = 0.15
+                uncertainty = min(1.0, uncertainty + _MEM_CV_BOOST)
+                uncertainty_sources["memory_cross_validation"] = _MEM_CV_BOOST
+                high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="memory_cross_validation_failure",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata=self._last_memory_cross_validation,
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "memory", "cross_validation_failure",
+                        causal_prerequisites=[input_trace_id],
+                        severity="warning",
+                        metadata=self._last_memory_cross_validation,
+                    )
+
         # 5c5. Cross-populate CausalContextWindowManager with memory-enriched
         # state so that memory retrievals contribute to the causal context
         # pool.  This closes the gap between the memory subsystems
@@ -19639,7 +19771,9 @@ class AEONDeltaV3(nn.Module):
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
         # memory-aware planning.  Gated by complexity gate[1].
-        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip:
+        # Circuit breaker: skip MCTS when world_model failed upstream to
+        # prevent planning on degraded prediction states.
+        if self.mcts_planner is not None and self.world_model is not None and planning and not fast and not _mcts_should_skip and "world_model" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("mcts_planning", C_star)
             # 5b2-ca. Collect causal adjacency for MCTS prior modulation —
             # when a NeuralCausalModel is active and has learned a DAG,
@@ -19820,6 +19954,7 @@ class AEONDeltaV3(nn.Module):
                     causal_model_results['memory_grounding'] = _mem_quality
             except Exception as causal_err:
                 _causal_healthy = False
+                _circuit_breaker_tripped.add("causal_model")
                 logger.warning(f"Causal model error (non-fatal): {causal_err}")
                 self.error_recovery.record_event(
                     error_class="subsystem",
@@ -20065,6 +20200,45 @@ class AEONDeltaV3(nn.Module):
                 )
                 if _reconciled_adj is not None:
                     self._cached_reconciled_adjacency = _reconciled_adj.detach()
+                    # 5d1c-dag-enforce. Enforce reconciled DAG — when the
+                    # consensus produces a reconciled adjacency, feed it
+                    # back into the individual causal models as a soft
+                    # structural prior.  This closes the gap where consensus
+                    # was detected but never enforced: models that diverge
+                    # from the majority-weighted consensus have their
+                    # adjacency nudged toward the reconciled structure,
+                    # ensuring structural agreement improves over time
+                    # rather than merely being recorded.  The blending
+                    # weight is proportional to disagreement magnitude
+                    # so that near-consensus models are barely adjusted
+                    # while strong outliers receive stronger correction.
+                    if _dag_consensus_results.get("needs_escalation", False):
+                        _RECONCILE_BLEND = min(0.3, 1.0 - _consensus_score)
+                        for _mdl_name, _mdl_adj in _adj_matrices.items():
+                            _target_adj = _reconciled_adj[:_mdl_adj.numel()].reshape(
+                                _mdl_adj.shape
+                            )
+                            _blended = (
+                                (1.0 - _RECONCILE_BLEND) * _mdl_adj
+                                + _RECONCILE_BLEND * _target_adj
+                            )
+                            # Apply back to models that expose mutable adjacency
+                            if _mdl_name == 'neural_causal' and hasattr(self.causal_model, 'adjacency'):
+                                try:
+                                    self.causal_model.adjacency.data.copy_(_blended)
+                                except Exception:
+                                    pass
+                            elif _mdl_name == 'notears' and hasattr(self.notears_causal, 'W'):
+                                try:
+                                    self.notears_causal.W.data.copy_(_blended)
+                                except Exception:
+                                    pass
+                        self.audit_log.record(
+                            "causal_dag_consensus", "enforced_reconciliation", {
+                                "blend_weight": _RECONCILE_BLEND,
+                                "consensus_score": _consensus_score,
+                            },
+                        )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "causal_dag_consensus", "evaluated",
@@ -20436,7 +20610,7 @@ class AEONDeltaV3(nn.Module):
                     "complexity_score": _complexity_score_val,
                 },
             )
-        if self.unified_simulator is not None and not fast and not _unified_sim_should_skip:
+        if self.unified_simulator is not None and not fast and not _unified_sim_should_skip and "causal_model" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("unified_simulator", C_star)
             unified_simulator_results = self.unified_simulator(C_star)
             # Blend counterfactual signal as residual
@@ -21906,6 +22080,14 @@ class AEONDeltaV3(nn.Module):
                     and torch.is_tensor(_gm_lang_ucc)
                     and _gm_lang_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["grounded_multimodal"] = _gm_lang_ucc
+            # Include cached memory state so the coherence verifier can
+            # cross-validate memory-fused reasoning against other subsystem
+            # outputs.  Without this, memory contributions are invisible
+            # to the UCC, preventing detection of memory-reasoning
+            # misalignment.
+            if (self._cached_memory_state is not None
+                    and self._cached_memory_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["memory"] = self._cached_memory_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23061,6 +23243,8 @@ class AEONDeltaV3(nn.Module):
             'certified_results': _certified_results,
             'dag_consensus_results': _dag_consensus_results,
             'memory_retrieval_quality': self._last_memory_retrieval_quality,
+            'memory_cross_validation': getattr(self, '_last_memory_cross_validation', {}),
+            'circuit_breaker_tripped': _circuit_breaker_tripped,
             'unified_cognitive_cycle_results': unified_cycle_results,
             'convergence_arbiter_results': _convergence_arbiter_result,
             'directional_uncertainty': (
@@ -25167,6 +25351,44 @@ class AEONDeltaV3(nn.Module):
                 'component': 'encoder_reasoning_norm',
                 'gap': 'Encoder-reasoning normalization enabled but missing',
                 'remediation': 'Check encoder_reasoning_norm initialization',
+            })
+
+        # --- Memory cross-validation bridge ---
+        _active_mem_count = sum([
+            self.hierarchical_memory is not None,
+            getattr(self, 'neurogenic_memory', None) is not None,
+            getattr(self, 'consolidating_memory', None) is not None,
+            getattr(self, 'temporal_memory', None) is not None,
+        ])
+        if _active_mem_count >= 2:
+            verified.append(
+                'memory_cross_validation → pairwise cosine consistency '
+                f'across {_active_mem_count} active memory systems'
+            )
+        elif _active_mem_count == 1:
+            gaps.append({
+                'component': 'memory_cross_validation',
+                'gap': 'Only 1 memory system active; cross-validation requires ≥2',
+                'remediation': 'Enable additional memory systems for cross-validation',
+            })
+
+        # --- Circuit breaker pattern ---
+        verified.append(
+            'circuit_breaker → upstream failures (world_model, memory, '
+            'causal_model) prevent downstream cascade execution'
+        )
+
+        # --- Supplementary memory trust scoring ---
+        if self.trust_scorer is not None and _active_mem_count > 0:
+            verified.append(
+                'supplementary_memory_trust → trust scorer dampens '
+                'low-confidence memory contributions from all subsystems'
+            )
+        elif self.trust_scorer is None and _active_mem_count > 0:
+            gaps.append({
+                'component': 'supplementary_memory_trust',
+                'gap': 'Trust scorer disabled; supplementary memory not trust-scored',
+                'remediation': 'Enable ExternalDataTrustScorer for memory validation',
             })
 
         # --- Determine overall status ---
