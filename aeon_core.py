@@ -13852,6 +13852,10 @@ class MetaCognitiveRecursionTrigger:
                 # "uncertainty" signal so that novel failure modes still
                 # influence metacognitive sensitivity rather than being
                 # silently ignored.
+                logger.debug(
+                    "adapt_weights_from_evolution: unmapped error class "
+                    "'%s' defaulting to 'uncertainty' signal", cls_name,
+                )
                 signal = "uncertainty"
             success_rate = stats.get("success_rate", 1.0)
             # Bidirectional: low success → positive adjustment (boost),
@@ -16900,10 +16904,11 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Register encoder and VQ stages in the provenance tracker.
         # These stages run in _forward_impl before the tracker is reset,
-        # so we record them here with the quantized input (z_in) as the
-        # reference state.  The delta is zero since we only observe the
-        # output, but the modules are registered in the attribution chain
-        # for root-cause traceability.
+        # so we record them here with the quantized input (z_in) as a
+        # placeholder.  The delta is zero because the encoder converts
+        # discrete tokens to continuous embeddings (incompatible shapes
+        # for L2 delta), but the modules are registered in the dependency
+        # DAG and attribution order for root-cause traceability.
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         self.provenance_tracker.record_before("vq", z_in)
