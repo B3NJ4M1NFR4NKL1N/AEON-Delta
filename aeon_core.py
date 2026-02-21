@@ -13690,9 +13690,15 @@ class ModuleCoherenceVerifier(nn.Module):
     """Cross-validates outputs between subsystem pairs.
 
     Computes pairwise cosine-similarity between key subsystem outputs
-    (meta-loop state, factor embedding, safety-gated state, memory-fused
-    state) and produces a scalar coherence score ∈ [0, 1] indicating
+    and produces a scalar coherence score ∈ [0, 1] indicating
     how self-consistent the pipeline is.
+
+    When invoked via ``AEONDeltaV3.verify_coherence()``, the following
+    cached subsystem states participate in the pairwise comparison:
+    meta-loop, factor extraction, safety, memory, world model, causal
+    model, feedback bus, decoder, integration, cognitive executive,
+    grounded multimodal, auto-critic, RSSM, MCTS planning,
+    hierarchical VAE, and unified simulator.
 
     When coherence is low (below ``threshold``), the verifier emits a
     boolean flag ``needs_recheck`` that downstream logic can use to
@@ -14211,6 +14217,13 @@ class MetaCognitiveRecursionTrigger:
             # Coherence verifier failure — the verification subsystem
             # itself failed, escalating uncertainty.
             "coherence_verifier_failure": "coherence_deficit",
+            # Feedback bus failure — cross-pass feedback loop broken.
+            "feedback_bus_failure": "uncertainty",
+            # Verify coherence deficit — out-of-band coherence check.
+            "verify_coherence_deficit": "coherence_deficit",
+            # Training UCC failure — unified cognitive cycle failed
+            # during training, signalling integration issues.
+            "training_ucc_failure": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -16561,6 +16574,18 @@ class AEONDeltaV3(nn.Module):
         # can detect drift between the auto-critic's self-assessment and
         # upstream reasoning states, closing the critic ↔ reasoning loop.
         self._cached_auto_critic_state: Optional[torch.Tensor] = None
+        # RSSM output — cached so verify_coherence can cross-validate
+        # dynamics-model output against upstream reasoning states.
+        self._cached_rssm_state: Optional[torch.Tensor] = None
+        # MCTS planning output — cached so verify_coherence can detect
+        # drift between planning-selected states and integrated output.
+        self._cached_mcts_state: Optional[torch.Tensor] = None
+        # Hierarchical VAE selected level — cached so verify_coherence
+        # can cross-validate abstraction against other subsystems.
+        self._cached_hvae_state: Optional[torch.Tensor] = None
+        # Unified simulator next state — cached so verify_coherence can
+        # detect counterfactual-reasoning divergence from main pipeline.
+        self._cached_unified_sim_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -20417,6 +20442,7 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                         )
             self.provenance_tracker.record_after("mcts_planning", C_star)
+            self._cached_mcts_state = C_star.detach()
             # Record MCTS planning in causal trace for full root-cause
             # traceability — ensures planning decisions can be traced
             # back to their search tree root and world model predictions.
@@ -21220,6 +21246,7 @@ class AEONDeltaV3(nn.Module):
             if cf_next is not None and torch.isfinite(cf_next).all():
                 C_star = C_star + self.config.unified_simulator_blend * cf_next
             self.provenance_tracker.record_after("unified_simulator", C_star)
+            self._cached_unified_sim_state = C_star.detach()
             self.audit_log.record("unified_simulator", "computed", {
                 "interventional": bool(
                     unified_simulator_results.get("interventional", False)
@@ -21562,6 +21589,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(hvae_err)[:200]},
                     )
             self.provenance_tracker.record_after("hierarchical_vae", C_star)
+            self._cached_hvae_state = C_star.detach()
         self.integrity_monitor.record_health(
             "hierarchical_vae",
             1.0 if _hvae_healthy else 0.0,
@@ -21656,6 +21684,7 @@ class AEONDeltaV3(nn.Module):
             high_uncertainty = uncertainty > 0.5
             z_rssm = C_fused
         self.provenance_tracker.record_after("rssm", z_rssm)
+        self._cached_rssm_state = z_rssm.detach()
         # Record RSSM dynamics in causal trace so that state transitions
         # through the recurrent cell are traceable as causal prerequisites
         # for downstream integration and decoding decisions.
@@ -26156,6 +26185,29 @@ class AEONDeltaV3(nn.Module):
         # results alongside the static wiring checks, so that the
         # diagnostic report captures both structural and runtime health.
         _runtime_coherence = self.verify_coherence()
+
+        # Call verify_pipeline_wiring() to validate that declared
+        # _PIPELINE_DEPENDENCIES map to actually-initialized modules,
+        # surfacing any declared but unrealized data-flow edges.
+        _wiring = self.verify_pipeline_wiring()
+        for _missing in _wiring.get('missing_edges', []):
+            gaps.append({
+                'component': 'pipeline_wiring',
+                'gap': (
+                    f'Declared dependency {_missing["edge"]} is not '
+                    f'realized: {_missing["reason"]}'
+                ),
+                'remediation': (
+                    'Enable the disabled module or remove the dependency '
+                    'from _PIPELINE_DEPENDENCIES'
+                ),
+            })
+        if _wiring['wiring_coverage'] == 1.0:
+            verified.append(
+                'pipeline_wiring → all declared dependencies verified '
+                f'({_wiring["verified_count"]}/{_wiring["total_edges"]} edges)'
+            )
+
         _runtime_score = _runtime_coherence.get('coherence_score', 1.0)
         if _runtime_score < 0.5:
             gaps.append({
@@ -26488,6 +26540,123 @@ class AEONDeltaV3(nn.Module):
                 * getattr(self, '_cached_output_quality', 1.0)
             )),
             'extension_points': _extension_points,
+            'pipeline_wiring': _wiring,
+        }
+
+    def verify_pipeline_wiring(self) -> Dict[str, Any]:
+        """Validate that declared ``_PIPELINE_DEPENDENCIES`` map to
+        actually-initialized module pairs.
+
+        Each entry in ``_PIPELINE_DEPENDENCIES`` is an ``(upstream,
+        downstream)`` tuple declaring a data-flow edge.  This method
+        checks that both the upstream and downstream modules referenced
+        by each dependency are present as initialized (non-None)
+        attributes on the model, and reports any edges whose modules
+        are missing.
+
+        Returns:
+            Dict with:
+                - ``total_edges``: number of declared dependency edges.
+                - ``verified_edges``: list of (upstream, downstream)
+                  tuples where both modules are initialized.
+                - ``missing_edges``: list of dicts describing edges
+                  whose upstream or downstream module is None.
+                - ``wiring_coverage``: fraction of edges verified ∈ [0, 1].
+        """
+        # Map pipeline-dependency node names to model attribute names.
+        # Most nodes map directly; a few use different attribute names.
+        _NODE_ATTR_MAP: Dict[str, str] = {
+            'input': 'encoder',
+            'encoder': 'encoder',
+            'vq': 'vector_quantizer',
+            'meta_loop': 'meta_loop',
+            'certified_meta_loop': 'certified_meta_loop',
+            'convergence_arbiter': 'convergence_arbiter',
+            'slot_binding': 'slot_binder',
+            'factor_extraction': 'sparse_factors',
+            'topology_analysis': 'topology_analyzer',
+            'diversity_analysis': 'diversity_metric',
+            'complexity_estimator': 'complexity_estimator',
+            'consistency_gate': 'consistency_gate',
+            'cross_validation': 'cross_validator',
+            'self_report': 'self_reporter',
+            'safety': 'safety_system',
+            'cognitive_executive': 'cognitive_executive',
+            'deeper_meta_loop': 'meta_loop',
+            'world_model': 'world_model',
+            'hierarchical_world_model': 'hierarchical_world_model',
+            'causal_world_model': 'causal_world_model',
+            'memory': 'hierarchical_memory',
+            'temporal_memory': 'temporal_memory',
+            'neurogenic_memory': 'neurogenic_memory',
+            'consolidating_memory': 'consolidating_memory',
+            'memory_trust': 'trust_scorer',
+            'memory_validation': 'memory_validator',
+            'memory_cross_validation': 'hierarchical_memory',
+            'mcts_planning': 'mcts_planner',
+            'active_learning': 'active_learning_planner',
+            'icm_curiosity': 'active_learning_planner',
+            'causal_model': 'causal_model',
+            'notears_causal': 'notears_causal',
+            'causal_programmatic': 'causal_programmatic',
+            'causal_dag_consensus': 'causal_dag_consensus',
+            'unified_simulator': 'unified_simulator',
+            'hybrid_reasoning': 'hybrid_reasoning',
+            'ns_bridge': 'standalone_ns_bridge',
+            'temporal_knowledge_graph': 'temporal_knowledge_graph',
+            'hierarchical_vae': 'hierarchical_vae',
+            'causal_context': 'causal_context',
+            'rssm': 'rssm_cell',
+            'multimodal': 'multimodal',
+            'grounded_multimodal': 'grounded_multimodal',
+            'integration': 'integration_proj',
+            'auto_critic': 'auto_critic',
+            'output_reliability': 'module_coherence',
+            'metacognitive_trigger': 'metacognitive_trigger',
+            'error_evolution': 'error_evolution',
+            'unified_cognitive_cycle': 'unified_cognitive_cycle',
+            'decoder': 'decoder',
+            'encoder_reasoning_norm': 'encoder_reasoning_norm',
+            'continual_learning': 'continual_learning',
+            'feedback_bus': 'feedback_bus',
+        }
+
+        verified_edges: List[Tuple[str, str]] = []
+        missing_edges: List[Dict[str, str]] = []
+
+        for upstream, downstream in self._PIPELINE_DEPENDENCIES:
+            up_attr = _NODE_ATTR_MAP.get(upstream, upstream)
+            down_attr = _NODE_ATTR_MAP.get(downstream, downstream)
+            up_ok = getattr(self, up_attr, None) is not None
+            down_ok = getattr(self, down_attr, None) is not None
+
+            if up_ok and down_ok:
+                verified_edges.append((upstream, downstream))
+            else:
+                missing_parts = []
+                if not up_ok:
+                    missing_parts.append(
+                        f"upstream '{upstream}' (attr '{up_attr}') is None"
+                    )
+                if not down_ok:
+                    missing_parts.append(
+                        f"downstream '{downstream}' (attr '{down_attr}') is None"
+                    )
+                missing_edges.append({
+                    'edge': (upstream, downstream),
+                    'reason': '; '.join(missing_parts),
+                })
+
+        total = len(self._PIPELINE_DEPENDENCIES)
+        coverage = len(verified_edges) / total if total > 0 else 1.0
+
+        return {
+            'total_edges': total,
+            'verified_edges': verified_edges,
+            'verified_count': len(verified_edges),
+            'missing_edges': missing_edges,
+            'missing_count': len(missing_edges),
+            'wiring_coverage': coverage,
         }
 
     @torch.no_grad()
@@ -26609,6 +26778,10 @@ class AEONDeltaV3(nn.Module):
             ("_cached_executive_state", "cognitive_executive"),
             ("_cached_grounded_multimodal_state", "grounded_multimodal"),
             ("_cached_auto_critic_state", "auto_critic"),
+            ("_cached_rssm_state", "rssm"),
+            ("_cached_mcts_state", "mcts_planning"),
+            ("_cached_hvae_state", "hierarchical_vae"),
+            ("_cached_unified_sim_state", "unified_simulator"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):

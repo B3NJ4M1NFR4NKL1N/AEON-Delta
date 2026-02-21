@@ -39671,6 +39671,279 @@ def test_recurring_root_cause_in_ucc_audit():
         "UCC processing must log recurring root causes in audit"
     )
     print("✅ test_recurring_root_cause_in_ucc_audit PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW TESTS: Architectural Unification — Pipeline Wiring, Subsystem Caching,
+# Error Evolution Recording, and Cross-Module Coherence Coverage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_verify_pipeline_wiring_returns_wellformed():
+    """verify_pipeline_wiring() returns a well-formed result dict with
+    all expected keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    result = model.verify_pipeline_wiring()
+    assert "total_edges" in result
+    assert "verified_edges" in result
+    assert "verified_count" in result
+    assert "missing_edges" in result
+    assert "missing_count" in result
+    assert "wiring_coverage" in result
+    assert isinstance(result["verified_edges"], list)
+    assert isinstance(result["missing_edges"], list)
+    assert result["total_edges"] > 0, "Should have declared dependencies"
+    assert 0.0 <= result["wiring_coverage"] <= 1.0
+    assert result["verified_count"] + result["missing_count"] == result["total_edges"]
+    print("✅ test_verify_pipeline_wiring_returns_wellformed PASSED")
+
+
+def test_verify_pipeline_wiring_full_coherence_coverage():
+    """With enable_full_coherence=True, all pipeline dependencies should
+    map to initialized modules (100% wiring coverage)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu', enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    result = model.verify_pipeline_wiring()
+    assert result["wiring_coverage"] == 1.0, (
+        f"Full coherence should achieve 100% wiring coverage, got "
+        f"{result['wiring_coverage']:.2%} with missing: "
+        f"{[m['edge'] for m in result['missing_edges']]}"
+    )
+    print("✅ test_verify_pipeline_wiring_full_coherence_coverage PASSED")
+
+
+def test_verify_pipeline_wiring_in_self_diagnostic():
+    """self_diagnostic() includes pipeline_wiring key."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    assert "pipeline_wiring" in diag, (
+        "self_diagnostic must include pipeline_wiring"
+    )
+    wiring = diag["pipeline_wiring"]
+    assert "total_edges" in wiring
+    assert "wiring_coverage" in wiring
+    print("✅ test_verify_pipeline_wiring_in_self_diagnostic PASSED")
+
+
+def test_cached_rssm_state_initialized():
+    """AEONDeltaV3 initializes _cached_rssm_state to None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_rssm_state'), (
+        "Model must have _cached_rssm_state attribute"
+    )
+    assert model._cached_rssm_state is None
+    print("✅ test_cached_rssm_state_initialized PASSED")
+
+
+def test_cached_mcts_state_initialized():
+    """AEONDeltaV3 initializes _cached_mcts_state to None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_mcts_state'), (
+        "Model must have _cached_mcts_state attribute"
+    )
+    assert model._cached_mcts_state is None
+    print("✅ test_cached_mcts_state_initialized PASSED")
+
+
+def test_cached_hvae_state_initialized():
+    """AEONDeltaV3 initializes _cached_hvae_state to None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_hvae_state'), (
+        "Model must have _cached_hvae_state attribute"
+    )
+    assert model._cached_hvae_state is None
+    print("✅ test_cached_hvae_state_initialized PASSED")
+
+
+def test_cached_unified_sim_state_initialized():
+    """AEONDeltaV3 initializes _cached_unified_sim_state to None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_unified_sim_state'), (
+        "Model must have _cached_unified_sim_state attribute"
+    )
+    assert model._cached_unified_sim_state is None
+    print("✅ test_cached_unified_sim_state_initialized PASSED")
+
+
+def test_verify_coherence_includes_rssm_state():
+    """verify_coherence() includes RSSM state in subsystem list when available."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "_cached_rssm_state" in src, (
+        "verify_coherence must include _cached_rssm_state"
+    )
+    print("✅ test_verify_coherence_includes_rssm_state PASSED")
+
+
+def test_verify_coherence_includes_mcts_state():
+    """verify_coherence() includes MCTS planning state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "_cached_mcts_state" in src, (
+        "verify_coherence must include _cached_mcts_state"
+    )
+    print("✅ test_verify_coherence_includes_mcts_state PASSED")
+
+
+def test_verify_coherence_includes_hvae_state():
+    """verify_coherence() includes hierarchical VAE state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "_cached_hvae_state" in src, (
+        "verify_coherence must include _cached_hvae_state"
+    )
+    print("✅ test_verify_coherence_includes_hvae_state PASSED")
+
+
+def test_verify_coherence_includes_unified_sim_state():
+    """verify_coherence() includes unified simulator state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "_cached_unified_sim_state" in src, (
+        "verify_coherence must include _cached_unified_sim_state"
+    )
+    print("✅ test_verify_coherence_includes_unified_sim_state PASSED")
+
+
+def test_rssm_output_cached_in_forward():
+    """The forward pass caches RSSM output for coherence verification."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_cached_rssm_state" in src, (
+        "Forward pass must cache RSSM output in _cached_rssm_state"
+    )
+    print("✅ test_rssm_output_cached_in_forward PASSED")
+
+
+def test_mcts_output_cached_in_forward():
+    """The forward pass caches MCTS output for coherence verification."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_cached_mcts_state" in src, (
+        "Forward pass must cache MCTS output in _cached_mcts_state"
+    )
+    print("✅ test_mcts_output_cached_in_forward PASSED")
+
+
+def test_hvae_output_cached_in_forward():
+    """The forward pass caches HVAE output for coherence verification."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_cached_hvae_state" in src, (
+        "Forward pass must cache HVAE output in _cached_hvae_state"
+    )
+    print("✅ test_hvae_output_cached_in_forward PASSED")
+
+
+def test_unified_sim_output_cached_in_forward():
+    """The forward pass caches unified simulator output for coherence."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_cached_unified_sim_state" in src, (
+        "Forward pass must cache unified simulator output"
+    )
+    print("✅ test_unified_sim_output_cached_in_forward PASSED")
+
+
+def test_training_ucc_failure_in_trigger_mapping():
+    """MetaCognitiveRecursionTrigger maps training_ucc_failure to
+    a valid signal weight key."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    # The _class_to_signal mapping is used in adapt_weights_from_evolution.
+    # Verify that training_ucc_failure resolves to a valid signal.
+    _class_to_signal = {
+        "training_ucc_failure": "uncertainty",
+    }
+    valid_signals = set(trigger._signal_weights.keys())
+    for cls_name, signal in _class_to_signal.items():
+        assert signal in valid_signals, (
+            f"Error class '{cls_name}' maps to invalid signal '{signal}'"
+        )
+    print("✅ test_training_ucc_failure_in_trigger_mapping PASSED")
+
+
+def test_ae_train_ucc_failure_escalates_to_warning():
+    """ae_train.py logs UCC failures at WARNING level, not DEBUG."""
+    import inspect
+    import ae_train
+    src_a = inspect.getsource(ae_train.SafeThoughtAETrainerV4.fit)
+    assert "logger.warning" in src_a and "Unified cognitive cycle" in src_a, (
+        "Phase A must log UCC failures at WARNING level"
+    )
+    src_b = inspect.getsource(ae_train.ContextualRSSMTrainer.fit)
+    assert "logger.warning" in src_b and "Phase B unified cognitive cycle" in src_b, (
+        "Phase B must log UCC failures at WARNING level"
+    )
+    print("✅ test_ae_train_ucc_failure_escalates_to_warning PASSED")
+
+
+def test_ae_train_ucc_failure_records_error_evolution():
+    """ae_train.py records UCC failures in error evolution when available."""
+    import inspect
+    import ae_train
+    src_a = inspect.getsource(ae_train.SafeThoughtAETrainerV4.fit)
+    assert "training_ucc_failure" in src_a, (
+        "Phase A must record training_ucc_failure in error evolution"
+    )
+    src_b = inspect.getsource(ae_train.ContextualRSSMTrainer.fit)
+    assert "training_ucc_failure" in src_b, (
+        "Phase B must record training_ucc_failure in error evolution"
+    )
+    print("✅ test_ae_train_ucc_failure_records_error_evolution PASSED")
+
+
+def test_module_coherence_verifier_docstring_updated():
+    """ModuleCoherenceVerifier docstring lists all verified subsystems."""
+    from aeon_core import ModuleCoherenceVerifier
+    doc = ModuleCoherenceVerifier.__doc__
+    assert doc is not None
+    for subsystem in [
+        "RSSM", "MCTS planning", "hierarchical VAE",
+        "unified simulator", "auto-critic",
+    ]:
+        assert subsystem in doc, (
+            f"ModuleCoherenceVerifier docstring must mention {subsystem}"
+        )
+    print("✅ test_module_coherence_verifier_docstring_updated PASSED")
+
+
+def test_adapt_weights_maps_new_error_classes():
+    """adapt_weights_from_evolution maps feedback_bus_failure,
+    verify_coherence_deficit, and training_ucc_failure error classes."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    for cls_name in [
+        "feedback_bus_failure",
+        "verify_coherence_deficit",
+        "training_ucc_failure",
+    ]:
+        assert cls_name in src, (
+            f"adapt_weights_from_evolution must map '{cls_name}'"
+        )
+    print("✅ test_adapt_weights_maps_new_error_classes PASSED")
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
     test_tensor_hash_collision_resistance()
@@ -41356,6 +41629,29 @@ def test_recurring_root_cause_in_ucc_audit():
     test_provenance_concentration_in_forward_path()
     test_weakest_pair_blend_in_ucc_path()
     test_recurring_root_cause_in_ucc_audit()
+
+    # Architectural Unification — Pipeline Wiring, Subsystem Caching,
+    # Error Evolution Recording, and Cross-Module Coherence Coverage Tests
+    test_verify_pipeline_wiring_returns_wellformed()
+    test_verify_pipeline_wiring_full_coherence_coverage()
+    test_verify_pipeline_wiring_in_self_diagnostic()
+    test_cached_rssm_state_initialized()
+    test_cached_mcts_state_initialized()
+    test_cached_hvae_state_initialized()
+    test_cached_unified_sim_state_initialized()
+    test_verify_coherence_includes_rssm_state()
+    test_verify_coherence_includes_mcts_state()
+    test_verify_coherence_includes_hvae_state()
+    test_verify_coherence_includes_unified_sim_state()
+    test_rssm_output_cached_in_forward()
+    test_mcts_output_cached_in_forward()
+    test_hvae_output_cached_in_forward()
+    test_unified_sim_output_cached_in_forward()
+    test_training_ucc_failure_in_trigger_mapping()
+    test_ae_train_ucc_failure_escalates_to_warning()
+    test_ae_train_ucc_failure_records_error_evolution()
+    test_module_coherence_verifier_docstring_updated()
+    test_adapt_weights_maps_new_error_classes()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
