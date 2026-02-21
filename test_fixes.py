@@ -35893,6 +35893,137 @@ def test_cached_executive_state_populated():
     print("✅ test_cached_executive_state_populated PASSED")
 
 
+def test_pipeline_dependencies_include_active_learning():
+    """_PIPELINE_DEPENDENCIES should include edges for the active learning
+    planner so that trace_root_cause() can attribute curiosity-driven
+    exploration decisions to the active_learning node."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    expected_edges = [
+        ("mcts_planning", "active_learning"),
+        ("world_model", "active_learning"),
+        ("active_learning", "metacognitive_trigger"),
+    ]
+    for u, d in expected_edges:
+        assert (u, d) in dep_set, (
+            f"Missing pipeline dependency edge ({u}, {d})"
+        )
+    print("✅ test_pipeline_dependencies_include_active_learning PASSED")
+
+
+def test_active_learning_dag_node_attr_mapping():
+    """The _DAG_NODE_TO_ATTR mapping inside _reasoning_core_impl should
+    include 'active_learning' → 'active_learning_planner' so that the
+    provenance DAG auto-population correctly filters edges when the
+    active learning planner is disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    # Enabled: active_learning edges should be populated in provenance DAG
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_world_model=True,
+        enable_mcts_planner=True,
+        enable_active_learning_planner=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    assert model.active_learning_planner is not None
+
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        model(tokens, decode_mode='train')
+
+    # The provenance dependency graph should contain edges referencing
+    # active_learning since the planner is enabled
+    dep_graph = model.provenance_tracker.get_dependency_graph()
+    al_mentioned = any(
+        'active_learning' in downstream or
+        'active_learning' in ' '.join(upstreams)
+        for downstream, upstreams in dep_graph.items()
+    )
+    assert al_mentioned, (
+        "active_learning should have edges in provenance dependency graph "
+        "when enabled"
+    )
+    print("✅ test_active_learning_dag_node_attr_mapping PASSED")
+
+
+def test_active_learning_in_provenance_instrumented_set():
+    """The _provenance_instrumented set in self_diagnostic should include
+    'active_learning' to verify that the module is covered by the
+    dependency graph for root-cause traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # When full_coherence is enabled, the provenance_dependencies
+    # verification should pass (no gap about missing active_learning)
+    prov_gaps = [
+        g for g in diag.get('gaps', [])
+        if g.get('component') == 'provenance_dependencies'
+        and 'active_learning' in g.get('gap', '')
+    ]
+    assert len(prov_gaps) == 0, (
+        "active_learning should be covered in provenance_dependencies; "
+        f"found gap: {prov_gaps}"
+    )
+    print("✅ test_active_learning_in_provenance_instrumented_set PASSED")
+
+
+def test_active_learning_provenance_filtered_when_disabled():
+    """When active_learning_planner is disabled, its edges should be
+    filtered from the provenance DAG so ghost dependencies don't appear
+    in root-cause traces."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8,
+        enable_active_learning_planner=False,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    assert model.active_learning_planner is None
+
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        model(tokens, decode_mode='train')
+
+    # active_learning edges should have been filtered out
+    dep_graph = model.provenance_tracker.get_dependency_graph()
+    al_mentioned = any(
+        'active_learning' in downstream or
+        'active_learning' in ' '.join(upstreams)
+        for downstream, upstreams in dep_graph.items()
+    )
+    assert not al_mentioned, (
+        f"Disabled active_learning should have no edges in provenance DAG"
+    )
+
+    # Provenance attribution should not include active_learning
+    prov = model.provenance_tracker.compute_attribution()
+    contributions = prov.get('contributions', {})
+    al_contrib = contributions.get('active_learning', 0.0)
+    assert al_contrib == 0.0, (
+        f"Disabled active_learning should have zero contribution, "
+        f"got {al_contrib}"
+    )
+    print("✅ test_active_learning_provenance_filtered_when_disabled PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -37419,6 +37550,13 @@ def _run_all_tests():
     test_topology_catastrophe_triggers_auto_critic()
     test_ns_post_revision_check_runs()
     
+    # Architectural Unification — Active Learning Planner Provenance
+    # Traceability & Pipeline Dependency Gap Closure Tests
+    test_pipeline_dependencies_include_active_learning()
+    test_active_learning_dag_node_attr_mapping()
+    test_active_learning_in_provenance_instrumented_set()
+    test_active_learning_provenance_filtered_when_disabled()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
