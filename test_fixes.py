@@ -39013,6 +39013,197 @@ def test_server_causal_trace_root_cause_endpoint_exists():
     print("✅ test_server_causal_trace_root_cause_endpoint_exists PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Cross-Module Consistency & Traceability Tests
+# ============================================================================
+
+def test_recovery_pressure_incorporates_failure_rate():
+    """Gap 1: _compute_recovery_pressure() uses per-class failure rates.
+
+    When the ErrorRecoveryManager has a high failure rate, the recovery
+    pressure should be boosted beyond what the raw event count alone
+    would produce (30% weight on failure rate).
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(
+        device_str='cpu',
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=False,
+        enable_mcts_planner=False, enable_causal_model=False,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+
+    # No recoveries → pressure should be 0
+    p0 = model._compute_recovery_pressure()
+    assert p0 == 0.0, f"Expected 0.0, got {p0}"
+
+    # Record some failed recovery events
+    for _ in range(5):
+        model.error_recovery.record_event(
+            error_class="numerical",
+            context="test",
+            success=False,
+        )
+    # Record one success
+    model.error_recovery.record_event(
+        error_class="numerical",
+        context="test",
+        success=True,
+    )
+
+    p1 = model._compute_recovery_pressure()
+    # With 6 total events and 5/6 failure rate (~0.833):
+    # base = min(1.0, 6 * 0.1) = 0.6
+    # blended = 0.7 * 0.6 + 0.3 * (5/6) ≈ 0.42 + 0.25 = 0.67
+    assert 0.5 < p1 < 1.0, f"Expected pressure in (0.5, 1.0), got {p1}"
+
+    # Compare: with ALL successes, pressure should be lower
+    model.error_recovery.reset_stats()
+    for _ in range(6):
+        model.error_recovery.record_event(
+            error_class="numerical", context="test", success=True,
+        )
+    p2 = model._compute_recovery_pressure()
+    # base = 0.6, failure_rate = 0, blended = 0.7 * 0.6 + 0.3 * 0 = 0.42
+    assert p2 < p1, f"All-success pressure ({p2}) should be < mixed ({p1})"
+
+    print("✅ test_recovery_pressure_incorporates_failure_rate PASSED")
+
+
+def test_provenance_commit_snapshot():
+    """Gap 3: CausalProvenanceTracker.commit_snapshot() saves attribution
+    history and get_provenance_trend() returns per-module trends.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Pass 1: module_a dominates
+    tracker.reset()
+    tracker.record_before("module_a", torch.zeros(1, 64))
+    tracker.record_after("module_a", torch.ones(1, 64))
+    tracker.record_before("module_b", torch.ones(1, 64))
+    tracker.record_after("module_b", torch.ones(1, 64) * 1.01)
+    snap1 = tracker.commit_snapshot()
+
+    assert "contributions" in snap1, "Snapshot should have contributions"
+    assert "timestamp" in snap1, "Snapshot should have timestamp"
+    assert snap1["contributions"]["module_a"] > snap1["contributions"]["module_b"]
+
+    # Pass 2: module_b dominates
+    tracker.reset()
+    tracker.record_before("module_a", torch.zeros(1, 64))
+    tracker.record_after("module_a", torch.zeros(1, 64) + 0.01)
+    tracker.record_before("module_b", torch.zeros(1, 64))
+    tracker.record_after("module_b", torch.ones(1, 64))
+    snap2 = tracker.commit_snapshot()
+
+    assert snap2["contributions"]["module_b"] > snap2["contributions"]["module_a"]
+
+    # Trend: module_a should show decreasing contribution
+    trend_a = tracker.get_provenance_trend("module_a")
+    assert len(trend_a) == 2, f"Expected 2 snapshots, got {len(trend_a)}"
+    assert trend_a[0] > trend_a[1], (
+        f"module_a contribution should decrease: {trend_a}"
+    )
+
+    # Trend: module_b should show increasing contribution
+    trend_b = tracker.get_provenance_trend("module_b")
+    assert trend_b[1] > trend_b[0], (
+        f"module_b contribution should increase: {trend_b}"
+    )
+
+    # Non-existent module returns zero trend
+    trend_c = tracker.get_provenance_trend("nonexistent")
+    assert all(v == 0.0 for v in trend_c), "Nonexistent module should have zero trend"
+
+    print("✅ test_provenance_commit_snapshot PASSED")
+
+
+def test_generate_path_ucc_receives_cached_signals():
+    """Gap 2 & 5: Cached signals from _reasoning_core_impl are
+    available as instance attributes after initialization.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(
+        device_str='cpu',
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=False,
+        enable_mcts_planner=False, enable_causal_model=False,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+
+    # Verify all new cached attributes exist with correct defaults
+    assert hasattr(model, '_cached_topo_catastrophe'), "Missing _cached_topo_catastrophe"
+    assert model._cached_topo_catastrophe is False
+    assert hasattr(model, '_cached_safety_enforced'), "Missing _cached_safety_enforced"
+    assert model._cached_safety_enforced is False
+    assert hasattr(model, '_cached_auto_critic_score'), "Missing _cached_auto_critic_score"
+    assert model._cached_auto_critic_score is None
+    assert hasattr(model, '_cached_executive_health'), "Missing _cached_executive_health"
+    assert model._cached_executive_health is None
+    assert hasattr(model, '_cached_memory_signal'), "Missing _cached_memory_signal"
+    assert model._cached_memory_signal is None
+    assert hasattr(model, '_cached_converged_state'), "Missing _cached_converged_state"
+    assert model._cached_converged_state is None
+    assert hasattr(model, '_cached_meta_results'), "Missing _cached_meta_results"
+    assert model._cached_meta_results is None
+    assert hasattr(model, '_cached_certified_results'), "Missing _cached_certified_results"
+    assert model._cached_certified_results is None
+
+    print("✅ test_generate_path_ucc_receives_cached_signals PASSED")
+
+
+def test_recovery_bridge_to_error_evolution():
+    """Gap 4: When recovery events have failures, they are bridged
+    into CausalErrorEvolutionTracker during the forward pass setup.
+
+    This test verifies the bridging logic independently by calling the
+    error_evolution.record_episode directly as the bridge code does.
+    """
+    from aeon_core import CausalErrorEvolutionTracker, ErrorRecoveryManager
+
+    recovery = ErrorRecoveryManager(hidden_dim=64)
+    evolution = CausalErrorEvolutionTracker()
+
+    # Record some recovery failures
+    recovery.record_event("numerical", "test", success=False)
+    recovery.record_event("numerical", "test", success=False)
+    recovery.record_event("shape", "test", success=True)
+
+    stats = recovery.get_recovery_stats()
+    by_class = stats.get("by_class", {})
+    failures = stats.get("failures", 0)
+
+    assert failures > 0, "Should have failures"
+
+    # Simulate the bridge logic
+    for cls, cnt in by_class.items():
+        if cnt > 0:
+            evolution.record_episode(
+                error_class=cls,
+                strategy_used="error_recovery_bridge",
+                success=(stats.get("successes", 0) > failures),
+                metadata={"recovery_count": cnt, "total_failures": failures},
+            )
+
+    summary = evolution.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "numerical" in error_classes, (
+        f"numerical should be in error classes: {error_classes.keys()}"
+    )
+
+    print("✅ test_recovery_bridge_to_error_evolution PASSED")
+
+
 def _run_all_tests():
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -40673,6 +40864,12 @@ def _run_all_tests():
     test_server_provenance_root_cause_endpoint_exists()
     test_server_causal_trace_endpoint_exists()
     test_server_causal_trace_root_cause_endpoint_exists()
+
+    # Architectural Unification — Cross-Module Consistency Tests
+    test_recovery_pressure_incorporates_failure_rate()
+    test_provenance_commit_snapshot()
+    test_generate_path_ucc_receives_cached_signals()
+    test_recovery_bridge_to_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
