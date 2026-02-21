@@ -1988,6 +1988,14 @@ class DataCharacteristicsAnalyzer:
     training pipeline adapts its initial configuration to the data.
     """
 
+    _SMALL_DATASET_THRESHOLD = 100
+    _LARGE_DATASET_THRESHOLD = 10000
+    _VERY_SMALL_DATASET_THRESHOLD = 64
+    _SMALL_DATASET_BS_THRESHOLD = 256
+    _HIGH_TOKEN_VARIANCE_THRESHOLD = 15000
+    _ESTIMATED_EPOCHS = 30
+    _LOW_VOCAB_COVERAGE_THRESHOLD = 0.1
+
     def __init__(self, config: AEONConfigV4):
         self.config = config
         self._stats: Dict[str, Any] = {}
@@ -2043,10 +2051,10 @@ class DataCharacteristicsAnalyzer:
         base_cfg = self.config
 
         # Learning rate: scale down for small datasets, up for large
-        if n < 100:
+        if n < self._SMALL_DATASET_THRESHOLD:
             rec['learning_rate'] = max(base_cfg.min_learning_rate, base_cfg.learning_rate * 0.5)
             rec['lr_reason'] = 'Small dataset — reduced LR to prevent overfitting'
-        elif n > 10000:
+        elif n > self._LARGE_DATASET_THRESHOLD:
             rec['learning_rate'] = min(base_cfg.learning_rate * 2.0, 1e-3)
             rec['lr_reason'] = 'Large dataset — increased LR for faster convergence'
         else:
@@ -2054,10 +2062,10 @@ class DataCharacteristicsAnalyzer:
             rec['lr_reason'] = 'Standard dataset size'
 
         # Batch size: adapt to dataset size
-        if n < 64:
+        if n < self._VERY_SMALL_DATASET_THRESHOLD:
             rec['batch_size'] = min(base_cfg.batch_size, max(2, n // 4))
             rec['bs_reason'] = 'Very small dataset — reduced batch size'
-        elif n < 256:
+        elif n < self._SMALL_DATASET_BS_THRESHOLD:
             rec['batch_size'] = min(base_cfg.batch_size, 8)
             rec['bs_reason'] = 'Small dataset — moderate batch size'
         else:
@@ -2066,7 +2074,7 @@ class DataCharacteristicsAnalyzer:
 
         # Gradient clip: tighter for high-variance data
         token_std = stats.get('token_std', 0)
-        if token_std > 15000:
+        if token_std > self._HIGH_TOKEN_VARIANCE_THRESHOLD:
             rec['grad_clip_norm'] = max(0.1, base_cfg.grad_clip_norm * 0.5)
             rec['gc_reason'] = 'High token variance — tighter gradient clipping'
         else:
@@ -2074,13 +2082,13 @@ class DataCharacteristicsAnalyzer:
             rec['gc_reason'] = 'Normal token distribution'
 
         # Warmup: proportional to dataset size
-        estimated_steps = max(n // base_cfg.batch_size, 1) * 30  # rough estimate
+        estimated_steps = max(n // base_cfg.batch_size, 1) * self._ESTIMATED_EPOCHS
         rec['warmup_steps'] = min(base_cfg.warmup_steps, max(50, estimated_steps // 10))
         rec['warmup_reason'] = f'Proportional to ~{estimated_steps} estimated steps'
 
         # VQ codebook: scale with vocabulary coverage
         coverage = stats.get('vocab_coverage', 0)
-        if coverage < 0.1:
+        if coverage < self._LOW_VOCAB_COVERAGE_THRESHOLD:
             rec['vq_num_embeddings'] = min(base_cfg.vq_num_embeddings, 512)
             rec['vq_reason'] = 'Low vocab coverage — smaller codebook to avoid dead codes'
         else:
@@ -2152,6 +2160,13 @@ class AdaptiveTrainingController:
     _LOW_CB_USAGE = 5.0
     _HIGH_CB_USAGE = 95.0
     _CB_SATURATION_HISTORY_MIN = 10
+    _LOSS_SPIKE_MULTIPLIER = 1.5
+    _PLATEAU_LR_MULTIPLIER = 1.5
+    _PLATEAU_COUNT_TRIGGER = 3
+    _GRAD_CLIP_PROXIMITY_THRESHOLD = 0.9
+    _GRAD_CLIP_LOWER_THRESHOLD = 0.1
+    _GRAD_CLIP_EXPAND_FACTOR = 1.25
+    _GRAD_CLIP_SHRINK_FACTOR = 3
 
     def __init__(self, config: AEONConfigV4):
         self.config = config
@@ -2229,18 +2244,19 @@ class AdaptiveTrainingController:
 
         if all(abs(d) < self._PLATEAU_THRESHOLD for d in deltas):
             self._plateau_count += 1
-            if self._plateau_count >= 3:
-                new_lr = min(self._current_lr * 1.5, self._MAX_LR)
+            if self._plateau_count >= self._PLATEAU_COUNT_TRIGGER:
+                new_lr = min(self._current_lr * self._PLATEAU_LR_MULTIPLIER, self._MAX_LR)
                 if new_lr != self._current_lr:
                     self._current_lr = new_lr
                     self._plateau_count = 0
-                    return {'lr_factor': 1.5, 'lr_reason': 'loss_plateau',
+                    return {'lr_factor': self._PLATEAU_LR_MULTIPLIER,
+                            'lr_reason': 'loss_plateau',
                             'recommended_lr': new_lr}
         else:
             self._plateau_count = 0
 
         # Detect loss spike
-        if len(window) >= 2 and window[-1] > window[-2] * 1.5:
+        if len(window) >= 2 and window[-1] > window[-2] * self._LOSS_SPIKE_MULTIPLIER:
             self._spike_count += 1
             new_lr = max(self._current_lr * 0.5, self._MIN_LR)
             if new_lr != self._current_lr:
@@ -2264,15 +2280,15 @@ class AdaptiveTrainingController:
         max_norm = max(window)
 
         # If gradients consistently near clip value, loosen
-        if avg_norm > self._current_grad_clip * 0.9:
-            new_clip = min(self._current_grad_clip * 1.25, self._MAX_GRAD_CLIP)
+        if avg_norm > self._current_grad_clip * self._GRAD_CLIP_PROXIMITY_THRESHOLD:
+            new_clip = min(self._current_grad_clip * self._GRAD_CLIP_EXPAND_FACTOR, self._MAX_GRAD_CLIP)
             if new_clip != self._current_grad_clip:
                 self._current_grad_clip = new_clip
                 return {'grad_clip': new_clip, 'gc_reason': 'gradients_near_clip'}
 
         # If gradients very small, tighten for stability
-        if avg_norm < self._current_grad_clip * 0.1 and avg_norm > 0:
-            new_clip = max(avg_norm * 3, self._MIN_GRAD_CLIP)
+        if avg_norm < self._current_grad_clip * self._GRAD_CLIP_LOWER_THRESHOLD and avg_norm > 0:
+            new_clip = max(avg_norm * self._GRAD_CLIP_SHRINK_FACTOR, self._MIN_GRAD_CLIP)
             if new_clip != self._current_grad_clip:
                 self._current_grad_clip = new_clip
                 return {'grad_clip': new_clip, 'gc_reason': 'gradients_very_small'}
