@@ -25413,6 +25413,7 @@ class AEONDeltaV3(nn.Module):
             'temporal_knowledge_graph',
             'continual_learning', 'grounded_multimodal',
             'encoder_reasoning_norm',
+            'icm_curiosity', 'memory_cross_validation',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:

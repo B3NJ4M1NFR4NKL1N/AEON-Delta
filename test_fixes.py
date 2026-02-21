@@ -36101,6 +36101,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "auto_critic": "auto_critic",
         "mcts_planning": "mcts_planner",
         "active_learning": "active_learning_planner",
+        "icm_curiosity": "active_learning_planner",
         "cognitive_executive": "cognitive_executive",
         "causal_dag_consensus": "causal_dag_consensus",
         "certified_meta_loop": "certified_meta_loop",
@@ -37722,15 +37723,23 @@ def test_self_diagnostic_reports_extension_points():
         "self_diagnostic should include extension_points"
     )
     ext_points = diag['extension_points']
-    assert len(ext_points) >= 5, (
-        f"Expected at least 5 extension points, got {len(ext_points)}"
+    # After integration of Task2VecMetaLearner and CuriosityDrivenExploration,
+    # 3 extension points remain: ParallelCognitivePipeline,
+    # HierarchicalCognitiveArchitecture, LatentDynamicsModel.
+    assert len(ext_points) >= 3, (
+        f"Expected at least 3 extension points, got {len(ext_points)}"
     )
     ext_classes = [ep['class'] for ep in ext_points]
-    assert 'Task2VecMetaLearner' in ext_classes, (
-        "Task2VecMetaLearner should be listed as extension point"
-    )
     assert 'ParallelCognitivePipeline' in ext_classes, (
         "ParallelCognitivePipeline should be listed as extension point"
+    )
+    # Task2VecMetaLearner and CuriosityDrivenExploration should no longer
+    # appear since they are now integrated into the pipeline.
+    assert 'Task2VecMetaLearner' not in ext_classes, (
+        "Task2VecMetaLearner should no longer be an extension point"
+    )
+    assert 'CuriosityDrivenExploration' not in ext_classes, (
+        "CuriosityDrivenExploration should no longer be an extension point"
     )
     for ep in ext_points:
         assert ep['status'] == 'available_not_integrated', (
