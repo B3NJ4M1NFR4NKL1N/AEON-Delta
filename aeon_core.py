@@ -22307,6 +22307,22 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_memory_state is not None
                     and self._cached_memory_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["memory"] = self._cached_memory_state
+            # Include integration state so the coherence verifier can
+            # cross-validate the final integrated output against earlier
+            # pipeline stages.  Without this, integration-level
+            # misalignment (e.g. projection errors in integration_proj)
+            # is invisible to the UCC's inline coherence check despite
+            # being caught by the out-of-band verify_coherence().
+            if (self._cached_integration_state is not None
+                    and self._cached_integration_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["integration"] = self._cached_integration_state
+            # Include cognitive executive winner state so the coherence
+            # verifier can detect misalignment between executive
+            # arbitration and the integrated output within the same
+            # forward pass, not only in out-of-band verify_coherence().
+            if (self._cached_executive_state is not None
+                    and self._cached_executive_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["cognitive_executive_cached"] = self._cached_executive_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23353,6 +23369,20 @@ class AEONDeltaV3(nn.Module):
                 "terminal_state_validation", 1.0,
             )
         
+        # 8i-oq. Pre-compute current-pass output reliability so the terminal
+        # feedback bus below uses the fresh value instead of the stale
+        # _cached_output_quality from the PREVIOUS forward pass.  This
+        # closes the intra-pass feedback gap where the final feedback
+        # vector could not reflect the current pass's auto-critic quality,
+        # convergence rate, or coherence assessment.
+        _current_output_reliability = max(0.0, min(1.0,
+            (1.0 - uncertainty)
+            * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
+            * max(0.0, meta_results.get('convergence_rate', 1.0))
+            * max(0.0, 1.0 - self._cached_coherence_deficit)
+        ))
+        self._cached_output_quality = _current_output_reliability
+
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
         # analysis, provenance dampening) is complete, refresh the cached
@@ -23376,7 +23406,7 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 recovery_pressure=self._compute_recovery_pressure(),
                 self_report_consistency=self._cached_self_report_consistency,
-            output_quality=self._cached_output_quality,
+            output_quality=_current_output_reliability,
             ).detach()
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
@@ -23528,12 +23558,7 @@ class AEONDeltaV3(nn.Module):
             # uncertainty ≈ 1) dominates the overall score — this is
             # appropriate for a safety-first architecture where any
             # individual failure mode should degrade the trust signal.
-            'output_reliability': max(0.0, min(1.0,
-                (1.0 - uncertainty)
-                * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
-                * max(0.0, meta_results.get('convergence_rate', 1.0))
-                * max(0.0, 1.0 - self._cached_coherence_deficit)
-            )),
+            'output_reliability': _current_output_reliability,
             # Pre-computed loss components (avoids second spectral-norm pass)
             '_precomputed_consistency': _precomputed_consistency,
             '_precomputed_consistency_loss': _precomputed_consistency_loss,
@@ -23546,9 +23571,8 @@ class AEONDeltaV3(nn.Module):
         # reasoning consistency loop.
         self._cached_decoder_state = z_out.detach()
 
-        # Cache output reliability for out-of-band coherence checks
-        # via verify_coherence(), closing the output→coherence loop.
-        self._cached_output_quality = outputs.get('output_reliability', 1.0)
+        # _cached_output_quality was already set at step 8i-oq above
+        # with the current pass's fresh value; no need to re-cache here.
 
         return z_out, outputs
     
@@ -26024,6 +26048,20 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_fb_err)[:200]},
                     )
+
+        # --- Directional uncertainty summary ---
+        # Include per-module uncertainty from the DirectionalUncertaintyTracker
+        # so that out-of-band coherence checks expose WHICH subsystem is
+        # most uncertain, enabling targeted re-reasoning rather than generic
+        # uncertainty escalation.  Without this, verify_coherence() reports
+        # aggregate coherence but cannot identify the specific module(s)
+        # driving the deficit.
+        if self.uncertainty_tracker is not None:
+            _dir_unc_summary = self.uncertainty_tracker.build_summary()
+            result["directional_uncertainty"] = _dir_unc_summary
+            _most_uncertain = _dir_unc_summary.get("most_uncertain_module")
+            if _most_uncertain is not None:
+                result["most_uncertain_module"] = _most_uncertain
 
         return result
 
