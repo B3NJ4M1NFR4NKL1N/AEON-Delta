@@ -15993,6 +15993,7 @@ class AEONDeltaV3(nn.Module):
         # consistency verification loop.
         self._cached_decoder_state: Optional[torch.Tensor] = None
         self._cached_integration_state: Optional[torch.Tensor] = None
+        self._cached_executive_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16700,6 +16701,24 @@ class AEONDeltaV3(nn.Module):
                         "evolved_strategy": _evolved_strategy,
                     }),
                 )
+            # Escalate the pipeline error to the metacognitive trigger so
+            # that the next forward pass's adaptive weights reflect this
+            # failure, closing the loop between runtime exceptions and
+            # meta-cognitive sensitivity.  The trigger's
+            # adapt_weights_from_evolution() uses the updated error
+            # summary to boost signals associated with the error class.
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Post-error trigger adaptation failed: %s",
+                        _adapt_err,
+                    )
+
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
             # so that modules that completed successfully are still attributed.
@@ -16916,7 +16935,39 @@ class AEONDeltaV3(nn.Module):
         # at each call site.  The DAG mirrors the data-flow order of
         # the reasoning core: each downstream module declares its
         # upstream dependencies once per forward pass.
+        # Filter out edges that reference disabled modules so that the
+        # provenance DAG accurately reflects the active pipeline,
+        # preventing ghost dependencies from appearing in root-cause
+        # traces when optional subsystems are not enabled.
+        _DAG_NODE_TO_ATTR = {
+            "world_model": "world_model",
+            "hierarchical_world_model": "hierarchical_world_model",
+            "causal_model": "causal_model",
+            "notears_causal": "notears_causal",
+            "causal_programmatic": "causal_programmatic",
+            "causal_world_model": "causal_world_model",
+            "unified_simulator": "unified_simulator",
+            "hybrid_reasoning": "hybrid_reasoning",
+            "ns_bridge": "standalone_ns_bridge",
+            "hierarchical_vae": "hierarchical_vae",
+            "auto_critic": "auto_critic",
+            "mcts_planning": "mcts_planner",
+            "cognitive_executive": "cognitive_executive",
+            "causal_dag_consensus": "causal_dag_consensus",
+            "certified_meta_loop": "certified_meta_loop",
+            "multimodal": "multimodal",
+            "temporal_knowledge_graph": "temporal_knowledge_graph",
+            "complexity_estimator": "complexity_estimator",
+            "unified_cognitive_cycle": "unified_cognitive_cycle",
+        }
         for _up, _down in self._PIPELINE_DEPENDENCIES:
+            # Skip edge if either node maps to a disabled (None) module
+            _up_attr = _DAG_NODE_TO_ATTR.get(_up)
+            _down_attr = _DAG_NODE_TO_ATTR.get(_down)
+            if _up_attr is not None and getattr(self, _up_attr, None) is None:
+                continue
+            if _down_attr is not None and getattr(self, _down_attr, None) is None:
+                continue
             self.provenance_tracker.record_dependency(_up, _down)
         
         # 0. Register encoder and VQ stages in the provenance tracker.
@@ -18054,6 +18105,11 @@ class AEONDeltaV3(nn.Module):
                     "executed_subsystems": executive_results.get("executed", []),
                     "top_k": self.cognitive_executive.top_k,
                 })
+                # Cache the executive winner for verify_coherence() so
+                # out-of-band coherence checks can detect misalignment
+                # between executive arbitration and the integrated output.
+                if _winner is not None and torch.is_tensor(_winner):
+                    self._cached_executive_state = _winner.detach()
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "cognitive_executive", "dispatched",
@@ -23160,15 +23216,27 @@ class AEONDeltaV3(nn.Module):
         Comprehensive loss computation.
         
         Components:
-        1. Language modeling loss
-        2. VQ loss
-        3. Self-consistency loss
-        4. Lipschitz regularization
-        5. Safety loss
-        6. L2 regularization
+        1.  Language modeling loss (cross-entropy)
+        2.  VQ loss (vector quantizer commitment + codebook)
+        3.  Self-consistency loss (lambda_op fixed-point)
+        4.  Lipschitz regularization (contraction penalty)
+        5.  Safety loss (multi-level safety system)
+        6.  L2 regularization (parameter norm)
+        7.  Sparsity loss (sparse factor decomposition)
+        8.  Coherence loss (inter-module cosine similarity)
+        9.  Causal DAG loss (acyclicity constraints across causal models)
+        10. Hierarchical VAE KL loss
+        11. Adaptive meta-loop ponder cost
+        12. Meta-learner EWC loss (catastrophic forgetting prevention)
+        13. Provenance concentration loss (balanced module cooperation)
+        14. Cross-validation agreement loss (factor-causal consistency)
+        15. Auto-critic quality loss (self-correction incentive)
+        16. Unified cognitive cycle loss (internal consistency penalty)
+        17. Self-report loss (honest, consistent self-assessment)
+        18. Cycle-consistency loss (encoder-decoder information fidelity)
         
         Returns:
-            Dict with total_loss and components
+            Dict with total_loss and per-component losses
         """
         # ===== 1. LM LOSS =====
         logits = outputs['logits']
@@ -23989,6 +24057,10 @@ class AEONDeltaV3(nn.Module):
 
         # --- Check which modules are active ---
         _module_checks = {
+            'encoder': getattr(self, 'encoder', None),
+            'decoder': getattr(self, 'decoder', None),
+            'vector_quantizer': getattr(self, 'vector_quantizer', None),
+            'backbone_adapter': getattr(self, 'backbone_adapter', None),
             'meta_loop': self.meta_loop,
             'recursive_meta_loop': getattr(self, 'recursive_meta_loop', None),
             'hierarchical_meta_loop': getattr(self, 'hierarchical_meta_loop', None),
@@ -24032,6 +24104,7 @@ class AEONDeltaV3(nn.Module):
             'convergence_arbiter': getattr(self, 'convergence_arbiter', None),
             'uncertainty_tracker': getattr(self, 'uncertainty_tracker', None),
             'memory_validator': getattr(self, 'memory_validator', None),
+            'unified_cognitive_cycle': getattr(self, 'unified_cognitive_cycle', None),
             'state_validator': getattr(self, 'state_validator', None),
             'error_classifier': getattr(self, 'error_classifier', None),
             'error_recovery': getattr(self, 'error_recovery', None),
@@ -24909,6 +24982,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_feedback", "feedback_bus"),
             ("_cached_decoder_state", "decoder"),
             ("_cached_integration_state", "integration"),
+            ("_cached_executive_state", "cognitive_executive"),
         ]:
             cached = getattr(self, attr_name, None)
             if cached is not None and isinstance(cached, torch.Tensor):
