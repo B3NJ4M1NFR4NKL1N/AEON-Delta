@@ -41867,6 +41867,7 @@ def test_build_feedback_extra_signals_helper():
         _cached_topology_state = torch.tensor([1.0])
         _last_trust_score = 0.4
         _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
+        _cached_uncertainty_sources = {"coherence_deficit": 0.3}
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -41874,6 +41875,8 @@ def test_build_feedback_extra_signals_helper():
     assert extra["topology_catastrophe"] == 1.0  # catastrophe detected
     assert extra["memory_trust"] == 0.4
     assert extra["complexity_gate_usage"] > 0.0  # some gates are off
+    assert "unc_coherence_deficit" in extra  # uncertainty sources forwarded
+    assert extra["unc_coherence_deficit"] == 0.3
     print("✅ test_build_feedback_extra_signals_helper PASSED")
 
 

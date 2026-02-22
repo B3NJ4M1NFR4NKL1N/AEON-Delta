@@ -8526,6 +8526,7 @@ class MemoryManager:
                     'vec': self.fallback_vectors[i],
                     'meta': self.fallback_metas[i],
                     'age': now - self.fallback_timestamps[i],
+                    'score': float(similarities[i]),
                 }
                 for i in top_indices
             ]
@@ -16915,6 +16916,12 @@ class AEONDeltaV3(nn.Module):
         # coherence verifier can cross-validate symbolic fact grounding
         # against other subsystem outputs.
         self._cached_tkg_state: Optional[torch.Tensor] = None
+        # Per-source uncertainty breakdown — cached after each forward pass
+        # so that _build_feedback_extra_signals can route individual
+        # uncertainty contributors into the feedback bus, closing the gap
+        # where directional uncertainty was computed but never fed back
+        # into the meta-loop conditioning vector.
+        self._cached_uncertainty_sources: Dict[str, float] = {}
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16950,6 +16957,12 @@ class AEONDeltaV3(nn.Module):
         # causal decision chain, enabling root-cause analysis of memory-
         # influenced reasoning outcomes.
         self._last_memory_retrieval_quality: Dict[str, Any] = {}
+        # Cross-validation disagreement magnitude (0.0 = perfect agreement,
+        # 1.0 = total disagreement) and reconciled target state — cached so
+        # compute_loss() can add a supervised correction term for the causal
+        # model when factor–causal predictions diverge.
+        self._last_cv_disagreement: float = 0.0
+        self._last_cv_reconciled_target: Optional[torch.Tensor] = None
         
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
@@ -17170,6 +17183,14 @@ class AEONDeltaV3(nn.Module):
             extra["complexity_gate_usage"] = float(
                 1.0 - _cg.float().mean().item(),
             )
+        # Per-source uncertainty breakdown — feed individual uncertainty
+        # contributors (e.g. coherence_deficit, hvae_kl_divergence,
+        # reconciliation_disagreement) into the feedback bus so the
+        # meta-loop conditioning vector reflects *which* subsystems are
+        # uncertain, not just the scalar total.  Each source is clamped
+        # to [0, 1] and prefixed with "unc_" to avoid name collisions.
+        for src_name, src_val in self._cached_uncertainty_sources.items():
+            extra[f"unc_{src_name}"] = max(0.0, min(1.0, float(src_val)))
         return extra
 
     @staticmethod
@@ -17379,7 +17400,17 @@ class AEONDeltaV3(nn.Module):
                 found = self.memory_manager.retrieve_relevant(q, k=3)
                 if found:
                     vecs = [torch.from_numpy(f['vec']).to(device) for f in found]
-                    memory_contexts.append(torch.stack(vecs).mean(dim=0))
+                    # Weight each retrieved memory by its retrieval score
+                    # (cosine similarity) so that more relevant memories
+                    # contribute more to the fused representation.  This
+                    # closes the gap where all retrieved items had equal
+                    # influence regardless of relevance.
+                    scores = [max(f.get('score', 1.0), 1e-6) for f in found]
+                    total_score = sum(scores)
+                    weighted = sum(
+                        v * (s / total_score) for v, s in zip(vecs, scores)
+                    )
+                    memory_contexts.append(weighted)
                 else:
                     memory_contexts.append(torch.zeros_like(q))
             
@@ -21686,6 +21717,19 @@ class AEONDeltaV3(nn.Module):
             # disagreement — record in error evolution so the system
             # learns from cross-module conflicts over time.
             _agreement_val = reconciliation_results["agreement_score"].mean().item()
+            # 5d2-causal. Cross-validation → causal model supervision —
+            # when factor–causal agreement is low, the reconciled state
+            # represents a corrected consensus that the causal world model
+            # failed to predict.  Cache the reconciled state and the
+            # disagreement magnitude so that compute_loss() can add a
+            # supervised correction term that nudges the causal model
+            # toward the reconciled consensus.  This closes the gap where
+            # cross-validation detected causal disagreement but never used
+            # it to improve the causal model's predictions.
+            self._last_cv_disagreement = max(0.0, 1.0 - _agreement_val)
+            self._last_cv_reconciled_target = (
+                reconciliation_results["reconciled_state"].detach()
+            )
             if _agreement_val < self.config.cross_validation_agreement and self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class="reconciliation_disagreement",
@@ -22239,6 +22283,26 @@ class AEONDeltaV3(nn.Module):
                     )
             self.provenance_tracker.record_after("hierarchical_vae", C_star)
             self._cached_hvae_state = C_star.detach()
+            # 5e-gate. HVAE → complexity gate refinement — when the HVAE
+            # selects a high-abstraction level (large KL divergence or
+            # high-norm selected_level), the input is conceptually complex
+            # and all subsystems should remain active.  Refine the
+            # complexity gates computed in step 0a with the HVAE's
+            # abstraction signal so that early low-complexity estimates
+            # don't prematurely skip subsystems that the HVAE later
+            # determines are needed.
+            if _complexity_gates is not None and _hvae_healthy:
+                _hvae_kl = hierarchical_vae_results.get('kl_loss', None)
+                if _hvae_kl is not None:
+                    _hvae_kl_val_gate = float(_hvae_kl.item())
+                    if math.isfinite(_hvae_kl_val_gate):
+                        # High KL means high abstraction complexity — push
+                        # gates toward 1.0 (fully active) proportionally.
+                        _hvae_gate_boost = min(1.0, _hvae_kl_val_gate * 0.1)
+                        _complexity_gates = torch.clamp(
+                            _complexity_gates + _hvae_gate_boost, 0.0, 1.0,
+                        )
+                        self._last_complexity_gates = _complexity_gates
         self.integrity_monitor.record_health(
             "hierarchical_vae",
             1.0 if _hvae_healthy else 0.0,
@@ -22929,7 +22993,33 @@ class AEONDeltaV3(nn.Module):
                     key=_pre_critic_contributions.get,
                 )
             self.provenance_tracker.record_before("auto_critic", z_out)
+            # 8b3-adapt. Error-evolution-guided critic threshold — consult
+            # historical success rates of auto-critic revisions to adapt
+            # the acceptance threshold.  When past revisions rarely succeeded
+            # the threshold is lowered so the critic commits sooner rather
+            # than wasting iterations on unproductive revisions.  When
+            # revisions frequently succeeded the threshold is raised to
+            # demand higher quality.  This closes the gap where the critic's
+            # acceptance bar was static regardless of its track record.
+            _orig_critic_threshold = self.auto_critic.threshold
+            if self.error_evolution is not None:
+                _critic_best = self.error_evolution.get_best_strategy(
+                    "uncertainty_auto_critic_uncertainty",
+                )
+                if _critic_best == "auto_critic":
+                    # Past auto-critic revisions worked well — tighten
+                    self.auto_critic.threshold = min(
+                        0.95, _orig_critic_threshold * 1.05,
+                    )
+                elif _critic_best is not None:
+                    # Another strategy outperformed auto-critic — loosen
+                    self.auto_critic.threshold = max(
+                        0.5, _orig_critic_threshold * 0.95,
+                    )
             critic_result = self.auto_critic(z_out)
+            # Restore original threshold so the adaptation is per-pass
+            # and does not drift unboundedly across forward calls.
+            self.auto_critic.threshold = _orig_critic_threshold
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
@@ -24785,6 +24875,11 @@ class AEONDeltaV3(nn.Module):
                 weight_table=_adapted_weights,
             )
             high_uncertainty = uncertainty > 0.5
+        # Cache per-source uncertainty breakdown so subsequent feedback bus
+        # calls (and the next forward pass's early feedback) can route
+        # individual uncertainty contributors into the meta-loop
+        # conditioning vector.
+        self._cached_uncertainty_sources = dict(uncertainty_sources)
         
         _provenance = self.provenance_tracker.compute_attribution()
         
@@ -25758,6 +25853,31 @@ class AEONDeltaV3(nn.Module):
             if torch.is_tensor(_agree) and _agree.requires_grad:
                 cross_validation_loss = (1.0 - _agree.mean())
 
+        # ===== 13b. CAUSAL MODEL SUPERVISION FROM CROSS-VALIDATION =====
+        # When cross-validation detected factor-causal disagreement, the
+        # reconciled state is a corrected consensus that the causal world
+        # model failed to predict.  Add an MSE loss term between the causal
+        # model's prediction and the reconciled target, weighted by the
+        # disagreement magnitude.  This closes the gap where cross-
+        # validation improved the output but never corrected the causal
+        # model that produced the incorrect prediction.
+        causal_cv_supervision_loss = torch.tensor(0.0, device=self.device)
+        _causal_pred = outputs.get('causal_world_model_results', {}).get(
+            'predicted_state', None,
+        )
+        if (
+            self._last_cv_disagreement > 0.1
+            and self._last_cv_reconciled_target is not None
+            and _causal_pred is not None
+            and torch.is_tensor(_causal_pred)
+            and _causal_pred.requires_grad
+            and _causal_pred.shape == self._last_cv_reconciled_target.shape
+        ):
+            causal_cv_supervision_loss = (
+                self._last_cv_disagreement
+                * F.mse_loss(_causal_pred, self._last_cv_reconciled_target)
+            )
+
         # ===== 14. AUTO-CRITIC QUALITY LOSS =====
         # When AutoCriticLoop produces a revised candidate, penalize low
         # critic scores so that the generator learns to produce outputs
@@ -26022,6 +26142,7 @@ class AEONDeltaV3(nn.Module):
             ewc_loss +
             _provenance_weight * provenance_loss +
             self.config.lambda_cross_validation * cross_validation_loss +
+            self.config.lambda_cross_validation * causal_cv_supervision_loss +
             self.config.lambda_auto_critic * auto_critic_loss +
             self.config.lambda_ucc * ucc_loss +
             self.config.lambda_self_report * self_report_loss +
@@ -26085,6 +26206,7 @@ class AEONDeltaV3(nn.Module):
             'ewc_loss': ewc_loss,
             'provenance_loss': provenance_loss,
             'cross_validation_loss': cross_validation_loss,
+            'causal_cv_supervision_loss': causal_cv_supervision_loss,
             'auto_critic_loss': auto_critic_loss,
             'ucc_loss': ucc_loss,
             'self_report_loss': self_report_loss,
@@ -26399,6 +26521,7 @@ class AEONDeltaV3(nn.Module):
             ('hvae_kl_loss', 'high_hvae_kl_training_loss'),
             ('self_report_loss', 'high_self_report_training_loss'),
             ('cross_validation_loss', 'high_cross_validation_training_loss'),
+            ('causal_cv_supervision_loss', 'high_causal_cv_supervision_training_loss'),
         ]
         for _loss_key, _error_class in _subsystem_losses:
             _sub_loss = loss_dict.get(_loss_key, None)
