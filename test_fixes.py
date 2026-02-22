@@ -9162,10 +9162,10 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 3/9 ≈ 0.333 < 0.5 threshold → should NOT trigger
-    # with default weights; activate five to cross threshold.
-    # Five signals → with graduated uncertainty (0.8 × 1/9) + 4 binary
-    # signals (4 × 1/9) = 4.8/9 ≈ 0.533 ≥ threshold → should trigger
+    # Three signals → score = 3/11 ≈ 0.273 < 0.5 threshold → should NOT trigger
+    # with default weights; activate five to cross threshold — but with
+    # 11 signal weights the composite score is 4.8/11 ≈ 0.436 < 0.5.
+    # The topology_catastrophe override ensures should_trigger is True.
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
@@ -9174,7 +9174,7 @@ def test_metacognitive_recursion_trigger_evaluate():
         safety_violation=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 4.8 / 9.0) < 1e-9
+    assert abs(result["trigger_score"] - 4.8 / 11.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
@@ -9190,11 +9190,11 @@ def test_metacognitive_recursion_trigger_max_recursions():
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(
-        trigger_threshold=1.0 / 9.0 - 0.01,  # just below one-signal weight
+        trigger_threshold=1.0 / 11.0 - 0.01,  # just below one-signal weight
         max_recursions=1,
     )
 
-    # First call → should trigger (one signal = 1/9 ≈ 0.111 ≥ threshold)
+    # First call → should trigger (one signal = 1/11 ≈ 0.091 ≥ threshold)
     r1 = trigger.evaluate(uncertainty=0.8)
     assert r1["should_trigger"] is True
 
@@ -9212,7 +9212,7 @@ def test_metacognitive_recursion_trigger_max_recursions():
 
 
 def test_metacognitive_recursion_trigger_all_signals():
-    """Verify all nine signals contribute to trigger score."""
+    """Verify all eleven signals contribute to trigger score."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
@@ -9227,9 +9227,11 @@ def test_metacognitive_recursion_trigger_all_signals():
         world_model_surprise=1.0,
         causal_quality=0.1,
         safety_violation=True,
+        diversity_collapse=1.0,
+        memory_trust_deficit=1.0,
     )
     assert abs(result["trigger_score"] - 1.0) < 1e-9
-    assert len(result["triggers_active"]) == 9
+    assert len(result["triggers_active"]) == 11
     assert result["should_trigger"] is True
 
     print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
@@ -9737,13 +9739,13 @@ def test_causal_trace_root_cause():
 
 def test_memory_staleness_feeds_metacognitive_trigger():
     """Gap 4: Memory retrieval staleness feeds into metacognitive recursion
-    trigger as one of six signals."""
+    trigger as one of eleven signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0  # per-signal weight with 9 signals
+    _w = 1.0 / 11.0  # per-signal weight with 11 signals
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only memory_staleness active → score = 1/9 ≥ threshold
+    # Only memory_staleness active → score = 1/11 ≥ threshold
     result = trigger.evaluate(memory_staleness=True)
     assert result["should_trigger"] is True
     assert "memory_staleness" in result["triggers_active"]
@@ -11412,10 +11414,10 @@ def test_causal_trace_summary_in_fallback():
 # ============================================================================
 
 def test_recovery_pressure_in_metacognitive_trigger():
-    """Gap 5: recovery_pressure is one of 9 signals in MetaCognitiveRecursionTrigger."""
+    """Gap 5: recovery_pressure is one of 11 signals in MetaCognitiveRecursionTrigger."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # Only recovery_pressure active (above 0.3 threshold)
@@ -11634,7 +11636,7 @@ def test_signal_weights_returned_in_evaluate():
         "Expected 'signal_weights' in evaluate() result"
     )
     weights = result['signal_weights']
-    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
+    assert len(weights) == 11, f"Expected 11 signal weights, got {len(weights)}"
     assert abs(sum(weights.values()) - 1.0) < 1e-9, (
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
@@ -15476,7 +15478,7 @@ def test_causal_quality_in_metacognitive_trigger():
     DAG quality and reasoning depth."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(
         trigger_threshold=_w - 0.01,
         causal_quality_threshold=0.3,
@@ -27353,7 +27355,7 @@ def test_safety_violation_signal_in_metacognitive_trigger():
     to find safe alternatives rather than simply blending to input."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # safety_violation=True → should trigger
@@ -27431,7 +27433,7 @@ def test_ucc_evaluate_accepts_safety_violation():
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
     # Low threshold so single safety_violation signal triggers
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -27565,14 +27567,14 @@ def test_architecture_summary_includes_safety_critic_bridge():
     print("✅ test_architecture_summary_includes_safety_critic_bridge PASSED")
 
 
-def test_nine_signals_in_metacognitive_trigger():
-    """Verify MetaCognitiveRecursionTrigger has exactly 9 signals
-    after adding safety_violation."""
+def test_eleven_signals_in_metacognitive_trigger():
+    """Verify MetaCognitiveRecursionTrigger has exactly 11 signals
+    after adding diversity_collapse and memory_trust_deficit."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger()
     weights = trigger._signal_weights
-    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
+    assert len(weights) == 11, f"Expected 11 signal weights, got {len(weights)}"
     assert "safety_violation" in weights, (
         "Expected 'safety_violation' in signal weights"
     )
@@ -27580,7 +27582,7 @@ def test_nine_signals_in_metacognitive_trigger():
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
 
-    print("✅ test_nine_signals_in_metacognitive_trigger PASSED")
+    print("✅ test_eleven_signals_in_metacognitive_trigger PASSED")
 
 
 def test_get_weakest_pair_identifies_lowest_similarity():
@@ -29594,7 +29596,7 @@ def test_ucc_evaluate_accepts_topology_catastrophe():
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
     # Threshold low enough that a single signal triggers
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -29625,7 +29627,7 @@ def test_post_integration_metacognitive_includes_safety_violation():
     even when detected late in the pipeline."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
 
     # Verify that evaluate() accepts safety_violation
     result = trigger.evaluate(safety_violation=True)
@@ -29753,7 +29755,7 @@ def test_ucc_evaluate_returns_error_evolution_root_causes():
     cm = ConvergenceMonitor()
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -29788,7 +29790,7 @@ def test_ucc_evaluate_returns_causal_chain():
     cm = ConvergenceMonitor()
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ct = TemporalCausalTraceBuffer(max_entries=100)
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt, causal_trace=ct)
@@ -29863,7 +29865,7 @@ def test_training_bridge_error_classes_in_trigger_mapping():
         }
     })
     w = trigger._signal_weights
-    default_w = 1.0 / 9.0
+    default_w = 1.0 / 11.0
     # training_divergence maps to "diverging" — should get boosted
     assert w['diverging'] > default_w, (
         f"training_divergence should boost 'diverging' weight: {w['diverging']:.4f} <= {default_w:.4f}"
@@ -30244,8 +30246,8 @@ def test_graduated_uncertainty_signal():
     assert result["trigger_score"] > 0.0, (
         "Graduated uncertainty should contribute > 0 even below old binary threshold"
     )
-    # Score should be proportional: w * 0.4 = (1/9) * 0.4
-    expected = (1.0 / 9.0) * 0.4
+    # Score should be proportional: w * 0.4 = (1/11) * 0.4
+    expected = (1.0 / 11.0) * 0.4
     assert abs(result["trigger_score"] - expected) < 1e-9, (
         f"Expected graduated score {expected}, got {result['trigger_score']}"
     )
@@ -30260,7 +30262,7 @@ def test_high_uncertainty_override_triggers():
         trigger_threshold=0.9,  # high threshold that uncertainty alone can't reach
         max_recursions=2,
     )
-    # uncertainty=0.8 alone gives score = (1/9)*0.8 ≈ 0.089, well below 0.9
+    # uncertainty=0.8 alone gives score = (1/11)*0.8 ≈ 0.073, well below 0.9
     # But the high-uncertainty override (>0.7) should force trigger
     result = trigger.evaluate(uncertainty=0.8)
     assert result["should_trigger"] is True, (
@@ -31888,8 +31890,8 @@ def test_metacognitive_trigger_maps_new_error_classes():
     # After adaptation, diverging and memory_staleness weights should be boosted
     w = trigger._signal_weights
     # Since convergence_conflict maps to "diverging" and has low success,
-    # diverging weight should be above default (1/9 ≈ 0.111)
-    assert w["diverging"] > 0.111 or w["memory_staleness"] > 0.111, (
+    # diverging weight should be above default (1/11 ≈ 0.091)
+    assert w["diverging"] > 0.091 or w["memory_staleness"] > 0.091, (
         f"Expected boosted weights: diverging={w['diverging']:.3f}, "
         f"memory_staleness={w['memory_staleness']:.3f}"
     )
@@ -35553,11 +35555,11 @@ def test_new_error_classes_mapped_to_trigger_signals():
 
     # Verify weights were actually adjusted (not just silently ignored)
     # trust_scorer_failure → uncertainty, low success → boosted weight
-    assert trigger._signal_weights["uncertainty"] > 1.0 / 9.0, (
+    assert trigger._signal_weights["uncertainty"] > 1.0 / 11.0, (
         "Expected uncertainty weight to be boosted by trust_scorer_failure"
     )
     # coherence_verifier_failure → coherence_deficit
-    assert trigger._signal_weights["coherence_deficit"] > 1.0 / 9.0, (
+    assert trigger._signal_weights["coherence_deficit"] > 1.0 / 11.0, (
         "Expected coherence_deficit weight to be boosted by coherence_verifier_failure"
     )
 
