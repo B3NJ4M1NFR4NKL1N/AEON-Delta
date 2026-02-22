@@ -41877,6 +41877,148 @@ def test_build_feedback_extra_signals_helper():
     print("✅ test_build_feedback_extra_signals_helper PASSED")
 
 
+# ============================================================================
+# Tests for architectural gap closure — unified cognitive coherence fixes
+# ============================================================================
+
+def test_error_recovery_provenance_tracking():
+    """Error recovery in reasoning_core records provenance before/after recovery."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    assert 'provenance_tracker.record_before(\n                    "error_recovery"' in src or \
+           'provenance_tracker.record_before(\n                    "error_recovery"' in src or \
+           ('record_before' in src and '"error_recovery"' in src), (
+        "reasoning_core must record provenance before/after error recovery"
+    )
+    assert ('record_after' in src and '"error_recovery"' in src), (
+        "reasoning_core must record provenance after error recovery"
+    )
+    print("✅ test_error_recovery_provenance_tracking PASSED")
+
+
+def test_error_recovery_causal_trace():
+    """Error recovery in reasoning_core records causal trace for pipeline_fallback."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    assert '"error_recovery", "pipeline_fallback"' in src or \
+           '"error_recovery"' in src, (
+        "reasoning_core must record causal trace for error recovery fallback"
+    )
+    assert 'pipeline_fallback' in src, (
+        "Causal trace must include pipeline_fallback event type"
+    )
+    print("✅ test_error_recovery_causal_trace PASSED")
+
+
+def test_active_learning_error_causal_trace():
+    """Active learning error skip is recorded in causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"active_learning", "error_skip"' in src or \
+           ('"active_learning"' in src and '"error_skip"' in src), (
+        "_reasoning_core_impl must record causal trace for active learning error skip"
+    )
+    print("✅ test_active_learning_error_causal_trace PASSED")
+
+
+def test_hybrid_reasoning_post_revision_revalidation():
+    """Hybrid reasoning conclusions are re-validated after auto-critic revision."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'hybrid_post_revision_check' in src, (
+        "_reasoning_core_impl must re-validate hybrid reasoning after auto-critic"
+    )
+    assert 'hybrid_reasoning_post_revision_violations' in src, (
+        "Post-revision hybrid violations must escalate uncertainty"
+    )
+    print("✅ test_hybrid_reasoning_post_revision_revalidation PASSED")
+
+
+def test_deeper_meta_loop_coherence_gate():
+    """UCC deeper meta-loop acceptance verifies coherence, not just convergence."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_ucc_deeper_coherent' in src, (
+        "Deeper meta-loop acceptance must include coherence check"
+    )
+    assert 'deeper_meta_loop_coherence_rejected' in src, (
+        "Coherence-rejected deeper loops must be logged"
+    )
+    print("✅ test_deeper_meta_loop_coherence_gate PASSED")
+
+
+def test_provenance_fallback_trigger_adaptation():
+    """When error_evolution is absent, provenance adapts metacognitive trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'adapt_weights_from_provenance' in src, (
+        "_reasoning_core_impl must call adapt_weights_from_provenance as fallback"
+    )
+    # Verify it's gated on error_evolution being None
+    assert 'self.error_evolution is None' in src, (
+        "Provenance-based adaptation must be gated on error_evolution being None"
+    )
+    print("✅ test_provenance_fallback_trigger_adaptation PASSED")
+
+
+def test_provenance_tracker_error_recovery_roundtrip():
+    """CausalProvenanceTracker correctly tracks error_recovery module."""
+    import torch
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    z_before = torch.randn(2, 64)
+    z_after = torch.randn(2, 64) * 0.5  # Different output after recovery
+    tracker.record_before("error_recovery", z_before)
+    tracker.record_after("error_recovery", z_after)
+    attrib = tracker.compute_attribution()
+    contribs = attrib.get("contributions", {})
+    assert "error_recovery" in contribs, (
+        "Provenance attribution must include error_recovery module"
+    )
+    assert contribs["error_recovery"] > 0.0, (
+        "Error recovery must have positive contribution when states differ"
+    )
+    print("✅ test_provenance_tracker_error_recovery_roundtrip PASSED")
+
+
+def test_metacognitive_trigger_provenance_adaptation_roundtrip():
+    """MetaCognitiveRecursionTrigger adapts weights from provenance attribution."""
+    import torch
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalProvenanceTracker
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker = CausalProvenanceTracker()
+
+    # Record dominant meta_loop and minor encoder contribution
+    # so that meta_loop exceeds the mean and triggers adaptation.
+    z_base = torch.zeros(2, 64)
+    z_mid = z_base + 0.01 * torch.randn(2, 64)  # small encoder delta
+    z_out = torch.randn(2, 64)  # large meta_loop delta
+
+    tracker.record_before("encoder", z_base)
+    tracker.record_after("encoder", z_mid)
+    tracker.record_before("meta_loop", z_mid)
+    tracker.record_after("meta_loop", z_out)
+
+    old_weights = dict(trigger._signal_weights)
+    prov = tracker.compute_attribution()
+    trigger.adapt_weights_from_provenance(prov)
+    new_weights = trigger._signal_weights
+
+    # meta_loop maps to "diverging" signal; it should be boosted
+    # because meta_loop contribution >> 0.5 (mean of 2 modules)
+    assert new_weights["diverging"] != old_weights["diverging"], (
+        "Provenance adaptation should boost the diverging signal "
+        "when meta_loop dominates"
+    )
+    print("✅ test_metacognitive_trigger_provenance_adaptation_roundtrip PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -43665,6 +43807,16 @@ def _run_all_tests():
     test_ucc_memory_signal_coherence_integration()
     test_generate_returns_output_reliability()
     test_meta_recovery_learner_failure_audit_trail()
+
+    # Architectural gap closure — unified cognitive coherence tests
+    test_error_recovery_provenance_tracking()
+    test_error_recovery_causal_trace()
+    test_active_learning_error_causal_trace()
+    test_hybrid_reasoning_post_revision_revalidation()
+    test_deeper_meta_loop_coherence_gate()
+    test_provenance_fallback_trigger_adaptation()
+    test_provenance_tracker_error_recovery_roundtrip()
+    test_metacognitive_trigger_provenance_adaptation_roundtrip()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

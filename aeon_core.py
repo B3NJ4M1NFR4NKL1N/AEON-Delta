@@ -17696,6 +17696,26 @@ class AEONDeltaV3(nn.Module):
             )
             if recovery_success and recovered_value is not None:
                 recovered_value = recovered_value.to(device)
+                # Record recovery in provenance so that causal attribution
+                # includes the error-recovery substitution.  Without this,
+                # recovery silently replaces the pipeline output and
+                # downstream provenance analysis cannot trace *why* the
+                # output changed, violating the "all conclusions traceable
+                # to root causes" contract.
+                self.provenance_tracker.record_before(
+                    "error_recovery", z_in,
+                )
+                self.provenance_tracker.record_after(
+                    "error_recovery", recovered_value,
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "error_recovery", "pipeline_fallback",
+                        metadata={
+                            "error_class": error_class,
+                            "evolved_strategy": _evolved_strategy,
+                        },
+                    )
             # MetaRecoveryLearner: encode actual error context and select
             # recovery strategy based on learned policy, then record the
             # experience so the learner can improve over time.
@@ -21815,6 +21835,15 @@ class AEONDeltaV3(nn.Module):
                             "error": str(_al_err),
                         }),
                     )
+                # Record the skip in provenance so that downstream
+                # causal attribution knows the active-learning signal
+                # was absent due to error, not due to low novelty.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "active_learning", "error_skip",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={"error": str(_al_err)},
+                    )
                 _al_err_boost = min(1.0 - uncertainty, 0.05)
                 if _al_err_boost > 0:
                     uncertainty = min(1.0, uncertainty + _al_err_boost)
@@ -22702,6 +22731,67 @@ class AEONDeltaV3(nn.Module):
                             "ns_consistency", "post_revision_check", {
                                 "post_violations": int(_post_violations),
                                 "revision_resolved": _post_violations == 0,
+                            },
+                        )
+                    except Exception:
+                        pass
+                # 8b3b. Post-auto-critic hybrid reasoning re-validation —
+                # re-check hybrid reasoning conclusions against the revised
+                # z_out to confirm they remain consistent.  The initial
+                # validation (step 8b2) aligned conclusions to the
+                # pre-revision z_out; after the critic revised z_out, the
+                # conclusions may no longer be consistent with the output,
+                # violating the "all conclusions traceable to root causes"
+                # contract.
+                _hr_conclusions_post = hybrid_reasoning_results.get(
+                    "conclusions", None,
+                )
+                if (_hr_conclusions_post is not None
+                        and torch.isfinite(_hr_conclusions_post).all()
+                        and self.ns_consistency_checker is not None):
+                    try:
+                        _hr_post_norm = F.layer_norm(
+                            _hr_conclusions_post,
+                            [_hr_conclusions_post.shape[-1]],
+                        )
+                        _z_post_norm = F.layer_norm(
+                            z_out, [z_out.shape[-1]],
+                        )
+                        _z_post_std = _z_post_norm.std(
+                            dim=-1, keepdim=True,
+                        )
+                        _z_post_mean = _z_post_norm.mean(
+                            dim=-1, keepdim=True,
+                        )
+                        _hr_post_aligned = (
+                            _hr_post_norm * _z_post_std + _z_post_mean
+                        )
+                        _hr_post_ns = self.ns_consistency_checker(
+                            _hr_post_aligned, rules_proxy,
+                        )
+                        _hr_post_violations = (
+                            _hr_post_ns["num_violations"].sum().item()
+                        )
+                        if _hr_post_violations > 0:
+                            _hr_post_boost = min(
+                                1.0 - uncertainty, 0.1,
+                            )
+                            uncertainty = min(
+                                1.0, uncertainty + _hr_post_boost,
+                            )
+                            uncertainty_sources[
+                                "hybrid_reasoning_post_revision_violations"
+                            ] = _hr_post_boost
+                            high_uncertainty = uncertainty > 0.5
+                        self.audit_log.record(
+                            "ns_consistency",
+                            "hybrid_post_revision_check", {
+                                "post_violations": int(
+                                    _hr_post_violations,
+                                ),
+                                "revision_resolved": (
+                                    _hr_post_violations == 0
+                                ),
                             },
                         )
                     except Exception:
@@ -23945,6 +24035,21 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
+            # 8f-ucc-adapt-prov. Provenance-based trigger adaptation
+            # fallback — when error_evolution is unavailable, use
+            # provenance attribution to adapt metacognitive trigger
+            # weights.  This ensures the trigger mechanism learns from
+            # module dominance patterns even without evolutionary error
+            # history, closing the loop where provenance data was
+            # captured but never acted upon in the absence of
+            # error_evolution.
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is None):
+                _ucc_prov = self.provenance_tracker.compute_attribution()
+                if _ucc_prov.get("contributions"):
+                    self.metacognitive_trigger.adapt_weights_from_provenance(
+                        _ucc_prov,
+                    )
             # Record root-cause analysis in causal trace for traceability
             if self.causal_trace is not None and _ucc_root_causes:
                 self.causal_trace.record(
@@ -24044,7 +24149,41 @@ class AEONDeltaV3(nn.Module):
                     _ucc_deeper_rate = _ucc_meta_deeper.get(
                         "convergence_rate", 0.0,
                     )
-                    if _ucc_deeper_rate >= convergence_quality_scalar:
+                    # Accept the deeper result only if convergence improved
+                    # AND the coherence deficit did not worsen.  Without the
+                    # coherence check, a deeper loop that converges faster
+                    # but increases cross-module divergence is still
+                    # accepted, violating the "each component verifies and
+                    # reinforces the others" contract.
+                    _ucc_deeper_coherent = True
+                    if self.module_coherence is not None:
+                        try:
+                            _ucc_deeper_coh = self.module_coherence({
+                                "deeper_output": _ucc_C_deeper,
+                                "original_output": z_out,
+                            })
+                            _ucc_deeper_coh_deficit = max(
+                                0.0,
+                                1.0 - float(
+                                    _ucc_deeper_coh[
+                                        "coherence_score"
+                                    ].mean().item()
+                                ),
+                            )
+                            if _ucc_deeper_coh_deficit > self._cached_coherence_deficit + 0.1:
+                                _ucc_deeper_coherent = False
+                                self.audit_log.record(
+                                    "unified_cognitive_cycle",
+                                    "deeper_meta_loop_coherence_rejected",
+                                    {
+                                        "deeper_deficit": _ucc_deeper_coh_deficit,
+                                        "original_deficit": self._cached_coherence_deficit,
+                                    },
+                                )
+                        except Exception:
+                            pass
+                    if (_ucc_deeper_rate >= convergence_quality_scalar
+                            and _ucc_deeper_coherent):
                         _ucc_deeper_accepted = True
                         z_out = _ucc_C_deeper
                         self.audit_log.record(
