@@ -3358,7 +3358,7 @@ class ContextualRSSMTrainer:
                 # decoder cannot interpret signal latent-space drift,
                 # which should trigger deeper meta-cognitive reasoning.
                 if _decoder_invalid_count > 0 and valid_batches > 0:
-                    _decoder_failure_ratio = _decoder_invalid_count / max(valid_batches, 1)
+                    _decoder_failure_ratio = _decoder_invalid_count / valid_batches
                     _uncertainty = min(1.0, _uncertainty + _decoder_failure_ratio * 0.3)
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 # Adapt metacognitive trigger weights from accumulated
