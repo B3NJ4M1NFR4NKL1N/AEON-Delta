@@ -6240,6 +6240,10 @@ class CausalProvenanceTracker:
         # significant enough to emit a causal trace entry.  This avoids
         # flooding the trace buffer with trivial identity-like transforms.
         self._delta_trace_threshold: float = 0.01
+        self._error_evolution: Optional['CausalErrorEvolutionTracker'] = None
+        # Threshold above which a module's L2 delta is considered
+        # anomalous enough to emit an error-evolution episode.
+        self._delta_anomaly_threshold: float = 50.0
     
     def reset(self):
         """Clear all recorded snapshots for a new forward pass."""
@@ -6261,7 +6265,21 @@ class CausalProvenanceTracker:
         module transformations that shaped the output.
         """
         self._causal_trace = trace
-    
+
+    def set_error_evolution(
+        self, tracker: Optional['CausalErrorEvolutionTracker'],
+    ) -> None:
+        """Attach a :class:`CausalErrorEvolutionTracker`.
+
+        Once attached, :meth:`record_after` emits an error-evolution
+        episode whenever a module's L2 delta exceeds
+        ``_delta_anomaly_threshold``, bridging per-module attribution
+        deltas into the error-evolution learning system so that
+        anomalously large module contributions trigger recovery
+        strategy adaptation.
+        """
+        self._error_evolution = tracker
+
     def record_before(self, module_name: str, state: torch.Tensor):
         """Record the state before a module's transformation.
 
@@ -6317,6 +6335,24 @@ class CausalProvenanceTracker:
                     },
                     severity="info" if new_delta < 1.0 else "warning",
                 )
+            # Bridge anomalous deltas to error evolution so that
+            # unusually large module contributions trigger recovery
+            # strategy adaptation.
+            _ee = getattr(self, '_error_evolution', None)
+            if _ee is not None and new_delta > self._delta_anomaly_threshold:
+                try:
+                    _ee.record_episode(
+                        error_class='provenance_delta_anomaly',
+                        strategy_used='meta_rerun',
+                        success=False,
+                        metadata={
+                            'module': module_name,
+                            'l2_delta': new_delta,
+                            'threshold': self._delta_anomaly_threshold,
+                        },
+                    )
+                except Exception:
+                    pass
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -7198,6 +7234,7 @@ class ConvergenceMonitor:
         self.history: deque = deque(maxlen=10)
         self._error_evolution: Optional['CausalErrorEvolutionTracker'] = None
         self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
+        self._metacognitive_trigger: Optional['MetaCognitiveRecursionTrigger'] = None
         self._secondary_signals: Dict[str, float] = {}
 
     def set_error_evolution(
@@ -7225,6 +7262,18 @@ class ConvergenceMonitor:
         module dominated when the convergence failure occurred.
         """
         self._provenance_tracker = tracker
+
+    def set_metacognitive_trigger(
+        self, trigger: Optional['MetaCognitiveRecursionTrigger'],
+    ) -> None:
+        """Attach a :class:`MetaCognitiveRecursionTrigger`.
+
+        Once attached, :meth:`check` reads the trigger's active-trigger
+        count and tightens the convergence threshold proportionally,
+        so that high metacognitive pressure requires stricter
+        convergence before certification.
+        """
+        self._metacognitive_trigger = trigger
 
     def record_secondary_signal(self, name: str, value: float) -> None:
         """Record an auxiliary convergence signal.
@@ -7290,7 +7339,21 @@ class ConvergenceMonitor:
             for v in self._secondary_signals.values()
         )
 
-        if avg_contraction < 1.0 and delta_norm < self.threshold:
+        # When a metacognitive trigger is attached and has active
+        # triggers, tighten the effective convergence threshold so
+        # that high metacognitive pressure demands stricter
+        # convergence before certification.
+        _effective_threshold = self.threshold
+        _mt = getattr(self, '_metacognitive_trigger', None)
+        if _mt is not None:
+            _last = getattr(_mt, '_last_triggers_active', None)
+            if _last and len(_last) >= 3:
+                _n_active = len(_last)
+                _effective_threshold = self.threshold * max(
+                    0.5, 1.0 - 0.05 * _n_active,
+                )
+
+        if avg_contraction < 1.0 and delta_norm < _effective_threshold:
             if _secondary_degraded:
                 # Residual converged but auxiliary subsystems indicate
                 # instability — downgrade to 'converging' and withhold
@@ -7355,7 +7418,7 @@ class ConvergenceMonitor:
             }
             # Stagnation: converging but delta hasn't dropped below
             # threshold for a long time.
-            if len(self.history) >= 10 and delta_norm > self.threshold * 10:
+            if len(self.history) >= 10 and delta_norm > _effective_threshold * 10:
                 self._bridge_convergence_event(
                     'convergence_stagnation',
                     'increase_iterations',
@@ -13560,6 +13623,29 @@ class CrossValidationReconciler(nn.Module):
             "reconcile_iterations": iterations,
         }
 
+    def get_correction_signal(
+        self,
+        agreement_score: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Produce a corrective signal from cross-validation agreement.
+
+        When agreement is below the threshold, the returned attenuation
+        factor (∈ [0, 1]) can be used by downstream modules to dampen
+        their confidence, closing the loop between cross-validation
+        disagreement and downstream behavior adjustment.
+
+        Args:
+            agreement_score: [B] agreement tensor from forward().
+
+        Returns:
+            Dict with ``attenuation`` factor and ``low_agreement`` bool.
+        """
+        low = (agreement_score < self.agreement_threshold).any().item()
+        attenuation = agreement_score.clamp(0.0, 1.0).mean().item()
+        return {
+            "attenuation": attenuation,
+            "low_agreement": bool(low),
+        }
 
 class ExternalDataTrustScorer(nn.Module):
     """
@@ -14172,6 +14258,7 @@ class MetaCognitiveRecursionTrigger:
             "low_causal_quality": self._DEFAULT_WEIGHT,
             "safety_violation": self._DEFAULT_WEIGHT,
         }
+        self._last_triggers_active: List[str] = []
 
     def reset(self) -> None:
         """Reset recursion counter at the start of each forward pass."""
@@ -14509,7 +14596,7 @@ class MetaCognitiveRecursionTrigger:
         if should_trigger:
             self._recursion_count += 1
 
-        return {
+        result = {
             "should_trigger": should_trigger,
             "trigger_score": trigger_score,
             "tightened_threshold": self.tightening_factor,
@@ -14518,6 +14605,8 @@ class MetaCognitiveRecursionTrigger:
             "recursion_count": self._recursion_count,
             "signal_weights": dict(w),
         }
+        self._last_triggers_active = list(triggers_active)
+        return result
 
 
 class CausalErrorEvolutionTracker:
@@ -16639,6 +16728,18 @@ class AEONDeltaV3(nn.Module):
         # Unified simulator next state — cached so verify_coherence can
         # detect counterfactual-reasoning divergence from main pipeline.
         self._cached_unified_sim_state: Optional[torch.Tensor] = None
+        # Diversity metric output — cached so verify_coherence can
+        # detect thought-collapse divergence from reasoning states.
+        self._cached_diversity_state: Optional[torch.Tensor] = None
+        # Topology analysis output — cached so verify_coherence can
+        # detect loss-landscape instability divergence.
+        self._cached_topology_state: Optional[torch.Tensor] = None
+        # Cross-validation reconciled state — cached so verify_coherence
+        # can detect inter-module reconciliation drift.
+        self._cached_cross_validation_state: Optional[torch.Tensor] = None
+        # NS consistency overall score — cached so verify_coherence can
+        # detect neuro-symbolic rule violation patterns.
+        self._cached_ns_consistency_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -16714,6 +16815,16 @@ class AEONDeltaV3(nn.Module):
         if self.provenance_tracker is not None:
             self.convergence_monitor.set_provenance_tracker(
                 self.provenance_tracker
+            )
+        # Wire provenance tracker → error evolution so anomalous deltas
+        # trigger error-evolution episodes.
+        if self.error_evolution is not None:
+            self.provenance_tracker.set_error_evolution(self.error_evolution)
+        # Wire convergence monitor ← metacognitive trigger so trigger
+        # pressure tightens convergence thresholds.
+        if self.metacognitive_trigger is not None:
+            self.convergence_monitor.set_metacognitive_trigger(
+                self.metacognitive_trigger
             )
         
         # ===== UNIFIED COGNITIVE CYCLE =====
@@ -18666,7 +18777,15 @@ class AEONDeltaV3(nn.Module):
             topo_results = self._compute_topology(factors, iterations, B, device, fast)
         finally:
             self.provenance_tracker.record_after("topology_analysis", C_star)
-        
+
+        # Cache diversity and topology states for coherence verification.
+        _div_t = diversity_results.get('diversity')
+        if _div_t is not None and isinstance(_div_t, torch.Tensor):
+            self._cached_diversity_state = _div_t.detach()
+        _topo_t = topo_results.get('catastrophes')
+        if _topo_t is not None and isinstance(_topo_t, torch.Tensor):
+            self._cached_topology_state = _topo_t.float().detach()
+
         # 3a. Record diversity health — low diversity indicates thought
         # collapse, which is a critical architectural failure mode.
         _diversity_score = float(diversity_results['diversity'].mean().item())
@@ -21162,6 +21281,7 @@ class AEONDeltaV3(nn.Module):
             self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
             self.provenance_tracker.record_after("cross_validation", C_star)
+            self._cached_cross_validation_state = C_star.detach()
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
                 "iterations": reconciliation_results["reconcile_iterations"],
@@ -22009,6 +22129,10 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_before("ns_consistency", z_out)
             ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
             self.provenance_tracker.record_after("ns_consistency", z_out)
+            # Cache NS consistency overall score for coherence verification.
+            _ns_oc = ns_consistency_results.get("overall_consistency")
+            if _ns_oc is not None and isinstance(_ns_oc, torch.Tensor):
+                self._cached_ns_consistency_state = _ns_oc.detach()
             # Also validate hybrid reasoning conclusions if available.
             # Normalize conclusions into the same distribution as z_out so
             # that the consistency checker's output_to_predicates projection
@@ -26905,9 +27029,15 @@ class AEONDeltaV3(nn.Module):
             ("_cached_mcts_state", "mcts_planning"),
             ("_cached_hvae_state", "hierarchical_vae"),
             ("_cached_unified_sim_state", "unified_simulator"),
+            ("_cached_diversity_state", "diversity"),
+            ("_cached_topology_state", "topology"),
+            ("_cached_cross_validation_state", "cross_validation"),
+            ("_cached_ns_consistency_state", "ns_consistency"),
         ]:
             cached = getattr(self, attr_name, None)
-            if cached is not None and isinstance(cached, torch.Tensor):
+            if (cached is not None
+                    and isinstance(cached, torch.Tensor)
+                    and cached.dim() == 2):
                 subsystem_states[label] = cached
 
         if len(subsystem_states) < 2:
@@ -26929,6 +27059,31 @@ class AEONDeltaV3(nn.Module):
         _pairwise_data = coherence_out.get("pairwise", {})
         _weakest = self.module_coherence.get_weakest_pair(_pairwise_data)
         result["weakest_pair"] = _weakest
+
+        # Include scalar subsystem states as auxiliary coherence signals
+        # so that diversity collapse, topology instability, and NS-rule
+        # violations participate in the coherence assessment even though
+        # they lack the [B, hidden_dim] shape required for pairwise
+        # cosine similarity.
+        _aux = {}
+        if self._cached_diversity_state is not None:
+            _aux["diversity"] = float(self._cached_diversity_state.mean().item())
+        if self._cached_topology_state is not None:
+            _aux["topology_catastrophe"] = float(
+                self._cached_topology_state.mean().item()
+            )
+        if self._cached_ns_consistency_state is not None:
+            _aux["ns_consistency"] = float(
+                self._cached_ns_consistency_state.mean().item()
+            )
+        if _aux:
+            result["auxiliary_signals"] = _aux
+            # Degrade coherence score if diversity collapsed or NS
+            # consistency is low, triggering recheck.
+            if _aux.get("diversity", 1.0) < 0.3:
+                result["needs_recheck"] = True
+            if _aux.get("ns_consistency", 1.0) < 0.5:
+                result["needs_recheck"] = True
 
         # --- Trigger meta-cognitive evaluation on low coherence ---
         # Incorporates integrity_health degradation into the coherence
