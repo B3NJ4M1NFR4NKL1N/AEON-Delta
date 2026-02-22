@@ -17291,6 +17291,57 @@ class AEONDeltaV3(nn.Module):
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
             
+            # Blend NeurogenicMemory patterns into the fused state when
+            # available.  Without this, neurogenic memory is queried
+            # independently (in reasoning_core step 5c) but never
+            # influences the main memory-fused representation, leaving
+            # the neurogenic subsystem disconnected from the fusion
+            # pipeline and invisible to downstream reasoning.
+            if self.neurogenic_memory is not None:
+                try:
+                    for i in range(C_fused.shape[0]):
+                        neuro_ret = self.neurogenic_memory.retrieve(
+                            C_fused[i].detach(), k=3,
+                        )
+                        if neuro_ret:
+                            neuro_vecs = torch.stack(
+                                [v for v, _s in neuro_ret]
+                            )
+                            C_fused[i] = C_fused[i] + (
+                                self.config.neurogenic_retrieval_weight
+                                * neuro_vecs.mean(dim=0).to(device)
+                            )
+                except Exception as neuro_err:
+                    logger.debug(
+                        "NeurogenicMemory fusion skipped: %s", neuro_err,
+                    )
+                    self._memory_stale = True
+
+            # Blend TemporalMemory patterns into the fused state when
+            # available.  This mirrors the neurogenic blending above,
+            # ensuring temporal episodic context influences the main
+            # memory-fused representation rather than being consumed
+            # only as a post-hoc residual in reasoning_core step 5c.
+            if self.temporal_memory is not None:
+                try:
+                    for i in range(C_fused.shape[0]):
+                        temporal_ret = self.temporal_memory.retrieve(
+                            C_fused[i].detach(), k=3,
+                        )
+                        if temporal_ret:
+                            temporal_vecs = torch.stack(
+                                [m['vector'] for m in temporal_ret]
+                            )
+                            C_fused[i] = C_fused[i] + (
+                                self.config.temporal_memory_retrieval_weight
+                                * temporal_vecs.mean(dim=0).to(device)
+                            )
+                except Exception as temporal_err:
+                    logger.debug(
+                        "TemporalMemory fusion skipped: %s", temporal_err,
+                    )
+                    self._memory_stale = True
+
             # Blend ConsolidatingMemory semantic prototypes into the
             # fused state when available.  This bridges the two parallel
             # memory systems (MemoryManager FAISS and ConsolidatingMemory
@@ -20470,6 +20521,12 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _neuro_boost)
                 uncertainty_sources["neurogenic_memory_sparse"] = _neuro_boost
                 high_uncertainty = uncertainty > 0.5
+                # Propagate neurogenic memory sparsity to the memory
+                # staleness flag so the metacognitive trigger sees
+                # degraded memory on the next forward pass, closing
+                # the gap where neurogenic retrieval failures were
+                # invisible to the meta-cognitive recursion trigger.
+                self._memory_stale = True
             self.provenance_tracker.record_after("neurogenic_memory", C_star)
         
         # 5c3. Consolidating memory — store current states and retrieve
@@ -20531,6 +20588,11 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _temporal_boost)
                 uncertainty_sources["temporal_memory_sparse"] = _temporal_boost
                 high_uncertainty = uncertainty > 0.5
+                # Propagate temporal memory sparsity to the memory
+                # staleness flag so the metacognitive trigger detects
+                # impoverished temporal context on the next forward
+                # pass, matching the neurogenic staleness propagation.
+                self._memory_stale = True
             self.provenance_tracker.record_after("temporal_memory", C_star)
         
         # Record memory subsystem health — covers hierarchical, neurogenic,
@@ -22326,6 +22388,15 @@ class AEONDeltaV3(nn.Module):
                             _ac_unc_boost, _ac_deficit * 0.3,
                         )
                         high_uncertainty = uncertainty > 0.5
+                    # Wire auto-critic quality into the convergence monitor
+                    # so that self-assessment scores inform convergence
+                    # tracking, closing the feedback loop between the
+                    # critic and the convergence subsystem.
+                    if _auto_critic_final_score < 1.0:
+                        self.convergence_monitor.record_secondary_signal(
+                            "auto_critic_quality_deficit",
+                            1.0 - _auto_critic_final_score,
+                        )
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
@@ -22441,6 +22512,15 @@ class AEONDeltaV3(nn.Module):
                         _uc_boost, _uc_deficit * 0.3,
                     )
                     high_uncertainty = uncertainty > 0.5
+                # Wire unconditional auto-critic quality into the
+                # convergence monitor, matching the NS-violation and
+                # metacognitive paths so all critic invocations inform
+                # convergence tracking uniformly.
+                if _auto_critic_final_score < 1.0:
+                    self.convergence_monitor.record_secondary_signal(
+                        "auto_critic_quality_deficit",
+                        1.0 - _auto_critic_final_score,
+                    )
                 self.audit_log.record("auto_critic", "quality_assessment", {
                     "final_score": _auto_critic_final_score,
                     "trigger": "unconditional",
@@ -22537,6 +22617,16 @@ class AEONDeltaV3(nn.Module):
                     _ac_unc_boost, _ac_deficit * 0.3,
                 )
                 high_uncertainty = uncertainty > 0.5
+            # Wire auto-critic quality into the convergence monitor
+            # so that metacognitive-triggered self-assessment informs
+            # convergence tracking consistently with the NS-violation
+            # path above, ensuring all auto-critic invocations feed
+            # back into the convergence subsystem.
+            if _auto_critic_final_score < 1.0:
+                self.convergence_monitor.record_secondary_signal(
+                    "auto_critic_quality_deficit",
+                    1.0 - _auto_critic_final_score,
+                )
             # Determine which condition triggered the cycle
             if _topo_catastrophe:
                 _trigger = "topology_catastrophe"
