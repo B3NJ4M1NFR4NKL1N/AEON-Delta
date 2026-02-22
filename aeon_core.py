@@ -13912,34 +13912,46 @@ class ModuleCoherenceVerifier(nn.Module):
         }
 
     def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
-        """Adapt threshold bidirectionally based on coherence error history.
+        """Adapt threshold bidirectionally based on error history.
 
-        Inspects the ``coherence_deficit`` error class in the supplied
-        error summary.  When the success rate is below 50 % and at least
-        two episodes have been recorded, the threshold is tightened by a
-        small step (capped at 0.9) so the system becomes stricter after
-        repeated failures.  Conversely, when the success rate exceeds
-        80 %, the threshold is gradually relaxed toward the initial
-        baseline, preventing monotonic inflation of strictness after
-        transient coherence issues are resolved.
+        Inspects the ``coherence_deficit``, ``diversity_collapse``,
+        ``topology_catastrophe``, and ``low_memory_trust`` error classes
+        in the supplied error summary.  When any class has a success rate
+        below 50 % and at least two episodes recorded, the threshold is
+        tightened by a small step (capped at 0.9).  Conversely, when all
+        inspected classes have success rates above 80 %, the threshold is
+        gradually relaxed toward the initial baseline.
 
         Args:
             error_summary: Output of
                 ``CausalErrorEvolutionTracker.get_error_summary()``.
         """
         classes = error_summary.get("error_classes", {})
-        cd_stats = classes.get("coherence_deficit")
-        if cd_stats is None:
+        _tighten = False
+        _any_class_found = False
+        _all_healthy = True
+        for _cls_name in (
+            "coherence_deficit",
+            "diversity_collapse",
+            "topology_catastrophe",
+            "low_memory_trust",
+        ):
+            _stats = classes.get(_cls_name)
+            if _stats is None or _stats.get("count", 0) < 2:
+                continue
+            _any_class_found = True
+            _sr = _stats.get("success_rate", 1.0)
+            if _sr < 0.5:
+                _tighten = True
+            if _sr <= 0.8:
+                _all_healthy = False
+        if not _any_class_found:
             return
-        if cd_stats.get("count", 0) < 2:
-            return
-        success_rate = cd_stats.get("success_rate", 1.0)
-        if success_rate < 0.5:
+        if _tighten:
             self.threshold = min(
                 self._ADAPT_CAP, self.threshold + self._ADAPT_STEP,
             )
-        elif success_rate > 0.8 and self.threshold > self._initial_threshold:
-            # Gradually relax toward baseline when coherence is healthy
+        elif _all_healthy and self.threshold > self._initial_threshold:
             self.threshold = max(
                 self._initial_threshold,
                 self.threshold - self._RELAX_STEP,
@@ -14175,7 +14187,7 @@ class CausalDAGConsensus:
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors nine independent signals:
+    Monitors eleven independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -14196,6 +14208,11 @@ class MetaCognitiveRecursionTrigger:
        output that violates safety constraints.  Deeper re-reasoning
        may find a safe alternative rather than simply blending back to
        the input.
+    10. ``diversity_collapse`` — thought diversity has fallen below the
+        collapse threshold, indicating the system is producing redundant
+        representations that deeper reasoning may diversify.
+    11. ``memory_trust_deficit`` — external memory trust is low, indicating
+        unreliable data that deeper internal reasoning should compensate for.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -14216,8 +14233,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (9 signals × 1/9 ≈ 0.111 each)
-    _DEFAULT_WEIGHT = 1.0 / 9.0
+    # Default per-signal weight (11 signals × 1/11 ≈ 0.091 each)
+    _DEFAULT_WEIGHT = 1.0 / 11.0
 
     def __init__(
         self,
@@ -14257,6 +14274,8 @@ class MetaCognitiveRecursionTrigger:
             "world_model_surprise": self._DEFAULT_WEIGHT,
             "low_causal_quality": self._DEFAULT_WEIGHT,
             "safety_violation": self._DEFAULT_WEIGHT,
+            "diversity_collapse": self._DEFAULT_WEIGHT,
+            "memory_trust_deficit": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
 
@@ -14314,7 +14333,7 @@ class MetaCognitiveRecursionTrigger:
             # Previously unmapped error classes — adding them ensures
             # that all recorded failure modes influence trigger weights.
             "vq_codebook_collapse": "uncertainty",
-            "diversity_collapse": "uncertainty",
+            "diversity_collapse": "diversity_collapse",
             "memory_staleness": "memory_staleness",
             "memory_subsystem": "memory_staleness",
             "critical_uncertainty": "uncertainty",
@@ -14353,7 +14372,7 @@ class MetaCognitiveRecursionTrigger:
             # Trust scorer failure — memory verification subsystem error
             # feeds into uncertainty so metacognitive cycles compensate.
             "trust_scorer_failure": "uncertainty",
-            "low_memory_trust": "memory_staleness",
+            "low_memory_trust": "memory_trust_deficit",
             # Coherence verifier failure — the verification subsystem
             # itself failed, escalating uncertainty.
             "coherence_verifier_failure": "coherence_deficit",
@@ -14445,7 +14464,7 @@ class MetaCognitiveRecursionTrigger:
         "encoder_reasoning_norm": "uncertainty",
         "continual_learning": "uncertainty",
         "slot_binding": "coherence_deficit",
-        "diversity_analysis": "uncertainty",
+        "diversity_analysis": "diversity_collapse",
         "cross_validation": "coherence_deficit",
         "integration": "coherence_deficit",
         "multimodal": "uncertainty",
@@ -14530,6 +14549,8 @@ class MetaCognitiveRecursionTrigger:
         world_model_surprise: float = 0.0,
         causal_quality: float = 1.0,
         safety_violation: bool = False,
+        diversity_collapse: float = 0.0,
+        memory_trust_deficit: float = 0.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -14558,6 +14579,14 @@ class MetaCognitiveRecursionTrigger:
             safety_violation: True if the safety system detected an unsafe
                 state and enforced a rollback.  Triggers deeper reasoning
                 to search for a safe alternative.
+            diversity_collapse: Scalar ∈ [0, 1] indicating thought diversity
+                deficit.  High values indicate the system is producing
+                collapsed, low-diversity representations that deeper
+                reasoning may diversify.
+            memory_trust_deficit: Scalar ∈ [0, 1] indicating how unreliable
+                external memory is.  Derived from ``1 - trust_score``; high
+                values indicate unreliable external data that deeper
+                reasoning should compensate for.
 
         Returns:
             Dict with:
@@ -14594,6 +14623,8 @@ class MetaCognitiveRecursionTrigger:
             "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
             "low_causal_quality": w["low_causal_quality"] * float(causal_quality < self._causal_quality_threshold),
             "safety_violation": w["safety_violation"] * float(safety_violation),
+            "diversity_collapse": w.get("diversity_collapse", 0.0) * max(0.0, min(1.0, diversity_collapse)),
+            "memory_trust_deficit": w.get("memory_trust_deficit", 0.0) * max(0.0, min(1.0, memory_trust_deficit)),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -15290,6 +15321,8 @@ class UnifiedCognitiveCycle:
         auto_critic_quality: Optional[float] = None,
         executive_health: Optional[float] = None,
         output_reliability: Optional[float] = None,
+        diversity_collapse: float = 0.0,
+        memory_trust_deficit: float = 0.0,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -15429,6 +15462,39 @@ class UnifiedCognitiveCycle:
                 },
             )
 
+        # 2b. Record diversity collapse in error evolution so the
+        # coherence verifier threshold and metacognitive trigger weights
+        # can adapt to thought collapse history.
+        if diversity_collapse > 0.3 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='diversity_collapse',
+                strategy_used='meta_rerun',
+                success=False,
+                metadata={'diversity_collapse': diversity_collapse},
+            )
+
+        # 2c. Record topology catastrophe in error evolution so the
+        # coherence verifier threshold tightens after structural
+        # instability in the loss landscape.
+        if topology_catastrophe and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='topology_catastrophe',
+                strategy_used='meta_rerun',
+                success=False,
+                metadata={'topology_catastrophe': True},
+            )
+
+        # 2d. Record memory trust deficit in error evolution so the
+        # metacognitive trigger learns to be more sensitive to unreliable
+        # external data.
+        if memory_trust_deficit > 0.3 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='low_memory_trust',
+                strategy_used='meta_rerun',
+                success=False,
+                metadata={'memory_trust_deficit': memory_trust_deficit},
+            )
+
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
         if self.metacognitive_trigger is not None:
@@ -15442,6 +15508,8 @@ class UnifiedCognitiveCycle:
                 world_model_surprise=world_model_surprise,
                 causal_quality=causal_quality,
                 safety_violation=safety_violation,
+                diversity_collapse=diversity_collapse,
+                memory_trust_deficit=memory_trust_deficit,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence and
@@ -15451,11 +15519,14 @@ class UnifiedCognitiveCycle:
                 is_diverging or coherence_deficit > 0.5
                 or uncertainty > 0.7 or safety_violation
                 or topology_catastrophe
+                or diversity_collapse > 0.5
+                or memory_trust_deficit > 0.5
             )
             trigger_detail = {
                 'should_trigger': _should_trigger_fallback,
                 'trigger_score': max(
                     uncertainty, coherence_deficit,
+                    diversity_collapse, memory_trust_deficit,
                     1.0 if is_diverging else 0.0,
                 ),
                 'triggers_active': (
@@ -15465,6 +15536,8 @@ class UnifiedCognitiveCycle:
                         ('uncertainty', uncertainty > 0.7),
                         ('safety_violation', safety_violation),
                         ('topology_catastrophe', topology_catastrophe),
+                        ('diversity_collapse', diversity_collapse > 0.5),
+                        ('memory_trust_deficit', memory_trust_deficit > 0.5),
                     ] if v]
                 ),
             }
@@ -15635,6 +15708,16 @@ class UnifiedCognitiveCycle:
                         "output_reliability", 1.0 - _or,
                         source_label="low_output_trust",
                     )
+            if diversity_collapse > 0.3:
+                self.uncertainty_tracker.record(
+                    "diversity", diversity_collapse,
+                    source_label="thought_diversity_collapse",
+                )
+            if memory_trust_deficit > 0.3:
+                self.uncertainty_tracker.record(
+                    "memory_trust", memory_trust_deficit,
+                    source_label="unreliable_external_data",
+                )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -15880,6 +15963,18 @@ class AEONDeltaV3(nn.Module):
         # traceability of thought collapse events.
         ("factor_extraction", "diversity_analysis"),
         ("diversity_analysis", "metacognitive_trigger"),
+        # Diversity collapse feeds into safety, cross-validation, and
+        # auto-critic so that thought collapse triggers targeted safety
+        # re-examination, stricter factor–causal alignment, and immediate
+        # correction of collapsed reasoning state.
+        ("diversity_analysis", "safety"),
+        ("diversity_analysis", "cross_validation"),
+        ("diversity_analysis", "auto_critic"),
+        # Topology catastrophe feeds into world model and MCTS planning
+        # so that loss-landscape instability causes the world model to
+        # adjust predictions and MCTS to adapt planning horizon.
+        ("topology_analysis", "world_model"),
+        ("topology_analysis", "mcts_planning"),
         # DAG consensus disagreement tightens the cross-validation
         # reconciler threshold for stricter factor–causal alignment.
         ("causal_dag_consensus", "cross_validation"),
@@ -15936,6 +16031,15 @@ class AEONDeltaV3(nn.Module):
         # data is unreliable.
         ("memory", "memory_trust"),
         ("memory_trust", "metacognitive_trigger"),
+        # Low memory trust feeds into integration and auto-critic so
+        # that unreliable external data is downweighted during final
+        # integration and flagged for immediate correction.
+        ("memory_trust", "integration"),
+        ("memory_trust", "auto_critic"),
+        # Complexity estimator receives feedback from the world model
+        # so that downstream divergence can trigger re-gating, closing
+        # the one-directional complexity gating loop.
+        ("world_model", "complexity_estimator"),
         # ── Continual learning pipeline edges ──────────────────────
         # The continual learning core's lateral adapter enriches the
         # encoder output before VQ, enabling trace_root_cause() to
@@ -16050,6 +16154,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus = CognitiveFeedbackBus(
             hidden_dim=config.hidden_dim,
         ).to(self.device)
+        # Register additional dynamic signal channels so the feedback bus
+        # can condition the meta-loop on diversity collapse, topology
+        # catastrophe, memory trust, and complexity gate usage — signals
+        # that were previously computed but never fed back into the
+        # reasoning core's fixed-point iteration.
+        self.feedback_bus.register_signal("diversity_collapse", default=0.0)
+        self.feedback_bus.register_signal("topology_catastrophe", default=0.0)
+        self.feedback_bus.register_signal("memory_trust", default=1.0)
+        self.feedback_bus.register_signal("complexity_gate_usage", default=0.0)
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17029,6 +17142,36 @@ class AEONDeltaV3(nn.Module):
         total = stats.get("total", 0)
         return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
 
+    def _build_feedback_extra_signals(self) -> Dict[str, float]:
+        """Build extra signal dict for CognitiveFeedbackBus from cached state.
+
+        Aggregates diversity collapse, topology catastrophe, memory trust,
+        and complexity gate usage into scalar signals that the feedback bus
+        can project into the meta-loop conditioning vector.
+        """
+        extra: Dict[str, float] = {}
+        # Diversity collapse: 1.0 when collapsed, 0.0 when healthy
+        if self._cached_diversity_state is not None:
+            _div_val = float(self._cached_diversity_state.mean().item())
+            _threshold = self.config.diversity_collapse_threshold
+            extra["diversity_collapse"] = max(
+                0.0, min(1.0, (_threshold - _div_val) / max(_threshold, 1e-6)),
+            )
+        # Topology catastrophe: 1.0 when any catastrophe, 0.0 otherwise
+        if self._cached_topology_state is not None:
+            extra["topology_catastrophe"] = float(
+                self._cached_topology_state.any().item(),
+            )
+        # Memory trust: direct trust score (1.0 = fully trusted)
+        extra["memory_trust"] = getattr(self, '_last_trust_score', 1.0)
+        # Complexity gate usage: fraction of gates that are off (skipping)
+        _cg = getattr(self, '_last_complexity_gates', None)
+        if _cg is not None and isinstance(_cg, torch.Tensor):
+            extra["complexity_gate_usage"] = float(
+                1.0 - _cg.float().mean().item(),
+            )
+        return extra
+
     @staticmethod
     def _encode_state_for_recovery(
         tensor: torch.Tensor, target_dim: int, device: torch.device,
@@ -17696,6 +17839,7 @@ class AEONDeltaV3(nn.Module):
                         safety_score=torch.ones(B, 1, device=device),
                         convergence_quality=0.0,
                         uncertainty=1.0,
+                        extra_signals=self._build_feedback_extra_signals(),
                     ).detach()
             except Exception as fb_err:
                 logger.warning(
@@ -18046,6 +18190,7 @@ class AEONDeltaV3(nn.Module):
             if _complexity_gates is not None and not torch.isfinite(_complexity_gates).all():
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
+            self._last_complexity_gates = _complexity_gates
             logger.debug(
                 f"Complexity: {_complexity_score_val:.3f}"
             )
@@ -19339,6 +19484,7 @@ class AEONDeltaV3(nn.Module):
             output_quality=self._cached_output_quality,
             memory_quality=self._last_memory_retrieval_quality.get(
                 "retrieval_quality", 1.0),
+            extra_signals=self._build_feedback_extra_signals(),
             ).detach()
         # 5a-ii-b. Current-pass feedback modulation — use the freshly computed
         # feedback to refine uncertainty for the current pass.  When recovery
@@ -19936,6 +20082,7 @@ class AEONDeltaV3(nn.Module):
                 output_quality=self._cached_output_quality,
                 memory_quality=self._last_memory_retrieval_quality.get(
                     "retrieval_quality", 1.0),
+                extra_signals=self._build_feedback_extra_signals(),
                 ).detach()
                 self.provenance_tracker.record_before("deeper_meta_loop", C_star)
                 C_star_deeper, _iter_deeper, meta_deeper = self.meta_loop(
@@ -21415,6 +21562,7 @@ class AEONDeltaV3(nn.Module):
                     self_report_consistency=self._cached_self_report_consistency,
                 output_quality=self._cached_output_quality,
                 memory_quality=_memory_retrieval_quality,
+                extra_signals=self._build_feedback_extra_signals(),
                 ).detach()
         
         # 5d2. Cross-validation: reconcile factors vs causal predictions.
@@ -23493,6 +23641,17 @@ class AEONDeltaV3(nn.Module):
                         * max(0.0, meta_results.get('convergence_rate', 1.0))
                         * max(0.0, 1.0 - self._cached_coherence_deficit)
                     )),
+                    # Diversity collapse signal — thought diversity deficit
+                    # computed from the diversity metric's score relative to
+                    # the collapse threshold.
+                    diversity_collapse=max(0.0, min(1.0, (
+                        self.config.diversity_collapse_threshold
+                        - float(diversity_results.get('diversity', torch.tensor(1.0)).mean().item())
+                    ) / max(self.config.diversity_collapse_threshold, 1e-6))),
+                    # Memory trust deficit — inverse of the trust scorer's
+                    # mean trust score, signalling unreliable external data.
+                    memory_trust_deficit=max(0.0, 1.0 - getattr(
+                        self, '_last_trust_score', 1.0)),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -23870,6 +24029,7 @@ class AEONDeltaV3(nn.Module):
                     self_report_consistency=self._cached_self_report_consistency,
                 output_quality=self._cached_output_quality,
                 memory_quality=_memory_retrieval_quality,
+                extra_signals=self._build_feedback_extra_signals(),
                 ).detach()
                 self.provenance_tracker.record_before(
                     "deeper_meta_loop", z_out,
@@ -24201,6 +24361,7 @@ class AEONDeltaV3(nn.Module):
                         self_report_consistency=self._cached_self_report_consistency,
                     output_quality=self._cached_output_quality,
                     memory_quality=_memory_retrieval_quality,
+                    extra_signals=self._build_feedback_extra_signals(),
                     ).detach()
         
         # 8g-0a. Post-revision safety re-evaluation — re-evaluate safety
@@ -24692,6 +24853,7 @@ class AEONDeltaV3(nn.Module):
                 self_report_consistency=self._cached_self_report_consistency,
             output_quality=_current_output_reliability,
             memory_quality=_memory_retrieval_quality,
+            extra_signals=self._build_feedback_extra_signals(),
             ).detach()
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
@@ -27668,6 +27830,7 @@ class AEONDeltaV3(nn.Module):
                         self, '_cached_output_quality', 1.0),
                     memory_quality=self._last_memory_retrieval_quality.get(
                         "retrieval_quality", 1.0),
+                    extra_signals=self._build_feedback_extra_signals(),
                 ).detach()
             except Exception as _fb_err:
                 logger.warning(

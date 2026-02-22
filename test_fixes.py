@@ -13487,7 +13487,7 @@ def test_world_model_surprise_in_metacognitive_trigger():
     triggers deeper reasoning instead of only escalating uncertainty."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
 
     # world_model_surprise below threshold → should NOT fire
     result = trigger.evaluate(world_model_surprise=0.1)
