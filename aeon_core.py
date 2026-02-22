@@ -23182,19 +23182,40 @@ class AEONDeltaV3(nn.Module):
                 _ucc_states["cross_validation"] = _cv_reconciled
             # Include causal DAG consensus as a subsystem state so the
             # coherence verifier can detect structural causal divergence.
-            # When multiple causal models disagree, the consensus-scaled
-            # core state will diverge from the integrated output,
-            # signalling a cross-subsystem inconsistency that was
-            # previously invisible to the coherence verifier (Gap 4).
+            # When multiple causal models disagree, the consensus signal
+            # diverges from the integrated output, signalling a cross-
+            # subsystem inconsistency that was previously invisible to
+            # the coherence verifier (Gap 4).
+            #
+            # The representation uses a *directional perturbation*
+            # proportional to the disagreement rather than simple scalar
+            # multiplication.  Cosine similarity — the metric used by
+            # ModuleCoherenceVerifier — is invariant to uniform scaling,
+            # so the previous formulation ``C_star * consensus_score``
+            # always had cosine similarity = 1.0 with C_star regardless
+            # of consensus, producing no detectable divergence signal.
+            # The perturbation approach blends C_star with a dimension-
+            # rolled copy (which has a nearly orthogonal direction) so
+            # that low consensus produces a measurably different vector
+            # direction detectable by cosine-based coherence verification.
             if (_dag_consensus_results
                     and _dag_consensus_results.get("consensus_score") is not None):
                 _consensus_score_val = _dag_consensus_results["consensus_score"]
-                # C_star is the converged thought state from the meta-loop;
-                # scaling it by consensus produces a divergent signal when
-                # causal models disagree.
-                _ucc_states["causal_dag_consensus"] = (
-                    C_star * _consensus_score_val
-                )
+                _disagreement = max(0.0, 1.0 - _consensus_score_val)
+                if _disagreement > 0.0:
+                    # Blend C_star with a dimension-rolled copy.  The
+                    # rolled copy is nearly orthogonal to C_star in high
+                    # dimensions, so disagreement-proportional blending
+                    # produces a genuinely different direction that cosine
+                    # similarity can detect.  When disagreement = 0,
+                    # this returns C_star exactly.
+                    _c_rolled = C_star.roll(1, dims=-1)
+                    _ucc_states["causal_dag_consensus"] = (
+                        (1.0 - _disagreement) * C_star
+                        + _disagreement * _c_rolled
+                    )
+                else:
+                    _ucc_states["causal_dag_consensus"] = C_star
             # Include cognitive executive workspace so the coherence
             # verifier can detect misalignment between the executive's
             # winning subsystem and the integrated output.  Without this,
@@ -23287,6 +23308,28 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_safety_state is not None
                     and self._cached_safety_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["safety"] = self._cached_safety_state
+            # Include the raw input so the coherence verifier can detect
+            # input-to-output drift, mirroring the post-integration
+            # coherence check (step 8f) which includes z_in but was
+            # previously invisible to the UCC.
+            if z_in.shape[-1] == z_out.shape[-1]:
+                _ucc_states["input"] = z_in
+            # Include causal model output (mean-pooled to hidden_dim) so
+            # the UCC's coherence verifier can cross-validate causal
+            # conclusions against the integrated output, matching the
+            # post-integration coherence check that already includes this.
+            _cm_vars_ucc = causal_model_results.get("causal_vars", None)
+            if _cm_vars_ucc is not None:
+                _cm_exp_ucc = _cm_vars_ucc.mean(
+                    dim=-1, keepdim=True,
+                ).expand_as(z_out)
+                _ucc_states["causal_model"] = _cm_exp_ucc
+            # Include unified simulator next-state prediction so the
+            # coherence verifier can detect simulator-reasoning divergence.
+            _us_next_ucc = unified_simulator_results.get("next_state", None)
+            if (_us_next_ucc is not None
+                    and _us_next_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["unified_simulator"] = _us_next_ucc
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23469,6 +23512,47 @@ class AEONDeltaV3(nn.Module):
                     self._cached_causal_quality = min(
                         self._cached_causal_quality, 1.0 - _ucc_deficit,
                     )
+                    # 8f-iv-blend-nonrerun. Targeted weakest-pair correction
+                    # in the non-rerun case — when the UCC detects a
+                    # coherence deficit that is above threshold but does NOT
+                    # trigger a full rerun, apply weakest-pair blending to
+                    # partially repair the identified incoherence.  This
+                    # closes the gap where coherence deficits below the
+                    # rerun threshold only escalated uncertainty without
+                    # attempting any targeted correction, despite the
+                    # specific divergent pair being known.
+                    if not _ucc_should_rerun and self.module_coherence is not None:
+                        _ucc_nr_weakest = _ucc_coherence.get(
+                            "weakest_pair", None,
+                        )
+                        if _ucc_nr_weakest is not None:
+                            _ucc_states = ModuleCoherenceVerifier.blend_weakest_pair(
+                                _ucc_states, _ucc_nr_weakest,
+                            )
+                            # If the weakest pair involves the integrated
+                            # output, propagate the blended value back so
+                            # downstream consumers (decoder, output) see
+                            # the corrected representation.
+                            _nr_blended_out = _ucc_states.get(
+                                "integrated_output", None,
+                            )
+                            if (_nr_blended_out is not None
+                                    and _nr_blended_out.shape == z_out.shape
+                                    and torch.isfinite(_nr_blended_out).all()):
+                                z_out = _nr_blended_out
+                            self.audit_log.record(
+                                "module_coherence",
+                                "weakest_pair_blended_nonrerun",
+                                {
+                                    "modules": _ucc_nr_weakest.get(
+                                        "modules", [],
+                                    ),
+                                    "similarity": _ucc_nr_weakest.get(
+                                        "similarity", 0.0,
+                                    ),
+                                    "coherence_deficit": _ucc_deficit,
+                                },
+                            )
                 # Propagate UCC coherence score into coherence_results
                 # so compute_loss() can use the UCC's richer assessment
                 # (which includes provenance-correlated evaluation and
