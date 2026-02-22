@@ -2782,6 +2782,8 @@ class AEONConfig:
     lambda_world_model_surprise: float = 0.01
     lambda_convergence_residual: float = 0.01
     lambda_decoder_provenance: float = 0.005
+    lambda_ns_consistency: float = 0.01
+    lambda_hierarchical_wm: float = 0.01
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -16293,6 +16295,12 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "memory_re_retrieval_pressure", default=0.0,
         )
+        # Decoder provenance pressure — signals when the decoder
+        # significantly distorts the reasoning representation, prompting
+        # deeper reasoning in the next pass to produce more robust states.
+        self.feedback_bus.register_signal(
+            "decoder_provenance_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17387,6 +17395,20 @@ class AEONDeltaV3(nn.Module):
         # reactive uncertainty escalation.
         if self._cached_memory_needs_re_retrieval:
             extra["memory_re_retrieval_pressure"] = 1.0
+        # Decoder provenance delta — when the decoder significantly
+        # distorts the reasoning representation (high L2 delta in the
+        # provenance tracker), signal the meta-loop to strengthen
+        # its conclusions on the next pass.  This closes the decoder →
+        # feedback loop: large decoder transformations indicate the
+        # reasoning core output is not sufficiently decoder-friendly,
+        # prompting deeper reasoning to produce more robust states.
+        _prov = getattr(self, 'provenance_tracker', None)
+        if _prov is not None:
+            _dec_delta = _prov.compute_attribution().get(
+                'contributions', {},
+            ).get('decoder', 0.0)
+            if isinstance(_dec_delta, (int, float)) and _dec_delta > 0.05:
+                extra["decoder_provenance_pressure"] = min(1.0, _dec_delta)
         # Per-source uncertainty breakdown — feed individual uncertainty
         # contributors (e.g. coherence_deficit, hvae_kl_divergence,
         # reconciliation_disagreement) into the feedback bus so the
@@ -24261,6 +24283,14 @@ class AEONDeltaV3(nn.Module):
             if (_us_next_ucc is not None
                     and _us_next_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["unified_simulator"] = _us_next_ucc
+            # Include the previous pass's decoder output so the coherence
+            # verifier can detect cross-pass decoder drift.  Without this,
+            # the decoder operates outside the coherence loop — an
+            # incoherent decoder can distort reasoning conclusions without
+            # triggering a meta-cognitive rerun.
+            if (self._cached_decoder_state is not None
+                    and self._cached_decoder_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["decoder"] = self._cached_decoder_state
             # Include complexity estimator score as a directional
             # perturbation of C_star so the coherence verifier can detect
             # input-complexity-driven divergence from the integrated output.
@@ -26644,6 +26674,36 @@ class AEONDeltaV3(nn.Module):
             if torch.is_tensor(_gm_loss) and _gm_loss.requires_grad:
                 grounded_mm_loss = 0.01 * _gm_loss
 
+        # ===== 18b. NEURO-SYMBOLIC CONSISTENCY LOSS =====
+        # Penalize neuro-symbolic rule violations detected by the
+        # NeuroSymbolicConsistencyChecker so that training actively
+        # reduces logical constraint failures.  Without this, NS
+        # violations are detected at runtime but never create a
+        # gradient signal — the model has no incentive to avoid them.
+        # The loss is (1 - mean overall_consistency), capped at 1.0.
+        ns_consistency_loss = torch.tensor(0.0, device=self.device)
+        _ns_results = outputs.get('ns_consistency_results', {})
+        _ns_oc = _ns_results.get('overall_consistency', None)
+        if _ns_oc is not None and torch.is_tensor(_ns_oc) and torch.isfinite(_ns_oc).all():
+            ns_consistency_loss = (1.0 - _ns_oc.mean()).clamp(min=0.0, max=1.0)
+
+        # ===== 18c. HIERARCHICAL WORLD MODEL PREDICTION LOSS =====
+        # Penalize divergence between the hierarchical world model's
+        # prediction and the actual integrated output (z_out).  Without
+        # this, the HWM produces predictions that are never directly
+        # supervised — its parameters receive gradients only through
+        # the residual blend, which is insufficient for accurate
+        # multi-horizon forecasting.
+        hierarchical_wm_loss = torch.tensor(0.0, device=self.device)
+        _hwm_results = outputs.get('hierarchical_wm_results', {})
+        _hwm_pred = _hwm_results.get('prediction', None)
+        _hwm_target = outputs.get('core_state', None)
+        if (_hwm_pred is not None and _hwm_target is not None
+                and torch.is_tensor(_hwm_pred) and torch.is_tensor(_hwm_target)
+                and _hwm_pred.shape == _hwm_target.shape
+                and torch.isfinite(_hwm_pred).all()):
+            hierarchical_wm_loss = F.mse_loss(_hwm_pred, _hwm_target.detach())
+
         # ===== 19. META-RECOVERY POLICY LOSS =====
         # When MetaRecoveryLearner is enabled and its replay buffer has
         # enough experiences, sample a mini-batch and compute the
@@ -26847,6 +26907,8 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_world_model_surprise * world_model_surprise_loss +
             _convergence_loss_scale * self.config.lambda_convergence_residual * convergence_residual_loss +
             self.config.lambda_decoder_provenance * decoder_provenance_loss +
+            self.config.lambda_ns_consistency * ns_consistency_loss +
+            self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
@@ -26888,6 +26950,26 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                     metadata={'coherence_loss': _coh_val},
                 )
+            _ns_val = 0.0
+            if torch.is_tensor(ns_consistency_loss) and torch.isfinite(ns_consistency_loss):
+                _ns_val = float(ns_consistency_loss.detach().item())
+            if _ns_val > 0.3:
+                self.error_evolution.record_episode(
+                    error_class='high_ns_consistency_loss',
+                    strategy_used='ns_constraint_supervision',
+                    success=False,
+                    metadata={'ns_consistency_loss': _ns_val},
+                )
+            _hwm_val = 0.0
+            if torch.is_tensor(hierarchical_wm_loss) and torch.isfinite(hierarchical_wm_loss):
+                _hwm_val = float(hierarchical_wm_loss.detach().item())
+            if _hwm_val > 0.5:
+                self.error_evolution.record_episode(
+                    error_class='high_hierarchical_wm_loss',
+                    strategy_used='hierarchical_wm_supervision',
+                    success=False,
+                    metadata={'hierarchical_wm_loss': _hwm_val},
+                )
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
@@ -26915,6 +26997,8 @@ class AEONDeltaV3(nn.Module):
             'world_model_surprise_loss': world_model_surprise_loss,
             'convergence_residual_loss': convergence_residual_loss,
             'decoder_provenance_loss': decoder_provenance_loss,
+            'ns_consistency_loss': ns_consistency_loss,
+            'hierarchical_wm_loss': hierarchical_wm_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
             'task2vec_loss': task2vec_loss,
@@ -27228,6 +27312,8 @@ class AEONDeltaV3(nn.Module):
             ('cross_validation_loss', 'high_cross_validation_training_loss'),
             ('causal_cv_supervision_loss', 'high_causal_cv_supervision_training_loss'),
             ('decoder_provenance_loss', 'high_decoder_provenance_training_loss'),
+            ('ns_consistency_loss', 'high_ns_consistency_training_loss'),
+            ('hierarchical_wm_loss', 'high_hierarchical_wm_training_loss'),
         ]
         for _loss_key, _error_class in _subsystem_losses:
             _sub_loss = loss_dict.get(_loss_key, None)
