@@ -15345,6 +15345,30 @@ class UnifiedCognitiveCycle:
                     and _fb.shape[-1] == _sample_state.shape[-1]):
                 subsystem_states = {**subsystem_states, "feedback_bus": _fb}
 
+        # 0b. Incorporate memory_signal into subsystem states so that
+        # coherence verification detects misalignment between retrieved
+        # memories and other subsystems even when memory_validator is
+        # absent.  This closes the gap where memory_signal was only used
+        # inside memory_validator.validate() but never participated in
+        # cross-module coherence checks.
+        if memory_signal is not None:
+            _sample_state = next(iter(subsystem_states.values()), None)
+            if (_sample_state is not None
+                    and memory_signal.shape[-1] == _sample_state.shape[-1]):
+                subsystem_states = {**subsystem_states, "memory": memory_signal}
+
+        # 0c. Incorporate converged_state into subsystem states so that
+        # coherence checks can compare the meta-loop's converged output
+        # against other subsystem outputs, catching drift between the
+        # reasoning core and downstream modules.
+        if converged_state is not None:
+            _sample_state = next(iter(subsystem_states.values()), None)
+            if (_sample_state is not None
+                    and converged_state.shape[-1] == _sample_state.shape[-1]):
+                subsystem_states = {
+                    **subsystem_states, "converged_state": converged_state,
+                }
+
         # 1. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
 
@@ -17569,7 +17593,13 @@ class AEONDeltaV3(nn.Module):
                         next_state=next_ctx.squeeze(0),
                     )
                 except Exception as exc:
-                    logger.debug("Meta-recovery learner failed: %s", exc)
+                    logger.warning("Meta-recovery learner failed: %s", exc)
+                    self.audit_log.record(
+                        "meta_recovery", "learner_failed", {
+                            "error": str(exc),
+                            "error_class": error_class,
+                        },
+                    )
             # Record error recovery into causal trace so root-cause
             # analysis can link recovery decisions to their antecedents.
             # Include the evolved strategy from error evolution so that
@@ -17616,9 +17646,15 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _adapt_err:
-                    logger.debug(
+                    logger.warning(
                         "Post-error trigger adaptation failed: %s",
                         _adapt_err,
+                    )
+                    self.audit_log.record(
+                        "metacognitive_trigger", "post_error_adaptation_failed", {
+                            "error": str(_adapt_err),
+                            "error_class": error_class,
+                        },
                     )
 
             # Deterministic fallback — return input as-is with partial outputs.
@@ -17662,9 +17698,15 @@ class AEONDeltaV3(nn.Module):
                         uncertainty=1.0,
                     ).detach()
             except Exception as fb_err:
-                logger.debug(
-                    "Feedback bus caching failed during error recovery "
-                    "(best-effort, non-fatal): %s", fb_err,
+                logger.warning(
+                    "Feedback bus caching failed during error recovery: %s",
+                    fb_err,
+                )
+                self.audit_log.record(
+                    "feedback_bus", "recovery_cache_failed", {
+                        "error": str(fb_err),
+                        "error_class": error_class,
+                    },
                 )
 
             # Positive recovery reinforcement — when recovery succeeded,
@@ -17684,8 +17726,24 @@ class AEONDeltaV3(nn.Module):
                         reward=1.0,
                         next_state=_success_ctx.squeeze(0),
                     )
-                except Exception:
-                    logger.debug("Positive reinforcement failed during recovery")
+                except Exception as _reinforce_err:
+                    logger.warning(
+                        "Positive reinforcement failed during recovery: %s",
+                        _reinforce_err,
+                    )
+                    self.audit_log.record(
+                        "meta_recovery", "reinforcement_failed", {
+                            "error": str(_reinforce_err),
+                            "error_class": error_class,
+                        },
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='recovery_reinforcement_failed',
+                            strategy_used='positive_reinforcement',
+                            success=False,
+                            metadata={"detail": str(_reinforce_err)},
+                        )
 
             # Store recovered state in ConsolidatingMemory so that the
             # memory pipeline remains populated even after error recovery.
@@ -17701,8 +17759,24 @@ class AEONDeltaV3(nn.Module):
                             self.consolidating_memory.store(
                                 recovered_value[i].detach()
                             )
-                except Exception:
-                    logger.debug("Memory storage failed during recovery")
+                except Exception as _mem_store_err:
+                    logger.warning(
+                        "Memory storage failed during recovery: %s",
+                        _mem_store_err,
+                    )
+                    self.audit_log.record(
+                        "consolidating_memory", "recovery_store_failed", {
+                            "error": str(_mem_store_err),
+                            "error_class": error_class,
+                        },
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='recovery_memory_store_failed',
+                            strategy_used='consolidating_memory_store',
+                            success=False,
+                            metadata={"detail": str(_mem_store_err)},
+                        )
 
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
@@ -25931,6 +26005,10 @@ class AEONDeltaV3(nn.Module):
                 'status': 'ok',
                 'reason': None,
                 'uncertainty': _gen_uncertainty,
+                'output_reliability': max(0.0, min(1.0,
+                    (1.0 - _gen_uncertainty)
+                    * max(0.0, 1.0 - self._cached_coherence_deficit)
+                )),
                 'causal_decision_chain': outputs.get('causal_decision_chain', {}),
                 'provenance': _gen_provenance,
                 'ucc_result': _gen_ucc_result,

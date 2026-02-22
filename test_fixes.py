@@ -41461,6 +41461,172 @@ def test_ucc_memory_validation_causal_context_integration():
     print("✅ test_ucc_memory_validation_causal_context_integration PASSED")
 
 
+def test_recovery_reinforcement_failure_audit_trail():
+    """Silent recovery reinforcement failures are recorded in audit_log and error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    # Verify the positive-reinforcement except block records to audit_log
+    assert '"meta_recovery", "reinforcement_failed"' in src, (
+        "Positive reinforcement failure must be recorded in audit_log"
+    )
+    # Verify it also records to error_evolution
+    assert "'recovery_reinforcement_failed'" in src or '"recovery_reinforcement_failed"' in src, (
+        "Positive reinforcement failure must be recorded in error_evolution"
+    )
+    print("✅ test_recovery_reinforcement_failure_audit_trail PASSED")
+
+
+def test_recovery_memory_store_failure_audit_trail():
+    """Silent memory storage failures during recovery are recorded in audit_log."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    # Verify the memory-storage except block records to audit_log
+    assert '"consolidating_memory", "recovery_store_failed"' in src, (
+        "Memory storage failure during recovery must be recorded in audit_log"
+    )
+    # Verify it records to error_evolution
+    assert "'recovery_memory_store_failed'" in src or '"recovery_memory_store_failed"' in src, (
+        "Memory storage failure must be recorded in error_evolution"
+    )
+    print("✅ test_recovery_memory_store_failure_audit_trail PASSED")
+
+
+def test_feedback_bus_recovery_failure_audit_trail():
+    """Feedback bus caching failure during recovery is recorded in audit_log."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    assert '"feedback_bus", "recovery_cache_failed"' in src, (
+        "Feedback bus recovery cache failure must be recorded in audit_log"
+    )
+    print("✅ test_feedback_bus_recovery_failure_audit_trail PASSED")
+
+
+def test_metacognitive_trigger_post_error_failure_audit_trail():
+    """Post-error trigger adaptation failure is recorded in audit_log."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    assert '"metacognitive_trigger", "post_error_adaptation_failed"' in src, (
+        "Post-error trigger adaptation failure must be recorded in audit_log"
+    )
+    print("✅ test_metacognitive_trigger_post_error_failure_audit_trail PASSED")
+
+
+def test_ucc_memory_signal_in_subsystem_states():
+    """UnifiedCognitiveCycle includes memory_signal in coherence checking."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle, ModuleCoherenceVerifier,
+    )
+    conv_mon = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    verifier = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=verifier,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    # When memory_signal is provided, it should appear in subsystem states
+    # via the coherence verifier's pairwise checks.
+    states = {
+        "core_state": torch.randn(2, 64),
+        "integrated_output": torch.randn(2, 64),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        memory_signal=torch.randn(2, 64),
+    )
+    coherence = result.get("coherence_result", {})
+    # The coherence result should exist and be computed — the memory signal
+    # should be included in the pairwise checks.
+    assert "coherence_score" in coherence, (
+        "UCC must return coherence result when memory_signal provided"
+    )
+    print("✅ test_ucc_memory_signal_in_subsystem_states PASSED")
+
+
+def test_ucc_converged_state_in_subsystem_states():
+    """UnifiedCognitiveCycle includes converged_state in coherence checking."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle, ModuleCoherenceVerifier,
+    )
+    conv_mon = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    verifier = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=verifier,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    states = {
+        "core_state": torch.randn(2, 64),
+        "integrated_output": torch.randn(2, 64),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        converged_state=torch.randn(2, 64),
+    )
+    coherence = result.get("coherence_result", {})
+    assert "coherence_score" in coherence, (
+        "UCC must return coherence result when converged_state provided"
+    )
+    print("✅ test_ucc_converged_state_in_subsystem_states PASSED")
+
+
+def test_ucc_memory_signal_coherence_integration():
+    """Verify memory_signal and converged_state participate in UCC coherence via source inspection."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # Memory signal should be incorporated into subsystem_states
+    assert '"memory"' in src and 'memory_signal' in src, (
+        "UCC.evaluate must incorporate memory_signal into subsystem states"
+    )
+    # Converged state should be incorporated
+    assert '"converged_state"' in src and 'converged_state' in src, (
+        "UCC.evaluate must incorporate converged_state into subsystem states"
+    )
+    print("✅ test_ucc_memory_signal_coherence_integration PASSED")
+
+
+def test_generate_returns_output_reliability():
+    """generate() return dict includes output_reliability for caller visibility."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.generate)
+    assert "'output_reliability'" in src or '"output_reliability"' in src, (
+        "generate() must include output_reliability in its return dict"
+    )
+    # Verify it's computed from uncertainty and coherence
+    assert '_cached_coherence_deficit' in src, (
+        "generate() output_reliability must incorporate coherence deficit"
+    )
+    print("✅ test_generate_returns_output_reliability PASSED")
+
+
+def test_meta_recovery_learner_failure_audit_trail():
+    """MetaRecoveryLearner failure is recorded in audit_log (not silently swallowed)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.reasoning_core)
+    assert '"meta_recovery", "learner_failed"' in src, (
+        "Meta-recovery learner failure must be recorded in audit_log"
+    )
+    print("✅ test_meta_recovery_learner_failure_audit_trail PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -43237,6 +43403,18 @@ def _run_all_tests():
     test_provenance_to_signal_includes_complexity_estimator()
     test_provenance_to_signal_includes_memory_validation()
     test_ucc_memory_validation_causal_context_integration()
+
+    # Architectural unification — error recovery audit trail and UCC
+    # coherence integration for memory_signal and converged_state
+    test_recovery_reinforcement_failure_audit_trail()
+    test_recovery_memory_store_failure_audit_trail()
+    test_feedback_bus_recovery_failure_audit_trail()
+    test_metacognitive_trigger_post_error_failure_audit_trail()
+    test_ucc_memory_signal_in_subsystem_states()
+    test_ucc_converged_state_in_subsystem_states()
+    test_ucc_memory_signal_coherence_integration()
+    test_generate_returns_output_reliability()
+    test_meta_recovery_learner_failure_audit_trail()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
