@@ -42791,6 +42791,198 @@ def test_pipeline_deps_include_safety_honesty_memory_edges():
     print("✅ test_pipeline_deps_include_safety_honesty_memory_edges PASSED")
 
 
+def test_ucc_cross_pass_state_cached_in_init():
+    """Verify that UCC cross-pass state variables are initialized in __init__."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    for attr in [
+        "_cached_ucc_flagged_modules",
+        "_cached_ucc_most_uncertain",
+        "_cached_ucc_recurring_root",
+        "_cached_provenance_root_modules",
+        "_cached_memory_needs_re_retrieval",
+    ]:
+        assert attr in init_src, (
+            f"AEONDeltaV3.__init__ must initialize {attr}"
+        )
+    print("✅ test_ucc_cross_pass_state_cached_in_init PASSED")
+
+
+def test_ucc_cross_pass_signals_registered_with_feedback_bus():
+    """Verify that UCC, provenance, and memory cross-pass signals are
+    registered with the CognitiveFeedbackBus."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    for signal_name in [
+        "ucc_flagged_pressure",
+        "ucc_recurring_root_pressure",
+        "provenance_root_pressure",
+        "memory_re_retrieval_pressure",
+    ]:
+        assert signal_name in init_src, (
+            f"Feedback bus signal '{signal_name}' must be registered in __init__"
+        )
+    print("✅ test_ucc_cross_pass_signals_registered_with_feedback_bus PASSED")
+
+
+def test_build_feedback_extra_signals_includes_ucc_state():
+    """_build_feedback_extra_signals includes UCC, provenance, and memory
+    re-retrieval cross-pass signals when the corresponding state is set."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        # Cross-pass state: UCC flagged modules
+        _cached_ucc_flagged_modules = ["meta_loop", "safety"]
+        _cached_ucc_most_uncertain = "meta_loop"
+        _cached_ucc_recurring_root = "causal_model"
+        _cached_provenance_root_modules = ["world_model", "memory"]
+        _cached_memory_needs_re_retrieval = True
+
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+
+    # UCC flagged pressure should be 2/5 = 0.4
+    assert "ucc_flagged_pressure" in extra, (
+        "Must include ucc_flagged_pressure signal"
+    )
+    assert abs(extra["ucc_flagged_pressure"] - 0.4) < 1e-6, (
+        f"Expected 0.4, got {extra['ucc_flagged_pressure']}"
+    )
+
+    # UCC recurring root pressure should be 1.0
+    assert "ucc_recurring_root_pressure" in extra, (
+        "Must include ucc_recurring_root_pressure signal"
+    )
+    assert extra["ucc_recurring_root_pressure"] == 1.0, (
+        f"Expected 1.0, got {extra['ucc_recurring_root_pressure']}"
+    )
+
+    # Provenance root pressure should be 2/3 ≈ 0.667
+    assert "provenance_root_pressure" in extra, (
+        "Must include provenance_root_pressure signal"
+    )
+    assert abs(extra["provenance_root_pressure"] - 2.0 / 3.0) < 1e-6, (
+        f"Expected ~0.667, got {extra['provenance_root_pressure']}"
+    )
+
+    # Memory re-retrieval pressure should be 1.0
+    assert "memory_re_retrieval_pressure" in extra, (
+        "Must include memory_re_retrieval_pressure signal"
+    )
+    assert extra["memory_re_retrieval_pressure"] == 1.0, (
+        f"Expected 1.0, got {extra['memory_re_retrieval_pressure']}"
+    )
+    print("✅ test_build_feedback_extra_signals_includes_ucc_state PASSED")
+
+
+def test_build_feedback_extra_signals_default_ucc_state():
+    """_build_feedback_extra_signals omits UCC signals when cross-pass
+    state is at default (empty/None) values."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        # Default cross-pass state (no UCC results yet)
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_most_uncertain = None
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+
+    # None of the new signals should be present at defaults
+    assert "ucc_flagged_pressure" not in extra, (
+        "ucc_flagged_pressure must not appear when no modules are flagged"
+    )
+    assert "ucc_recurring_root_pressure" not in extra, (
+        "ucc_recurring_root_pressure must not appear when no recurring root"
+    )
+    assert "provenance_root_pressure" not in extra, (
+        "provenance_root_pressure must not appear with empty root modules"
+    )
+    assert "memory_re_retrieval_pressure" not in extra, (
+        "memory_re_retrieval_pressure must not appear when False"
+    )
+    print("✅ test_build_feedback_extra_signals_default_ucc_state PASSED")
+
+
+def test_ucc_flagged_modules_cached_in_forward():
+    """Verify that the reasoning core caches UCC flagged modules."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    fwd_src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "self._cached_ucc_flagged_modules" in fwd_src, (
+        "_reasoning_core_impl() must cache UCC flagged modules via "
+        "self._cached_ucc_flagged_modules"
+    )
+    assert "self._cached_ucc_most_uncertain" in fwd_src, (
+        "_reasoning_core_impl() must cache UCC most uncertain module via "
+        "self._cached_ucc_most_uncertain"
+    )
+    print("✅ test_ucc_flagged_modules_cached_in_forward PASSED")
+
+
+def test_provenance_root_modules_cached_in_forward():
+    """Verify that the reasoning core caches provenance root-cause modules."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    fwd_src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "self._cached_provenance_root_modules" in fwd_src, (
+        "_reasoning_core_impl() must cache provenance root modules via "
+        "self._cached_provenance_root_modules"
+    )
+    print("✅ test_provenance_root_modules_cached_in_forward PASSED")
+
+
+def test_ucc_recurring_root_cached_in_forward():
+    """Verify that the reasoning core caches recurring root-cause subsystem."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    fwd_src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "self._cached_ucc_recurring_root" in fwd_src, (
+        "_reasoning_core_impl() must cache UCC recurring root cause via "
+        "self._cached_ucc_recurring_root"
+    )
+    print("✅ test_ucc_recurring_root_cached_in_forward PASSED")
+
+
+def test_memory_re_retrieval_cached_in_forward():
+    """Verify that the reasoning core caches memory re-retrieval flag."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    fwd_src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "self._cached_memory_needs_re_retrieval" in fwd_src, (
+        "_reasoning_core_impl() must cache memory re-retrieval flag via "
+        "self._cached_memory_needs_re_retrieval"
+    )
+    print("✅ test_memory_re_retrieval_cached_in_forward PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -44615,6 +44807,17 @@ def _run_all_tests():
     test_recovery_safe_fallback_tensor_shape()
     test_recovery_numerical_uses_safe_fallback()
     test_pipeline_deps_include_safety_honesty_memory_edges()
+
+    # Architectural Unification — UCC cross-pass verification, provenance
+    # root-cause feedback, and memory re-retrieval pressure tests
+    test_ucc_cross_pass_state_cached_in_init()
+    test_ucc_cross_pass_signals_registered_with_feedback_bus()
+    test_build_feedback_extra_signals_includes_ucc_state()
+    test_build_feedback_extra_signals_default_ucc_state()
+    test_ucc_flagged_modules_cached_in_forward()
+    test_provenance_root_modules_cached_in_forward()
+    test_ucc_recurring_root_cached_in_forward()
+    test_memory_re_retrieval_cached_in_forward()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
