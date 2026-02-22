@@ -14435,6 +14435,38 @@ class MetaCognitiveRecursionTrigger:
         "factor_extraction": "coherence_deficit",
         "auto_critic": "uncertainty",
         "topology_analysis": "topology_catastrophe",
+        # ── Previously unmapped provenance modules ─────────────
+        # Adding these ensures that when any provenance-tracked module
+        # dominates the output, the metacognitive trigger's sensitivity
+        # is adjusted for the corresponding signal, closing the feedback
+        # loop between provenance attribution and re-reasoning decisions.
+        "encoder": "uncertainty",
+        "vq": "uncertainty",
+        "encoder_reasoning_norm": "uncertainty",
+        "continual_learning": "uncertainty",
+        "slot_binding": "coherence_deficit",
+        "diversity_analysis": "uncertainty",
+        "cross_validation": "coherence_deficit",
+        "integration": "coherence_deficit",
+        "multimodal": "uncertainty",
+        "grounded_multimodal": "uncertainty",
+        "rssm": "world_model_surprise",
+        "mcts_planning": "uncertainty",
+        "active_learning": "uncertainty",
+        "cognitive_executive": "uncertainty",
+        "causal_context": "low_causal_quality",
+        "causal_dag_consensus": "low_causal_quality",
+        "causal_world_model": "world_model_surprise",
+        "unified_simulator": "world_model_surprise",
+        "hybrid_reasoning": "uncertainty",
+        "ns_bridge": "coherence_deficit",
+        "ns_consistency": "safety_violation",
+        "hierarchical_vae": "uncertainty",
+        "temporal_knowledge_graph": "low_causal_quality",
+        "neurogenic_memory": "memory_staleness",
+        "temporal_memory": "memory_staleness",
+        "consolidating_memory": "memory_staleness",
+        "auto_critic_safety": "safety_violation",
     }
 
     def adapt_weights_from_provenance(
@@ -18768,6 +18800,16 @@ class AEONDeltaV3(nn.Module):
         )  # [B, hidden_dim]
         C_star = C_star * gate
         self.provenance_tracker.record_after("consistency_gate", C_star)
+        # Record consistency gate in the causal trace so that downstream
+        # root-cause analysis can identify gating decisions as contributors
+        # to output quality changes.
+        if self.causal_trace is not None:
+            _gate_mean = float(gate.mean().item())
+            self.causal_trace.record(
+                "consistency_gate", "applied",
+                causal_prerequisites=[input_trace_id],
+                metadata={"gate_mean": _gate_mean},
+            )
         
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
@@ -18914,6 +18956,19 @@ class AEONDeltaV3(nn.Module):
                     adaptive_safety_threshold = (
                         adaptive_safety_threshold * _sr_safety_tightening
                     )
+            # Record self-report assessment in the causal trace so that
+            # root-cause analysis can identify self-assessment signals as
+            # contributors to uncertainty escalation and safety tightening.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "self_report", "assessed",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "honesty": float(_sr_honesty.mean().item()) if _sr_honesty is not None and torch.is_tensor(_sr_honesty) else None,
+                        "confidence": float(_sr_confidence.mean().item()) if _sr_confidence is not None and torch.is_tensor(_sr_confidence) else None,
+                        "consistency": float(_sr_consistency.mean().item()) if _sr_consistency is not None and torch.is_tensor(_sr_consistency) else None,
+                    },
+                )
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         # Uses adaptive_safety_threshold which is tightened when convergence
@@ -23117,6 +23172,31 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_tkg_state is not None
                     and self._cached_tkg_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["temporal_knowledge_graph"] = self._cached_tkg_state
+            # Include RSSM state so the coherence verifier can
+            # cross-validate state-space dynamics against the
+            # integrated output.  Without this, RSSM-driven
+            # temporal dynamics are invisible to the UCC.
+            if (self._cached_rssm_state is not None
+                    and self._cached_rssm_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["rssm"] = self._cached_rssm_state
+            # Include auto-critic output so the coherence verifier
+            # can detect misalignment between the critic's revision
+            # and the integrated output.
+            if (self._cached_auto_critic_state is not None
+                    and self._cached_auto_critic_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["auto_critic"] = self._cached_auto_critic_state
+            # Include MCTS planning state so the coherence verifier
+            # can cross-validate planning decisions against other
+            # subsystem outputs.
+            if (self._cached_mcts_state is not None
+                    and self._cached_mcts_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["mcts_planning"] = self._cached_mcts_state
+            # Include safety system state so the coherence verifier
+            # can detect misalignment between safety enforcement
+            # and the integrated output.
+            if (self._cached_safety_state is not None
+                    and self._cached_safety_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["safety"] = self._cached_safety_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
