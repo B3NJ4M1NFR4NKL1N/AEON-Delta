@@ -16740,6 +16740,10 @@ class AEONDeltaV3(nn.Module):
         # NS consistency overall score — cached so verify_coherence can
         # detect neuro-symbolic rule violation patterns.
         self._cached_ns_consistency_state: Optional[torch.Tensor] = None
+        # Temporal Knowledge Graph blended output — cached so the UCC
+        # coherence verifier can cross-validate symbolic fact grounding
+        # against other subsystem outputs.
+        self._cached_tkg_state: Optional[torch.Tensor] = None
         
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
@@ -20267,6 +20271,27 @@ class AEONDeltaV3(nn.Module):
                             "mean_importance": float(importance_scores.mean().item()),
                         },
                     )
+                # NTM memory utilization validation — check if the NTM is
+                # using a healthy fraction of its memory slots.  Low
+                # utilization indicates collapsed addressing (all writes
+                # concentrated on a few slots), which silently degrades
+                # memory quality.  Escalate uncertainty when utilization
+                # drops below 10% so the metacognitive trigger can detect
+                # impoverished memory states.
+                if hasattr(self.hierarchical_memory, 'num_used_slots'):
+                    _ntm_used = self.hierarchical_memory.num_used_slots
+                    _ntm_total = getattr(
+                        self.hierarchical_memory, 'memory_size',
+                        getattr(self.hierarchical_memory, 'M', torch.empty(0)).shape[0],
+                    )
+                    if _ntm_total > 0:
+                        _ntm_utilization = _ntm_used / _ntm_total
+                        _NTM_UTIL_THRESHOLD = 0.1
+                        if _ntm_utilization < _NTM_UTIL_THRESHOLD:
+                            _ntm_boost = min(1.0 - uncertainty, 0.15)
+                            uncertainty = min(1.0, uncertainty + _ntm_boost)
+                            uncertainty_sources["ntm_low_utilization"] = _ntm_boost
+                            high_uncertainty = uncertainty > 0.5
             except Exception as mem_err:
                 _memory_healthy = False
                 _circuit_breaker_tripped.add("memory")
@@ -21750,6 +21775,7 @@ class AEONDeltaV3(nn.Module):
                         uncertainty_sources["tkg_retrieval_error"] = _tkg_err_boost
                         high_uncertainty = uncertainty > 0.5
             self.provenance_tracker.record_after("temporal_knowledge_graph", C_star)
+            self._cached_tkg_state = C_star.detach()
 
         # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
@@ -22707,6 +22733,17 @@ class AEONDeltaV3(nn.Module):
                             {"health": _sub_health},
                         ),
                     )
+                    # Surface degraded subsystem health as an uncertainty
+                    # source so the directional uncertainty tracker and
+                    # metacognitive trigger can identify WHICH subsystem
+                    # is degraded, enabling targeted re-reasoning rather
+                    # than generic uncertainty escalation.
+                    _health_deficit = 1.0 - _sub_health
+                    _health_unc_boost = min(1.0 - uncertainty, _health_deficit * 0.15)
+                    if _health_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _health_unc_boost)
+                        uncertainty_sources[f"health_{_sub_name}"] = _health_unc_boost
+                        high_uncertainty = uncertainty > 0.5
         
         # 8f. Post-integration coherence verification — a second coherence
         # pass that includes all subsystem outputs produced during the
@@ -23073,6 +23110,13 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_executive_state is not None
                     and self._cached_executive_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["cognitive_executive_cached"] = self._cached_executive_state
+            # Include TKG blended state so the coherence verifier can
+            # cross-validate symbolic fact grounding against other
+            # subsystem outputs.  Without this, TKG-enriched reasoning
+            # is invisible to the UCC despite modifying C_star.
+            if (self._cached_tkg_state is not None
+                    and self._cached_tkg_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["temporal_knowledge_graph"] = self._cached_tkg_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23514,6 +23558,15 @@ class AEONDeltaV3(nn.Module):
                         context="ucc_driven_auto_critic",
                         success=False,
                     )
+            # 8f-ucc-prov-recompute. Recompute provenance attribution after
+            # the deeper meta-loop so downstream consumers see updated
+            # per-module contributions that reflect the re-reasoning pass.
+            # Without this, the output's provenance snapshot is stale —
+            # it reflects the pre-deeper-loop attribution, preventing the
+            # caller from knowing whether the re-run fixed the root issue.
+            if _ucc_deeper_accepted:
+                _post_deeper_provenance = self.provenance_tracker.compute_attribution()
+                unified_cycle_results['provenance_post_rerun'] = _post_deeper_provenance
             # 8f-ucc-reverify. Post-rerun coherence re-verification — after
             # the deeper meta-loop and/or auto-critic revised z_out, re-check
             # cross-module coherence to ensure the refined state is actually
@@ -27033,6 +27086,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_topology_state", "topology"),
             ("_cached_cross_validation_state", "cross_validation"),
             ("_cached_ns_consistency_state", "ns_consistency"),
+            ("_cached_tkg_state", "temporal_knowledge_graph"),
         ]:
             cached = getattr(self, attr_name, None)
             if (cached is not None
