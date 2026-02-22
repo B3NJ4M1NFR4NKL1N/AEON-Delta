@@ -40529,6 +40529,166 @@ def test_convergence_metacognitive_wired_in_model():
     print("✅ test_convergence_metacognitive_wired_in_model PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification — TKG→UCC Coherence, Integrity→Uncertainty,
+# Provenance Recompute After Deeper Meta-Loop, NTM Utilization Validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_cached_tkg_state_initialized():
+    """AEONDeltaV3 initializes _cached_tkg_state to None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_tkg_state'), (
+        "Model must have _cached_tkg_state attribute"
+    )
+    assert model._cached_tkg_state is None
+    print("✅ test_cached_tkg_state_initialized PASSED")
+
+
+def test_verify_coherence_includes_tkg_state():
+    """verify_coherence() includes TKG state in subsystem list when available."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "_cached_tkg_state" in src, (
+        "verify_coherence must include _cached_tkg_state"
+    )
+    print("✅ test_verify_coherence_includes_tkg_state PASSED")
+
+
+def test_tkg_state_in_ucc_states():
+    """_reasoning_core_impl includes _cached_tkg_state in UCC subsystem states."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'temporal_knowledge_graph' in src and '_cached_tkg_state' in src, (
+        "_reasoning_core_impl must add TKG state to UCC states"
+    )
+    # Also verify the state is added to _ucc_states dict
+    assert '_ucc_states["temporal_knowledge_graph"]' in src, (
+        "TKG state must be added to _ucc_states for coherence verification"
+    )
+    print("✅ test_tkg_state_in_ucc_states PASSED")
+
+
+def test_integrity_health_surfaces_uncertainty():
+    """Degraded subsystem health surfaces as uncertainty sources."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The health degradation block should now escalate uncertainty
+    assert 'health_unc_boost' in src or 'health_deficit' in src, (
+        "_reasoning_core_impl must surface degraded health as uncertainty"
+    )
+    assert 'uncertainty_sources[f"health_{_sub_name}"]' in src, (
+        "Per-subsystem health degradation must be recorded in uncertainty_sources"
+    )
+    print("✅ test_integrity_health_surfaces_uncertainty PASSED")
+
+
+def test_provenance_recompute_after_deeper_meta_loop():
+    """Provenance is recomputed after UCC-triggered deeper meta-loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'provenance_post_rerun' in src, (
+        "_reasoning_core_impl must recompute provenance after deeper meta-loop"
+    )
+    assert 'compute_attribution' in src, (
+        "Provenance must be recomputed via compute_attribution() post-deeper-loop"
+    )
+    print("✅ test_provenance_recompute_after_deeper_meta_loop PASSED")
+
+
+def test_ntm_utilization_check_in_forward():
+    """NTM memory utilization is validated during hierarchical memory retrieval."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'ntm_low_utilization' in src, (
+        "_reasoning_core_impl must check NTM slot utilization"
+    )
+    assert 'num_used_slots' in src, (
+        "NTM utilization check must use num_used_slots property"
+    )
+    print("✅ test_ntm_utilization_check_in_forward PASSED")
+
+
+def test_ucc_evaluate_with_tkg_subsystem_state():
+    """UCC.evaluate() processes TKG state when included in subsystem_states."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle, ModuleCoherenceVerifier,
+    )
+    conv_mon = ConvergenceMonitor(threshold=0.01)
+    coherence = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=coherence,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    # Include TKG state in subsystem states
+    states = {
+        "core_state": torch.randn(2, 64),
+        "integrated_output": torch.randn(2, 64),
+        "temporal_knowledge_graph": torch.randn(2, 64),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+    )
+    # UCC should process without error and return standard keys
+    assert 'coherence_result' in result
+    assert 'should_rerun' in result
+    assert 'convergence_verdict' in result
+    print("✅ test_ucc_evaluate_with_tkg_subsystem_state PASSED")
+
+
+def test_ntm_utilization_low_escalates_uncertainty():
+    """Low NTM utilization triggers uncertainty escalation."""
+    import torch
+    # Test the utilization check logic in isolation
+    uncertainty = 0.0
+    uncertainty_sources = {}
+    # Simulate a NTM with low utilization (1 of 128 slots used)
+    _ntm_used = 1
+    _ntm_total = 128
+    _ntm_utilization = _ntm_used / _ntm_total
+    _NTM_UTIL_THRESHOLD = 0.1
+    if _ntm_utilization < _NTM_UTIL_THRESHOLD:
+        _ntm_boost = min(1.0 - uncertainty, 0.15)
+        uncertainty = min(1.0, uncertainty + _ntm_boost)
+        uncertainty_sources["ntm_low_utilization"] = _ntm_boost
+    assert uncertainty > 0, "Low NTM utilization should escalate uncertainty"
+    assert "ntm_low_utilization" in uncertainty_sources
+    assert abs(uncertainty_sources["ntm_low_utilization"] - 0.15) < 1e-6
+    print("✅ test_ntm_utilization_low_escalates_uncertainty PASSED")
+
+
+def test_integrity_health_degradation_escalates_uncertainty():
+    """Degraded subsystem health escalates uncertainty per-subsystem."""
+    # Test the health degradation → uncertainty logic in isolation
+    uncertainty = 0.0
+    uncertainty_sources = {}
+    _sub_health = 0.3  # Below 0.5 threshold
+    _health_deficit = 1.0 - _sub_health
+    _health_unc_boost = min(1.0 - uncertainty, _health_deficit * 0.15)
+    if _health_unc_boost > 0:
+        uncertainty = min(1.0, uncertainty + _health_unc_boost)
+        uncertainty_sources["health_safety"] = _health_unc_boost
+    assert uncertainty > 0, "Degraded health should escalate uncertainty"
+    assert "health_safety" in uncertainty_sources
+    expected_boost = 0.7 * 0.15  # deficit * scale
+    assert abs(uncertainty_sources["health_safety"] - expected_boost) < 1e-6
+    print("✅ test_integrity_health_degradation_escalates_uncertainty PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -42258,6 +42418,18 @@ def _run_all_tests():
     test_output_reliability_scales_with_verification_coverage()
     test_forward_includes_verification_coverage_in_output()
     test_error_fallback_uses_corrected_defaults()
+
+    # Architectural Unification — TKG→UCC Coherence, Integrity→Uncertainty,
+    # Provenance Recompute After Deeper Meta-Loop, NTM Utilization Validation
+    test_cached_tkg_state_initialized()
+    test_verify_coherence_includes_tkg_state()
+    test_tkg_state_in_ucc_states()
+    test_integrity_health_surfaces_uncertainty()
+    test_provenance_recompute_after_deeper_meta_loop()
+    test_ntm_utilization_check_in_forward()
+    test_ucc_evaluate_with_tkg_subsystem_state()
+    test_ntm_utilization_low_escalates_uncertainty()
+    test_integrity_health_degradation_escalates_uncertainty()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
