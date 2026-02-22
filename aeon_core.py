@@ -16856,6 +16856,8 @@ class AEONDeltaV3(nn.Module):
         # cognitive recursion trigger on the next pass so that memory
         # gaps drive deeper reasoning.
         self._memory_stale: bool = False
+        self._neurogenic_memory_error: bool = False
+        self._temporal_memory_error: bool = False
         
         # World model surprise feedback — stores the mean surprise from
         # the previous forward pass so the feedback bus can incorporate
@@ -17550,6 +17552,7 @@ class AEONDeltaV3(nn.Module):
                         "NeurogenicMemory fusion skipped: %s", neuro_err,
                     )
                     self._memory_stale = True
+                    self._neurogenic_memory_error = True
 
             # Blend TemporalMemory patterns into the fused state when
             # available.  This mirrors the neurogenic blending above,
@@ -17575,6 +17578,7 @@ class AEONDeltaV3(nn.Module):
                         "TemporalMemory fusion skipped: %s", temporal_err,
                     )
                     self._memory_stale = True
+                    self._temporal_memory_error = True
 
             # Blend ConsolidatingMemory semantic prototypes into the
             # fused state when available.  This bridges the two parallel
@@ -19326,6 +19330,23 @@ class AEONDeltaV3(nn.Module):
                         "consistency": float(_sr_consistency.mean().item()) if _sr_consistency is not None and torch.is_tensor(_sr_consistency) else None,
                     },
                 )
+        
+        # 5-sr-coh. Cache self-report-gated state for post-integration
+        # coherence verification — multiplying C_star by the confidence
+        # scalar produces a representation whose magnitude reflects how
+        # trustworthy the system judges its own state to be.  Including
+        # this in coherence verification ensures that self-assessment
+        # signals participate in cross-subsystem consistency checks.
+        if self_report:
+            _sr_conf = self_report.get('confidence', None)
+            if _sr_conf is not None and torch.is_tensor(_sr_conf):
+                self._cached_self_report_state = (
+                    C_star * _sr_conf
+                ).detach()
+            else:
+                self._cached_self_report_state = None
+        else:
+            self._cached_self_report_state = None
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         # Uses adaptive_safety_threshold which is tightened when convergence
@@ -21837,6 +21858,45 @@ class AEONDeltaV3(nn.Module):
                         uncertainty = min(1.0, uncertainty + _exhaust_boost)
                         uncertainty_sources["reconciliation_exhausted"] = _exhaust_boost
                         high_uncertainty = uncertainty > 0.5
+                # 5d2-exhaust-ac. Reconciliation exhaustion → auto-critic
+                # revision — when the reconciler could not converge,
+                # invoke auto-critic to directly revise the state,
+                # closing the gap where exhaustion only escalated
+                # uncertainty but never triggered immediate correction.
+                if (not _reconciliation_converged
+                        and self.auto_critic is not None):
+                    try:
+                        self.provenance_tracker.record_before(
+                            "auto_critic", C_star,
+                        )
+                        _cv_critic = self.auto_critic(C_star)
+                        _cv_revised = _cv_critic.get("candidate", None)
+                        if (_cv_revised is not None
+                                and torch.isfinite(_cv_revised).all()
+                                and _cv_revised.shape == C_star.shape):
+                            C_star = _cv_revised
+                        self.provenance_tracker.record_after(
+                            "auto_critic", C_star,
+                        )
+                        self.audit_log.record(
+                            "auto_critic",
+                            "reconciliation_exhaustion_revision",
+                            {
+                                "agreement": _agreement_val,
+                                "revised": _cv_revised is not None,
+                            },
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="reconciliation_exhaustion",
+                                strategy_used="auto_critic_revision",
+                                success=_cv_revised is not None,
+                            )
+                    except Exception as _cv_ac_err:
+                        logger.debug(
+                            "Reconciliation-exhaustion auto-critic "
+                            "failed: %s", _cv_ac_err,
+                        )
         
         # 5d3. Causal-aware planning annotation — when both MCTS planning
         # and causal model results are available, annotate the MCTS output
@@ -22373,6 +22433,8 @@ class AEONDeltaV3(nn.Module):
         
         # 6. Memory fusion (delegated to helper)
         self._consolidating_memory_error = False
+        self._neurogenic_memory_error = False
+        self._temporal_memory_error = False
         C_fused = self._fuse_memory(C_star, device, memory_retrieval)
         
         # 6a-0. ConsolidatingMemory error escalation — when fuse_memory
@@ -22391,6 +22453,44 @@ class AEONDeltaV3(nn.Module):
                     strategy_used="uncertainty_escalation",
                     success=True,
                     metadata={"subsystem": "consolidating_memory"},
+                )
+        
+        # 6a-0b. NeurogenicMemory / TemporalMemory error escalation —
+        # when fuse_memory caught and swallowed an exception from either
+        # subsystem, escalate uncertainty and record in error_evolution
+        # so the metacognitive cycle is aware of memory-subsystem
+        # degradation.  Without this, these errors silently set
+        # _memory_stale without informing the uncertainty pipeline.
+        _MEM_SUBSYS_UNCERTAINTY_BOOST = 0.12
+        if self._neurogenic_memory_error and not fast:
+            _neuro_boost = min(
+                1.0 - uncertainty, _MEM_SUBSYS_UNCERTAINTY_BOOST,
+            )
+            if _neuro_boost > 0:
+                uncertainty = min(1.0, uncertainty + _neuro_boost)
+                uncertainty_sources["neurogenic_memory_error"] = _neuro_boost
+                high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="memory_subsystem",
+                    strategy_used="uncertainty_escalation",
+                    success=True,
+                    metadata={"subsystem": "neurogenic_memory"},
+                )
+        if self._temporal_memory_error and not fast:
+            _temporal_boost = min(
+                1.0 - uncertainty, _MEM_SUBSYS_UNCERTAINTY_BOOST,
+            )
+            if _temporal_boost > 0:
+                uncertainty = min(1.0, uncertainty + _temporal_boost)
+                uncertainty_sources["temporal_memory_error"] = _temporal_boost
+                high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="memory_subsystem",
+                    strategy_used="uncertainty_escalation",
+                    success=True,
+                    metadata={"subsystem": "temporal_memory"},
                 )
         
         # 6a. Trust-score-driven uncertainty escalation — when the
@@ -22977,6 +23077,27 @@ class AEONDeltaV3(nn.Module):
                     "Unconditional auto-critic error (non-fatal): %s",
                     _uc_err,
                 )
+                # Escalate uncertainty so the metacognitive cycle is
+                # aware that the self-verification mechanism itself
+                # failed — a qualitatively worse signal than a low
+                # quality score, since it means the system cannot even
+                # assess its own output reliability.
+                _AC_ERR_UNCERTAINTY_BOOST = 0.2
+                _ac_err_boost = min(1.0 - uncertainty, _AC_ERR_UNCERTAINTY_BOOST)
+                if _ac_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _ac_err_boost)
+                    uncertainty_sources["auto_critic_error"] = _ac_err_boost
+                    high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="auto_critic_failure",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "trigger": "unconditional",
+                            "error": str(_uc_err)[:200],
+                        }),
+                    )
         
         # 8b3a. Weighted uncertainty fusion — recompute the final scalar
         # uncertainty from all accumulated sources using reliability-based
@@ -23276,6 +23397,27 @@ class AEONDeltaV3(nn.Module):
                     "Integration retry auto-critic failed (non-fatal): %s",
                     _retry_err,
                 )
+                # Escalate uncertainty — integration retry failure means
+                # the corrective mechanism itself broke, compounding the
+                # original integration failure.
+                _RETRY_ERR_UNCERTAINTY_BOOST = 0.2
+                _retry_err_boost = min(
+                    1.0 - uncertainty, _RETRY_ERR_UNCERTAINTY_BOOST,
+                )
+                if _retry_err_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _retry_err_boost)
+                    uncertainty_sources["integration_retry_error"] = _retry_err_boost
+                    high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="auto_critic_failure",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "trigger": "integration_retry",
+                            "error": str(_retry_err)[:200],
+                        }),
+                    )
         
         # 8d. Positive recovery reinforcement — when the pipeline
         # completes successfully, record a positive reward so that
@@ -23393,6 +23535,16 @@ class AEONDeltaV3(nn.Module):
             # subsystems in the post-integration coherence check.
             if self.multimodal is not None and _multimodal_healthy:
                 post_states["multimodal"] = z_rssm
+            # Include self-report-gated state if available — ensures
+            # that self-assessment signals participate in cross-subsystem
+            # coherence verification.  If self-report confidence is low,
+            # the gated state's magnitude is damped, which the coherence
+            # verifier will detect as misalignment with high-confidence
+            # subsystem outputs, triggering re-reasoning.
+            if (getattr(self, '_cached_self_report_state', None) is not None
+                    and self._cached_self_report_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_self_report_state.shape[0] == z_out.shape[0]):
+                post_states["self_report"] = self._cached_self_report_state
             if len(post_states) >= 2:
                 post_coherence = self.module_coherence(post_states)
                 # Merge into coherence_results: use the lower of pre/post
@@ -23766,6 +23918,12 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_safety_state is not None
                     and self._cached_safety_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["safety"] = self._cached_safety_state
+            # Include self-report-gated state so the UCC coherence
+            # verifier can detect self-assessment–reasoning divergence.
+            if (getattr(self, '_cached_self_report_state', None) is not None
+                    and self._cached_self_report_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_self_report_state.shape[0] == z_out.shape[0]):
+                _ucc_states["self_report"] = self._cached_self_report_state
             # Include the raw input so the coherence verifier can detect
             # input-to-output drift, mirroring the post-integration
             # coherence check (step 8f) which includes z_in but was
