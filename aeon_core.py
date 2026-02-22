@@ -1876,6 +1876,21 @@ class ErrorRecoveryManager:
     # Strategy implementations (private)
     # ------------------------------------------------------------------
 
+    def _safe_fallback_tensor(
+        self,
+        fallback: Optional[torch.Tensor],
+        last_good: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Create a zero-filled fallback tensor whose shape matches the
+        most recent non-None reference tensor.  Uses ``last_good`` or
+        ``fallback`` to infer shape; if both are ``None``, falls back to
+        ``(1, hidden_dim)`` as a conservative default.
+        """
+        ref = last_good if last_good is not None else fallback
+        if ref is not None:
+            return torch.zeros_like(ref)
+        return torch.zeros(1, self.hidden_dim)
+
     def _recover_numerical(
         self, context: str, fallback: Optional[torch.Tensor],
         last_good: Optional[torch.Tensor],
@@ -1887,7 +1902,7 @@ class ErrorRecoveryManager:
             return True, sanitized
         if fallback is not None:
             return True, fallback
-        return True, torch.zeros(1, self.hidden_dim)
+        return True, self._safe_fallback_tensor(fallback, last_good)
 
     def _recover_shape(
         self, context: str, fallback: Optional[torch.Tensor],
@@ -1895,7 +1910,7 @@ class ErrorRecoveryManager:
     ) -> Tuple[bool, Optional[torch.Tensor]]:
         if fallback is not None:
             return True, fallback
-        return True, torch.zeros(1, self.hidden_dim)
+        return True, self._safe_fallback_tensor(fallback, last_good)
 
     def _recover_convergence(
         self, context: str, fallback: Optional[torch.Tensor],
@@ -1905,7 +1920,7 @@ class ErrorRecoveryManager:
             return True, last_good
         if fallback is not None:
             return True, fallback
-        return True, torch.zeros(1, self.hidden_dim)
+        return True, self._safe_fallback_tensor(fallback, last_good)
 
     def _recover_resource(
         self, context: str, fallback: Optional[torch.Tensor],
@@ -1916,7 +1931,7 @@ class ErrorRecoveryManager:
             return True, last_good.cpu()
         if fallback is not None:
             return True, fallback.cpu()
-        return True, torch.zeros(1, self.hidden_dim)
+        return True, self._safe_fallback_tensor(fallback, last_good)
 
     def _recover_semantic(
         self, context: str, fallback: Optional[torch.Tensor],
@@ -2813,6 +2828,7 @@ class AEONConfig:
     
     # ===== SAFETY =====
     safety_threshold: float = 0.5
+    critical_safety_threshold: float = 0.1
     nan_policy: str = "WARN"
     enable_safety_guardrails: bool = True
     safety_alert_threshold: int = 10
@@ -3109,6 +3125,17 @@ class AEONConfig:
     # e.g. scale * empty_ratio, so near-total memory failure escalates
     # more than marginal staleness.
     memory_staleness_uncertainty_scale: float = 0.15
+
+    # When True, the honesty gate from TransparentSelfReporting is
+    # applied as a multiplicative gate on the final output tensor so
+    # that low-confidence outputs are explicitly dampened rather than
+    # only escalating uncertainty.
+    enable_honesty_output_gate: bool = True
+
+    # When True and memory validation signals needs_re_retrieval,
+    # the system performs an actual second retrieval pass with the
+    # current converged state to replace stale memories.
+    enable_memory_re_retrieval: bool = True
 
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
@@ -16100,6 +16127,22 @@ class AEONDeltaV3(nn.Module):
         ("temporal_memory", "memory_cross_validation"),
         ("memory", "memory_cross_validation"),
         ("memory_cross_validation", "metacognitive_trigger"),
+        # ── Safety halt path ───────────────────────────────────────
+        # Critical safety halt overrides all downstream processing when
+        # the entire batch is critically unsafe, ensuring traceability
+        # from safety scoring through to output blocking.
+        ("safety", "output_reliability"),
+        # ── Honesty output gating path ─────────────────────────────
+        # The self-report honesty gate modulates the final output tensor
+        # so that low-confidence outputs are explicitly dampened, wiring
+        # self-reporting into active output control.
+        ("self_report", "integration"),
+        # ── Memory re-retrieval path ───────────────────────────────
+        # When memory staleness triggers consolidation, a re-retrieval
+        # pass feeds fresh memories back into the converged state,
+        # closing the loop between memory validation and active
+        # memory correction.
+        ("memory_validation", "memory"),
     ]
     
     def __init__(self, config: AEONConfig):
@@ -19478,7 +19521,44 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.end_phase("safety", success=True)
         self.provenance_tracker.record_after("safety", C_star)
         self._cached_safety_state = C_star.detach()
-        
+
+        # 5a-critical. Critical safety halt — when safety score falls
+        # below the critical threshold for the *entire batch*, the output
+        # is unreliable enough that downstream consumers should be warned.
+        # A ``safety_blocked`` flag is added to the output dict so callers
+        # can detect and refuse to act on critically unsafe results.
+        # The output tensor is clamped to the safe fallback (z_in) to
+        # prevent any potentially harmful content from propagating.
+        _safety_blocked = False
+        if self.safety_system is not None:
+            _critical_threshold = self.config.critical_safety_threshold
+            _critical_mask = (
+                safety_score < _critical_threshold
+            ).squeeze(-1)  # [B]
+            if _critical_mask.all():
+                _safety_blocked = True
+                C_star = z_in.clone()
+                logger.warning(
+                    "Critical safety halt: ALL %d samples below critical "
+                    "threshold %.3f — output replaced with safe fallback",
+                    B, _critical_threshold,
+                )
+                self.audit_log.record("safety", "critical_halt", {
+                    "batch_size": B,
+                    "critical_threshold": _critical_threshold,
+                    "min_score": float(safety_score.min().item()),
+                    "mean_score": float(safety_score.mean().item()),
+                }, severity="critical")
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "safety_enforcement", "critical_halt",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "critical_threshold": _critical_threshold,
+                            "min_score": float(safety_score.min().item()),
+                        },
+                    )
+
         # 5a-ib. Cognitive Executive Function — Global Workspace Theory
         # dispatcher that prioritizes subsystems via attention budget and
         # broadcasts the winning hypothesis through a shared workspace.
@@ -20810,6 +20890,52 @@ class AEONDeltaV3(nn.Module):
                         {"empty_ratio": _empty_ratio},
                     ),
                 )
+            # 5c1b-1. Active memory re-retrieval — after consolidation,
+            # re-query the hierarchical memory with the current converged
+            # state (C_star) instead of the original z_in.  Consolidation
+            # may have promoted items that are now retrievable, and C_star
+            # is a better query than z_in because it incorporates the
+            # meta-loop's reasoning.  This closes the gap where
+            # needs_re_retrieval was signaled but never acted upon.
+            if (self.config.enable_memory_re_retrieval
+                    and self.hierarchical_memory is not None):
+                try:
+                    _re_retrieved = []
+                    _re_empty = 0
+                    for i in range(B):
+                        ret = self.hierarchical_memory.retrieve(C_star[i].detach(), k=5)
+                        working = ret.get('working', [])
+                        if working:
+                            vecs = torch.stack([v for v, _s in working])
+                            _re_retrieved.append(vecs.mean(dim=0))
+                        else:
+                            _re_retrieved.append(
+                                torch.zeros(self.config.hidden_dim, device=device)
+                            )
+                            _re_empty += 1
+                    _re_ctx = torch.stack(_re_retrieved)
+                    _re_quality = 1.0 - (_re_empty / max(B, 1))
+                    # Only blend if re-retrieval improved over original
+                    _orig_quality = 1.0 - (_memory_empty_count / max(B, 1))
+                    if _re_quality > _orig_quality:
+                        C_star = C_star + self.memory_projection(_re_ctx)
+                        _memory_retrieval_quality = _re_quality
+                        _memory_empty_count = _re_empty
+                        self._memory_stale = (
+                            _re_empty > B * _MEMORY_STALENESS_RATIO
+                        )
+                        self.audit_log.record("memory", "re_retrieval", {
+                            "original_quality": float(
+                                1.0 - ((_memory_empty_count + _re_empty) / max(2 * B, 1))
+                            ),
+                            "re_retrieval_quality": _re_quality,
+                            "re_empty": _re_empty,
+                        })
+                except Exception as _retr_err:
+                    logger.debug(
+                        "Memory re-retrieval failed (non-fatal): %s",
+                        _retr_err,
+                    )
         
         # 5c2. Neurogenic memory — consolidate important states and
         # retrieve nearest neurons to enrich the current state.  After
@@ -25197,6 +25323,28 @@ class AEONDeltaV3(nn.Module):
             "world_model_verified_prediction_error": _verified_prediction_error,
         }
         
+        # 8h-honesty. Honesty-gated output modulation — apply the
+        # TransparentSelfReporting honesty gate as a multiplicative
+        # modulator on the output tensor.  When honesty is low, the
+        # output is dampened toward zero, explicitly signaling that the
+        # system does not trust its own answer.  This closes the gap
+        # where honesty was computed but only influenced training loss,
+        # never the actual output.  The gate is smooth (sigmoid) so
+        # gradient flow is preserved during training.
+        if (self.config.enable_honesty_output_gate
+                and self_report
+                and not _safety_blocked):
+            _honesty_val = self_report.get('honesty_gate', None)
+            if _honesty_val is not None and torch.is_tensor(_honesty_val):
+                # Detach to avoid creating a second backward path through
+                # the self-report network (it is trained via self_report_loss).
+                _honesty_gate = _honesty_val.detach().expand_as(z_out).clamp(0.0, 1.0)
+                z_out = z_out * _honesty_gate
+                self.audit_log.record("self_report", "honesty_output_gate", {
+                    "mean_honesty": float(_honesty_val.mean().item()),
+                    "min_honesty": float(_honesty_val.min().item()),
+                })
+
         # 8h-final. Terminal state consistency validation — run
         # StateConsistencyValidator.validate_and_recover() on the final
         # z_out after all corrections (auto-critic, provenance dampening,
@@ -25412,6 +25560,7 @@ class AEONDeltaV3(nn.Module):
             'memory_retrieval_quality': self._last_memory_retrieval_quality,
             'memory_cross_validation': getattr(self, '_last_memory_cross_validation', {}),
             'circuit_breaker_tripped': _circuit_breaker_tripped,
+            'safety_blocked': _safety_blocked,
             'unified_cognitive_cycle_results': unified_cycle_results,
             'convergence_arbiter_results': _convergence_arbiter_result,
             'directional_uncertainty': (
