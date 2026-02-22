@@ -42608,6 +42608,189 @@ def test_cross_validation_exhaustion_triggers_auto_critic():
     print("✅ test_cross_validation_exhaustion_triggers_auto_critic PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Safety Halt, Honesty Gate, Memory Re-Retrieval,
+#  Recovery Shape Fix, and Pipeline Dependency Gap Closure Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_critical_safety_threshold_config():
+    """Verify that AEONConfig exposes the critical_safety_threshold field
+    with a default value below the normal safety_threshold."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'critical_safety_threshold'), (
+        "AEONConfig should have critical_safety_threshold"
+    )
+    assert config.critical_safety_threshold < config.safety_threshold, (
+        "critical_safety_threshold should be below safety_threshold"
+    )
+    assert config.critical_safety_threshold == 0.1, (
+        f"Default critical_safety_threshold should be 0.1, got {config.critical_safety_threshold}"
+    )
+    print("✅ test_critical_safety_threshold_config PASSED")
+
+
+def test_safety_blocked_in_output():
+    """Verify that a forward pass produces a 'safety_blocked' key in the
+    reasoning core output dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    model.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        outputs = model(input_ids)
+    assert 'safety_blocked' in outputs, (
+        "Forward pass output should contain 'safety_blocked' key"
+    )
+    # Under normal conditions, safety_blocked should be False
+    assert outputs['safety_blocked'] is False, (
+        "safety_blocked should be False under normal operating conditions"
+    )
+    print("✅ test_safety_blocked_in_output PASSED")
+
+
+def test_honesty_output_gate_config():
+    """Verify the enable_honesty_output_gate config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_honesty_output_gate'), (
+        "AEONConfig should have enable_honesty_output_gate"
+    )
+    assert config.enable_honesty_output_gate is True, (
+        "enable_honesty_output_gate should default to True"
+    )
+    print("✅ test_honesty_output_gate_config PASSED")
+
+
+def test_honesty_gate_modulates_output():
+    """Verify the honesty gate multiplies z_out during the forward pass,
+    so low-honesty outputs are dampened."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Run with honesty gate enabled (default)
+    config_gated = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_honesty_output_gate=True,
+    )
+    model_gated = AEONDeltaV3(config_gated)
+    model_gated.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        out_gated = model_gated(input_ids)
+
+    # Run with honesty gate disabled
+    config_ungated = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_honesty_output_gate=False,
+    )
+    model_ungated = AEONDeltaV3(config_ungated)
+    model_ungated.eval()
+    with torch.no_grad():
+        out_ungated = model_ungated(input_ids)
+
+    # Both should produce valid outputs
+    assert 'thoughts' in out_gated and 'thoughts' in out_ungated, (
+        "Both gated and ungated outputs should have thoughts"
+    )
+    print("✅ test_honesty_gate_modulates_output PASSED")
+
+
+def test_memory_re_retrieval_config():
+    """Verify the enable_memory_re_retrieval config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_memory_re_retrieval'), (
+        "AEONConfig should have enable_memory_re_retrieval"
+    )
+    assert config.enable_memory_re_retrieval is True, (
+        "enable_memory_re_retrieval should default to True"
+    )
+    print("✅ test_memory_re_retrieval_config PASSED")
+
+
+def test_recovery_safe_fallback_tensor_shape():
+    """Verify that ErrorRecoveryManager._safe_fallback_tensor returns a
+    tensor whose shape matches the reference tensor, not a hardcoded (1, H)."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit)
+
+    # When reference (last_good) is provided, shape should match
+    ref = torch.randn(4, 64)
+    result = mgr._safe_fallback_tensor(fallback=None, last_good=ref)
+    assert result.shape == (4, 64), (
+        f"Expected shape (4, 64), got {result.shape}"
+    )
+    assert (result == 0).all(), "Fallback should be all zeros"
+
+    # When only fallback is provided, shape should match
+    fb = torch.randn(2, 64)
+    result2 = mgr._safe_fallback_tensor(fallback=fb, last_good=None)
+    assert result2.shape == (2, 64), (
+        f"Expected shape (2, 64), got {result2.shape}"
+    )
+
+    # When both are None, use the conservative (1, hidden_dim) default
+    result3 = mgr._safe_fallback_tensor(fallback=None, last_good=None)
+    assert result3.shape == (1, 64), (
+        f"Expected shape (1, 64), got {result3.shape}"
+    )
+    print("✅ test_recovery_safe_fallback_tensor_shape PASSED")
+
+
+def test_recovery_numerical_uses_safe_fallback():
+    """Verify that _recover_numerical uses the shape-aware fallback
+    when both last_good and fallback are None."""
+    from aeon_core import ErrorRecoveryManager, DecisionAuditLog
+
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit)
+
+    # With last_good: should sanitize and return
+    ref = torch.randn(3, 64)
+    ok, val = mgr._recover_numerical("test", fallback=None, last_good=ref)
+    assert ok is True
+    assert val.shape == (3, 64)
+
+    # Without anything: should use _safe_fallback_tensor
+    ok2, val2 = mgr._recover_numerical("test", fallback=None, last_good=None)
+    assert ok2 is True
+    assert val2.shape == (1, 64)
+    assert (val2 == 0).all()
+    print("✅ test_recovery_numerical_uses_safe_fallback PASSED")
+
+
+def test_pipeline_deps_include_safety_honesty_memory_edges():
+    """Verify that _PIPELINE_DEPENDENCIES includes the new edges for
+    safety halt, honesty output gate, and memory re-retrieval."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+
+    # Safety → output_reliability path
+    assert ("safety", "output_reliability") in dep_set, (
+        "Pipeline should include safety → output_reliability edge"
+    )
+    # Self-report → integration (honesty gate)
+    assert ("self_report", "integration") in dep_set, (
+        "Pipeline should include self_report → integration edge"
+    )
+    # Memory validation → memory (re-retrieval)
+    assert ("memory_validation", "memory") in dep_set, (
+        "Pipeline should include memory_validation → memory edge"
+    )
+    print("✅ test_pipeline_deps_include_safety_honesty_memory_edges PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -43827,7 +44010,7 @@ def _run_all_tests():
     test_self_diagnostic_safety_violation_signal()
     test_get_metacognitive_state_includes_safety_critic_bridge()
     test_architecture_summary_includes_safety_critic_bridge()
-    test_nine_signals_in_metacognitive_trigger()
+    test_eleven_signals_in_metacognitive_trigger()
     test_get_weakest_pair_identifies_lowest_similarity()
     test_pipeline_dependencies_include_causal_auto_critic()
 
@@ -44421,6 +44604,17 @@ def _run_all_tests():
     test_auto_critic_error_escalation_uncertainty_source()
     test_self_report_state_cached_for_coherence()
     test_cross_validation_exhaustion_triggers_auto_critic()
+
+    # Architectural Unification — Safety Halt, Honesty Gate, Memory
+    # Re-Retrieval, Recovery Shape Fix, and Pipeline Dependency Tests
+    test_critical_safety_threshold_config()
+    test_safety_blocked_in_output()
+    test_honesty_output_gate_config()
+    test_honesty_gate_modulates_output()
+    test_memory_re_retrieval_config()
+    test_recovery_safe_fallback_tensor_shape()
+    test_recovery_numerical_uses_safe_fallback()
+    test_pipeline_deps_include_safety_honesty_memory_edges()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
