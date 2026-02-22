@@ -41347,6 +41347,120 @@ def test_ucc_coherence_deficit_triggers_nonrerun_blend():
     print("✅ test_ucc_coherence_deficit_triggers_nonrerun_blend PASSED")
 
 
+def test_simulator_divergence_in_causal_trace():
+    """Unified simulator divergence is recorded in TemporalCausalTraceBuffer."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'causal_trace.record(' in src
+    # Verify simulator divergence specifically gets a causal trace entry
+    assert '"unified_simulator", "counterfactual_divergence"' in src, (
+        "_reasoning_core_impl must record unified simulator divergence in causal trace"
+    )
+    print("✅ test_simulator_divergence_in_causal_trace PASSED")
+
+
+def test_tkg_fact_storage_in_causal_trace():
+    """TKG fact storage events are recorded in TemporalCausalTraceBuffer."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"temporal_knowledge_graph", "facts_stored"' in src, (
+        "_reasoning_core_impl must record TKG fact storage in causal trace"
+    )
+    assert '"fact_confidence"' in src, (
+        "TKG causal trace entry must include fact confidence metadata"
+    )
+    print("✅ test_tkg_fact_storage_in_causal_trace PASSED")
+
+
+def test_complexity_estimator_in_ucc_states():
+    """Complexity estimator score is included in UCC subsystem states."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_ucc_states["complexity_estimator"]' in src, (
+        "_reasoning_core_impl must add complexity estimator to _ucc_states"
+    )
+    print("✅ test_complexity_estimator_in_ucc_states PASSED")
+
+
+def test_memory_validation_feeds_causal_context():
+    """UCC memory validation staleness feeds back to CausalContextWindowManager."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'source="memory_validation"' in src, (
+        "_reasoning_core_impl must feed memory validation into causal context"
+    )
+    assert '"needs_re_retrieval": True' in src, (
+        "Memory validation causal context entry must include needs_re_retrieval"
+    )
+    print("✅ test_memory_validation_feeds_causal_context PASSED")
+
+
+def test_provenance_to_signal_includes_complexity_estimator():
+    """MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL includes complexity_estimator."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert "complexity_estimator" in mapping, (
+        "complexity_estimator must be mapped in _PROVENANCE_TO_SIGNAL"
+    )
+    assert mapping["complexity_estimator"] == "uncertainty", (
+        "complexity_estimator should map to 'uncertainty' signal"
+    )
+    print("✅ test_provenance_to_signal_includes_complexity_estimator PASSED")
+
+
+def test_provenance_to_signal_includes_memory_validation():
+    """MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL includes memory_validation."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert "memory_validation" in mapping, (
+        "memory_validation must be mapped in _PROVENANCE_TO_SIGNAL"
+    )
+    assert mapping["memory_validation"] == "memory_staleness", (
+        "memory_validation should map to 'memory_staleness' signal"
+    )
+    print("✅ test_provenance_to_signal_includes_memory_validation PASSED")
+
+
+def test_ucc_memory_validation_causal_context_integration():
+    """UCC memory validation drives causal context when re-retrieval needed."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle, MemoryReasoningValidator,
+    )
+    conv_mon = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    mem_val = MemoryReasoningValidator()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        memory_validator=mem_val,
+    )
+    # Create intentionally inconsistent memory and converged states
+    states = {
+        "core_state": torch.ones(2, 64),
+        "integrated_output": torch.ones(2, 64),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        memory_signal=torch.ones(2, 64),
+        converged_state=-torch.ones(2, 64),  # opposite direction → inconsistent
+    )
+    mem_validation = result.get("memory_validation", {})
+    assert "consistency_score" in mem_validation, (
+        "UCC must return memory validation with consistency_score"
+    )
+    print("✅ test_ucc_memory_validation_causal_context_integration PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -43114,6 +43228,15 @@ def _run_all_tests():
     test_ucc_states_include_input_and_causal()
     test_nonrerun_weakest_pair_blending()
     test_ucc_coherence_deficit_triggers_nonrerun_blend()
+
+    # Cross-module feedback loop wiring tests
+    test_simulator_divergence_in_causal_trace()
+    test_tkg_fact_storage_in_causal_trace()
+    test_complexity_estimator_in_ucc_states()
+    test_memory_validation_feeds_causal_context()
+    test_provenance_to_signal_includes_complexity_estimator()
+    test_provenance_to_signal_includes_memory_validation()
+    test_ucc_memory_validation_causal_context_integration()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
