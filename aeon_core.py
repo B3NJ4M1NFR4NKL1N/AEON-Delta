@@ -16241,6 +16241,28 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal("topology_catastrophe", default=0.0)
         self.feedback_bus.register_signal("memory_trust", default=1.0)
         self.feedback_bus.register_signal("complexity_gate_usage", default=0.0)
+        # UCC cross-pass verification signals — register signals so the
+        # feedback bus can condition the meta-loop based on cross-pass UCC
+        # assessments.  When the UCC flags modules as incoherent or
+        # identifies recurring root causes, these signals propagate that
+        # assessment into the next pass, closing the verification loop.
+        self.feedback_bus.register_signal("ucc_flagged_pressure", default=0.0)
+        self.feedback_bus.register_signal(
+            "ucc_recurring_root_pressure", default=0.0,
+        )
+        # Provenance root-cause pressure — carries root-cause attribution
+        # into the next pass's meta-loop so that subsystems repeatedly
+        # identified as root causes receive proportionally higher
+        # conditioning pressure.
+        self.feedback_bus.register_signal(
+            "provenance_root_pressure", default=0.0,
+        )
+        # Memory re-retrieval pressure — signals pre-emptive memory
+        # re-retrieval when the MemoryReasoningValidator detected
+        # stale/inconsistent memories in the previous pass.
+        self.feedback_bus.register_signal(
+            "memory_re_retrieval_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17001,7 +17023,30 @@ class AEONDeltaV3(nn.Module):
         # where directional uncertainty was computed but never fed back
         # into the meta-loop conditioning vector.
         self._cached_uncertainty_sources: Dict[str, float] = {}
-        
+
+        # UCC cross-pass state — caches the UCC's flagged modules, most
+        # uncertain module, and recurring root causes so the NEXT forward
+        # pass's feedback bus can condition the meta-loop based on which
+        # subsystems the UCC identified as incoherent or repeatedly
+        # problematic.  This closes the cross-pass verification loop:
+        # UCC evaluation → cached state → feedback bus → meta-loop
+        # conditioning → targeted deeper reasoning.
+        self._cached_ucc_flagged_modules: List[str] = []
+        self._cached_ucc_most_uncertain: Optional[str] = None
+        self._cached_ucc_recurring_root: Optional[str] = None
+
+        # Provenance root-cause cross-pass state — caches the root-cause
+        # modules identified by provenance attribution so the next pass's
+        # feedback bus carries root-cause pressure, enabling the meta-loop
+        # to allocate deeper reasoning to repeatedly problematic subsystems.
+        self._cached_provenance_root_modules: List[str] = []
+
+        # Memory re-retrieval cross-pass state — when MemoryReasoningValidator
+        # detects stale/inconsistent memories, this flag persists across
+        # passes so the next pass's feedback bus signals pre-emptive
+        # re-retrieval rather than relying on the same stale cache.
+        self._cached_memory_needs_re_retrieval: bool = False
+
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
         # to detect structural disagreement.  Active whenever ≥2 causal
@@ -17238,8 +17283,10 @@ class AEONDeltaV3(nn.Module):
         """Build extra signal dict for CognitiveFeedbackBus from cached state.
 
         Aggregates diversity collapse, topology catastrophe, memory trust,
-        and complexity gate usage into scalar signals that the feedback bus
-        can project into the meta-loop conditioning vector.
+        complexity gate usage, UCC cross-pass verification state, provenance
+        root-cause attribution, and memory re-retrieval pressure into scalar
+        signals that the feedback bus can project into the meta-loop
+        conditioning vector.
         """
         extra: Dict[str, float] = {}
         # Diversity collapse: 1.0 when collapsed, 0.0 when healthy
@@ -17262,6 +17309,36 @@ class AEONDeltaV3(nn.Module):
             extra["complexity_gate_usage"] = float(
                 1.0 - _cg.float().mean().item(),
             )
+        # UCC flagged module pressure — fraction of subsystems flagged as
+        # incoherent by the previous pass's UnifiedCognitiveCycle.  This
+        # closes the cross-pass verification loop: UCC detects weak modules
+        # → cached here → feedback bus conditions next meta-loop → deeper
+        # reasoning for flagged subsystems.
+        if self._cached_ucc_flagged_modules:
+            extra["ucc_flagged_pressure"] = min(
+                1.0, len(self._cached_ucc_flagged_modules) / 5.0,
+            )
+        # UCC recurring root-cause pressure — 1.0 when a subsystem
+        # repeatedly appears in error chains, signalling systemic weakness
+        # that requires sustained meta-cognitive attention.
+        if self._cached_ucc_recurring_root is not None:
+            extra["ucc_recurring_root_pressure"] = 1.0
+        # Provenance root-cause pressure — carries root-cause module
+        # attribution from the previous pass into the feedback bus.  When
+        # provenance identifies specific modules as dominant contributors
+        # to output problems, this pressure signal ensures the next pass's
+        # meta-loop allocates proportionally deeper reasoning.
+        if self._cached_provenance_root_modules:
+            extra["provenance_root_pressure"] = min(
+                1.0, len(self._cached_provenance_root_modules) / 3.0,
+            )
+        # Memory re-retrieval pressure — when the MemoryReasoningValidator
+        # detected stale/inconsistent memories in the previous pass, this
+        # signal pre-emptively conditions the meta-loop to expect memory
+        # invalidation, enabling proactive re-retrieval rather than
+        # reactive uncertainty escalation.
+        if self._cached_memory_needs_re_retrieval:
+            extra["memory_re_retrieval_pressure"] = 1.0
         # Per-source uncertainty breakdown — feed individual uncertainty
         # contributors (e.g. coherence_deficit, hvae_kl_divergence,
         # reconciliation_disagreement) into the feedback bus so the
@@ -24161,6 +24238,16 @@ class AEONDeltaV3(nn.Module):
                     _ucc_prov_rc = unified_cycle_results.get(
                         "provenance_root_cause", {},
                     )
+                    # Cache provenance root-cause modules for next-pass
+                    # feedback bus conditioning.  This closes the root-cause
+                    # traceability loop: provenance identifies which upstream
+                    # modules dominated the output → cached here → feedback
+                    # bus carries provenance_root_pressure signal → next
+                    # pass's meta-loop allocates deeper reasoning to those
+                    # specific subsystems.
+                    self._cached_provenance_root_modules = list(
+                        _ucc_prov_rc.get("root_modules", []),
+                    )
                     self.audit_log.record(
                         "unified_cognitive_cycle", "rerun_recommended", {
                             "trigger_detail": {
@@ -24226,6 +24313,13 @@ class AEONDeltaV3(nn.Module):
                 _ucc_flagged_modules = _ucc_unc_summary.get(
                     "flagged_modules", [],
                 )
+                # Cache UCC directional uncertainty results for next-pass
+                # feedback bus conditioning.  This closes the cross-pass
+                # verification loop: the UCC's per-module uncertainty
+                # assessment feeds into the NEXT pass's meta-loop via the
+                # feedback bus signals registered as ucc_flagged_pressure.
+                self._cached_ucc_flagged_modules = list(_ucc_flagged_modules)
+                self._cached_ucc_most_uncertain = _ucc_most_uncertain
                 if _ucc_most_uncertain is not None:
                     uncertainty_sources[
                         "ucc_most_uncertain_module"
@@ -24393,6 +24487,15 @@ class AEONDeltaV3(nn.Module):
                 and self.causal_context is not None
                 and not fast):
             _ucc_mem_val = unified_cycle_results.get("memory_validation", {})
+            # Cache memory re-retrieval flag for next-pass feedback bus.
+            # This closes the memory consistency verification loop across
+            # passes: MemoryReasoningValidator detects stale memories →
+            # cached here → memory_re_retrieval_pressure signal in feedback
+            # bus → next pass's meta-loop proactively conditions for memory
+            # invalidation rather than reactively discovering staleness.
+            self._cached_memory_needs_re_retrieval = _ucc_mem_val.get(
+                "needs_re_retrieval", False,
+            )
             if _ucc_mem_val.get("needs_re_retrieval", False):
                 self.causal_context.add(
                     source="memory_validation",
@@ -24481,6 +24584,12 @@ class AEONDeltaV3(nn.Module):
                 "recurring_root_causes", {},
             )
             _ucc_top_recurrent = _ucc_recurring.get("top_subsystem", None)
+            # Cache recurring root-cause subsystem for next-pass feedback
+            # bus conditioning.  This closes the systemic weakness
+            # detection loop: recurring root causes → cached here →
+            # ucc_recurring_root_pressure signal in feedback bus →
+            # sustained meta-cognitive attention on problematic subsystem.
+            self._cached_ucc_recurring_root = _ucc_top_recurrent
             if _ucc_top_recurrent is not None:
                 self.audit_log.record(
                     "unified_cognitive_cycle", "recurring_root_cause", {
