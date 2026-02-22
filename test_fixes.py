@@ -43687,6 +43687,167 @@ def test_diversity_collapse_corrects_c_star():
     print("✅ test_diversity_collapse_corrects_c_star PASSED")
 
 
+def test_config_lambda_ns_consistency():
+    """Verify lambda_ns_consistency config field exists with correct default."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'lambda_ns_consistency'), (
+        "AEONConfig must have lambda_ns_consistency field"
+    )
+    assert config.lambda_ns_consistency == 0.01
+    print("✅ test_config_lambda_ns_consistency PASSED")
+
+
+def test_config_lambda_hierarchical_wm():
+    """Verify lambda_hierarchical_wm config field exists with correct default."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(device_str='cpu')
+    assert hasattr(config, 'lambda_hierarchical_wm'), (
+        "AEONConfig must have lambda_hierarchical_wm field"
+    )
+    assert config.lambda_hierarchical_wm == 0.01
+    print("✅ test_config_lambda_hierarchical_wm PASSED")
+
+
+def test_ns_consistency_loss_in_compute_loss():
+    """Verify ns_consistency_loss is computed and included in total_loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+    B, S = 2, 16
+    ids = torch.randint(1, 1000, (B, S))
+    outputs = model(ids)
+    # Inject ns_consistency_results into outputs
+    outputs['ns_consistency_results'] = {
+        'overall_consistency': torch.tensor([0.7]),
+        'num_violations': torch.tensor([2]),
+    }
+    targets = torch.randint(1, 1000, (B, S))
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'ns_consistency_loss' in loss_dict, (
+        "compute_loss must return ns_consistency_loss"
+    )
+    ns_loss = loss_dict['ns_consistency_loss']
+    assert torch.is_tensor(ns_loss), "ns_consistency_loss must be a tensor"
+    # With overall_consistency=0.7, loss should be ~0.3
+    expected = 1.0 - 0.7
+    assert abs(ns_loss.item() - expected) < 0.05, (
+        f"Expected ns_consistency_loss ≈ {expected}, got {ns_loss.item()}"
+    )
+    print("✅ test_ns_consistency_loss_in_compute_loss PASSED")
+
+
+def test_hierarchical_wm_loss_in_compute_loss():
+    """Verify hierarchical_wm_loss is computed and included in total_loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+    B, S = 2, 16
+    ids = torch.randint(1, 1000, (B, S))
+    outputs = model(ids)
+    # Inject hierarchical_wm_results into outputs
+    core_state = outputs.get('core_state', torch.randn(B, 32))
+    pred = core_state + torch.randn_like(core_state) * 0.5
+    outputs['hierarchical_wm_results'] = {'prediction': pred}
+    outputs['core_state'] = core_state
+    targets = torch.randint(1, 1000, (B, S))
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'hierarchical_wm_loss' in loss_dict, (
+        "compute_loss must return hierarchical_wm_loss"
+    )
+    hwm_loss = loss_dict['hierarchical_wm_loss']
+    assert torch.is_tensor(hwm_loss), "hierarchical_wm_loss must be a tensor"
+    assert hwm_loss.item() > 0, "HWM loss should be > 0 for noisy prediction"
+    print("✅ test_hierarchical_wm_loss_in_compute_loss PASSED")
+
+
+def test_decoder_in_ucc_states():
+    """Verify that decoder state is included in UCC coherence check."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_ucc_states["decoder"]' in src, (
+        "_reasoning_core_impl must include decoder in _ucc_states "
+        "for cross-pass coherence verification"
+    )
+    print("✅ test_decoder_in_ucc_states PASSED")
+
+
+def test_decoder_provenance_pressure_in_feedback_bus():
+    """Verify decoder_provenance_pressure signal is registered and routed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    # Check signal is registered
+    assert "decoder_provenance_pressure" in model.feedback_bus._extra_signals, (
+        "feedback_bus must have decoder_provenance_pressure registered"
+    )
+    # Check _build_feedback_extra_signals references decoder provenance
+    import inspect
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "decoder_provenance_pressure" in src, (
+        "_build_feedback_extra_signals must route decoder_provenance_pressure"
+    )
+    print("✅ test_decoder_provenance_pressure_in_feedback_bus PASSED")
+
+
+def test_ns_consistency_loss_in_training_bridge():
+    """Verify bridge_training_loss_to_error_evolution monitors ns_consistency_loss."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.bridge_training_loss_to_error_evolution)
+    assert "ns_consistency_loss" in src, (
+        "bridge_training_loss_to_error_evolution must monitor "
+        "'ns_consistency_loss' for subsystem error learning"
+    )
+    print("✅ test_ns_consistency_loss_in_training_bridge PASSED")
+
+
+def test_hierarchical_wm_loss_in_training_bridge():
+    """Verify bridge_training_loss_to_error_evolution monitors hierarchical_wm_loss."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.bridge_training_loss_to_error_evolution)
+    assert "hierarchical_wm_loss" in src, (
+        "bridge_training_loss_to_error_evolution must monitor "
+        "'hierarchical_wm_loss' for subsystem error learning"
+    )
+    print("✅ test_hierarchical_wm_loss_in_training_bridge PASSED")
+
+
+def test_ns_consistency_loss_error_evolution():
+    """Verify high NS consistency loss records error_evolution episode."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+    assert "high_ns_consistency_loss" in src, (
+        "compute_loss must record 'high_ns_consistency_loss' "
+        "error_evolution episode when NS violations are high"
+    )
+    print("✅ test_ns_consistency_loss_error_evolution PASSED")
+
+
+def test_hierarchical_wm_loss_error_evolution():
+    """Verify high HWM loss records error_evolution episode."""
+    from aeon_core import AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+    assert "high_hierarchical_wm_loss" in src, (
+        "compute_loss must record 'high_hierarchical_wm_loss' "
+        "error_evolution episode when HWM prediction error is high"
+    )
+    print("✅ test_hierarchical_wm_loss_error_evolution PASSED")
+
+
 def test_decoder_provenance_in_training_bridge():
     """Verify that bridge_training_loss_to_error_evolution includes
     decoder_provenance_loss in its subsystem loss monitoring."""
@@ -45566,6 +45727,19 @@ def test_decoder_provenance_in_training_bridge():
     test_auto_critic_all_scores_in_output()
     test_output_reliability_in_dag_node_mapping()
     test_diversity_collapse_corrects_c_star()
+
+    # Architectural Unification — NS Consistency Loss, Hierarchical WM Loss,
+    # Decoder in UCC Coherence, Decoder Provenance Feedback
+    test_config_lambda_ns_consistency()
+    test_config_lambda_hierarchical_wm()
+    test_ns_consistency_loss_in_compute_loss()
+    test_hierarchical_wm_loss_in_compute_loss()
+    test_decoder_in_ucc_states()
+    test_decoder_provenance_pressure_in_feedback_bus()
+    test_ns_consistency_loss_in_training_bridge()
+    test_hierarchical_wm_loss_in_training_bridge()
+    test_ns_consistency_loss_error_evolution()
+    test_hierarchical_wm_loss_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
