@@ -9162,10 +9162,10 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 3/9 ≈ 0.333 < 0.5 threshold → should NOT trigger
-    # with default weights; activate five to cross threshold.
-    # Five signals → with graduated uncertainty (0.8 × 1/9) + 4 binary
-    # signals (4 × 1/9) = 4.8/9 ≈ 0.533 ≥ threshold → should trigger
+    # Three signals → score = 3/11 ≈ 0.273 < 0.5 threshold → should NOT trigger
+    # with default weights; activate five to cross threshold — but with
+    # 11 signal weights the composite score is 4.8/11 ≈ 0.436 < 0.5.
+    # The topology_catastrophe override ensures should_trigger is True.
     result = trigger.evaluate(
         uncertainty=0.8,
         is_diverging=True,
@@ -9174,7 +9174,7 @@ def test_metacognitive_recursion_trigger_evaluate():
         safety_violation=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 4.8 / 9.0) < 1e-9
+    assert abs(result["trigger_score"] - 4.8 / 11.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
@@ -9190,11 +9190,11 @@ def test_metacognitive_recursion_trigger_max_recursions():
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(
-        trigger_threshold=1.0 / 9.0 - 0.01,  # just below one-signal weight
+        trigger_threshold=1.0 / 11.0 - 0.01,  # just below one-signal weight
         max_recursions=1,
     )
 
-    # First call → should trigger (one signal = 1/9 ≈ 0.111 ≥ threshold)
+    # First call → should trigger (one signal = 1/11 ≈ 0.091 ≥ threshold)
     r1 = trigger.evaluate(uncertainty=0.8)
     assert r1["should_trigger"] is True
 
@@ -9212,7 +9212,7 @@ def test_metacognitive_recursion_trigger_max_recursions():
 
 
 def test_metacognitive_recursion_trigger_all_signals():
-    """Verify all nine signals contribute to trigger score."""
+    """Verify all eleven signals contribute to trigger score."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
@@ -9227,9 +9227,11 @@ def test_metacognitive_recursion_trigger_all_signals():
         world_model_surprise=1.0,
         causal_quality=0.1,
         safety_violation=True,
+        diversity_collapse=1.0,
+        memory_trust_deficit=1.0,
     )
     assert abs(result["trigger_score"] - 1.0) < 1e-9
-    assert len(result["triggers_active"]) == 9
+    assert len(result["triggers_active"]) == 11
     assert result["should_trigger"] is True
 
     print("✅ test_metacognitive_recursion_trigger_all_signals PASSED")
@@ -9737,13 +9739,13 @@ def test_causal_trace_root_cause():
 
 def test_memory_staleness_feeds_metacognitive_trigger():
     """Gap 4: Memory retrieval staleness feeds into metacognitive recursion
-    trigger as one of six signals."""
+    trigger as one of eleven signals."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0  # per-signal weight with 9 signals
+    _w = 1.0 / 11.0  # per-signal weight with 11 signals
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only memory_staleness active → score = 1/9 ≥ threshold
+    # Only memory_staleness active → score = 1/11 ≥ threshold
     result = trigger.evaluate(memory_staleness=True)
     assert result["should_trigger"] is True
     assert "memory_staleness" in result["triggers_active"]
@@ -11412,10 +11414,10 @@ def test_causal_trace_summary_in_fallback():
 # ============================================================================
 
 def test_recovery_pressure_in_metacognitive_trigger():
-    """Gap 5: recovery_pressure is one of 9 signals in MetaCognitiveRecursionTrigger."""
+    """Gap 5: recovery_pressure is one of 11 signals in MetaCognitiveRecursionTrigger."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # Only recovery_pressure active (above 0.3 threshold)
@@ -11634,7 +11636,7 @@ def test_signal_weights_returned_in_evaluate():
         "Expected 'signal_weights' in evaluate() result"
     )
     weights = result['signal_weights']
-    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
+    assert len(weights) == 11, f"Expected 11 signal weights, got {len(weights)}"
     assert abs(sum(weights.values()) - 1.0) < 1e-9, (
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
@@ -13485,7 +13487,7 @@ def test_world_model_surprise_in_metacognitive_trigger():
     triggers deeper reasoning instead of only escalating uncertainty."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
 
     # world_model_surprise below threshold → should NOT fire
     result = trigger.evaluate(world_model_surprise=0.1)
@@ -15476,7 +15478,7 @@ def test_causal_quality_in_metacognitive_trigger():
     DAG quality and reasoning depth."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(
         trigger_threshold=_w - 0.01,
         causal_quality_threshold=0.3,
@@ -27353,7 +27355,7 @@ def test_safety_violation_signal_in_metacognitive_trigger():
     to find safe alternatives rather than simply blending to input."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    _w = 1.0 / 9.0
+    _w = 1.0 / 11.0
     trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
     # safety_violation=True → should trigger
@@ -27431,7 +27433,7 @@ def test_ucc_evaluate_accepts_safety_violation():
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
     # Low threshold so single safety_violation signal triggers
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -27565,14 +27567,14 @@ def test_architecture_summary_includes_safety_critic_bridge():
     print("✅ test_architecture_summary_includes_safety_critic_bridge PASSED")
 
 
-def test_nine_signals_in_metacognitive_trigger():
-    """Verify MetaCognitiveRecursionTrigger has exactly 9 signals
-    after adding safety_violation."""
+def test_eleven_signals_in_metacognitive_trigger():
+    """Verify MetaCognitiveRecursionTrigger has exactly 11 signals
+    after adding diversity_collapse and memory_trust_deficit."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     trigger = MetaCognitiveRecursionTrigger()
     weights = trigger._signal_weights
-    assert len(weights) == 9, f"Expected 9 signal weights, got {len(weights)}"
+    assert len(weights) == 11, f"Expected 11 signal weights, got {len(weights)}"
     assert "safety_violation" in weights, (
         "Expected 'safety_violation' in signal weights"
     )
@@ -27580,7 +27582,7 @@ def test_nine_signals_in_metacognitive_trigger():
         f"Signal weights should sum to 1.0, got {sum(weights.values())}"
     )
 
-    print("✅ test_nine_signals_in_metacognitive_trigger PASSED")
+    print("✅ test_eleven_signals_in_metacognitive_trigger PASSED")
 
 
 def test_get_weakest_pair_identifies_lowest_similarity():
@@ -29594,7 +29596,7 @@ def test_ucc_evaluate_accepts_topology_catastrophe():
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
     # Threshold low enough that a single signal triggers
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -29625,7 +29627,7 @@ def test_post_integration_metacognitive_includes_safety_violation():
     even when detected late in the pipeline."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
 
     # Verify that evaluate() accepts safety_violation
     result = trigger.evaluate(safety_violation=True)
@@ -29753,7 +29755,7 @@ def test_ucc_evaluate_returns_error_evolution_root_causes():
     cm = ConvergenceMonitor()
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
 
@@ -29788,7 +29790,7 @@ def test_ucc_evaluate_returns_causal_chain():
     cm = ConvergenceMonitor()
     cv = ModuleCoherenceVerifier(hidden_dim=hidden_dim)
     ee = CausalErrorEvolutionTracker()
-    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 9.0 - 0.01)
+    mt = MetaCognitiveRecursionTrigger(trigger_threshold=1.0 / 11.0 - 0.01)
     pt = CausalProvenanceTracker()
     ct = TemporalCausalTraceBuffer(max_entries=100)
     ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt, causal_trace=ct)
@@ -29863,7 +29865,7 @@ def test_training_bridge_error_classes_in_trigger_mapping():
         }
     })
     w = trigger._signal_weights
-    default_w = 1.0 / 9.0
+    default_w = 1.0 / 11.0
     # training_divergence maps to "diverging" — should get boosted
     assert w['diverging'] > default_w, (
         f"training_divergence should boost 'diverging' weight: {w['diverging']:.4f} <= {default_w:.4f}"
@@ -30244,8 +30246,8 @@ def test_graduated_uncertainty_signal():
     assert result["trigger_score"] > 0.0, (
         "Graduated uncertainty should contribute > 0 even below old binary threshold"
     )
-    # Score should be proportional: w * 0.4 = (1/9) * 0.4
-    expected = (1.0 / 9.0) * 0.4
+    # Score should be proportional: w * 0.4 = (1/11) * 0.4
+    expected = (1.0 / 11.0) * 0.4
     assert abs(result["trigger_score"] - expected) < 1e-9, (
         f"Expected graduated score {expected}, got {result['trigger_score']}"
     )
@@ -30260,7 +30262,7 @@ def test_high_uncertainty_override_triggers():
         trigger_threshold=0.9,  # high threshold that uncertainty alone can't reach
         max_recursions=2,
     )
-    # uncertainty=0.8 alone gives score = (1/9)*0.8 ≈ 0.089, well below 0.9
+    # uncertainty=0.8 alone gives score = (1/11)*0.8 ≈ 0.073, well below 0.9
     # But the high-uncertainty override (>0.7) should force trigger
     result = trigger.evaluate(uncertainty=0.8)
     assert result["should_trigger"] is True, (
@@ -31888,8 +31890,8 @@ def test_metacognitive_trigger_maps_new_error_classes():
     # After adaptation, diverging and memory_staleness weights should be boosted
     w = trigger._signal_weights
     # Since convergence_conflict maps to "diverging" and has low success,
-    # diverging weight should be above default (1/9 ≈ 0.111)
-    assert w["diverging"] > 0.111 or w["memory_staleness"] > 0.111, (
+    # diverging weight should be above default (1/11 ≈ 0.091)
+    assert w["diverging"] > 0.091 or w["memory_staleness"] > 0.091, (
         f"Expected boosted weights: diverging={w['diverging']:.3f}, "
         f"memory_staleness={w['memory_staleness']:.3f}"
     )
@@ -35553,11 +35555,11 @@ def test_new_error_classes_mapped_to_trigger_signals():
 
     # Verify weights were actually adjusted (not just silently ignored)
     # trust_scorer_failure → uncertainty, low success → boosted weight
-    assert trigger._signal_weights["uncertainty"] > 1.0 / 9.0, (
+    assert trigger._signal_weights["uncertainty"] > 1.0 / 11.0, (
         "Expected uncertainty weight to be boosted by trust_scorer_failure"
     )
     # coherence_verifier_failure → coherence_deficit
-    assert trigger._signal_weights["coherence_deficit"] > 1.0 / 9.0, (
+    assert trigger._signal_weights["coherence_deficit"] > 1.0 / 11.0, (
         "Expected coherence_deficit weight to be boosted by coherence_verifier_failure"
     )
 
@@ -41625,6 +41627,254 @@ def test_meta_recovery_learner_failure_audit_trail():
         "Meta-recovery learner failure must be recorded in audit_log"
     )
     print("✅ test_meta_recovery_learner_failure_audit_trail PASSED")
+
+
+# ============================================================================
+# Tests for architectural unification changes
+# ============================================================================
+
+def test_pipeline_deps_diversity_safety_cross_validation():
+    """Diversity analysis feeds into safety, cross_validation, and auto_critic."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("diversity_analysis", "safety") in edge_set
+    assert ("diversity_analysis", "cross_validation") in edge_set
+    assert ("diversity_analysis", "auto_critic") in edge_set
+    print("✅ test_pipeline_deps_diversity_safety_cross_validation PASSED")
+
+
+def test_pipeline_deps_topology_world_model_mcts():
+    """Topology analysis feeds into world_model and mcts_planning."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("topology_analysis", "world_model") in edge_set
+    assert ("topology_analysis", "mcts_planning") in edge_set
+    print("✅ test_pipeline_deps_topology_world_model_mcts PASSED")
+
+
+def test_pipeline_deps_memory_trust_integration_auto_critic():
+    """Memory trust feeds into integration and auto_critic."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("memory_trust", "integration") in edge_set
+    assert ("memory_trust", "auto_critic") in edge_set
+    print("✅ test_pipeline_deps_memory_trust_integration_auto_critic PASSED")
+
+
+def test_pipeline_deps_complexity_feedback_loop():
+    """World model feeds back into complexity estimator."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("world_model", "complexity_estimator") in edge_set
+    print("✅ test_pipeline_deps_complexity_feedback_loop PASSED")
+
+
+def test_feedback_bus_extra_signal_channels():
+    """Feedback bus registers diversity_collapse, topology_catastrophe,
+    memory_trust, and complexity_gate_usage as dynamic signals."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=32)
+    fb.register_signal("diversity_collapse", default=0.0)
+    fb.register_signal("topology_catastrophe", default=0.0)
+    fb.register_signal("memory_trust", default=1.0)
+    fb.register_signal("complexity_gate_usage", default=0.0)
+    assert fb.total_channels == 16  # 12 core + 4 dynamic
+    assert "diversity_collapse" in fb._extra_signals
+    assert "topology_catastrophe" in fb._extra_signals
+    assert "memory_trust" in fb._extra_signals
+    assert "complexity_gate_usage" in fb._extra_signals
+    # Verify forward pass works with extra signals
+    fb.eval()
+    out = fb(
+        batch_size=2, device=torch.device("cpu"),
+        extra_signals={"diversity_collapse": 0.8, "memory_trust": 0.3},
+    )
+    assert out.shape == (2, 32)
+    assert torch.isfinite(out).all()
+    print("✅ test_feedback_bus_extra_signal_channels PASSED")
+
+
+def test_trigger_diversity_collapse_signal():
+    """MetaCognitiveRecursionTrigger responds to diversity_collapse signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    _w = 1.0 / 11.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w * 0.9 - 0.01)
+    result = trigger.evaluate(diversity_collapse=0.9)
+    assert "diversity_collapse" in result["triggers_active"]
+    assert result["should_trigger"] is True
+    # Zero diversity_collapse → no signal
+    trigger.reset()
+    result2 = trigger.evaluate(diversity_collapse=0.0)
+    assert "diversity_collapse" not in result2["triggers_active"]
+    print("✅ test_trigger_diversity_collapse_signal PASSED")
+
+
+def test_trigger_memory_trust_deficit_signal():
+    """MetaCognitiveRecursionTrigger responds to memory_trust_deficit signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    _w = 1.0 / 11.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w * 0.8 - 0.01)
+    result = trigger.evaluate(memory_trust_deficit=0.8)
+    assert "memory_trust_deficit" in result["triggers_active"]
+    assert result["should_trigger"] is True
+    # Zero deficit → no signal
+    trigger.reset()
+    result2 = trigger.evaluate(memory_trust_deficit=0.0)
+    assert "memory_trust_deficit" not in result2["triggers_active"]
+    print("✅ test_trigger_memory_trust_deficit_signal PASSED")
+
+
+def test_ucc_fallback_diversity_memory_trust():
+    """UCC fallback trigger includes diversity_collapse and memory_trust_deficit."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        UnifiedCognitiveCycle,
+    )
+    hidden = 16
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=None,  # force fallback
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    states = {"a": torch.randn(2, hidden), "b": torch.randn(2, hidden)}
+    # diversity_collapse > 0.5 triggers fallback
+    result = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        diversity_collapse=0.8,
+    )
+    assert result["should_rerun"] is True
+    assert "diversity_collapse" in result["trigger_detail"]["triggers_active"]
+    # memory_trust_deficit > 0.5 triggers fallback
+    ucc.reset()
+    result2 = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        memory_trust_deficit=0.7,
+    )
+    assert result2["should_rerun"] is True
+    assert "memory_trust_deficit" in result2["trigger_detail"]["triggers_active"]
+    print("✅ test_ucc_fallback_diversity_memory_trust PASSED")
+
+
+def test_ucc_records_diversity_topology_trust_errors():
+    """UCC.evaluate() records diversity_collapse, topology_catastrophe,
+    and low_memory_trust in error evolution."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, UnifiedCognitiveCycle,
+    )
+    hidden = 16
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden),
+        error_evolution=tracker,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.01),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    states = {"a": torch.randn(2, hidden), "b": torch.randn(2, hidden)}
+    ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        diversity_collapse=0.5,
+        memory_trust_deficit=0.5,
+        topology_catastrophe=True,
+    )
+    summary = tracker.get_error_summary()
+    classes = summary.get("error_classes", {})
+    assert "diversity_collapse" in classes
+    assert "topology_catastrophe" in classes
+    assert "low_memory_trust" in classes
+    print("✅ test_ucc_records_diversity_topology_trust_errors PASSED")
+
+
+def test_coherence_threshold_adapts_to_diversity_topology():
+    """ModuleCoherenceVerifier.adapt_threshold() tightens on diversity_collapse
+    and topology_catastrophe error classes, not only coherence_deficit."""
+    from aeon_core import ModuleCoherenceVerifier
+    verifier = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.5)
+    initial = verifier.threshold
+    # Simulate error summary with diversity_collapse failures
+    summary = {
+        "error_classes": {
+            "diversity_collapse": {"count": 5, "success_rate": 0.1},
+        },
+    }
+    verifier.adapt_threshold(summary)
+    assert verifier.threshold > initial, (
+        f"Expected threshold to tighten from {initial}, got {verifier.threshold}"
+    )
+    # Simulate summary with only healthy classes → relax
+    verifier.threshold = 0.7
+    verifier._initial_threshold = 0.5
+    summary_healthy = {
+        "error_classes": {
+            "diversity_collapse": {"count": 5, "success_rate": 0.95},
+            "topology_catastrophe": {"count": 3, "success_rate": 0.9},
+        },
+    }
+    verifier.adapt_threshold(summary_healthy)
+    assert verifier.threshold < 0.7, (
+        f"Expected threshold to relax from 0.7, got {verifier.threshold}"
+    )
+    print("✅ test_coherence_threshold_adapts_to_diversity_topology PASSED")
+
+
+def test_adapt_weights_diversity_collapse_mapping():
+    """adapt_weights_from_evolution maps diversity_collapse error class to
+    the 'diversity_collapse' signal (not 'uncertainty')."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    for _ in range(10):
+        tracker.record_episode("diversity_collapse", "escalation", success=False)
+    original_dc = trigger._signal_weights.get("diversity_collapse", 0)
+    trigger.adapt_weights_from_evolution(tracker.get_error_summary())
+    new_dc = trigger._signal_weights.get("diversity_collapse", 0)
+    assert new_dc > original_dc, (
+        f"Expected diversity_collapse weight to increase from {original_dc} to {new_dc}"
+    )
+    print("✅ test_adapt_weights_diversity_collapse_mapping PASSED")
+
+
+def test_provenance_to_signal_includes_diversity_collapse():
+    """_PROVENANCE_TO_SIGNAL maps diversity_analysis to diversity_collapse."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert mapping.get("diversity_analysis") == "diversity_collapse"
+    print("✅ test_provenance_to_signal_includes_diversity_collapse PASSED")
+
+
+def test_build_feedback_extra_signals_helper():
+    """_build_feedback_extra_signals returns correct dict from cached state."""
+    import torch
+    from aeon_core import AEONDeltaV3
+    # Test the helper method by calling it on a mock-like object
+    # that has the required attributes
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = torch.tensor([0.1])
+        _cached_topology_state = torch.tensor([1.0])
+        _last_trust_score = 0.4
+        _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "diversity_collapse" in extra
+    assert extra["diversity_collapse"] > 0.0  # collapse detected
+    assert extra["topology_catastrophe"] == 1.0  # catastrophe detected
+    assert extra["memory_trust"] == 0.4
+    assert extra["complexity_gate_usage"] > 0.0  # some gates are off
+    print("✅ test_build_feedback_extra_signals_helper PASSED")
 
 
 def _run_all_tests():
