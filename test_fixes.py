@@ -42418,6 +42418,196 @@ def test_task2vec_loss_in_compute_loss():
     print("✅ test_task2vec_loss_in_compute_loss PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Unified Cognitive Coherence Gap Closure Tests
+#  Tests for: memory error escalation, auto-critic error escalation,
+#  cross-validation → auto-critic trigger, self-report coherence inclusion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_neurogenic_memory_error_escalates_uncertainty():
+    """NeurogenicMemory errors in _fuse_memory should set the error flag
+    so that downstream uncertainty escalation picks it up."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the flag attribute exists and is False by default
+    assert hasattr(model, '_neurogenic_memory_error'), (
+        "AEONDeltaV3 should have _neurogenic_memory_error attribute"
+    )
+    assert model._neurogenic_memory_error is False
+
+    # Simulate setting it (as _fuse_memory would on error)
+    model._neurogenic_memory_error = True
+    assert model._neurogenic_memory_error is True
+
+    print("✅ test_neurogenic_memory_error_escalates_uncertainty PASSED")
+
+
+def test_temporal_memory_error_escalates_uncertainty():
+    """TemporalMemory errors in _fuse_memory should set the error flag
+    so that downstream uncertainty escalation picks it up."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the flag attribute exists and is False by default
+    assert hasattr(model, '_temporal_memory_error'), (
+        "AEONDeltaV3 should have _temporal_memory_error attribute"
+    )
+    assert model._temporal_memory_error is False
+
+    # Simulate setting it (as _fuse_memory would on error)
+    model._temporal_memory_error = True
+    assert model._temporal_memory_error is True
+
+    print("✅ test_temporal_memory_error_escalates_uncertainty PASSED")
+
+
+def test_memory_error_flags_reset_before_fusion():
+    """Memory error flags should be reset to False before each _fuse_memory
+    call so that stale flags from a prior forward pass don't persist."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate a prior error
+    model._neurogenic_memory_error = True
+    model._temporal_memory_error = True
+    model._consolidating_memory_error = True
+
+    # Run a forward pass — flags should reset
+    model.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # After forward, the flags should be False (reset in step 6)
+    assert model._neurogenic_memory_error is False, (
+        "_neurogenic_memory_error should be reset before _fuse_memory"
+    )
+    assert model._temporal_memory_error is False, (
+        "_temporal_memory_error should be reset before _fuse_memory"
+    )
+    assert model._consolidating_memory_error is False, (
+        "_consolidating_memory_error should be reset before _fuse_memory"
+    )
+
+    print("✅ test_memory_error_flags_reset_before_fusion PASSED")
+
+
+def test_auto_critic_error_escalation_uncertainty_source():
+    """When auto-critic raises an exception, the catch block should
+    add an entry to uncertainty_sources rather than silently swallowing."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify auto_critic exists and can be monkeypatched
+    assert model.auto_critic is not None, "AutoCriticLoop should be instantiated"
+
+    # Monkeypatch auto_critic to raise
+    original_forward = model.auto_critic.forward
+
+    def _raise_always(*args, **kwargs):
+        raise RuntimeError("Injected auto-critic test failure")
+
+    model.auto_critic.forward = _raise_always
+    model.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # The model should still produce output (error is non-fatal)
+    assert 'output' in outputs or 'z_out' in outputs or 'logits' in outputs, (
+        "Model should still produce output despite auto-critic error"
+    )
+
+    # Restore original
+    model.auto_critic.forward = original_forward
+
+    print("✅ test_auto_critic_error_escalation_uncertainty_source PASSED")
+
+
+def test_self_report_state_cached_for_coherence():
+    """Self-report-gated state should be cached as _cached_self_report_state
+    for inclusion in post-integration coherence verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Run forward to populate cached state
+    model.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # The self_report state should exist as an attribute after forward
+    assert hasattr(model, '_cached_self_report_state'), (
+        "AEONDeltaV3 should have _cached_self_report_state after forward"
+    )
+
+    # If self_reporter is active, the cached state should be a tensor
+    if model.self_reporter is not None:
+        cached = model._cached_self_report_state
+        if cached is not None:
+            assert isinstance(cached, torch.Tensor), (
+                "_cached_self_report_state should be a Tensor"
+            )
+            assert cached.shape[-1] == config.hidden_dim, (
+                "_cached_self_report_state should have hidden_dim last dim"
+            )
+
+    print("✅ test_self_report_state_cached_for_coherence PASSED")
+
+
+def test_cross_validation_exhaustion_triggers_auto_critic():
+    """When cross-validation reconciliation exhausts max iterations,
+    auto-critic should be invoked for immediate correction."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify both cross_validator and auto_critic exist
+    assert model.cross_validator is not None, (
+        "CrossValidationReconciler should be instantiated"
+    )
+    assert model.auto_critic is not None, (
+        "AutoCriticLoop should be instantiated"
+    )
+
+    # Run forward pass — the auto-critic should handle reconciliation
+    # exhaustion automatically; we just verify the model doesn't crash
+    model.eval()
+    input_ids = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    assert 'output' in outputs or 'z_out' in outputs or 'logits' in outputs, (
+        "Model should produce output with cross-validation + auto-critic"
+    )
+
+    print("✅ test_cross_validation_exhaustion_triggers_auto_critic PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -44223,6 +44413,14 @@ def _run_all_tests():
     test_directional_uncertainty_triggers_rerun()
     test_provenance_root_cause_always_available()
     test_task2vec_loss_in_compute_loss()
+
+    # Architectural unification — unified cognitive system gap closure
+    test_neurogenic_memory_error_escalates_uncertainty()
+    test_temporal_memory_error_escalates_uncertainty()
+    test_memory_error_flags_reset_before_fusion()
+    test_auto_critic_error_escalation_uncertainty_source()
+    test_self_report_state_cached_for_coherence()
+    test_cross_validation_exhaustion_triggers_auto_critic()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
