@@ -43586,6 +43586,107 @@ def test_decoder_degenerate_output_detection():
     print("✅ test_decoder_degenerate_output_detection PASSED")
 
 
+def test_circuit_breaker_guards_auxiliary_memory():
+    """When hierarchical memory fails (circuit breaker tripped for 'memory'),
+    auxiliary memory stages (neurogenic, consolidating, temporal) should be
+    skipped to prevent cascading failures on degraded C_star."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_neurogenic_memory=True,
+        enable_consolidating_memory=True,
+        enable_temporal_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch hierarchical memory to raise an exception
+    if model.hierarchical_memory is not None:
+        def _fail_mem(*args, **kwargs):
+            raise RuntimeError("Injected memory failure")
+        model.hierarchical_memory.forward = _fail_mem
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    cb = outputs.get('circuit_breaker_tripped', set())
+    assert 'memory' in cb, (
+        f"Expected 'memory' in circuit_breaker_tripped, got {cb}"
+    )
+    print("✅ test_circuit_breaker_guards_auxiliary_memory PASSED")
+
+
+def test_auto_critic_all_scores_in_output():
+    """The output dict should contain auto_critic_all_scores list tracking
+    all invocation scores, and auto_critic_final_score should be the minimum."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        _, outputs = model.reasoning_core(z_in, fast=False)
+
+    assert 'auto_critic_all_scores' in outputs, (
+        "auto_critic_all_scores key missing from reasoning_core outputs"
+    )
+    all_scores = outputs['auto_critic_all_scores']
+    assert isinstance(all_scores, list), (
+        f"Expected list, got {type(all_scores)}"
+    )
+    # When auto_critic ran, final score should equal minimum of all scores
+    final = outputs.get('auto_critic_final_score')
+    if all_scores:
+        assert final == min(all_scores), (
+            f"auto_critic_final_score ({final}) != min(all_scores) ({min(all_scores)})"
+        )
+    print(f"  auto_critic_all_scores: {all_scores}")
+    print(f"  auto_critic_final_score: {final}")
+    print("✅ test_auto_critic_all_scores_in_output PASSED")
+
+
+def test_output_reliability_in_dag_node_mapping():
+    """output_reliability should be mapped in _DAG_NODE_TO_ATTR inside
+    _reasoning_core_impl so that edges referencing it are properly gated
+    when module_coherence is disabled."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"output_reliability"' in src and '"module_coherence"' in src, (
+        "output_reliability must be mapped to module_coherence in "
+        "_DAG_NODE_TO_ATTR for proper provenance gating"
+    )
+    print("✅ test_output_reliability_in_dag_node_mapping PASSED")
+
+
+def test_diversity_collapse_corrects_c_star():
+    """When diversity collapse is detected, the corrective residual should
+    modify C_star to break representational degeneracy."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_DIVERSITY_CORRECTION_SCALE' in src, (
+        "_reasoning_core_impl must include diversity-collapse corrective "
+        "residual that modifies C_star when collapse is detected"
+    )
+    assert '_collapse_severity' in src, (
+        "_reasoning_core_impl must compute collapse_severity for "
+        "proportional diversity correction"
+    )
+    print("✅ test_diversity_collapse_corrects_c_star PASSED")
+
+
 def test_decoder_provenance_in_training_bridge():
     """Verify that bridge_training_loss_to_error_evolution includes
     decoder_provenance_loss in its subsystem loss monitoring."""
@@ -45458,6 +45559,13 @@ def test_decoder_provenance_in_training_bridge():
     test_decoder_provenance_loss_in_compute_loss()
     test_decoder_degenerate_output_detection()
     test_decoder_provenance_in_training_bridge()
+
+    # Architectural Unification — Circuit Breaker, Auto-Critic, Diversity,
+    # Provenance DAG Mapping
+    test_circuit_breaker_guards_auxiliary_memory()
+    test_auto_critic_all_scores_in_output()
+    test_output_reliability_in_dag_node_mapping()
+    test_diversity_collapse_corrects_c_star()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

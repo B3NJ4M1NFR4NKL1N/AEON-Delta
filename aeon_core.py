@@ -18390,6 +18390,12 @@ class AEONDeltaV3(nn.Module):
             "grounded_multimodal": "grounded_multimodal",
             "encoder_reasoning_norm": "encoder_reasoning_norm",
             "decoder": "decoder",
+            # output_reliability is a virtual node gated by the same
+            # module_coherence attribute used in verify_pipeline_wiring.
+            # Without this mapping, edges referencing output_reliability
+            # are always registered even when module_coherence is
+            # disabled, creating phantom edges in the provenance DAG.
+            "output_reliability": "module_coherence",
         }
         for _up, _down in self._PIPELINE_DEPENDENCIES:
             # Skip edge if either node maps to a disabled (None) module
@@ -19433,6 +19439,22 @@ class AEONDeltaV3(nn.Module):
                         "uncertainty_boost": _diversity_boost,
                     },
                 )
+            # 3b-correct. Diversity-collapse corrective residual — when
+            # thought collapse is detected, apply a small perturbation to
+            # C_star to break representational degeneracy.  The perturbation
+            # is proportional to the severity of collapse and derived from
+            # the state itself (mean-subtracted) to maintain determinism.
+            # This closes the gap where diversity collapse only escalated
+            # uncertainty but never actively corrected the representation.
+            _DIVERSITY_CORRECTION_SCALE = 0.05
+            _collapse_severity = (
+                (_DIVERSITY_COLLAPSE_THRESHOLD - _diversity_score)
+                / max(_DIVERSITY_COLLAPSE_THRESHOLD, 1e-6)
+            )
+            _correction = C_star - C_star.mean(dim=0, keepdim=True)
+            _correction_norm = _correction.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+            _correction = _correction / _correction_norm
+            C_star = C_star + _DIVERSITY_CORRECTION_SCALE * _collapse_severity * _correction
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -21083,7 +21105,7 @@ class AEONDeltaV3(nn.Module):
         # consolidation, the most similar stored neurons are blended
         # back as a residual, closing the loop so that previously
         # learned patterns actively influence ongoing reasoning.
-        if self.neurogenic_memory is not None and not fast:
+        if self.neurogenic_memory is not None and not fast and "memory" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("neurogenic_memory", C_star)
             _neuro_retrieval_empty = 0
             for i in range(B):
@@ -21129,7 +21151,7 @@ class AEONDeltaV3(nn.Module):
         # semantic prototypes for context enrichment.  This connects the
         # three-stage consolidation pipeline (working → episodic → semantic)
         # into the main reasoning flow.
-        if self.consolidating_memory is not None and not fast:
+        if self.consolidating_memory is not None and not fast and "memory" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("consolidating_memory", C_star)
             for i in range(B):
                 if torch.isfinite(C_star[i]).all():
@@ -21149,7 +21171,7 @@ class AEONDeltaV3(nn.Module):
         # * age), modeling Ebbinghaus's forgetting curve: memories fade
         # exponentially unless their importance compensates for temporal
         # distance.  High-importance states effectively "remember" longer.
-        if self.temporal_memory is not None and not fast:
+        if self.temporal_memory is not None and not fast and "memory" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("temporal_memory", C_star)
             _temporal_weight = self.config.temporal_memory_retrieval_weight
             _temporal_k = self.config.temporal_memory_retrieval_k
@@ -22982,6 +23004,10 @@ class AEONDeltaV3(nn.Module):
         _auto_critic_final_score_tensor = None
         # Track whether any auto-critic revision modified z_out
         _any_auto_critic_revised = False
+        # Accumulate all auto-critic scores across multiple invocations
+        # so the final score reflects the worst assessment rather than
+        # the last one (which previously overwrote earlier scores).
+        _auto_critic_all_scores: List[float] = []
         
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
@@ -23112,6 +23138,7 @@ class AEONDeltaV3(nn.Module):
                         _any_auto_critic_revised = True
                     self.provenance_tracker.record_after("auto_critic", z_out)
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
+                    _auto_critic_all_scores.append(_auto_critic_final_score)
                     _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
                     # Feed auto-critic quality into uncertainty_sources so
                     # low scores escalate uncertainty and trigger deeper
@@ -23298,6 +23325,7 @@ class AEONDeltaV3(nn.Module):
                     _any_auto_critic_revised = True
                 self.provenance_tracker.record_after("auto_critic", z_out)
                 _auto_critic_final_score = _uc_critic.get("final_score", 0.0)
+                _auto_critic_all_scores.append(_auto_critic_final_score)
                 _auto_critic_final_score_tensor = _uc_critic.get(
                     "final_score_tensor", None,
                 )
@@ -23460,6 +23488,7 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after("auto_critic", z_out)
             self._cached_auto_critic_state = z_out.detach()
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
+            _auto_critic_all_scores.append(_auto_critic_final_score)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
             # Update running quality EMA so cross-pass trend is available
             # for threshold adaptation and uncertainty trajectory tracking.
@@ -25702,6 +25731,13 @@ class AEONDeltaV3(nn.Module):
             except Exception as _lip_err:
                 logger.debug("Pre-computed lipschitz loss failed: %s", _lip_err)
 
+        # Reconcile auto-critic scores across multiple invocations:
+        # use the minimum (worst) score so the final assessment reflects
+        # the most pessimistic view, ensuring that quality issues detected
+        # by any invocation path are not masked by a later higher score.
+        if _auto_critic_all_scores:
+            _auto_critic_final_score = min(_auto_critic_all_scores)
+
         outputs = {
             'core_state': C_star,
             'factors': factors,
@@ -25752,6 +25788,7 @@ class AEONDeltaV3(nn.Module):
             'causal_decision_chain': _causal_decision_chain,
             'uncertainty_sources': uncertainty_sources,
             'auto_critic_final_score': _auto_critic_final_score,
+            'auto_critic_all_scores': _auto_critic_all_scores,
             'auto_critic_final_score_tensor': _auto_critic_final_score_tensor,
             'certified_results': _certified_results,
             'dag_consensus_results': _dag_consensus_results,
