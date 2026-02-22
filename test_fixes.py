@@ -41629,6 +41629,254 @@ def test_meta_recovery_learner_failure_audit_trail():
     print("✅ test_meta_recovery_learner_failure_audit_trail PASSED")
 
 
+# ============================================================================
+# Tests for architectural unification changes
+# ============================================================================
+
+def test_pipeline_deps_diversity_safety_cross_validation():
+    """Diversity analysis feeds into safety, cross_validation, and auto_critic."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("diversity_analysis", "safety") in edge_set
+    assert ("diversity_analysis", "cross_validation") in edge_set
+    assert ("diversity_analysis", "auto_critic") in edge_set
+    print("✅ test_pipeline_deps_diversity_safety_cross_validation PASSED")
+
+
+def test_pipeline_deps_topology_world_model_mcts():
+    """Topology analysis feeds into world_model and mcts_planning."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("topology_analysis", "world_model") in edge_set
+    assert ("topology_analysis", "mcts_planning") in edge_set
+    print("✅ test_pipeline_deps_topology_world_model_mcts PASSED")
+
+
+def test_pipeline_deps_memory_trust_integration_auto_critic():
+    """Memory trust feeds into integration and auto_critic."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("memory_trust", "integration") in edge_set
+    assert ("memory_trust", "auto_critic") in edge_set
+    print("✅ test_pipeline_deps_memory_trust_integration_auto_critic PASSED")
+
+
+def test_pipeline_deps_complexity_feedback_loop():
+    """World model feeds back into complexity estimator."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("world_model", "complexity_estimator") in edge_set
+    print("✅ test_pipeline_deps_complexity_feedback_loop PASSED")
+
+
+def test_feedback_bus_extra_signal_channels():
+    """Feedback bus registers diversity_collapse, topology_catastrophe,
+    memory_trust, and complexity_gate_usage as dynamic signals."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=32)
+    fb.register_signal("diversity_collapse", default=0.0)
+    fb.register_signal("topology_catastrophe", default=0.0)
+    fb.register_signal("memory_trust", default=1.0)
+    fb.register_signal("complexity_gate_usage", default=0.0)
+    assert fb.total_channels == 16  # 12 core + 4 dynamic
+    assert "diversity_collapse" in fb._extra_signals
+    assert "topology_catastrophe" in fb._extra_signals
+    assert "memory_trust" in fb._extra_signals
+    assert "complexity_gate_usage" in fb._extra_signals
+    # Verify forward pass works with extra signals
+    fb.eval()
+    out = fb(
+        batch_size=2, device=torch.device("cpu"),
+        extra_signals={"diversity_collapse": 0.8, "memory_trust": 0.3},
+    )
+    assert out.shape == (2, 32)
+    assert torch.isfinite(out).all()
+    print("✅ test_feedback_bus_extra_signal_channels PASSED")
+
+
+def test_trigger_diversity_collapse_signal():
+    """MetaCognitiveRecursionTrigger responds to diversity_collapse signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    _w = 1.0 / 11.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w * 0.9 - 0.01)
+    result = trigger.evaluate(diversity_collapse=0.9)
+    assert "diversity_collapse" in result["triggers_active"]
+    assert result["should_trigger"] is True
+    # Zero diversity_collapse → no signal
+    trigger.reset()
+    result2 = trigger.evaluate(diversity_collapse=0.0)
+    assert "diversity_collapse" not in result2["triggers_active"]
+    print("✅ test_trigger_diversity_collapse_signal PASSED")
+
+
+def test_trigger_memory_trust_deficit_signal():
+    """MetaCognitiveRecursionTrigger responds to memory_trust_deficit signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    _w = 1.0 / 11.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w * 0.8 - 0.01)
+    result = trigger.evaluate(memory_trust_deficit=0.8)
+    assert "memory_trust_deficit" in result["triggers_active"]
+    assert result["should_trigger"] is True
+    # Zero deficit → no signal
+    trigger.reset()
+    result2 = trigger.evaluate(memory_trust_deficit=0.0)
+    assert "memory_trust_deficit" not in result2["triggers_active"]
+    print("✅ test_trigger_memory_trust_deficit_signal PASSED")
+
+
+def test_ucc_fallback_diversity_memory_trust():
+    """UCC fallback trigger includes diversity_collapse and memory_trust_deficit."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        UnifiedCognitiveCycle,
+    )
+    hidden = 16
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=None,  # force fallback
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    states = {"a": torch.randn(2, hidden), "b": torch.randn(2, hidden)}
+    # diversity_collapse > 0.5 triggers fallback
+    result = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        diversity_collapse=0.8,
+    )
+    assert result["should_rerun"] is True
+    assert "diversity_collapse" in result["trigger_detail"]["triggers_active"]
+    # memory_trust_deficit > 0.5 triggers fallback
+    ucc.reset()
+    result2 = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        memory_trust_deficit=0.7,
+    )
+    assert result2["should_rerun"] is True
+    assert "memory_trust_deficit" in result2["trigger_detail"]["triggers_active"]
+    print("✅ test_ucc_fallback_diversity_memory_trust PASSED")
+
+
+def test_ucc_records_diversity_topology_trust_errors():
+    """UCC.evaluate() records diversity_collapse, topology_catastrophe,
+    and low_memory_trust in error evolution."""
+    import torch
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, UnifiedCognitiveCycle,
+    )
+    hidden = 16
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden),
+        error_evolution=tracker,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.01),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    states = {"a": torch.randn(2, hidden), "b": torch.randn(2, hidden)}
+    ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01,
+        diversity_collapse=0.5,
+        memory_trust_deficit=0.5,
+        topology_catastrophe=True,
+    )
+    summary = tracker.get_error_summary()
+    classes = summary.get("error_classes", {})
+    assert "diversity_collapse" in classes
+    assert "topology_catastrophe" in classes
+    assert "low_memory_trust" in classes
+    print("✅ test_ucc_records_diversity_topology_trust_errors PASSED")
+
+
+def test_coherence_threshold_adapts_to_diversity_topology():
+    """ModuleCoherenceVerifier.adapt_threshold() tightens on diversity_collapse
+    and topology_catastrophe error classes, not only coherence_deficit."""
+    from aeon_core import ModuleCoherenceVerifier
+    verifier = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.5)
+    initial = verifier.threshold
+    # Simulate error summary with diversity_collapse failures
+    summary = {
+        "error_classes": {
+            "diversity_collapse": {"count": 5, "success_rate": 0.1},
+        },
+    }
+    verifier.adapt_threshold(summary)
+    assert verifier.threshold > initial, (
+        f"Expected threshold to tighten from {initial}, got {verifier.threshold}"
+    )
+    # Simulate summary with only healthy classes → relax
+    verifier.threshold = 0.7
+    verifier._initial_threshold = 0.5
+    summary_healthy = {
+        "error_classes": {
+            "diversity_collapse": {"count": 5, "success_rate": 0.95},
+            "topology_catastrophe": {"count": 3, "success_rate": 0.9},
+        },
+    }
+    verifier.adapt_threshold(summary_healthy)
+    assert verifier.threshold < 0.7, (
+        f"Expected threshold to relax from 0.7, got {verifier.threshold}"
+    )
+    print("✅ test_coherence_threshold_adapts_to_diversity_topology PASSED")
+
+
+def test_adapt_weights_diversity_collapse_mapping():
+    """adapt_weights_from_evolution maps diversity_collapse error class to
+    the 'diversity_collapse' signal (not 'uncertainty')."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    for _ in range(10):
+        tracker.record_episode("diversity_collapse", "escalation", success=False)
+    original_dc = trigger._signal_weights.get("diversity_collapse", 0)
+    trigger.adapt_weights_from_evolution(tracker.get_error_summary())
+    new_dc = trigger._signal_weights.get("diversity_collapse", 0)
+    assert new_dc > original_dc, (
+        f"Expected diversity_collapse weight to increase from {original_dc} to {new_dc}"
+    )
+    print("✅ test_adapt_weights_diversity_collapse_mapping PASSED")
+
+
+def test_provenance_to_signal_includes_diversity_collapse():
+    """_PROVENANCE_TO_SIGNAL maps diversity_analysis to diversity_collapse."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert mapping.get("diversity_analysis") == "diversity_collapse"
+    print("✅ test_provenance_to_signal_includes_diversity_collapse PASSED")
+
+
+def test_build_feedback_extra_signals_helper():
+    """_build_feedback_extra_signals returns correct dict from cached state."""
+    import torch
+    from aeon_core import AEONDeltaV3
+    # Test the helper method by calling it on a mock-like object
+    # that has the required attributes
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = torch.tensor([0.1])
+        _cached_topology_state = torch.tensor([1.0])
+        _last_trust_score = 0.4
+        _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "diversity_collapse" in extra
+    assert extra["diversity_collapse"] > 0.0  # collapse detected
+    assert extra["topology_catastrophe"] == 1.0  # catastrophe detected
+    assert extra["memory_trust"] == 0.4
+    assert extra["complexity_gate_usage"] > 0.0  # some gates are off
+    print("✅ test_build_feedback_extra_signals_helper PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
