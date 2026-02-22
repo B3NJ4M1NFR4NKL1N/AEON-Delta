@@ -2781,6 +2781,7 @@ class AEONConfig:
     lambda_cycle_consistency: float = 0.01
     lambda_world_model_surprise: float = 0.01
     lambda_convergence_residual: float = 0.01
+    lambda_decoder_provenance: float = 0.005
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -16103,6 +16104,11 @@ class AEONDeltaV3(nn.Module):
         # re-evaluation.
         ("integration", "decoder"),
         ("decoder", "unified_cognitive_cycle"),
+        # Decoder quality feeds back into error evolution and auto-critic
+        # so that decoding failures are traceable via root-cause analysis
+        # and the auto-critic can self-correct decoder-stage distortions.
+        ("decoder", "error_evolution"),
+        ("decoder", "auto_critic"),
         # ── Causal context registration paths ──────────────────────
         # Slot binding and factor extraction outputs are registered in
         # the causal context window so that cross-pass retrieval can
@@ -22379,7 +22385,7 @@ class AEONDeltaV3(nn.Module):
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
         _hybrid_healthy = True
-        if self.hybrid_reasoning is not None and not fast:
+        if self.hybrid_reasoning is not None and not fast and "causal_model" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("hybrid_reasoning", C_star)
             try:
                 hybrid_reasoning_results = self.hybrid_reasoning(C_star)
@@ -22438,7 +22444,7 @@ class AEONDeltaV3(nn.Module):
         # diverges from the neural state, it indicates a neural↔symbolic
         # inconsistency that the residual blend helps reconcile.
         ns_bridge_results: Dict[str, Any] = {}
-        if self.standalone_ns_bridge is not None and not fast:
+        if self.standalone_ns_bridge is not None and not fast and "causal_model" not in _circuit_breaker_tripped:
             try:
                 self.provenance_tracker.record_before("ns_bridge", C_star)
                 _ns_facts = self.standalone_ns_bridge.extract_facts(C_star)
@@ -26074,6 +26080,32 @@ class AEONDeltaV3(nn.Module):
                 },
             )
         
+        # ===== DECODER DEGENERATE OUTPUT → ERROR EVOLUTION =====
+        # Detect degenerate decoder output (e.g. near-zero variance
+        # across the vocabulary, indicating the decoder collapsed to a
+        # uniform or near-constant distribution) and record it in error
+        # evolution so that metacognitive recovery can learn from decoder
+        # failures.  This closes the gap where decoder-stage failures
+        # were invisible to the error evolution system: upstream modules
+        # could be perfectly converged yet the decoder silently produces
+        # unusable output without triggering any feedback signal.
+        if logits is not None and self.error_evolution is not None:
+            try:
+                _logit_var = logits.detach().var(dim=-1).mean().item()
+                _DECODER_DEGENERATE_VAR_THRESHOLD = 1e-4
+                if _logit_var < _DECODER_DEGENERATE_VAR_THRESHOLD:
+                    self.error_evolution.record_episode(
+                        error_class="decoder_degenerate_output",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "logit_variance": _logit_var,
+                            "decode_mode": decode_mode,
+                        }),
+                    )
+            except (RuntimeError, ValueError):
+                pass
+
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
         # diverged beyond a tolerable threshold from the encoder's
@@ -26545,6 +26577,25 @@ class AEONDeltaV3(nn.Module):
                     min(_residual_norm_val, 10.0), device=self.device,
                 )
 
+        # ===== 17d. DECODER PROVENANCE LOSS =====
+        # Penalize high decoder provenance delta — the L2 distance between
+        # the reasoning core output and the decoder's after-state in the
+        # provenance tracker.  A large delta indicates the decoder is
+        # distorting the reasoning representation, which should be
+        # minimized for faithful output generation.  This closes the loop
+        # between decoder provenance tracking (which was purely diagnostic)
+        # and training, ensuring the decoder learns to preserve the
+        # reasoning core's conclusions.
+        decoder_provenance_loss = torch.tensor(0.0, device=self.device)
+        _prov_attr = outputs.get('provenance', {})
+        if not _prov_attr:
+            _prov_attr = self.provenance_tracker.compute_attribution()
+        _decoder_delta = _prov_attr.get('contributions', {}).get('decoder', 0.0)
+        if isinstance(_decoder_delta, (int, float)) and _decoder_delta > 0:
+            decoder_provenance_loss = torch.tensor(
+                min(_decoder_delta, 1.0), device=self.device,
+            )
+
         # ===== 18. GROUNDED MULTIMODAL CONTRASTIVE LOSS =====
         # When GroundedMultimodalLearning is active, add its contrastive
         # loss to incentivize vision-language alignment, solving the
@@ -26758,6 +26809,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_cycle_consistency * cycle_consistency_loss +
             self.config.lambda_world_model_surprise * world_model_surprise_loss +
             _convergence_loss_scale * self.config.lambda_convergence_residual * convergence_residual_loss +
+            self.config.lambda_decoder_provenance * decoder_provenance_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
@@ -26825,6 +26877,7 @@ class AEONDeltaV3(nn.Module):
             'cycle_consistency_loss': cycle_consistency_loss,
             'world_model_surprise_loss': world_model_surprise_loss,
             'convergence_residual_loss': convergence_residual_loss,
+            'decoder_provenance_loss': decoder_provenance_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
             'task2vec_loss': task2vec_loss,
@@ -27137,6 +27190,7 @@ class AEONDeltaV3(nn.Module):
             ('self_report_loss', 'high_self_report_training_loss'),
             ('cross_validation_loss', 'high_cross_validation_training_loss'),
             ('causal_cv_supervision_loss', 'high_causal_cv_supervision_training_loss'),
+            ('decoder_provenance_loss', 'high_decoder_provenance_training_loss'),
         ]
         for _loss_key, _error_class in _subsystem_losses:
             _sub_loss = loss_dict.get(_loss_key, None)
@@ -28170,7 +28224,8 @@ class AEONDeltaV3(nn.Module):
         # --- Circuit breaker pattern ---
         verified.append(
             'circuit_breaker → upstream failures (world_model, memory, '
-            'causal_model) prevent downstream cascade execution'
+            'causal_model) prevent downstream cascade execution '
+            '(hybrid_reasoning, ns_bridge, mcts_planner, unified_simulator)'
         )
 
         # --- Supplementary memory trust scoring ---
