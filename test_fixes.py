@@ -43215,6 +43215,226 @@ def test_phase_b_decoder_failure_records_error_evolution():
     print("✅ test_phase_b_decoder_failure_records_error_evolution PASSED")
 
 
+def test_compute_loss_includes_world_model_surprise_loss():
+    """Verify that compute_loss includes world_model_surprise_loss when
+    world_model_results contain a predicted_next state.  This closes the
+    gap where the world model's prediction error was monitored at runtime
+    but never fed into the training objective.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids)
+    loss_dict = model.compute_loss(outputs, input_ids)
+
+    assert "world_model_surprise_loss" in loss_dict, (
+        f"compute_loss should return 'world_model_surprise_loss' but keys are: "
+        f"{list(loss_dict.keys())}"
+    )
+    wms_loss = loss_dict["world_model_surprise_loss"]
+    assert torch.is_tensor(wms_loss) and torch.isfinite(wms_loss), (
+        f"world_model_surprise_loss should be a finite tensor, got {wms_loss}"
+    )
+
+    print("✅ test_compute_loss_includes_world_model_surprise_loss PASSED")
+
+
+def test_compute_loss_includes_convergence_residual_loss():
+    """Verify that compute_loss includes convergence_residual_loss when
+    meta_results contain a residual_norm.  This closes the gap where the
+    meta-loop's convergence residual was monitored but never optimized.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids)
+    loss_dict = model.compute_loss(outputs, input_ids)
+
+    assert "convergence_residual_loss" in loss_dict, (
+        f"compute_loss should return 'convergence_residual_loss' but keys are: "
+        f"{list(loss_dict.keys())}"
+    )
+    cr_loss = loss_dict["convergence_residual_loss"]
+    assert torch.is_tensor(cr_loss) and torch.isfinite(cr_loss), (
+        f"convergence_residual_loss should be a finite tensor, got {cr_loss}"
+    )
+
+    print("✅ test_compute_loss_includes_convergence_residual_loss PASSED")
+
+
+def test_decoder_provenance_tracking():
+    """Verify that the decoder transform is registered with the provenance
+    tracker, enabling root-cause tracing through the decode stage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        model(input_ids)
+
+    attribution = model.provenance_tracker.compute_attribution()
+    assert "decoder" in attribution.get("order", []), (
+        f"Provenance tracker should include 'decoder' in execution order. "
+        f"Got order: {attribution.get('order', [])}"
+    )
+    assert "decoder" in attribution.get("deltas", {}), (
+        f"Provenance tracker should have a delta for 'decoder'. "
+        f"Got deltas for: {list(attribution.get('deltas', {}).keys())}"
+    )
+
+    print("✅ test_decoder_provenance_tracking PASSED")
+
+
+def test_decoder_in_pipeline_dependencies_dag():
+    """Verify that the decoder node is present in _DAG_NODE_TO_ATTR and
+    _PIPELINE_DEPENDENCIES so that trace_root_cause() can traverse
+    through the decode stage.
+    """
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    decoder_edges = [
+        (u, d) for u, d in deps if u == "decoder" or d == "decoder"
+    ]
+    assert len(decoder_edges) >= 2, (
+        f"Expected at least 2 pipeline dependency edges involving 'decoder', "
+        f"got {len(decoder_edges)}: {decoder_edges}"
+    )
+
+    print("✅ test_decoder_in_pipeline_dependencies_dag PASSED")
+
+
+def test_convergence_arbiter_coherence_cross_reference():
+    """Verify that the convergence arbiter detects conflict when
+    convergence monitors agree but coherence is low.  This closes
+    the gap where convergence and coherence were assessed independently.
+    """
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+
+    # All monitors say converged but coherence is very low
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        certified_results={"certified_convergence": True},
+        coherence_score=0.3,  # low coherence
+    )
+
+    assert result["has_conflict"] is True, (
+        "Arbiter should detect conflict when coherence is low despite convergence"
+    )
+    assert "coherence" in result.get("individual_verdicts", {}), (
+        "Arbiter should include coherence in individual_verdicts"
+    )
+    assert result["individual_verdicts"]["coherence"] == "incoherent", (
+        "Arbiter should label low coherence as 'incoherent'"
+    )
+
+    # When coherence is high, no conflict from coherence alone
+    result_good = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        certified_results={"certified_convergence": True},
+        coherence_score=0.8,  # high coherence
+    )
+
+    assert result_good["has_conflict"] is False, (
+        "Arbiter should not detect conflict when coherence is high"
+    )
+
+    # When coherence_score is not provided, no conflict from coherence
+    result_none = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        coherence_score=None,
+    )
+    assert result_none["has_conflict"] is False, (
+        "Arbiter should not detect coherence conflict when score is None"
+    )
+
+    print("✅ test_convergence_arbiter_coherence_cross_reference PASSED")
+
+
+def test_config_new_lambda_fields():
+    """Verify that AEONConfig includes the new lambda fields for
+    world_model_surprise and convergence_residual loss components.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, "lambda_world_model_surprise"), (
+        "AEONConfig should have lambda_world_model_surprise field"
+    )
+    assert hasattr(config, "lambda_convergence_residual"), (
+        "AEONConfig should have lambda_convergence_residual field"
+    )
+    assert config.lambda_world_model_surprise == 0.01, (
+        f"Default lambda_world_model_surprise should be 0.01, "
+        f"got {config.lambda_world_model_surprise}"
+    )
+    assert config.lambda_convergence_residual == 0.01, (
+        f"Default lambda_convergence_residual should be 0.01, "
+        f"got {config.lambda_convergence_residual}"
+    )
+
+    print("✅ test_config_new_lambda_fields PASSED")
+
+
+def test_provenance_trace_root_cause_through_decoder():
+    """Verify that trace_root_cause('decoder') walks backward through
+    the dependency DAG and reaches the input stage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        model(input_ids)
+
+    trace = model.provenance_tracker.trace_root_cause("decoder")
+    root_modules = trace.get("root_modules", [])
+    visited = trace.get("visited", set())
+
+    assert "input" in root_modules, (
+        f"Root cause trace from 'decoder' should reach 'input'. "
+        f"Root modules: {root_modules}"
+    )
+    assert "encoder" in visited, (
+        f"Root cause trace from 'decoder' should visit 'encoder'. "
+        f"Visited: {visited}"
+    )
+
+    print("✅ test_provenance_trace_root_cause_through_decoder PASSED")
+
+
 def test_phase_b_decoder_failure_escalates_uncertainty():
     """Phase B escalates uncertainty for UCC when decoder validation fails."""
     import inspect
