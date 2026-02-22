@@ -16907,20 +16907,32 @@ class AEONDeltaV3(nn.Module):
     def _compute_diversity(
         self, factors: torch.Tensor, B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
-        """Compute diversity metric or return defaults."""
+        """Compute diversity metric or return defaults.
+
+        When the diversity metric is disabled or skipped (fast mode), returns
+        a neutral default *above* the diversity-collapse threshold so that
+        downstream uncertainty escalation (diversity-collapse detection) is
+        not falsely triggered by the absence of a measurement.  Returning
+        0.0 previously caused every fast-mode or metric-disabled pass to
+        register as a diversity collapse, injecting spurious uncertainty.
+        """
         if self.diversity_metric is not None and not fast:
             diversity_results = self.diversity_metric(factors)
             logger.debug(
                 f"Diversity: score={diversity_results['diversity'].mean().item():.4f}"
             )
             return diversity_results
+        # Use a neutral default above the collapse threshold so that
+        # missing diversity analysis does not masquerade as collapse.
+        _neutral = self.config.diversity_collapse_threshold + 0.1
         return {
-            'diversity': torch.zeros(B, device=device),
+            'diversity': torch.full((B,), _neutral, device=device),
             'action_propensity': torch.full(
                 (B, self.config.num_pillars),
                 1.0 / self.config.num_pillars,
                 device=device
-            )
+            ),
+            '_defaults_used': True,
         }
     
     def _compute_topology(
@@ -16928,7 +16940,16 @@ class AEONDeltaV3(nn.Module):
         B: int, device: torch.device, fast: bool
     ) -> Dict[str, Any]:
         """Compute topology analysis results or return defaults.
-        
+
+        When the topology analyzer is disabled or skipped (fast mode),
+        returns conservative defaults that assert *no catastrophe detected*.
+        Previously ``catastrophe_probs`` defaulted to 0.5, which is
+        semantically incorrect: the absence of topology analysis does not
+        constitute 50 % evidence of a catastrophe.  A 0.0 default
+        correctly represents "no evidence of instability" and prevents
+        downstream meta-cognitive triggers from treating an unanalysed
+        pass as half-catastrophic.
+
         Args:
             factors: [B, num_pillars] factor activations.
             iterations: [B] convergence iterations from meta-loop.
@@ -16945,8 +16966,9 @@ class AEONDeltaV3(nn.Module):
         return {
             'potential': torch.zeros(B, device=device),
             'gradient': torch.zeros(B, self.config.num_pillars, device=device),
-            'catastrophe_probs': torch.full((B,), 0.5, device=device),
-            'catastrophes': torch.zeros(B, dtype=torch.bool, device=device)
+            'catastrophe_probs': torch.zeros(B, device=device),
+            'catastrophes': torch.zeros(B, dtype=torch.bool, device=device),
+            '_defaults_used': True,
         }
     
     def _compute_safety(
@@ -16985,6 +17007,37 @@ class AEONDeltaV3(nn.Module):
             self_report = {}
         
         return safety_score, self_report
+    
+    def _compute_verification_coverage(self) -> float:
+        """Compute the fraction of active verification modules.
+
+        Returns a scalar in [0, 1] representing what proportion of the
+        architecture's verification / cross-validation subsystems are
+        enabled.  This is used to degrade output reliability when the
+        system is operating with reduced self-verification, ensuring that
+        conclusions produced without full cross-checking are flagged as
+        less trustworthy.
+
+        The set of verification-critical modules is intentionally narrow:
+        only modules whose primary purpose is to *verify or cross-check*
+        other modules' outputs are counted.  Modules that *produce*
+        reasoning outputs (world models, planners) are excluded because
+        their absence reduces capability, not verification rigour.
+        """
+        _VERIFICATION_MODULES = [
+            ("safety_system", self.safety_system),
+            ("self_reporter", self.self_reporter),
+            ("diversity_metric", self.diversity_metric),
+            ("topology_analyzer", self.topology_analyzer),
+            ("cross_validator", self.cross_validator),
+            ("unified_cognitive_cycle", self.unified_cognitive_cycle),
+            ("auto_critic", self.auto_critic),
+            ("metacognitive_trigger", self.metacognitive_trigger),
+            ("coherence_verifier", self.module_coherence),
+        ]
+        total = len(_VERIFICATION_MODULES)
+        active = sum(1 for _, mod in _VERIFICATION_MODULES if mod is not None)
+        return active / max(total, 1)
     
     def _fuse_memory(
         self, C_star: torch.Tensor, device: torch.device,
@@ -17463,24 +17516,30 @@ class AEONDeltaV3(nn.Module):
                 'convergence_quality': 0.0,
                 'convergence_delta': None,
                 'diversity_results': {
-                    'diversity': torch.zeros(B, device=device),
+                    'diversity': torch.full(
+                        (B,),
+                        self.config.diversity_collapse_threshold + 0.1,
+                        device=device,
+                    ),
                     'action_propensity': torch.full(
                         (B, self.config.num_pillars),
                         1.0 / self.config.num_pillars,
                         device=device,
                     ),
+                    '_defaults_used': True,
                 },
                 'topo_results': {
                     'potential': torch.zeros(B, device=device),
                     'gradient': torch.zeros(
                         B, self.config.num_pillars, device=device
                     ),
-                    'catastrophe_probs': torch.full(
-                        (B,), 0.5, device=device
+                    'catastrophe_probs': torch.zeros(
+                        B, device=device
                     ),
                     'catastrophes': torch.zeros(
                         B, dtype=torch.bool, device=device
                     ),
+                    '_defaults_used': True,
                 },
                 'safety_score': torch.ones(B, 1, device=device),
                 'self_report': {},
@@ -17554,6 +17613,7 @@ class AEONDeltaV3(nn.Module):
                 },
                 'uncertainty_sources': {'pipeline_error': 1.0},
                 'auto_critic_final_score': None,
+                'verification_coverage': self._compute_verification_coverage(),
                 'dag_consensus_results': {},
                 'memory_retrieval_quality': {},
                 'unified_cognitive_cycle_results': {},
@@ -24020,11 +24080,20 @@ class AEONDeltaV3(nn.Module):
         # closes the intra-pass feedback gap where the final feedback
         # vector could not reflect the current pass's auto-critic quality,
         # convergence rate, or coherence assessment.
-        _current_output_reliability = max(0.0, min(1.0,
+        #
+        # Verification coverage scales the raw reliability by the fraction
+        # of active verification modules: when key cross-checking systems
+        # are disabled, the output reliability is correspondingly reduced,
+        # ensuring the system is self-aware about its verification depth.
+        _verification_coverage = self._compute_verification_coverage()
+        _raw_reliability = (
             (1.0 - uncertainty)
             * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
             * max(0.0, meta_results.get('convergence_rate', 1.0))
             * max(0.0, 1.0 - self._cached_coherence_deficit)
+        )
+        _current_output_reliability = max(0.0, min(1.0,
+            _raw_reliability * (0.5 + 0.5 * _verification_coverage)
         ))
         self._cached_output_quality = _current_output_reliability
 
@@ -24205,6 +24274,7 @@ class AEONDeltaV3(nn.Module):
             # appropriate for a safety-first architecture where any
             # individual failure mode should degrade the trust signal.
             'output_reliability': _current_output_reliability,
+            'verification_coverage': _verification_coverage,
             # Pre-computed loss components (avoids second spectral-norm pass)
             '_precomputed_consistency': _precomputed_consistency,
             '_precomputed_consistency_loss': _precomputed_consistency_loss,
