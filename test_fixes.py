@@ -41884,6 +41884,7 @@ def test_build_feedback_extra_signals_helper():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42081,6 +42082,14 @@ def test_uncertainty_sources_values_clamped():
             "above_one_source": 2.0,
             "normal_source": 0.4,
         }
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert extra["unc_negative_source"] == 0.0, "Negative values must be clamped to 0"
@@ -42942,6 +42951,7 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43003,6 +43013,7 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43130,6 +43141,7 @@ def test_systematic_uncertainty_in_feedback_bus():
         _uncertainty_history = [0.7, 0.8, 0.6, 0.75, 0.65]
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43192,6 +43204,7 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         # Simulate poor auto-critic quality over many passes
         _auto_critic_quality_ema = 0.3
         _auto_critic_quality_count = 10
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43224,6 +43237,7 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.9
         _auto_critic_quality_count = 10
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
