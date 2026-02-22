@@ -16989,6 +16989,14 @@ class AEONDeltaV3(nn.Module):
         # can detect drift between the auto-critic's self-assessment and
         # upstream reasoning states, closing the critic ↔ reasoning loop.
         self._cached_auto_critic_state: Optional[torch.Tensor] = None
+        # Auto-critic running quality — exponential moving average of
+        # auto-critic final_score values across forward passes.  This
+        # enables the auto-critic threshold adaptation (step 8b3-adapt) to
+        # use a smoothed quality history instead of per-pass error-evolution
+        # lookups, closing the gap where individual pass quality was
+        # discarded and only binary success/failure was persisted.
+        self._auto_critic_quality_ema: float = 0.5
+        self._auto_critic_quality_count: int = 0
         # RSSM output — cached so verify_coherence can cross-validate
         # dynamics-model output against upstream reasoning states.
         self._cached_rssm_state: Optional[torch.Tensor] = None
@@ -17023,6 +17031,16 @@ class AEONDeltaV3(nn.Module):
         # where directional uncertainty was computed but never fed back
         # into the meta-loop conditioning vector.
         self._cached_uncertainty_sources: Dict[str, float] = {}
+
+        # Cross-pass uncertainty history — stores the total uncertainty
+        # from recent forward passes (bounded window) so the system can
+        # distinguish systematic uncertainty (consistently high across
+        # passes) from transient spikes (single-pass anomalies).  When
+        # the moving average exceeds a threshold, the feedback bus raises
+        # a persistent signal that conditions the meta-loop for sustained
+        # deeper reasoning rather than per-pass reactive escalation.
+        self._uncertainty_history: List[float] = []
+        _UNCERTAINTY_HISTORY_WINDOW: int = 10
 
         # UCC cross-pass state — caches the UCC's flagged modules, most
         # uncertain module, and recurring root causes so the NEXT forward
@@ -17347,6 +17365,20 @@ class AEONDeltaV3(nn.Module):
         # to [0, 1] and prefixed with "unc_" to avoid name collisions.
         for src_name, src_val in self._cached_uncertainty_sources.items():
             extra[f"unc_{src_name}"] = max(0.0, min(1.0, float(src_val)))
+        # Cross-pass systematic uncertainty — when uncertainty has been
+        # consistently elevated across recent forward passes, signal the
+        # meta-loop to maintain deeper reasoning proactively rather than
+        # reacting to each individual spike.
+        if len(self._uncertainty_history) >= 3:
+            _unc_avg = sum(self._uncertainty_history) / len(self._uncertainty_history)
+            extra["systematic_uncertainty"] = max(0.0, min(1.0, _unc_avg))
+        # Auto-critic quality trend — feed the cross-pass quality EMA
+        # into the meta-loop so that historically poor auto-critic
+        # performance triggers compensatory deeper reasoning.
+        if self._auto_critic_quality_count >= 2:
+            _quality_deficit = max(0.0, 1.0 - self._auto_critic_quality_ema)
+            if _quality_deficit > 0.3:
+                extra["auto_critic_quality_deficit"] = min(1.0, _quality_deficit)
         return extra
 
     @staticmethod
@@ -23374,6 +23406,17 @@ class AEONDeltaV3(nn.Module):
                     self.auto_critic.threshold = max(
                         0.5, _orig_critic_threshold * 0.95,
                     )
+            elif self._auto_critic_quality_count >= 3:
+                # Fallback: use cross-pass quality EMA when error_evolution
+                # is unavailable, so the critic still self-calibrates.
+                if self._auto_critic_quality_ema > 0.7:
+                    self.auto_critic.threshold = min(
+                        0.95, _orig_critic_threshold * 1.05,
+                    )
+                elif self._auto_critic_quality_ema < 0.4:
+                    self.auto_critic.threshold = max(
+                        0.5, _orig_critic_threshold * 0.95,
+                    )
             critic_result = self.auto_critic(z_out)
             # Restore original threshold so the adaptation is per-pass
             # and does not drift unboundedly across forward calls.
@@ -23386,6 +23429,14 @@ class AEONDeltaV3(nn.Module):
             self._cached_auto_critic_state = z_out.detach()
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
+            # Update running quality EMA so cross-pass trend is available
+            # for threshold adaptation and uncertainty trajectory tracking.
+            _ema_alpha = 0.3
+            self._auto_critic_quality_ema = (
+                _ema_alpha * _auto_critic_final_score
+                + (1.0 - _ema_alpha) * self._auto_critic_quality_ema
+            )
+            self._auto_critic_quality_count += 1
             # Feed auto-critic quality into uncertainty_sources so
             # low scores escalate uncertainty and trigger deeper
             # meta-cognitive cycles via weighted fusion.
@@ -25307,6 +25358,12 @@ class AEONDeltaV3(nn.Module):
         # individual uncertainty contributors into the meta-loop
         # conditioning vector.
         self._cached_uncertainty_sources = dict(uncertainty_sources)
+        # Record per-pass uncertainty into the cross-pass history window
+        # so the feedback bus can detect systematic vs transient patterns.
+        self._uncertainty_history.append(float(uncertainty))
+        _hist_window = getattr(self, '_UNCERTAINTY_HISTORY_WINDOW', 10)
+        if len(self._uncertainty_history) > _hist_window:
+            self._uncertainty_history = self._uncertainty_history[-_hist_window:]
         
         _provenance = self.provenance_tracker.compute_attribution()
         
@@ -28782,6 +28839,21 @@ class AEONDeltaV3(nn.Module):
                 else "degraded" if _coherence_score >= 0.5
                 else "fragmented"
             ),
+            "cross_pass_uncertainty": {
+                "history_length": len(self._uncertainty_history),
+                "mean": (
+                    sum(self._uncertainty_history) / len(self._uncertainty_history)
+                    if self._uncertainty_history else 0.0
+                ),
+                "is_systematic": (
+                    len(self._uncertainty_history) >= 3
+                    and (sum(self._uncertainty_history) / len(self._uncertainty_history)) > 0.5
+                ),
+            },
+            "auto_critic_quality": {
+                "ema": self._auto_critic_quality_ema,
+                "pass_count": self._auto_critic_quality_count,
+            },
         }
     
     def init_meta_learner(self):
