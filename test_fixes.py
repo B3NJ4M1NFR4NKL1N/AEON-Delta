@@ -41867,6 +41867,7 @@ def test_build_feedback_extra_signals_helper():
         _cached_topology_state = torch.tensor([1.0])
         _last_trust_score = 0.4
         _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
+        _cached_uncertainty_sources = {"coherence_deficit": 0.3}
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -41874,6 +41875,8 @@ def test_build_feedback_extra_signals_helper():
     assert extra["topology_catastrophe"] == 1.0  # catastrophe detected
     assert extra["memory_trust"] == 0.4
     assert extra["complexity_gate_usage"] > 0.0  # some gates are off
+    assert "unc_coherence_deficit" in extra  # uncertainty sources forwarded
+    assert extra["unc_coherence_deficit"] == 0.3
     print("✅ test_build_feedback_extra_signals_helper PASSED")
 
 
@@ -42017,6 +42020,172 @@ def test_metacognitive_trigger_provenance_adaptation_roundtrip():
         "when meta_loop dominates"
     )
     print("✅ test_metacognitive_trigger_provenance_adaptation_roundtrip PASSED")
+
+
+# ============================================================================
+# Tests for unified cognitive architecture gap closures
+# ============================================================================
+
+
+def test_uncertainty_sources_cached_for_feedback_bus():
+    """_cached_uncertainty_sources is set during forward and fed to feedback bus."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # The method must iterate over _cached_uncertainty_sources
+    assert "_cached_uncertainty_sources" in src, (
+        "_build_feedback_extra_signals must consume _cached_uncertainty_sources"
+    )
+    assert 'unc_' in src, (
+        "Per-source uncertainty signals must be prefixed with 'unc_'"
+    )
+    # Verify attribute is initialized in __init__
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    assert "_cached_uncertainty_sources" in init_src, (
+        "_cached_uncertainty_sources must be initialized in __init__"
+    )
+    print("✅ test_uncertainty_sources_cached_for_feedback_bus PASSED")
+
+
+def test_uncertainty_sources_values_clamped():
+    """Per-source uncertainty values are clamped to [0, 1] in feedback signals."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        # Simulate extreme uncertainty_sources values
+        _cached_uncertainty_sources = {
+            "negative_source": -0.5,
+            "above_one_source": 2.0,
+            "normal_source": 0.4,
+        }
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert extra["unc_negative_source"] == 0.0, "Negative values must be clamped to 0"
+    assert extra["unc_above_one_source"] == 1.0, "Values >1 must be clamped to 1"
+    assert abs(extra["unc_normal_source"] - 0.4) < 1e-6, "Normal values preserved"
+    print("✅ test_uncertainty_sources_values_clamped PASSED")
+
+
+def test_memory_retrieval_score_in_results():
+    """MemoryManager.retrieve_relevant returns 'score' field."""
+    import torch
+    import numpy as np
+    from aeon_core import AEONConfig, MemoryManager
+    cfg = AEONConfig(hidden_dim=32, vocab_size=256, z_dim=32, vq_embedding_dim=32)
+    mm = MemoryManager(cfg)
+    # Store a vector
+    vec = torch.from_numpy(np.random.randn(32).astype(np.float32))
+    mm.add_embedding(vec, meta={"test": True})
+    # Retrieve
+    results = mm.retrieve_relevant(vec, k=1)
+    assert len(results) == 1
+    assert "score" in results[0], "retrieve_relevant must return 'score' field"
+    assert isinstance(results[0]["score"], float), "score must be a float"
+    # Score should be high for same vector (cosine similarity ~ 1.0)
+    assert results[0]["score"] > 0.9, (
+        f"Same-vector retrieval should have high score, got {results[0]['score']}"
+    )
+    print("✅ test_memory_retrieval_score_in_results PASSED")
+
+
+def test_memory_fusion_uses_score_weighting():
+    """_fuse_memory uses retrieval scores to weight memory averaging."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._fuse_memory)
+    # Must reference 'score' from retrieved items
+    assert "score" in src, (
+        "_fuse_memory must use retrieval scores for weighting"
+    )
+    # Must NOT use simple .mean(dim=0) for raw unweighted averaging
+    assert "torch.stack(vecs).mean(dim=0)" not in src, (
+        "_fuse_memory should use score-weighted averaging, not uniform mean"
+    )
+    print("✅ test_memory_fusion_uses_score_weighting PASSED")
+
+
+def test_auto_critic_threshold_adaptation():
+    """Auto-critic threshold adapts from error evolution history."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    # Check that _reasoning_core_impl contains threshold adaptation logic
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_orig_critic_threshold" in src, (
+        "Auto-critic must save/restore original threshold"
+    )
+    assert "auto_critic.threshold" in src, (
+        "Auto-critic threshold must be modified based on error evolution"
+    )
+    assert "get_best_strategy" in src, (
+        "Auto-critic adaptation must consult error_evolution.get_best_strategy"
+    )
+    print("✅ test_auto_critic_threshold_adaptation PASSED")
+
+
+def test_hvae_complexity_gate_refinement():
+    """HVAE abstraction level refines complexity gates."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Must contain HVAE → complexity gate boost logic
+    assert "_hvae_gate_boost" in src or "hvae_kl_val_gate" in src, (
+        "HVAE KL divergence must feed back into complexity gates"
+    )
+    assert "_last_complexity_gates" in src, (
+        "Complexity gates must be updated after HVAE computation"
+    )
+    print("✅ test_hvae_complexity_gate_refinement PASSED")
+
+
+def test_cv_disagreement_causal_supervision_loss():
+    """compute_loss includes causal_cv_supervision_loss when disagreement is high."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    cfg = AEONConfig(hidden_dim=32, vocab_size=256, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(cfg)
+    # Simulate high disagreement with reconciled target
+    model._last_cv_disagreement = 0.8
+    model._last_cv_reconciled_target = torch.randn(1, 32)
+    # Create mock outputs
+    outputs = {
+        'logits': torch.randn(1, 10, 256, requires_grad=True),
+        'thoughts': torch.randn(1, 32),
+        'thoughts_residual': torch.randn(1, 32),
+        'vq_loss': torch.tensor(0.0),
+        'iterations': torch.tensor([3.0]),
+        'convergence_quality': 0.9,
+        'uncertainty': 0.1,
+        'causal_world_model_results': {},
+    }
+    targets = torch.randint(0, 256, (1, 10))
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'causal_cv_supervision_loss' in loss_dict, (
+        "compute_loss must return causal_cv_supervision_loss"
+    )
+    print("✅ test_cv_disagreement_causal_supervision_loss PASSED")
+
+
+def test_cv_disagreement_init_defaults():
+    """_last_cv_disagreement and _last_cv_reconciled_target are initialized."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    cfg = AEONConfig(hidden_dim=32, vocab_size=256, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(cfg)
+    assert hasattr(model, '_last_cv_disagreement'), (
+        "_last_cv_disagreement must be initialized in __init__"
+    )
+    assert model._last_cv_disagreement == 0.0
+    assert hasattr(model, '_last_cv_reconciled_target'), (
+        "_last_cv_reconciled_target must be initialized in __init__"
+    )
+    assert model._last_cv_reconciled_target is None
+    print("✅ test_cv_disagreement_init_defaults PASSED")
 
 
 def _run_all_tests():
