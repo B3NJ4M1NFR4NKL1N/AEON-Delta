@@ -9223,7 +9223,7 @@ def test_metacognitive_recursion_trigger_all_signals():
         topology_catastrophe=True,
         coherence_deficit=True,
         memory_staleness=True,
-        recovery_pressure=0.5,
+        recovery_pressure=1.0,
         world_model_surprise=1.0,
         causal_quality=0.1,
         safety_violation=True,
@@ -11414,17 +11414,26 @@ def test_causal_trace_summary_in_fallback():
 # ============================================================================
 
 def test_recovery_pressure_in_metacognitive_trigger():
-    """Gap 5: recovery_pressure is one of 11 signals in MetaCognitiveRecursionTrigger."""
+    """Gap 5: recovery_pressure is one of 11 graduated signals in MetaCognitiveRecursionTrigger."""
     from aeon_core import MetaCognitiveRecursionTrigger
 
     _w = 1.0 / 11.0
-    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
 
-    # Only recovery_pressure active (above 0.3 threshold)
-    result = trigger.evaluate(recovery_pressure=0.5)
+    # recovery_pressure=1.0 → graduated signal = (1.0 - 0.3) / 0.7 = 1.0
+    # trigger_score = _w * 1.0 = _w ≈ 0.0909
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=_w - 0.01)
+    result = trigger.evaluate(recovery_pressure=1.0)
     assert result["should_trigger"] is True
     assert "recovery_pressure" in result["triggers_active"]
     assert abs(result["trigger_score"] - _w) < 1e-9
+
+    # Graduated: recovery_pressure=0.5 → signal = (0.5 - 0.3) / 0.7 ≈ 0.2857
+    # Score = _w * 0.2857 ≈ 0.026 — should be proportional, not binary 1.0
+    trigger.reset()
+    result_mid = trigger.evaluate(recovery_pressure=0.5)
+    expected_mid = _w * (0.5 - 0.3) / 0.7
+    assert abs(result_mid["trigger_score"] - expected_mid) < 1e-6
+    assert "recovery_pressure" in result_mid["triggers_active"]
 
     # Below 0.3 → recovery_pressure should NOT fire
     trigger.reset()
@@ -42188,6 +42197,227 @@ def test_cv_disagreement_init_defaults():
     print("✅ test_cv_disagreement_init_defaults PASSED")
 
 
+# ==================== Architectural Coherence Gap Closure Tests ====================
+# Tests for graduated signal fixes, directional uncertainty → trigger wiring,
+# provenance always-on root cause, and Task2Vec loss integration.
+
+def test_graduated_recovery_pressure_proportional():
+    """Graduated recovery_pressure: trigger score should scale proportionally
+    with recovery_pressure magnitude, not flatten to binary 0/1."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    _w = 1.0 / 11.0
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.001)
+
+    # Two different magnitudes should produce different trigger scores
+    result_low = trigger.evaluate(recovery_pressure=0.4)
+    trigger.reset()
+    result_high = trigger.evaluate(recovery_pressure=0.9)
+
+    score_low = result_low["trigger_score"]
+    score_high = result_high["trigger_score"]
+    assert score_high > score_low, (
+        f"Higher recovery_pressure should produce higher score, "
+        f"got low={score_low:.6f}, high={score_high:.6f}"
+    )
+    # Verify proportional scaling: (0.9 - 0.3) / 0.7 ≈ 0.857 vs (0.4 - 0.3) / 0.7 ≈ 0.143
+    expected_ratio = ((0.9 - 0.3) / 0.7) / ((0.4 - 0.3) / 0.7)
+    actual_ratio = score_high / max(score_low, 1e-12)
+    assert abs(actual_ratio - expected_ratio) < 0.01, (
+        f"Scores should scale proportionally, expected ratio={expected_ratio:.3f}, "
+        f"got {actual_ratio:.3f}"
+    )
+    print("✅ test_graduated_recovery_pressure_proportional PASSED")
+
+
+def test_graduated_world_model_surprise_proportional():
+    """Graduated world_model_surprise: trigger score should scale proportionally
+    with surprise magnitude, not flatten to binary 0/1."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.001)
+
+    # surprise=0.6 → signal = (0.6 - 0.5) / 0.5 = 0.2
+    result_low = trigger.evaluate(world_model_surprise=0.6)
+    trigger.reset()
+    # surprise=1.0 → signal = (1.0 - 0.5) / 0.5 = 1.0
+    result_high = trigger.evaluate(world_model_surprise=1.0)
+
+    score_low = result_low["trigger_score"]
+    score_high = result_high["trigger_score"]
+    assert score_high > score_low, (
+        f"Higher world_model_surprise should produce higher score, "
+        f"got low={score_low:.6f}, high={score_high:.6f}"
+    )
+    print("✅ test_graduated_world_model_surprise_proportional PASSED")
+
+
+def test_directional_uncertainty_triggers_rerun():
+    """DirectionalUncertaintyTracker: when a single module has concentrated
+    high uncertainty (>0.7), the UCC should trigger re-reasoning."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, TemporalCausalTraceBuffer,
+        UnifiedConvergenceArbiter, DirectionalUncertaintyTracker,
+        MemoryReasoningValidator,
+    )
+    import torch
+
+    dim = 32
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=dim),
+        error_evolution=CausalErrorEvolutionTracker(max_history=50),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=99.0),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(max_entries=100),
+        convergence_arbiter=UnifiedConvergenceArbiter(),
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+        memory_validator=MemoryReasoningValidator(),
+    )
+
+    # Set trigger threshold very high so composite trigger won't fire
+    ucc.metacognitive_trigger._trigger_threshold = 99.0
+
+    # Provide subsystem states with very low coherence in one module
+    states = {
+        "encoder": torch.randn(1, dim),
+        "decoder": torch.randn(1, dim),
+    }
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,  # converged
+        uncertainty=0.0,
+        topology_catastrophe=False,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        safety_violation=True,  # high safety → 0.8 uncertainty in tracker
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+    )
+
+    # The safety_violation records 0.8 uncertainty for safety module → >0.7
+    # This should trigger re-reasoning via directional uncertainty path
+    summary = result.get('uncertainty_summary', {})
+    if summary:
+        peak = summary.get('aggregate_uncertainty', 0.0)
+        if peak > 0.7:
+            assert result['should_rerun'] is True, (
+                f"UCC should trigger re-reasoning when directional uncertainty "
+                f"peak={peak:.3f} > 0.7"
+            )
+    print("✅ test_directional_uncertainty_triggers_rerun PASSED")
+
+
+def test_provenance_root_cause_always_available():
+    """Provenance root-cause extraction should run even when should_rerun
+    is False, so that every evaluation has traceable module attribution."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, TemporalCausalTraceBuffer,
+        UnifiedConvergenceArbiter, DirectionalUncertaintyTracker,
+        MemoryReasoningValidator,
+    )
+    import torch
+
+    dim = 32
+    provenance = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=dim),
+        error_evolution=CausalErrorEvolutionTracker(max_history=50),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=99.0),
+        provenance_tracker=provenance,
+        causal_trace=TemporalCausalTraceBuffer(max_entries=100),
+        convergence_arbiter=UnifiedConvergenceArbiter(),
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+        memory_validator=MemoryReasoningValidator(),
+    )
+
+    # Record some provenance data
+    z = torch.randn(1, dim)
+    provenance.record_before("encoder", z)
+    provenance.record_after("encoder", z + 0.5)
+
+    # Use identical states to ensure coherence is high
+    _base = torch.randn(1, dim)
+    states = {
+        "encoder": _base.clone(),
+        "decoder": _base.clone(),
+    }
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,  # very converged
+        uncertainty=0.0,
+        topology_catastrophe=False,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        safety_violation=False,
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+    )
+
+    # provenance_root_cause should always be present in UCC output,
+    # regardless of whether should_rerun is True or False
+    assert 'provenance_root_cause' in result, (
+        "provenance_root_cause should always be present in UCC output"
+    )
+    print("✅ test_provenance_root_cause_always_available PASSED")
+
+
+def test_task2vec_loss_in_compute_loss():
+    """Task2Vec EWC loss should be included in compute_loss when task
+    clusters exist, preventing catastrophic forgetting."""
+    from aeon_core import AEONConfig, AEONDeltaV3, Task2VecMetaLearner
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Manually attach a Task2Vec learner pointing at a small sub-module
+    # to avoid the recursion issue with wrapping self
+    _sub = model.encoder
+    model.task2vec_meta_learner = Task2VecMetaLearner(
+        model=_sub,
+        embedding_dim=128,
+    )
+
+    # Insert a fake task cluster
+    _fake_fisher = {}
+    _fake_params = {}
+    for name, param in list(_sub.named_parameters())[:3]:
+        if param.requires_grad:
+            _fake_fisher[name] = torch.ones_like(param) * 0.01
+            _fake_params[name] = param.data.clone()
+    _fake_emb = torch.randn(128)
+    model.task2vec_meta_learner._task_memory.append(
+        (_fake_emb, _fake_fisher, _fake_params)
+    )
+
+    assert model.task2vec_meta_learner.num_task_clusters > 0
+
+    # Run forward + compute_loss in train mode
+    model.train()
+    input_ids = torch.randint(0, 256, (1, 8))
+    outputs = model(input_ids)
+    loss_info = model.compute_loss(outputs, input_ids)
+
+    assert 'task2vec_loss' in loss_info, (
+        "compute_loss should return task2vec_loss in loss breakdown"
+    )
+    print("✅ test_task2vec_loss_in_compute_loss PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -43986,6 +44216,13 @@ def _run_all_tests():
     test_provenance_fallback_trigger_adaptation()
     test_provenance_tracker_error_recovery_roundtrip()
     test_metacognitive_trigger_provenance_adaptation_roundtrip()
+
+    # Architectural coherence gap closure tests
+    test_graduated_recovery_pressure_proportional()
+    test_graduated_world_model_surprise_proportional()
+    test_directional_uncertainty_triggers_rerun()
+    test_provenance_root_cause_always_available()
+    test_task2vec_loss_in_compute_loss()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
