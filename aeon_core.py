@@ -14614,14 +14614,32 @@ class MetaCognitiveRecursionTrigger:
         # discarded magnitude information and prevented moderate
         # uncertainty from contributing to composite trigger decisions.
         _unc_signal = max(0.0, min(1.0, uncertainty))
+        # Graduated recovery_pressure: scale linearly from 0 at threshold
+        # to full weight at 1.0, so higher pressure contributes
+        # proportionally more weight.  The previous binary threshold
+        # (recovery_pressure > 0.3) discarded magnitude information —
+        # a pressure of 0.95 was treated identically to 0.31.
+        _RECOVERY_PRESSURE_THRESHOLD = 0.3
+        _rp = float(recovery_pressure)
+        _rp_signal = 0.0
+        if _rp > _RECOVERY_PRESSURE_THRESHOLD:
+            _rp_signal = min(1.0, (_rp - _RECOVERY_PRESSURE_THRESHOLD) / (1.0 - _RECOVERY_PRESSURE_THRESHOLD))
+        # Graduated world_model_surprise: scale linearly from 0 at
+        # threshold to full weight at 1.0.  The previous binary threshold
+        # discarded prediction-error magnitude, preventing the trigger
+        # from distinguishing minor from catastrophic prediction failures.
+        _wms = float(world_model_surprise)
+        _wms_signal = 0.0
+        if _wms > self._surprise_threshold:
+            _wms_signal = min(1.0, (_wms - self._surprise_threshold) / max(1e-6, 1.0 - self._surprise_threshold))
         signal_values = {
             "uncertainty": w["uncertainty"] * _unc_signal,
             "diverging": w["diverging"] * float(is_diverging),
             "topology_catastrophe": w["topology_catastrophe"] * float(topology_catastrophe),
             "coherence_deficit": w["coherence_deficit"] * _cd_signal,
             "memory_staleness": w["memory_staleness"] * float(memory_staleness),
-            "recovery_pressure": w["recovery_pressure"] * float(recovery_pressure > 0.3),
-            "world_model_surprise": w["world_model_surprise"] * float(world_model_surprise > self._surprise_threshold),
+            "recovery_pressure": w["recovery_pressure"] * _rp_signal,
+            "world_model_surprise": w["world_model_surprise"] * _wms_signal,
             "low_causal_quality": w["low_causal_quality"] * float(causal_quality < self._causal_quality_threshold),
             "safety_violation": w["safety_violation"] * float(safety_violation),
             "diversity_collapse": w.get("diversity_collapse", 0.0) * max(0.0, min(1.0, diversity_collapse)),
@@ -15580,7 +15598,7 @@ class UnifiedCognitiveCycle:
         # modules* to prioritise during deeper reasoning.
         provenance_root_cause: Dict[str, Any] = {}
         _prov_dom = _prov_dominant  # from the earlier snapshot
-        if should_rerun and _prov_dom is not None:
+        if _prov_dom is not None:
             provenance_root_cause = self.provenance_tracker.trace_root_cause(
                 _prov_dom,
             )
@@ -15756,6 +15774,22 @@ class UnifiedCognitiveCycle:
                         set(trigger_detail.get('triggers_active', []))
                         | {'memory_reasoning_inconsistency'}
                     )
+
+        # 7d-ii. Directional uncertainty → re-reasoning trigger — when the
+        # uncertainty tracker identifies a single module with concentrated
+        # high uncertainty (> 0.7), trigger re-reasoning even if the
+        # composite trigger didn't fire.  This wires the per-module
+        # uncertainty signal back into the trigger decision, closing the
+        # loop between directional tracking and meta-cognitive recursion.
+        if uncertainty_summary and not should_rerun:
+            _peak = uncertainty_summary.get('aggregate_uncertainty', 0.0)
+            _peak_mod = uncertainty_summary.get('most_uncertain_module', '')
+            if _peak > 0.7:
+                should_rerun = True
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {f'directional_uncertainty:{_peak_mod}'}
+                )
 
         # 7e. Output reliability feedback — when composite output
         # reliability is low, record in error evolution so the system
@@ -26006,6 +26040,30 @@ class AEONDeltaV3(nn.Module):
                 logger.debug("Meta-recovery loss computation failed: %s", _mr_err)
                 meta_recovery_loss = torch.tensor(0.0, device=self.device)
 
+        # ===== 20. TASK2VEC EWC LOSS =====
+        # When Task2VecMetaLearner has accumulated task clusters, apply
+        # EWC regularisation using the most recent task's Fisher
+        # information and optimal parameters.  This prevents catastrophic
+        # forgetting of previously learned task-specific reasoning
+        # patterns by penalising parameter drift from Fisher-weighted
+        # optima, closing the training-time Task2Vec integration gap.
+        task2vec_loss = torch.tensor(0.0, device=self.device)
+        if (self.task2vec_meta_learner is not None
+                and self.training
+                and self.task2vec_meta_learner.num_task_clusters > 0):
+            try:
+                _last_task = self.task2vec_meta_learner._task_memory[-1]
+                _t2v_fisher = _last_task[1]
+                _t2v_params = _last_task[2]
+                task2vec_loss = self.task2vec_meta_learner.ewc_loss(
+                    _t2v_fisher, _t2v_params,
+                )
+                if not torch.isfinite(task2vec_loss):
+                    task2vec_loss = torch.tensor(0.0, device=self.device)
+            except Exception as _t2v_err:
+                logger.debug("Task2Vec EWC loss computation failed: %s", _t2v_err)
+                task2vec_loss = torch.tensor(0.0, device=self.device)
+
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
         _causal_weight = getattr(self.config, 'lambda_causal_dag', 0.01)
@@ -26149,6 +26207,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_cycle_consistency * cycle_consistency_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
+            getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
             reg_loss
         )
         
@@ -26213,6 +26272,7 @@ class AEONDeltaV3(nn.Module):
             'cycle_consistency_loss': cycle_consistency_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
+            'task2vec_loss': task2vec_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
