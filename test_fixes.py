@@ -42707,6 +42707,89 @@ def test_honesty_gate_modulates_output():
     print("✅ test_honesty_gate_modulates_output PASSED")
 
 
+def test_auto_critic_output_gate_config():
+    """Verify the enable_auto_critic_output_gate config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_auto_critic_output_gate'), (
+        "AEONConfig should have enable_auto_critic_output_gate"
+    )
+    assert config.enable_auto_critic_output_gate is True, (
+        "enable_auto_critic_output_gate should default to True"
+    )
+    print("✅ test_auto_critic_output_gate_config PASSED")
+
+
+def test_coherence_output_gate_config():
+    """Verify the enable_coherence_output_gate config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_coherence_output_gate'), (
+        "AEONConfig should have enable_coherence_output_gate"
+    )
+    assert config.enable_coherence_output_gate is True, (
+        "enable_coherence_output_gate should default to True"
+    )
+    print("✅ test_coherence_output_gate_config PASSED")
+
+
+def test_auto_critic_current_quality_in_feedback_bus():
+    """Verify that AEONDeltaV3 registers the auto_critic_current_quality
+    signal in the CognitiveFeedbackBus so the meta-loop can directly
+    condition on the most recent self-critique assessment."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert "auto_critic_current_quality" in model.feedback_bus._extra_signals, (
+        "Feedback bus should have auto_critic_current_quality registered"
+    )
+    # Default should be 1.0 (perfect quality = no dampening)
+    assert model.feedback_bus._extra_signals["auto_critic_current_quality"] == 1.0, (
+        "auto_critic_current_quality default should be 1.0"
+    )
+    print("✅ test_auto_critic_current_quality_in_feedback_bus PASSED")
+
+
+def test_auto_critic_current_score_caching():
+    """Verify that _cached_auto_critic_current_score is initialized on
+    AEONDeltaV3 and included in the feedback extra signals when set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    # Initially None
+    assert model._cached_auto_critic_current_score is None, (
+        "_cached_auto_critic_current_score should start as None"
+    )
+    # When score is set to a value < 1.0, it should appear in extra signals
+    model._cached_auto_critic_current_score = 0.6
+    extra = model._build_feedback_extra_signals()
+    assert "auto_critic_current_quality" in extra, (
+        "auto_critic_current_quality should be in feedback extra signals "
+        "when cached score < 1.0"
+    )
+    assert abs(extra["auto_critic_current_quality"] - 0.6) < 1e-6, (
+        f"auto_critic_current_quality should be 0.6, got {extra['auto_critic_current_quality']}"
+    )
+    # When score is 1.0 (perfect), it should NOT appear
+    model._cached_auto_critic_current_score = 1.0
+    extra = model._build_feedback_extra_signals()
+    assert "auto_critic_current_quality" not in extra, (
+        "auto_critic_current_quality should not be in extra signals "
+        "when score is 1.0 (perfect)"
+    )
+    print("✅ test_auto_critic_current_score_caching PASSED")
+
+
 def test_memory_re_retrieval_config():
     """Verify the enable_memory_re_retrieval config parameter exists
     and defaults to True."""
@@ -45680,6 +45763,10 @@ def test_decoder_provenance_in_training_bridge():
     test_safety_blocked_in_output()
     test_honesty_output_gate_config()
     test_honesty_gate_modulates_output()
+    test_auto_critic_output_gate_config()
+    test_coherence_output_gate_config()
+    test_auto_critic_current_quality_in_feedback_bus()
+    test_auto_critic_current_score_caching()
     test_memory_re_retrieval_config()
     test_recovery_safe_fallback_tensor_shape()
     test_recovery_numerical_uses_safe_fallback()

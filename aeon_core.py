@@ -3137,6 +3137,24 @@ class AEONConfig:
     # only escalating uncertainty.
     enable_honesty_output_gate: bool = True
 
+    # When True, the auto-critic quality score is applied as a
+    # multiplicative gate on the final output tensor so that outputs
+    # produced by internally-criticized reasoning are explicitly
+    # dampened.  This closes the gap where auto-critic quality only
+    # influenced uncertainty escalation (when score < 0.5) but never
+    # directly attenuated the decoder input, allowing moderate-quality
+    # assessments (0.5–0.7) to pass through without dampening.
+    enable_auto_critic_output_gate: bool = True
+
+    # When True, the cross-module coherence deficit is applied as a
+    # multiplicative gate on the final output tensor so that outputs
+    # produced from internally-inconsistent reasoning are explicitly
+    # dampened.  This closes the gap where coherence deficit only
+    # influenced training loss scale and metacognitive trigger but was
+    # invisible to the decoder input when uncertainty remained below
+    # the penalty threshold.
+    enable_coherence_output_gate: bool = True
+
     # When True and memory validation signals needs_re_retrieval,
     # the system performs an actual second retrieval pass with the
     # current converged state to replace stale memories.
@@ -16301,6 +16319,12 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "decoder_provenance_pressure", default=0.0,
         )
+        # Current-pass auto-critic quality — dedicated signal so the
+        # meta-loop can immediately react to self-critique assessments
+        # without waiting for the cross-pass EMA to accumulate.
+        self.feedback_bus.register_signal(
+            "auto_critic_current_quality", default=1.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17035,6 +17059,10 @@ class AEONDeltaV3(nn.Module):
         # discarded and only binary success/failure was persisted.
         self._auto_critic_quality_ema: float = 0.5
         self._auto_critic_quality_count: int = 0
+        # Current-pass auto-critic quality — cached so the feedback bus
+        # can include the most recent self-critique score as a dedicated
+        # signal alongside the cross-pass EMA.
+        self._cached_auto_critic_current_score: Optional[float] = None
         # RSSM output — cached so verify_coherence can cross-validate
         # dynamics-model output against upstream reasoning states.
         self._cached_rssm_state: Optional[torch.Tensor] = None
@@ -17431,6 +17459,15 @@ class AEONDeltaV3(nn.Module):
             _quality_deficit = max(0.0, 1.0 - self._auto_critic_quality_ema)
             if _quality_deficit > 0.3:
                 extra["auto_critic_quality_deficit"] = min(1.0, _quality_deficit)
+        # Current-pass auto-critic quality — feed the most recent self-
+        # critique score directly so the meta-loop can react immediately
+        # to quality degradation without waiting for the cross-pass EMA
+        # to accumulate.  This closes the gap where auto-critic quality
+        # was only visible to the feedback bus through the blended
+        # output_quality composite and the delayed EMA trend.
+        _ac_current = self._cached_auto_critic_current_score
+        if _ac_current is not None and _ac_current < 1.0:
+            extra["auto_critic_current_quality"] = max(0.0, min(1.0, _ac_current))
         return extra
 
     @staticmethod
@@ -25602,6 +25639,43 @@ class AEONDeltaV3(nn.Module):
                     "min_honesty": float(_honesty_val.min().item()),
                 })
 
+        # 8h-critic. Auto-critic quality output gate — when the auto-critic
+        # detected quality issues, dampen z_out proportionally so the
+        # decoder produces lower-confidence outputs.  This closes the gap
+        # where auto-critic quality only influenced uncertainty escalation
+        # (when score < 0.5) but never directly attenuated the decoder
+        # input, allowing moderate-quality assessments (0.5–0.7) to pass
+        # through at full strength.  The gate is smooth (linear interpolation
+        # toward zero) so gradient flow is preserved during training.
+        if (self.config.enable_auto_critic_output_gate
+                and _auto_critic_final_score is not None
+                and _auto_critic_final_score < 1.0
+                and not _safety_blocked):
+            _ac_gate = max(0.0, min(1.0, _auto_critic_final_score))
+            z_out = z_out * _ac_gate
+            self.audit_log.record("auto_critic", "output_gate", {
+                "gate_value": _ac_gate,
+                "auto_critic_score": _auto_critic_final_score,
+            })
+
+        # 8h-coherence. Coherence-deficit output gate — when cross-module
+        # coherence is poor, dampen z_out so the decoder does not produce
+        # overconfident outputs from internally-inconsistent reasoning.
+        # This closes the gap where coherence deficit influenced training
+        # loss scale and metacognitive trigger but was invisible to the
+        # decoder input when uncertainty remained below the penalty
+        # threshold.  The gate scales linearly from 1.0 (no deficit) to
+        # 0.0 (complete incoherence).
+        if (self.config.enable_coherence_output_gate
+                and self._cached_coherence_deficit > 0.0
+                and not _safety_blocked):
+            _coh_gate = max(0.0, 1.0 - self._cached_coherence_deficit)
+            z_out = z_out * _coh_gate
+            self.audit_log.record("module_coherence", "output_gate", {
+                "gate_value": _coh_gate,
+                "coherence_deficit": self._cached_coherence_deficit,
+            })
+
         # 8h-final. Terminal state consistency validation — run
         # StateConsistencyValidator.validate_and_recover() on the final
         # z_out after all corrections (auto-critic, provenance dampening,
@@ -25767,6 +25841,11 @@ class AEONDeltaV3(nn.Module):
         # by any invocation path are not masked by a later higher score.
         if _auto_critic_all_scores:
             _auto_critic_final_score = min(_auto_critic_all_scores)
+
+        # Cache current-pass auto-critic quality for feedback bus so the
+        # next pass's meta-loop conditioning directly reflects the most
+        # recent self-critique assessment, not just the cross-pass EMA.
+        self._cached_auto_critic_current_score = _auto_critic_final_score
 
         outputs = {
             'core_state': C_star,
