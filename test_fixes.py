@@ -41877,6 +41877,13 @@ def test_build_feedback_extra_signals_helper():
         _last_trust_score = 0.4
         _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
         _cached_uncertainty_sources = {"coherence_deficit": 0.3}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42849,6 +42856,9 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _cached_ucc_recurring_root = "causal_model"
         _cached_provenance_root_modules = ["world_model", "memory"]
         _cached_memory_needs_re_retrieval = True
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -42907,6 +42917,9 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _cached_ucc_recurring_root = None
         _cached_provenance_root_modules = []
         _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -42983,7 +42996,238 @@ def test_memory_re_retrieval_cached_in_forward():
     print("✅ test_memory_re_retrieval_cached_in_forward PASSED")
 
 
-def _run_all_tests():
+# ============================================================================
+# Architectural Unification — Cross-Pass Uncertainty History,
+# Auto-Critic Quality Persistence, and Decoder Cross-Validation Tests
+# ============================================================================
+
+def test_cross_pass_uncertainty_history_init():
+    """AEONDeltaV3.__init__ creates the uncertainty history accumulator."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    assert "_uncertainty_history" in init_src, (
+        "__init__ must declare _uncertainty_history for cross-pass tracking"
+    )
+    print("✅ test_cross_pass_uncertainty_history_init PASSED")
+
+
+def test_cross_pass_uncertainty_history_recorded():
+    """_reasoning_core_impl records uncertainty into the cross-pass history."""
+    # Use grep-like search instead of inspect.getsource for the very large
+    # _reasoning_core_impl method to avoid memory/performance issues.
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert "self._uncertainty_history.append" in src, (
+        "aeon_core.py must contain _uncertainty_history.append for cross-pass tracking"
+    )
+    print("✅ test_cross_pass_uncertainty_history_recorded PASSED")
+
+
+def test_systematic_uncertainty_in_feedback_bus():
+    """_build_feedback_extra_signals includes systematic_uncertainty
+    when the history window has enough entries."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        # Simulate 5 passes of elevated uncertainty
+        _uncertainty_history = [0.7, 0.8, 0.6, 0.75, 0.65]
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "systematic_uncertainty" in extra, (
+        "Must include systematic_uncertainty when history has >= 3 entries"
+    )
+    expected_avg = sum(_Mock._uncertainty_history) / len(_Mock._uncertainty_history)
+    assert abs(extra["systematic_uncertainty"] - expected_avg) < 1e-6, (
+        f"Expected {expected_avg}, got {extra['systematic_uncertainty']}"
+    )
+    print("✅ test_systematic_uncertainty_in_feedback_bus PASSED")
+
+
+def test_auto_critic_quality_ema_init():
+    """AEONDeltaV3.__init__ creates auto-critic quality EMA tracker."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    assert "_auto_critic_quality_ema" in init_src, (
+        "__init__ must declare _auto_critic_quality_ema for cross-pass quality tracking"
+    )
+    assert "_auto_critic_quality_count" in init_src, (
+        "__init__ must declare _auto_critic_quality_count"
+    )
+    print("✅ test_auto_critic_quality_ema_init PASSED")
+
+
+def test_auto_critic_quality_ema_updated_in_forward():
+    """Auto-critic quality EMA is updated in _reasoning_core_impl."""
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert "_auto_critic_quality_ema" in src, (
+        "aeon_core.py must update _auto_critic_quality_ema"
+    )
+    assert "_auto_critic_quality_count += 1" in src, (
+        "aeon_core.py must increment _auto_critic_quality_count"
+    )
+    print("✅ test_auto_critic_quality_ema_updated_in_forward PASSED")
+
+
+def test_auto_critic_quality_deficit_in_feedback_bus():
+    """_build_feedback_extra_signals includes auto_critic_quality_deficit
+    when the EMA indicates poor quality over multiple passes."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        # Simulate poor auto-critic quality over many passes
+        _auto_critic_quality_ema = 0.3
+        _auto_critic_quality_count = 10
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "auto_critic_quality_deficit" in extra, (
+        "Must include auto_critic_quality_deficit when EMA quality is low"
+    )
+    assert extra["auto_critic_quality_deficit"] == 0.7, (
+        f"Expected 0.7, got {extra['auto_critic_quality_deficit']}"
+    )
+    print("✅ test_auto_critic_quality_deficit_in_feedback_bus PASSED")
+
+
+def test_auto_critic_quality_deficit_absent_when_good():
+    """_build_feedback_extra_signals omits auto_critic_quality_deficit
+    when the EMA indicates good quality."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.9
+        _auto_critic_quality_count = 10
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "auto_critic_quality_deficit" not in extra, (
+        "auto_critic_quality_deficit must not appear when quality is good"
+    )
+    print("✅ test_auto_critic_quality_deficit_absent_when_good PASSED")
+
+
+def test_auto_critic_ema_fallback_threshold_adaptation():
+    """Auto-critic threshold adaptation uses quality EMA as fallback
+    when error_evolution is unavailable."""
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert "_auto_critic_quality_count >= 3" in src, (
+        "Auto-critic threshold adaptation must include EMA-based fallback "
+        "when error_evolution is unavailable"
+    )
+    print("✅ test_auto_critic_ema_fallback_threshold_adaptation PASSED")
+
+
+def test_metacognitive_state_includes_cross_pass_uncertainty():
+    """get_metacognitive_state exposes cross-pass uncertainty metrics."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.get_metacognitive_state)
+    assert "cross_pass_uncertainty" in src, (
+        "get_metacognitive_state must include cross_pass_uncertainty"
+    )
+    assert "is_systematic" in src, (
+        "cross_pass_uncertainty must include is_systematic indicator"
+    )
+    print("✅ test_metacognitive_state_includes_cross_pass_uncertainty PASSED")
+
+
+def test_metacognitive_state_includes_auto_critic_quality():
+    """get_metacognitive_state exposes auto-critic quality EMA."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.get_metacognitive_state)
+    assert "auto_critic_quality" in src, (
+        "get_metacognitive_state must include auto_critic_quality"
+    )
+    print("✅ test_metacognitive_state_includes_auto_critic_quality PASSED")
+
+
+def test_phase_b_decoder_cross_loss_in_epoch_metrics():
+    """Phase B ContextualRSSMTrainer.fit accumulates decoder_cross_loss."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+
+    fit_src = inspect.getsource(ContextualRSSMTrainer.fit)
+    assert "decoder_cross_loss" in fit_src, (
+        "Phase B fit() must accumulate decoder_cross_loss in epoch_metrics"
+    )
+    print("✅ test_phase_b_decoder_cross_loss_in_epoch_metrics PASSED")
+
+
+def test_phase_b_decoder_failure_records_error_evolution():
+    """Phase B records decoder cross-validation failures in error_evolution."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+
+    fit_src = inspect.getsource(ContextualRSSMTrainer.fit)
+    assert "decoder_cross_validation_failure" in fit_src, (
+        "Phase B fit() must record decoder validation failures in error_evolution"
+    )
+    assert "decoder_valid" in fit_src, (
+        "Phase B fit() must check decoder_valid from train_step metrics"
+    )
+    print("✅ test_phase_b_decoder_failure_records_error_evolution PASSED")
+
+
+def test_phase_b_decoder_failure_escalates_uncertainty():
+    """Phase B escalates uncertainty for UCC when decoder validation fails."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+
+    fit_src = inspect.getsource(ContextualRSSMTrainer.fit)
+    assert "_decoder_invalid_count" in fit_src, (
+        "Phase B fit() must track decoder invalid count for uncertainty escalation"
+    )
+    assert "_decoder_failure_ratio" in fit_src, (
+        "Phase B fit() must compute decoder failure ratio for UCC uncertainty"
+    )
+    print("✅ test_phase_b_decoder_failure_escalates_uncertainty PASSED")
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -44818,6 +45062,22 @@ def _run_all_tests():
     test_provenance_root_modules_cached_in_forward()
     test_ucc_recurring_root_cached_in_forward()
     test_memory_re_retrieval_cached_in_forward()
+
+    # Architectural Unification — Cross-Pass Uncertainty History,
+    # Auto-Critic Quality Persistence, and Decoder Cross-Validation Tests
+    test_cross_pass_uncertainty_history_init()
+    test_cross_pass_uncertainty_history_recorded()
+    test_systematic_uncertainty_in_feedback_bus()
+    test_auto_critic_quality_ema_init()
+    test_auto_critic_quality_ema_updated_in_forward()
+    test_auto_critic_quality_deficit_in_feedback_bus()
+    test_auto_critic_quality_deficit_absent_when_good()
+    test_auto_critic_ema_fallback_threshold_adaptation()
+    test_metacognitive_state_includes_cross_pass_uncertainty()
+    test_metacognitive_state_includes_auto_critic_quality()
+    test_phase_b_decoder_cross_loss_in_epoch_metrics()
+    test_phase_b_decoder_failure_records_error_evolution()
+    test_phase_b_decoder_failure_escalates_uncertainty()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

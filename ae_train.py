@@ -3236,9 +3236,11 @@ class ContextualRSSMTrainer:
             
             epoch_metrics = {
                 "mse_loss": 0.0, "cosine_sim": 0.0, 
-                "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0
+                "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0,
+                "decoder_cross_loss": 0.0,
             }
             valid_batches = 0
+            _decoder_invalid_count = 0
             
             for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
                 ctx_batch = ctx_batch.to(self.device)
@@ -3253,6 +3255,25 @@ class ContextualRSSMTrainer:
                         batch_valid = True
                 if batch_valid:
                     valid_batches += 1
+                # Track decoder cross-validation failures so that error
+                # evolution can learn from RSSM-decoder incompatibility
+                # patterns.  Without this, decoder_valid failures are
+                # computed in train_step but silently discarded, making
+                # latent-space drift invisible to the cognitive system.
+                if not metrics.get("decoder_valid", True):
+                    _decoder_invalid_count += 1
+                    self._error_evolution.record_episode(
+                        error_class="decoder_cross_validation_failure",
+                        strategy_used="skip_and_continue",
+                        success=False,
+                        metadata={
+                            "step": self.global_step,
+                            "decoder_cross_loss": metrics.get(
+                                "decoder_cross_loss", float('nan')
+                            ),
+                            "phase": "B",
+                        },
+                    )
                 
                 if batch_idx % log_every_batch == 0:
                     self.monitor.log_batch(batch_idx, total_batches, {
@@ -3332,6 +3353,13 @@ class ContextualRSSMTrainer:
             try:
                 _loss_delta = abs(convergence_verdict.get("trend", 0.0))
                 _uncertainty = min(epoch_metrics.get("mse_loss", 0.0) / _MSE_UNCERTAINTY_SCALE, 1.0)
+                # Escalate uncertainty when decoder cross-validation
+                # failed during this epoch — RSSM predictions that the
+                # decoder cannot interpret signal latent-space drift,
+                # which should trigger deeper meta-cognitive reasoning.
+                if _decoder_invalid_count > 0 and valid_batches > 0:
+                    _decoder_failure_ratio = _decoder_invalid_count / valid_batches
+                    _uncertainty = min(1.0, _uncertainty + _decoder_failure_ratio * 0.3)
                 _is_diverging = convergence_verdict["status"] == "diverging"
                 # Adapt metacognitive trigger weights from accumulated
                 # error-evolution history so that historically problematic
