@@ -2779,6 +2779,8 @@ class AEONConfig:
     lambda_ucc: float = 0.02
     lambda_self_report: float = 0.02
     lambda_cycle_consistency: float = 0.01
+    lambda_world_model_surprise: float = 0.01
+    lambda_convergence_residual: float = 0.01
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -14981,6 +14983,7 @@ class UnifiedConvergenceArbiter:
         meta_loop_results: Dict[str, Any],
         convergence_monitor_verdict: Dict[str, Any],
         certified_results: Optional[Dict[str, Any]] = None,
+        coherence_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Produce a unified convergence verdict.
 
@@ -14990,6 +14993,14 @@ class UnifiedConvergenceArbiter:
             convergence_monitor_verdict: Output of ConvergenceMonitor.check().
             certified_results: Optional output of CertifiedMetaLoop containing
                 ``certified_convergence`` and ``certified_error_bound``.
+            coherence_score: Optional cross-module coherence score ∈ [0, 1]
+                from the :class:`ModuleCoherenceVerifier`.  When provided and
+                below 0.5, the arbiter treats it as a conflicting signal —
+                even if all convergence monitors agree, low coherence
+                indicates the converged state is internally inconsistent,
+                warranting deeper reasoning.  This closes the gap where
+                convergence and coherence were assessed independently with
+                no cross-referencing.
 
         Returns:
             Dict with:
@@ -15030,6 +15041,18 @@ class UnifiedConvergenceArbiter:
             verdicts["certified_meta_loop"] = "converged" if cert_conv else "not_certified"
             certified_flags["certified_meta_loop"] = cert_conv
 
+        # 4. Coherence cross-reference (when available)
+        # Low coherence contradicts convergence: the meta-loop may have
+        # converged numerically but the resulting state is internally
+        # inconsistent across subsystems.  Treating this as a conflict
+        # prevents the system from accepting a converged-but-incoherent
+        # state as final.
+        _coherence_conflict = False
+        if coherence_score is not None and coherence_score < 0.5:
+            verdicts["coherence"] = "incoherent"
+            certified_flags["coherence"] = False
+            _coherence_conflict = True
+
         # Compute consensus
         all_converged = all(v == "converged" for v in verdicts.values())
         any_diverging = any(v == "diverging" for v in verdicts.values())
@@ -15037,7 +15060,7 @@ class UnifiedConvergenceArbiter:
 
         # Detect conflicts
         unique_verdicts = set(verdicts.values()) - {"warmup"}
-        has_conflict = len(unique_verdicts) > 1 and not all_converged
+        has_conflict = (len(unique_verdicts) > 1 and not all_converged) or _coherence_conflict
         conflict_details = []
         if has_conflict:
             for monitor, verdict in verdicts.items():
@@ -15685,6 +15708,7 @@ class UnifiedCognitiveCycle:
                 meta_loop_results=meta_loop_results,
                 convergence_monitor_verdict=convergence_verdict,
                 certified_results=certified_results,
+                coherence_score=1.0 - coherence_deficit,
             )
             # If monitors conflict, escalate uncertainty and record
             if convergence_arbiter_result.get("has_conflict", False):
@@ -18359,6 +18383,7 @@ class AEONDeltaV3(nn.Module):
             "continual_learning": "continual_learning",
             "grounded_multimodal": "grounded_multimodal",
             "encoder_reasoning_norm": "encoder_reasoning_norm",
+            "decoder": "decoder",
         }
         for _up, _down in self._PIPELINE_DEPENDENCIES:
             # Skip edge if either node maps to a disabled (None) module
@@ -19039,6 +19064,7 @@ class AEONDeltaV3(nn.Module):
                 meta_loop_results=meta_results,
                 convergence_monitor_verdict=convergence_verdict,
                 certified_results=_certified_results if _certified_results else None,
+                coherence_score=max(0.0, 1.0 - self._cached_coherence_deficit),
             )
             if _convergence_arbiter_result.get("has_conflict", False):
                 _arb_boost = _convergence_arbiter_result.get("uncertainty_boost", 0.0)
@@ -25964,6 +25990,12 @@ class AEONDeltaV3(nn.Module):
         outputs['cache_hit'] = _cache_hit
         
         # ===== DECODE =====
+        # Register decoder transform with provenance tracker so that
+        # trace_root_cause() can attribute output quality to the decode
+        # stage.  The before-state is the reasoning core output z_out;
+        # the after-state uses mean-pooled logits collapsed to [B, D]
+        # for compatible L2 delta computation with the hidden_dim space.
+        self.provenance_tracker.record_before("decoder", z_out)
         if decode_mode == 'train':
             logits = self.decoder(
                 z=z_out,
@@ -25987,6 +26019,13 @@ class AEONDeltaV3(nn.Module):
             )
         else:
             raise ValueError(f"Unknown decode_mode: {decode_mode}")
+        # Record decoder after-state: mean-pool logits over sequence and
+        # vocab dimensions to collapse to [B, 1], then expand to match
+        # z_out's hidden_dim for L2 delta computation.  This provides a
+        # coarse but meaningful signal of how much the decoder changed
+        # the representation magnitude.
+        _decoder_after = logits.detach().mean(dim=-1).mean(dim=-1, keepdim=True).expand_as(z_out)
+        self.provenance_tracker.record_after("decoder", _decoder_after)
         
         # ===== UNCERTAINTY CONFIDENCE PENALTY =====
         # When reasoning uncertainty exceeds the threshold, scale logits
@@ -26467,6 +26506,45 @@ class AEONDeltaV3(nn.Module):
                 max(0.0, 1.0 - _cc_score), device=self.device,
             )
 
+        # ===== 17b. WORLD MODEL PREDICTION LOSS =====
+        # When the world model produces a predicted_next state, penalize
+        # its divergence from the actual reasoning core output so that
+        # the world model is optimized for prediction accuracy during
+        # training.  This closes the gap where world_model_surprise was
+        # monitored at runtime and used for uncertainty escalation but
+        # never fed back into the training objective — the world model
+        # could degrade without any gradient signal to correct it.
+        world_model_surprise_loss = torch.tensor(0.0, device=self.device)
+        _wm_results = outputs.get('world_model_results', {})
+        _wm_predicted = _wm_results.get('predicted_next', None)
+        _wm_actual = outputs.get('core_state', None)
+        if (
+            _wm_predicted is not None
+            and _wm_actual is not None
+            and torch.is_tensor(_wm_predicted)
+            and torch.is_tensor(_wm_actual)
+            and _wm_predicted.shape == _wm_actual.shape
+        ):
+            _wm_mse = F.mse_loss(_wm_predicted, _wm_actual.detach())
+            if torch.isfinite(_wm_mse):
+                world_model_surprise_loss = _wm_mse
+
+        # ===== 17c. CONVERGENCE RESIDUAL NORM LOSS =====
+        # Penalize high residual norm from the meta-loop so that
+        # the system learns to converge faster during training.  This
+        # closes the gap where convergence residual was tracked by the
+        # ConvergenceMonitor at runtime but never appeared in the
+        # training objective — the meta-loop had no gradient incentive
+        # to reduce its residual beyond the fixed-point contraction.
+        convergence_residual_loss = torch.tensor(0.0, device=self.device)
+        _meta_res = outputs.get('meta_results', {})
+        _residual_norm_val = _meta_res.get('residual_norm', None)
+        if _residual_norm_val is not None and isinstance(_residual_norm_val, (int, float)):
+            if _residual_norm_val > 0 and math.isfinite(_residual_norm_val):
+                convergence_residual_loss = torch.tensor(
+                    min(_residual_norm_val, 10.0), device=self.device,
+                )
+
         # ===== 18. GROUNDED MULTIMODAL CONTRASTIVE LOSS =====
         # When GroundedMultimodalLearning is active, add its contrastive
         # loss to incentivize vision-language alignment, solving the
@@ -26678,6 +26756,8 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_ucc * ucc_loss +
             self.config.lambda_self_report * self_report_loss +
             self.config.lambda_cycle_consistency * cycle_consistency_loss +
+            self.config.lambda_world_model_surprise * world_model_surprise_loss +
+            _convergence_loss_scale * self.config.lambda_convergence_residual * convergence_residual_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
@@ -26743,6 +26823,8 @@ class AEONDeltaV3(nn.Module):
             'ucc_loss': ucc_loss,
             'self_report_loss': self_report_loss,
             'cycle_consistency_loss': cycle_consistency_loss,
+            'world_model_surprise_loss': world_model_surprise_loss,
+            'convergence_residual_loss': convergence_residual_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
             'task2vec_loss': task2vec_loss,
@@ -28562,6 +28644,7 @@ class AEONDeltaV3(nn.Module):
                 meta_loop_results={},
                 convergence_monitor_verdict=_conv_verdict,
                 certified_results=None,
+                coherence_score=score,
             )
             result["convergence_arbiter"] = _arbiter_result
             if _arbiter_result.get("has_conflict", False):
