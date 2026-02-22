@@ -43448,6 +43448,157 @@ def test_phase_b_decoder_failure_escalates_uncertainty():
         "Phase B fit() must compute decoder failure ratio for UCC uncertainty"
     )
     print("✅ test_phase_b_decoder_failure_escalates_uncertainty PASSED")
+
+
+# =============================================================================
+# ARCHITECTURAL UNIFICATION — DECODER FEEDBACK, CIRCUIT BREAKER, PROVENANCE
+# =============================================================================
+
+def test_decoder_feedback_pipeline_edges():
+    """Verify that decoder has feedback edges to error_evolution and
+    auto_critic in _PIPELINE_DEPENDENCIES for root-cause traceability."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    decoder_downstream = [d for u, d in deps if u == "decoder"]
+
+    assert "error_evolution" in decoder_downstream, (
+        f"'decoder' → 'error_evolution' edge missing from _PIPELINE_DEPENDENCIES. "
+        f"Decoder downstream: {decoder_downstream}"
+    )
+    assert "auto_critic" in decoder_downstream, (
+        f"'decoder' → 'auto_critic' edge missing from _PIPELINE_DEPENDENCIES. "
+        f"Decoder downstream: {decoder_downstream}"
+    )
+
+    print("✅ test_decoder_feedback_pipeline_edges PASSED")
+
+
+def test_circuit_breaker_guards_hybrid_reasoning():
+    """Verify that hybrid_reasoning checks circuit breaker for causal_model
+    failures, preventing execution on degraded upstream outputs."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Find the hybrid_reasoning condition line
+    lines = src.split('\n')
+    hybrid_guard_found = False
+    for line in lines:
+        if ('hybrid_reasoning' in line and 'circuit_breaker' in line
+                and 'causal_model' in line):
+            hybrid_guard_found = True
+            break
+
+    assert hybrid_guard_found, (
+        "hybrid_reasoning invocation must check "
+        "'causal_model' not in _circuit_breaker_tripped"
+    )
+
+    print("✅ test_circuit_breaker_guards_hybrid_reasoning PASSED")
+
+
+def test_circuit_breaker_guards_ns_bridge():
+    """Verify that standalone_ns_bridge checks circuit breaker for
+    causal_model failures, preventing execution on degraded upstream."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    lines = src.split('\n')
+    ns_bridge_guard_found = False
+    for line in lines:
+        if ('standalone_ns_bridge' in line and 'circuit_breaker' in line
+                and 'causal_model' in line):
+            ns_bridge_guard_found = True
+            break
+
+    assert ns_bridge_guard_found, (
+        "standalone_ns_bridge invocation must check "
+        "'causal_model' not in _circuit_breaker_tripped"
+    )
+
+    print("✅ test_circuit_breaker_guards_ns_bridge PASSED")
+
+
+def test_config_lambda_decoder_provenance():
+    """Verify AEONConfig includes lambda_decoder_provenance field."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, "lambda_decoder_provenance"), (
+        "AEONConfig should have lambda_decoder_provenance field"
+    )
+    assert config.lambda_decoder_provenance == 0.005, (
+        f"Default lambda_decoder_provenance should be 0.005, "
+        f"got {config.lambda_decoder_provenance}"
+    )
+
+    print("✅ test_config_lambda_decoder_provenance PASSED")
+
+
+def test_decoder_provenance_loss_in_compute_loss():
+    """Verify compute_loss returns decoder_provenance_loss key."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids)
+    targets = torch.randint(1, 1000, (B, L))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert "decoder_provenance_loss" in loss_dict, (
+        "compute_loss must return 'decoder_provenance_loss' key"
+    )
+    assert torch.is_tensor(loss_dict["decoder_provenance_loss"]), (
+        "decoder_provenance_loss must be a tensor"
+    )
+    assert torch.isfinite(loss_dict["decoder_provenance_loss"]), (
+        "decoder_provenance_loss must be finite"
+    )
+
+    print("✅ test_decoder_provenance_loss_in_compute_loss PASSED")
+
+
+def test_decoder_degenerate_output_detection():
+    """Verify that _forward_impl detects degenerate decoder output and
+    records it in error evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "decoder_degenerate_output" in src, (
+        "_forward_impl must detect degenerate decoder output "
+        "and record 'decoder_degenerate_output' in error evolution"
+    )
+    assert "DECODER_DEGENERATE_VAR_THRESHOLD" in src, (
+        "_forward_impl must define a variance threshold for "
+        "decoder degenerate output detection"
+    )
+
+    print("✅ test_decoder_degenerate_output_detection PASSED")
+
+
+def test_decoder_provenance_in_training_bridge():
+    """Verify that bridge_training_loss_to_error_evolution includes
+    decoder_provenance_loss in its subsystem loss monitoring."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.bridge_training_loss_to_error_evolution)
+    assert "decoder_provenance_loss" in src, (
+        "bridge_training_loss_to_error_evolution must monitor "
+        "'decoder_provenance_loss' for subsystem error learning"
+    )
+
+    print("✅ test_decoder_provenance_in_training_bridge PASSED")
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -45298,6 +45449,15 @@ def test_phase_b_decoder_failure_escalates_uncertainty():
     test_phase_b_decoder_cross_loss_in_epoch_metrics()
     test_phase_b_decoder_failure_records_error_evolution()
     test_phase_b_decoder_failure_escalates_uncertainty()
+
+    # Architectural Unification — Decoder Feedback, Circuit Breaker, Provenance
+    test_decoder_feedback_pipeline_edges()
+    test_circuit_breaker_guards_hybrid_reasoning()
+    test_circuit_breaker_guards_ns_bridge()
+    test_config_lambda_decoder_provenance()
+    test_decoder_provenance_loss_in_compute_loss()
+    test_decoder_degenerate_output_detection()
+    test_decoder_provenance_in_training_bridge()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
