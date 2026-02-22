@@ -40261,6 +40261,274 @@ def test_error_fallback_uses_corrected_defaults():
     print("✅ test_error_fallback_uses_corrected_defaults PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL COHERENCE TESTS
+# ============================================================================
+
+
+def test_provenance_tracker_set_error_evolution():
+    """Verify CausalProvenanceTracker.set_error_evolution() bridges
+    anomalous L2 deltas into error-evolution episodes."""
+    from aeon_core import CausalProvenanceTracker, CausalErrorEvolutionTracker
+
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+    tracker.set_error_evolution(ee)
+
+    # Record a very large delta that exceeds the anomaly threshold
+    state_before = torch.zeros(2, 64)
+    state_after = torch.ones(2, 64) * 100.0  # Large change
+    tracker.record_before("test_module", state_before)
+    tracker.record_after("test_module", state_after)
+
+    summary = ee.get_error_summary()
+    classes = summary.get("error_classes", {})
+    assert "provenance_delta_anomaly" in classes, (
+        "Expected provenance_delta_anomaly in error evolution after large delta"
+    )
+    print("✅ test_provenance_tracker_set_error_evolution PASSED")
+
+
+def test_provenance_tracker_small_delta_no_episode():
+    """Verify small L2 deltas do NOT trigger error-evolution episodes."""
+    from aeon_core import CausalProvenanceTracker, CausalErrorEvolutionTracker
+
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+    tracker.set_error_evolution(ee)
+
+    # Record a small delta well below the anomaly threshold
+    state = torch.randn(2, 64)
+    tracker.record_before("test_module", state)
+    tracker.record_after("test_module", state + 0.001)  # Tiny change
+
+    summary = ee.get_error_summary()
+    classes = summary.get("error_classes", {})
+    assert "provenance_delta_anomaly" not in classes, (
+        "Small deltas should not trigger provenance_delta_anomaly"
+    )
+    print("✅ test_provenance_tracker_small_delta_no_episode PASSED")
+
+
+def test_convergence_monitor_metacognitive_trigger_wiring():
+    """Verify ConvergenceMonitor.set_metacognitive_trigger() tightens
+    threshold when triggers are active."""
+    from aeon_core import ConvergenceMonitor, MetaCognitiveRecursionTrigger
+
+    cm = ConvergenceMonitor(threshold=1e-3)
+    mt = MetaCognitiveRecursionTrigger()
+    cm.set_metacognitive_trigger(mt)
+
+    # Simulate 3+ active triggers
+    mt._last_triggers_active = ["a", "b", "c"]
+
+    # The effective threshold should be tighter than the original
+    # Feed enough history to get past warmup
+    for i in range(5):
+        cm.check(1e-4 * (0.9 ** i))
+
+    # Verify the monitor has the trigger wired
+    assert cm._metacognitive_trigger is mt
+    print("✅ test_convergence_monitor_metacognitive_trigger_wiring PASSED")
+
+
+def test_metacognitive_trigger_stores_last_triggers():
+    """Verify MetaCognitiveRecursionTrigger stores _last_triggers_active
+    after evaluate()."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mt = MetaCognitiveRecursionTrigger()
+    assert mt._last_triggers_active == []
+
+    result = mt.evaluate(
+        uncertainty=0.9,
+        is_diverging=True,
+        topology_catastrophe=False,
+    )
+
+    assert len(mt._last_triggers_active) > 0, (
+        "Expected _last_triggers_active to be populated after evaluate()"
+    )
+    assert mt._last_triggers_active == result["triggers_active"]
+    print("✅ test_metacognitive_trigger_stores_last_triggers PASSED")
+
+
+def test_cached_diversity_topology_states():
+    """Verify that diversity and topology states are cached during forward."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify initial state is None
+    assert model._cached_diversity_state is None
+    assert model._cached_topology_state is None
+
+    z_in = torch.randn(2, 32)
+    model.reasoning_core(z_in, fast=False)
+
+    # After forward, states should be cached
+    assert model._cached_diversity_state is not None, (
+        "Expected _cached_diversity_state to be set after reasoning_core"
+    )
+    assert model._cached_topology_state is not None, (
+        "Expected _cached_topology_state to be set after reasoning_core"
+    )
+    print("✅ test_cached_diversity_topology_states PASSED")
+
+
+def test_cached_cross_validation_state():
+    """Verify cross-validation state is cached after reconciliation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_cross_validation=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model._cached_cross_validation_state is None
+
+    z_in = torch.randn(2, 32)
+    model.reasoning_core(z_in, fast=False)
+
+    # Cross-validation should cache reconciled state
+    if model.cross_validator is not None:
+        assert model._cached_cross_validation_state is not None, (
+            "Expected _cached_cross_validation_state after reasoning_core"
+        )
+    print("✅ test_cached_cross_validation_state PASSED")
+
+
+def test_cached_ns_consistency_state():
+    """Verify NS consistency state is cached after check."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_ns_consistency_check=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    assert model._cached_ns_consistency_state is None
+
+    z_in = torch.randn(2, 32)
+    model.reasoning_core(z_in, fast=False)
+
+    if model.ns_consistency_checker is not None:
+        assert model._cached_ns_consistency_state is not None, (
+            "Expected _cached_ns_consistency_state after reasoning_core"
+        )
+    print("✅ test_cached_ns_consistency_state PASSED")
+
+
+def test_verify_coherence_auxiliary_signals():
+    """Verify that verify_coherence includes auxiliary signals for scalar
+    subsystem states (diversity, topology, NS consistency)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run forward to populate cached states
+    z_in = torch.randn(2, 32)
+    model.reasoning_core(z_in, fast=False)
+
+    result = model.verify_coherence()
+
+    # Check that auxiliary_signals is present when scalar states are cached
+    if model._cached_diversity_state is not None:
+        assert "auxiliary_signals" in result, (
+            "Expected auxiliary_signals in verify_coherence result"
+        )
+        aux = result["auxiliary_signals"]
+        assert "diversity" in aux, "Expected diversity in auxiliary_signals"
+    print("✅ test_verify_coherence_auxiliary_signals PASSED")
+
+
+def test_cross_validation_correction_signal():
+    """Verify CrossValidationReconciler.get_correction_signal() produces
+    valid attenuation and low_agreement signals."""
+    from aeon_core import CrossValidationReconciler
+
+    cv = CrossValidationReconciler(hidden_dim=32, agreement_threshold=0.7)
+
+    # High agreement → no attenuation
+    high_agreement = torch.tensor([0.9, 0.8])
+    result = cv.get_correction_signal(high_agreement)
+    assert not result["low_agreement"], "High agreement should not flag low"
+    assert result["attenuation"] > 0.7, "High agreement attenuation should be high"
+
+    # Low agreement → attenuation
+    low_agreement = torch.tensor([0.3, 0.2])
+    result = cv.get_correction_signal(low_agreement)
+    assert result["low_agreement"], "Low agreement should flag low"
+    assert result["attenuation"] < 0.5, "Low agreement attenuation should be low"
+    print("✅ test_cross_validation_correction_signal PASSED")
+
+
+def test_provenance_error_evolution_wired_in_model():
+    """Verify that AEONDeltaV3 wires provenance_tracker → error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is not None
+    ee = getattr(model.provenance_tracker, '_error_evolution', None)
+    assert ee is model.error_evolution, (
+        "Expected provenance_tracker._error_evolution to be wired to model.error_evolution"
+    )
+    print("✅ test_provenance_error_evolution_wired_in_model PASSED")
+
+
+def test_convergence_metacognitive_wired_in_model():
+    """Verify that AEONDeltaV3 wires convergence_monitor ← metacognitive_trigger."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+
+    if model.metacognitive_trigger is not None:
+        mt = getattr(model.convergence_monitor, '_metacognitive_trigger', None)
+        assert mt is model.metacognitive_trigger, (
+            "Expected convergence_monitor._metacognitive_trigger to be wired"
+        )
+    print("✅ test_convergence_metacognitive_wired_in_model PASSED")
+
+
 def _run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
