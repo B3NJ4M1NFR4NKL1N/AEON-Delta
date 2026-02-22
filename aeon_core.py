@@ -14463,6 +14463,8 @@ class MetaCognitiveRecursionTrigger:
         "ns_consistency": "safety_violation",
         "hierarchical_vae": "uncertainty",
         "temporal_knowledge_graph": "low_causal_quality",
+        "complexity_estimator": "uncertainty",
+        "memory_validation": "memory_staleness",
         "neurogenic_memory": "memory_staleness",
         "temporal_memory": "memory_staleness",
         "consolidating_memory": "memory_staleness",
@@ -21660,6 +21662,17 @@ class AEONDeltaV3(nn.Module):
                                 "uncertainty_boost": _usim_boost,
                             }),
                         )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "unified_simulator", "counterfactual_divergence",
+                            causal_prerequisites=[input_trace_id],
+                            severity="warning",
+                            metadata={
+                                "cf_divergence": _cf_divergence,
+                                "threshold": _UNIFIED_SIM_DIVERGENCE_THRESHOLD,
+                                "uncertainty_boost": _usim_boost,
+                            },
+                        )
         
         # 5e2-fc. Complexity-gated fallback for unified simulator —
         # cache the counterfactual next_state when it runs; when skipped,
@@ -21818,6 +21831,15 @@ class AEONDeltaV3(nn.Module):
                         confidence=_ns_fact_confidence,
                         timestamp=self._step_counter,
                     )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "temporal_knowledge_graph", "facts_stored",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "fact_confidence": _ns_fact_confidence,
+                                "tkg_size": len(self.temporal_knowledge_graph),
+                            },
+                        )
             except Exception as ns_err:
                 logger.warning(f"NeuroSymbolicBridge error (non-fatal): {ns_err}")
                 self.error_recovery.record_event(
@@ -23330,6 +23352,20 @@ class AEONDeltaV3(nn.Module):
             if (_us_next_ucc is not None
                     and _us_next_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["unified_simulator"] = _us_next_ucc
+            # Include complexity estimator score as a directional
+            # perturbation of C_star so the coherence verifier can detect
+            # input-complexity-driven divergence from the integrated output.
+            # Without this, complexity-gated subsystem skipping is invisible
+            # to the UCC, preventing detection of complexity–reasoning
+            # misalignment.
+            if _complexity_score_val is not None:
+                _comp_disagreement = abs(_complexity_score_val - 0.5) * 2.0
+                if _comp_disagreement > 0.0:
+                    _c_rolled_comp = C_star.roll(1, dims=-1)
+                    _ucc_states["complexity_estimator"] = (
+                        (1.0 - _comp_disagreement) * C_star
+                        + _comp_disagreement * _c_rolled_comp
+                    )
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Include NS consistency violations in the safety
@@ -23613,6 +23649,35 @@ class AEONDeltaV3(nn.Module):
                     ),
                 },
             )
+
+        # 8f-ucc-mem. Feed UCC memory-validation staleness back into the
+        # CausalContextWindowManager so that stale memory events decay
+        # context relevance and become visible across forward passes.
+        # Without this, memory staleness detected by the UCC was recorded
+        # in error_evolution but never influenced the causal context's
+        # relevance ranking, leaving cross-temporal reasoning blind to
+        # memory-consistency failures.
+        if (self.unified_cognitive_cycle is not None
+                and unified_cycle_results
+                and self.causal_context is not None
+                and not fast):
+            _ucc_mem_val = unified_cycle_results.get("memory_validation", {})
+            if _ucc_mem_val.get("needs_re_retrieval", False):
+                self.causal_context.add(
+                    source="memory_validation",
+                    embedding=z_out.mean(dim=0).detach(),
+                    relevance=0.0,
+                    causal_weight=max(0.0, _ucc_mem_val.get(
+                        "consistency_score", 0.0,
+                    )),
+                    tier="short_term",
+                    metadata={
+                        "needs_re_retrieval": True,
+                        "consistency_score": _ucc_mem_val.get(
+                            "consistency_score", 0.0,
+                        ),
+                    },
+                )
 
         # 8f-ucc. UCC-driven active correction — when the UnifiedCognitiveCycle
         # recommended a rerun, invoke corrective actions (auto-critic and/or
