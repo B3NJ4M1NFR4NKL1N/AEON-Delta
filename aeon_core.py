@@ -16020,6 +16020,15 @@ class AEONDeltaV3(nn.Module):
         ("unified_simulator", "hybrid_reasoning"),
         ("hybrid_reasoning", "ns_bridge"),
         ("hybrid_reasoning", "hierarchical_vae"),
+        # Hybrid reasoning quality feeds into the UCC so the coherence
+        # verifier can detect neuro-symbolic integration degradation and
+        # trigger meta-cognitive re-reasoning when symbolic conclusions
+        # diverge from the neural state.
+        ("hybrid_reasoning", "unified_cognitive_cycle"),
+        # NS bridge confidence feeds into the UCC so the coherence
+        # verifier can cross-validate symbolic grounding quality against
+        # other subsystem outputs, closing the symbolic verification loop.
+        ("ns_bridge", "unified_cognitive_cycle"),
         ("ns_bridge", "hierarchical_vae"),
         ("hierarchical_vae", "causal_context"),
         # HVAE selected_level feeds into the unified cognitive cycle so
@@ -16047,6 +16056,10 @@ class AEONDeltaV3(nn.Module):
         ("consolidating_memory", "causal_context"),
         ("temporal_memory", "causal_context"),
         ("cross_validation", "unified_simulator"),
+        # Cross-validation agreement deficit feeds into the auto-critic
+        # so that low factor-causal agreement triggers immediate self-
+        # correction rather than waiting for the UCC to escalate.
+        ("cross_validation", "auto_critic"),
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
         ("deeper_meta_loop", "world_model"),
@@ -16362,6 +16375,25 @@ class AEONDeltaV3(nn.Module):
         # scalar aggregate, enabling targeted deeper reasoning.
         self.feedback_bus.register_signal("unc_peak", default=0.0)
         self.feedback_bus.register_signal("unc_source_count", default=0.0)
+        # Hybrid reasoning quality — measures the quality of neuro-symbolic
+        # integration so the meta-loop can deepen reasoning when symbolic
+        # conclusions are weak or invalid.
+        self.feedback_bus.register_signal(
+            "hybrid_reasoning_quality", default=1.0,
+        )
+        # NS bridge confidence — measures the strength of symbolic fact
+        # and rule grounding so the meta-loop can compensate when the
+        # neural↔symbolic round-trip produces low-activation outputs.
+        self.feedback_bus.register_signal(
+            "ns_bridge_confidence", default=1.0,
+        )
+        # Cross-validation agreement deficit — carries the factor-causal
+        # disagreement magnitude into the feedback bus so the meta-loop
+        # can tighten reasoning when the reconciler detects prediction
+        # divergence between factor-embedded and causal-predicted states.
+        self.feedback_bus.register_signal(
+            "cv_agreement_deficit", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17168,6 +17200,16 @@ class AEONDeltaV3(nn.Module):
         # re-retrieval rather than relying on the same stale cache.
         self._cached_memory_needs_re_retrieval: bool = False
 
+        # Hybrid reasoning quality — caches the quality of the last
+        # HybridReasoningEngine invocation so _build_feedback_extra_signals
+        # can route neuro-symbolic integration quality into the feedback bus.
+        self._cached_hybrid_reasoning_quality: float = 1.0
+
+        # NS bridge confidence — caches the symbolic grounding strength
+        # from the last NeuroSymbolicBridge invocation so the feedback bus
+        # can condition the meta-loop on neural↔symbolic round-trip quality.
+        self._cached_ns_bridge_confidence: float = 1.0
+
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
         # to detect structural disagreement.  Active whenever ≥2 causal
@@ -17540,6 +17582,25 @@ class AEONDeltaV3(nn.Module):
         _ac_current = self._cached_auto_critic_current_score
         if _ac_current is not None and _ac_current < 1.0:
             extra["auto_critic_current_quality"] = max(0.0, min(1.0, _ac_current))
+        # Hybrid reasoning quality — when the HybridReasoningEngine
+        # produced weak or invalid conclusions, signal the meta-loop
+        # to deepen reasoning for neuro-symbolic integration repair.
+        # 1.0 means healthy, 0.0 means completely degraded.
+        _hrq = self._cached_hybrid_reasoning_quality
+        if _hrq < 1.0:
+            extra["hybrid_reasoning_quality"] = max(0.0, min(1.0, _hrq))
+        # NS bridge confidence — when the neural↔symbolic round-trip
+        # produces low-activation facts/rules, signal the meta-loop
+        # to strengthen symbolic grounding on the next pass.
+        _nsc = self._cached_ns_bridge_confidence
+        if _nsc < 1.0:
+            extra["ns_bridge_confidence"] = max(0.0, min(1.0, _nsc))
+        # Cross-validation agreement deficit — carries the factor-causal
+        # disagreement directly into the feedback bus so the next pass's
+        # meta-loop can tighten reasoning when predictions diverge.
+        _cvd = self._last_cv_disagreement
+        if _cvd > 0.0:
+            extra["cv_agreement_deficit"] = max(0.0, min(1.0, _cvd))
         return extra
 
     @staticmethod
@@ -22627,6 +22688,16 @@ class AEONDeltaV3(nn.Module):
         self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
             "executed": self.hybrid_reasoning is not None and not fast,
         })
+        # Cache hybrid reasoning quality for the feedback bus.  Quality
+        # is derived from (a) whether the engine ran without error and
+        # (b) whether the conclusions were finite and non-trivial.
+        # 1.0 = healthy and productive, 0.0 = errored or empty.
+        if self.hybrid_reasoning is not None and not fast:
+            _hrq = 0.0 if not _hybrid_healthy else 1.0
+            conclusions = hybrid_reasoning_results.get("conclusions", None)
+            if _hybrid_healthy and (conclusions is None or not torch.isfinite(conclusions).all()):
+                _hrq = 0.5  # ran but produced invalid/empty conclusions
+            self._cached_hybrid_reasoning_quality = _hrq
         
         # 5e3b. Standalone NeuroSymbolic Bridge — lightweight neural↔symbolic
         # grounding that operates independently of HybridReasoningEngine.
@@ -22709,6 +22780,21 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _ns_err_boost)
                     uncertainty_sources["ns_bridge_error"] = _ns_err_boost
                     high_uncertainty = uncertainty > 0.5
+        # Cache NS bridge confidence for the feedback bus.  Confidence is
+        # derived from the mean fact and rule activation: high activation
+        # indicates strong symbolic grounding; errors yield 0.0.
+        if self.standalone_ns_bridge is not None and not fast:
+            _ns_facts_out = ns_bridge_results.get('facts', None)
+            _ns_rules_out = ns_bridge_results.get('rules', None)
+            if _ns_facts_out is not None and _ns_rules_out is not None:
+                _fact_act = float(_ns_facts_out.mean().item())
+                _rule_act = float(_ns_rules_out.mean().item())
+                self._cached_ns_bridge_confidence = max(
+                    0.0, min(1.0, (_fact_act + _rule_act) / 2.0),
+                )
+            else:
+                # NS bridge was skipped or errored
+                self._cached_ns_bridge_confidence = 0.0
         
         # 5e3c. TKG retrieval — query the standalone TemporalKnowledgeGraph
         # to retrieve previously stored symbolic facts and blend them as
@@ -24286,6 +24372,15 @@ class AEONDeltaV3(nn.Module):
             if (_hr_conc_ucc is not None
                     and _hr_conc_ucc.shape[-1] == z_out.shape[-1]):
                 _ucc_states["hybrid_reasoning"] = _hr_conc_ucc
+            # Include NS bridge re-embedded state so the coherence verifier
+            # can cross-validate symbolic grounding quality against other
+            # subsystem outputs.  Without this, the NS bridge's symbolic
+            # round-trip is invisible to the UCC despite modifying C_star.
+            _ns_reembed_ucc = ns_bridge_results.get("reembedded", None)
+            if (_ns_reembed_ucc is not None
+                    and torch.is_tensor(_ns_reembed_ucc)
+                    and _ns_reembed_ucc.shape[-1] == z_out.shape[-1]):
+                _ucc_states["ns_bridge"] = _ns_reembed_ucc
             # Include the reconciled state from cross-validation so
             # that the coherence verifier can compare factor–causal
             # alignment against the integrated output and core state.
