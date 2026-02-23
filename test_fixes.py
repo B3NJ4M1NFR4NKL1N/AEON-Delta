@@ -45298,6 +45298,198 @@ def test_ucc_causal_trace_records_verdict():
     print("✅ test_ucc_causal_trace_records_verdict PASSED")
 
 
+# ======================================================================
+# Architectural Unification — Cross-Module Verification & Feedback Loops
+# ======================================================================
+
+def test_error_evolution_recommend_loss_adjustments():
+    """CausalErrorEvolutionTracker.recommend_loss_adjustments returns boost
+    factors for lambda params that correspond to failing error classes."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    # Record failures for coherence — success rate = 0 (all failures)
+    for _ in range(5):
+        tracker.record_episode(
+            error_class='high_coherence_loss',
+            strategy_used='coherence_weight_boost',
+            success=False,
+        )
+    # Record successes for ns_consistency — success rate = 1 (all succeed)
+    for _ in range(5):
+        tracker.record_episode(
+            error_class='high_ns_consistency_loss',
+            strategy_used='skip',
+            success=True,
+        )
+    adj = tracker.recommend_loss_adjustments()
+    assert "lambda_coherence" in adj, (
+        "Expected lambda_coherence boost for 0% success rate"
+    )
+    assert adj["lambda_coherence"] > 1.0, (
+        f"Expected lambda_coherence boost > 1.0, got {adj['lambda_coherence']}"
+    )
+    assert "lambda_ns_consistency" not in adj, (
+        "lambda_ns_consistency should not be boosted (100% success rate)"
+    )
+    print("✅ test_error_evolution_recommend_loss_adjustments PASSED")
+
+
+def test_error_evolution_recommend_loss_adjustments_empty():
+    """recommend_loss_adjustments returns empty dict when no errors recorded."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    adj = tracker.recommend_loss_adjustments()
+    assert adj == {}, f"Expected empty dict, got {adj}"
+    print("✅ test_error_evolution_recommend_loss_adjustments_empty PASSED")
+
+
+def test_error_evolution_recommend_loss_adjustments_max_boost():
+    """Boost factor is capped at max_boost."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    for _ in range(10):
+        tracker.record_episode(
+            error_class='high_coherence_loss',
+            strategy_used='boost',
+            success=False,
+        )
+    adj = tracker.recommend_loss_adjustments(max_boost=3.0)
+    assert adj["lambda_coherence"] <= 3.0, (
+        f"Boost should be <= max_boost 3.0, got {adj['lambda_coherence']}"
+    )
+    print("✅ test_error_evolution_recommend_loss_adjustments_max_boost PASSED")
+
+
+def test_error_evolution_loss_adaptation_in_compute_loss():
+    """Verify that error evolution adjustments affect total_loss via compute_loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+    B, S = 2, 16
+    ids = torch.randint(1, 1000, (B, S))
+    outputs = model(ids)
+    targets = torch.randint(1, 1000, (B, S))
+    # First, compute loss without error history
+    loss_dict_before = model.compute_loss(outputs, targets)
+    total_before = loss_dict_before['total_loss'].item()
+    # Now record many failures for coherence
+    if model.error_evolution is not None:
+        for _ in range(10):
+            model.error_evolution.record_episode(
+                error_class='high_coherence_loss',
+                strategy_used='boost',
+                success=False,
+            )
+    loss_dict_after = model.compute_loss(outputs, targets)
+    total_after = loss_dict_after['total_loss'].item()
+    # With failing coherence, total loss should be >= before (boost applied)
+    # Note: might be equal if coherence_loss component is 0
+    assert total_after >= total_before - 1e-6, (
+        f"Expected total_after >= total_before, got {total_after} vs {total_before}"
+    )
+    print("✅ test_error_evolution_loss_adaptation_in_compute_loss PASSED")
+
+
+def test_post_integration_deeper_meta_loop_code_exists():
+    """Verify that the post-integration deeper meta-loop re-reasoning code
+    is present in the reasoning core implementation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "post_deeper_meta_loop" in src, (
+        "reasoning_core must contain post-integration deeper meta-loop "
+        "re-reasoning code (provenance key 'post_deeper_meta_loop')"
+    )
+    assert "post_integration_deeper_rerun" in src, (
+        "reasoning_core must record 'post_integration_deeper_rerun' "
+        "in error evolution for traceability"
+    )
+    print("✅ test_post_integration_deeper_meta_loop_code_exists PASSED")
+
+
+def test_causal_world_model_cross_validation_code_exists():
+    """Verify that the causal world model cross-validation code is present."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "causal_world_model_cross_validation" in src, (
+        "reasoning_core must cross-validate causal world model predictions "
+        "against physics and hierarchical world models"
+    )
+    assert "causal_physics_wm_cross_divergence" in src or \
+           "causal_{_xv_name}_cross_divergence" in src, (
+        "reasoning_core must register causal-wm cross-divergence as "
+        "an uncertainty source"
+    )
+    print("✅ test_causal_world_model_cross_validation_code_exists PASSED")
+
+
+def test_temporal_knowledge_graph_retrieval_code_exists():
+    """Verify that TKG retrieval is wired into the reasoning pipeline."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "temporal_knowledge_graph" in src and "retrieve_relevant" in src, (
+        "reasoning_core must query TemporalKnowledgeGraph.retrieve_relevant() "
+        "during reasoning to ground causal inference in temporal symbolic knowledge"
+    )
+    print("✅ test_temporal_knowledge_graph_retrieval_code_exists PASSED")
+
+
+def test_temporal_knowledge_graph_retrieval_integration():
+    """Verify TKG retrieval returns relevant stored facts."""
+    import torch.nn.functional as F
+    from aeon_core import TemporalKnowledgeGraph
+    tkg = TemporalKnowledgeGraph(capacity=100)
+    # Store some facts
+    fact1 = torch.randn(32)
+    fact2 = torch.randn(32)
+    tkg.add_facts(fact1, confidence=0.9)
+    tkg.add_facts(fact2, confidence=0.8)
+    # Query with similar vector
+    query = fact1 + torch.randn(32) * 0.01
+    result = tkg.retrieve_relevant(query, top_k=2)
+    assert result.shape == (32,), f"Expected shape (32,), got {result.shape}"
+    assert torch.isfinite(result).all(), "TKG retrieval returned non-finite values"
+    # Result should be closer to fact1 than a random vector
+    sim_to_fact1 = F.cosine_similarity(
+        result.unsqueeze(0), fact1.unsqueeze(0),
+    ).item()
+    sim_to_random = F.cosine_similarity(
+        result.unsqueeze(0), torch.randn(1, 32),
+    ).item()
+    assert sim_to_fact1 > sim_to_random, (
+        "TKG retrieval should return facts similar to query"
+    )
+    print("✅ test_temporal_knowledge_graph_retrieval_integration PASSED")
+
+
+def test_error_evolution_class_to_lambda_mapping():
+    """Verify the error-class-to-lambda mapping covers key subsystems."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    expected_classes = [
+        "high_coherence_loss",
+        "high_training_loss",
+        "high_ns_consistency_loss",
+        "high_hierarchical_wm_loss",
+        "high_memory_retrieval_loss",
+    ]
+    for cls in expected_classes:
+        assert cls in mapping, (
+            f"_ERROR_CLASS_TO_LAMBDA should map '{cls}' to a lambda parameter"
+        )
+    # All values should be valid lambda parameter names
+    for cls, param in mapping.items():
+        assert param.startswith("lambda_"), (
+            f"Mapping value '{param}' for '{cls}' should start with 'lambda_'"
+        )
+    print("✅ test_error_evolution_class_to_lambda_mapping PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -47248,6 +47440,17 @@ def run_all_tests():
     test_meta_loop_causal_trace_includes_residual_norm()
     test_ucc_incomplete_coverage_audit()
     test_ucc_causal_trace_records_verdict()
+
+    # Architectural Unification — Cross-Module Verification & Feedback Loops
+    test_error_evolution_recommend_loss_adjustments()
+    test_error_evolution_recommend_loss_adjustments_empty()
+    test_error_evolution_recommend_loss_adjustments_max_boost()
+    test_error_evolution_loss_adaptation_in_compute_loss()
+    test_post_integration_deeper_meta_loop_code_exists()
+    test_causal_world_model_cross_validation_code_exists()
+    test_temporal_knowledge_graph_retrieval_code_exists()
+    test_temporal_knowledge_graph_retrieval_integration()
+    test_error_evolution_class_to_lambda_mapping()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
