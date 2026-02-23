@@ -2937,6 +2937,7 @@ class AEONConfig:
     # ===== ACTIVE LEARNING PLANNER =====
     enable_active_learning_planner: bool = False
     active_learning_curiosity_weight: float = 1.0
+    active_learning_blend_weight: float = 0.05
     
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
@@ -15654,6 +15655,7 @@ class UnifiedCognitiveCycle:
         output_reliability: Optional[float] = None,
         diversity_collapse: float = 0.0,
         memory_trust_deficit: float = 0.0,
+        convergence_certificate: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -15688,6 +15690,13 @@ class UnifiedCognitiveCycle:
                 low output trust to the directional uncertainty tracker
                 and error evolution, closing the output→meta-cognitive
                 feedback loop.
+            convergence_certificate: Optional convergence verification
+                result from :meth:`ProvablyConvergentMetaLoop.verify_convergence`.
+                When provided, the formal Banach fixed-point conditions
+                (contraction satisfied, Lipschitz target met) are checked.
+                Violations trigger re-reasoning and escalate uncertainty,
+                closing the gap where formal convergence guarantees were
+                computed but never fed into the meta-cognitive cycle.
 
         Returns:
             Dict with:
@@ -15697,6 +15706,8 @@ class UnifiedCognitiveCycle:
                 - trigger_detail: full output of MetaCognitiveRecursionTrigger.
                 - provenance: current attribution snapshot.
                 - root_cause_trace: root-cause info if causal_trace available.
+                - convergence_certificate: formal convergence verification
+                  result when provided.
         """
         # 0. Incorporate feedback signal into subsystem states when provided
         # so that downstream coherence checks can detect misalignment between
@@ -15826,6 +15837,44 @@ class UnifiedCognitiveCycle:
                 metadata={'memory_trust_deficit': memory_trust_deficit},
             )
 
+        # 2f. Convergence certificate verification — when a formal
+        # convergence certificate is provided (from verify_convergence()),
+        # check the Banach fixed-point conditions.  When the contraction
+        # mapping condition is violated (empirical Lipschitz >= 1), the
+        # meta-loop's theoretical convergence guarantee is lost.  Escalate
+        # uncertainty and record in error evolution so the system learns
+        # from convergence guarantee failures, closing the gap where
+        # verify_convergence() was defined but never fed into the meta-
+        # cognitive cycle.
+        _cert_contraction_violated = False
+        if convergence_certificate is not None:
+            if not convergence_certificate.get('contraction_satisfied', True):
+                _cert_contraction_violated = True
+                _cert_lip = convergence_certificate.get(
+                    'empirical_lipschitz', 1.0,
+                )
+                _cert_unc_boost = min(
+                    1.0 - uncertainty,
+                    min(0.3, (_cert_lip - 1.0) * 0.2) if _cert_lip > 1.0 else 0.1,
+                )
+                uncertainty = min(1.0, uncertainty + _cert_unc_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='convergence_certificate_violation',
+                        strategy_used='meta_rerun',
+                        success=False,
+                        metadata={
+                            'empirical_lipschitz': _cert_lip,
+                            'contraction_satisfied': False,
+                            'target_satisfied': convergence_certificate.get(
+                                'target_satisfied', False,
+                            ),
+                            'residual_norm': convergence_certificate.get(
+                                'residual_norm', float('inf'),
+                            ),
+                        },
+                    )
+
         # 2e. Provenance-driven trigger weight adaptation — adjust the
         # metacognitive trigger's signal weights proportionally to the
         # current provenance attribution so that modules dominating the
@@ -15892,6 +15941,18 @@ class UnifiedCognitiveCycle:
             }
         should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
 
+        # 3b. Convergence certificate → rerun trigger — when the formal
+        # Banach contraction condition is violated, force a rerun even if
+        # the composite trigger didn't fire.  This ensures that formal
+        # convergence guarantee failures always activate the meta-cognitive
+        # cycle, not just heuristic uncertainty thresholds.
+        if _cert_contraction_violated and not should_rerun:
+            should_rerun = True
+            trigger_detail['triggers_active'] = list(
+                set(trigger_detail.get('triggers_active', []))
+                | {'convergence_certificate_violation'}
+            )
+
         # Enrich trigger detail with provenance attribution so
         # downstream consumers can see *which module* dominated when
         # re-reasoning was recommended (Gap 5).
@@ -15932,6 +15993,28 @@ class UnifiedCognitiveCycle:
             provenance_root_cause = self.provenance_tracker.trace_root_cause(
                 _prov_dom,
             )
+
+        # 5c. Provenance root-cause → rerun trigger — when the root-cause
+        # analysis reveals that a single upstream module contributes more
+        # than 60% of the total L2 delta and the overall provenance shows
+        # significant attribution spread (> 2 modules), trigger re-reasoning
+        # even if the composite trigger didn't fire.  A dominant root module
+        # with high contribution indicates a bottleneck whose output
+        # disproportionately shapes the final result, warranting deeper
+        # meta-cognitive review to verify that dominance is justified.
+        # This closes the gap where provenance root-cause was computed
+        # post-hoc without influencing the should_rerun decision.
+        if not should_rerun and provenance_root_cause:
+            _rc_contributions = provenance_root_cause.get('contributions', {})
+            _rc_total = sum(abs(v) for v in _rc_contributions.values()) or 1.0
+            for _rc_mod, _rc_val in _rc_contributions.items():
+                if abs(_rc_val) / _rc_total > 0.6 and len(_rc_contributions) > 2:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {f'provenance_root_cause_dominance:{_rc_mod}'}
+                    )
+                    break
 
         # 6. Root-cause trace (if available).
         root_cause_trace = {}
@@ -16217,6 +16300,7 @@ class UnifiedCognitiveCycle:
                 'escalation': coherence_trend_escalation,
                 'pass_count': self._coherence_trend_count,
             },
+            'convergence_certificate': convergence_certificate or {},
         }
 
     def reset(self) -> None:
@@ -19457,6 +19541,46 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=_convergence_relevance,
                 tier="short_term",
             )
+
+        # 1a-cert. Formal convergence verification — compute the Banach
+        # fixed-point convergence certificate when the meta-loop converged
+        # successfully and we are not in fast mode.  The certificate is
+        # stored and later passed to the UnifiedCognitiveCycle so that
+        # formal convergence guarantee violations (contraction mapping not
+        # satisfied, Lipschitz target exceeded) trigger meta-cognitive
+        # re-reasoning.  This closes the gap where verify_convergence()
+        # was defined on ProvablyConvergentMetaLoop but never called
+        # during the forward pass, leaving the formal convergence
+        # guarantees disconnected from the cognitive cycle.
+        _convergence_certificate: Optional[Dict[str, Any]] = None
+        if (meta_loop_valid
+                and not fast
+                and hasattr(self.meta_loop, 'verify_convergence')
+                and not _adaptive_meta_used):
+            try:
+                with torch.no_grad():
+                    _convergence_certificate = self.meta_loop.verify_convergence(
+                        z_in, num_samples=min(50, max(10, B * 2)),
+                    )
+                if _convergence_certificate.get('warnings'):
+                    for _cert_warn in _convergence_certificate['warnings']:
+                        logger.debug("Convergence certificate: %s", _cert_warn)
+                self.audit_log.record("meta_loop", "convergence_certificate", {
+                    "contraction_satisfied": _convergence_certificate.get(
+                        "contraction_satisfied", False,
+                    ),
+                    "target_satisfied": _convergence_certificate.get(
+                        "target_satisfied", False,
+                    ),
+                    "empirical_lipschitz": _convergence_certificate.get(
+                        "empirical_lipschitz", None,
+                    ),
+                })
+            except Exception as _cert_err:
+                logger.debug(
+                    "Convergence certificate computation failed (non-fatal): %s",
+                    _cert_err,
+                )
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
         # window monitor to detect sustained divergence across forward
@@ -23039,6 +23163,31 @@ class AEONDeltaV3(nn.Module):
                             uncertainty = min(1.0, uncertainty + _icm_boost)
                             uncertainty_sources["icm_curiosity"] = _icm_boost
                             high_uncertainty = uncertainty > 0.5
+                # 5e-iii. Active learning state blending — blend the
+                # planner's best_action into C_star as a small residual
+                # so the epistemic exploration signal shapes downstream
+                # reasoning.  Previously, the planner computed actions
+                # that only fed uncertainty but never influenced the
+                # reasoning state, leaving its epistemic signal isolated
+                # from causal decision-making.  The blend weight is kept
+                # small (default 0.05) to avoid overriding the converged
+                # meta-loop output while still nudging the state toward
+                # epistemically informative regions.
+                _al_best_action = active_learning_results.get("best_action", None)
+                if (_al_best_action is not None
+                        and torch.is_tensor(_al_best_action)
+                        and torch.isfinite(_al_best_action).all()):
+                    # Project best_action to match C_star shape if needed.
+                    # best_action is [action_dim] from select_action(C_star[0]),
+                    # while C_star is [B, hidden_dim].
+                    if _al_best_action.dim() == 1 and _al_best_action.shape[0] == C_star.shape[-1]:
+                        _al_residual = _al_best_action.unsqueeze(0).expand_as(C_star)
+                        C_star = C_star + self.config.active_learning_blend_weight * _al_residual
+                        self.provenance_tracker.record_after("active_learning", C_star)
+                        self.audit_log.record("active_learning", "state_blended", {
+                            "blend_weight": self.config.active_learning_blend_weight,
+                            "action_norm": float(_al_best_action.norm().item()),
+                        })
             except Exception as _al_err:
                 logger.warning(f"ActiveLearningPlanner error (non-fatal): {_al_err}")
                 self.error_recovery.record_event(
@@ -25437,6 +25586,10 @@ class AEONDeltaV3(nn.Module):
                     # mean trust score, signalling unreliable external data.
                     memory_trust_deficit=max(0.0, 1.0 - getattr(
                         self, '_last_trust_score', 1.0)),
+                    # Formal convergence certificate from verify_convergence()
+                    # so the UCC can check Banach fixed-point conditions and
+                    # trigger re-reasoning when contraction is not satisfied.
+                    convergence_certificate=_convergence_certificate,
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
