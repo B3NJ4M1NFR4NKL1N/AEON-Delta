@@ -41885,6 +41885,9 @@ def test_build_feedback_extra_signals_helper():
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42095,6 +42098,9 @@ def test_uncertainty_sources_values_clamped():
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     # Uncertainty sources are now aggregated into unc_peak and unc_source_count.
@@ -42965,6 +42971,9 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43027,6 +43036,9 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43155,6 +43167,9 @@ def test_systematic_uncertainty_in_feedback_bus():
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43218,6 +43233,9 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         _auto_critic_quality_ema = 0.3
         _auto_critic_quality_count = 10
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43251,6 +43269,9 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _auto_critic_quality_ema = 0.9
         _auto_critic_quality_count = 10
         _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
@@ -44347,6 +44368,192 @@ def test_eval_step_extracts_ucc_signals():
         # is correctly wired, not the loss computation itself.
         pass
     print("✅ test_eval_step_extracts_ucc_signals PASSED")
+
+
+# ============================================================================
+# Tests for architectural coherence closure — hybrid reasoning, NS bridge,
+# and cross-validation feedback bus integration
+# ============================================================================
+
+
+def test_pipeline_deps_hybrid_ns_ucc_edges():
+    """Pipeline DAG includes edges from hybrid_reasoning and ns_bridge to UCC."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+    assert ("hybrid_reasoning", "unified_cognitive_cycle") in edge_set, (
+        "Missing edge: hybrid_reasoning → unified_cognitive_cycle"
+    )
+    assert ("ns_bridge", "unified_cognitive_cycle") in edge_set, (
+        "Missing edge: ns_bridge → unified_cognitive_cycle"
+    )
+    assert ("cross_validation", "auto_critic") in edge_set, (
+        "Missing edge: cross_validation → auto_critic"
+    )
+    print("✅ test_pipeline_deps_hybrid_ns_ucc_edges PASSED")
+
+
+def test_feedback_bus_hybrid_ns_cv_signals_registered():
+    """Feedback bus registers hybrid_reasoning_quality, ns_bridge_confidence,
+    and cv_agreement_deficit signals."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, vocab_size=256, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    extra_names = set(model.feedback_bus._extra_signals.keys())
+    assert "hybrid_reasoning_quality" in extra_names, (
+        "hybrid_reasoning_quality not registered in feedback bus"
+    )
+    assert "ns_bridge_confidence" in extra_names, (
+        "ns_bridge_confidence not registered in feedback bus"
+    )
+    assert "cv_agreement_deficit" in extra_names, (
+        "cv_agreement_deficit not registered in feedback bus"
+    )
+    print("✅ test_feedback_bus_hybrid_ns_cv_signals_registered PASSED")
+
+
+def test_build_feedback_extra_signals_hybrid_ns_cv():
+    """_build_feedback_extra_signals returns hybrid, NS, and CV signals
+    when their cached state is degraded."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockDegraded:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        # Degraded hybrid reasoning: errored
+        _cached_hybrid_reasoning_quality = 0.0
+        # Degraded NS bridge: low activation
+        _cached_ns_bridge_confidence = 0.2
+        # CV disagreement present
+        _last_cv_disagreement = 0.6
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_MockDegraded())
+    assert "hybrid_reasoning_quality" in extra, (
+        "Must include hybrid_reasoning_quality when quality < 1.0"
+    )
+    assert extra["hybrid_reasoning_quality"] == 0.0, (
+        f"Expected 0.0, got {extra['hybrid_reasoning_quality']}"
+    )
+    assert "ns_bridge_confidence" in extra, (
+        "Must include ns_bridge_confidence when confidence < 1.0"
+    )
+    assert abs(extra["ns_bridge_confidence"] - 0.2) < 1e-6, (
+        f"Expected 0.2, got {extra['ns_bridge_confidence']}"
+    )
+    assert "cv_agreement_deficit" in extra, (
+        "Must include cv_agreement_deficit when disagreement > 0"
+    )
+    assert abs(extra["cv_agreement_deficit"] - 0.6) < 1e-6, (
+        f"Expected 0.6, got {extra['cv_agreement_deficit']}"
+    )
+    print("✅ test_build_feedback_extra_signals_hybrid_ns_cv PASSED")
+
+
+def test_build_feedback_extra_signals_omits_healthy():
+    """_build_feedback_extra_signals omits hybrid/NS/CV signals when healthy."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockHealthy:
+        class config:
+            diversity_collapse_threshold = 0.3
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        # All healthy
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_MockHealthy())
+    assert "hybrid_reasoning_quality" not in extra, (
+        "hybrid_reasoning_quality must not appear when quality is 1.0"
+    )
+    assert "ns_bridge_confidence" not in extra, (
+        "ns_bridge_confidence must not appear when confidence is 1.0"
+    )
+    assert "cv_agreement_deficit" not in extra, (
+        "cv_agreement_deficit must not appear when disagreement is 0.0"
+    )
+    print("✅ test_build_feedback_extra_signals_omits_healthy PASSED")
+
+
+def test_cached_hybrid_reasoning_quality_init():
+    """AEONDeltaV3.__init__ declares _cached_hybrid_reasoning_quality."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    assert "_cached_hybrid_reasoning_quality" in init_src, (
+        "__init__ must declare _cached_hybrid_reasoning_quality"
+    )
+    print("✅ test_cached_hybrid_reasoning_quality_init PASSED")
+
+
+def test_cached_ns_bridge_confidence_init():
+    """AEONDeltaV3.__init__ declares _cached_ns_bridge_confidence."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    init_src = inspect.getsource(AEONDeltaV3.__init__)
+    assert "_cached_ns_bridge_confidence" in init_src, (
+        "__init__ must declare _cached_ns_bridge_confidence"
+    )
+    print("✅ test_cached_ns_bridge_confidence_init PASSED")
+
+
+def test_hybrid_quality_cached_in_forward():
+    """_reasoning_core_impl caches hybrid reasoning quality."""
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert "self._cached_hybrid_reasoning_quality" in src, (
+        "aeon_core.py must cache _cached_hybrid_reasoning_quality in forward path"
+    )
+    print("✅ test_hybrid_quality_cached_in_forward PASSED")
+
+
+def test_ns_bridge_confidence_cached_in_forward():
+    """_reasoning_core_impl caches NS bridge confidence."""
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert "self._cached_ns_bridge_confidence" in src, (
+        "aeon_core.py must cache _cached_ns_bridge_confidence in forward path"
+    )
+    print("✅ test_ns_bridge_confidence_cached_in_forward PASSED")
+
+
+def test_ns_bridge_in_ucc_states():
+    """_reasoning_core_impl includes ns_bridge in UCC subsystem states."""
+    with open("aeon_core.py") as f:
+        src = f.read()
+    assert '"ns_bridge"' in src and '_ucc_states["ns_bridge"]' in src, (
+        "aeon_core.py must include ns_bridge in _ucc_states"
+    )
+    print("✅ test_ns_bridge_in_ucc_states PASSED")
 
 
 def run_all_tests():
