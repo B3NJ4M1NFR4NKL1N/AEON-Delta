@@ -6476,6 +6476,65 @@ class CausalProvenanceTracker:
         deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
         return {k: sorted(v) for k, v in deps.items()}
 
+    def validate_dag_acyclic(self) -> Dict[str, Any]:
+        """Validate that the dependency graph is acyclic.
+
+        Uses iterative depth-first search to detect cycles in the
+        dependency DAG.  When a cycle is found, it is recorded and the
+        offending back-edge is removed so that :meth:`trace_root_cause`
+        remains safe.
+
+        Returns:
+            Dict with:
+                - is_acyclic: bool — True if no cycles were found.
+                - cycles_found: list of cycle descriptions (edges removed).
+                - nodes_checked: int — total nodes visited.
+        """
+        deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
+        all_nodes: Set[str] = set(deps.keys())
+        for parents in deps.values():
+            all_nodes.update(parents)
+
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {n: WHITE for n in all_nodes}
+        cycles_found: List[Dict[str, str]] = []
+
+        for start in all_nodes:
+            if color[start] != WHITE:
+                continue
+            stack = [(start, False)]
+            while stack:
+                node, processed = stack.pop()
+                if processed:
+                    color[node] = BLACK
+                    continue
+                if color[node] == GRAY:
+                    color[node] = BLACK
+                    continue
+                color[node] = GRAY
+                stack.append((node, True))
+                for parent in list(deps.get(node, set())):
+                    if color[parent] == GRAY:
+                        # Back-edge detected → cycle
+                        cycles_found.append({
+                            'from': parent,
+                            'to': node,
+                        })
+                        deps[node].discard(parent)
+                        logger.warning(
+                            "CausalProvenanceTracker: removed cyclic edge "
+                            "%s → %s to maintain DAG invariant",
+                            parent, node,
+                        )
+                    elif color[parent] == WHITE:
+                        stack.append((parent, False))
+
+        return {
+            'is_acyclic': len(cycles_found) == 0,
+            'cycles_found': cycles_found,
+            'nodes_checked': len(all_nodes),
+        }
+
     def trace_root_cause(self, module_name: str) -> Dict[str, Any]:
         """Trace backward through the dependency DAG to find root causes.
 
@@ -14493,6 +14552,9 @@ class MetaCognitiveRecursionTrigger:
             # Training UCC failure — unified cognitive cycle failed
             # during training, signalling integration issues.
             "training_ucc_failure": "uncertainty",
+            # Provenance DAG cycle — dependency graph contained a
+            # cycle, indicating a wiring error in the pipeline.
+            "provenance_dag_cycle": "low_causal_quality",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -18812,6 +18874,20 @@ class AEONDeltaV3(nn.Module):
             if _down_attr is not None and getattr(self, _down_attr, None) is None:
                 continue
             self.provenance_tracker.record_dependency(_up, _down)
+        # Validate dependency DAG acyclicity after all edges are registered.
+        # If cycles are detected, the validator removes the offending
+        # back-edges and logs a warning so trace_root_cause() remains safe.
+        _dag_validation = self.provenance_tracker.validate_dag_acyclic()
+        if not _dag_validation['is_acyclic']:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='provenance_dag_cycle',
+                    strategy_used='edge_removal',
+                    success=True,
+                    metadata={
+                        'cycles_found': len(_dag_validation['cycles_found']),
+                    },
+                )
         
         # 0. Register encoder and VQ stages in the provenance tracker.
         # These stages run in _forward_impl before the tracker is reset,
@@ -26601,6 +26677,32 @@ class AEONDeltaV3(nn.Module):
         ))
         self._cached_output_quality = _current_output_reliability
 
+        # 8i-oq-attrib. Output reliability causal decomposition — break down
+        # the composite reliability score by contributing factor so that
+        # downstream root-cause analysis can identify WHICH subsystem
+        # degraded overall output trust.  Without this, the scalar
+        # reliability score is opaque: callers know the output is
+        # unreliable but not why.  The decomposition enables targeted
+        # corrective action by the metacognitive trigger and error
+        # evolution tracker.
+        _reliability_factors = {
+            'uncertainty_contribution': max(0.0, 1.0 - uncertainty),
+            'auto_critic_contribution': max(0.0,
+                _auto_critic_final_score if _auto_critic_final_score else 1.0),
+            'convergence_contribution': max(0.0,
+                meta_results.get('convergence_rate', 1.0)),
+            'coherence_contribution': max(0.0,
+                1.0 - self._cached_coherence_deficit),
+            'verification_coverage': _verification_coverage,
+        }
+        # Identify the weakest factor — this is the bottleneck
+        # subsystem that most degrades output reliability.
+        _weakest_factor = min(
+            _reliability_factors, key=_reliability_factors.get,
+        )
+        _reliability_factors['weakest_factor'] = _weakest_factor
+        _reliability_factors['composite'] = _current_output_reliability
+
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
         # analysis, provenance dampening) is complete, refresh the cached
@@ -26794,6 +26896,7 @@ class AEONDeltaV3(nn.Module):
             # appropriate for a safety-first architecture where any
             # individual failure mode should degrade the trust signal.
             'output_reliability': _current_output_reliability,
+            'output_reliability_factors': _reliability_factors,
             'verification_coverage': _verification_coverage,
             # Pre-computed loss components (avoids second spectral-norm pass)
             '_precomputed_consistency': _precomputed_consistency,
@@ -27141,19 +27244,93 @@ class AEONDeltaV3(nn.Module):
                     ).mean().item()
                     _cycle_consistency = max(0.0, min(1.0, (_cos_sim + 1.0) / 2.0))
                     _cc_threshold = self.config.cycle_consistency_violation_threshold
-                    if _cycle_consistency < _cc_threshold and self.error_evolution is not None:
-                        self.error_evolution.record_episode(
-                            error_class='cycle_consistency_violation',
-                            strategy_used='uncertainty_escalation',
-                            success=False,
-                            metadata={
-                                'cycle_consistency': _cycle_consistency,
-                                'cosine_similarity': float(_cos_sim),
-                            },
+                    if _cycle_consistency < _cc_threshold:
+                        # Escalate uncertainty within the same forward pass
+                        # so that the metacognitive trigger and downstream
+                        # consumers react to encode→reason→decode fidelity
+                        # loss immediately, not only at training time.
+                        _cc_deficit = max(0.0, _cc_threshold - _cycle_consistency)
+                        _CC_UNCERTAINTY_SCALE = 0.25
+                        _cc_unc_boost = min(
+                            1.0 - uncertainty,
+                            _cc_deficit * _CC_UNCERTAINTY_SCALE,
                         )
+                        if _cc_unc_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _cc_unc_boost)
+                            uncertainty_sources["cycle_consistency_violation"] = _cc_unc_boost
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='cycle_consistency_violation',
+                                strategy_used='uncertainty_escalation',
+                                success=False,
+                                metadata={
+                                    'cycle_consistency': _cycle_consistency,
+                                    'cosine_similarity': float(_cos_sim),
+                                    'uncertainty_boost': _cc_unc_boost,
+                                },
+                            )
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "cycle_consistency", "violation_detected",
+                                causal_prerequisites=[input_trace_id],
+                                severity="warning",
+                                metadata={
+                                    'cycle_consistency': _cycle_consistency,
+                                    'cosine_similarity': float(_cos_sim),
+                                    'uncertainty_boost': _cc_unc_boost,
+                                },
+                            )
             except (RuntimeError, ValueError) as _cc_err:
                 logger.debug("Cycle-consistency check failed: %s", _cc_err)
+
+        # ===== DECODER RE-ENCODE VERIFICATION =====
+        # Re-encode the decoder output through the encoder and compare
+        # with the reasoning core's converged state (C_star).  This
+        # closes the full output→input verification loop: if the
+        # decoder output, when round-tripped through the encoder,
+        # diverges from the internal state, it means the decode stage
+        # introduced distortion that the encoder would not reproduce.
+        _reencode_consistency: float = 1.0
+        if (z_out is not None
+                and hasattr(self, 'encoder')
+                and self.encoder is not None
+                and not fast):
+            try:
+                with torch.no_grad():
+                    _reencoded = self.encoder(z_out.detach())
+                    _core = outputs.get('core_state', z_out).detach()
+                    if (_reencoded.shape == _core.shape
+                            and torch.isfinite(_reencoded).all()):
+                        _re_cos = F.cosine_similarity(
+                            _reencoded, _core, dim=-1,
+                        ).mean().item()
+                        _reencode_consistency = max(
+                            0.0, min(1.0, (_re_cos + 1.0) / 2.0),
+                        )
+                        _RE_THRESHOLD = self.config.cycle_consistency_violation_threshold
+                        if _reencode_consistency < _RE_THRESHOLD:
+                            _re_deficit = max(0.0, _RE_THRESHOLD - _reencode_consistency)
+                            _re_unc_boost = min(
+                                1.0 - uncertainty,
+                                _re_deficit * 0.2,
+                            )
+                            if _re_unc_boost > 0:
+                                uncertainty = min(1.0, uncertainty + _re_unc_boost)
+                                uncertainty_sources["reencode_divergence"] = _re_unc_boost
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='cycle_consistency_violation',
+                                    strategy_used='reencode_verification',
+                                    success=False,
+                                    metadata={
+                                        'reencode_consistency': _reencode_consistency,
+                                    },
+                                )
+            except Exception as _re_err:
+                logger.debug("Re-encode verification failed (non-fatal): %s", _re_err)
+
         outputs['cycle_consistency'] = _cycle_consistency
+        outputs['reencode_consistency'] = _reencode_consistency
 
         # ===== PACKAGE RESULTS =====
         result = {

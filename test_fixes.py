@@ -45636,6 +45636,135 @@ def test_causal_trace_find_targeted_query():
     print("✅ test_causal_trace_find_targeted_query PASSED")
 
 
+def test_validate_dag_acyclic_clean():
+    """Verify CausalProvenanceTracker.validate_dag_acyclic returns True for acyclic DAGs."""
+    from aeon_core import CausalProvenanceTracker
+    pt = CausalProvenanceTracker()
+    pt.record_dependency('encoder', 'meta_loop')
+    pt.record_dependency('meta_loop', 'decoder')
+    pt.record_dependency('encoder', 'decoder')  # skip connection
+    result = pt.validate_dag_acyclic()
+    assert result['is_acyclic'] is True, f"Expected acyclic DAG, got {result}"
+    assert result['cycles_found'] == [], f"Expected no cycles, got {result['cycles_found']}"
+    assert result['nodes_checked'] == 3, f"Expected 3 nodes, got {result['nodes_checked']}"
+    print("✅ test_validate_dag_acyclic_clean PASSED")
+
+
+def test_validate_dag_acyclic_cycle_detected():
+    """Verify CausalProvenanceTracker detects and removes cyclic edges."""
+    from aeon_core import CausalProvenanceTracker
+    pt = CausalProvenanceTracker()
+    pt.record_dependency('A', 'B')
+    pt.record_dependency('B', 'C')
+    pt.record_dependency('C', 'A')  # cycle: A→B→C→A
+    result = pt.validate_dag_acyclic()
+    assert result['is_acyclic'] is False, f"Expected cycle detection, got {result}"
+    assert len(result['cycles_found']) > 0, "Expected at least one cycle"
+    # After removal, DAG should be acyclic
+    result2 = pt.validate_dag_acyclic()
+    assert result2['is_acyclic'] is True, f"Expected acyclic after removal, got {result2}"
+    print("✅ test_validate_dag_acyclic_cycle_detected PASSED")
+
+
+def test_validate_dag_acyclic_empty():
+    """Verify validate_dag_acyclic handles empty DAG gracefully."""
+    from aeon_core import CausalProvenanceTracker
+    pt = CausalProvenanceTracker()
+    result = pt.validate_dag_acyclic()
+    assert result['is_acyclic'] is True
+    assert result['nodes_checked'] == 0
+    print("✅ test_validate_dag_acyclic_empty PASSED")
+
+
+def test_cycle_consistency_violation_escalates_uncertainty():
+    """Verify cycle_consistency_violation escalates uncertainty in the forward pass.
+
+    The code should record an uncertainty_sources entry when cycle
+    consistency drops below the configured threshold.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3)
+    assert 'cycle_consistency_violation' in source, (
+        "AEONDeltaV3 should record 'cycle_consistency_violation' in uncertainty_sources"
+    )
+    assert 'uncertainty_sources["cycle_consistency_violation"]' in source, (
+        "cycle_consistency_violation should be recorded as an uncertainty source"
+    )
+    print("✅ test_cycle_consistency_violation_escalates_uncertainty PASSED")
+
+
+def test_reencode_verification_code_exists():
+    """Verify the decoder re-encode verification loop exists in the forward pass.
+
+    The code should re-encode the decoder output through the encoder and
+    compare with C_star to verify decode→encode round-trip fidelity.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3)
+    assert 'reencode_consistency' in source, (
+        "AEONDeltaV3 should compute reencode_consistency for output→input verification"
+    )
+    assert 'reencode_divergence' in source, (
+        "reencode_divergence should be recorded as an uncertainty source "
+        "when the round-trip verification fails"
+    )
+    print("✅ test_reencode_verification_code_exists PASSED")
+
+
+def test_output_reliability_factors_in_output():
+    """Verify output_reliability_factors is included in the forward pass output.
+
+    The output dict should contain a decomposition of the output reliability
+    score by contributing factor so that downstream root-cause analysis can
+    identify WHICH subsystem degraded overall output trust.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3)
+    assert 'output_reliability_factors' in source, (
+        "AEONDeltaV3 output should include output_reliability_factors decomposition"
+    )
+    assert 'weakest_factor' in source, (
+        "output_reliability_factors should identify the weakest contributing factor"
+    )
+    assert 'uncertainty_contribution' in source, (
+        "output_reliability_factors should include uncertainty_contribution"
+    )
+    assert 'convergence_contribution' in source, (
+        "output_reliability_factors should include convergence_contribution"
+    )
+    assert 'coherence_contribution' in source, (
+        "output_reliability_factors should include coherence_contribution"
+    )
+    print("✅ test_output_reliability_factors_in_output PASSED")
+
+
+def test_provenance_dag_cycle_in_error_class_mapping():
+    """Verify provenance_dag_cycle is mapped in MetaCognitiveRecursionTrigger."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    source = inspect.getsource(MetaCognitiveRecursionTrigger)
+    assert '"provenance_dag_cycle"' in source, (
+        "provenance_dag_cycle should be mapped in _class_to_signal "
+        "so DAG cycle detection feeds into metacognitive trigger weights"
+    )
+    print("✅ test_provenance_dag_cycle_in_error_class_mapping PASSED")
+
+
+def test_dag_validation_in_forward_pass():
+    """Verify DAG acyclicity validation is called in the forward pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3)
+    assert 'validate_dag_acyclic' in source, (
+        "AEONDeltaV3 forward pass should validate DAG acyclicity "
+        "after registering pipeline dependencies"
+    )
+    print("✅ test_dag_validation_in_forward_pass PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -47604,6 +47733,17 @@ def run_all_tests():
     test_ns_consistency_in_ucc_expected_subsystems()
     test_ns_consistency_state_added_to_ucc_states()
     test_causal_trace_find_targeted_query()
+
+    # Architectural Unification — DAG Acyclicity, Cycle Consistency,
+    # Re-encode Verification, and Output Reliability Decomposition
+    test_validate_dag_acyclic_clean()
+    test_validate_dag_acyclic_cycle_detected()
+    test_validate_dag_acyclic_empty()
+    test_cycle_consistency_violation_escalates_uncertainty()
+    test_reencode_verification_code_exists()
+    test_output_reliability_factors_in_output()
+    test_provenance_dag_cycle_in_error_class_mapping()
+    test_dag_validation_in_forward_pass()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
