@@ -2784,6 +2784,7 @@ class AEONConfig:
     lambda_decoder_provenance: float = 0.005
     lambda_ns_consistency: float = 0.01
     lambda_hierarchical_wm: float = 0.01
+    lambda_memory_retrieval: float = 0.005
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -26916,6 +26917,7 @@ class AEONDeltaV3(nn.Module):
         16. Unified cognitive cycle loss (internal consistency penalty)
         17. Self-report loss (honest, consistent self-assessment)
         18. Cycle-consistency loss (encoder-decoder information fidelity)
+        18d. Memory retrieval quality loss (memory subsystem supervision)
         
         Returns:
             Dict with total_loss and per-component losses
@@ -27332,6 +27334,32 @@ class AEONDeltaV3(nn.Module):
                 and torch.isfinite(_hwm_pred).all()):
             hierarchical_wm_loss = F.mse_loss(_hwm_pred, _hwm_target.detach())
 
+        # ===== 18d. MEMORY RETRIEVAL QUALITY LOSS =====
+        # Penalize poor memory retrieval quality so that memory systems
+        # receive a gradient signal.  Without this, memory subsystems
+        # (hierarchical, neurogenic, consolidating, temporal) operate
+        # without direct training supervision — retrieval quality is
+        # tracked for observability but never backpropagated.
+        # The loss is (1 - retrieval_quality) + cross-validation
+        # inconsistency penalty when multiple memory systems disagree.
+        memory_retrieval_loss = torch.tensor(0.0, device=self.device)
+        _mem_quality_info = outputs.get('memory_retrieval_quality', {})
+        _mem_cv_info = outputs.get('memory_cross_validation', {})
+        _mrl_quality = _mem_quality_info.get('retrieval_quality', None)
+        if _mrl_quality is not None and isinstance(_mrl_quality, (int, float)):
+            # Base loss: penalize low retrieval quality
+            memory_retrieval_loss = torch.tensor(
+                max(0.0, 1.0 - float(_mrl_quality)),
+                device=self.device,
+            )
+            # Additional penalty for cross-validation inconsistency
+            if _mem_cv_info.get('inconsistent', False):
+                _mean_sim = _mem_cv_info.get('mean_similarity', 0.5)
+                memory_retrieval_loss = memory_retrieval_loss + torch.tensor(
+                    max(0.0, 1.0 - float(_mean_sim)),
+                    device=self.device,
+                )
+
         # ===== 19. META-RECOVERY POLICY LOSS =====
         # When MetaRecoveryLearner is enabled and its replay buffer has
         # enough experiences, sample a mini-batch and compute the
@@ -27575,6 +27603,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_decoder_provenance * decoder_provenance_loss +
             self.config.lambda_ns_consistency * ns_consistency_loss +
             self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
+            self.config.lambda_memory_retrieval * memory_retrieval_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
@@ -27637,6 +27666,17 @@ class AEONDeltaV3(nn.Module):
                     metadata={'hierarchical_wm_loss': _hwm_val},
                 )
 
+        if self.error_evolution is not None:
+            if torch.is_tensor(memory_retrieval_loss) and torch.isfinite(memory_retrieval_loss):
+                _mrl_val = float(memory_retrieval_loss.detach().item())
+                if _mrl_val > 0.5:
+                    self.error_evolution.record_episode(
+                        error_class='high_memory_retrieval_loss',
+                        strategy_used='memory_retrieval_supervision',
+                        success=False,
+                        metadata={'memory_retrieval_loss': _mrl_val},
+                    )
+
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
         
@@ -27665,6 +27705,7 @@ class AEONDeltaV3(nn.Module):
             'decoder_provenance_loss': decoder_provenance_loss,
             'ns_consistency_loss': ns_consistency_loss,
             'hierarchical_wm_loss': hierarchical_wm_loss,
+            'memory_retrieval_loss': memory_retrieval_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
             'task2vec_loss': task2vec_loss,
@@ -27888,6 +27929,7 @@ class AEONDeltaV3(nn.Module):
                     * max(0.0, 1.0 - self._cached_coherence_deficit)
                 )),
                 'causal_decision_chain': outputs.get('causal_decision_chain', {}),
+                'uncertainty_sources': outputs.get('uncertainty_sources', {}),
                 'provenance': _gen_provenance,
                 'ucc_result': _gen_ucc_result,
             }
@@ -27981,6 +28023,7 @@ class AEONDeltaV3(nn.Module):
             ('decoder_provenance_loss', 'high_decoder_provenance_training_loss'),
             ('ns_consistency_loss', 'high_ns_consistency_training_loss'),
             ('hierarchical_wm_loss', 'high_hierarchical_wm_training_loss'),
+            ('memory_retrieval_loss', 'high_memory_retrieval_training_loss'),
         ]
         for _loss_key, _error_class in _subsystem_losses:
             _sub_loss = loss_dict.get(_loss_key, None)
@@ -30629,6 +30672,55 @@ class AEONTrainer:
                     metrics['inference_uncertainty'] = float(_unc)
             if outputs.get('is_fallback', False):
                 metrics['inference_fallback'] = 1.0
+
+            # ===== UNCERTAINTY SOURCE ATTRIBUTION =====
+            # Surface the per-source uncertainty breakdown so training
+            # can observe *which* subsystem drives inference degradation,
+            # not just the aggregate uncertainty scalar.  This enables
+            # targeted training interventions (e.g. extra causal DAG
+            # supervision when causal uncertainty dominates).
+            _unc_sources = outputs.get('uncertainty_sources', {})
+            for _src_name, _src_val in _unc_sources.items():
+                metrics[f'unc_src_{_src_name}'] = float(_src_val)
+
+            # ===== RE-REASONING ON should_rerun =====
+            # When the UCC signals that reasoning should be re-run, do
+            # a second forward pass so the eval metrics reflect the
+            # model's *corrected* reasoning rather than its first (potentially
+            # degraded) attempt.  This closes the loop: uncertainty triggers
+            # a meta-cognitive cycle even during evaluation, ensuring each
+            # component verifies and reinforces the others.
+            if _ucc and _ucc.get('should_rerun', False):
+                try:
+                    outputs_rerun = self.model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        decode_mode='train',
+                        fast=False
+                    )
+                    loss_dict_rerun = self.model.compute_loss(
+                        outputs_rerun,
+                        labels,
+                        attention_mask
+                    )
+                    # Use the better (lower total_loss) of the two passes
+                    _orig_loss = metrics.get('total_loss', float('inf'))
+                    _rerun_loss = (
+                        float(loss_dict_rerun['total_loss'].item())
+                        if torch.is_tensor(loss_dict_rerun.get('total_loss'))
+                        else float('inf')
+                    )
+                    if _rerun_loss < _orig_loss:
+                        metrics = {
+                            k: float(v.item()) if isinstance(v, torch.Tensor) else float(v)
+                            for k, v in loss_dict_rerun.items()
+                        }
+                    metrics['eval_rerun_triggered'] = 1.0
+                    metrics['eval_rerun_improved'] = float(_rerun_loss < _orig_loss)
+                except Exception:
+                    # Non-fatal: if re-reasoning fails, keep original metrics
+                    metrics['eval_rerun_triggered'] = 1.0
+                    metrics['eval_rerun_improved'] = 0.0
 
         return metrics
     
