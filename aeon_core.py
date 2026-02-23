@@ -15137,16 +15137,32 @@ class DirectionalUncertaintyTracker:
     2. Re-reasoning can target the specific uncertain module rather
        than re-running everything.
     3. Uncertainty sources are traceable for root-cause analysis.
+    4. Historical trend data persists across cycles so that
+       persistently uncertain modules can be identified even when
+       individual-cycle uncertainty is moderate.
 
     This is a pure-logic utility with no learnable parameters.
     """
 
+    _HISTORY_MAXLEN: int = 16
+
     def __init__(self):
         self._sources: Dict[str, float] = {}
         self._module_uncertainties: Dict[str, float] = {}
+        # Rolling history of per-module uncertainty across cycles.
+        # Each entry is a snapshot of ``_module_uncertainties`` from the
+        # previous cycle, enabling trend detection.
+        self._history: deque = deque(maxlen=self._HISTORY_MAXLEN)
 
     def reset(self) -> None:
-        """Clear all tracked uncertainty for a new forward pass."""
+        """Archive the current cycle's data and clear for a new pass.
+
+        Unlike a hard clear, the current module uncertainties are pushed
+        onto the rolling history before being reset, preserving trend
+        information for cross-cycle analysis.
+        """
+        if self._module_uncertainties:
+            self._history.append(dict(self._module_uncertainties))
         self._sources.clear()
         self._module_uncertainties.clear()
 
@@ -15218,7 +15234,8 @@ class DirectionalUncertaintyTracker:
 
         Returns:
             Dict with aggregate, most_uncertain_module, sources,
-            module_uncertainties, and flagged_modules.
+            module_uncertainties, flagged_modules, and trend data
+            from the rolling history.
         """
         return {
             "aggregate_uncertainty": self.get_aggregate(),
@@ -15226,7 +15243,37 @@ class DirectionalUncertaintyTracker:
             "sources": self.get_sources(),
             "module_uncertainties": self.get_module_uncertainties(),
             "flagged_modules": self.get_modules_above_threshold(),
+            "persistent_uncertain_modules": self.get_persistently_uncertain(),
+            "history_length": len(self._history),
         }
+
+    def get_persistently_uncertain(
+        self, threshold: float = 0.3, min_occurrences: int = 3,
+    ) -> List[str]:
+        """Return modules that exceeded *threshold* in at least
+        *min_occurrences* of the recent history cycles.
+
+        Persistent uncertainty indicates a structural weakness rather
+        than a transient anomaly, enabling targeted architectural
+        investigation or resource reallocation.
+
+        Args:
+            threshold: Per-module uncertainty above which a cycle counts.
+            min_occurrences: Minimum number of flagged cycles to qualify.
+
+        Returns:
+            List of module names sorted by frequency (descending).
+        """
+        counts: Dict[str, int] = defaultdict(int)
+        for snapshot in self._history:
+            for name, unc in snapshot.items():
+                if unc > threshold:
+                    counts[name] += 1
+        return sorted(
+            [name for name, cnt in counts.items() if cnt >= min_occurrences],
+            key=lambda n: counts[n],
+            reverse=True,
+        )
 
 
 class MemoryReasoningValidator:
@@ -21544,6 +21591,36 @@ class AEONDeltaV3(nn.Module):
                 "inconsistent": _mem_inconsistent,
                 "num_systems": len(_mem_snapshots),
             }
+            # 5c5-cv-rel. Per-system reliability scoring — compute each
+            # memory system's mean pairwise similarity to all other
+            # systems.  A system whose output is similar to most others
+            # is considered reliable; a system that disagrees with
+            # everyone is flagged as an outlier.  The per-system
+            # reliability map is cached so the next forward pass can
+            # weight memory contributions accordingly, closing the gap
+            # where disagreement was detected but the *source* of
+            # disagreement was not identified.
+            _per_system_reliability: Dict[str, float] = {}
+            for _sys_name in _mem_names:
+                _sys_sims = [
+                    v for k, v in _pair_sims.items()
+                    if _sys_name in k
+                ]
+                _per_system_reliability[_sys_name] = (
+                    sum(_sys_sims) / max(len(_sys_sims), 1)
+                )
+            self._last_memory_cross_validation[
+                "per_system_reliability"
+            ] = _per_system_reliability
+            # Cache the least reliable system name for causal tracing.
+            if _per_system_reliability:
+                _least_reliable = min(
+                    _per_system_reliability,
+                    key=_per_system_reliability.get,
+                )
+                self._last_memory_cross_validation[
+                    "least_reliable_system"
+                ] = _least_reliable
             if _mem_inconsistent:
                 _MEM_CV_BOOST = 0.15
                 uncertainty = min(1.0, uncertainty + _MEM_CV_BOOST)
@@ -23292,6 +23369,44 @@ class AEONDeltaV3(nn.Module):
             logger.warning(
                 f"State consistency violations: {validation_result['violations']}"
             )
+            # 8b-unc. State validation → uncertainty escalation — when
+            # the integrated output fails consistency checks, escalate
+            # uncertainty so the metacognitive trigger can activate deeper
+            # reasoning.  The boost is proportional to the number of
+            # distinct violation types, capped at 0.25 to prevent a single
+            # bad sample from saturating the uncertainty budget.  This
+            # closes the gap where state violations were logged but never
+            # fed back into the self-reflective cycle.
+            _sv_violation_count = len(validation_result.get("violations", []))
+            _SV_UNCERTAINTY_SCALE = 0.05
+            _SV_UNCERTAINTY_CAP = 0.25
+            _sv_boost = min(
+                1.0 - uncertainty,
+                min(_sv_violation_count * _SV_UNCERTAINTY_SCALE, _SV_UNCERTAINTY_CAP),
+            )
+            if _sv_boost > 0:
+                uncertainty = min(1.0, uncertainty + _sv_boost)
+                uncertainty_sources["state_validation_violation"] = _sv_boost
+                high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="state_validation_violation",
+                    strategy_used="uncertainty_escalation",
+                    success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        "num_violations": _sv_violation_count,
+                        "violations": validation_result["violations"],
+                    }),
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "state_validator", "consistency_violation",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "num_violations": _sv_violation_count,
+                        "violations": validation_result["violations"],
+                    },
+                )
         
         # 8b2. Neuro-symbolic consistency check — includes hybrid reasoning
         # conclusions when available, ensuring that neuro-symbolic derivations
@@ -23364,6 +23479,39 @@ class AEONDeltaV3(nn.Module):
                         ns_consistency_results["overall_consistency"].mean().item()
                     ),
                 }, severity="warning")
+                # 8b2-unc. NS consistency → uncertainty escalation — when
+                # the main output violates neuro-symbolic rules, escalate
+                # uncertainty proportionally to the overall consistency
+                # deficit.  Previously only hybrid-reasoning violations
+                # triggered escalation (8b2, line above); this ensures the
+                # primary output's NS violations also feed back into the
+                # metacognitive cycle so that any reasoning inconsistency
+                # triggers self-reflection.
+                _ns_overall = ns_consistency_results["overall_consistency"]
+                _ns_deficit = float(1.0 - _ns_overall.mean().item())
+                _NS_VIOLATION_UNCERTAINTY_SCALE = 0.2
+                _ns_main_boost = min(
+                    1.0 - uncertainty,
+                    max(0.0, _ns_deficit) * _NS_VIOLATION_UNCERTAINTY_SCALE,
+                )
+                if _ns_main_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _ns_main_boost)
+                    uncertainty_sources["ns_consistency_violation"] = _ns_main_boost
+                    high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ns_consistency_violation",
+                        strategy_used="uncertainty_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "num_violations": int(
+                                ns_consistency_results["num_violations"].sum().item()
+                            ),
+                            "overall_consistency": float(
+                                _ns_overall.mean().item()
+                            ),
+                        }),
+                    )
                 # 8b2a. Record per-predicate satisfaction in causal trace
                 # so root-cause analysis can identify which logical rules
                 # were violated, enabling granular rule-violation diagnostics
@@ -23402,12 +23550,23 @@ class AEONDeltaV3(nn.Module):
                             key=_ns_critic_contribs.get,
                         )
                     self.provenance_tracker.record_before("auto_critic", z_out)
+                    _pre_critic_z_out = z_out.detach().clone()
                     critic_result = self.auto_critic(z_out)
                     revised = critic_result.get("candidate", None)
                     if revised is not None and torch.isfinite(revised).all():
                         z_out = revised
                         _any_auto_critic_revised = True
                     self.provenance_tracker.record_after("auto_critic", z_out)
+                    # 8b3-rev. Revision magnitude tracking — compute the
+                    # L2 delta between pre- and post-revision outputs so
+                    # that downstream traceability can quantify how much
+                    # the critic changed.  Large revisions indicate the
+                    # output was far from acceptable; the delta feeds into
+                    # the audit log and causal trace for root-cause
+                    # analysis of self-correction patterns.
+                    _revision_delta = float(
+                        (z_out - _pre_critic_z_out).norm(dim=-1).mean().item()
+                    )
                     _auto_critic_final_score = critic_result.get("final_score", 0.0)
                     _auto_critic_all_scores.append(_auto_critic_final_score)
                     _auto_critic_final_score_tensor = critic_result.get("final_score_tensor", None)
@@ -23436,6 +23595,7 @@ class AEONDeltaV3(nn.Module):
                     self.audit_log.record("auto_critic", "revised", {
                         "iterations": critic_result.get("iterations", 0),
                         "final_score": critic_result.get("final_score", 0.0),
+                        "revision_delta": _revision_delta,
                         "trigger": "ns_violation",
                         "provenance_dominant_module": _ns_critic_dominant,
                     })
@@ -23448,6 +23608,7 @@ class AEONDeltaV3(nn.Module):
                             metadata={
                                 "final_score": critic_result.get("final_score", 0.0),
                                 "iterations": critic_result.get("iterations", 0),
+                                "revision_delta": _revision_delta,
                                 "revised": revised is not None and torch.isfinite(revised).all(),
                                 "provenance_dominant_module": _ns_critic_dominant,
                                 "provenance_contributions": _ns_critic_contribs,
@@ -23593,6 +23754,7 @@ class AEONDeltaV3(nn.Module):
                 and not _any_auto_critic_revised):
             try:
                 self.provenance_tracker.record_before("auto_critic", z_out)
+                _pre_uc_z_out = z_out.detach().clone()
                 _uc_critic = self.auto_critic(z_out)
                 _uc_revised = _uc_critic.get("candidate", None)
                 if (_uc_revised is not None
@@ -23601,6 +23763,13 @@ class AEONDeltaV3(nn.Module):
                     z_out = _uc_revised
                     _any_auto_critic_revised = True
                 self.provenance_tracker.record_after("auto_critic", z_out)
+                # 8b2c-rev. Unconditional auto-critic revision delta —
+                # mirror the NS-violation path's revision magnitude
+                # tracking so that all self-correction paths produce
+                # traceable delta metrics.
+                _uc_revision_delta = float(
+                    (z_out - _pre_uc_z_out).norm(dim=-1).mean().item()
+                )
                 _auto_critic_final_score = _uc_critic.get("final_score", 0.0)
                 _auto_critic_all_scores.append(_auto_critic_final_score)
                 _auto_critic_final_score_tensor = _uc_critic.get(
@@ -23627,6 +23796,7 @@ class AEONDeltaV3(nn.Module):
                     )
                 self.audit_log.record("auto_critic", "quality_assessment", {
                     "final_score": _auto_critic_final_score,
+                    "revision_delta": _uc_revision_delta,
                     "trigger": "unconditional",
                 })
                 # Record unconditional auto-critic quality in error
@@ -24739,6 +24909,36 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                # 8f-persist. Persistent uncertainty escalation — when the
+                # DirectionalUncertaintyTracker's rolling history shows
+                # modules that are persistently above threshold across
+                # multiple cycles, escalate uncertainty further.  This
+                # catches structural weaknesses that individual cycles
+                # tolerate but that cumulatively degrade reasoning quality.
+                _ucc_persistent = _ucc_unc_summary.get(
+                    "persistent_uncertain_modules", [],
+                )
+                if _ucc_persistent:
+                    _PERSISTENT_UNC_SCALE = 0.1
+                    _persist_boost = min(
+                        1.0 - uncertainty,
+                        len(_ucc_persistent) * _PERSISTENT_UNC_SCALE,
+                    )
+                    if _persist_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _persist_boost)
+                        uncertainty_sources[
+                            "persistent_module_uncertainty"
+                        ] = _persist_boost
+                        high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="persistent_module_uncertainty",
+                            strategy_used="uncertainty_escalation",
+                            success=False,
+                            metadata=self._provenance_enriched_metadata({
+                                "persistent_modules": _ucc_persistent,
+                            }),
+                        )
                 # Update uncertainty from the unified cycle's coherence
                 # assessment.  The threshold is set to 0.1 so that even
                 # moderate coherence deficits trigger graduated
