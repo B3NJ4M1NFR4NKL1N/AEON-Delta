@@ -3672,6 +3672,16 @@ class TrainingConvergenceMonitor:
         }
 
 
+# Maps training error classes to pipeline stage dependency pairs (upstream,
+# downstream) for provenance forwarding in bridge_training_errors_to_inference.
+_ERROR_CLASS_TO_DEPENDENCY_MAP: Dict[str, Tuple[str, str]] = {
+    "divergence": ("meta_loop", "error_evolution"),
+    "training_divergence": ("meta_loop", "error_evolution"),
+    "stagnation": ("encoder", "meta_loop"),
+    "training_stagnation": ("encoder", "meta_loop"),
+}
+
+
 def bridge_training_errors_to_inference(
     trainer_monitor: 'TrainingConvergenceMonitor',
     inference_error_evolution: Any,
@@ -3816,19 +3826,13 @@ def bridge_training_errors_to_inference(
     # attribute inference-time issues to training-discovered structural
     # weaknesses.  Error classes are mapped to pipeline stage pairs so
     # the provenance DAG includes training-time failure causality.
-    _ERROR_CLASS_TO_DEPENDENCY = {
-        "divergence": ("meta_loop", "error_evolution"),
-        "training_divergence": ("meta_loop", "error_evolution"),
-        "stagnation": ("encoder", "meta_loop"),
-        "training_stagnation": ("encoder", "meta_loop"),
-    }
     if inference_provenance_tracker is not None:
         for cls_name in error_classes:
-            _dep = _ERROR_CLASS_TO_DEPENDENCY.get(cls_name)
-            if _dep is not None:
+            stage_pair = _ERROR_CLASS_TO_DEPENDENCY_MAP.get(cls_name)
+            if stage_pair is not None:
                 try:
                     inference_provenance_tracker.record_dependency(
-                        f"training_{_dep[0]}", _dep[1],
+                        f"training_{stage_pair[0]}", stage_pair[1],
                     )
                 except (AttributeError, TypeError) as _prov_err:
                     logging.getLogger(__name__).debug(
