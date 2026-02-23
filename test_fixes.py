@@ -44743,6 +44743,275 @@ def test_persistent_uncertainty_escalation_in_forward():
     print("✅ test_persistent_uncertainty_escalation_in_forward PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE GAP CLOSURE TESTS — UCC provenance-driven trigger
+#  adaptation, depth-weighted provenance boost, cross-pass coherence trend,
+#  always-cached provenance roots, and training bridge provenance forwarding.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_ucc_provenance_adapts_trigger_weights():
+    """UCC.evaluate() should call adapt_weights_from_provenance()."""
+    from aeon_core import (
+        CausalProvenanceTracker, MetaCognitiveRecursionTrigger,
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+    )
+    cm = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+    prov.record_before('meta_loop', torch.randn(2, 32))
+    prov.record_after('meta_loop', torch.randn(2, 32) * 10)
+    prov.record_before('safety', torch.randn(2, 32))
+    prov.record_after('safety', torch.randn(2, 32) * 0.1)
+    orig_weights = dict(trigger._signal_weights)
+    ucc.evaluate(
+        subsystem_states={'meta_loop': torch.randn(2, 32)},
+        delta_norm=0.01,
+    )
+    new_weights = dict(trigger._signal_weights)
+    assert any(
+        abs(orig_weights[k] - new_weights[k]) > 1e-10 for k in orig_weights
+    ), "Provenance adaptation should change trigger weights"
+    print("✅ test_ucc_provenance_adapts_trigger_weights PASSED")
+
+
+def test_ucc_provenance_adaptation_no_data_noop():
+    """UCC provenance adaptation should be a no-op with no provenance data."""
+    from aeon_core import (
+        CausalProvenanceTracker, MetaCognitiveRecursionTrigger,
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+    )
+    cm = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+    orig_weights = dict(trigger._signal_weights)
+    ucc.evaluate(
+        subsystem_states={'test': torch.randn(2, 32)},
+        delta_norm=0.01,
+    )
+    new_weights = dict(trigger._signal_weights)
+    assert orig_weights == new_weights, "Empty provenance should not change weights"
+    print("✅ test_ucc_provenance_adaptation_no_data_noop PASSED")
+
+
+def test_provenance_depth_weighted_boost():
+    """Provenance uncertainty boost should factor in dependency depth."""
+    from aeon_core import CausalProvenanceTracker
+    prov = CausalProvenanceTracker()
+    prov.record_dependency('encoder', 'meta_loop')
+    prov.record_dependency('meta_loop', 'safety')
+    prov.record_dependency('safety', 'decoder')
+    # Make encoder dominant (root module, depth 0)
+    prov.record_before('encoder', torch.randn(2, 32))
+    prov.record_after('encoder', torch.randn(2, 32) * 20)
+    prov.record_before('meta_loop', torch.randn(2, 32))
+    prov.record_after('meta_loop', torch.randn(2, 32) * 0.1)
+    prov.record_before('safety', torch.randn(2, 32))
+    prov.record_after('safety', torch.randn(2, 32) * 0.1)
+    result = prov.get_provenance_uncertainty_boost()
+    assert 'depth_factor' in result, "depth_factor must be in result"
+    assert result['depth_factor'] == 1.0, "Root module should have depth_factor=1.0"
+    assert result['boost'] > 0, "Dominant root module should have boost > 0"
+    print("✅ test_provenance_depth_weighted_boost PASSED")
+
+
+def test_provenance_depth_weighted_boost_leaf_module():
+    """Leaf module dominance should have attenuated depth_factor."""
+    from aeon_core import CausalProvenanceTracker
+    prov = CausalProvenanceTracker()
+    prov.record_dependency('encoder', 'meta_loop')
+    prov.record_dependency('meta_loop', 'safety')
+    prov.record_dependency('safety', 'decoder')
+    # Make decoder dominant (leaf module, depth 3)
+    prov.record_before('decoder', torch.randn(2, 32))
+    prov.record_after('decoder', torch.randn(2, 32) * 20)
+    prov.record_before('encoder', torch.randn(2, 32))
+    prov.record_after('encoder', torch.randn(2, 32) * 0.1)
+    prov.record_before('meta_loop', torch.randn(2, 32))
+    prov.record_after('meta_loop', torch.randn(2, 32) * 0.1)
+    prov.record_before('safety', torch.randn(2, 32))
+    prov.record_after('safety', torch.randn(2, 32) * 0.1)
+    result = prov.get_provenance_uncertainty_boost()
+    assert 'depth_factor' in result, "depth_factor must be in result"
+    # Leaf module should have attenuated depth factor (< 1.0)
+    assert result['depth_factor'] < 1.0, (
+        f"Leaf module should have depth_factor < 1.0, got {result['depth_factor']}"
+    )
+    print("✅ test_provenance_depth_weighted_boost_leaf_module PASSED")
+
+
+def test_provenance_depth_weighted_boost_no_deps():
+    """Provenance boost without dependencies should have depth_factor=1.0."""
+    from aeon_core import CausalProvenanceTracker
+    prov = CausalProvenanceTracker()
+    prov.record_before('only_module', torch.randn(2, 32))
+    prov.record_after('only_module', torch.randn(2, 32) * 20)
+    result = prov.get_provenance_uncertainty_boost()
+    assert result['depth_factor'] == 1.0, "No deps should mean depth_factor=1.0"
+    print("✅ test_provenance_depth_weighted_boost_no_deps PASSED")
+
+
+def test_ucc_coherence_trend_tracking_init():
+    """UCC should initialize coherence trend tracking state."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    cm = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    assert ucc._coherence_trend_ema == 0.0
+    assert ucc._coherence_trend_count == 0
+    assert ucc._coherence_trend_alpha == 0.3
+    print("✅ test_ucc_coherence_trend_tracking_init PASSED")
+
+
+def test_ucc_coherence_trend_in_result():
+    """UCC evaluate result should include coherence_trend."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    cm = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    result = ucc.evaluate(
+        subsystem_states={'test': torch.randn(2, 32)},
+        delta_norm=0.01,
+    )
+    assert 'coherence_trend' in result, "coherence_trend must be in result"
+    trend = result['coherence_trend']
+    assert 'ema' in trend
+    assert 'escalation' in trend
+    assert 'pass_count' in trend
+    assert trend['pass_count'] == 1
+    print("✅ test_ucc_coherence_trend_in_result PASSED")
+
+
+def test_ucc_coherence_trend_escalation():
+    """UCC should escalate uncertainty when coherence trend degrades."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, ModuleCoherenceVerifier,
+    )
+    cm = ConvergenceMonitor(threshold=0.01)
+    prov = CausalProvenanceTracker()
+    # Use a coherence verifier that returns low coherence
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.99)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=verifier,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+    # Run 5 passes with low coherence (random states → low cosine similarity)
+    for i in range(5):
+        result = ucc.evaluate(
+            subsystem_states={
+                'a': torch.randn(2, 32),
+                'b': torch.randn(2, 32),
+            },
+            delta_norm=0.01,
+        )
+    assert ucc._coherence_trend_count == 5
+    assert ucc._coherence_trend_ema >= 0.0
+    trend = result['coherence_trend']
+    assert trend['pass_count'] == 5
+    print("✅ test_ucc_coherence_trend_escalation PASSED")
+
+
+def test_bridge_training_provenance_forwarding():
+    """bridge_training_errors_to_inference should forward provenance deps."""
+    from aeon_core import CausalProvenanceTracker
+    from ae_train import bridge_training_errors_to_inference
+
+    class MockTrainerMonitor:
+        def export_error_patterns(self):
+            return {
+                'error_classes': {
+                    'divergence': {
+                        'count': 3, 'success_rate': 0.2,
+                        'best_strategy': 'deeper_meta_loop',
+                    },
+                }
+            }
+
+    class MockErrorEvolution:
+        def __init__(self):
+            self.episodes = []
+        def record_episode(self, **kwargs):
+            self.episodes.append(kwargs)
+
+    monitor = MockTrainerMonitor()
+    ee = MockErrorEvolution()
+    prov = CausalProvenanceTracker()
+    count = bridge_training_errors_to_inference(
+        trainer_monitor=monitor,
+        inference_error_evolution=ee,
+        inference_provenance_tracker=prov,
+    )
+    assert count >= 1, "Should have bridged at least 1 episode"
+    deps = prov.get_dependency_graph()
+    assert len(deps) > 0, "Should have recorded provenance dependencies"
+    print("✅ test_bridge_training_provenance_forwarding PASSED")
+
+
+def test_bridge_training_provenance_noop_without_tracker():
+    """bridge_training_errors_to_inference should work without tracker."""
+    from ae_train import bridge_training_errors_to_inference
+
+    class MockTrainerMonitor:
+        def export_error_patterns(self):
+            return {
+                'error_classes': {
+                    'divergence': {
+                        'count': 2, 'success_rate': 0.3,
+                        'best_strategy': 'unknown',
+                    },
+                }
+            }
+
+    class MockErrorEvolution:
+        def __init__(self):
+            self.episodes = []
+        def record_episode(self, **kwargs):
+            self.episodes.append(kwargs)
+
+    monitor = MockTrainerMonitor()
+    ee = MockErrorEvolution()
+    count = bridge_training_errors_to_inference(
+        trainer_monitor=monitor,
+        inference_error_evolution=ee,
+        inference_provenance_tracker=None,
+    )
+    assert count >= 1, "Should bridge even without provenance tracker"
+    print("✅ test_bridge_training_provenance_noop_without_tracker PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -46662,6 +46931,20 @@ def run_all_tests():
     test_memory_cross_validation_per_system_reliability()
     test_auto_critic_revision_delta_in_audit()
     test_persistent_uncertainty_escalation_in_forward()
+
+    # Architectural Coherence Gap Closure — UCC provenance-driven trigger
+    # adaptation, depth-weighted provenance boost, cross-pass coherence
+    # trend, always-cached provenance roots, training bridge provenance
+    test_ucc_provenance_adapts_trigger_weights()
+    test_ucc_provenance_adaptation_no_data_noop()
+    test_provenance_depth_weighted_boost()
+    test_provenance_depth_weighted_boost_leaf_module()
+    test_provenance_depth_weighted_boost_no_deps()
+    test_ucc_coherence_trend_tracking_init()
+    test_ucc_coherence_trend_in_result()
+    test_ucc_coherence_trend_escalation()
+    test_bridge_training_provenance_forwarding()
+    test_bridge_training_provenance_noop_without_tracker()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

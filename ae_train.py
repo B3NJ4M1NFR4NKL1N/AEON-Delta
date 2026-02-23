@@ -3672,12 +3672,23 @@ class TrainingConvergenceMonitor:
         }
 
 
+# Maps training error classes to pipeline stage dependency pairs (upstream,
+# downstream) for provenance forwarding in bridge_training_errors_to_inference.
+_ERROR_CLASS_TO_DEPENDENCY_MAP: Dict[str, Tuple[str, str]] = {
+    "divergence": ("meta_loop", "error_evolution"),
+    "training_divergence": ("meta_loop", "error_evolution"),
+    "stagnation": ("encoder", "meta_loop"),
+    "training_stagnation": ("encoder", "meta_loop"),
+}
+
+
 def bridge_training_errors_to_inference(
     trainer_monitor: 'TrainingConvergenceMonitor',
     inference_error_evolution: Any,
     causal_trace: Any = None,
     inference_convergence_monitor: Any = None,
     inference_integrity_monitor: Any = None,
+    inference_provenance_tracker: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -3701,6 +3712,11 @@ def bridge_training_errors_to_inference(
     subsystem health degradation is recorded so that the inference
     pipeline's metacognitive trigger can factor in training instabilities.
 
+    When *inference_provenance_tracker* is provided, training-time
+    pipeline failure edges are recorded as provenance dependencies so
+    that ``trace_root_cause()`` on the inference side can attribute
+    inference-time issues to training-discovered structural weaknesses.
+
     Args:
         trainer_monitor: The training convergence monitor that has
             accumulated error episodes during training.
@@ -3712,6 +3728,9 @@ def bridge_training_errors_to_inference(
             ``ConvergenceMonitor`` to wire for automatic bridging.
         inference_integrity_monitor: Optional inference-side
             ``SystemIntegrityMonitor`` to record training health.
+        inference_provenance_tracker: Optional inference-side
+            ``CausalProvenanceTracker`` to receive training-time
+            structural failure edges as provenance dependencies.
 
     Returns:
         Number of error episodes bridged.
@@ -3800,6 +3819,25 @@ def bridge_training_errors_to_inference(
                     logging.getLogger(__name__).debug(
                         "Integrity monitor bridge failed for %s: %s",
                         cls_name, _him_err,
+                    )
+
+    # Bridge training-time pipeline failure edges into inference provenance
+    # tracker so that trace_root_cause() on the inference side can
+    # attribute inference-time issues to training-discovered structural
+    # weaknesses.  Error classes are mapped to pipeline stage pairs so
+    # the provenance DAG includes training-time failure causality.
+    if inference_provenance_tracker is not None:
+        for cls_name in error_classes:
+            stage_pair = _ERROR_CLASS_TO_DEPENDENCY_MAP.get(cls_name)
+            if stage_pair is not None:
+                try:
+                    inference_provenance_tracker.record_dependency(
+                        f"training_{stage_pair[0]}", stage_pair[1],
+                    )
+                except (AttributeError, TypeError) as _prov_err:
+                    logging.getLogger(__name__).debug(
+                        "Provenance bridge failed for %s: %s",
+                        cls_name, _prov_err,
                     )
 
     return bridged
