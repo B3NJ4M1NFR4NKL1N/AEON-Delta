@@ -19247,7 +19247,9 @@ class AEONDeltaV3(nn.Module):
         })
         # Record meta-loop convergence in causal trace so that all
         # downstream decisions can be traced back to this convergence
-        # point as a causal prerequisite.
+        # point as a causal prerequisite.  Include residual_norm so
+        # root-cause analysis can determine whether downstream issues
+        # stem from premature convergence or divergence.
         if self.causal_trace is not None:
             self.causal_trace.record(
                 "meta_loop", "converged" if meta_loop_valid else "fallback",
@@ -19256,6 +19258,8 @@ class AEONDeltaV3(nn.Module):
                     "convergence_rate": convergence_rate,
                     "avg_iterations": float(iterations.mean().item()),
                     "finite": meta_loop_valid,
+                    "residual_norm": meta_results.get("residual_norm", None),
+                    "adaptive": _adaptive_meta_used,
                 },
             )
         
@@ -22726,6 +22730,21 @@ class AEONDeltaV3(nn.Module):
                     unified_simulator_results.get("interventional", False)
                 ),
             })
+            # Record unified simulator execution in causal trace so that
+            # counterfactual reasoning is traceable for root-cause analysis.
+            # Previously only divergence events were traced, leaving normal
+            # execution invisible in the causal DAG.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "unified_simulator", "computed",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "interventional": bool(
+                            unified_simulator_results.get("interventional", False)
+                        ),
+                        "next_state_valid": cf_next is not None and torch.isfinite(cf_next).all() if cf_next is not None else False,
+                    },
+                )
             # 5e2-i. Unified simulator divergence feedback — when the
             # counterfactual next_state diverges significantly from the
             # current C_star, escalate uncertainty.  Large counterfactual
@@ -23414,6 +23433,20 @@ class AEONDeltaV3(nn.Module):
                 )
             self.provenance_tracker.record_after("grounded_multimodal", z_rssm)
             self._cached_grounded_multimodal_state = z_rssm.detach()
+            # Record grounded multimodal execution in causal trace so that
+            # perceptual grounding contributions are traceable for root-cause
+            # analysis.  Without this, CLIP-style contrastive grounding is
+            # invisible in the causal DAG.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "grounded_multimodal", "computed",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "language_valid": (
+                            _grounded_mm_results.get('language') is not None
+                        ),
+                    },
+                )
         
         # 8. Integration with residual and normalization
         self.provenance_tracker.record_before("integration", z_rssm)
@@ -24855,6 +24888,26 @@ class AEONDeltaV3(nn.Module):
                     )
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
+                # Track which subsystems were absent from coherence
+                # verification so root-cause analysis can distinguish
+                # "verified coherent" from "unverified due to absence".
+                _UCC_EXPECTED_SUBSYSTEMS = {
+                    "integrated_output", "core_state", "factor_embedding",
+                    "world_model", "hybrid_reasoning", "ns_bridge",
+                    "cross_validation", "causal_dag_consensus",
+                    "cognitive_executive", "hierarchical_world_model",
+                    "hierarchical_vae", "grounded_multimodal", "memory",
+                    "integration", "rssm", "auto_critic", "mcts_planning",
+                    "safety", "causal_model", "unified_simulator", "decoder",
+                }
+                _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
+                if _ucc_absent:
+                    self.audit_log.record(
+                        "unified_cognitive_cycle", "incomplete_coverage", {
+                            "absent_subsystems": sorted(_ucc_absent),
+                            "present_count": len(_ucc_states),
+                        },
+                    )
                 # Include NS consistency violations in the safety
                 # signal so that symbolic-rule failures trigger the
                 # same meta-cognitive rerun as safety guardrail
@@ -24921,6 +24974,23 @@ class AEONDeltaV3(nn.Module):
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
                 )
+                # Record the UCC evaluation verdict in causal trace so
+                # the meta-cognitive decision (rerun vs. accept) is fully
+                # traceable for root-cause analysis.  Without this, the
+                # UCC's reasoning verdict is only in the audit log.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "unified_cognitive_cycle", "evaluated",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "should_rerun": _ucc_should_rerun,
+                            "coherence_deficit": unified_cycle_results.get(
+                                "coherence_result", {},
+                            ).get("coherence_deficit", 0.0),
+                            "present_subsystems": sorted(_ucc_states.keys()),
+                            "absent_subsystems": sorted(_ucc_absent) if _ucc_absent else [],
+                        },
+                    )
                 # Always cache provenance root-cause modules for next-pass
                 # feedback bus conditioning, regardless of rerun status.
                 # Previously this was only set on the rerun path, leaving
