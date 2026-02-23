@@ -41884,6 +41884,7 @@ def test_build_feedback_extra_signals_helper():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42081,6 +42082,14 @@ def test_uncertainty_sources_values_clamped():
             "above_one_source": 2.0,
             "normal_source": 0.4,
         }
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert extra["unc_negative_source"] == 0.0, "Negative values must be clamped to 0"
@@ -42707,6 +42716,89 @@ def test_honesty_gate_modulates_output():
     print("✅ test_honesty_gate_modulates_output PASSED")
 
 
+def test_auto_critic_output_gate_config():
+    """Verify the enable_auto_critic_output_gate config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_auto_critic_output_gate'), (
+        "AEONConfig should have enable_auto_critic_output_gate"
+    )
+    assert config.enable_auto_critic_output_gate is True, (
+        "enable_auto_critic_output_gate should default to True"
+    )
+    print("✅ test_auto_critic_output_gate_config PASSED")
+
+
+def test_coherence_output_gate_config():
+    """Verify the enable_coherence_output_gate config parameter exists
+    and defaults to True."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    assert hasattr(config, 'enable_coherence_output_gate'), (
+        "AEONConfig should have enable_coherence_output_gate"
+    )
+    assert config.enable_coherence_output_gate is True, (
+        "enable_coherence_output_gate should default to True"
+    )
+    print("✅ test_coherence_output_gate_config PASSED")
+
+
+def test_auto_critic_current_quality_in_feedback_bus():
+    """Verify that AEONDeltaV3 registers the auto_critic_current_quality
+    signal in the CognitiveFeedbackBus so the meta-loop can directly
+    condition on the most recent self-critique assessment."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    assert "auto_critic_current_quality" in model.feedback_bus._extra_signals, (
+        "Feedback bus should have auto_critic_current_quality registered"
+    )
+    # Default should be 1.0 (perfect quality = no dampening)
+    assert model.feedback_bus._extra_signals["auto_critic_current_quality"] == 1.0, (
+        "auto_critic_current_quality default should be 1.0"
+    )
+    print("✅ test_auto_critic_current_quality_in_feedback_bus PASSED")
+
+
+def test_auto_critic_current_score_caching():
+    """Verify that _cached_auto_critic_current_score is initialized on
+    AEONDeltaV3 and included in the feedback extra signals when set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    # Initially None
+    assert model._cached_auto_critic_current_score is None, (
+        "_cached_auto_critic_current_score should start as None"
+    )
+    # When score is set to a value < 1.0, it should appear in extra signals
+    model._cached_auto_critic_current_score = 0.6
+    extra = model._build_feedback_extra_signals()
+    assert "auto_critic_current_quality" in extra, (
+        "auto_critic_current_quality should be in feedback extra signals "
+        "when cached score < 1.0"
+    )
+    assert abs(extra["auto_critic_current_quality"] - 0.6) < 1e-6, (
+        f"auto_critic_current_quality should be 0.6, got {extra['auto_critic_current_quality']}"
+    )
+    # When score is 1.0 (perfect), it should NOT appear
+    model._cached_auto_critic_current_score = 1.0
+    extra = model._build_feedback_extra_signals()
+    assert "auto_critic_current_quality" not in extra, (
+        "auto_critic_current_quality should not be in extra signals "
+        "when score is 1.0 (perfect)"
+    )
+    print("✅ test_auto_critic_current_score_caching PASSED")
+
+
 def test_memory_re_retrieval_config():
     """Verify the enable_memory_re_retrieval config parameter exists
     and defaults to True."""
@@ -42859,6 +42951,7 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -42920,6 +43013,7 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43047,6 +43141,7 @@ def test_systematic_uncertainty_in_feedback_bus():
         _uncertainty_history = [0.7, 0.8, 0.6, 0.75, 0.65]
         _auto_critic_quality_ema = 0.5
         _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43109,6 +43204,7 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         # Simulate poor auto-critic quality over many passes
         _auto_critic_quality_ema = 0.3
         _auto_critic_quality_count = 10
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43141,6 +43237,7 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _uncertainty_history = []
         _auto_critic_quality_ema = 0.9
         _auto_critic_quality_count = 10
+        _cached_auto_critic_current_score = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
@@ -45680,6 +45777,10 @@ def test_decoder_provenance_in_training_bridge():
     test_safety_blocked_in_output()
     test_honesty_output_gate_config()
     test_honesty_gate_modulates_output()
+    test_auto_critic_output_gate_config()
+    test_coherence_output_gate_config()
+    test_auto_critic_current_quality_in_feedback_bus()
+    test_auto_critic_current_score_caching()
     test_memory_re_retrieval_config()
     test_recovery_safe_fallback_tensor_shape()
     test_recovery_numerical_uses_safe_fallback()
