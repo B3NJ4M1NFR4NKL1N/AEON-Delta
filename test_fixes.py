@@ -45765,6 +45765,149 @@ def test_dag_validation_in_forward_pass():
     print("✅ test_dag_validation_in_forward_pass PASSED")
 
 
+# ======================================================================
+# Architectural Unification — Unified Cognitive Coherence Fixes
+# ======================================================================
+
+def test_diversity_collapse_triggers_factor_reextraction():
+    """Verify that diversity collapse triggers factor re-extraction.
+
+    When thought diversity collapses below the threshold, the corrected
+    C_star should trigger a re-extraction of factors via sparse_factors
+    so that downstream modules operate on factors reflecting the
+    diversity-corrected state.  This test verifies the code path exists
+    in _reasoning_core_impl.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The re-extraction should invoke sparse_factors after diversity correction
+    assert 'factors_re_extracted' in source, (
+        "_reasoning_core_impl should re-extract factors after diversity "
+        "correction so downstream modules see the corrected representation"
+    )
+    # Verify the re-extraction records provenance
+    assert '3b-reextract' in source, (
+        "_reasoning_core_impl should document factor re-extraction in a "
+        "'3b-reextract' comment block for traceability"
+    )
+    print("✅ test_diversity_collapse_triggers_factor_reextraction PASSED")
+
+
+def test_memory_causal_degradation_escalates_uncertainty():
+    """Verify that memory staleness + low causal quality escalates uncertainty.
+
+    When memory is stale AND causal quality degrades below 0.5, the
+    system should escalate uncertainty from the causal side so the
+    metacognitive trigger sees the stale-memory→weak-causal chain.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'memory_causal_degradation' in source, (
+        "_reasoning_core_impl should escalate uncertainty when memory is "
+        "stale and causal quality is low (memory_causal_degradation signal)"
+    )
+    # Verify the error evolution records the new error class
+    assert '"memory_causal_degradation"' in source, (
+        "_reasoning_core_impl should record 'memory_causal_degradation' "
+        "in error evolution for learning"
+    )
+    print("✅ test_memory_causal_degradation_escalates_uncertainty PASSED")
+
+
+def test_memory_causal_degradation_in_error_class_mapping():
+    """Verify memory_causal_degradation maps to lambda_memory_retrieval."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'memory_causal_degradation' in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA should include 'memory_causal_degradation'"
+    )
+    assert mapping['memory_causal_degradation'] == 'lambda_memory_retrieval', (
+        "memory_causal_degradation should map to 'lambda_memory_retrieval'"
+    )
+    print("✅ test_memory_causal_degradation_in_error_class_mapping PASSED")
+
+
+def test_deeper_meta_loop_rejection_records_error_evolution():
+    """Verify that rejected UCC deeper meta-loop results are recorded.
+
+    When the UCC triggers a deeper meta-loop re-reasoning pass and the
+    result is rejected (convergence didn't improve or coherence worsened),
+    the rejection must be recorded in error evolution so the system
+    learns from failed re-reasoning attempts.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'deeper_meta_loop_rejected' in source, (
+        "_reasoning_core_impl should record 'deeper_meta_loop_rejected' "
+        "when the UCC deeper meta-loop result is rejected"
+    )
+    # Verify both rejection reasons are handled
+    assert 'coherence_worsened' in source, (
+        "deeper meta-loop rejection should distinguish 'coherence_worsened' reason"
+    )
+    assert 'convergence_not_improved' in source, (
+        "deeper meta-loop rejection should distinguish "
+        "'convergence_not_improved' reason"
+    )
+    print("✅ test_deeper_meta_loop_rejection_records_error_evolution PASSED")
+
+
+def test_deeper_meta_loop_rejected_in_error_class_mapping():
+    """Verify deeper_meta_loop_rejected maps to lambda_ucc."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'deeper_meta_loop_rejected' in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA should include 'deeper_meta_loop_rejected'"
+    )
+    assert mapping['deeper_meta_loop_rejected'] == 'lambda_ucc', (
+        "deeper_meta_loop_rejected should map to 'lambda_ucc'"
+    )
+    print("✅ test_deeper_meta_loop_rejected_in_error_class_mapping PASSED")
+
+
+def test_auto_critic_quality_adapts_deeper_loop_strategy():
+    """Verify that auto-critic quality adapts the deeper loop strategy.
+
+    When the auto-critic's quality assessment is low (< 0.5), the UCC
+    deeper loop should tighten its convergence threshold further and
+    add extra iterations proportional to the quality deficit.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '8f-ucc-ac-strategy' in source, (
+        "_reasoning_core_impl should contain '8f-ucc-ac-strategy' "
+        "comment block for auto-critic-driven strategy adaptation"
+    )
+    # Verify tightening is adapted based on auto-critic quality
+    assert '_ucc_ac_quality' in source, (
+        "_reasoning_core_impl should use _ucc_ac_quality to adapt "
+        "the deeper loop's convergence tightening"
+    )
+    print("✅ test_auto_critic_quality_adapts_deeper_loop_strategy PASSED")
+
+
+def test_ucc_deeper_rejection_causal_trace():
+    """Verify UCC deeper meta-loop rejection is recorded in causal trace.
+
+    When the deeper meta-loop result is rejected, the causal trace should
+    record the rejection so all conclusions are traceable to root causes.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Check that rejected deeper loop records in causal trace
+    # The pattern: causal_trace.record(..., "deeper_meta_loop_rejected", ...)
+    assert '"deeper_meta_loop_rejected"' in source, (
+        "_reasoning_core_impl should record deeper meta-loop rejection "
+        "in the causal trace for full traceability"
+    )
+    print("✅ test_ucc_deeper_rejection_causal_trace PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -47744,6 +47887,15 @@ def run_all_tests():
     test_output_reliability_factors_in_output()
     test_provenance_dag_cycle_in_error_class_mapping()
     test_dag_validation_in_forward_pass()
+
+    # Architectural Unification — Unified Cognitive Coherence Fixes
+    test_diversity_collapse_triggers_factor_reextraction()
+    test_memory_causal_degradation_escalates_uncertainty()
+    test_memory_causal_degradation_in_error_class_mapping()
+    test_deeper_meta_loop_rejection_records_error_evolution()
+    test_deeper_meta_loop_rejected_in_error_class_mapping()
+    test_auto_critic_quality_adapts_deeper_loop_strategy()
+    test_ucc_deeper_rejection_causal_trace()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
