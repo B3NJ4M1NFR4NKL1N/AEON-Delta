@@ -14802,6 +14802,27 @@ class MetaCognitiveRecursionTrigger:
             # diverged from self-reported confidence, indicating
             # miscalibrated self-assessment.
             "deception_suppression": "safety_violation",
+            # ── Additional error classes for full coverage ─────────
+            "active_learning_error": "uncertainty",
+            "auto_critic_failure": "uncertainty",
+            "decoder_degenerate_output": "coherence_deficit",
+            "deeper_meta_loop_accepted": "uncertainty",
+            "deeper_meta_loop_rejected": "diverging",
+            "integration_failure_retry": "coherence_deficit",
+            "memory_causal_degradation": "memory_staleness",
+            "memory_cross_validation_failure": "memory_staleness",
+            "ns_bridge_error": "safety_violation",
+            "ns_consistency_violation": "safety_violation",
+            "persistent_module_uncertainty": "uncertainty",
+            "post_integration_deeper_rerun": "uncertainty",
+            "reconciliation_exhaustion": "coherence_deficit",
+            "state_validation_violation": "safety_violation",
+            "terminal_state_invalid": "safety_violation",
+            "training_convergence_diverging": "diverging",
+            "training_gradient_explosion": "uncertainty",
+            "training_loss_divergence": "diverging",
+            "training_nan_loss": "uncertainty",
+            "unified_simulator_divergence": "world_model_surprise",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15340,19 +15361,72 @@ class CausalErrorEvolutionTracker:
     # the corresponding loss weight is boosted so training applies
     # corrective pressure to the failing subsystem.
     _ERROR_CLASS_TO_LAMBDA: Dict[str, str] = {
+        # ── Training-time error classes ─────────────────────────────────
         "high_coherence_loss": "lambda_coherence",
         "high_training_loss": "lambda_self_consistency",
         "high_ns_consistency_loss": "lambda_ns_consistency",
         "high_hierarchical_wm_loss": "lambda_hierarchical_wm",
         "high_memory_retrieval_loss": "lambda_memory_retrieval",
+        "training_gradient_explosion": "lambda_reg",
+        "training_nan_loss": "lambda_safety",
+        "training_loss_divergence": "lambda_self_consistency",
+        "training_convergence_diverging": "lambda_lipschitz",
+        # ── Meta-cognitive cycle error classes ──────────────────────────
         "metacognitive_rerun": "lambda_ucc",
-        "convergence": "lambda_lipschitz",
-        "numerical": "lambda_safety",
         "deeper_meta_loop_rejected": "lambda_ucc",
-        "memory_causal_degradation": "lambda_memory_retrieval",
+        "deeper_meta_loop_accepted": "lambda_ucc",
+        "unified_cycle_rerun": "lambda_ucc",
+        "post_integration_metacognitive": "lambda_ucc",
+        "post_integration_deeper_rerun": "lambda_ucc",
+        "post_integration_coherence_deficit": "lambda_coherence",
+        "post_rerun_coherence_deficit": "lambda_coherence",
+        "post_auto_critic_coherence_deficit": "lambda_coherence",
         "premature_complexity_gating": "lambda_ucc",
+        # ── Convergence error classes ──────────────────────────────────
+        "convergence": "lambda_lipschitz",
+        "convergence_divergence": "lambda_lipschitz",
+        "convergence_conflict": "lambda_lipschitz",
+        "certified_convergence_failure": "lambda_lipschitz",
+        "numerical": "lambda_safety",
+        # ── Memory error classes ───────────────────────────────────────
+        "memory_causal_degradation": "lambda_memory_retrieval",
         "memory_aggregate_failure": "lambda_memory_retrieval",
-        "causal_dag_disagreement": "lambda_lipschitz",
+        "memory_staleness": "lambda_memory_retrieval",
+        "memory_subsystem": "lambda_memory_retrieval",
+        "memory_cross_validation_failure": "lambda_memory_retrieval",
+        "low_memory_trust": "lambda_memory_retrieval",
+        # ── Causal reasoning error classes ─────────────────────────────
+        "causal_dag_disagreement": "lambda_causal_dag",
+        "cross_validation_low_agreement": "lambda_cross_validation",
+        "reconciliation_disagreement": "lambda_cross_validation",
+        "reconciliation_exhaustion": "lambda_cross_validation",
+        # ── Safety & verification error classes ────────────────────────
+        "safety_critic_revision": "lambda_safety",
+        "state_validation_violation": "lambda_safety",
+        "terminal_state_invalid": "lambda_safety",
+        "trust_scorer_failure": "lambda_safety",
+        # ── Coherence & diversity error classes ────────────────────────
+        "coherence_deficit": "lambda_coherence",
+        "coherence_verifier_failure": "lambda_coherence",
+        "diversity_collapse": "lambda_coherence",
+        # ── Subsystem-specific error classes ───────────────────────────
+        "auto_critic_failure": "lambda_auto_critic",
+        "auto_critic_low_quality": "lambda_auto_critic",
+        "ns_consistency_violation": "lambda_ns_consistency",
+        "ns_bridge_error": "lambda_ns_consistency",
+        "ns_violation_auto_critic": "lambda_ns_consistency",
+        "world_model_prediction_error": "lambda_world_model_surprise",
+        "world_model_cross_divergence": "lambda_world_model_surprise",
+        "unified_simulator_divergence": "lambda_world_model_surprise",
+        "vq_codebook_collapse": "lambda_self_consistency",
+        "decoder_degenerate_output": "lambda_cycle_consistency",
+        "mcts_low_confidence": "lambda_ucc",
+        "active_learning_error": "lambda_ucc",
+        "integration_failure_retry": "lambda_self_consistency",
+        # ── Uncertainty & monitoring error classes ─────────────────────
+        "high_output_uncertainty": "lambda_ucc",
+        "critical_uncertainty": "lambda_ucc",
+        "persistent_module_uncertainty": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -25983,6 +26057,9 @@ class AEONDeltaV3(nn.Module):
                     "integration", "rssm", "auto_critic", "mcts_planning",
                     "safety", "causal_model", "unified_simulator", "decoder",
                     "ns_consistency",
+                    # ── Additional subsystems verified for full coverage ──
+                    "self_report", "input",
+                    "temporal_knowledge_graph", "complexity_estimator",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:
@@ -28241,8 +28318,8 @@ class AEONDeltaV3(nn.Module):
                             "decode_mode": decode_mode,
                         }),
                     )
-            except (RuntimeError, ValueError):
-                pass
+            except (RuntimeError, ValueError) as _dec_err:
+                logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -29126,25 +29203,25 @@ class AEONDeltaV3(nn.Module):
             _convergence_loss_scale * _uncertainty_loss_scale * _safety_source_boost * _ee_boost("lambda_safety") * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
             _convergence_loss_scale * _uncertainty_loss_scale * _coherence_source_boost * _ee_boost("lambda_coherence") * _coherence_weight * coherence_loss +
-            _causal_source_boost * _causal_weight * causal_dag_loss +
+            _causal_source_boost * _ee_boost("lambda_causal_dag") * _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             ponder_loss +
             ewc_loss +
             _provenance_weight * provenance_loss +
-            self.config.lambda_cross_validation * cross_validation_loss +
-            self.config.lambda_cross_validation * causal_cv_supervision_loss +
-            self.config.lambda_auto_critic * auto_critic_loss +
+            _ee_boost("lambda_cross_validation") * self.config.lambda_cross_validation * cross_validation_loss +
+            _ee_boost("lambda_cross_validation") * self.config.lambda_cross_validation * causal_cv_supervision_loss +
+            _ee_boost("lambda_auto_critic") * self.config.lambda_auto_critic * auto_critic_loss +
             _ee_boost("lambda_ucc") * self.config.lambda_ucc * ucc_loss +
-            self.config.lambda_self_report * self_report_loss +
-            self.config.lambda_cycle_consistency * cycle_consistency_loss +
-            self.config.lambda_world_model_surprise * world_model_surprise_loss +
+            _ee_boost("lambda_self_report") * self.config.lambda_self_report * self_report_loss +
+            _ee_boost("lambda_cycle_consistency") * self.config.lambda_cycle_consistency * cycle_consistency_loss +
+            _ee_boost("lambda_world_model_surprise") * self.config.lambda_world_model_surprise * world_model_surprise_loss +
             _convergence_loss_scale * self.config.lambda_convergence_residual * convergence_residual_loss +
             self.config.lambda_decoder_provenance * decoder_provenance_loss +
             _ee_boost("lambda_ns_consistency") * self.config.lambda_ns_consistency * ns_consistency_loss +
             _ee_boost("lambda_hierarchical_wm") * self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
             _ee_boost("lambda_memory_retrieval") * self.config.lambda_memory_retrieval * memory_retrieval_loss +
             grounded_mm_loss +
-            getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
+            _ee_boost("lambda_meta_recovery") * getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
             reg_loss
         )
