@@ -160,6 +160,7 @@ __all__ = [
     "OptimizedTopologyAnalyzer", "DiversityMetric",
     "SparseFactorization", "CausalFactorExtractor",
     "MultiLevelSafetySystem", "TransparentSelfReporting",
+    "DeceptionSuppressor",
     # Memory
     "MemoryManager", "HierarchicalMemory",
     "NeuralTuringMachine", "TemporalMemory",
@@ -2942,8 +2943,16 @@ class AEONConfig:
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
     enable_hierarchical_vae: bool = False
+    # NOTE: Social cognition module is planned but not yet implemented.
+    # Setting this to True has no effect until the module is available.
     enable_social_cognition: bool = False
     enable_deception_suppressor: bool = True
+    # Deception suppressor blend weight — controls how strongly the
+    # suppressor gates the output when internal inconsistency is detected.
+    # Higher values cause stronger suppression.  Range: [0, 1].
+    deception_suppressor_blend: float = 0.2
+    # NOTE: Code execution sandbox is planned but not yet implemented.
+    # Setting this to True has no effect until the sandbox is available.
     enable_code_execution: bool = False
 
     # ===== CONTINUAL LEARNING =====
@@ -8610,6 +8619,108 @@ class TransparentSelfReporting(nn.Module):
             'consistency': consistency,
             'confidence': confidence,
             'report_vector': inner_report
+        }
+
+
+class DeceptionSuppressor(nn.Module):
+    """Detects and suppresses internal inconsistency between self-reported
+    confidence and actual output divergence.
+
+    The ``TransparentSelfReporting`` module produces an honesty gate and a
+    confidence score that reflect the system's *self-assessment*.  However,
+    without an independent check, the self-assessment itself could be
+    miscalibrated — the system may report high confidence while its
+    internal representations diverge significantly from the reasoning
+    core's converged state.
+
+    ``DeceptionSuppressor`` closes this gap by computing an *independent*
+    consistency signal between the encoder's input representation and the
+    decoder's output representation, then comparing it to the self-reported
+    confidence.  When the self-report claims high confidence but the
+    independent signal reveals high divergence, the suppressor produces a
+    penalty scalar that downstream code can use to dampen the output.
+
+    This satisfies the AGI-coherence requirement that "each component
+    verifies and reinforces the others" by making the self-reporting
+    module's output subject to external verification.
+
+    Architecture::
+
+        (psi_0, C_star) → independent_consistency_check
+                              ↓
+        |confidence − independent_check| → divergence
+                              ↓
+        divergence > threshold → suppression_gate ∈ [0, 1]
+
+    Args:
+        hidden_dim: Dimensionality of internal representations.
+        threshold: Divergence threshold above which suppression activates.
+    """
+
+    def __init__(self, hidden_dim: int, threshold: float = 0.3):
+        super().__init__()
+        self.threshold = max(0.0, min(threshold, 1.0))
+        self.consistency_probe = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        psi_0: torch.Tensor,
+        core_state: torch.Tensor,
+        self_report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute suppression gate from self-report and independent probe.
+
+        Args:
+            psi_0: [B, hidden_dim] encoder output (pre-meta-loop).
+            core_state: [B, hidden_dim] converged state (post-meta-loop).
+            self_report: Dict from ``TransparentSelfReporting.forward()``,
+                must contain ``'confidence'`` tensor of shape [B, 1].
+
+        Returns:
+            Dict with:
+                - suppression_gate: [B, 1] ∈ [0, 1] (1 = no suppression).
+                - independent_consistency: [B, 1] ∈ [0, 1].
+                - divergence: [B, 1] ∈ [0, 1].
+                - deception_pressure: float — scalar feedback signal.
+        """
+        B = psi_0.size(0)
+        device = psi_0.device
+
+        # Independent consistency probe
+        combined = torch.cat([psi_0, core_state], dim=-1)
+        independent_consistency = self.consistency_probe(combined)
+
+        # Self-reported confidence
+        confidence = self_report.get(
+            'confidence',
+            torch.full((B, 1), 0.5, device=device),
+        )
+        if confidence.dim() == 0:
+            confidence = confidence.unsqueeze(0).unsqueeze(-1)
+        elif confidence.dim() == 1:
+            confidence = confidence.unsqueeze(-1)
+
+        # Divergence = gap between claimed confidence and independent check
+        divergence = torch.abs(confidence - independent_consistency)
+
+        # Suppression gate: 1.0 when consistent, decays toward 0 when diverging
+        above_threshold = (divergence - self.threshold).clamp(min=0.0)
+        suppression_gate = (1.0 - above_threshold).clamp(0.0, 1.0)
+
+        # Scalar feedback signal for the feedback bus
+        deception_pressure = float(divergence.mean().item())
+
+        return {
+            'suppression_gate': suppression_gate,
+            'independent_consistency': independent_consistency,
+            'divergence': divergence,
+            'deception_pressure': deception_pressure,
         }
 
 
@@ -14562,6 +14673,10 @@ class MetaCognitiveRecursionTrigger:
             # Memory aggregate failure — all active memory subsystems
             # failed simultaneously, tripping the circuit breaker.
             "memory_aggregate_failure": "memory_staleness",
+            # Deception suppression — independent consistency probe
+            # diverged from self-reported confidence, indicating
+            # miscalibrated self-assessment.
+            "deception_suppression": "safety_violation",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -14667,6 +14782,7 @@ class MetaCognitiveRecursionTrigger:
         "temporal_memory": "memory_staleness",
         "consolidating_memory": "memory_staleness",
         "auto_critic_safety": "safety_violation",
+        "deception_suppressor": "safety_violation",
     }
 
     def adapt_weights_from_provenance(
@@ -16831,6 +16947,12 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "lipschitz_pressure", default=0.0,
         )
+        # Deception suppressor feedback — when the independent consistency
+        # probe diverges from self-reported confidence, the pressure
+        # signal conditions the next pass's meta-loop to be more cautious.
+        self.feedback_bus.register_signal(
+            "deception_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -16930,6 +17052,16 @@ class AEONDeltaV3(nn.Module):
             self.safety_system = None
             self.self_reporter = None
             logger.info("Safety systems disabled")
+        
+        # ===== DECEPTION SUPPRESSOR =====
+        if getattr(config, 'enable_deception_suppressor', True) and self.self_reporter is not None:
+            logger.info("Loading DeceptionSuppressor...")
+            self.deception_suppressor = DeceptionSuppressor(
+                hidden_dim=config.hidden_dim,
+                threshold=0.3,
+            ).to(self.device)
+        else:
+            self.deception_suppressor = None
         
         # ===== WORLD MODEL =====
         if config.enable_world_model:
@@ -17499,6 +17631,10 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
+        # Deception suppressor pressure from the most recent forward pass.
+        # When high, the feedback bus conditions the next meta-loop to
+        # produce more cautious (tighter convergence) outputs.
+        self._cached_deception_pressure: float = 0.0
         # Empirical Lipschitz from the most recent convergence certificate.
         # When the Lipschitz constant exceeds the target, this value feeds
         # into the feedback bus so the next pass's meta-loop is conditioned
@@ -18079,6 +18215,15 @@ class AEONDeltaV3(nn.Module):
             extra["lipschitz_pressure"] = max(
                 0.0, min(1.0, (_lip - _lip_target) / max(1.0 - _lip_target, 1e-6)),
             )
+        # Deception suppressor pressure — when the previous pass's
+        # independent consistency probe diverged significantly from the
+        # self-reported confidence, signal the meta-loop to be more
+        # cautious on the next pass.  This closes the deception →
+        # feedback loop: high deception pressure conditions the meta-loop
+        # to demand tighter convergence before accepting self-assessments.
+        _dp = getattr(self, '_cached_deception_pressure', 0.0)
+        if _dp > 0.1:
+            extra["deception_pressure"] = max(0.0, min(1.0, _dp))
         return extra
 
     @staticmethod
@@ -18252,6 +18397,7 @@ class AEONDeltaV3(nn.Module):
         _VERIFICATION_MODULES = [
             ("safety_system", self.safety_system),
             ("self_reporter", self.self_reporter),
+            ("deception_suppressor", self.deception_suppressor),
             ("diversity_metric", self.diversity_metric),
             ("topology_analyzer", self.topology_analyzer),
             ("cross_validator", self.cross_validator),
@@ -20320,6 +20466,60 @@ class AEONDeltaV3(nn.Module):
                 self._cached_self_report_state = None
         else:
             self._cached_self_report_state = None
+        
+        # 5-ds. Deception suppression — when the DeceptionSuppressor is
+        # active, compare the self-report's claimed confidence against an
+        # independent consistency probe between z_in (pre-meta-loop) and
+        # C_star (post-meta-loop).  High divergence between claimed and
+        # independent consistency signals internal miscalibration;
+        # suppress output proportionally and escalate uncertainty.
+        deception_results: Dict[str, Any] = {}
+        if self.deception_suppressor is not None and self_report:
+            try:
+                deception_results = self.deception_suppressor(
+                    z_in, C_star, self_report,
+                )
+                _deception_pressure = deception_results.get(
+                    'deception_pressure', 0.0,
+                )
+                self._cached_deception_pressure = _deception_pressure
+                if _deception_pressure > 0.3:
+                    _ds_blend = getattr(
+                        self.config, 'deception_suppressor_blend', 0.2,
+                    )
+                    _gate = deception_results['suppression_gate']
+                    C_star = C_star * (1.0 - _ds_blend + _ds_blend * _gate)
+                    _ds_unc_boost = min(
+                        1.0 - uncertainty,
+                        _deception_pressure * 0.3,
+                    )
+                    if _ds_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _ds_unc_boost)
+                        uncertainty_sources["deception_suppression"] = _ds_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+                    self.audit_log.record(
+                        "deception_suppressor", "suppressed", {
+                            "deception_pressure": _deception_pressure,
+                            "suppression_gate_mean": float(
+                                _gate.mean().item(),
+                            ),
+                        },
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "deception_suppressor", "suppressed",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "deception_pressure": _deception_pressure,
+                            },
+                        )
+            except Exception as _ds_err:
+                logger.debug(
+                    "DeceptionSuppressor forward failed (non-fatal): %s",
+                    _ds_err,
+                )
+        else:
+            self._cached_deception_pressure = 0.0
         
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         # Uses adaptive_safety_threshold which is tightened when convergence
@@ -27406,6 +27606,7 @@ class AEONDeltaV3(nn.Module):
             'topo_results': topo_results,
             'safety_score': safety_score,
             'self_report': self_report,
+            'deception_results': deception_results,
             'meta_results': meta_results,
             'iterations': iterations,
             'psi_0': z_in,
@@ -31006,6 +31207,7 @@ class AEONDeltaV3(nn.Module):
             ("TopologyAnalyzer", self.topology_analyzer),
             ("SafetySystem", self.safety_system),
             ("SelfReporter", self.self_reporter),
+            ("DeceptionSuppressor", self.deception_suppressor),
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
             ("NeurogenicMemory", self.neurogenic_memory),

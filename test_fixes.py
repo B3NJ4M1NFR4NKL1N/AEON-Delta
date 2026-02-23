@@ -46703,6 +46703,191 @@ def test_gap5_memory_validation_dampens_output():
     print("✅ test_gap5_memory_validation_dampens_output PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DeceptionSuppressor & Architectural Unification Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_deception_suppressor_forward():
+    """DeceptionSuppressor produces expected output keys and shapes."""
+    from aeon_core import DeceptionSuppressor
+    ds = DeceptionSuppressor(hidden_dim=256, threshold=0.3)
+    psi_0 = torch.randn(4, 256)
+    core_state = torch.randn(4, 256)
+    self_report = {'confidence': torch.rand(4, 1)}
+    result = ds(psi_0, core_state, self_report)
+    assert 'suppression_gate' in result
+    assert 'independent_consistency' in result
+    assert 'divergence' in result
+    assert 'deception_pressure' in result
+    assert result['suppression_gate'].shape == (4, 1)
+    assert result['independent_consistency'].shape == (4, 1)
+    assert result['divergence'].shape == (4, 1)
+    assert 0.0 <= result['deception_pressure'] <= 1.0
+    # Gate must be in [0, 1]
+    assert (result['suppression_gate'] >= 0.0).all()
+    assert (result['suppression_gate'] <= 1.0).all()
+    print("✅ test_deception_suppressor_forward PASSED")
+
+
+def test_deception_suppressor_no_confidence():
+    """DeceptionSuppressor handles missing confidence gracefully."""
+    from aeon_core import DeceptionSuppressor
+    ds = DeceptionSuppressor(hidden_dim=128, threshold=0.3)
+    psi_0 = torch.randn(2, 128)
+    core_state = torch.randn(2, 128)
+    result = ds(psi_0, core_state, {})  # Empty self_report
+    assert result['suppression_gate'].shape == (2, 1)
+    assert 0.0 <= result['deception_pressure'] <= 1.0
+    print("✅ test_deception_suppressor_no_confidence PASSED")
+
+
+def test_deception_suppressor_gradient_flow():
+    """DeceptionSuppressor supports gradient back-propagation."""
+    from aeon_core import DeceptionSuppressor
+    ds = DeceptionSuppressor(hidden_dim=64, threshold=0.3)
+    psi_0 = torch.randn(2, 64, requires_grad=True)
+    core_state = torch.randn(2, 64, requires_grad=True)
+    self_report = {'confidence': torch.rand(2, 1)}
+    result = ds(psi_0, core_state, self_report)
+    loss = result['suppression_gate'].mean() + result['independent_consistency'].mean()
+    loss.backward()
+    assert psi_0.grad is not None
+    assert core_state.grad is not None
+    print("✅ test_deception_suppressor_gradient_flow PASSED")
+
+
+def test_deception_suppressor_in_aeon_init():
+    """DeceptionSuppressor is initialized in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_deception_suppressor=True)
+    model = AEONDeltaV3(config)
+    assert model.deception_suppressor is not None, (
+        "DeceptionSuppressor must be initialized when enable_deception_suppressor=True"
+    )
+    print("✅ test_deception_suppressor_in_aeon_init PASSED")
+
+
+def test_deception_suppressor_disabled():
+    """DeceptionSuppressor is None when config flag is False."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_deception_suppressor=False)
+    model = AEONDeltaV3(config)
+    assert model.deception_suppressor is None, (
+        "DeceptionSuppressor must be None when enable_deception_suppressor=False"
+    )
+    print("✅ test_deception_suppressor_disabled PASSED")
+
+
+def test_deception_pressure_feedback_signal_registered():
+    """deception_pressure signal is registered in the CognitiveFeedbackBus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert "deception_pressure" in model.feedback_bus._extra_signals, (
+        "deception_pressure must be a registered feedback bus signal"
+    )
+    print("✅ test_deception_pressure_feedback_signal_registered PASSED")
+
+
+def test_deception_suppressor_in_verification_coverage():
+    """DeceptionSuppressor counts toward verification coverage."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._compute_verification_coverage)
+    assert "deception_suppressor" in src, (
+        "_compute_verification_coverage must include deception_suppressor"
+    )
+    print("✅ test_deception_suppressor_in_verification_coverage PASSED")
+
+
+def test_deception_suppression_error_class_in_trigger_mapping():
+    """deception_suppression error class maps to a trigger signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    # Verify the class-to-signal mapping includes deception
+    import inspect
+    src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert "deception_suppression" in src, (
+        "adapt_weights_from_evolution must map deception_suppression error class"
+    )
+    print("✅ test_deception_suppression_error_class_in_trigger_mapping PASSED")
+
+
+def test_deception_suppressor_in_provenance_to_signal():
+    """deception_suppressor is in the provenance-to-signal mapping."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert "deception_suppressor" in mapping, (
+        "_PROVENANCE_TO_SIGNAL must include deception_suppressor"
+    )
+    print("✅ test_deception_suppressor_in_provenance_to_signal PASSED")
+
+
+def test_deception_suppressor_in_forward_pass():
+    """DeceptionSuppressor is invoked in the reasoning core forward pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "deception_suppressor" in src, (
+        "_reasoning_core_impl must reference deception_suppressor"
+    )
+    assert "deception_pressure" in src, (
+        "_reasoning_core_impl must compute deception_pressure"
+    )
+    print("✅ test_deception_suppressor_in_forward_pass PASSED")
+
+
+def test_deception_results_in_outputs():
+    """deception_results appears in the output dictionary."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "'deception_results'" in src, (
+        "Output dict must include 'deception_results' key"
+    )
+    print("✅ test_deception_results_in_outputs PASSED")
+
+
+def test_config_deception_suppressor_blend():
+    """Config has deception_suppressor_blend field with sensible default."""
+    from aeon_core import AEONConfig
+    config = AEONConfig()
+    assert hasattr(config, 'deception_suppressor_blend'), (
+        "AEONConfig must have deception_suppressor_blend field"
+    )
+    assert 0.0 <= config.deception_suppressor_blend <= 1.0, (
+        "deception_suppressor_blend must be in [0, 1]"
+    )
+    print("✅ test_config_deception_suppressor_blend PASSED")
+
+
+def test_orphaned_config_flags_documented():
+    """Orphaned config flags have proper documentation."""
+    import inspect
+    from aeon_core import AEONConfig
+    src = inspect.getsource(AEONConfig)
+    # enable_social_cognition should have a NOT_IMPLEMENTED note
+    assert "not yet implemented" in src.lower() or "planned" in src.lower(), (
+        "Orphaned config flags must be documented as not yet implemented"
+    )
+    print("✅ test_orphaned_config_flags_documented PASSED")
+
+
+def test_feedback_bus_deception_pressure_signal():
+    """Feedback bus populates deception_pressure from cached state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "deception_pressure" in src, (
+        "_build_feedback_extra_signals must include deception_pressure"
+    )
+    assert "_cached_deception_pressure" in src, (
+        "_build_feedback_extra_signals must read _cached_deception_pressure"
+    )
+    print("✅ test_feedback_bus_deception_pressure_signal PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -48721,6 +48906,22 @@ def run_all_tests():
     test_gap4_lipschitz_pressure_absent_when_below_target()
     test_gap4_lipschitz_feedback_signal_registered()
     test_gap5_memory_validation_dampens_output()
+
+    # DeceptionSuppressor & Architectural Unification Tests
+    test_deception_suppressor_forward()
+    test_deception_suppressor_no_confidence()
+    test_deception_suppressor_gradient_flow()
+    test_deception_suppressor_in_aeon_init()
+    test_deception_suppressor_disabled()
+    test_deception_pressure_feedback_signal_registered()
+    test_deception_suppressor_in_verification_coverage()
+    test_deception_suppression_error_class_in_trigger_mapping()
+    test_deception_suppressor_in_provenance_to_signal()
+    test_deception_suppressor_in_forward_pass()
+    test_deception_results_in_outputs()
+    test_config_deception_suppressor_blend()
+    test_orphaned_config_flags_documented()
+    test_feedback_bus_deception_pressure_signal()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
