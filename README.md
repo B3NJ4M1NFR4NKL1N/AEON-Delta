@@ -412,16 +412,26 @@ Ensures multi-model DAG agreement and provides a unified entry point for the com
 
 ---
 
+### **31. Convergence Arbitration, Uncertainty Tracking & Memory Validation**
+Fine-grained convergence consensus, per-module uncertainty attribution, and memory-reasoning alignment:
+- **`UnifiedConvergenceArbiter`**: Unifies verdicts from three independent convergence monitors (ProvablyConvergentMetaLoop, CertifiedMetaLoop, ConvergenceMonitor) using conservative consensus — convergence is certified only when all monitors agree; disagreement flags a `convergence_conflict` that feeds into meta-cognitive recursion triggers with configurable uncertainty boost
+- **`DirectionalUncertaintyTracker`**: Tracks per-module uncertainty contributions to enable targeted re-reasoning instead of full pipeline re-execution — maintains per-module uncertainty signals for root-cause attribution, allowing the system to identify which specific module is most uncertain and focus re-reasoning efforts there
+- **`MemoryReasoningValidator`**: Validates retrieved memories against the final converged reasoning state via cosine similarity to detect stale or irrelevant memories that may have polluted the reasoning process — signals need for memory re-retrieval or uncertainty escalation when validation falls below configurable consistency threshold
+
+Enables multi-monitor convergence consensus, targeted uncertainty attribution, and memory-reasoning coherence verification.
+
+---
+
 ## 🖥️ Dashboard & Server (`aeon_server.py` + `AEON_Dashboard.html`)
 
 ### **Server: aeon_server.py v3.3.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **55 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
+- **61 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
 - **WebSocket** real-time updates (training progress, test events, log streaming)
 - **SSE** log streaming with per-level filtering and per-test event streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 1,101 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 1,609 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, correlation ID middleware
 - **VQ codebook introspection**: `/api/vq/codebook` with utilization history
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
@@ -463,6 +473,8 @@ python aeon_server.py [--host 0.0.0.0] [--port 8000]
 - **`WarmupCosineScheduler`**: Learning rate scheduler with linear warmup and cosine annealing decay
 - **`TrainingProvenanceTracker`**: Tracks training provenance metadata including data sources, hyperparameters, and training history for reproducibility
 - **`TrainingConvergenceMonitor`**: Monitors training convergence metrics across epochs with early stopping and stability analysis
+- **`DataCharacteristicsAnalyzer`**: Analyzes training data to adaptively select initial hyperparameters — examines token distributions, sequence statistics, and document structure to recommend learning rate, batch size, gradient clip, and other training parameters based on actual data characteristics
+- **`AdaptiveTrainingController`**: Real-time adaptive controller for training hyperparameters that monitors loss trajectory, gradient norms, and codebook utilization during training to adjust parameters dynamically — implements multi-strategy adaptation (loss-based LR, gradient-norm-based clip, and convergence-based patience adjustments) with causal traceability
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
 - Document-aware tokenization preserving semantic boundaries  
@@ -519,7 +531,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 1,101 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 1,609 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -546,9 +558,11 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 1,101 tests) verif
 - **Advanced causal** (unified causal simulator, neuro-symbolic bridge, temporal knowledge graph, hybrid reasoning engine)  
 - **Advanced meta-learning** (Task2Vec embeddings, latent dynamics model)  
 - **AGI coherence** (module coherence verification, meta-cognitive recursion trigger, causal error evolution tracker, causal DAG consensus, unified cognitive cycle, cross-module integration)  
+- **Convergence arbitration** (unified convergence arbiter consensus, directional uncertainty tracking per module, memory-reasoning validation)  
 - **Production infrastructure** (system integrity monitor with anomaly detection, progress tracker with phase lifecycle and rollback, deterministic execution guard)  
 - **Cognitive feedback** (cognitive feedback bus forward/gradient flow, causal provenance tracking and attribution)  
 - **Causal infrastructure** (causal context window with tiers and eviction, temporal causal trace with chain reconstruction, cross-validation reconciliation, external data trust scoring, complexity estimation with subsystem gating, neuro-symbolic consistency checking)  
+- **Adaptive training** (data characteristics analysis, adaptive training controller, loss-based and gradient-norm-based parameter adjustment)  
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -570,11 +584,11 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py          # Core architecture — 115 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.3.0 — 55 API endpoints, WebSocket, SSE, training runner
+├── aeon_core.py          # Core architecture — 118 classes, all modules, model (AEONDeltaV3), trainer, CLI
+├── aeon_server.py        # FastAPI backend v3.3.0 — 61 API endpoints, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — real-time monitoring, inference, training UI
-├── ae_train.py           # Training pipeline v4.0 — 14 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (1,101 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
+├── test_fixes.py         # Comprehensive test suite (1,609 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── requirements.txt      # Python dependencies
 ├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
