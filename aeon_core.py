@@ -25011,6 +25011,15 @@ class AEONDeltaV3(nn.Module):
                         (1.0 - _comp_disagreement) * C_star
                         + _comp_disagreement * _c_rolled_comp
                     )
+            # Include NS consistency state in UCC subsystem states so
+            # that neuro-symbolic rule violations participate in
+            # cross-module coherence verification.  Without this, the
+            # coherence verifier cannot detect misalignment between
+            # symbolic-rule satisfaction and neural subsystem outputs,
+            # leaving a blind spot in cross-module verification.
+            if (self._cached_ns_consistency_state is not None
+                    and self._cached_ns_consistency_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["ns_consistency"] = self._cached_ns_consistency_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Track which subsystems were absent from coherence
@@ -25024,6 +25033,7 @@ class AEONDeltaV3(nn.Module):
                     "hierarchical_vae", "grounded_multimodal", "memory",
                     "integration", "rssm", "auto_critic", "mcts_planning",
                     "safety", "causal_model", "unified_simulator", "decoder",
+                    "ns_consistency",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:
@@ -25143,6 +25153,32 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                    # 8f-iv-trace. Targeted causal trace query — when the
+                    # UCC recommends re-reasoning, use causal_trace.find()
+                    # to retrieve the history of the most uncertain
+                    # subsystem.  This turns the causal trace from a
+                    # write-heavy audit trail into an active diagnostic
+                    # tool: the reasoning pipeline queries *specific*
+                    # subsystem failures before re-reasoning, enabling
+                    # targeted corrective action rather than blind re-runs.
+                    _ucc_most_uncertain_mod = unified_cycle_results.get(
+                        "uncertainty_summary", {},
+                    ).get("most_uncertain_module", None)
+                    _targeted_trace_history: List[Dict[str, Any]] = []
+                    if (self.causal_trace is not None
+                            and _ucc_most_uncertain_mod is not None):
+                        _targeted_trace_history = self.causal_trace.find(
+                            subsystem=_ucc_most_uncertain_mod,
+                            severity="warning",
+                            n=5,
+                        )
+                        if _targeted_trace_history:
+                            self.audit_log.record(
+                                "causal_trace", "targeted_subsystem_query", {
+                                    "queried_subsystem": _ucc_most_uncertain_mod,
+                                    "matching_entries": len(_targeted_trace_history),
+                                },
+                            )
                     # Feed the unified cycle's rerun signal into
                     # metacognitive_info so downstream re-reasoning
                     # logic (step 8g-0) respects the unified verdict.
@@ -26401,6 +26437,10 @@ class AEONDeltaV3(nn.Module):
                 if self.error_evolution is not None else {}
             ),
             "causal_trace_summary": _causal_trace_summary,
+            "recurring_root_causes": (
+                self.causal_trace.get_recurring_root_causes()
+                if self.causal_trace is not None else {}
+            ),
             "coherence_score": (
                 float(coherence_results["coherence_score"].mean().item())
                 if coherence_results and "coherence_score" in coherence_results
