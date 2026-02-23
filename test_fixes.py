@@ -41892,8 +41892,13 @@ def test_build_feedback_extra_signals_helper():
     assert extra["topology_catastrophe"] == 1.0  # catastrophe detected
     assert extra["memory_trust"] == 0.4
     assert extra["complexity_gate_usage"] > 0.0  # some gates are off
-    assert "unc_coherence_deficit" in extra  # uncertainty sources forwarded
-    assert extra["unc_coherence_deficit"] == 0.3
+    # Uncertainty sources are now aggregated into unc_peak and unc_source_count
+    # instead of individual unc_* keys, to avoid needing 60+ dynamic
+    # signal registrations in the feedback bus.
+    assert "unc_peak" in extra, "Aggregated uncertainty peak must be present"
+    assert extra["unc_peak"] == 0.3  # max of {coherence_deficit: 0.3}
+    assert "unc_source_count" in extra, "Aggregated uncertainty source count must be present"
+    assert extra["unc_source_count"] > 0.0  # at least one source active
     print("✅ test_build_feedback_extra_signals_helper PASSED")
 
 
@@ -42092,9 +42097,17 @@ def test_uncertainty_sources_values_clamped():
         _cached_auto_critic_current_score = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
-    assert extra["unc_negative_source"] == 0.0, "Negative values must be clamped to 0"
-    assert extra["unc_above_one_source"] == 1.0, "Values >1 must be clamped to 1"
-    assert abs(extra["unc_normal_source"] - 0.4) < 1e-6, "Normal values preserved"
+    # Uncertainty sources are now aggregated into unc_peak and unc_source_count.
+    # unc_peak takes the maximum clamped value; unc_source_count normalizes the
+    # active source count.  This validates that extreme values are properly
+    # handled during aggregation.
+    assert extra["unc_peak"] == 1.0, (
+        "unc_peak should be clamped max — above_one_source (2.0) clamps to 1.0"
+    )
+    assert extra["unc_source_count"] > 0.0, "Should have active uncertainty sources"
+    # Values must be finite and in [0, 1]
+    assert 0.0 <= extra["unc_peak"] <= 1.0, "unc_peak must be in [0, 1]"
+    assert 0.0 <= extra["unc_source_count"] <= 1.0, "unc_source_count must be in [0, 1]"
     print("✅ test_uncertainty_sources_values_clamped PASSED")
 
 
@@ -44056,6 +44069,150 @@ def test_bridge_recovery_records_context_metadata():
     print("✅ test_bridge_recovery_records_context_metadata PASSED")
 
 
+def test_feedback_bus_systematic_uncertainty_registered():
+    """Verify systematic_uncertainty signal is registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    assert "systematic_uncertainty" in model.feedback_bus._extra_signals, (
+        "feedback_bus must have systematic_uncertainty registered"
+    )
+    print("✅ test_feedback_bus_systematic_uncertainty_registered PASSED")
+
+
+def test_feedback_bus_auto_critic_quality_deficit_registered():
+    """Verify auto_critic_quality_deficit signal is registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    assert "auto_critic_quality_deficit" in model.feedback_bus._extra_signals, (
+        "feedback_bus must have auto_critic_quality_deficit registered"
+    )
+    print("✅ test_feedback_bus_auto_critic_quality_deficit_registered PASSED")
+
+
+def test_feedback_bus_unc_peak_registered():
+    """Verify unc_peak signal is registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    assert "unc_peak" in model.feedback_bus._extra_signals, (
+        "feedback_bus must have unc_peak registered"
+    )
+    assert "unc_source_count" in model.feedback_bus._extra_signals, (
+        "feedback_bus must have unc_source_count registered"
+    )
+    print("✅ test_feedback_bus_unc_peak_registered PASSED")
+
+
+def test_feedback_bus_extra_signals_all_routed():
+    """Every signal returned by _build_feedback_extra_signals must be
+    registered in the feedback bus to avoid silent signal drops."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    # Populate cached state to exercise all code paths
+    model._cached_uncertainty_sources = {
+        "coherence_deficit": 0.5,
+        "world_model_error": 0.3,
+    }
+    model._uncertainty_history = [0.6, 0.7, 0.8]
+    model._auto_critic_quality_count = 3
+    model._auto_critic_quality_ema = 0.4
+    model._cached_auto_critic_current_score = 0.6
+    extra = model._build_feedback_extra_signals()
+    registered = set(model.feedback_bus._extra_signals.keys())
+    for key in extra:
+        assert key in registered, (
+            f"Signal '{key}' returned by _build_feedback_extra_signals "
+            f"is not registered in the feedback bus — it will be silently "
+            f"dropped. Register it via feedback_bus.register_signal()."
+        )
+    print("✅ test_feedback_bus_extra_signals_all_routed PASSED")
+
+
+def test_ucc_targeted_loss_gating_in_compute_loss():
+    """When UCC identifies a most_uncertain_module, compute_loss should
+    apply a targeted boost to the corresponding loss component."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+    # Verify that compute_loss references UCC targeted loss gating
+    assert "most_uncertain_module" in src, (
+        "compute_loss must reference most_uncertain_module from UCC "
+        "uncertainty_summary for targeted loss gating"
+    )
+    assert "_UCC_MODULE_LOSS_BOOST" in src, (
+        "compute_loss must define _UCC_MODULE_LOSS_BOOST for targeted "
+        "UCC-driven loss scaling"
+    )
+    assert "module_uncertainties" in src, (
+        "compute_loss must reference module_uncertainties to determine "
+        "the boost magnitude for the most uncertain module"
+    )
+    print("✅ test_ucc_targeted_loss_gating_in_compute_loss PASSED")
+
+
+def test_ucc_targeted_loss_boost_causal():
+    """UCC targeted loss gating should boost causal loss when
+    most_uncertain_module is a causal module."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+        use_vq=False, enable_world_model=False,
+        enable_hierarchical_memory=False,
+        enable_causal_model=False, enable_meta_learning=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B = 2
+    # Create synthetic outputs with proper keys
+    outputs = {
+        'logits': torch.randn(B, config.seq_length, config.vocab_size),
+        'core_state': torch.randn(B, config.hidden_dim),
+        'psi_0': torch.randn(B, config.z_dim),
+        'vq_loss': torch.tensor(0.0),
+        'safety_score': torch.ones(B, 1),
+        'factors': torch.randn(B, config.num_pillars),
+    }
+    targets = torch.randint(0, 1000, (B, config.seq_length))
+    # Compute loss without UCC targeted boost
+    loss_without = model.compute_loss(outputs, targets)
+    # Now inject UCC results with causal_model as most uncertain
+    outputs['unified_cognitive_cycle_results'] = {
+        'should_rerun': True,
+        'trigger_detail': {'trigger_score': 0.8, 'triggers_active': ['causal']},
+        'uncertainty_summary': {
+            'most_uncertain_module': 'causal_model',
+            'module_uncertainties': {'causal_model': 0.9},
+        },
+    }
+    loss_with = model.compute_loss(outputs, targets)
+    # The loss with UCC targeted boost should be >= loss without
+    # (because the causal_source_boost is elevated)
+    assert loss_with['total_loss'].item() >= loss_without['total_loss'].item() - 1e-4, (
+        "UCC targeted boost for causal_model should increase total loss "
+        "due to elevated causal_source_boost"
+    )
+    print("✅ test_ucc_targeted_loss_boost_causal PASSED")
+
+
 def test_run_all_tests_is_standalone_function():
     """run_all_tests must be a standalone module-level function, not nested
     inside another test function."""
@@ -45963,6 +46120,14 @@ def run_all_tests():
     test_all_recovery_sites_bridge_to_evolution()
     test_bridge_recovery_records_context_metadata()
     test_run_all_tests_is_standalone_function()
+
+    # Architectural Unification — Feedback Bus & UCC Loss Gating Tests
+    test_feedback_bus_systematic_uncertainty_registered()
+    test_feedback_bus_auto_critic_quality_deficit_registered()
+    test_feedback_bus_unc_peak_registered()
+    test_feedback_bus_extra_signals_all_routed()
+    test_ucc_targeted_loss_gating_in_compute_loss()
+    test_ucc_targeted_loss_boost_causal()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

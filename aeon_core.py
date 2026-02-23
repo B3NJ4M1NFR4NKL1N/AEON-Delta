@@ -16325,6 +16325,26 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "auto_critic_current_quality", default=1.0,
         )
+        # Systematic uncertainty — elevated when uncertainty has been
+        # consistently high across recent forward passes, prompting
+        # proactive deeper reasoning rather than reactive per-spike
+        # escalation.
+        self.feedback_bus.register_signal(
+            "systematic_uncertainty", default=0.0,
+        )
+        # Auto-critic quality deficit trend — when the cross-pass
+        # quality EMA indicates historically poor auto-critic
+        # performance, this signal triggers compensatory deeper
+        # reasoning on subsequent passes.
+        self.feedback_bus.register_signal(
+            "auto_critic_quality_deficit", default=0.0,
+        )
+        # Per-source uncertainty aggregates — peak single-source
+        # uncertainty and active source count provide the meta-loop
+        # with distributional uncertainty information beyond the
+        # scalar aggregate, enabling targeted deeper reasoning.
+        self.feedback_bus.register_signal("unc_peak", default=0.0)
+        self.feedback_bus.register_signal("unc_source_count", default=0.0)
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17465,14 +17485,21 @@ class AEONDeltaV3(nn.Module):
             ).get('decoder', 0.0)
             if isinstance(_dec_delta, (int, float)) and _dec_delta > 0.05:
                 extra["decoder_provenance_pressure"] = min(1.0, _dec_delta)
-        # Per-source uncertainty breakdown — feed individual uncertainty
-        # contributors (e.g. coherence_deficit, hvae_kl_divergence,
-        # reconciliation_disagreement) into the feedback bus so the
-        # meta-loop conditioning vector reflects *which* subsystems are
-        # uncertain, not just the scalar total.  Each source is clamped
-        # to [0, 1] and prefixed with "unc_" to avoid name collisions.
-        for src_name, src_val in self._cached_uncertainty_sources.items():
-            extra[f"unc_{src_name}"] = max(0.0, min(1.0, float(src_val)))
+        # Per-source uncertainty aggregates — instead of feeding each
+        # individual uncertainty source as a separate signal (which would
+        # require dynamic registration of 60+ channels and bloat the
+        # projection layer), aggregate them into two summary statistics:
+        # the peak single-source uncertainty and the normalized count of
+        # active sources.  Peak captures the worst-case signal while
+        # count captures the breadth of uncertainty spread, giving the
+        # meta-loop distributional information beyond the scalar total.
+        if self._cached_uncertainty_sources:
+            _unc_vals = [
+                max(0.0, min(1.0, float(v)))
+                for v in self._cached_uncertainty_sources.values()
+            ]
+            extra["unc_peak"] = max(_unc_vals) if _unc_vals else 0.0
+            extra["unc_source_count"] = min(1.0, len(_unc_vals) / 10.0)
         # Cross-pass systematic uncertainty — when uncertainty has been
         # consistently elevated across recent forward passes, signal the
         # meta-loop to maintain deeper reasoning proactively rather than
@@ -27045,6 +27072,44 @@ class AEONDeltaV3(nn.Module):
             )
             if _safety_unc > 0:
                 _safety_source_boost = 1.0 + _PER_SOURCE_BOOST_MULTIPLIER * min(_safety_unc, 0.5)
+
+        # ===== 16b. UCC TARGETED LOSS GATING =====
+        # When the UnifiedCognitiveCycle identifies the most uncertain
+        # module, apply a targeted boost to the corresponding loss
+        # component so training steers toward fixing the weakest link
+        # rather than uniformly penalizing all subsystems.  This closes
+        # the loop between UCC's per-module uncertainty analysis and the
+        # training objective: the UCC diagnoses *which* module is most
+        # uncertain, and the loss function applies corrective pressure
+        # specifically to that module's training signal.
+        _UCC_MODULE_LOSS_BOOST = 1.5
+        if _ucc_results:
+            _unc_summary = _ucc_results.get('uncertainty_summary', {})
+            _most_uncertain = _unc_summary.get('most_uncertain_module')
+            _module_uncertainties = _unc_summary.get(
+                'module_uncertainties', {},
+            )
+            if _most_uncertain and _most_uncertain in _module_uncertainties:
+                _peak_unc_val = max(
+                    0.0, min(1.0, float(_module_uncertainties[_most_uncertain])),
+                )
+                _targeted_boost = 1.0 + _UCC_MODULE_LOSS_BOOST * _peak_unc_val
+                if _most_uncertain in (
+                    'causal_model', 'causal_world_model',
+                ):
+                    _causal_source_boost = max(
+                        _causal_source_boost, _targeted_boost,
+                    )
+                elif _most_uncertain in ('coherence',):
+                    _coherence_source_boost = max(
+                        _coherence_source_boost, _targeted_boost,
+                    )
+                elif _most_uncertain in (
+                    'safety', 'topology', 'world_model',
+                ):
+                    _safety_source_boost = max(
+                        _safety_source_boost, _targeted_boost,
+                    )
         
         total_loss = (
             lm_loss +
