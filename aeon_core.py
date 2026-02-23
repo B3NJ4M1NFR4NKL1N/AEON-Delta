@@ -27702,6 +27702,11 @@ class AEONDeltaV3(nn.Module):
             self.inference_cache.set_ssm_state([z_quantized.detach()])
 
         outputs['cache_hit'] = _cache_hit
+
+        # Extract causal trace ID produced by _reasoning_core_impl so
+        # that downstream causal-trace recordings (cycle-consistency,
+        # re-encode verification, etc.) can reference it.
+        input_trace_id = outputs.get('causal_trace_id', '')
         
         # ===== DECODE =====
         # Register decoder transform with provenance tracker so that
