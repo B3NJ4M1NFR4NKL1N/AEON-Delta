@@ -45908,6 +45908,193 @@ def test_ucc_deeper_rejection_causal_trace():
     print("✅ test_ucc_deeper_rejection_causal_trace PASSED")
 
 
+# ======================================================================
+# Architectural Coherence — Unified AGI Gap Closures
+# ======================================================================
+
+def test_continual_learning_iterates_frozen_columns():
+    """Verify continual learning enrichment iterates over frozen columns.
+
+    The ContinualLearningCore.forward() method iterates over all frozen
+    columns (columns[:-1]) and applies the lateral adapter for each.
+    The _forward_impl should match this semantics: when multiple task
+    columns exist, each frozen column should contribute its adapter signal
+    rather than applying the adapter once to the current encoder output.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The loop should iterate over frozen columns
+    assert 'continual_learning.columns[:-1]' in source, (
+        "_forward_impl should iterate over continual_learning.columns[:-1] "
+        "to apply lateral adapters from all frozen prior-task columns"
+    )
+    # Should NOT contain the old self-loop pattern
+    assert 'self.continual_learning.lateral_adapter(\n' not in source or \
+        '_prev_col' in source, (
+        "_forward_impl should iterate per-column, not self-loop the adapter"
+    )
+    print("✅ test_continual_learning_iterates_frozen_columns PASSED")
+
+
+def test_unified_sim_high_uncertainty_override():
+    """Verify world_model and causal_world_model override on high_uncertainty.
+
+    World model and causal world model gates override on high_uncertainty
+    so that uncertain states always get verified through these subsystems.
+    The unified simulator intentionally does NOT override because
+    counterfactual reasoning is expensive and not always needed under
+    uncertainty.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Verify world_model_should_skip includes high_uncertainty override
+    wm_idx = source.find('_world_model_should_skip')
+    assert wm_idx != -1, "Should define _world_model_should_skip"
+    wm_snippet = source[wm_idx:wm_idx + 300]
+    assert 'not high_uncertainty' in wm_snippet, (
+        "_world_model_should_skip should include 'not high_uncertainty' override"
+    )
+    # Verify causal_world_should_skip includes high_uncertainty override
+    cw_idx = source.find('_causal_world_should_skip')
+    assert cw_idx != -1, "Should define _causal_world_should_skip"
+    cw_snippet = source[cw_idx:cw_idx + 300]
+    assert 'not high_uncertainty' in cw_snippet, (
+        "_causal_world_should_skip should include 'not high_uncertainty' override"
+    )
+    print("✅ test_unified_sim_high_uncertainty_override PASSED")
+
+
+def test_feedback_bus_causal_dag_consensus_signal():
+    """Verify feedback bus has a causal_dag_consensus_quality signal.
+
+    The feedback bus should carry DAG consensus quality so the meta-loop
+    can condition on inter-model structural agreement.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Check that the signal is registered in feedback bus
+    assert hasattr(model, 'feedback_bus'), "Model should have feedback_bus"
+    registered = model.feedback_bus._extra_signals if hasattr(
+        model.feedback_bus, '_extra_signals'
+    ) else {}
+    # Check via _build_feedback_extra_signals
+    extra = model._build_feedback_extra_signals()
+    # The method should be able to produce causal_dag_consensus_quality
+    # When _cached_causal_quality < 1.0
+    model._cached_causal_quality = 0.5
+    extra = model._build_feedback_extra_signals()
+    assert 'causal_dag_consensus_quality' in extra, (
+        "_build_feedback_extra_signals should include 'causal_dag_consensus_quality' "
+        "when _cached_causal_quality < 1.0"
+    )
+    assert abs(extra['causal_dag_consensus_quality'] - 0.5) < 1e-6, (
+        "causal_dag_consensus_quality should reflect _cached_causal_quality"
+    )
+    print("✅ test_feedback_bus_causal_dag_consensus_signal PASSED")
+
+
+def test_memory_aggregate_circuit_breaker_code_exists():
+    """Verify the aggregate memory circuit breaker exists in source.
+
+    When ALL active memory subsystems fail, the pipeline should revert
+    to the pre-fusion state (C_star) to prevent corrupted memory from
+    polluting downstream reasoning.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'memory_aggregate_failure' in source, (
+        "_reasoning_core_impl should record 'memory_aggregate_failure' "
+        "when all active memory subsystems fail simultaneously"
+    )
+    assert 'memory_fusion' in source, (
+        "_reasoning_core_impl should trip 'memory_fusion' circuit breaker "
+        "when all active memory subsystems fail"
+    )
+    print("✅ test_memory_aggregate_circuit_breaker_code_exists PASSED")
+
+
+def test_reactive_regate_code_exists():
+    """Verify reactive re-gating logic exists in source.
+
+    When subsystems were complexity-gated OFF but downstream uncertainty
+    exceeded the threshold, the system should record this as premature
+    gating for error evolution learning.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'premature_complexity_gating' in source, (
+        "_reasoning_core_impl should record 'premature_complexity_gating' "
+        "when gated-off subsystems are needed post-hoc"
+    )
+    assert 'reactive_regate' in source, (
+        "_reasoning_core_impl should contain reactive re-gating logic"
+    )
+    print("✅ test_reactive_regate_code_exists PASSED")
+
+
+def test_new_error_classes_in_lambda_mapping():
+    """Verify new error classes are mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    new_classes = [
+        "premature_complexity_gating",
+        "memory_aggregate_failure",
+        "causal_dag_disagreement",
+    ]
+    for cls in new_classes:
+        assert cls in mapping, (
+            f"_ERROR_CLASS_TO_LAMBDA should map '{cls}' to a lambda parameter"
+        )
+        assert mapping[cls].startswith("lambda_"), (
+            f"Mapping value '{mapping[cls]}' for '{cls}' should start with 'lambda_'"
+        )
+    print("✅ test_new_error_classes_in_lambda_mapping PASSED")
+
+
+def test_new_error_classes_in_trigger_mapping():
+    """Verify new error classes are mapped in MetaCognitiveRecursionTrigger."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    source = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert '"premature_complexity_gating"' in source, (
+        "MetaCognitiveRecursionTrigger should map 'premature_complexity_gating' "
+        "to a trigger signal"
+    )
+    assert '"memory_aggregate_failure"' in source, (
+        "MetaCognitiveRecursionTrigger should map 'memory_aggregate_failure' "
+        "to a trigger signal"
+    )
+    print("✅ test_new_error_classes_in_trigger_mapping PASSED")
+
+
+def test_feedback_bus_dag_consensus_at_full_quality():
+    """Verify DAG consensus signal is absent when quality is 1.0 (healthy).
+
+    When all causal models agree perfectly (_cached_causal_quality == 1.0),
+    the signal should not appear in extra_signals to avoid noise.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._cached_causal_quality = 1.0
+    extra = model._build_feedback_extra_signals()
+    assert 'causal_dag_consensus_quality' not in extra, (
+        "causal_dag_consensus_quality should not appear when quality == 1.0"
+    )
+    print("✅ test_feedback_bus_dag_consensus_at_full_quality PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -47896,6 +48083,16 @@ def run_all_tests():
     test_deeper_meta_loop_rejected_in_error_class_mapping()
     test_auto_critic_quality_adapts_deeper_loop_strategy()
     test_ucc_deeper_rejection_causal_trace()
+
+    # Architectural Coherence — Unified AGI Gap Closures
+    test_continual_learning_iterates_frozen_columns()
+    test_unified_sim_high_uncertainty_override()
+    test_feedback_bus_causal_dag_consensus_signal()
+    test_memory_aggregate_circuit_breaker_code_exists()
+    test_reactive_regate_code_exists()
+    test_new_error_classes_in_lambda_mapping()
+    test_new_error_classes_in_trigger_mapping()
+    test_feedback_bus_dag_consensus_at_full_quality()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
