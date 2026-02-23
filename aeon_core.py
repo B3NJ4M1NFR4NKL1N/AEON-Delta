@@ -30211,22 +30211,19 @@ class AEONTrainer:
         # inference→training feedback loop: the trainer can detect
         # when the model's reasoning pipeline is degraded (high
         # uncertainty, low coherence) and adjust training accordingly.
-        _reasoning_outputs = None
-        if isinstance(outputs, tuple) and len(outputs) >= 2:
-            _reasoning_outputs = outputs[1] if isinstance(outputs[1], dict) else None
-        if _reasoning_outputs is not None:
-            _ucc = _reasoning_outputs.get('unified_cognitive_cycle_results', {})
+        if isinstance(outputs, dict):
+            _ucc = outputs.get('unified_cognitive_cycle_results', {})
             if _ucc:
                 metrics['ucc_should_rerun'] = float(_ucc.get('should_rerun', False))
                 _coh = _ucc.get('coherence_deficit', None)
                 if _coh is not None:
                     metrics['ucc_coherence_deficit'] = float(_coh)
-            _chain = _reasoning_outputs.get('causal_decision_chain', {})
+            _chain = outputs.get('causal_decision_chain', {})
             if _chain:
                 _unc = _chain.get('uncertainty', None)
                 if _unc is not None:
                     metrics['inference_uncertainty'] = float(_unc)
-            if _reasoning_outputs.get('is_fallback', False):
+            if outputs.get('is_fallback', False):
                 metrics['inference_fallback'] = 1.0
 
         return metrics
