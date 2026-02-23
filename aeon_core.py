@@ -6525,6 +6525,14 @@ class CausalProvenanceTracker:
         the reasoning pipeline is fragile — a single subsystem is driving
         the conclusion without sufficient cross-validation from others.
 
+        The boost is further scaled by the dependency-chain depth of the
+        dominant module.  A module close to the pipeline root (depth 0-1)
+        that dominates the output indicates early-stage overriding of the
+        entire downstream chain, which is more concerning than a leaf
+        module (high depth) dominating — the latter only affects the final
+        stage.  The depth factor ranges from 1.0 (root, full boost) to
+        0.5 (deepest, halved boost).
+
         This method converts that concentration into an uncertainty signal
         so that downstream metacognitive triggers can activate deeper
         reasoning when provenance is unhealthy.
@@ -6542,11 +6550,15 @@ class CausalProvenanceTracker:
                 - boost: float ∈ [0, max_boost] — uncertainty boost.
                 - dominant_module: str or None — name of the dominant module.
                 - concentration: float — Herfindahl-like concentration index.
+                - depth_factor: float — depth-based scaling applied to boost.
         """
         attribution = self.compute_attribution()
         contributions = attribution.get('contributions', {})
         if not contributions:
-            return {"boost": 0.0, "dominant_module": None, "concentration": 0.0}
+            return {
+                "boost": 0.0, "dominant_module": None,
+                "concentration": 0.0, "depth_factor": 1.0,
+            }
 
         # Herfindahl-like concentration: sum of squared contributions.
         # Uniform distribution → 1/N; single-module dominance → 1.0.
@@ -6556,6 +6568,7 @@ class CausalProvenanceTracker:
         dominant_fraction = contributions[dominant_module]
 
         boost = 0.0
+        depth_factor = 1.0
         if dominant_fraction > dominance_threshold:
             # Scale linearly from 0 at threshold to max_boost at 1.0
             boost = min(
@@ -6564,11 +6577,39 @@ class CausalProvenanceTracker:
                 / (1.0 - dominance_threshold)
                 * max_boost,
             )
+            # Depth-weighted scaling: compute the depth of the dominant
+            # module in the dependency DAG.  Root modules (depth 0) get
+            # full boost (factor 1.0); deeper modules get attenuated
+            # boost (minimum factor 0.5).  This reflects the insight
+            # that root-level dominance (early pipeline stage overriding
+            # all downstream processing) is more architecturally
+            # concerning than leaf-level dominance.
+            deps = getattr(self, '_dependencies', {})
+            if deps:
+                _depth = 0
+                _visited: Set[str] = set()
+                _queue = [(dominant_module, 0)]
+                while _queue:
+                    _node, _d = _queue.pop(0)
+                    if _node in _visited:
+                        continue
+                    _visited.add(_node)
+                    _parents = deps.get(_node, set())
+                    if _parents:
+                        for _p in _parents:
+                            _queue.append((_p, _d + 1))
+                    _depth = max(_depth, _d)
+                # Normalize: assume max pipeline depth ~20; deeper modules
+                # get lower factor (min 0.5).
+                _max_depth = max(len(self._order), 20)
+                depth_factor = max(0.5, 1.0 - 0.5 * _depth / _max_depth)
+                boost = boost * depth_factor
 
         return {
             "boost": boost,
             "dominant_module": dominant_module if boost > 0 else None,
             "concentration": concentration,
+            "depth_factor": depth_factor,
         }
 
 
@@ -15437,6 +15478,16 @@ class UnifiedCognitiveCycle:
         self.uncertainty_tracker = uncertainty_tracker
         self.memory_validator = memory_validator
 
+        # Cross-pass coherence trend tracking — EMA of coherence deficit
+        # across successive evaluate() calls.  When coherence is
+        # systematically degrading (trend rising), the cycle escalates
+        # uncertainty even if individual-pass deficits are below the
+        # rerun threshold.  This catches slow architectural drift that
+        # per-pass evaluation misses.
+        self._coherence_trend_ema: float = 0.0
+        self._coherence_trend_alpha: float = 0.3
+        self._coherence_trend_count: int = 0
+
         # Wire convergence monitor → error evolution automatically.
         if self.error_evolution is not None:
             self.convergence_monitor.set_error_evolution(self.error_evolution)
@@ -15648,6 +15699,24 @@ class UnifiedCognitiveCycle:
                 success=False,
                 metadata={'memory_trust_deficit': memory_trust_deficit},
             )
+
+        # 2e. Provenance-driven trigger weight adaptation — adjust the
+        # metacognitive trigger's signal weights proportionally to the
+        # current provenance attribution so that modules dominating the
+        # output also dominate the re-reasoning decision.  This closes the
+        # feedback loop where provenance was computed (step 5) but never
+        # influenced trigger sensitivity within the same cycle.
+        if self.metacognitive_trigger is not None:
+            try:
+                _prov_snap = self.provenance_tracker.compute_attribution()
+                self.metacognitive_trigger.adapt_weights_from_provenance(
+                    _prov_snap,
+                )
+            except Exception as _prov_adapt_err:
+                logger.warning(
+                    "UCC: adapt_weights_from_provenance failed (non-fatal): %s",
+                    _prov_adapt_err,
+                )
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
@@ -15959,6 +16028,45 @@ class UnifiedCognitiveCycle:
         if self.causal_trace is not None:
             recurring_root_causes = self.causal_trace.get_recurring_root_causes()
 
+        # 7g. Cross-pass coherence trend tracking — update the EMA of
+        # coherence deficit and escalate uncertainty when the trend
+        # indicates systematic degradation across forward passes.
+        # Individual-pass deficits below the rerun threshold may not
+        # trigger re-reasoning, but a rising trend signals architectural
+        # drift that warrants deeper meta-cognitive attention.
+        self._coherence_trend_count += 1
+        self._coherence_trend_ema = (
+            self._coherence_trend_alpha * coherence_deficit
+            + (1.0 - self._coherence_trend_alpha) * self._coherence_trend_ema
+        )
+        coherence_trend_escalation: float = 0.0
+        # Only act after enough passes to establish a reliable trend
+        _COHERENCE_TREND_MIN_PASSES = 3
+        _COHERENCE_TREND_THRESHOLD = 0.2
+        if (self._coherence_trend_count >= _COHERENCE_TREND_MIN_PASSES
+                and self._coherence_trend_ema > _COHERENCE_TREND_THRESHOLD):
+            coherence_trend_escalation = min(
+                0.15, self._coherence_trend_ema * 0.3,
+            )
+            uncertainty = min(1.0, uncertainty + coherence_trend_escalation)
+            if not should_rerun and coherence_trend_escalation > 0.1:
+                should_rerun = True
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {'coherence_trend_degradation'}
+                )
+            if self.error_evolution is not None and coherence_trend_escalation > 0.05:
+                self.error_evolution.record_episode(
+                    error_class='coherence_trend_degradation',
+                    strategy_used='trend_escalation',
+                    success=False,
+                    metadata={
+                        'coherence_trend_ema': self._coherence_trend_ema,
+                        'current_deficit': coherence_deficit,
+                        'escalation': coherence_trend_escalation,
+                    },
+                )
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -15978,6 +16086,11 @@ class UnifiedCognitiveCycle:
             'uncertainty_summary': uncertainty_summary,
             'memory_validation': memory_validation,
             'recurring_root_causes': recurring_root_causes,
+            'coherence_trend': {
+                'ema': self._coherence_trend_ema,
+                'escalation': coherence_trend_escalation,
+                'pass_count': self._coherence_trend_count,
+            },
         }
 
     def reset(self) -> None:
@@ -24807,23 +24920,19 @@ class AEONDeltaV3(nn.Module):
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
                 )
+                # Always cache provenance root-cause modules for next-pass
+                # feedback bus conditioning, regardless of rerun status.
+                # Previously this was only set on the rerun path, leaving
+                # the feedback bus's provenance_root_pressure signal dark
+                # on non-rerun passes and losing valuable attribution
+                # feedback that informs the next pass's meta-loop depth.
+                _ucc_prov_rc = unified_cycle_results.get(
+                    "provenance_root_cause", {},
+                )
+                self._cached_provenance_root_modules = list(
+                    _ucc_prov_rc.get("root_modules", []),
+                )
                 if _ucc_should_rerun:
-                    # Include provenance root-cause info in the audit log
-                    # so that rerun decisions are traceable back to the
-                    # specific upstream modules that dominated the output.
-                    _ucc_prov_rc = unified_cycle_results.get(
-                        "provenance_root_cause", {},
-                    )
-                    # Cache provenance root-cause modules for next-pass
-                    # feedback bus conditioning.  This closes the root-cause
-                    # traceability loop: provenance identifies which upstream
-                    # modules dominated the output → cached here → feedback
-                    # bus carries provenance_root_pressure signal → next
-                    # pass's meta-loop allocates deeper reasoning to those
-                    # specific subsystems.
-                    self._cached_provenance_root_modules = list(
-                        _ucc_prov_rc.get("root_modules", []),
-                    )
                     self.audit_log.record(
                         "unified_cognitive_cycle", "rerun_recommended", {
                             "trigger_detail": {
