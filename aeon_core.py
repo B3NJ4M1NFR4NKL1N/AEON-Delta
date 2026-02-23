@@ -16687,6 +16687,16 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "causal_dag_consensus_quality", default=1.0,
         )
+        # Deferred metacognitive trigger pressure — when fast mode
+        # evaluates the metacognitive trigger but skips actual recursion,
+        # the trigger score is carried forward so the next full-speed
+        # pass can act on it immediately.  Without this, fast-mode
+        # trigger evaluations are lost between passes, breaking the
+        # requirement that any uncertainty triggers a meta-cognitive
+        # cycle.
+        self.feedback_bus.register_signal(
+            "deferred_trigger_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17503,6 +17513,12 @@ class AEONDeltaV3(nn.Module):
         # can condition the meta-loop on neural↔symbolic round-trip quality.
         self._cached_ns_bridge_confidence: float = 1.0
 
+        # Deferred metacognitive trigger pressure — when fast mode
+        # evaluates the trigger but skips actual recursion, the trigger
+        # score is cached here so _build_feedback_extra_signals can
+        # carry it into the feedback bus for the next pass.
+        self._deferred_trigger_pressure: float = 0.0
+
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
         # to detect structural disagreement.  Active whenever ≥2 causal
@@ -17904,6 +17920,14 @@ class AEONDeltaV3(nn.Module):
         _dag_q = self._cached_causal_quality
         if _dag_q < 1.0:
             extra["causal_dag_consensus_quality"] = max(0.0, min(1.0, _dag_q))
+        # Deferred metacognitive trigger pressure — when fast mode
+        # evaluated the trigger but skipped recursion, the trigger score
+        # is carried into the feedback bus so the next full-speed pass
+        # benefits from the deferred assessment.
+        if self._deferred_trigger_pressure > 0.0:
+            extra["deferred_trigger_pressure"] = max(
+                0.0, min(1.0, self._deferred_trigger_pressure),
+            )
         return extra
 
     @staticmethod
@@ -20697,6 +20721,9 @@ class AEONDeltaV3(nn.Module):
         # tightened parameters for deeper reasoning.
         metacognitive_info: Dict[str, Any] = {}
         if self.metacognitive_trigger is not None and not fast:
+            # Clear deferred trigger pressure from any prior fast-mode
+            # pass — the full evaluation supersedes the deferred score.
+            self._deferred_trigger_pressure = 0.0
             _topo_catastrophe_flag = bool(
                 topo_results.get('catastrophes', torch.zeros(1)).any().item()
             )
@@ -21083,6 +21110,55 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+        
+        # 5a-iv-fast. Lightweight metacognitive trigger evaluation in
+        # fast mode — when fast=True the full metacognitive recursion
+        # pipeline (topology critic, provenance read-back, deeper
+        # meta-loop) is skipped for latency, but the trigger itself is
+        # still evaluated so that (a) deferred trigger state is available
+        # to the feedback bus for the next pass, (b) error-evolution
+        # weight adaptation stays current, and (c) the audit log records
+        # why deeper reasoning would have fired, preserving causal
+        # traceability even in fast mode.  This closes the gap where
+        # fast-mode uncertainty was computed but never compared against
+        # the metacognitive threshold.
+        elif self.metacognitive_trigger is not None and fast:
+            _topo_catastrophe_flag = bool(
+                topo_results.get('catastrophes', torch.zeros(1)).any().item()
+            )
+            if self.error_evolution is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception:
+                    pass  # non-critical in fast path
+            metacognitive_info = self.metacognitive_trigger.evaluate(
+                uncertainty=uncertainty,
+                is_diverging=is_diverging,
+                topology_catastrophe=_topo_catastrophe_flag,
+                coherence_deficit=self._cached_coherence_deficit,
+                memory_staleness=self._memory_stale,
+                recovery_pressure=self._compute_recovery_pressure(),
+                world_model_surprise=self._cached_surprise,
+                causal_quality=self._cached_causal_quality,
+                safety_violation=safety_enforced,
+            )
+            # Cache trigger score so the feedback bus carries the deferred
+            # assessment into the next pass.
+            self._deferred_trigger_pressure = max(
+                0.0, min(1.0, metacognitive_info.get("trigger_score", 0.0)),
+            )
+            # Record deferred trigger in audit log so the decision is
+            # traceable even though the actual recursion was skipped.
+            if metacognitive_info.get("should_trigger", False):
+                self.audit_log.record(
+                    "metacognitive_recursion", "deferred_fast_mode", {
+                        "triggers_active": metacognitive_info["triggers_active"],
+                        "trigger_score": metacognitive_info["trigger_score"],
+                        "uncertainty": uncertainty,
+                    },
+                )
         
         # 5a-v. Record accumulated uncertainty sources in the causal trace
         # so that any downstream decision can be traced back to the specific
@@ -27500,6 +27576,11 @@ class AEONDeltaV3(nn.Module):
         # the error evolution tracker for learning.  This closes the
         # loop between encoder input and reasoning output, ensuring
         # that the full pipeline is causally coherent end-to-end.
+        # Extract uncertainty and uncertainty_sources from the reasoning
+        # core outputs so that cycle-consistency and re-encode checks
+        # can escalate uncertainty within the same forward pass.
+        uncertainty = outputs.get('uncertainty', 0.0)
+        uncertainty_sources = outputs.get('uncertainty_sources', {})
         _cycle_consistency: float = 1.0
         if z_out is not None and z_encoded is not None:
             try:
@@ -27598,6 +27679,10 @@ class AEONDeltaV3(nn.Module):
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
+        # Write back uncertainty and uncertainty_sources that may have
+        # been escalated by cycle-consistency or re-encode checks.
+        outputs['uncertainty'] = uncertainty
+        outputs['uncertainty_sources'] = uncertainty_sources
 
         # ===== PACKAGE RESULTS =====
         result = {
