@@ -15024,6 +15024,58 @@ class CausalErrorEvolutionTracker:
             'episodes_with_antecedents': with_antecedents,
         }
 
+    # ── Error-evolution → loss weight adaptation ────────────────────────
+    # Maps error classes to the config lambda parameters they should
+    # influence.  When an error class has a persistently low success rate,
+    # the corresponding loss weight is boosted so training applies
+    # corrective pressure to the failing subsystem.
+    _ERROR_CLASS_TO_LAMBDA: Dict[str, str] = {
+        "high_coherence_loss": "lambda_coherence",
+        "high_training_loss": "lambda_self_consistency",
+        "high_ns_consistency_loss": "lambda_ns_consistency",
+        "high_hierarchical_wm_loss": "lambda_hierarchical_wm",
+        "high_memory_retrieval_loss": "lambda_memory_retrieval",
+        "metacognitive_rerun": "lambda_ucc",
+        "convergence": "lambda_lipschitz",
+        "numerical": "lambda_safety",
+    }
+
+    def recommend_loss_adjustments(
+        self,
+        max_boost: float = 2.0,
+        failure_threshold: float = 0.5,
+    ) -> Dict[str, float]:
+        """Recommend multiplicative adjustments to loss weights based on error history.
+
+        For each error class that maps to a lambda parameter, compute a
+        boost factor proportional to the failure rate (1 − success_rate).
+        Error classes with success rates above ``failure_threshold`` are
+        considered healthy and receive no boost.
+
+        Args:
+            max_boost: Maximum multiplicative boost (e.g. 2.0 = at most 2×).
+            failure_threshold: Success rate below which boost is applied.
+
+        Returns:
+            Dict mapping lambda parameter names to multiplicative boost
+            factors (≥ 1.0).  Only parameters that need adjustment are
+            included; absent keys imply a factor of 1.0.
+        """
+        summary = self.get_error_summary()
+        adjustments: Dict[str, float] = {}
+        error_classes = summary.get("error_classes", {})
+        for err_cls, lambda_name in self._ERROR_CLASS_TO_LAMBDA.items():
+            cls_stats = error_classes.get(err_cls)
+            if cls_stats is None:
+                continue
+            success_rate = cls_stats.get("success_rate", 1.0)
+            if success_rate < failure_threshold:
+                # Linearly scale boost: 0% success → max_boost, threshold → 1.0
+                failure_severity = 1.0 - success_rate / max(failure_threshold, 1e-8)
+                boost = 1.0 + (max_boost - 1.0) * min(1.0, failure_severity)
+                adjustments[lambda_name] = boost
+        return adjustments
+
 
 class UnifiedConvergenceArbiter:
     """Unifies verdicts from multiple convergence monitors into one consistent result.
@@ -21902,7 +21954,80 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
             self.provenance_tracker.record_after("causal_world_model", C_star)
+
+        # 5d1a-xv. Causal-world-model cross-validation — extend the
+        # physics ↔ hierarchical cross-validation (5b1a-xv) to include
+        # the CausalWorldModel prediction.  When the causal model's
+        # predicted state diverges from the physics or hierarchical
+        # predictions, escalate uncertainty and record in the causal
+        # trace so all three world models form a cooperative ensemble
+        # that mutually reinforces confidence when they agree and flags
+        # epistemic uncertainty when they diverge.
+        _cw_predicted = causal_world_results.get("predicted_state", None)
+        if _cw_predicted is not None and not fast:
+            for _xv_name, _xv_pred in [
+                ("physics_wm", world_model_results.get("predicted_next", None)),
+                ("hierarchical_wm", hierarchical_wm_results.get("prediction", None)),
+            ]:
+                if (_xv_pred is not None
+                        and _xv_pred.shape == _cw_predicted.shape):
+                    _cwm_div = float(
+                        (_cw_predicted.detach() - _xv_pred.detach())
+                        .pow(2).mean().item()
+                    )
+                    if (math.isfinite(_cwm_div)
+                            and _cwm_div > self.config.wm_cross_divergence_threshold):
+                        _cwm_boost = min(1.0 - uncertainty, _cwm_div * 0.1)
+                        uncertainty = min(1.0, uncertainty + _cwm_boost)
+                        _src_key = f"causal_{_xv_name}_cross_divergence"
+                        uncertainty_sources[_src_key] = _cwm_boost
+                        high_uncertainty = uncertainty > 0.5
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "causal_world_model_cross_validation",
+                                f"divergence_{_xv_name}",
+                                causal_prerequisites=[input_trace_id],
+                                severity="warning",
+                                metadata={
+                                    "divergence": _cwm_div,
+                                    "peer": _xv_name,
+                                },
+                            )
         
+        # 5d1b-tkg. Temporal Knowledge Graph retrieval — query stored
+        # symbolic facts before causal reasoning so the causal model
+        # operates on a state enriched with historical symbolic context.
+        # This wires the previously write-only TKG into the reasoning
+        # pipeline: facts stored by the NeuroSymbolicBridge (step 5f) are
+        # now actively retrieved and blended as a residual, grounding
+        # causal reasoning in temporal symbolic knowledge.
+        _tkg_retrieved = None
+        if (self.temporal_knowledge_graph is not None
+                and len(self.temporal_knowledge_graph) > 0
+                and not fast):
+            try:
+                _tkg_query = C_star.mean(dim=0) if C_star.dim() > 1 else C_star
+                _tkg_retrieved = self.temporal_knowledge_graph.retrieve_relevant(
+                    _tkg_query, top_k=5,
+                )
+                if (_tkg_retrieved is not None
+                        and torch.isfinite(_tkg_retrieved).all()
+                        and _tkg_retrieved.shape[-1] == C_star.shape[-1]):
+                    _TKG_BLEND_WEIGHT = 0.05
+                    C_star = C_star + _TKG_BLEND_WEIGHT * _tkg_retrieved.to(device)
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "temporal_knowledge_graph", "retrieved",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "tkg_size": len(self.temporal_knowledge_graph),
+                            },
+                        )
+            except Exception as _tkg_err:
+                logger.debug(
+                    "TKG retrieval error (non-fatal): %s", _tkg_err,
+                )
+
         # 5d1b. NeuralCausalModel — learn inter-factor causal structure.
         # Uses factors as exogenous inputs to discover causal relationships
         # among the cognitive pillars.  The resulting causal variables are
@@ -25741,6 +25866,90 @@ class AEONDeltaV3(nn.Module):
                 # Merge post-evaluation info into metacognitive_info
                 metacognitive_info = metacognitive_info_post
                 metacognitive_info["phase"] = "post_integration"
+                # 8g-0-deeper. Post-integration deeper meta-loop re-reasoning —
+                # re-run the meta-loop with tightened parameters so that
+                # late-stage uncertainty (trust, HVAE KL, NS violations)
+                # triggers actual deeper reasoning, not just auto-critic
+                # revision.  This mirrors the 5a-iv deeper meta-loop path
+                # but fires on post-integration signals that weren't
+                # available during early-stage trigger evaluation.
+                _post_deeper_accepted = False
+                if self.provably_convergent_meta_loop is not None:
+                    _post_tight = (
+                        self.config.convergence_threshold
+                        * metacognitive_info_post.get(
+                            "tightened_threshold",
+                            self.config.metacognitive_tightening_factor,
+                        )
+                    )
+                    _post_extra = metacognitive_info_post.get(
+                        "extra_iterations",
+                        self.config.metacognitive_extra_iterations,
+                    )
+                    _post_orig_thresh = self.meta_loop.convergence_threshold
+                    _post_orig_max = self.meta_loop.max_iterations
+                    self.meta_loop.convergence_threshold = _post_tight
+                    self.meta_loop.max_iterations = min(
+                        _post_orig_max + _post_extra,
+                        _post_orig_max * 2,
+                    )
+                    try:
+                        _post_deeper_fb = self.feedback_bus(
+                            batch_size=B,
+                            device=device,
+                            safety_score=safety_score,
+                            convergence_quality=convergence_quality_scalar,
+                            uncertainty=uncertainty,
+                            subsystem_health=_recovery_health,
+                            convergence_loss_scale=getattr(
+                                self, '_last_convergence_loss_scale', 1.0,
+                            ),
+                            world_model_surprise=self._cached_surprise,
+                            coherence_deficit=self._cached_coherence_deficit,
+                            causal_quality=self._cached_causal_quality,
+                            recovery_pressure=self._compute_recovery_pressure(),
+                            self_report_consistency=self._cached_self_report_consistency,
+                            output_quality=self._cached_output_quality,
+                            memory_quality=self._last_memory_retrieval_quality.get(
+                                "retrieval_quality", 1.0),
+                            extra_signals=self._build_feedback_extra_signals(),
+                        ).detach()
+                        self.provenance_tracker.record_before(
+                            "post_deeper_meta_loop", z_out,
+                        )
+                        _post_C_deeper, _, _post_meta_deeper = self.meta_loop(
+                            z_in, use_fixed_point=True,
+                            feedback=_post_deeper_fb,
+                        )
+                        self.provenance_tracker.record_after(
+                            "post_deeper_meta_loop", _post_C_deeper,
+                        )
+                        if (torch.isfinite(_post_C_deeper).all()
+                                and _post_meta_deeper.get(
+                                    "convergence_rate", 0.0,
+                                ) >= convergence_quality_scalar):
+                            _post_deeper_accepted = True
+                            z_out = _post_C_deeper
+                    except Exception as _pdm_err:
+                        logger.debug(
+                            "Post-integration deeper meta-loop error "
+                            "(non-fatal): %s", _pdm_err,
+                        )
+                    finally:
+                        self.meta_loop.convergence_threshold = _post_orig_thresh
+                        self.meta_loop.max_iterations = _post_orig_max
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="post_integration_deeper_rerun",
+                            strategy_used="deeper_meta_loop",
+                            success=_post_deeper_accepted,
+                            metadata=self._provenance_enriched_metadata({
+                                "triggers": metacognitive_info_post.get(
+                                    "triggers_active", [],
+                                ),
+                                "phase": "post_integration",
+                            }),
+                        )
                 # Invoke auto-critic for self-correction on the final output
                 if self.auto_critic is not None:
                     try:
@@ -27649,14 +27858,28 @@ class AEONDeltaV3(nn.Module):
                         _safety_source_boost, _targeted_boost,
                     )
         
+        # ===== 16c. ERROR-EVOLUTION ADAPTIVE LOSS WEIGHTING =====
+        # Consult the CausalErrorEvolutionTracker for persistently failing
+        # subsystems and boost the corresponding loss weights so training
+        # applies targeted corrective pressure.  This closes the feedback
+        # loop between runtime error history and training: subsystems that
+        # repeatedly fail at inference time receive stronger training
+        # gradients, while healthy subsystems retain their default weights.
+        _ee_adjustments: Dict[str, float] = {}
+        if self.error_evolution is not None:
+            _ee_adjustments = self.error_evolution.recommend_loss_adjustments()
+
+        def _ee_boost(lambda_name: str) -> float:
+            return _ee_adjustments.get(lambda_name, 1.0)
+
         total_loss = (
             lm_loss +
             vq_loss +
-            _uncertainty_loss_scale * consistency_loss +
-            _convergence_loss_scale * self.config.lambda_lipschitz * lipschitz_loss +
-            _convergence_loss_scale * _uncertainty_loss_scale * _safety_source_boost * self.config.lambda_safety * safety_loss +
+            _uncertainty_loss_scale * _ee_boost("lambda_self_consistency") * consistency_loss +
+            _convergence_loss_scale * _ee_boost("lambda_lipschitz") * self.config.lambda_lipschitz * lipschitz_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * _safety_source_boost * _ee_boost("lambda_safety") * self.config.lambda_safety * safety_loss +
             self.config.sparsity_target * sparsity_loss +
-            _convergence_loss_scale * _uncertainty_loss_scale * _coherence_source_boost * _coherence_weight * coherence_loss +
+            _convergence_loss_scale * _uncertainty_loss_scale * _coherence_source_boost * _ee_boost("lambda_coherence") * _coherence_weight * coherence_loss +
             _causal_source_boost * _causal_weight * causal_dag_loss +
             hvae_kl_loss +
             ponder_loss +
@@ -27665,15 +27888,15 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_cross_validation * cross_validation_loss +
             self.config.lambda_cross_validation * causal_cv_supervision_loss +
             self.config.lambda_auto_critic * auto_critic_loss +
-            self.config.lambda_ucc * ucc_loss +
+            _ee_boost("lambda_ucc") * self.config.lambda_ucc * ucc_loss +
             self.config.lambda_self_report * self_report_loss +
             self.config.lambda_cycle_consistency * cycle_consistency_loss +
             self.config.lambda_world_model_surprise * world_model_surprise_loss +
             _convergence_loss_scale * self.config.lambda_convergence_residual * convergence_residual_loss +
             self.config.lambda_decoder_provenance * decoder_provenance_loss +
-            self.config.lambda_ns_consistency * ns_consistency_loss +
-            self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
-            self.config.lambda_memory_retrieval * memory_retrieval_loss +
+            _ee_boost("lambda_ns_consistency") * self.config.lambda_ns_consistency * ns_consistency_loss +
+            _ee_boost("lambda_hierarchical_wm") * self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
+            _ee_boost("lambda_memory_retrieval") * self.config.lambda_memory_retrieval * memory_retrieval_loss +
             grounded_mm_loss +
             getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
