@@ -3023,6 +3023,14 @@ class AEONConfig:
     metacognitive_blend_alpha: float = 0.2
     enable_error_evolution: bool = True
     error_evolution_max_history: int = 100
+    # Error-evolution proactive guidance — when the error evolution
+    # tracker recommends the "deeper_meta_loop" strategy for recurring
+    # error classes, these parameters control the pre-configured
+    # meta-loop adjustments applied *before* the current pass's
+    # meta-loop invocation.
+    evolved_tightening_factor: float = 0.7
+    evolved_extra_iterations: int = 5
+    evolved_max_preemptive_uncertainty: float = 0.1
     # Unified cognitive cycle — orchestrates ConvergenceMonitor,
     # ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
     # MetaCognitiveRecursionTrigger, and CausalProvenanceTracker into a
@@ -3207,6 +3215,12 @@ class AEONConfig:
             f"sep_token_id ({self.sep_token_id}) must be in [0, vocab_size)"
         assert 0.0 <= self.certified_meta_loop_uncertainty_boost <= 1.0, \
             f"certified_meta_loop_uncertainty_boost ({self.certified_meta_loop_uncertainty_boost}) must be in [0.0, 1.0]"
+        assert 0.0 < self.evolved_tightening_factor <= 1.0, \
+            f"evolved_tightening_factor ({self.evolved_tightening_factor}) must be in (0.0, 1.0]"
+        assert self.evolved_extra_iterations >= 0, \
+            f"evolved_extra_iterations ({self.evolved_extra_iterations}) must be >= 0"
+        assert 0.0 <= self.evolved_max_preemptive_uncertainty <= 1.0, \
+            f"evolved_max_preemptive_uncertainty ({self.evolved_max_preemptive_uncertainty}) must be in [0.0, 1.0]"
         
         # Sequence backend validation
         assert self.encoder_backend in ("lstm", "ssm", "mamba2", "linear_attention"), \
@@ -6401,8 +6415,11 @@ class CausalProvenanceTracker:
                             'threshold': self._delta_anomaly_threshold,
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as _ee_err:
+                    logger.debug(
+                        "Provenance delta anomaly recording failed "
+                        "(non-fatal): %s", _ee_err,
+                    )
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -18309,6 +18326,7 @@ class AEONDeltaV3(nn.Module):
 
             z_fallback = z_in
             fallback_outputs: Dict[str, Any] = {
+                'is_fallback': True,
                 'core_state': z_fallback,
                 'factors': torch.zeros(
                     B, self.config.num_pillars, device=device
@@ -18696,10 +18714,9 @@ class AEONDeltaV3(nn.Module):
                     # Pre-escalate uncertainty proportionally to the
                     # failure rate so the metacognitive trigger is more
                     # sensitive to historically problematic inputs.
-                    _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY = 0.1
                     _evolved_preemptive_uncertainty = max(
                         _evolved_preemptive_uncertainty,
-                        _MAX_EVOLVED_PREEMPTIVE_UNCERTAINTY * (1.0 - _success_rate),
+                        self.config.evolved_max_preemptive_uncertainty * (1.0 - _success_rate),
                     )
             if _evolved_preemptive_uncertainty > 0:
                 logger.debug(
@@ -18727,15 +18744,13 @@ class AEONDeltaV3(nn.Module):
         _evolved_orig_max_iter: Optional[int] = None
         if (_evolved_guidance == "deeper_meta_loop"
                 and _evolved_preemptive_uncertainty > 0):
-            _EVOLVED_TIGHTENING_FACTOR = 0.7
-            _EVOLVED_EXTRA_ITERATIONS = 5
             _evolved_orig_threshold = self.meta_loop.convergence_threshold
             _evolved_orig_max_iter = self.meta_loop.max_iterations
             self.meta_loop.convergence_threshold = (
-                _evolved_orig_threshold * _EVOLVED_TIGHTENING_FACTOR
+                _evolved_orig_threshold * self.config.evolved_tightening_factor
             )
             self.meta_loop.max_iterations = min(
-                _evolved_orig_max_iter + _EVOLVED_EXTRA_ITERATIONS,
+                _evolved_orig_max_iter + self.config.evolved_extra_iterations,
                 _evolved_orig_max_iter * 2,
             )
             _evolved_meta_loop_adjusted = True
@@ -21968,13 +21983,21 @@ class AEONDeltaV3(nn.Module):
                             if _mdl_name == 'neural_causal' and hasattr(self.causal_model, 'adjacency'):
                                 try:
                                     self.causal_model.adjacency.data.copy_(_blended)
-                                except Exception:
-                                    pass
+                                except Exception as _adj_err:
+                                    logger.debug(
+                                        "Causal DAG consensus: failed to "
+                                        "reconcile neural_causal adjacency "
+                                        "(non-fatal): %s", _adj_err,
+                                    )
                             elif _mdl_name == 'notears' and hasattr(self.notears_causal, 'W'):
                                 try:
                                     self.notears_causal.W.data.copy_(_blended)
-                                except Exception:
-                                    pass
+                                except Exception as _adj_err:
+                                    logger.debug(
+                                        "Causal DAG consensus: failed to "
+                                        "reconcile NOTEARS adjacency "
+                                        "(non-fatal): %s", _adj_err,
+                                    )
                         self.audit_log.record(
                             "causal_dag_consensus", "enforced_reconciliation", {
                                 "blend_weight": _RECONCILE_BLEND,
@@ -22037,8 +22060,11 @@ class AEONDeltaV3(nn.Module):
                                         "dag_revision_degraded"
                                     ] = 0.05
                                     high_uncertainty = uncertainty > 0.5
-                            except Exception:
-                                pass
+                            except Exception as _dag_rev_err:
+                                logger.debug(
+                                    "Post-revision DAG consensus check "
+                                    "failed (non-fatal): %s", _dag_rev_err,
+                                )
                         self.audit_log.record(
                             "auto_critic", "dag_disagreement_revision", {
                                 "consensus_score": _consensus_score,
@@ -23384,8 +23410,11 @@ class AEONDeltaV3(nn.Module):
                                 "revision_resolved": _post_violations == 0,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _ns_post_err:
+                        logger.debug(
+                            "NS consistency post-revision check failed "
+                            "(non-fatal): %s", _ns_post_err,
+                        )
                 # 8b3b. Post-auto-critic hybrid reasoning re-validation —
                 # re-check hybrid reasoning conclusions against the revised
                 # z_out to confirm they remain consistent.  The initial
@@ -23445,8 +23474,11 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _hr_post_err:
+                        logger.debug(
+                            "Hybrid reasoning post-revision check failed "
+                            "(non-fatal): %s", _hr_post_err,
+                        )
                 # 8b2b. NS violation → feedback bus propagation — escalate
                 # the cached coherence deficit so that the *next* forward
                 # pass's meta-loop is conditioned on symbolic consistency
@@ -24976,8 +25008,11 @@ class AEONDeltaV3(nn.Module):
                                         "original_deficit": self._cached_coherence_deficit,
                                     },
                                 )
-                        except Exception:
-                            pass
+                        except Exception as _ucc_coh_err:
+                            logger.debug(
+                                "UCC deeper meta-loop coherence check "
+                                "failed (non-fatal): %s", _ucc_coh_err,
+                            )
                     if (_ucc_deeper_rate >= convergence_quality_scalar
                             and _ucc_deeper_coherent):
                         _ucc_deeper_accepted = True
@@ -25957,6 +25992,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_auto_critic_current_score = _auto_critic_final_score
 
         outputs = {
+            'is_fallback': False,
             'core_state': C_star,
             'factors': factors,
             'consistency_gate': gate,
@@ -30167,6 +30203,32 @@ class AEONTrainer:
             k: float(v.item()) if isinstance(v, torch.Tensor) else float(v)
             for k, v in loss_dict.items()
         }
+
+        # ===== INFERENCE → TRAINING COGNITIVE FEEDBACK =====
+        # Extract UCC and meta-cognitive signals from the model's
+        # inference outputs so that evaluation metrics include
+        # cognitive health indicators.  This closes the
+        # inference→training feedback loop: the trainer can detect
+        # when the model's reasoning pipeline is degraded (high
+        # uncertainty, low coherence) and adjust training accordingly.
+        _reasoning_outputs = None
+        if isinstance(outputs, tuple) and len(outputs) >= 2:
+            _reasoning_outputs = outputs[1] if isinstance(outputs[1], dict) else None
+        if _reasoning_outputs is not None:
+            _ucc = _reasoning_outputs.get('unified_cognitive_cycle_results', {})
+            if _ucc:
+                metrics['ucc_should_rerun'] = float(_ucc.get('should_rerun', False))
+                _coh = _ucc.get('coherence_deficit', None)
+                if _coh is not None:
+                    metrics['ucc_coherence_deficit'] = float(_coh)
+            _chain = _reasoning_outputs.get('causal_decision_chain', {})
+            if _chain:
+                _unc = _chain.get('uncertainty', None)
+                if _unc is not None:
+                    metrics['inference_uncertainty'] = float(_unc)
+            if _reasoning_outputs.get('is_fallback', False):
+                metrics['inference_fallback'] = 1.0
+
         return metrics
     
     def train(
