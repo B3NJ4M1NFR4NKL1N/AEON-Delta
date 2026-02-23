@@ -3689,6 +3689,7 @@ def bridge_training_errors_to_inference(
     inference_convergence_monitor: Any = None,
     inference_integrity_monitor: Any = None,
     inference_provenance_tracker: Any = None,
+    inference_metacognitive_trigger: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -3717,6 +3718,12 @@ def bridge_training_errors_to_inference(
     that ``trace_root_cause()`` on the inference side can attribute
     inference-time issues to training-discovered structural weaknesses.
 
+    When *inference_metacognitive_trigger* is provided, trigger signal
+    weights are adapted from the combined training + inference error
+    summary so that the inference pipeline's metacognitive sensitivity
+    immediately reflects training-discovered failure patterns rather
+    than waiting for the first inference-time error to occur.
+
     Args:
         trainer_monitor: The training convergence monitor that has
             accumulated error episodes during training.
@@ -3731,6 +3738,9 @@ def bridge_training_errors_to_inference(
         inference_provenance_tracker: Optional inference-side
             ``CausalProvenanceTracker`` to receive training-time
             structural failure edges as provenance dependencies.
+        inference_metacognitive_trigger: Optional inference-side
+            ``MetaCognitiveRecursionTrigger`` whose signal weights
+            will be adapted from the bridged error summary.
 
     Returns:
         Number of error episodes bridged.
@@ -3839,6 +3849,25 @@ def bridge_training_errors_to_inference(
                         "Provenance bridge failed for %s: %s",
                         cls_name, _prov_err,
                     )
+
+    # Adapt inference-side metacognitive trigger signal weights from the
+    # combined error summary (now including bridged training episodes).
+    # Without this, the inference trigger uses default uniform weights
+    # and training-discovered failure patterns do not influence trigger
+    # sensitivity until the first inference-time error event triggers
+    # adapt_weights_from_evolution inside the forward pass.  This closes
+    # the training→inference knowledge transfer loop for trigger weights.
+    if inference_metacognitive_trigger is not None and bridged > 0:
+        try:
+            _combined_summary = inference_error_evolution.get_error_summary()
+            inference_metacognitive_trigger.adapt_weights_from_evolution(
+                _combined_summary,
+            )
+        except (AttributeError, TypeError) as _trigger_err:
+            logging.getLogger(__name__).debug(
+                "Metacognitive trigger weight adaptation failed "
+                "during bridge (non-fatal): %s", _trigger_err,
+            )
 
     return bridged
 
