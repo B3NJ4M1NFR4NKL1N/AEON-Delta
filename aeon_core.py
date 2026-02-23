@@ -6682,6 +6682,82 @@ class CausalProvenanceTracker:
             "depth_factor": depth_factor,
         }
 
+    def adapt_thresholds(
+        self,
+        error_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, float]:
+        """Adapt trace and anomaly thresholds from historical delta statistics.
+
+        Without adaptive thresholds the provenance tracker uses static
+        constants (``_delta_trace_threshold=0.01``,
+        ``_delta_anomaly_threshold=50.0``) that cannot respond to
+        changing module behaviour across forward passes.  This method
+        closes that gap by adjusting both thresholds using two signals:
+
+        1. **Current-pass delta statistics** — when the median delta is
+           very low, the trace threshold is tightened so that even small
+           but meaningful transformations are recorded.  When the median
+           is high, the threshold is relaxed to avoid trace flooding.
+        2. **Error-evolution summary** — when provenance-related error
+           classes (``provenance_delta_anomaly``) have a high failure
+           rate, the anomaly threshold is *lowered* so that the system
+           becomes more sensitive to large deltas that historically
+           correlated with failures.
+
+        Thresholds are clamped to safe ranges to prevent pathological
+        drift (trace: [0.001, 0.1], anomaly: [5.0, 200.0]).
+
+        Args:
+            error_summary: Optional error-evolution summary dict.  When
+                provided, used to scale the anomaly threshold based on
+                historical success rates.
+
+        Returns:
+            Dict with the new threshold values and the adaptation deltas.
+        """
+        old_trace = self._delta_trace_threshold
+        old_anomaly = self._delta_anomaly_threshold
+
+        # --- Adapt trace threshold from current-pass delta distribution ---
+        if self._deltas:
+            _delta_vals = sorted(self._deltas.values())
+            _median = _delta_vals[len(_delta_vals) // 2]
+            # Set trace threshold to 10% of median, clamped
+            _new_trace = max(0.001, min(0.1, _median * 0.1))
+            # Smooth with EMA to prevent oscillation
+            self._delta_trace_threshold = (
+                0.7 * self._delta_trace_threshold + 0.3 * _new_trace
+            )
+
+        # --- Adapt anomaly threshold from error-evolution history ---
+        if error_summary:
+            _prov_errors = error_summary.get(
+                'provenance_delta_anomaly', {},
+            )
+            _total = _prov_errors.get('total_episodes', 0)
+            _success_rate = _prov_errors.get('success_rate', 1.0)
+            if _total > 0 and _success_rate < 0.5:
+                # Historical anomalies correlate with failures →
+                # lower threshold to catch more
+                _factor = max(0.7, _success_rate + 0.2)
+                self._delta_anomaly_threshold = max(
+                    5.0,
+                    self._delta_anomaly_threshold * _factor,
+                )
+            elif _total > 0 and _success_rate > 0.8:
+                # Anomalies are mostly benign → relax threshold
+                self._delta_anomaly_threshold = min(
+                    200.0,
+                    self._delta_anomaly_threshold * 1.1,
+                )
+
+        return {
+            'trace_threshold': self._delta_trace_threshold,
+            'anomaly_threshold': self._delta_anomaly_threshold,
+            'trace_delta': self._delta_trace_threshold - old_trace,
+            'anomaly_delta': self._delta_anomaly_threshold - old_anomaly,
+        }
+
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
@@ -14270,6 +14346,55 @@ class ModuleCoherenceVerifier(nn.Module):
         }
 
     @staticmethod
+    def compute_correction_signals(
+        pairwise: Dict[tuple, torch.Tensor],
+        threshold: float = 0.5,
+    ) -> Dict[str, float]:
+        """Compute per-module correction pressure from pairwise coherence.
+
+        While :meth:`get_weakest_pair` identifies only the single worst
+        pair, this method computes a per-module *correction pressure*
+        score that indicates how much each subsystem diverges from its
+        peers on average.  The pressure is 0.0 for a fully coherent
+        module and 1.0 for a module that disagrees with every peer.
+
+        This closes the gap where the coherence verifier could *detect*
+        misalignment but could not communicate *per-module severity* back
+        to the feedback bus, preventing targeted conditioning of the
+        meta-loop for the specific modules that need correction.
+
+        Args:
+            pairwise: ``{(name_i, name_j): [B] similarity}`` dict from
+                :meth:`forward`.
+            threshold: Similarity below which a pair contributes
+                correction pressure.
+
+        Returns:
+            Dict mapping each module name to a correction pressure
+            score ∈ [0, 1].  Modules not appearing in *pairwise* are
+            absent from the result.
+        """
+        if not pairwise:
+            return {}
+
+        # Accumulate per-module deficit from all pairs it participates in
+        deficit_sum: Dict[str, float] = {}
+        pair_count: Dict[str, int] = {}
+        for (name_a, name_b), sim in pairwise.items():
+            _sim_mean = float(sim.mean().item())
+            _deficit = max(0.0, threshold - _sim_mean) / max(threshold, 1e-6)
+            for name in (name_a, name_b):
+                deficit_sum[name] = deficit_sum.get(name, 0.0) + _deficit
+                pair_count[name] = pair_count.get(name, 0) + 1
+
+        # Normalise to [0, 1] per module
+        correction: Dict[str, float] = {}
+        for name in deficit_sum:
+            count = pair_count.get(name, 1)
+            correction[name] = min(1.0, deficit_sum[name] / max(count, 1))
+        return correction
+
+    @staticmethod
     def blend_weakest_pair(
         states: Dict[str, torch.Tensor],
         weakest_info: Optional[Dict[str, Any]],
@@ -15921,6 +16046,22 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
                     _adapt_err,
                 )
+
+        # 1d. Adapt provenance tracker thresholds from current-pass delta
+        # statistics and error-evolution history so that causal tracing
+        # sensitivity adjusts to module behaviour rather than relying on
+        # static constants.  This closes the gap where the trace threshold
+        # (0.01) and anomaly threshold (50.0) were never updated, causing
+        # either trace flooding or missed significant transformations.
+        try:
+            self.provenance_tracker.adapt_thresholds(
+                error_summary=_err_summary or None,
+            )
+        except Exception as _prov_adapt_err:
+            logger.debug(
+                "UCC: provenance adapt_thresholds failed (non-fatal): %s",
+                _prov_adapt_err,
+            )
 
         # 2. Cross-module coherence verification.
         if self.coherence_verifier is not None:
@@ -17678,6 +17819,15 @@ class AEONDeltaV3(nn.Module):
         self._cached_factor_state: Optional[torch.Tensor] = None
         self._cached_safety_state: Optional[torch.Tensor] = None
         self._cached_memory_state: Optional[torch.Tensor] = None
+        # Individual memory subsystem states — cached for fine-grained
+        # coherence verification so that neurogenic, temporal, and
+        # consolidating memories can be cross-validated independently
+        # instead of only as an aggregate, closing the gap where
+        # subsystem-specific memory drift was invisible to the
+        # ModuleCoherenceVerifier.
+        self._cached_neurogenic_memory_state: Optional[torch.Tensor] = None
+        self._cached_temporal_memory_state: Optional[torch.Tensor] = None
+        self._cached_consolidating_memory_state: Optional[torch.Tensor] = None
         self._cached_world_model_state: Optional[torch.Tensor] = None
         self._cached_causal_state: Optional[torch.Tensor] = None
         # Reconciled DAG adjacency — cached after each CausalDAGConsensus
@@ -17773,6 +17923,12 @@ class AEONDeltaV3(nn.Module):
         # feedback bus carries root-cause pressure, enabling the meta-loop
         # to allocate deeper reasoning to repeatedly problematic subsystems.
         self._cached_provenance_root_modules: List[str] = []
+
+        # Per-module coherence correction pressure — caches the correction
+        # signals computed by ModuleCoherenceVerifier.compute_correction_signals()
+        # so the feedback bus can route targeted pressure to modules with
+        # inter-module divergence.
+        self._cached_coherence_correction_signals: Dict[str, float] = {}
 
         # Memory re-retrieval cross-pass state — when MemoryReasoningValidator
         # detects stale/inconsistent memories, this flag persists across
@@ -18224,6 +18380,21 @@ class AEONDeltaV3(nn.Module):
         _dp = getattr(self, '_cached_deception_pressure', 0.0)
         if _dp > 0.1:
             extra["deception_pressure"] = max(0.0, min(1.0, _dp))
+        # Per-module coherence correction pressure — carries the weakest-
+        # pair correction signals from the most recent UCC evaluation into
+        # the feedback bus so the meta-loop can allocate proportionally
+        # deeper reasoning to the specific modules that exhibited the
+        # largest inter-module divergence.  This closes the gap where the
+        # coherence verifier detected misalignment and the weakest pair
+        # was identified, but correction pressure was never routed back
+        # through the feedback conditioning loop.
+        _corr = getattr(self, '_cached_coherence_correction_signals', None)
+        if _corr:
+            for _mod_name, _pressure in _corr.items():
+                if _pressure > 0.1:
+                    extra[f"coherence_correction:{_mod_name}"] = max(
+                        0.0, min(1.0, _pressure),
+                    )
         return extra
 
     @staticmethod
@@ -18551,6 +18722,8 @@ class AEONDeltaV3(nn.Module):
                     )
                     self._memory_stale = True
                     self._neurogenic_memory_error = True
+                # Cache neurogenic memory state for fine-grained coherence
+                self._cached_neurogenic_memory_state = C_fused.detach()
 
             # Blend TemporalMemory patterns into the fused state when
             # available.  This mirrors the neurogenic blending above,
@@ -18577,6 +18750,8 @@ class AEONDeltaV3(nn.Module):
                     )
                     self._memory_stale = True
                     self._temporal_memory_error = True
+                # Cache temporal memory state for fine-grained coherence
+                self._cached_temporal_memory_state = C_fused.detach()
 
             # Blend ConsolidatingMemory semantic prototypes into the
             # fused state when available.  This bridges the two parallel
@@ -18606,6 +18781,8 @@ class AEONDeltaV3(nn.Module):
                     # uncertainty — a silent swallow hides memory-subsystem
                     # degradation from the metacognitive cycle.
                     self._consolidating_memory_error = True
+                # Cache consolidating memory state for fine-grained coherence
+                self._cached_consolidating_memory_state = C_fused.detach()
             
             return C_fused
         return C_star
@@ -25669,6 +25846,20 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_memory_state is not None
                     and self._cached_memory_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["memory"] = self._cached_memory_state
+            # Include individual memory subsystem states so the coherence
+            # verifier can detect drift in specific memory subsystems
+            # (neurogenic, temporal, consolidating) rather than only the
+            # aggregate, enabling targeted re-retrieval when a single
+            # memory system diverges from the rest.
+            if (self._cached_neurogenic_memory_state is not None
+                    and self._cached_neurogenic_memory_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["neurogenic_memory"] = self._cached_neurogenic_memory_state
+            if (self._cached_temporal_memory_state is not None
+                    and self._cached_temporal_memory_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["temporal_memory"] = self._cached_temporal_memory_state
+            if (self._cached_consolidating_memory_state is not None
+                    and self._cached_consolidating_memory_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["consolidating_memory"] = self._cached_consolidating_memory_state
             # Include integration state so the coherence verifier can
             # cross-validate the final integrated output against earlier
             # pipeline stages.  Without this, integration-level
@@ -25787,6 +25978,8 @@ class AEONDeltaV3(nn.Module):
                     "cross_validation", "causal_dag_consensus",
                     "cognitive_executive", "hierarchical_world_model",
                     "hierarchical_vae", "grounded_multimodal", "memory",
+                    "neurogenic_memory", "temporal_memory",
+                    "consolidating_memory",
                     "integration", "rssm", "auto_critic", "mcts_planning",
                     "safety", "causal_model", "unified_simulator", "decoder",
                     "ns_consistency",
@@ -25997,6 +26190,20 @@ class AEONDeltaV3(nn.Module):
                 # feedback bus signals registered as ucc_flagged_pressure.
                 self._cached_ucc_flagged_modules = list(_ucc_flagged_modules)
                 self._cached_ucc_most_uncertain = _ucc_most_uncertain
+                # Cache per-module coherence correction signals for the
+                # feedback bus.  Computed from the UCC's pairwise coherence
+                # so that modules with the most inter-module divergence
+                # receive proportionally stronger meta-loop conditioning.
+                _ucc_coh = unified_cycle_results.get("coherence_result", {})
+                _ucc_pw = _ucc_coh.get("pairwise", {})
+                if _ucc_pw and self.module_coherence is not None:
+                    self._cached_coherence_correction_signals = (
+                        ModuleCoherenceVerifier.compute_correction_signals(
+                            _ucc_pw, self.module_coherence.threshold,
+                        )
+                    )
+                else:
+                    self._cached_coherence_correction_signals = {}
                 if _ucc_most_uncertain is not None:
                     uncertainty_sources[
                         "ucc_most_uncertain_module"
@@ -26458,6 +26665,23 @@ class AEONDeltaV3(nn.Module):
                             and _ucc_deeper_coherent):
                         _ucc_deeper_accepted = True
                         z_out = _ucc_C_deeper
+                        # Record successful deeper reasoning in error
+                        # evolution so the system learns that re-reasoning
+                        # under these trigger conditions was effective,
+                        # reinforcing the trigger weights that activated it.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="deeper_meta_loop_accepted",
+                                strategy_used="meta_rerun",
+                                success=True,
+                                metadata={
+                                    "deeper_rate": _ucc_deeper_rate,
+                                    "original_rate": convergence_quality_scalar,
+                                    "triggers_active": unified_cycle_results.get(
+                                        "trigger_detail", {},
+                                    ).get("triggers_active", []),
+                                },
+                            )
                         self.audit_log.record(
                             "unified_cognitive_cycle",
                             "deeper_meta_loop_accepted",
