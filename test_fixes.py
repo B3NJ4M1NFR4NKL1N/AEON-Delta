@@ -49119,6 +49119,16 @@ def run_all_tests():
     test_self_diagnostic_reports_feedback_bus_observability()
     test_trainer_wires_convergence_to_error_evolution()
     test_trainer_wires_convergence_to_provenance()
+
+    # Architectural Unification — Memory Cross-Validation, Absent-Subsystem
+    # Uncertainty Escalation, and Error Class Coverage
+    test_ucc_inter_memory_cross_validation_detects_disagreement()
+    test_ucc_inter_memory_cross_validation_consistent()
+    test_ucc_inter_memory_cross_validation_single_memory()
+    test_ucc_absent_subsystem_uncertainty_escalation()
+    test_inter_memory_disagreement_in_error_class_mapping()
+    test_inter_memory_disagreement_in_trigger_signal_mapping()
+
     test_server_provenance_endpoint_exists()
     test_server_provenance_root_cause_endpoint_exists()
     test_server_causal_trace_endpoint_exists()
@@ -49518,15 +49528,6 @@ def run_all_tests():
     test_ee_boost_applied_to_cross_validation_loss()
     test_error_class_to_lambda_maps_to_valid_config_params()
     test_decoder_degenerate_check_logs_instead_of_pass()
-
-    # Architectural Unification — Memory Cross-Validation, Absent-Subsystem
-    # Uncertainty Escalation, and Error Class Coverage
-    test_ucc_inter_memory_cross_validation_detects_disagreement()
-    test_ucc_inter_memory_cross_validation_consistent()
-    test_ucc_inter_memory_cross_validation_single_memory()
-    test_ucc_absent_subsystem_uncertainty_escalation()
-    test_inter_memory_disagreement_in_error_class_mapping()
-    test_inter_memory_disagreement_in_trigger_signal_mapping()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
