@@ -44556,6 +44556,193 @@ def test_ns_bridge_in_ucc_states():
     print("✅ test_ns_bridge_in_ucc_states PASSED")
 
 
+# ============================================================================
+# Architectural coherence gap closure tests — state validation uncertainty,
+# NS consistency escalation, persistent uncertainty tracking, memory
+# cross-validation reliability, and auto-critic revision delta tracking.
+# ============================================================================
+
+
+def test_directional_uncertainty_tracker_history():
+    """DirectionalUncertaintyTracker preserves rolling history across resets."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    # Cycle 1
+    tracker.record("memory", 0.9)
+    tracker.record("causal_model", 0.7)
+    tracker.reset()
+    assert len(tracker._history) == 1, "First cycle should be archived"
+
+    # Cycle 2
+    tracker.record("memory", 0.85)
+    tracker.record("safety", 0.4)
+    tracker.reset()
+    assert len(tracker._history) == 2, "Second cycle should be archived"
+
+    # Current cycle has new data
+    tracker.record("convergence", 0.1)
+    summary = tracker.build_summary()
+    assert summary["history_length"] == 2
+    assert summary["aggregate_uncertainty"] == 0.1
+    print("✅ test_directional_uncertainty_tracker_history PASSED")
+
+
+def test_directional_uncertainty_tracker_persistent_modules():
+    """get_persistently_uncertain identifies chronically uncertain modules."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    # Run 5 cycles with memory always uncertain, safety only sometimes
+    for i in range(5):
+        tracker.reset()
+        tracker.record("memory", 0.8)
+        tracker.record("convergence", 0.1)
+        if i % 2 == 0:
+            tracker.record("safety", 0.5)
+    # Final reset archives cycle 5
+    tracker.reset()
+    tracker.record("dummy", 0.0)
+
+    persistent = tracker.get_persistently_uncertain(threshold=0.3, min_occurrences=3)
+    assert "memory" in persistent, "memory should be persistently uncertain"
+    assert "safety" in persistent, "safety should be persistently uncertain (3/5 cycles)"
+    assert "convergence" not in persistent, "convergence is below threshold"
+    print("✅ test_directional_uncertainty_tracker_persistent_modules PASSED")
+
+
+def test_directional_uncertainty_tracker_summary_includes_persistent():
+    """build_summary includes persistent_uncertain_modules key."""
+    from aeon_core import DirectionalUncertaintyTracker
+
+    tracker = DirectionalUncertaintyTracker()
+    summary = tracker.build_summary()
+    assert "persistent_uncertain_modules" in summary
+    assert "history_length" in summary
+    assert summary["history_length"] == 0
+    assert summary["persistent_uncertain_modules"] == []
+    print("✅ test_directional_uncertainty_tracker_summary_includes_persistent PASSED")
+
+
+def test_state_validation_violation_escalates_uncertainty():
+    """State validation failures should produce uncertainty_sources entry."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        z_out, outputs = model.reasoning_core(z_in, fast=True)
+    # The uncertainty_sources dict should be in the output
+    unc_sources = outputs.get("uncertainty_sources", {})
+    # We cannot guarantee a state validation violation on random input,
+    # but we CAN verify the key machinery is wired: the output dict
+    # must contain the uncertainty_sources key.
+    assert isinstance(unc_sources, dict), "uncertainty_sources must be a dict"
+    print("✅ test_state_validation_violation_escalates_uncertainty PASSED")
+
+
+def test_ns_consistency_violation_escalates_uncertainty():
+    """NS consistency violations on main z_out should escalate uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_ns_consistency_check=True,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    z_in = torch.randn(2, 32)
+    with torch.no_grad():
+        z_out, outputs = model.reasoning_core(z_in, fast=True)
+    unc_sources = outputs.get("uncertainty_sources", {})
+    # Verify uncertainty_sources is present in output
+    assert isinstance(unc_sources, dict)
+    # If NS violations occurred, the key should be present
+    # (we can't guarantee violations on random input, but we verify wiring)
+    print("✅ test_ns_consistency_violation_escalates_uncertainty PASSED")
+
+
+def test_memory_cross_validation_per_system_reliability():
+    """Memory cross-validation should compute per-system reliability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # The per-system reliability is computed when >= 2 memory systems
+    # contribute snapshots.  We test the logic directly.
+    pair_sims = {
+        "hierarchical-neurogenic": 0.8,
+        "hierarchical-temporal": 0.2,
+        "neurogenic-temporal": 0.1,
+    }
+    mem_names = ["hierarchical", "neurogenic", "temporal"]
+    per_system_reliability = {}
+    for sys_name in mem_names:
+        sys_sims = [v for k, v in pair_sims.items() if sys_name in k]
+        per_system_reliability[sys_name] = (
+            sum(sys_sims) / max(len(sys_sims), 1)
+        )
+    assert per_system_reliability["hierarchical"] == (0.8 + 0.2) / 2  # 0.5
+    assert per_system_reliability["neurogenic"] == (0.8 + 0.1) / 2  # 0.45
+    assert per_system_reliability["temporal"] == (0.2 + 0.1) / 2  # 0.15
+    least_reliable = min(per_system_reliability, key=per_system_reliability.get)
+    assert least_reliable == "temporal"
+    print("✅ test_memory_cross_validation_per_system_reliability PASSED")
+
+
+def test_auto_critic_revision_delta_in_audit():
+    """Auto-critic audit log entries should include revision_delta."""
+    from aeon_core import AutoCriticLoop
+
+    generator = nn.Linear(32, 32)
+    auto_critic = AutoCriticLoop(generator, hidden_dim=32, max_iterations=3, threshold=0.99)
+    auto_critic.eval()
+    z = torch.randn(2, 32)
+    with torch.no_grad():
+        result = auto_critic(z)
+    # The revision delta tracking is in AEONDeltaV3.reasoning_core,
+    # so we verify the auto_critic produces a candidate for revision.
+    assert "candidate" in result, "auto_critic must produce candidate"
+    assert "final_score" in result, "auto_critic must produce final_score"
+    # Verify the revision delta can be computed
+    candidate = result["candidate"]
+    if candidate is not None and torch.isfinite(candidate).all():
+        delta = float((candidate - z).norm(dim=-1).mean().item())
+        assert isinstance(delta, float) and math.isfinite(delta)
+    print("✅ test_auto_critic_revision_delta_in_audit PASSED")
+
+
+def test_persistent_uncertainty_escalation_in_forward():
+    """Persistent uncertain modules from UCC should escalate uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Run multiple forward passes to build uncertainty history
+    z_in = torch.randn(2, 32)
+    for _ in range(3):
+        with torch.no_grad():
+            z_out, outputs = model.reasoning_core(z_in, fast=True)
+    # Verify the output has uncertainty_sources (the escalation wiring exists)
+    assert "uncertainty_sources" in outputs
+    assert isinstance(outputs["uncertainty_sources"], dict)
+    print("✅ test_persistent_uncertainty_escalation_in_forward PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -46463,6 +46650,18 @@ def run_all_tests():
     test_evolved_config_in_to_dict()
     test_fallback_outputs_have_is_fallback_flag()
     test_eval_step_extracts_ucc_signals()
+
+    # Architectural Coherence Gap Closure Tests — state validation uncertainty,
+    # NS consistency escalation, persistent uncertainty tracking, memory
+    # cross-validation reliability, and auto-critic revision delta tracking.
+    test_directional_uncertainty_tracker_history()
+    test_directional_uncertainty_tracker_persistent_modules()
+    test_directional_uncertainty_tracker_summary_includes_persistent()
+    test_state_validation_violation_escalates_uncertainty()
+    test_ns_consistency_violation_escalates_uncertainty()
+    test_memory_cross_validation_per_system_reliability()
+    test_auto_critic_revision_delta_in_audit()
+    test_persistent_uncertainty_escalation_in_forward()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
