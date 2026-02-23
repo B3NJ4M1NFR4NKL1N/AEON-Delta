@@ -15621,6 +15621,14 @@ class UnifiedCognitiveCycle:
         # Wire convergence monitor → provenance tracker so divergence
         # events include per-module attribution (Gap 4).
         self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
+        # Wire convergence monitor → metacognitive trigger so that
+        # active trigger count tightens the convergence threshold,
+        # ensuring high metacognitive pressure demands stricter
+        # convergence before certification.
+        if self.metacognitive_trigger is not None:
+            self.convergence_monitor.set_metacognitive_trigger(
+                self.metacognitive_trigger,
+            )
         # Wire error evolution → causal trace automatically.
         if self.error_evolution is not None:
             self.error_evolution.set_causal_trace(self.causal_trace)
@@ -15744,7 +15752,31 @@ class UnifiedCognitiveCycle:
                     **subsystem_states, "converged_state": converged_state,
                 }
 
-        # 1. Convergence check (auto-bridges to error_evolution).
+        # 1. Record secondary convergence signals from subsystem health
+        # indicators so that the convergence monitor can degrade the
+        # verdict from 'converged' to 'converging' when auxiliary
+        # subsystems indicate instability, even if the residual norm
+        # converged.  This closes the gap where world model surprise,
+        # safety violations, recovery pressure, and auto-critic quality
+        # were evaluated by the metacognitive trigger but invisible to
+        # the convergence monitor's certification decision.
+        if world_model_surprise > 0:
+            self.convergence_monitor.record_secondary_signal(
+                "world_model_surprise", min(1.0, world_model_surprise),
+            )
+        if safety_violation:
+            self.convergence_monitor.record_secondary_signal(
+                "safety_violation", 0.8,
+            )
+        if recovery_pressure > 0:
+            self.convergence_monitor.record_secondary_signal(
+                "recovery_pressure", min(1.0, recovery_pressure),
+            )
+        if auto_critic_quality is not None and auto_critic_quality < 0.5:
+            self.convergence_monitor.record_secondary_signal(
+                "auto_critic_quality", 1.0 - max(0.0, min(1.0, auto_critic_quality)),
+            )
+        # 1a. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
 
         # 1b. Adapt coherence threshold from error evolution history so
@@ -15910,21 +15942,28 @@ class UnifiedCognitiveCycle:
                 memory_trust_deficit=memory_trust_deficit,
             )
         else:
-            # Fallback: trigger re-reasoning based on convergence and
-            # coherence signals alone so the UCC still functions even
-            # without a dedicated metacognitive trigger.
+            # Fallback: trigger re-reasoning based on convergence,
+            # coherence, and subsystem health signals so the UCC still
+            # functions even without a dedicated metacognitive trigger.
+            # World model surprise and low causal quality are included
+            # to ensure prediction error and DAG degradation trigger
+            # meta-cognitive re-evaluation.
             _should_trigger_fallback = (
                 is_diverging or coherence_deficit > 0.5
                 or uncertainty > 0.7 or safety_violation
                 or topology_catastrophe
                 or diversity_collapse > 0.5
                 or memory_trust_deficit > 0.5
+                or world_model_surprise > 0.5
+                or causal_quality < 0.5
             )
             trigger_detail = {
                 'should_trigger': _should_trigger_fallback,
                 'trigger_score': max(
                     uncertainty, coherence_deficit,
                     diversity_collapse, memory_trust_deficit,
+                    min(1.0, world_model_surprise),
+                    1.0 - causal_quality,
                     1.0 if is_diverging else 0.0,
                 ),
                 'triggers_active': (
@@ -15936,6 +15975,8 @@ class UnifiedCognitiveCycle:
                         ('topology_catastrophe', topology_catastrophe),
                         ('diversity_collapse', diversity_collapse > 0.5),
                         ('memory_trust_deficit', memory_trust_deficit > 0.5),
+                        ('world_model_surprise', world_model_surprise > 0.5),
+                        ('low_causal_quality', causal_quality < 0.5),
                     ] if v]
                 ),
             }
@@ -16781,6 +16822,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "deferred_trigger_pressure", default=0.0,
         )
+        # Convergence certificate Lipschitz pressure — when the empirical
+        # Lipschitz constant from the convergence certificate exceeds the
+        # target, this signal conditions the next pass's meta-loop to
+        # produce more contractive updates.  This closes the gap where
+        # certificates were computed but never fed back into fixed-point
+        # iteration dynamics.
+        self.feedback_bus.register_signal(
+            "lipschitz_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17449,6 +17499,13 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_deficit: float = 0.0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
+        # Empirical Lipschitz from the most recent convergence certificate.
+        # When the Lipschitz constant exceeds the target, this value feeds
+        # into the feedback bus so the next pass's meta-loop is conditioned
+        # to produce more contractive (lower Lipschitz) updates, closing
+        # the gap where convergence certificates were computed but never
+        # fed back into the meta-loop's fixed-point iteration dynamics.
+        self._cached_empirical_lipschitz: float = 0.0
         # Decoder/output quality feedback — caches the LM loss from the
         # most recent compute_loss() call so the CognitiveFeedbackBus
         # can incorporate output quality into the next forward pass's
@@ -18011,6 +18068,16 @@ class AEONDeltaV3(nn.Module):
         if self._deferred_trigger_pressure > 0.0:
             extra["deferred_trigger_pressure"] = max(
                 0.0, min(1.0, self._deferred_trigger_pressure),
+            )
+        # Convergence certificate Lipschitz pressure — when the empirical
+        # Lipschitz exceeds the target (> 0.85 typically), the excess is
+        # carried into the feedback bus so the meta-loop can condition
+        # its fixed-point iteration to be more contractive.
+        _lip = self._cached_empirical_lipschitz
+        _lip_target = self.config.lipschitz_target
+        if _lip > _lip_target:
+            extra["lipschitz_pressure"] = max(
+                0.0, min(1.0, (_lip - _lip_target) / max(1.0 - _lip_target, 1e-6)),
             )
         return extra
 
@@ -19576,6 +19643,14 @@ class AEONDeltaV3(nn.Module):
                         "empirical_lipschitz", None,
                     ),
                 })
+                # Cache empirical Lipschitz for feedback bus conditioning
+                # so the next pass's meta-loop can compensate when the
+                # contraction mapping condition is degraded.
+                _cert_lip_val = _convergence_certificate.get(
+                    "empirical_lipschitz", None,
+                )
+                if _cert_lip_val is not None:
+                    self._cached_empirical_lipschitz = float(_cert_lip_val)
             except Exception as _cert_err:
                 logger.debug(
                     "Convergence certificate computation failed (non-fatal): %s",
@@ -25929,6 +26004,25 @@ class AEONDeltaV3(nn.Module):
                 "needs_re_retrieval", False,
             )
             if _ucc_mem_val.get("needs_re_retrieval", False):
+                # Downweight stale memory contribution in the current
+                # pass's output by blending toward the pre-memory core
+                # state (C_star).  The consistency score determines the
+                # blend: low consistency → stronger dampening.  This
+                # closes the gap where memory validation only escalated
+                # uncertainty without adjusting the actual memory-fused
+                # representation, allowing stale memories to persist in
+                # the output despite being flagged as inconsistent.
+                _mem_consistency = max(0.0, min(1.0, _ucc_mem_val.get(
+                    "consistency_score", 0.0,
+                )))
+                if (self._cached_memory_state is not None
+                        and self._cached_memory_state.shape == z_out.shape
+                        and _mem_consistency < 0.3
+                        and torch.isfinite(z_out).all()):
+                    # Blend toward pre-memory state: low consistency ≈
+                    # stronger dampening of memory contribution.
+                    _dampen = max(0.0, min(0.5, 0.3 - _mem_consistency))
+                    z_out = z_out * (1.0 - _dampen) + C_star * _dampen
                 self.causal_context.add(
                     source="memory_validation",
                     embedding=z_out.mean(dim=0).detach(),

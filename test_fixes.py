@@ -41872,6 +41872,7 @@ def test_build_feedback_extra_signals_helper():
     class _MockModel:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = torch.tensor([0.1])
         _cached_topology_state = torch.tensor([1.0])
         _last_trust_score = 0.4
@@ -41888,6 +41889,10 @@ def test_build_feedback_extra_signals_helper():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42080,6 +42085,7 @@ def test_uncertainty_sources_values_clamped():
     class _MockModel:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -42101,6 +42107,10 @@ def test_uncertainty_sources_values_clamped():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     # Uncertainty sources are now aggregated into unc_peak and unc_source_count.
@@ -42956,6 +42966,7 @@ def test_build_feedback_extra_signals_includes_ucc_state():
     class _MockModel:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -42974,6 +42985,10 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43021,6 +43036,7 @@ def test_build_feedback_extra_signals_default_ucc_state():
     class _MockModel:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -43039,6 +43055,10 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43153,6 +43173,7 @@ def test_systematic_uncertainty_in_feedback_bus():
     class _Mock:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -43170,6 +43191,10 @@ def test_systematic_uncertainty_in_feedback_bus():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43219,6 +43244,7 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
     class _Mock:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -43236,6 +43262,10 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43256,6 +43286,7 @@ def test_auto_critic_quality_deficit_absent_when_good():
     class _Mock:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -43272,6 +43303,10 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
@@ -44423,6 +44458,7 @@ def test_build_feedback_extra_signals_hybrid_ns_cv():
     class _MockDegraded:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -44442,6 +44478,10 @@ def test_build_feedback_extra_signals_hybrid_ns_cv():
         _cached_ns_bridge_confidence = 0.2
         # CV disagreement present
         _last_cv_disagreement = 0.6
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockDegraded())
     assert "hybrid_reasoning_quality" in extra, (
@@ -44473,6 +44513,7 @@ def test_build_feedback_extra_signals_omits_healthy():
     class _MockHealthy:
         class config:
             diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
         _cached_diversity_state = None
         _cached_topology_state = None
         _last_trust_score = 1.0
@@ -44490,6 +44531,10 @@ def test_build_feedback_extra_signals_omits_healthy():
         _cached_hybrid_reasoning_quality = 1.0
         _cached_ns_bridge_confidence = 1.0
         _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockHealthy())
     assert "hybrid_reasoning_quality" not in extra, (
