@@ -15100,6 +15100,8 @@ class CausalErrorEvolutionTracker:
         "metacognitive_rerun": "lambda_ucc",
         "convergence": "lambda_lipschitz",
         "numerical": "lambda_safety",
+        "deeper_meta_loop_rejected": "lambda_ucc",
+        "memory_causal_degradation": "lambda_memory_retrieval",
     }
 
     def recommend_loss_adjustments(
@@ -19944,6 +19946,33 @@ class AEONDeltaV3(nn.Module):
             _correction_norm = _correction.norm(dim=-1, keepdim=True).clamp(min=1e-8)
             _correction = _correction / _correction_norm
             C_star = C_star + _DIVERSITY_CORRECTION_SCALE * _collapse_severity * _correction
+            # 3b-reextract. Re-extract factors from the corrected C_star so
+            # that downstream modules (safety, causal models, cross-
+            # validation) operate on factors that reflect the diversity-
+            # corrected state.  Without this, the factors variable still
+            # holds the pre-correction extraction, meaning the perturbation
+            # to C_star is invisible to every module that consumes factors
+            # rather than C_star directly — breaking the "each component
+            # verifies and reinforces the others" contract.
+            try:
+                self.provenance_tracker.record_before(
+                    "factor_extraction", C_star,
+                )
+                factors, embedded_factors = self.sparse_factors(C_star)
+                self.provenance_tracker.record_after(
+                    "factor_extraction", embedded_factors,
+                )
+                self._cached_factor_state = embedded_factors.detach()
+                self.audit_log.record(
+                    "diversity", "factors_re_extracted", {
+                        "collapse_severity": _collapse_severity,
+                    },
+                )
+            except Exception as _reextract_err:
+                logger.debug(
+                    "Post-diversity factor re-extraction failed "
+                    "(non-fatal): %s", _reextract_err,
+                )
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -22160,6 +22189,44 @@ class AEONDeltaV3(nn.Module):
                         self._cached_causal_quality - _mem_penalty,
                     )
                     causal_model_results['memory_grounding'] = _mem_quality
+                # 5d1b-mem-esc. Memory-stale causal uncertainty escalation
+                # — when memory is stale AND causal quality degrades below
+                # 0.5, escalate uncertainty from the causal side so the
+                # metacognitive trigger sees the stale-memory→weak-causal
+                # chain as a re-reasoning signal.  This closes the gap
+                # where memory staleness degraded causal quality but that
+                # degradation never fed back into the uncertainty pipeline
+                # within the same forward pass.
+                if (self._memory_stale
+                        and self._cached_causal_quality < 0.5
+                        and not fast):
+                    _mem_causal_boost = 0.15 * (1.0 - self._cached_causal_quality)
+                    uncertainty = min(1.0, uncertainty + _mem_causal_boost)
+                    uncertainty_sources["memory_causal_degradation"] = (
+                        _mem_causal_boost
+                    )
+                    high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="memory_causal_degradation",
+                            strategy_used="uncertainty_escalation",
+                            success=True,
+                            metadata={
+                                "causal_quality": self._cached_causal_quality,
+                                "memory_quality": _mem_quality,
+                            },
+                        )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "causal_model",
+                            "memory_stale_causal_degradation",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "causal_quality": self._cached_causal_quality,
+                                "memory_quality": _mem_quality,
+                            },
+                            severity="warning",
+                        )
             except Exception as causal_err:
                 _causal_healthy = False
                 _circuit_breaker_tripped.add("causal_model")
@@ -25646,6 +25713,32 @@ class AEONDeltaV3(nn.Module):
                 "extra_iterations",
                 self.config.metacognitive_extra_iterations,
             )
+            # 8f-ucc-ac-strategy. Auto-critic quality → deeper loop
+            # strategy adaptation — when the auto-critic's quality
+            # assessment is low (< 0.5), tighten the convergence
+            # threshold further and add extra iterations proportional
+            # to the quality deficit.  This closes the gap where
+            # auto_critic_quality fed into UCC detection but not into
+            # the corrective strategy: the deeper loop now reasons
+            # harder when the auto-critic has low confidence.
+            _ucc_ac_quality = unified_cycle_results.get(
+                "trigger_detail", {},
+            ).get("auto_critic_quality", None)
+            if _ucc_ac_quality is None:
+                # Fallback: retrieve from the cached score used to
+                # populate the UCC evaluation parameters.
+                _ucc_ac_quality = getattr(
+                    self, "_cached_auto_critic_score", None,
+                )
+            if (_ucc_ac_quality is not None
+                    and _ucc_ac_quality < 0.5):
+                _ac_deficit = 1.0 - _ucc_ac_quality
+                _ucc_tightening = _ucc_tightening * max(
+                    0.5, 1.0 - _ac_deficit * 0.3,
+                )
+                _ucc_extra_iters = _ucc_extra_iters + max(
+                    1, int(_ac_deficit * 3),
+                )
             _ucc_tight_threshold = (
                 self.config.convergence_threshold * _ucc_tightening
             )
@@ -25737,6 +25830,55 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
+                    else:
+                        # 8f-ucc-deeper-reject. Record rejection in error
+                        # evolution so the system learns from failed re-
+                        # reasoning attempts.  Without this, the UCC
+                        # triggers a deeper meta-loop, the result is
+                        # silently discarded, and the system never learns
+                        # that re-reasoning under these conditions was
+                        # ineffective — violating the "each component
+                        # verifies and reinforces the others" contract.
+                        _reject_reason = (
+                            "coherence_worsened"
+                            if not _ucc_deeper_coherent
+                            else "convergence_not_improved"
+                        )
+                        self.audit_log.record(
+                            "unified_cognitive_cycle",
+                            "deeper_meta_loop_rejected",
+                            {
+                                "reason": _reject_reason,
+                                "deeper_rate": _ucc_deeper_rate,
+                                "original_rate": convergence_quality_scalar,
+                                "deeper_coherent": _ucc_deeper_coherent,
+                            },
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="deeper_meta_loop_rejected",
+                                strategy_used=_reject_reason,
+                                success=False,
+                                metadata={
+                                    "deeper_rate": _ucc_deeper_rate,
+                                    "original_rate": convergence_quality_scalar,
+                                    "deeper_coherent": _ucc_deeper_coherent,
+                                    "triggers_active": unified_cycle_results.get(
+                                        "trigger_detail", {},
+                                    ).get("triggers_active", []),
+                                },
+                            )
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "unified_cognitive_cycle",
+                                "deeper_meta_loop_rejected",
+                                causal_prerequisites=[input_trace_id],
+                                metadata={
+                                    "reason": _reject_reason,
+                                    "deeper_rate": _ucc_deeper_rate,
+                                },
+                                severity="warning",
+                            )
             except Exception as _ucc_deep_err:
                 logger.warning(
                     "UCC-driven deeper meta-loop error (non-fatal): %s",
