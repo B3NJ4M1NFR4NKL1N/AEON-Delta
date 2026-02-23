@@ -14811,6 +14811,7 @@ class MetaCognitiveRecursionTrigger:
             "integration_failure_retry": "coherence_deficit",
             "memory_causal_degradation": "memory_staleness",
             "memory_cross_validation_failure": "memory_staleness",
+            "inter_memory_disagreement": "memory_staleness",
             "ns_bridge_error": "safety_violation",
             "ns_consistency_violation": "safety_violation",
             "persistent_module_uncertainty": "uncertainty",
@@ -15395,6 +15396,7 @@ class CausalErrorEvolutionTracker:
         "memory_subsystem": "lambda_memory_retrieval",
         "memory_cross_validation_failure": "lambda_memory_retrieval",
         "low_memory_trust": "lambda_memory_retrieval",
+        "inter_memory_disagreement": "lambda_memory_retrieval",
         # ── Causal reasoning error classes ─────────────────────────────
         "causal_dag_disagreement": "lambda_causal_dag",
         "cross_validation_low_agreement": "lambda_cross_validation",
@@ -16564,6 +16566,80 @@ class UnifiedCognitiveCycle:
                         | {'memory_reasoning_inconsistency'}
                     )
 
+        # 7d-iii. Inter-memory cross-validation — when multiple individual
+        # memory subsystem states are present in subsystem_states, compute
+        # pairwise cosine similarity between them.  When any pair diverges
+        # below the consistency threshold, escalate uncertainty and signal
+        # re-reasoning.  This closes the gap where 4 memory systems are
+        # fused independently without cross-validation: disagreement
+        # between e.g. neurogenic and temporal memory now triggers the
+        # meta-cognitive cycle to reconcile conflicting recollections.
+        _memory_keys = [
+            k for k in subsystem_states
+            if k in ("neurogenic_memory", "temporal_memory",
+                     "consolidating_memory", "memory")
+        ]
+        memory_cross_validation: Dict[str, Any] = {}
+        if len(_memory_keys) >= 2:
+            _mem_pairs_checked = 0
+            _mem_min_sim = 1.0
+            _mem_worst_pair: Optional[Tuple[str, str]] = None
+            for i in range(len(_memory_keys)):
+                for j in range(i + 1, len(_memory_keys)):
+                    _mk_a, _mk_b = _memory_keys[i], _memory_keys[j]
+                    _ma = subsystem_states[_mk_a]
+                    _mb = subsystem_states[_mk_b]
+                    if _ma.shape == _mb.shape:
+                        _sim = float(F.cosine_similarity(
+                            _ma.reshape(1, -1),
+                            _mb.reshape(1, -1),
+                            dim=-1,
+                        ).item())
+                        _mem_pairs_checked += 1
+                        if _sim < _mem_min_sim:
+                            _mem_min_sim = _sim
+                            _mem_worst_pair = (_mk_a, _mk_b)
+            _mem_cross_threshold = getattr(
+                self.memory_validator, 'consistency_threshold', 0.3,
+            ) if self.memory_validator is not None else 0.3
+            _mem_cross_inconsistent = (
+                _mem_pairs_checked > 0 and _mem_min_sim < _mem_cross_threshold
+            )
+            memory_cross_validation = {
+                "pairs_checked": _mem_pairs_checked,
+                "min_similarity": _mem_min_sim,
+                "worst_pair": _mem_worst_pair,
+                "is_consistent": not _mem_cross_inconsistent,
+            }
+            if _mem_cross_inconsistent:
+                _mcv_boost = min(1.0 - uncertainty, 0.1)
+                if _mcv_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _mcv_boost)
+                if self.uncertainty_tracker is not None:
+                    self.uncertainty_tracker.record(
+                        "memory_cross_validation", _mcv_boost,
+                        source_label="inter_memory_disagreement",
+                    )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='inter_memory_disagreement',
+                        strategy_used='memory_cross_validation',
+                        success=False,
+                        metadata={
+                            'min_similarity': _mem_min_sim,
+                            'worst_pair': list(_mem_worst_pair) if _mem_worst_pair else [],
+                        },
+                    )
+                if not should_rerun:
+                    should_rerun = True
+                # Always append the trigger for traceability so
+                # root-cause analysis can distinguish memory-driven
+                # reruns from other trigger sources.
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {'inter_memory_disagreement'}
+                )
+
         # 7d-ii. Directional uncertainty → re-reasoning trigger — when the
         # uncertainty tracker identifies a single module with concentrated
         # high uncertainty (> 0.7), trigger re-reasoning even if the
@@ -16669,6 +16745,7 @@ class UnifiedCognitiveCycle:
             'convergence_arbiter': convergence_arbiter_result,
             'uncertainty_summary': uncertainty_summary,
             'memory_validation': memory_validation,
+            'memory_cross_validation': memory_cross_validation,
             'recurring_root_causes': recurring_root_causes,
             'coherence_trend': {
                 'ema': self._coherence_trend_ema,
@@ -26072,6 +26149,23 @@ class AEONDeltaV3(nn.Module):
                             "present_count": len(_ucc_states),
                         },
                     )
+                    # Absent-subsystem uncertainty escalation — when
+                    # verification-critical subsystems are absent from
+                    # the UCC's coherence check, degrade confidence
+                    # proportionally to the fraction of missing systems
+                    # instead of silently accepting unverified outputs.
+                    # This ensures the system cannot claim full certainty
+                    # when its self-verification is incomplete.
+                    _absent_fraction = len(_ucc_absent) / max(
+                        len(_UCC_EXPECTED_SUBSYSTEMS), 1,
+                    )
+                    _absent_unc_boost = min(
+                        1.0 - uncertainty, _absent_fraction * 0.15,
+                    )
+                    if _absent_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _absent_unc_boost)
+                        uncertainty_sources["absent_subsystem_coverage"] = _absent_unc_boost
+                        high_uncertainty = uncertainty > 0.5
                 # Include NS consistency violations in the safety
                 # signal so that symbolic-rule failures trigger the
                 # same meta-cognitive rerun as safety guardrail
