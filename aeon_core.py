@@ -14555,6 +14555,12 @@ class MetaCognitiveRecursionTrigger:
             # Provenance DAG cycle — dependency graph contained a
             # cycle, indicating a wiring error in the pipeline.
             "provenance_dag_cycle": "low_causal_quality",
+            # Premature complexity gating — subsystems were skipped but
+            # downstream uncertainty revealed they were needed.
+            "premature_complexity_gating": "uncertainty",
+            # Memory aggregate failure — all active memory subsystems
+            # failed simultaneously, tripping the circuit breaker.
+            "memory_aggregate_failure": "memory_staleness",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15102,6 +15108,9 @@ class CausalErrorEvolutionTracker:
         "numerical": "lambda_safety",
         "deeper_meta_loop_rejected": "lambda_ucc",
         "memory_causal_degradation": "lambda_memory_retrieval",
+        "premature_complexity_gating": "lambda_ucc",
+        "memory_aggregate_failure": "lambda_memory_retrieval",
+        "causal_dag_disagreement": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -16671,6 +16680,13 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "cv_agreement_deficit", default=0.0,
         )
+        # Causal DAG consensus quality — carries inter-model structural
+        # agreement into the feedback bus so the meta-loop can tighten
+        # reasoning when multiple causal formalisms disagree on the
+        # underlying causal graph structure.
+        self.feedback_bus.register_signal(
+            "causal_dag_consensus_quality", default=1.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -17878,6 +17894,16 @@ class AEONDeltaV3(nn.Module):
         _cvd = self._last_cv_disagreement
         if _cvd > 0.0:
             extra["cv_agreement_deficit"] = max(0.0, min(1.0, _cvd))
+        # Causal DAG consensus quality — when multiple causal formalisms
+        # produce disagreeing adjacency structures, signal the meta-loop
+        # via the feedback bus.  _cached_causal_quality already reflects
+        # inter-model consensus (clamped by CausalDAGConsensus.evaluate),
+        # so route it directly.  A value of 1.0 means full agreement;
+        # values below the DAG consensus threshold indicate structural
+        # disagreement warranting deeper reasoning.
+        _dag_q = self._cached_causal_quality
+        if _dag_q < 1.0:
+            extra["causal_dag_consensus_quality"] = max(0.0, min(1.0, _dag_q))
         return extra
 
     @staticmethod
@@ -23109,6 +23135,42 @@ class AEONDeltaV3(nn.Module):
                 uncertainty = min(1.0, uncertainty + _coverage_boost)
                 uncertainty_sources["complexity_gated_coverage"] = _coverage_boost
                 high_uncertainty = uncertainty > 0.5
+            # 5e2-g2. Reactive re-gating — when subsystems were complexity-
+            # gated OFF at decision time but post-subsystem uncertainty has
+            # since risen above the threshold, the gating decision was
+            # premature.  Record this as an error episode so the complexity
+            # estimator's loss landscape can adapt, and flag the subsystems
+            # for forced re-enabling on the next forward pass.  This closes
+            # the gap where gating decisions were one-way: once a subsystem
+            # was skipped, no mechanism reconsidered that decision even when
+            # downstream evidence showed it was needed.
+            if high_uncertainty and _num_skipped > 0:
+                _skipped_names = []
+                if _world_model_should_skip:
+                    _skipped_names.append("world_model")
+                if _complexity_gates is not None and not _complexity_gates[:, 1].any().item():
+                    _skipped_names.append("mcts_planning")
+                if _complexity_gates is not None and not _complexity_gates[:, 2].any().item():
+                    _skipped_names.append("causal_world_model")
+                if _unified_sim_should_skip:
+                    _skipped_names.append("unified_simulator")
+                if _skipped_names and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="premature_complexity_gating",
+                        strategy_used="reactive_regate_flag",
+                        success=False,
+                        metadata={
+                            "skipped_subsystems": _skipped_names,
+                            "uncertainty_at_regate": float(uncertainty),
+                            "num_skipped": _num_skipped,
+                        },
+                    )
+                self.audit_log.record(
+                    "complexity_estimator", "reactive_regate_needed", {
+                        "skipped_subsystems": _skipped_names,
+                        "uncertainty": float(uncertainty),
+                    }, severity="warning",
+                )
         
         # 5e3. Hybrid reasoning engine — neuro-symbolic reasoning
         hybrid_reasoning_results: Dict[str, Any] = {}
@@ -23517,6 +23579,57 @@ class AEONDeltaV3(nn.Module):
                     strategy_used="uncertainty_escalation",
                     success=True,
                     metadata={"subsystem": "temporal_memory"},
+                )
+        
+        # 6a-0c. Aggregate memory circuit breaker — when ALL active memory
+        # subsystems failed during fusion, the fused state C_fused may be
+        # severely degraded.  Fall back to the pre-fusion C_star to prevent
+        # corrupted memory signals from polluting downstream reasoning.
+        # This closes the gap where individual memory errors escalated
+        # uncertainty but the aggregate failure was never acted upon.
+        _active_mem_count = sum([
+            self.consolidating_memory is not None,
+            self.neurogenic_memory is not None,
+            self.temporal_memory is not None,
+        ])
+        _failed_mem_count = sum([
+            self._consolidating_memory_error,
+            self._neurogenic_memory_error,
+            self._temporal_memory_error,
+        ])
+        if (_active_mem_count > 0
+                and _failed_mem_count >= _active_mem_count
+                and not fast):
+            logger.warning(
+                "All %d active memory subsystems failed — reverting to "
+                "pre-fusion state (memory circuit breaker tripped)",
+                _active_mem_count,
+            )
+            C_fused = C_star
+            _circuit_breaker_tripped.add("memory_fusion")
+            _ALL_MEM_UNCERTAINTY_BOOST = 0.25
+            _all_mem_boost = min(1.0 - uncertainty, _ALL_MEM_UNCERTAINTY_BOOST)
+            uncertainty = min(1.0, uncertainty + _all_mem_boost)
+            uncertainty_sources["all_memory_subsystems_failed"] = _all_mem_boost
+            high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="memory_aggregate_failure",
+                    strategy_used="circuit_breaker_revert",
+                    success=True,
+                    metadata={
+                        "active_subsystems": _active_mem_count,
+                        "failed_subsystems": _failed_mem_count,
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "memory_fusion", "aggregate_circuit_breaker",
+                    severity="error",
+                    metadata={
+                        "active_subsystems": _active_mem_count,
+                        "failed_subsystems": _failed_mem_count,
+                    },
                 )
         
         # 6a. Trust-score-driven uncertainty escalation — when the
@@ -27163,13 +27276,25 @@ class AEONDeltaV3(nn.Module):
         # This prevents catastrophic forgetting: prior task knowledge
         # is preserved in frozen columns and contributes to the current
         # encoding via learned lateral connections.
+        # Iterate over ALL frozen columns (columns[:-1]) so that each
+        # prior-task column contributes its lateral adapter signal,
+        # matching ContinualLearningCore.forward() semantics.  When no
+        # frozen columns exist (single task), this loop is a no-op.
         if self.continual_learning is not None:
             try:
-                _cl_enriched = self.continual_learning.lateral_adapter(
-                    z_encoded.detach(),
-                )
-                if torch.isfinite(_cl_enriched).all():
-                    z_encoded = z_encoded + 0.1 * _cl_enriched
+                for _prev_col in self.continual_learning.columns[:-1]:
+                    with torch.no_grad():
+                        _h_prev = _prev_col(input_ids, attention_mask=attention_mask)
+                    if isinstance(_h_prev, dict):
+                        _h_prev = _h_prev.get(
+                            'logits',
+                            _h_prev.get('z_quantized', next(iter(_h_prev.values()))),
+                        )
+                    _cl_enriched = self.continual_learning.lateral_adapter(
+                        _h_prev.detach(),
+                    )
+                    if torch.isfinite(_cl_enriched).all():
+                        z_encoded = z_encoded + 0.1 * _cl_enriched
             except Exception as cl_err:
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
