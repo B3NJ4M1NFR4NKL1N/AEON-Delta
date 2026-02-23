@@ -15401,6 +15401,7 @@ class CausalErrorEvolutionTracker:
         "reconciliation_disagreement": "lambda_cross_validation",
         "reconciliation_exhaustion": "lambda_cross_validation",
         # ── Safety & verification error classes ────────────────────────
+        "safety_rollback": "lambda_safety",
         "safety_critic_revision": "lambda_safety",
         "state_validation_violation": "lambda_safety",
         "terminal_state_invalid": "lambda_safety",
@@ -15427,6 +15428,8 @@ class CausalErrorEvolutionTracker:
         "high_output_uncertainty": "lambda_ucc",
         "critical_uncertainty": "lambda_ucc",
         "persistent_module_uncertainty": "lambda_ucc",
+        # ── Generic / fallback error classes ───────────────────────────
+        "subsystem": "lambda_safety",
     }
 
     def recommend_loss_adjustments(
