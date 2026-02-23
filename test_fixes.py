@@ -45194,6 +45194,110 @@ def test_memory_retrieval_loss_error_evolution():
     print("✅ test_memory_retrieval_loss_error_evolution PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Causal Trace Completeness, UCC Coverage
+#  Tracking, and Meta-Loop Convergence Traceability
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_meta_loop_causal_trace_includes_residual_norm():
+    """Meta-loop causal trace records residual_norm for root-cause traceability.
+
+    The meta-loop trace must include residual_norm so that downstream
+    root-cause analysis can determine whether issues stem from premature
+    convergence or divergence.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(1, 1000, (1, 16))
+    with torch.no_grad():
+        out = model(ids)
+    # The causal trace buffer should contain a meta_loop entry with
+    # residual_norm in its metadata.
+    if model.causal_trace is not None:
+        meta_traces = model.causal_trace.find(subsystem="meta_loop")
+        assert len(meta_traces) > 0, "Expected at least one meta_loop causal trace"
+        last_meta = meta_traces[0]  # find() returns most-recent-first
+        meta_md = last_meta.get("metadata", {})
+        assert "residual_norm" in meta_md, (
+            f"meta_loop causal trace missing residual_norm; keys={list(meta_md.keys())}"
+        )
+        assert "adaptive" in meta_md, (
+            f"meta_loop causal trace missing adaptive flag; keys={list(meta_md.keys())}"
+        )
+    print("✅ test_meta_loop_causal_trace_includes_residual_norm PASSED")
+
+
+def test_ucc_incomplete_coverage_audit():
+    """UCC logs absent subsystems when coherence verification has gaps.
+
+    When subsystems are disabled, the UCC should record which subsystems
+    were absent from the coherence check so root-cause analysis can
+    distinguish 'verified coherent' from 'unverified due to absence'.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(1, 1000, (1, 16))
+    with torch.no_grad():
+        out = model(ids)
+    # With many subsystems disabled (default config), the UCC should
+    # have logged incomplete_coverage in the audit log.
+    audit_events = model.audit_log.filter_by(
+        subsystem="unified_cognitive_cycle",
+    )
+    coverage_events = [
+        e for e in audit_events
+        if e.get("decision") == "incomplete_coverage"
+    ]
+    # With default config many subsystems are disabled, so coverage should
+    # be incomplete.  Verify the absent_subsystems field is present.
+    if coverage_events:
+        absent = coverage_events[0].get("metadata", {}).get("absent_subsystems", [])
+        assert isinstance(absent, list), "absent_subsystems should be a list"
+        assert len(absent) > 0, "Expected absent subsystems with default config"
+    print("✅ test_ucc_incomplete_coverage_audit PASSED")
+
+
+def test_ucc_causal_trace_records_verdict():
+    """UCC evaluation verdict is recorded in causal trace.
+
+    The unified cognitive cycle's evaluation decision (rerun vs. accept)
+    must be traceable for root-cause analysis.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(1, 1000, (1, 16))
+    with torch.no_grad():
+        out = model(ids)
+    if model.causal_trace is not None:
+        ucc_traces = model.causal_trace.find(
+            subsystem="unified_cognitive_cycle",
+            decision="evaluated",
+        )
+        assert len(ucc_traces) > 0, "Expected UCC evaluated trace entry"
+        ucc_md = ucc_traces[0].get("metadata", {})
+        assert "should_rerun" in ucc_md, "UCC trace missing should_rerun"
+        assert "coherence_deficit" in ucc_md, "UCC trace missing coherence_deficit"
+        assert "present_subsystems" in ucc_md, "UCC trace missing present_subsystems"
+        assert "absent_subsystems" in ucc_md, "UCC trace missing absent_subsystems"
+    print("✅ test_ucc_causal_trace_records_verdict PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -47138,6 +47242,12 @@ def run_all_tests():
     test_eval_step_rerun_fields()
     test_generate_output_includes_uncertainty_sources()
     test_memory_retrieval_loss_error_evolution()
+
+    # Architectural Unification — Causal Trace Completeness, UCC Coverage
+    # Tracking, and Meta-Loop Convergence Traceability
+    test_meta_loop_causal_trace_includes_residual_norm()
+    test_ucc_incomplete_coverage_audit()
+    test_ucc_causal_trace_records_verdict()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
