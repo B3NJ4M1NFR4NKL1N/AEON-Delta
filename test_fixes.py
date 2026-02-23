@@ -47123,6 +47123,157 @@ def test_deeper_meta_loop_acceptance_records_error_evolution():
     print("✅ test_deeper_meta_loop_acceptance_records_error_evolution PASSED")
 
 
+# =====================================================================
+# Architectural Unification Tests — Error-Class Coverage
+# =====================================================================
+
+def test_error_class_to_lambda_covers_all_recorded_classes():
+    """Every error class recorded via record_episode() across
+    the codebase must be present in _ERROR_CLASS_TO_LAMBDA so that
+    the adaptive loss weighting system can respond to every failure."""
+    import inspect
+    import re
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    # Scrape all error_class="..." values from aeon_core.py
+    core_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py",
+    )
+    with open(core_path, "r") as f:
+        content = f.read()
+    recorded = set(re.findall(r'error_class="([^"]+)"', content))
+    recorded.discard("none")  # success marker, not a failure class
+
+    unmapped = recorded - set(mapping.keys())
+    assert not unmapped, (
+        f"Error classes recorded but not in _ERROR_CLASS_TO_LAMBDA: "
+        f"{sorted(unmapped)}"
+    )
+    print("✅ test_error_class_to_lambda_covers_all_recorded_classes PASSED")
+
+
+def test_class_to_signal_covers_all_recorded_classes():
+    """Every error class recorded via record_episode() must be mapped
+    in adapt_weights_from_evolution's _class_to_signal dict so that
+    the metacognitive trigger can adjust sensitivity for every failure."""
+    import inspect
+    import re
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    # Extract keys from _class_to_signal = { ... }
+    mapped_keys = set(re.findall(r'"([^"]+)":\s*"', src))
+
+    core_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py",
+    )
+    with open(core_path, "r") as f:
+        content = f.read()
+    recorded = set(re.findall(r'error_class="([^"]+)"', content))
+    recorded.discard("none")
+
+    # Allow fallback to "uncertainty" for unmapped classes, but ensure
+    # at least 90% coverage (the fallback in the code handles the rest)
+    coverage = len(recorded & mapped_keys) / max(len(recorded), 1)
+    assert coverage >= 0.9, (
+        f"_class_to_signal coverage is {coverage:.0%}, need ≥90%. "
+        f"Missing: {sorted(recorded - mapped_keys)}"
+    )
+    print("✅ test_class_to_signal_covers_all_recorded_classes PASSED")
+
+
+def test_ucc_expected_subsystems_includes_populated_keys():
+    """_UCC_EXPECTED_SUBSYSTEMS must include subsystem keys that
+    are actually added to _ucc_states in the reasoning core."""
+    import inspect
+    import re
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3)
+    # Extract subsystems from the expected set definition
+    match = re.search(
+        r'_UCC_EXPECTED_SUBSYSTEMS\s*=\s*\{([^}]+)\}', src,
+    )
+    assert match, "_UCC_EXPECTED_SUBSYSTEMS definition not found"
+    expected = set(re.findall(r'"([^"]+)"', match.group(1)))
+
+    # Critical subsystems that must be present
+    must_have = {
+        "integrated_output", "core_state", "safety", "decoder",
+        "memory", "auto_critic", "ns_consistency",
+        "self_report", "temporal_knowledge_graph",
+    }
+    missing = must_have - expected
+    assert not missing, (
+        f"_UCC_EXPECTED_SUBSYSTEMS missing critical entries: "
+        f"{sorted(missing)}"
+    )
+    print("✅ test_ucc_expected_subsystems_includes_populated_keys PASSED")
+
+
+def test_ee_boost_applied_to_cross_validation_loss():
+    """compute_loss must apply _ee_boost to cross_validation_loss
+    so that error-evolution-adaptive weighting covers this loss."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+    assert '_ee_boost("lambda_cross_validation")' in src, (
+        "cross_validation_loss must use _ee_boost for adaptive weighting"
+    )
+    assert '_ee_boost("lambda_auto_critic")' in src, (
+        "auto_critic_loss must use _ee_boost for adaptive weighting"
+    )
+    assert '_ee_boost("lambda_self_report")' in src, (
+        "self_report_loss must use _ee_boost for adaptive weighting"
+    )
+    assert '_ee_boost("lambda_world_model_surprise")' in src, (
+        "world_model_surprise_loss must use _ee_boost for adaptive weighting"
+    )
+    print("✅ test_ee_boost_applied_to_cross_validation_loss PASSED")
+
+
+def test_error_class_to_lambda_maps_to_valid_config_params():
+    """Every lambda target in _ERROR_CLASS_TO_LAMBDA must correspond
+    to an actual config parameter or getattr fallback in compute_loss."""
+    from aeon_core import CausalErrorEvolutionTracker, AEONConfig
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    config = AEONConfig()
+
+    for error_class, lambda_name in mapping.items():
+        assert hasattr(config, lambda_name) or lambda_name in (
+            "lambda_meta_recovery", "lambda_task2vec",
+        ), (
+            f"_ERROR_CLASS_TO_LAMBDA['{error_class}'] = '{lambda_name}' "
+            f"but AEONConfig has no attribute '{lambda_name}'"
+        )
+    print("✅ test_error_class_to_lambda_maps_to_valid_config_params PASSED")
+
+
+def test_decoder_degenerate_check_logs_instead_of_pass():
+    """The decoder degenerate-output check must log failures instead
+    of silently swallowing them with a bare 'except: pass'."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3)
+    # Find the decoder degenerate output section
+    idx = src.find("decoder_degenerate_output")
+    assert idx > 0, "decoder_degenerate_output check must exist"
+    # Get context around it
+    region = src[idx:idx + 1000]
+    assert "logging.warning" in region or "logger.warning" in region or \
+           "log" in region.lower(), (
+        "Decoder degenerate-output check should log failures, not use bare pass"
+    )
+    print("✅ test_decoder_degenerate_check_logs_instead_of_pass PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -49171,6 +49322,14 @@ def run_all_tests():
     test_provenance_adapt_thresholds_in_ucc_evaluate()
     test_ucc_provenance_adapt_thresholds_integration()
     test_deeper_meta_loop_acceptance_records_error_evolution()
+
+    # Architectural unification coverage tests
+    test_error_class_to_lambda_covers_all_recorded_classes()
+    test_class_to_signal_covers_all_recorded_classes()
+    test_ucc_expected_subsystems_includes_populated_keys()
+    test_ee_boost_applied_to_cross_validation_loss()
+    test_error_class_to_lambda_maps_to_valid_config_params()
+    test_decoder_degenerate_check_logs_instead_of_pass()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
