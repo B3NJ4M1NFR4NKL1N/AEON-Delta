@@ -43958,6 +43958,120 @@ def test_decoder_provenance_in_training_bridge():
     )
 
     print("✅ test_decoder_provenance_in_training_bridge PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURAL UNIFICATION — Recovery-to-Evolution Bridge Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_bridge_recovery_to_evolution_method_exists():
+    """AEONDeltaV3 must have a _bridge_recovery_to_evolution helper method
+    that forwards error-recovery events to the error-evolution tracker."""
+    from aeon_core import AEONDeltaV3
+    assert hasattr(AEONDeltaV3, '_bridge_recovery_to_evolution'), (
+        "AEONDeltaV3 must define _bridge_recovery_to_evolution to bridge "
+        "error_recovery events into the error_evolution learning system"
+    )
+    print("✅ test_bridge_recovery_to_evolution_method_exists PASSED")
+
+
+def test_bridge_recovery_to_evolution_forwards_to_error_evolution():
+    """_bridge_recovery_to_evolution must call error_evolution.record_episode
+    when error_evolution is available."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, meta_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is not None, "error_evolution must be enabled"
+    initial_count = model.error_evolution._total_recorded
+
+    model._bridge_recovery_to_evolution("numerical", "test_context", False)
+
+    after_count = model.error_evolution._total_recorded
+    assert after_count == initial_count + 1, (
+        f"Expected error_evolution._total_recorded to increment by 1, "
+        f"got {initial_count} -> {after_count}"
+    )
+    print("✅ test_bridge_recovery_to_evolution_forwards_to_error_evolution PASSED")
+
+
+def test_bridge_recovery_to_evolution_noop_without_evolution():
+    """_bridge_recovery_to_evolution must not raise when error_evolution is None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, meta_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+
+    # Temporarily disable error_evolution
+    saved = model.error_evolution
+    model.error_evolution = None
+    try:
+        # Should not raise
+        model._bridge_recovery_to_evolution("subsystem", "test_context", False)
+    finally:
+        model.error_evolution = saved
+    print("✅ test_bridge_recovery_to_evolution_noop_without_evolution PASSED")
+
+
+def test_all_recovery_sites_bridge_to_evolution():
+    """Every error_recovery.record_event() call in _reasoning_core_impl
+    must be accompanied by either a _bridge_recovery_to_evolution() call
+    or a direct error_evolution.record_episode() call so that all
+    subsystem failures feed into the error-evolution learning system."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Count occurrences of each pattern
+    recovery_count = src.count("error_recovery.record_event(")
+    bridge_count = src.count("_bridge_recovery_to_evolution(")
+    direct_evo_count = src.count("error_evolution.record_episode(")
+
+    # Every recovery site must have either a bridge call or a direct
+    # error_evolution call nearby.  The total coverage must match.
+    total_coverage = bridge_count + direct_evo_count
+    assert total_coverage >= recovery_count, (
+        f"Found {recovery_count} error_recovery.record_event() calls but only "
+        f"{bridge_count} bridge + {direct_evo_count} direct error_evolution "
+        f"calls in _reasoning_core_impl — every recovery site must feed into "
+        f"the evolution learning system"
+    )
+    print("✅ test_all_recovery_sites_bridge_to_evolution PASSED")
+
+
+def test_bridge_recovery_records_context_metadata():
+    """_bridge_recovery_to_evolution must include context in the metadata
+    passed to error_evolution.record_episode for traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._bridge_recovery_to_evolution)
+    assert "metadata" in src, (
+        "_bridge_recovery_to_evolution must pass metadata to record_episode "
+        "for root-cause traceability"
+    )
+    assert "context" in src, (
+        "_bridge_recovery_to_evolution must include the context string "
+        "in its forwarded data"
+    )
+    print("✅ test_bridge_recovery_records_context_metadata PASSED")
+
+
+def test_run_all_tests_is_standalone_function():
+    """run_all_tests must be a standalone module-level function, not nested
+    inside another test function."""
+    import inspect
+    from test_fixes import run_all_tests
+
+    # Verify it's a module-level function (not nested)
+    assert callable(run_all_tests), "run_all_tests must be callable"
+    assert run_all_tests.__qualname__ == "run_all_tests", (
+        f"run_all_tests must be a top-level function, "
+        f"got qualname={run_all_tests.__qualname__}"
+    )
+    print("✅ test_run_all_tests_is_standalone_function PASSED")
+
+
+def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -45842,6 +45956,18 @@ def test_decoder_provenance_in_training_bridge():
     test_ns_consistency_loss_error_evolution()
     test_hierarchical_wm_loss_error_evolution()
 
+    # Architectural Unification — Recovery-to-Evolution Bridge Tests
+    test_bridge_recovery_to_evolution_method_exists()
+    test_bridge_recovery_to_evolution_forwards_to_error_evolution()
+    test_bridge_recovery_to_evolution_noop_without_evolution()
+    test_all_recovery_sites_bridge_to_evolution()
+    test_bridge_recovery_records_context_metadata()
+    test_run_all_tests_is_standalone_function()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
+
+
+if __name__ == "__main__":
+    run_all_tests()

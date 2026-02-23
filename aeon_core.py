@@ -17363,6 +17363,34 @@ class AEONDeltaV3(nn.Module):
         total = stats.get("total", 0)
         return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
 
+    def _bridge_recovery_to_evolution(
+        self,
+        error_class: str,
+        context: str,
+        success: bool,
+    ) -> None:
+        """Forward an error-recovery event to the error-evolution tracker.
+
+        This bridges the gap where ``error_recovery.record_event()`` captures
+        subsystem failures for immediate recovery but does *not* feed them
+        into ``error_evolution.record_episode()`` for long-term learning.
+        By routing every recovery event through this helper, the causal
+        error-evolution tracker can adapt metacognitive trigger weights
+        and strategy selection based on the full history of subsystem
+        failures — not only the subset that was explicitly instrumented.
+
+        The method is intentionally lightweight (no learnable parameters,
+        no tensor operations) so it can be called at every recovery site
+        without measurable overhead.
+        """
+        if self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class=error_class,
+                strategy_used=f"recovery:{context}",
+                success=success,
+                metadata={"context": context},
+            )
+
     def _build_feedback_extra_signals(self) -> Dict[str, float]:
         """Build extra signal dict for CognitiveFeedbackBus from cached state.
 
@@ -18933,6 +18961,9 @@ class AEONDeltaV3(nn.Module):
                 context="meta_loop_nan_fallback",
                 success=False,
             )
+            self._bridge_recovery_to_evolution(
+                "numerical", "meta_loop_nan_fallback", False,
+            )
             uncertainty = min(1.0, uncertainty + 0.3)
             uncertainty_sources["meta_loop_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
@@ -19117,6 +19148,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="certified_meta_loop_forward",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "certified_meta_loop_forward", False,
                 )
         _needs_deeper = (
             convergence_quality_scalar < 0.5
@@ -19641,6 +19675,9 @@ class AEONDeltaV3(nn.Module):
                     context="safety_enforcement",
                     success=True,
                 )
+                self._bridge_recovery_to_evolution(
+                    "safety_rollback", "safety_enforcement", True,
+                )
                 # Record safety rollback in causal trace so that
                 # downstream root-cause analysis can identify which
                 # modules produced the unsafe state that triggered
@@ -19822,6 +19859,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="cognitive_executive_forward",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "cognitive_executive_forward", False,
                 )
                 _exec_boost = min(1.0 - uncertainty, 0.05)
                 if _exec_boost > 0:
@@ -20692,6 +20732,9 @@ class AEONDeltaV3(nn.Module):
                     context="world_model_forward",
                     success=False,
                 )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "world_model_forward", False,
+                )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["world_model_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
@@ -20772,6 +20815,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="hierarchical_world_model_forward",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "hierarchical_world_model_forward", False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.15)
                 uncertainty_sources["hierarchical_wm_error"] = 0.15
@@ -21037,6 +21083,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="hierarchical_memory",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "hierarchical_memory", False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["memory_error"] = 0.2
@@ -21621,6 +21670,9 @@ class AEONDeltaV3(nn.Module):
                     context="causal_model_forward",
                     success=False,
                 )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "causal_model_forward", False,
+                )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["causal_model_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
@@ -21764,6 +21816,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="causal_programmatic_forward",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "causal_programmatic_forward", False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["causal_programmatic_error"] = 0.2
@@ -22499,6 +22554,9 @@ class AEONDeltaV3(nn.Module):
                     context="hybrid_reasoning_forward",
                     success=False,
                 )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "hybrid_reasoning_forward", False,
+                )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["hybrid_reasoning_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
@@ -22710,6 +22768,9 @@ class AEONDeltaV3(nn.Module):
                     context="hierarchical_vae_forward",
                     success=False,
                 )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "hierarchical_vae_forward", False,
+                )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["hvae_error"] = 0.2
                 high_uncertainty = uncertainty > 0.5
@@ -22874,6 +22935,9 @@ class AEONDeltaV3(nn.Module):
                 context="rssm_nan_fallback",
                 success=False,
             )
+            self._bridge_recovery_to_evolution(
+                "numerical", "rssm_nan_fallback", False,
+            )
             uncertainty = min(1.0, uncertainty + 0.3)
             uncertainty_sources["rssm_nan"] = 0.3
             high_uncertainty = uncertainty > 0.5
@@ -22914,6 +22978,9 @@ class AEONDeltaV3(nn.Module):
                         context="multimodal_nonfinite_output",
                         success=False,
                     )
+                    self._bridge_recovery_to_evolution(
+                        "numerical", "multimodal_nonfinite_output", False,
+                    )
                     uncertainty = min(1.0, uncertainty + 0.2)
                     uncertainty_sources["multimodal_nonfinite"] = 0.2
                     high_uncertainty = uncertainty > 0.5
@@ -22935,6 +23002,9 @@ class AEONDeltaV3(nn.Module):
                     error_class="subsystem",
                     context="multimodal_grounding",
                     success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "multimodal_grounding", False,
                 )
                 uncertainty = min(1.0, uncertainty + 0.2)
                 uncertainty_sources["multimodal_error"] = 0.2
@@ -23036,6 +23106,9 @@ class AEONDeltaV3(nn.Module):
                 error_class="numerical",
                 context="integration_nan_fallback",
                 success=False,
+            )
+            self._bridge_recovery_to_evolution(
+                "numerical", "integration_nan_fallback", False,
             )
             uncertainty = min(1.0, uncertainty + 0.3)
             uncertainty_sources["integration_nan"] = 0.3
@@ -24900,6 +24973,9 @@ class AEONDeltaV3(nn.Module):
                     context="ucc_deeper_meta_loop",
                     success=False,
                 )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "ucc_deeper_meta_loop", False,
+                )
             finally:
                 self.meta_loop.convergence_threshold = _ucc_orig_threshold
                 self.meta_loop.max_iterations = _ucc_orig_max_iter
@@ -24945,6 +25021,9 @@ class AEONDeltaV3(nn.Module):
                         error_class="subsystem",
                         context="ucc_driven_auto_critic",
                         success=False,
+                    )
+                    self._bridge_recovery_to_evolution(
+                        "subsystem", "ucc_driven_auto_critic", False,
                     )
             # 8f-ucc-prov-recompute. Recompute provenance attribution after
             # the deeper meta-loop so downstream consumers see updated
@@ -25234,6 +25313,9 @@ class AEONDeltaV3(nn.Module):
                         error_class="safety_rollback",
                         context="post_integration_safety",
                         success=True,
+                    )
+                    self._bridge_recovery_to_evolution(
+                        "safety_rollback", "post_integration_safety", True,
                     )
         
         # 8g-0b. Store auto-critic-revised output in memory systems — when
@@ -27321,6 +27403,7 @@ class AEONDeltaV3(nn.Module):
                 context="generate",
                 success=False,
             )
+            self._bridge_recovery_to_evolution(error_class, "generate", False)
             return {
                 'text': '',
                 'status': 'error',
@@ -28458,6 +28541,11 @@ class AEONDeltaV3(nn.Module):
             verified.append(
                 'memory_validator → memory-reasoning consistency '
                 'check triggers re-retrieval on mismatch'
+            )
+        if self.error_evolution is not None:
+            verified.append(
+                'error_recovery → error_evolution bridge ensures all '
+                'subsystem failures feed into the evolution learning system'
             )
 
         # --- Extension points (defined but not instantiated in the pipeline) ---
