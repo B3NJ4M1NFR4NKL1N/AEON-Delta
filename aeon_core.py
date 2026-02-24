@@ -16235,6 +16235,7 @@ class UnifiedCognitiveCycle:
         dag_adjacency_matrices: Optional[Dict[str, torch.Tensor]] = None,
         feedback_bus_trend: Optional[torch.Tensor] = None,
         decoder_quality: Optional[float] = None,
+        ns_consistency_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -16276,6 +16277,13 @@ class UnifiedCognitiveCycle:
                 Violations trigger re-reasoning and escalate uncertainty,
                 closing the gap where formal convergence guarantees were
                 computed but never fed into the meta-cognitive cycle.
+            ns_consistency_score: Optional neuro-symbolic consistency
+                score ∈ [0, 1] (1 = all rules satisfied).  When provided
+                and low (< 0.5), recorded as a convergence secondary
+                signal and directional uncertainty entry so that symbolic
+                rule violations explicitly inform the meta-cognitive cycle,
+                closing the gap where NS consistency results were only
+                indirectly reflected via the safety_violation flag.
 
         Returns:
             Dict with:
@@ -16366,6 +16374,17 @@ class UnifiedCognitiveCycle:
         if executive_health is not None and executive_health < 0.5:
             self.convergence_monitor.record_secondary_signal(
                 "executive_health", 1.0 - max(0.0, min(1.0, executive_health)),
+            )
+        # Neuro-symbolic consistency: when symbolic rule satisfaction is
+        # low, record as a convergence secondary signal so the monitor's
+        # verdict reflects logical-consistency failures.  This closes the
+        # gap where NS consistency violations were folded into the binary
+        # safety_violation flag but never independently surfaced as a
+        # graduated convergence signal.
+        if ns_consistency_score is not None and ns_consistency_score < 0.5:
+            self.convergence_monitor.record_secondary_signal(
+                "ns_consistency",
+                1.0 - max(0.0, min(1.0, ns_consistency_score)),
             )
         # 1a. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
@@ -16550,6 +16569,49 @@ class UnifiedCognitiveCycle:
                         "failed (non-fatal): %s", _dir_adapt_err,
                     )
 
+        # 2g. Early convergence arbitration — compute the convergence
+        # conflict score BEFORE the metacognitive trigger so the trigger's
+        # convergence_conflict signal is populated with the actual arbiter
+        # disagreement severity.  Previously, the arbiter ran after the
+        # trigger (section 7b), leaving convergence_conflict permanently
+        # at 0.0 and preventing the trigger from adapting its weights
+        # to convergence monitor disagreement history.
+        convergence_arbiter_result: Dict[str, Any] = {}
+        _convergence_conflict_score: float = 0.0
+        if (self.convergence_arbiter is not None
+                and meta_loop_results is not None):
+            convergence_arbiter_result = self.convergence_arbiter.arbitrate(
+                meta_loop_results=meta_loop_results,
+                convergence_monitor_verdict=convergence_verdict,
+                certified_results=certified_results,
+                coherence_score=1.0 - coherence_deficit,
+            )
+            if convergence_arbiter_result.get("has_conflict", False):
+                _arb_boost = convergence_arbiter_result.get("uncertainty_boost", 0.0)
+                uncertainty = min(1.0, uncertainty + _arb_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='convergence_conflict',
+                        strategy_used='arbitration_escalation',
+                        success=False,
+                        metadata={
+                            'conflict_details': convergence_arbiter_result.get(
+                                "conflict_details", [],
+                            ),
+                        },
+                    )
+                # Map unified_status to graduated conflict score so the
+                # trigger can scale its response proportionally.
+                _arb_status = convergence_arbiter_result.get(
+                    "unified_status", "",
+                )
+                if _arb_status == "diverging":
+                    _convergence_conflict_score = 1.0
+                elif _arb_status == "conflict":
+                    _convergence_conflict_score = 0.7
+                else:
+                    _convergence_conflict_score = 0.3
+
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
         if self.metacognitive_trigger is not None:
@@ -16565,6 +16627,7 @@ class UnifiedCognitiveCycle:
                 safety_violation=safety_violation,
                 diversity_collapse=diversity_collapse,
                 memory_trust_deficit=memory_trust_deficit,
+                convergence_conflict=_convergence_conflict_score,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence,
@@ -16757,39 +16820,18 @@ class UnifiedCognitiveCycle:
         if _original_threshold is not None and self.coherence_verifier is not None:
             self.coherence_verifier.threshold = _original_threshold
 
-        # 7b. Unified convergence arbitration — when multiple convergence
-        # monitors are active, produce a single consistent verdict.
-        convergence_arbiter_result: Dict[str, Any] = {}
-        if (self.convergence_arbiter is not None
-                and meta_loop_results is not None):
-            convergence_arbiter_result = self.convergence_arbiter.arbitrate(
-                meta_loop_results=meta_loop_results,
-                convergence_monitor_verdict=convergence_verdict,
-                certified_results=certified_results,
-                coherence_score=1.0 - coherence_deficit,
-            )
-            # If monitors conflict, escalate uncertainty and record
-            if convergence_arbiter_result.get("has_conflict", False):
-                _arb_boost = convergence_arbiter_result.get("uncertainty_boost", 0.0)
-                uncertainty = min(1.0, uncertainty + _arb_boost)
-                if self.error_evolution is not None:
-                    self.error_evolution.record_episode(
-                        error_class='convergence_conflict',
-                        strategy_used='arbitration_escalation',
-                        success=False,
-                        metadata={
-                            'conflict_details': convergence_arbiter_result.get(
-                                "conflict_details", [],
-                            ),
-                        },
-                    )
-                if not should_rerun and self.metacognitive_trigger is not None:
-                    # Conflict alone warrants re-reasoning
-                    should_rerun = True
-                    trigger_detail['triggers_active'] = list(
-                        set(trigger_detail.get('triggers_active', []))
-                        | {'convergence_conflict'}
-                    )
+        # 7b. Convergence arbitration re-reasoning override — the arbiter
+        # was already called in section 2g (before the trigger).  Here we
+        # only handle the re-reasoning override that depends on the
+        # trigger_detail built in section 3.
+        if convergence_arbiter_result.get("has_conflict", False):
+            if not should_rerun and self.metacognitive_trigger is not None:
+                # Conflict alone warrants re-reasoning
+                should_rerun = True
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {'convergence_conflict'}
+                )
 
         # 7b-ii. Causal DAG consensus verification — when the UCC owns a
         # CausalDAGConsensus instance and the caller provides adjacency
@@ -16891,6 +16933,13 @@ class UnifiedCognitiveCycle:
                     "memory_trust", memory_trust_deficit,
                     source_label="unreliable_external_data",
                 )
+            if ns_consistency_score is not None:
+                _ns = max(0.0, min(1.0, ns_consistency_score))
+                if _ns < 0.5:
+                    self.uncertainty_tracker.record(
+                        "ns_consistency", 1.0 - _ns,
+                        source_label="symbolic_rule_violation",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -17084,6 +17133,21 @@ class UnifiedCognitiveCycle:
                     strategy_used='meta_rerun',
                     success=False,
                     metadata={'auto_critic_quality': auto_critic_quality},
+                )
+
+        # 7e-v. Neuro-symbolic consistency feedback — when symbolic rule
+        # satisfaction is low, record in error evolution so the system
+        # learns from logical-consistency failures.  This closes the gap
+        # where NS violations were folded into the safety_violation bool
+        # but never recorded as a distinct error class for evolutionary
+        # learning and root-cause tracing.
+        if ns_consistency_score is not None and ns_consistency_score < 0.5:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='ns_consistency_violation',
+                    strategy_used='meta_rerun',
+                    success=False,
+                    metadata={'ns_consistency_score': ns_consistency_score},
                 )
 
         # 7f. Recurring root-cause analysis — query the causal trace for
@@ -27156,6 +27220,18 @@ class AEONDeltaV3(nn.Module):
                         max(0.0, 1.0 - self.provenance_tracker.compute_attribution()
                             .get('contributions', {}).get('decoder', 0.0))
                         if self.provenance_tracker is not None
+                        else None
+                    ),
+                    # Neuro-symbolic consistency score so the UCC can
+                    # record rule violations as a distinct convergence
+                    # secondary signal and directional uncertainty entry,
+                    # closing the gap where NS consistency was folded
+                    # into safety_violation but never independently
+                    # surfaced for graduated meta-cognitive response.
+                    ns_consistency_score=(
+                        float(ns_consistency_results["overall_consistency"].mean().item())
+                        if ns_consistency_results
+                        and "overall_consistency" in ns_consistency_results
                         else None
                     ),
                 )
