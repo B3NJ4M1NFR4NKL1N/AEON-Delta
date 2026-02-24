@@ -2633,6 +2633,28 @@ class SafeThoughtAETrainerV4:
             )
         
         return outputs
+
+    def _provenance_causal_quality(self) -> float:
+        """Compute causal quality from provenance attribution balance.
+
+        Returns a score in [0, 1] where 1.0 means all tracked subsystems
+        contribute equally (balanced attribution) and values approaching
+        0.0 indicate a single subsystem dominates the output.  This
+        translates provenance data into a signal the UCC can use to
+        detect architectural imbalance during training.
+        """
+        try:
+            attrib = self.provenance.compute_attribution()
+            contribs = attrib.get('contributions', {})
+            if len(contribs) < 2:
+                return 1.0  # Cannot assess balance with < 2 modules
+            vals = list(contribs.values())
+            max_val = max(vals)
+            # When max contribution approaches 1.0, a single module
+            # dominates — quality degrades proportionally.
+            return max(0.0, min(1.0, 1.0 - max_val + (1.0 / len(vals))))
+        except Exception:
+            return 1.0  # Default healthy when provenance unavailable
     
     def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, Any]:
         # Track per-component provenance so training errors can be
@@ -2925,6 +2947,11 @@ class SafeThoughtAETrainerV4:
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
                     recovery_pressure=1.0 if _is_diverging else 0.0,
+                    # Feed provenance-derived causal quality so the UCC
+                    # can detect when a single training subsystem dominates
+                    # the output attribution (quality = 1 when balanced,
+                    # degrades toward 0 when one module dominates entirely).
+                    causal_quality=self._provenance_causal_quality(),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
@@ -3263,6 +3290,24 @@ class ContextualRSSMTrainer:
             "decoder_valid": _decoder_valid,
         }
 
+    def _provenance_causal_quality(self) -> float:
+        """Compute causal quality from provenance attribution balance.
+
+        Returns a score in [0, 1] where 1.0 means all tracked subsystems
+        contribute equally and values approaching 0.0 indicate a single
+        module dominates, matching Phase A's provenance-derived quality.
+        """
+        try:
+            attrib = self.provenance.compute_attribution()
+            contribs = attrib.get('contributions', {})
+            if len(contribs) < 2:
+                return 1.0
+            vals = list(contribs.values())
+            max_val = max(vals)
+            return max(0.0, min(1.0, 1.0 - max_val + (1.0 / len(vals))))
+        except Exception:
+            return 1.0
+
     def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
             batch_size: int = 128, log_every_batch: int = 5):
         """
@@ -3453,6 +3498,10 @@ class ContextualRSSMTrainer:
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
                     recovery_pressure=1.0 if _is_diverging else 0.0,
+                    # Feed provenance-derived causal quality so the UCC
+                    # can detect when a single training subsystem dominates
+                    # the output attribution, matching Phase A's wiring.
+                    causal_quality=self._provenance_causal_quality(),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]

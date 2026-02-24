@@ -51884,6 +51884,64 @@ def test_self_diagnostic_verifies_uncertainty_propagation_feedback():
     print("✅ test_self_diagnostic_verifies_uncertainty_propagation_feedback PASSED")
 
 
+def test_training_provenance_causal_quality_phase_a():
+    """Phase A trainer._provenance_causal_quality must return balanced score."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, TrainingMonitor,
+        SafeThoughtAETrainerV4,
+    )
+    import logging
+
+    cfg = AEONConfigV4()
+    model = AEONDeltaV4(cfg)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, cfg, monitor, "/tmp/test_prov_a")
+
+    # With no provenance data, should return 1.0 (healthy default)
+    quality = trainer._provenance_causal_quality()
+    assert quality == 1.0, (
+        f"Empty provenance should yield quality=1.0, got {quality}"
+    )
+
+    # Record balanced provenance
+    import torch
+    state = torch.randn(2, cfg.z_dim)
+    trainer.provenance.reset()
+    trainer.provenance.record_before("encoder", state)
+    trainer.provenance.record_after("encoder", state + 0.1)
+    trainer.provenance.record_before("vq", state)
+    trainer.provenance.record_after("vq", state + 0.1)
+
+    quality = trainer._provenance_causal_quality()
+    assert 0.0 < quality <= 1.0, (
+        f"Balanced provenance should yield quality in (0, 1], got {quality}"
+    )
+
+    print("✅ test_training_provenance_causal_quality_phase_a PASSED")
+
+
+def test_training_provenance_causal_quality_phase_b():
+    """Phase B trainer._provenance_causal_quality must return balanced score."""
+    from ae_train import (
+        AEONConfigV4, AEONDeltaV4, TrainingMonitor,
+        ContextualRSSMTrainer,
+    )
+    import logging
+
+    cfg = AEONConfigV4()
+    model = AEONDeltaV4(cfg)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, cfg, monitor)
+
+    # With no provenance data, should return 1.0 (healthy default)
+    quality = trainer._provenance_causal_quality()
+    assert quality == 1.0, (
+        f"Empty provenance should yield quality=1.0, got {quality}"
+    )
+
+    print("✅ test_training_provenance_causal_quality_phase_b PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -54138,6 +54196,10 @@ def run_all_tests():
     test_cached_propagation_delta_initialized()
     test_self_diagnostic_verifies_error_evolution_feedback_closure()
     test_self_diagnostic_verifies_uncertainty_propagation_feedback()
+
+    # Architectural Unification — Training Provenance→UCC Causal Quality
+    test_training_provenance_causal_quality_phase_a()
+    test_training_provenance_causal_quality_phase_b()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
