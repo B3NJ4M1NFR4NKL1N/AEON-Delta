@@ -3476,8 +3476,17 @@ class ContextualRSSMTrainer:
                         "coherence_deficit", 0.0,
                     )
                     if _coherence_deficit > 0.3:
+                        # _COHERENCE_MIN_GRAD_CLIP: absolute floor to prevent
+                        # gradient clipping from becoming so tight that
+                        # learning effectively stalls.
+                        _COHERENCE_MIN_GRAD_CLIP = 0.1
+                        # _COHERENCE_CLIP_FACTOR: scales how aggressively the
+                        # deficit reduces the clip norm (0.5 = deficit of 1.0
+                        # halves the clip norm).
+                        _COHERENCE_CLIP_FACTOR = 0.5
                         _tightened_clip = max(
-                            0.1, self._grad_clip_norm * (1.0 - _coherence_deficit * 0.5),
+                            _COHERENCE_MIN_GRAD_CLIP,
+                            self._grad_clip_norm * (1.0 - _coherence_deficit * _COHERENCE_CLIP_FACTOR),
                         )
                         if _tightened_clip < self._grad_clip_norm:
                             self._grad_clip_norm = _tightened_clip
