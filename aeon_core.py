@@ -2791,6 +2791,9 @@ class AEONConfig:
     lambda_unified_sim: float = 0.01
     lambda_mcts_value: float = 0.005
     lambda_memory_retrieval: float = 0.005
+    lambda_convergence_arbiter_conflict: float = 0.01
+    lambda_memory_staleness: float = 0.005
+    lambda_coverage_deficit: float = 0.005
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -19701,6 +19704,20 @@ class AEONDeltaV3(nn.Module):
             extra["uncertainty_propagation_pressure"] = max(
                 0.0, min(1.0, _prop_delta),
             )
+        # Subsystem verification coverage deficit — when the coherence
+        # registry shows that a significant fraction of expected
+        # subsystems did not produce validated outputs this pass,
+        # signal the feedback bus so the next pass's meta-loop
+        # adjusts reasoning depth to compensate for incomplete
+        # verification.  This closes the gap where coverage deficit
+        # was tracked but not routed to the feedback conditioning.
+        _cov_registry = getattr(self, 'coherence_registry', None)
+        if _cov_registry is not None:
+            _cov_deficit = _cov_registry.get_coverage_deficit()
+            if _cov_deficit > 0.1:
+                extra["coverage_deficit_pressure"] = max(
+                    0.0, min(1.0, _cov_deficit),
+                )
         return extra
 
     @staticmethod
@@ -21777,6 +21794,10 @@ class AEONDeltaV3(nn.Module):
         )  # [B, hidden_dim]
         C_star = C_star * gate
         self.provenance_tracker.record_after("consistency_gate", C_star)
+        self.coherence_registry.register_output(
+            "consistency_gate",
+            validated=torch.isfinite(C_star).all().item(),
+        )
         # Record consistency gate in the causal trace so that downstream
         # root-cause analysis can identify gating decisions as contributors
         # to output quality changes.
@@ -24180,6 +24201,12 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                         )
             self.provenance_tracker.record_after("mcts_planning", C_star)
+            self.coherence_registry.register_output(
+                "mcts_planning",
+                validated=torch.isfinite(C_star).all().item(),
+                quality=max(0.0, min(1.0, float(_mcts_root_val)))
+                if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val) else 1.0,
+            )
             self._cached_mcts_state = C_star.detach()
             # Cache MCTS quality for the CognitiveFeedbackBus so that
             # planning confidence feeds into the next pass's meta-loop
@@ -26524,6 +26551,11 @@ class AEONDeltaV3(nn.Module):
                         z_out = revised
                         _any_auto_critic_revised = True
                     self.provenance_tracker.record_after("auto_critic", z_out)
+                    self.coherence_registry.register_output(
+                        "auto_critic",
+                        validated=torch.isfinite(z_out).all().item(),
+                        quality=critic_result.get("final_score", 1.0),
+                    )
                     # 8b3-rev. Revision magnitude tracking — compute the
                     # L2 delta between pre- and post-revision outputs so
                     # that downstream traceability can quantify how much
@@ -29142,6 +29174,15 @@ class AEONDeltaV3(nn.Module):
             )
             if _ns_violations_count > 0:
                 _post_coherence_deficit = max(_post_coherence_deficit, 0.5)
+            # Escalate coherence deficit with subsystem coverage gap so
+            # that missing subsystem verification feeds into the
+            # metacognitive trigger, closing the loop between the
+            # coherence registry and re-reasoning decisions.
+            _post_coverage_deficit = self.coherence_registry.get_coverage_deficit()
+            if _post_coverage_deficit > 0.2:
+                _post_coherence_deficit = max(
+                    _post_coherence_deficit, _post_coverage_deficit * 0.5,
+                )
             metacognitive_info_post = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
@@ -30123,6 +30164,10 @@ class AEONDeltaV3(nn.Module):
             'dag_consensus_results': _dag_consensus_results,
             'memory_retrieval_quality': self._last_memory_retrieval_quality,
             'memory_cross_validation': getattr(self, '_last_memory_cross_validation', {}),
+            'memory_validation': {
+                'staleness_score': 1.0 if self._memory_stale else 0.0,
+                'needs_re_retrieval': self._cached_memory_needs_re_retrieval,
+            },
             'circuit_breaker_tripped': _circuit_breaker_tripped,
             'safety_blocked': _safety_blocked,
             'unified_cognitive_cycle_results': unified_cycle_results,
@@ -31538,6 +31583,47 @@ class AEONDeltaV3(nn.Module):
         def _ee_boost(lambda_name: str) -> float:
             return _ee_adjustments.get(lambda_name, 1.0)
 
+        # ===== 19. CONVERGENCE ARBITER CONFLICT LOSS =====
+        # When multiple convergence monitors disagree (certified vs primary),
+        # penalize the conflict so training actively aligns convergence
+        # criteria, closing the gap where arbiter conflict was purely
+        # diagnostic and generated no training gradient.
+        convergence_arbiter_conflict_loss = torch.tensor(0.0, device=self.device)
+        _arb_results = outputs.get('convergence_arbiter_results', {})
+        if _arb_results and _arb_results.get('has_conflict', False):
+            _arb_severity = _arb_results.get('uncertainty_boost', 0.5)
+            convergence_arbiter_conflict_loss = torch.tensor(
+                max(0.0, min(1.0, float(_arb_severity))),
+                device=self.device,
+            )
+
+        # ===== 20. MEMORY STALENESS LOSS =====
+        # When MemoryReasoningValidator detects stale or inconsistent
+        # memories, penalize the staleness so training incentivizes
+        # memory freshness.  This closes the gap where memory validation
+        # was diagnostic-only and produced no training gradient.
+        memory_staleness_loss = torch.tensor(0.0, device=self.device)
+        _mem_validation = outputs.get('memory_validation', {})
+        if _mem_validation:
+            _staleness = _mem_validation.get('staleness_score', 0.0)
+            if isinstance(_staleness, (int, float)) and _staleness > 0.0:
+                memory_staleness_loss = torch.tensor(
+                    max(0.0, min(1.0, float(_staleness))),
+                    device=self.device,
+                )
+
+        # ===== 21. COVERAGE DEFICIT LOSS =====
+        # Penalize incomplete subsystem verification coverage so that
+        # training incentivizes all subsystems to produce validated
+        # outputs.  This closes the gap where coherence_registry tracked
+        # coverage but never fed it into the training objective.
+        coverage_deficit_loss = torch.tensor(0.0, device=self.device)
+        _coverage_deficit_val = self.coherence_registry.get_coverage_deficit()
+        if _coverage_deficit_val > 0.1:
+            coverage_deficit_loss = torch.tensor(
+                _coverage_deficit_val, device=self.device,
+            )
+
         total_loss = (
             lm_loss +
             vq_loss +
@@ -31569,6 +31655,9 @@ class AEONDeltaV3(nn.Module):
             grounded_mm_loss +
             _ee_boost("lambda_meta_recovery") * getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
             getattr(self.config, 'lambda_task2vec', 0.001) * task2vec_loss +
+            self.config.lambda_convergence_arbiter_conflict * convergence_arbiter_conflict_loss +
+            self.config.lambda_memory_staleness * memory_staleness_loss +
+            self.config.lambda_coverage_deficit * coverage_deficit_loss +
             reg_loss
         )
         
@@ -31694,6 +31783,9 @@ class AEONDeltaV3(nn.Module):
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
             'task2vec_loss': task2vec_loss,
+            'convergence_arbiter_conflict_loss': convergence_arbiter_conflict_loss,
+            'memory_staleness_loss': memory_staleness_loss,
+            'coverage_deficit_loss': coverage_deficit_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
