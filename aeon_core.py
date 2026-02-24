@@ -6673,10 +6673,24 @@ class CausalProvenanceTracker:
 
         root_modules = [m for m in visited if not deps.get(m)]
         contributions = {m: self._deltas.get(m, 0.0) for m in visited}
+        # When no root nodes are found despite visiting modules, the
+        # dependency DAG has no entry points — likely due to circular
+        # dependencies or incomplete registration.  Flag this structural
+        # anomaly so callers know the trace is incomplete rather than
+        # silently accepting an empty root-cause chain.
+        _trace_incomplete = bool(visited and not root_modules)
+        if _trace_incomplete:
+            logger.debug(
+                "trace_root_cause('%s'): no root nodes found among %d "
+                "visited modules — dependency DAG may have cycles or "
+                "missing entry points",
+                module_name, len(visited),
+            )
         return {
             'root_modules': sorted(root_modules),
             'visited': visited,
             'contributions': contributions,
+            'trace_incomplete': _trace_incomplete,
         }
 
     def get_provenance_uncertainty_boost(
@@ -16203,6 +16217,7 @@ class UnifiedCognitiveCycle:
         convergence_certificate: Optional[Dict[str, Any]] = None,
         dag_adjacency_matrices: Optional[Dict[str, torch.Tensor]] = None,
         feedback_bus_trend: Optional[torch.Tensor] = None,
+        decoder_quality: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -16314,6 +16329,16 @@ class UnifiedCognitiveCycle:
         if auto_critic_quality is not None and auto_critic_quality < 0.5:
             self.convergence_monitor.record_secondary_signal(
                 "auto_critic_quality", 1.0 - max(0.0, min(1.0, auto_critic_quality)),
+            )
+        # Decoder quality: when the decoder introduces significant
+        # distortion (quality < 0.5), record it as a convergence
+        # secondary signal so the monitor's verdict reflects decoder-
+        # stage instability, closing the gap where decoder distortions
+        # were tracked via provenance but invisible to convergence
+        # certification.
+        if decoder_quality is not None and decoder_quality < 0.5:
+            self.convergence_monitor.record_secondary_signal(
+                "decoder_quality", 1.0 - max(0.0, min(1.0, decoder_quality)),
             )
         # 1a. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
@@ -17568,6 +17593,12 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_arbiter_conflict", default=0.0,
         )
+        # Hierarchical VAE abstraction pressure — when the HVAE's KL
+        # divergence indicates high abstraction uncertainty, this signal
+        # conditions the meta-loop to reason deeper.
+        self.feedback_bus.register_signal(
+            "hvae_abstraction_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -18350,6 +18381,10 @@ class AEONDeltaV3(nn.Module):
         # Hierarchical VAE selected level — cached so verify_coherence
         # can cross-validate abstraction against other subsystems.
         self._cached_hvae_state: Optional[torch.Tensor] = None
+        # Hierarchical VAE KL divergence — cached so the feedback bus
+        # can condition the next pass's meta-loop on abstraction-level
+        # uncertainty from the VAE.
+        self._cached_hvae_kl: float = 0.0
         # Unified simulator next state — cached so verify_coherence can
         # detect counterfactual-reasoning divergence from main pipeline.
         self._cached_unified_sim_state: Optional[torch.Tensor] = None
@@ -18902,6 +18937,21 @@ class AEONDeltaV3(nn.Module):
         # next pass's fixed-point iteration dynamics.
         if self._cached_arbiter_has_conflict:
             extra["convergence_arbiter_conflict"] = 1.0
+        # Hierarchical VAE abstraction pressure — when the HVAE's KL
+        # divergence is high, the latent space is spread across
+        # abstraction levels, signalling conceptual complexity.  Feeding
+        # this into the feedback bus conditions the next pass's meta-loop
+        # to allocate deeper reasoning proportional to the abstraction
+        # uncertainty, closing the gap where HVAE level selection
+        # influenced the current pass's uncertainty scalar but never
+        # conditioned future meta-loop dynamics.
+        _HVAE_KL_FEEDBACK_THRESHOLD = 1.0
+        _hvae_kl = getattr(self, '_cached_hvae_kl', 0.0)
+        if _hvae_kl > _HVAE_KL_FEEDBACK_THRESHOLD:
+            extra["hvae_abstraction_pressure"] = max(
+                0.0,
+                min(1.0, (_hvae_kl - _HVAE_KL_FEEDBACK_THRESHOLD) * 0.2),
+            )
         return extra
 
     @staticmethod
@@ -24957,6 +25007,7 @@ class AEONDeltaV3(nn.Module):
                 _HVAE_KL_THRESHOLD = 1.0
                 _HVAE_UNCERTAINTY_SCALE = 0.15
                 _hvae_kl_val = float(vae_out['kl_loss'].item())
+                self._cached_hvae_kl = _hvae_kl_val
                 if math.isfinite(_hvae_kl_val) and _hvae_kl_val > _HVAE_KL_THRESHOLD:
                     _hvae_boost = min(
                         1.0 - uncertainty,
@@ -27022,6 +27073,19 @@ class AEONDeltaV3(nn.Module):
                         if self.feedback_bus is not None
                         else None
                     ),
+                    # Decoder quality from the previous pass's provenance
+                    # delta.  When the decoder introduced significant
+                    # distortion (high L2 delta), quality is low.  This
+                    # closes the gap where decoder distortions were tracked
+                    # via provenance but invisible to the UCC's convergence
+                    # and coherence assessments.  Uses 1 - delta as quality
+                    # since delta measures distortion magnitude.
+                    decoder_quality=(
+                        max(0.0, 1.0 - self.provenance_tracker.compute_attribution()
+                            .get('contributions', {}).get('decoder', 0.0))
+                        if self.provenance_tracker is not None
+                        else None
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -27998,6 +28062,21 @@ class AEONDeltaV3(nn.Module):
                         "deeper_accepted": _ucc_deeper_accepted,
                     }),
                 )
+
+        # 8f-v. Non-UCC auto-critic convergence feedback — when the
+        # UnifiedCognitiveCycle is disabled, the auto-critic quality
+        # signal is never recorded as a convergence secondary signal
+        # (the UCC path does this inside evaluate()).  Record it here
+        # so the ConvergenceMonitor's verdict reflects output quality
+        # regardless of whether the full UCC orchestrator is active.
+        if (self.unified_cognitive_cycle is None
+                and _auto_critic_final_score is not None
+                and _auto_critic_final_score < 0.5
+                and not fast):
+            self.convergence_monitor.record_secondary_signal(
+                "auto_critic_quality",
+                1.0 - max(0.0, min(1.0, _auto_critic_final_score)),
+            )
 
         # Package outputs
         convergence_quality = meta_results.get('convergence_rate', 0.0)
@@ -30672,6 +30751,12 @@ class AEONDeltaV3(nn.Module):
                 'uncertainty_sources': outputs.get('uncertainty_sources', {}),
                 'provenance': _gen_provenance,
                 'ucc_result': _gen_ucc_result,
+                # Metacognitive trigger info from the forward pass — exposes
+                # whether the meta-cognitive cycle fired and which triggers
+                # were active, enabling callers to adapt generation strategy
+                # (e.g. retry with different parameters) when the reasoning
+                # pipeline flagged internal inconsistencies.
+                'metacognitive_info': outputs.get('metacognitive_info', {}),
             }
         
         except Exception as e:
