@@ -18694,6 +18694,13 @@ class AEONDeltaV3(nn.Module):
         # model when factor–causal predictions diverge.
         self._last_cv_disagreement: float = 0.0
         self._last_cv_reconciled_target: Optional[torch.Tensor] = None
+        # Factor cross-validation supervision — cache the factor embedding
+        # at cross-validation time so compute_loss() can add a reciprocal
+        # supervision term that nudges factors toward the reconciled
+        # consensus when they diverge from cross-validation, closing the
+        # bidirectional correction gap (previously only causal models were
+        # corrected, leaving factors unsupervised by cross-validation).
+        self._last_cv_factor_embedding: Optional[torch.Tensor] = None
         
         # ===== AUDIT & VALIDATION =====
         self.audit_log = DecisionAuditLog(max_entries=1000)
@@ -18914,6 +18921,50 @@ class AEONDeltaV3(nn.Module):
                 success=success,
                 metadata={"context": context},
             )
+
+    def _validate_cached_state_coherence(
+        self,
+        cached_state: Optional[torch.Tensor],
+        current_state: torch.Tensor,
+        subsystem_name: str,
+        threshold: float = 0.3,
+    ) -> bool:
+        """Check whether a complexity-gated cached state is coherent with the
+        current reasoning trajectory.
+
+        When complexity gating skips a subsystem, the last-cached output is
+        reused.  If that cached state has diverged significantly from the
+        current ``C_star``, reusing it would silently inject stale context.
+        This method detects the divergence so the caller can override the
+        gate and force the subsystem to run.
+
+        Returns:
+            ``True`` if the cached state is coherent (cosine similarity
+            above *threshold*), ``False`` if it has diverged and the
+            subsystem should run despite the gate.
+        """
+        if cached_state is None:
+            return True  # no cache → nothing stale
+        if cached_state.shape != current_state.shape:
+            return True  # shape mismatch → can't compare
+        with torch.no_grad():
+            sim = F.cosine_similarity(
+                cached_state.reshape(1, -1),
+                current_state.reshape(1, -1),
+                dim=-1,
+            ).item()
+        if sim < threshold:
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem_name, "stale_cache_override",
+                    metadata={
+                        "cosine_similarity": sim,
+                        "threshold": threshold,
+                    },
+                    severity="warning",
+                )
+            return False
+        return True
 
     def _build_feedback_extra_signals(self) -> Dict[str, float]:
         """Build extra signal dict for CognitiveFeedbackBus from cached state.
@@ -20453,6 +20504,23 @@ class AEONDeltaV3(nn.Module):
                 prev_feedback = None
             else:
                 prev_feedback = prev_feedback.to(device)
+                # Amplify feedback when the bus trend shows worsening
+                # conditions (rising uncertainty or coherence deficit).
+                # This makes the meta-loop iterate deeper when the system
+                # is degrading across passes, not just when the current-
+                # pass feedback magnitude is high.
+                if self.feedback_bus is not None:
+                    _trend = self.feedback_bus.get_signal_trend()
+                    if _trend is not None:
+                        # Positive trend in uncertainty (idx 2) or coherence
+                        # deficit (idx 6) signals worsening → amplify
+                        _unc_trend = float(_trend[2].item()) if _trend.shape[0] > 2 else 0.0
+                        _coh_trend = float(_trend[6].item()) if _trend.shape[0] > 6 else 0.0
+                        _max_trend = max(0.0, _unc_trend, _coh_trend)
+                        if _max_trend > 0.02:
+                            # Scale factor: 1.0 + clamp(trend * 2, max=0.5)
+                            _trend_amplification = 1.0 + min(0.5, _max_trend * 2.0)
+                            prev_feedback = prev_feedback * _trend_amplification
         
         # 0g. Pre-meta-loop unified memory conditioning — query all memory
         # subsystems BEFORE the meta-loop so that historical context
@@ -22563,6 +22631,12 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 0].any().item()
             and not high_uncertainty
         )
+        # Validate cached world_model state coherence — override skip if
+        # the cached state has diverged from the current reasoning trajectory.
+        if _world_model_should_skip and not self._validate_cached_state_coherence(
+            self._cached_world_model_state, C_star, "world_model",
+        ):
+            _world_model_should_skip = False
         self.provenance_tracker.record_before("world_model", C_star)
         _world_model_healthy = True
         if _world_model_should_skip and self.causal_trace is not None:
@@ -22966,6 +23040,11 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 1].any().item()
             and not planning  # explicit planning=True overrides complexity gate
         )
+        # Validate cached MCTS state coherence — override skip if stale.
+        if _mcts_should_skip and not self._validate_cached_state_coherence(
+            self._cached_mcts_state, C_star, "mcts_planning",
+        ):
+            _mcts_should_skip = False
         if _mcts_should_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "mcts_planning", "complexity_gated_skip",
@@ -23621,6 +23700,11 @@ class AEONDeltaV3(nn.Module):
             and not _complexity_gates[:, 2].any().item()
             and not high_uncertainty
         )
+        # Validate cached causal state coherence — override skip if stale.
+        if _causal_world_should_skip and not self._validate_cached_state_coherence(
+            self._cached_causal_state, C_star, "causal_world_model",
+        ):
+            _causal_world_should_skip = False
         if _causal_world_should_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "causal_world_model", "complexity_gated_skip",
@@ -24454,6 +24538,11 @@ class AEONDeltaV3(nn.Module):
             self._last_cv_reconciled_target = (
                 reconciliation_results["reconciled_state"].detach()
             )
+            # Cache the factor embedding at cross-validation time so
+            # compute_loss() can add a reciprocal factor supervision term
+            # (factor_cv_supervision_loss) that nudges factors toward the
+            # reconciled consensus, making cross-validation bidirectional.
+            self._last_cv_factor_embedding = embedded_factors
             if _agreement_val < self.config.cross_validation_agreement and self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class="reconciliation_disagreement",
@@ -24814,6 +24903,11 @@ class AEONDeltaV3(nn.Module):
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
         )
+        # Validate cached unified_sim state coherence — override skip if stale.
+        if _unified_sim_should_skip and not self._validate_cached_state_coherence(
+            self._cached_unified_sim_state, C_star, "unified_simulator",
+        ):
+            _unified_sim_should_skip = False
         if _unified_sim_should_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "unified_simulator", "complexity_gated_skip",
@@ -29973,6 +30067,7 @@ class AEONDeltaV3(nn.Module):
         12. Meta-learner EWC loss (catastrophic forgetting prevention)
         13. Provenance concentration loss (balanced module cooperation)
         14. Cross-validation agreement loss (factor-causal consistency)
+        14b. Factor cross-validation supervision (bidirectional correction)
         15. Auto-critic quality loss (self-correction incentive)
         16. Unified cognitive cycle loss (internal consistency penalty)
         17. Self-report loss (honest, consistent self-assessment)
@@ -30252,6 +30347,27 @@ class AEONDeltaV3(nn.Module):
             causal_cv_supervision_loss = (
                 self._last_cv_disagreement
                 * F.mse_loss(_causal_pred, self._last_cv_reconciled_target)
+            )
+
+        # ===== 13c. FACTOR SUPERVISION FROM CROSS-VALIDATION =====
+        # Reciprocal correction: when cross-validation detects factor–
+        # causal disagreement, nudge the factor embedding toward the
+        # reconciled consensus.  This makes cross-validation bidirectional
+        # — previously only causal models received supervision (13b),
+        # leaving factors free to diverge without corrective gradients.
+        factor_cv_supervision_loss = torch.tensor(0.0, device=self.device)
+        _factor_embed = self._last_cv_factor_embedding
+        if (
+            self._last_cv_disagreement > 0.1
+            and self._last_cv_reconciled_target is not None
+            and _factor_embed is not None
+            and torch.is_tensor(_factor_embed)
+            and _factor_embed.requires_grad
+            and _factor_embed.shape == self._last_cv_reconciled_target.shape
+        ):
+            factor_cv_supervision_loss = (
+                self._last_cv_disagreement
+                * F.mse_loss(_factor_embed, self._last_cv_reconciled_target)
             )
 
         # ===== 14. AUTO-CRITIC QUALITY LOSS =====
@@ -30791,6 +30907,7 @@ class AEONDeltaV3(nn.Module):
             _provenance_weight * provenance_loss +
             _ee_boost("lambda_cross_validation") * self.config.lambda_cross_validation * cross_validation_loss +
             _ee_boost("lambda_cross_validation") * self.config.lambda_cross_validation * causal_cv_supervision_loss +
+            _ee_boost("lambda_cross_validation") * self.config.lambda_cross_validation * factor_cv_supervision_loss +
             _ee_boost("lambda_auto_critic") * self.config.lambda_auto_critic * auto_critic_loss +
             _ee_boost("lambda_ucc") * self.config.lambda_ucc * ucc_loss +
             _ee_boost("lambda_self_report") * self.config.lambda_self_report * self_report_loss +
@@ -30915,6 +31032,7 @@ class AEONDeltaV3(nn.Module):
             'provenance_loss': provenance_loss,
             'cross_validation_loss': cross_validation_loss,
             'causal_cv_supervision_loss': causal_cv_supervision_loss,
+            'factor_cv_supervision_loss': factor_cv_supervision_loss,
             'auto_critic_loss': auto_critic_loss,
             'ucc_loss': ucc_loss,
             'self_report_loss': self_report_loss,
@@ -31400,6 +31518,7 @@ class AEONDeltaV3(nn.Module):
             ('self_report_loss', 'high_self_report_training_loss'),
             ('cross_validation_loss', 'high_cross_validation_training_loss'),
             ('causal_cv_supervision_loss', 'high_causal_cv_supervision_training_loss'),
+            ('factor_cv_supervision_loss', 'high_factor_cv_supervision_training_loss'),
             ('decoder_provenance_loss', 'high_decoder_provenance_training_loss'),
             ('ns_consistency_loss', 'high_ns_consistency_training_loss'),
             ('hierarchical_wm_loss', 'high_hierarchical_wm_training_loss'),
@@ -32576,6 +32695,86 @@ class AEONDeltaV3(nn.Module):
             )),
             'extension_points': _extension_points,
             'pipeline_wiring': _wiring,
+        }
+
+    def apply_diagnostic_remediation(self) -> Dict[str, Any]:
+        """Auto-remediate gaps detected by :meth:`self_diagnostic`.
+
+        Initializes critical missing components that were enabled in config
+        but failed to initialize, closing the gap where ``self_diagnostic``
+        detected architectural disconnections but left them unresolved.
+
+        Only safe-to-create pure-logic components (no learnable parameters)
+        are auto-initialized.  Neural modules require explicit construction
+        with compatible weight dimensions and are not auto-remediated.
+
+        Returns:
+            Dict with ``remediated`` (list of component names fixed) and
+            ``skipped`` (list of components that need manual intervention).
+        """
+        remediated: List[str] = []
+        skipped: List[str] = []
+
+        # 1. MetaCognitiveRecursionTrigger — pure logic, no parameters.
+        if (self.metacognitive_trigger is None
+                and self.config.enable_metacognitive_recursion):
+            self.metacognitive_trigger = MetaCognitiveRecursionTrigger(
+                trigger_threshold=self.config.metacognitive_trigger_threshold,
+                max_recursions=self.config.metacognitive_max_recursions,
+                tightening_factor=self.config.metacognitive_tightening_factor,
+                extra_iterations=self.config.metacognitive_extra_iterations,
+            )
+            remediated.append('metacognitive_trigger')
+
+        # 2. CausalErrorEvolutionTracker — pure logic, no parameters.
+        if (self.error_evolution is None
+                and getattr(self.config, 'enable_error_evolution', True)):
+            self.error_evolution = CausalErrorEvolutionTracker(max_history=100)
+            remediated.append('error_evolution')
+
+        # 3. TemporalCausalTraceBuffer — pure logic, no parameters.
+        if (self.causal_trace is None
+                and getattr(self.config, 'enable_causal_trace', False)):
+            self.causal_trace = TemporalCausalTraceBuffer(max_entries=500)
+            remediated.append('causal_trace')
+            # Wire to error_evolution if both exist
+            if self.error_evolution is not None:
+                self.error_evolution.set_causal_trace(self.causal_trace)
+
+        # 4. UnifiedCognitiveCycle — pure logic orchestrator, no parameters.
+        if (self.unified_cognitive_cycle is None
+                and getattr(self.config, 'enable_unified_cognitive_cycle', True)
+                and self.convergence_monitor is not None):
+            self.unified_cognitive_cycle = UnifiedCognitiveCycle(
+                convergence_monitor=self.convergence_monitor,
+                coherence_verifier=self.module_coherence,
+                error_evolution=self.error_evolution,
+                metacognitive_trigger=self.metacognitive_trigger,
+                provenance_tracker=self.provenance_tracker,
+                causal_trace=self.causal_trace,
+                convergence_arbiter=getattr(self, 'convergence_arbiter', None),
+                uncertainty_tracker=getattr(self, 'uncertainty_tracker', None),
+                memory_validator=getattr(self, 'memory_validator', None),
+                causal_dag_consensus=getattr(self, 'causal_dag_consensus', None),
+            )
+            remediated.append('unified_cognitive_cycle')
+
+        # 5. Neural modules that require learnable parameters — flag for
+        # manual intervention.
+        for component, config_flag in [
+            ('auto_critic', 'enable_auto_critic'),
+            ('module_coherence', 'enable_module_coherence'),
+            ('cross_validator', 'enable_cross_validation'),
+        ]:
+            if (getattr(self, component, None) is None
+                    and getattr(self.config, config_flag, False)):
+                skipped.append(component)
+
+        return {
+            'remediated': remediated,
+            'skipped': skipped,
+            'total_remediated': len(remediated),
+            'total_skipped': len(skipped),
         }
 
     def verify_pipeline_wiring(self) -> Dict[str, Any]:
