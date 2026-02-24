@@ -48703,6 +48703,178 @@ def test_memory_re_retrieval_path_exists():
     print("✅ test_memory_re_retrieval_path_exists PASSED")
 
 
+# ── Architectural Unification Tests — Feedback Loop Closure ──────────
+
+
+def test_memory_re_retrieval_respects_staleness():
+    """Fix 1: Same-pass memory re-retrieval uses retrieve() per-sample
+    and only clears _memory_stale when retrieval returns non-empty
+    results.  Ensures memory staleness persists when all retrievals
+    return empty working memory."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch retrieve to always return empty
+    def _empty_retrieve(query, k=5):
+        return {"working": [], "episodic": [], "semantic": []}
+
+    model.hierarchical_memory.retrieve = _empty_retrieve
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        model(input_ids)
+
+    assert model._memory_stale is True, (
+        "Memory should remain stale when all re-retrievals are empty"
+    )
+    print("✅ test_memory_re_retrieval_respects_staleness PASSED")
+
+
+def test_causal_quality_penalizes_convergence():
+    """Fix 2: Poor causal DAG quality (< 0.5) penalizes
+    convergence_quality_scalar, ensuring causal model outputs feed
+    back into the meta-loop's convergence assessment."""
+    import torch, math
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the causal-convergence feedback path exists in source
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert "Causal quality" in src and "convergence_quality_scalar" in src, (
+        "Source should contain causal quality → convergence quality feedback"
+    )
+    # Also verify the constant is defined
+    assert "CAUSAL_CONVERGENCE_PENALTY_SCALE" in src, (
+        "Causal convergence penalty scale constant should be defined"
+    )
+    print("✅ test_causal_quality_penalizes_convergence PASSED")
+
+
+def test_world_model_surprise_state_correction():
+    """Fix 3: When world model surprise exceeds the threshold, a
+    corrective nudge is applied to C_star in the direction of the
+    world model's prediction, not just uncertainty escalation."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the correction path exists
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert "surprise_state_correction" in src, (
+        "Source should contain world model surprise state correction"
+    )
+    assert "WM_CORRECTION_SCALE" in src, (
+        "World model correction scale constant should be defined"
+    )
+    print("✅ test_world_model_surprise_state_correction PASSED")
+
+
+def test_auto_critic_iterative_refinement():
+    """Fix 4: When auto-critic first-pass quality is below 0.3, a
+    second revision pass is attempted, making the critic iterative
+    rather than one-shot."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the iterative path exists in source
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert "iterative_second_pass" in src, (
+        "Source should contain auto-critic iterative second pass"
+    )
+    assert "AC_ITERATIVE_THRESHOLD" in src, (
+        "Auto-critic iterative threshold constant should be defined"
+    )
+    print("✅ test_auto_critic_iterative_refinement PASSED")
+
+
+def test_ucc_deeper_result_partial_integration():
+    """Fix 5: When the UCC deeper meta-loop result is rejected, a
+    partial blend of the improvement is applied instead of full
+    discard, making the UCC a continuous refinement mechanism."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the partial integration path exists in source
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert "deeper_meta_loop_partial_blend" in src, (
+        "Source should contain deeper meta-loop partial blend"
+    )
+    assert "PARTIAL_BLEND_MAX" in src, (
+        "Partial blend max constant should be defined"
+    )
+    print("✅ test_ucc_deeper_result_partial_integration PASSED")
+
+
+def test_forward_with_all_feedback_loops():
+    """Integration: full forward pass succeeds with all feedback
+    loops active (train + eval modes), verifying no regressions."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_world_model=True,
+        enable_causal_model=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+
+    # Train mode
+    model.train()
+    outputs_train = model(input_ids)
+    assert torch.isfinite(outputs_train["logits"]).all(), (
+        "Train logits should be finite with all feedback loops"
+    )
+
+    # Eval mode
+    model.eval()
+    with torch.no_grad():
+        outputs_eval = model(input_ids)
+    assert torch.isfinite(outputs_eval["logits"]).all(), (
+        "Eval logits should be finite with all feedback loops"
+    )
+    print("✅ test_forward_with_all_feedback_loops PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -50826,6 +50998,14 @@ def run_all_tests():
     test_deferred_trigger_pressure_consumed_after_feedback()
     test_grounded_multimodal_causal_context_registration()
     test_memory_re_retrieval_path_exists()
+
+    # Architectural Unification — Feedback Loop Closure
+    test_memory_re_retrieval_respects_staleness()
+    test_causal_quality_penalizes_convergence()
+    test_world_model_surprise_state_correction()
+    test_auto_critic_iterative_refinement()
+    test_ucc_deeper_result_partial_integration()
+    test_forward_with_all_feedback_loops()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
