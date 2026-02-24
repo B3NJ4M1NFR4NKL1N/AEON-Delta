@@ -14974,6 +14974,13 @@ class MetaCognitiveRecursionTrigger:
             "provenance_dag_cycle": "low_causal_quality",
             "recovery_memory_store_failed": "memory_staleness",
             "recovery_reinforcement_failed": "uncertainty",
+            # ── UCC subsystem health error classes ─────────────────
+            # These error classes are recorded in UCC evaluate() when
+            # subsystem health indicators are low.  Mapping them ensures
+            # that executive, decoder, and auto-critic failures feed
+            # back into trigger weight adaptation.
+            "low_executive_health": "uncertainty",
+            "low_decoder_quality": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15279,7 +15286,11 @@ class MetaCognitiveRecursionTrigger:
             "memory_staleness": w["memory_staleness"] * float(memory_staleness),
             "recovery_pressure": w["recovery_pressure"] * _rp_signal,
             "world_model_surprise": w["world_model_surprise"] * _wms_signal,
-            "low_causal_quality": w["low_causal_quality"] * float(causal_quality < self._causal_quality_threshold),
+            "low_causal_quality": w["low_causal_quality"] * (
+                min(1.0, (self._causal_quality_threshold - causal_quality)
+                    / max(1e-6, self._causal_quality_threshold))
+                if causal_quality < self._causal_quality_threshold else 0.0
+            ),
             "safety_violation": w["safety_violation"] * float(safety_violation),
             "diversity_collapse": w.get("diversity_collapse", 0.0) * max(0.0, min(1.0, diversity_collapse)),
             "memory_trust_deficit": w.get("memory_trust_deficit", 0.0) * max(0.0, min(1.0, memory_trust_deficit)),
@@ -15651,6 +15662,12 @@ class CausalErrorEvolutionTracker:
         "recovery_reinforcement_failed": "lambda_ucc",
         "topology_catastrophe": "lambda_lipschitz",
         "verify_coherence_deficit": "lambda_coherence",
+        # ── UCC subsystem health error classes ─────────────────────
+        # These error classes are recorded in UCC evaluate() when
+        # subsystem health indicators are low, closing the loop
+        # between runtime health signals and training loss adaptation.
+        "low_executive_health": "lambda_ucc",
+        "low_decoder_quality": "lambda_cycle_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -16340,6 +16357,16 @@ class UnifiedCognitiveCycle:
             self.convergence_monitor.record_secondary_signal(
                 "decoder_quality", 1.0 - max(0.0, min(1.0, decoder_quality)),
             )
+        # Executive health: when the cognitive executive is impaired
+        # (health < 0.5), record it as a convergence secondary signal
+        # so the monitor's verdict reflects executive-level arbitration
+        # failures, closing the gap where executive health was tracked
+        # in directional uncertainty but invisible to convergence
+        # certification and error evolution learning.
+        if executive_health is not None and executive_health < 0.5:
+            self.convergence_monitor.record_secondary_signal(
+                "executive_health", 1.0 - max(0.0, min(1.0, executive_health)),
+            )
         # 1a. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
 
@@ -17012,6 +17039,51 @@ class UnifiedCognitiveCycle:
                 trigger_detail['triggers_active'] = list(
                     set(trigger_detail.get('triggers_active', []))
                     | {'low_output_reliability'}
+                )
+
+        # 7e-ii. Executive health feedback — when the cognitive executive
+        # reports impaired health, record in error evolution so the system
+        # learns from executive-level arbitration failures.  This closes
+        # the gap where executive_health was tracked in directional
+        # uncertainty but never recorded for evolutionary learning.
+        if executive_health is not None and executive_health < 0.5:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='low_executive_health',
+                    strategy_used='meta_rerun',
+                    success=False,
+                    metadata={
+                        'executive_health': executive_health,
+                        'uncertainty': uncertainty,
+                    },
+                )
+
+        # 7e-iii. Decoder quality feedback — when the decoder introduces
+        # significant distortion, record in error evolution so the system
+        # learns from decoder-stage failures.  This closes the gap where
+        # decoder_quality was a convergence secondary signal but never
+        # recorded for evolutionary learning via error evolution.
+        if decoder_quality is not None and decoder_quality < 0.5:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='low_decoder_quality',
+                    strategy_used='meta_rerun',
+                    success=False,
+                    metadata={'decoder_quality': decoder_quality},
+                )
+
+        # 7e-iv. Auto-critic quality feedback — when the auto-critic's
+        # self-assessment is low, record in error evolution so the system
+        # learns from self-verification failures.  This closes the gap
+        # where auto_critic_quality was a convergence secondary signal
+        # but never recorded for evolutionary learning.
+        if auto_critic_quality is not None and auto_critic_quality < 0.5:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='auto_critic_low_quality',
+                    strategy_used='meta_rerun',
+                    success=False,
+                    metadata={'auto_critic_quality': auto_critic_quality},
                 )
 
         # 7f. Recurring root-cause analysis — query the causal trace for
