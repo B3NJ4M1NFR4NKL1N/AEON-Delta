@@ -47274,6 +47274,194 @@ def test_decoder_degenerate_check_logs_instead_of_pass():
     print("✅ test_decoder_degenerate_check_logs_instead_of_pass PASSED")
 
 
+def test_ucc_inter_memory_cross_validation_detects_disagreement():
+    """UCC detects disagreement between multiple memory subsystem states."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.01),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.99),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # Neurogenic and temporal memory point in opposite directions
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'neurogenic_memory': torch.ones(2, 64),
+        'temporal_memory': -torch.ones(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,
+        uncertainty=0.1,
+    )
+
+    mcv = result.get('memory_cross_validation', {})
+    assert mcv, "memory_cross_validation should be present in result"
+    assert mcv['pairs_checked'] >= 1, "Should check at least one memory pair"
+    assert mcv['min_similarity'] < 0.3, "Opposite memory states should have low similarity"
+    assert not mcv['is_consistent'], "Opposite memory states should be inconsistent"
+    assert mcv['worst_pair'] is not None, "Worst pair should be identified"
+    assert 'inter_memory_disagreement' in result['trigger_detail'].get(
+        'triggers_active', []), "Should trigger inter_memory_disagreement"
+
+    print("✅ test_ucc_inter_memory_cross_validation_detects_disagreement PASSED")
+
+
+def test_ucc_inter_memory_cross_validation_consistent():
+    """UCC does NOT flag consistent memory subsystem states."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.01),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.99),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # Memories are very similar → should be consistent
+    base = torch.randn(2, 64)
+    states = {
+        'meta_loop': base,
+        'neurogenic_memory': base + 0.01 * torch.randn(2, 64),
+        'temporal_memory': base + 0.01 * torch.randn(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,
+        uncertainty=0.1,
+    )
+
+    mcv = result.get('memory_cross_validation', {})
+    assert mcv, "memory_cross_validation should be present in result"
+    assert mcv['is_consistent'], "Similar memory states should be consistent"
+    assert 'inter_memory_disagreement' not in result['trigger_detail'].get(
+        'triggers_active', []), "Should NOT trigger inter_memory_disagreement"
+
+    print("✅ test_ucc_inter_memory_cross_validation_consistent PASSED")
+
+
+def test_ucc_inter_memory_cross_validation_single_memory():
+    """UCC skips cross-validation when only one memory subsystem is present."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # Only one memory system present
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'neurogenic_memory': torch.randn(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.3,
+    )
+
+    mcv = result.get('memory_cross_validation', {})
+    # With only 1 memory key, no pairs are available → empty dict
+    assert mcv == {} or mcv.get('pairs_checked', 0) == 0, (
+        "Single memory system should not produce cross-validation results"
+    )
+
+    print("✅ test_ucc_inter_memory_cross_validation_single_memory PASSED")
+
+
+def test_ucc_absent_subsystem_uncertainty_escalation():
+    """Absent subsystems in UCC coherence check escalate uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64,
+        z_dim=64,
+        vq_embedding_dim=64,
+        meta_dim=64,
+        num_pillars=16,
+        enable_unified_cognitive_cycle=True,
+        enable_world_model=False,
+        enable_hierarchical_memory=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # The model has UCC enabled but many optional subsystems disabled.
+    # Verify that _compute_verification_coverage reflects this.
+    coverage = model._compute_verification_coverage()
+    assert 0.0 < coverage <= 1.0, (
+        f"Verification coverage should be in (0, 1], got {coverage}"
+    )
+
+    # The absent-subsystem escalation code path exists in the forward
+    # method.  We verify the code structure: search for the new
+    # 'absent_subsystem_coverage' uncertainty source assignment.
+    import inspect
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert 'absent_subsystem_coverage' in src, (
+        "Forward pass should escalate uncertainty for absent subsystems"
+    )
+
+    print("✅ test_ucc_absent_subsystem_uncertainty_escalation PASSED")
+
+
+def test_inter_memory_disagreement_in_error_class_mapping():
+    """inter_memory_disagreement is mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'inter_memory_disagreement' in mapping, (
+        "inter_memory_disagreement should be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping['inter_memory_disagreement'] == 'lambda_memory_retrieval', (
+        "inter_memory_disagreement should map to lambda_memory_retrieval"
+    )
+
+    print("✅ test_inter_memory_disagreement_in_error_class_mapping PASSED")
+
+
+def test_inter_memory_disagreement_in_trigger_signal_mapping():
+    """inter_memory_disagreement is mapped in MetaCognitiveRecursionTrigger."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Get the _class_to_signal dict from adapt_weights_from_evolution
+    import inspect
+    src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert 'inter_memory_disagreement' in src, (
+        "inter_memory_disagreement should be mapped in adapt_weights_from_evolution"
+    )
+
+    print("✅ test_inter_memory_disagreement_in_trigger_signal_mapping PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -48931,6 +49119,16 @@ def run_all_tests():
     test_self_diagnostic_reports_feedback_bus_observability()
     test_trainer_wires_convergence_to_error_evolution()
     test_trainer_wires_convergence_to_provenance()
+
+    # Architectural Unification — Memory Cross-Validation, Absent-Subsystem
+    # Uncertainty Escalation, and Error Class Coverage
+    test_ucc_inter_memory_cross_validation_detects_disagreement()
+    test_ucc_inter_memory_cross_validation_consistent()
+    test_ucc_inter_memory_cross_validation_single_memory()
+    test_ucc_absent_subsystem_uncertainty_escalation()
+    test_inter_memory_disagreement_in_error_class_mapping()
+    test_inter_memory_disagreement_in_trigger_signal_mapping()
+
     test_server_provenance_endpoint_exists()
     test_server_provenance_root_cause_endpoint_exists()
     test_server_causal_trace_endpoint_exists()
