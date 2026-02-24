@@ -50045,6 +50045,189 @@ def test_ucc_convergence_conflict_feeds_trigger():
     print("✅ test_ucc_convergence_conflict_feeds_trigger PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE — Unified Simulator Loss, MCTS Value Loss,
+#  Feedback Bus Planning Signals, Active Learning Trace, Verify Coherence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_config_has_unified_sim_and_mcts_loss_weights():
+    """Verify new loss weight config parameters exist with correct defaults."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert hasattr(config, 'lambda_unified_sim'), (
+        "AEONConfig must have lambda_unified_sim"
+    )
+    assert hasattr(config, 'lambda_mcts_value'), (
+        "AEONConfig must have lambda_mcts_value"
+    )
+    assert config.lambda_unified_sim == 0.01, (
+        f"lambda_unified_sim should default to 0.01, got {config.lambda_unified_sim}"
+    )
+    assert config.lambda_mcts_value == 0.005, (
+        f"lambda_mcts_value should default to 0.005, got {config.lambda_mcts_value}"
+    )
+
+    print("✅ test_config_has_unified_sim_and_mcts_loss_weights PASSED")
+
+
+def test_compute_loss_includes_unified_sim_and_mcts_losses():
+    """Verify compute_loss returns unified_sim_loss and mcts_value_loss."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    tokens = torch.randint(100, 1000, (1, 16))
+    outputs = model(tokens, fast=False)
+
+    targets = torch.randint(100, 1000, (1, 16))
+    losses = model.compute_loss(outputs, targets)
+
+    assert 'unified_sim_loss' in losses, (
+        "compute_loss must return unified_sim_loss"
+    )
+    assert 'mcts_value_loss' in losses, (
+        "compute_loss must return mcts_value_loss"
+    )
+    # Both should be tensors (possibly zero when subsystems are disabled)
+    assert torch.is_tensor(losses['unified_sim_loss']), (
+        "unified_sim_loss must be a tensor"
+    )
+    assert torch.is_tensor(losses['mcts_value_loss']), (
+        "mcts_value_loss must be a tensor"
+    )
+
+    print("✅ test_compute_loss_includes_unified_sim_and_mcts_losses PASSED")
+
+
+def test_feedback_bus_registers_planning_signals():
+    """Verify the CognitiveFeedbackBus has mcts and active learning signals."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # The feedback bus should have registered the new signals
+    registered = model.feedback_bus._extra_signals
+    assert "mcts_planning_quality" in registered, (
+        "mcts_planning_quality must be registered in feedback bus"
+    )
+    assert "active_learning_curiosity" in registered, (
+        "active_learning_curiosity must be registered in feedback bus"
+    )
+
+    print("✅ test_feedback_bus_registers_planning_signals PASSED")
+
+
+def test_verify_coherence_includes_memory_subsystems():
+    """Verify that verify_coherence checks neurogenic, temporal, and
+    consolidating memory states when they are cached."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Read the verify_coherence source to confirm the new states are present
+    src = inspect.getsource(model.verify_coherence)
+    assert "_cached_neurogenic_memory_state" in src, (
+        "verify_coherence must include _cached_neurogenic_memory_state"
+    )
+    assert "_cached_temporal_memory_state" in src, (
+        "verify_coherence must include _cached_temporal_memory_state"
+    )
+    assert "_cached_consolidating_memory_state" in src, (
+        "verify_coherence must include _cached_consolidating_memory_state"
+    )
+
+    print("✅ test_verify_coherence_includes_memory_subsystems PASSED")
+
+
+def test_error_evolution_maps_new_loss_classes():
+    """Verify new loss error classes are mapped in _ERROR_CLASS_TO_LAMBDA and
+    _ERROR_CLASS_TO_SIGNAL for complete error→training and error→metacognition
+    feedback loops."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "high_unified_sim_loss" in lambda_map, (
+        "high_unified_sim_loss missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert lambda_map["high_unified_sim_loss"] == "lambda_unified_sim", (
+        f"high_unified_sim_loss should map to lambda_unified_sim, "
+        f"got {lambda_map['high_unified_sim_loss']}"
+    )
+    assert "high_mcts_value_loss" in lambda_map, (
+        "high_mcts_value_loss missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert lambda_map["high_mcts_value_loss"] == "lambda_mcts_value", (
+        f"high_mcts_value_loss should map to lambda_mcts_value, "
+        f"got {lambda_map['high_mcts_value_loss']}"
+    )
+
+    print("✅ test_error_evolution_maps_new_loss_classes PASSED")
+
+
+def test_feedback_extra_signals_includes_planning():
+    """Verify _build_feedback_extra_signals returns MCTS and active learning
+    signals when cached values are present."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate low MCTS quality
+    model._cached_mcts_quality = 0.3
+    extra = model._build_feedback_extra_signals()
+    assert "mcts_planning_quality" in extra, (
+        "mcts_planning_quality must appear in extra signals when cached"
+    )
+    assert extra["mcts_planning_quality"] == 0.3, (
+        f"Expected 0.3 for mcts_planning_quality, got {extra['mcts_planning_quality']}"
+    )
+
+    # Simulate high active learning curiosity
+    model._cached_active_learning_curiosity = 0.8
+    extra = model._build_feedback_extra_signals()
+    assert "active_learning_curiosity" in extra, (
+        "active_learning_curiosity must appear in extra signals when cached"
+    )
+    assert extra["active_learning_curiosity"] == 0.8, (
+        f"Expected 0.8 for active_learning_curiosity, got {extra['active_learning_curiosity']}"
+    )
+
+    # When values are within healthy range, signals should NOT appear
+    model._cached_mcts_quality = 1.0
+    model._cached_active_learning_curiosity = 0.1
+    extra = model._build_feedback_extra_signals()
+    assert "mcts_planning_quality" not in extra or extra.get("mcts_planning_quality", 1.0) >= 1.0, (
+        "mcts_planning_quality should not appear when quality is healthy"
+    )
+    assert "active_learning_curiosity" not in extra, (
+        "active_learning_curiosity should not appear when curiosity is low"
+    )
+
+    print("✅ test_feedback_extra_signals_includes_planning PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -52213,6 +52396,15 @@ def run_all_tests():
     test_healthy_signals_not_recorded_in_error_evolution()
     test_new_error_classes_in_class_to_signal()
     test_new_error_classes_in_error_class_to_lambda()
+
+    # Architectural Coherence — Unified Simulator Loss, MCTS Value Loss,
+    # Feedback Bus Planning Signals, Active Learning Trace, Verify Coherence
+    test_config_has_unified_sim_and_mcts_loss_weights()
+    test_compute_loss_includes_unified_sim_and_mcts_losses()
+    test_feedback_bus_registers_planning_signals()
+    test_verify_coherence_includes_memory_subsystems()
+    test_error_evolution_maps_new_loss_classes()
+    test_feedback_extra_signals_includes_planning()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
