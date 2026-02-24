@@ -6396,6 +6396,9 @@ class CausalProvenanceTracker:
         # Threshold above which a module's L2 delta is considered
         # anomalous enough to emit an error-evolution episode.
         self._delta_anomaly_threshold: float = 50.0
+        # Tracks edges that were removed due to cycle detection so they
+        # are not silently re-added by subsequent record_dependency() calls.
+        self._removed_cyclic_edges: Set[Tuple[str, str]] = set()
     
     def reset(self):
         """Clear all recorded snapshots for a new forward pass."""
@@ -6544,6 +6547,9 @@ class CausalProvenanceTracker:
         that enables :meth:`trace_root_cause` to walk backward from any
         module to the original inputs that influenced its output.
 
+        Previously-removed cyclic edges are rejected to maintain DAG
+        acyclicity across forward passes.
+
         Args:
             from_module: Name of the upstream module (provider).
             to_module: Name of the downstream module (consumer).
@@ -6552,6 +6558,14 @@ class CausalProvenanceTracker:
             # Lazily initialized so that existing serialized instances
             # remain backward-compatible.
             self._dependencies: Dict[str, Set[str]] = {}
+        # Reject edges that were previously identified as cyclic
+        _removed = getattr(self, '_removed_cyclic_edges', set())
+        if (from_module, to_module) in _removed:
+            logger.debug(
+                "CausalProvenanceTracker: rejected re-addition of cyclic "
+                "edge %s → %s", from_module, to_module,
+            )
+            return
         self._dependencies.setdefault(to_module, set()).add(from_module)
 
     def get_dependency_graph(self) -> Dict[str, List[str]]:
@@ -6608,6 +6622,11 @@ class CausalProvenanceTracker:
                             'to': node,
                         })
                         deps[node].discard(parent)
+                        # Remember the removed edge so record_dependency()
+                        # rejects re-addition on subsequent forward passes.
+                        if not hasattr(self, '_removed_cyclic_edges'):
+                            self._removed_cyclic_edges = set()
+                        self._removed_cyclic_edges.add((parent, node))
                         logger.warning(
                             "CausalProvenanceTracker: removed cyclic edge "
                             "%s → %s to maintain DAG invariant",
@@ -14339,11 +14358,22 @@ class ModuleCoherenceVerifier(nn.Module):
         coherence = torch.stack(sims, dim=-1).mean(dim=-1)  # [B]
         needs_recheck = bool(coherence.mean().item() < self.threshold)
 
-        return {
+        result: Dict[str, Any] = {
             "coherence_score": coherence,
             "pairwise": pairwise,
             "needs_recheck": needs_recheck,
         }
+
+        # When coherence is below threshold, compute and include
+        # correction signals and weakest pair so downstream logic can
+        # apply targeted repair without a second pass through the verifier.
+        if needs_recheck:
+            result["correction_signals"] = self.compute_correction_signals(
+                pairwise, self.threshold,
+            )
+            result["weakest_pair"] = self.get_weakest_pair(pairwise)
+
+        return result
 
     def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
         """Adapt threshold bidirectionally based on error history.
@@ -26006,10 +26036,29 @@ class AEONDeltaV3(nn.Module):
                     self.auto_critic.threshold = max(
                         0.5, _orig_critic_threshold * 0.95,
                     )
+            # 8b3-depth. Metacognitive-trigger-guided critic depth — when
+            # the metacognitive trigger fired, increase the auto-critic's
+            # iteration budget proportionally to the trigger score so that
+            # higher-uncertainty situations receive deeper self-critique.
+            # This closes the gap where trigger severity was computed but
+            # never influenced auto-critic inspection depth.
+            _orig_critic_max_iterations = self.auto_critic.max_iterations
+            _trigger_score = metacognitive_info.get("trigger_score", 0.0)
+            if metacognitive_info.get("should_trigger", False) and _trigger_score > 0:
+                _extra = metacognitive_info.get(
+                    "extra_iterations",
+                    max(1, int(_trigger_score * 3)),
+                )
+                self.auto_critic.max_iterations = min(
+                    _orig_critic_max_iterations + _extra,
+                    _orig_critic_max_iterations * 2,
+                )
             critic_result = self.auto_critic(z_out)
-            # Restore original threshold so the adaptation is per-pass
-            # and does not drift unboundedly across forward calls.
+            # Restore original threshold and max_iterations so the
+            # adaptation is per-pass and does not drift unboundedly
+            # across forward calls.
             self.auto_critic.threshold = _orig_critic_threshold
+            self.auto_critic.max_iterations = _orig_critic_max_iterations
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
@@ -32133,6 +32182,51 @@ class AEONDeltaV3(nn.Module):
         _pairwise_data = coherence_out.get("pairwise", {})
         _weakest = self.module_coherence.get_weakest_pair(_pairwise_data)
         result["weakest_pair"] = _weakest
+
+        # --- Targeted repair via blend_weakest_pair ---
+        # When coherence is low and the weakest pair is identified,
+        # blend the two most divergent cached subsystem states toward
+        # their mean so that the next forward pass starts with more
+        # consistent representations.  This transforms verify_coherence()
+        # from a diagnostic-only check into an active self-repair
+        # mechanism, satisfying the requirement that each component
+        # verifies and reinforces the others.
+        result["correction_applied"] = False
+        if needs_recheck and _weakest is not None:
+            corrected = ModuleCoherenceVerifier.blend_weakest_pair(
+                subsystem_states, _weakest, blend_alpha=0.3,
+            )
+            # Write corrected states back to the corresponding caches
+            _label_to_attr = {
+                v: k for k, v in [
+                    ("_cached_meta_loop_state", "meta_loop"),
+                    ("_cached_factor_state", "factor_extraction"),
+                    ("_cached_safety_state", "safety"),
+                    ("_cached_memory_state", "memory"),
+                    ("_cached_world_model_state", "world_model"),
+                    ("_cached_causal_state", "causal_model"),
+                    ("_cached_feedback", "feedback_bus"),
+                    ("_cached_decoder_state", "decoder"),
+                    ("_cached_integration_state", "integration"),
+                    ("_cached_executive_state", "cognitive_executive"),
+                    ("_cached_grounded_multimodal_state", "grounded_multimodal"),
+                    ("_cached_auto_critic_state", "auto_critic"),
+                    ("_cached_rssm_state", "rssm"),
+                    ("_cached_mcts_state", "mcts_planning"),
+                    ("_cached_hvae_state", "hierarchical_vae"),
+                    ("_cached_unified_sim_state", "unified_simulator"),
+                    ("_cached_diversity_state", "diversity"),
+                    ("_cached_topology_state", "topology"),
+                    ("_cached_cross_validation_state", "cross_validation"),
+                    ("_cached_ns_consistency_state", "ns_consistency"),
+                    ("_cached_tkg_state", "temporal_knowledge_graph"),
+                ]
+            }
+            for label in _weakest.get("modules", []):
+                attr_name = _label_to_attr.get(label)
+                if attr_name is not None and label in corrected:
+                    setattr(self, attr_name, corrected[label].detach())
+            result["correction_applied"] = True
 
         # Include scalar subsystem states as auxiliary coherence signals
         # so that diversity collapse, topology instability, and NS-rule

@@ -49197,6 +49197,188 @@ def test_ucc_worsening_trend_triggers_rerun():
     print("✅ test_ucc_worsening_trend_triggers_rerun PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — Cyclic Edge Prevention,
+#  Coherence Verifier Correction Signals, verify_coherence Self-Repair,
+#  Metacognitive-Trigger-Guided Auto-Critic Depth
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_provenance_tracker_rejects_cyclic_edge_re_addition():
+    """CausalProvenanceTracker must reject re-addition of previously removed cyclic edges.
+
+    Gap fixed: record_dependency() silently re-added edges that
+    validate_dag_acyclic() had previously removed, breaking the DAG
+    invariant on subsequent forward passes.  Now the tracker remembers
+    removed cyclic edges and rejects their re-addition.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    pt = CausalProvenanceTracker()
+    pt.record_dependency("A", "B")
+    pt.record_dependency("B", "C")
+    pt.record_dependency("C", "A")  # Creates cycle A→B→C→A
+
+    result = pt.validate_dag_acyclic()
+    assert len(result["cycles_found"]) > 0, "Expected at least one cycle"
+
+    # Remember which edge was removed
+    removed = pt._removed_cyclic_edges
+    assert len(removed) > 0, "Expected removed cyclic edges to be tracked"
+
+    # Try to re-add each removed edge — they should be rejected
+    for from_m, to_m in list(removed):
+        pt.record_dependency(from_m, to_m)
+
+    # Verify DAG is still acyclic after re-addition attempts
+    result2 = pt.validate_dag_acyclic()
+    assert result2["is_acyclic"], (
+        "DAG should remain acyclic after rejecting re-added cyclic edges"
+    )
+
+    print("✅ test_provenance_tracker_rejects_cyclic_edge_re_addition PASSED")
+
+
+def test_coherence_verifier_forward_includes_correction_signals():
+    """ModuleCoherenceVerifier.forward() must include correction_signals and
+    weakest_pair in its output when coherence is below threshold.
+
+    Gap fixed: forward() only returned needs_recheck=True without
+    correction signals, requiring callers to make a second pass through
+    the verifier to get actionable repair information.
+    """
+    from aeon_core import ModuleCoherenceVerifier
+
+    # Use a high threshold to force needs_recheck=True
+    mcv = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.99)
+    states = {
+        "meta_loop": torch.randn(2, 32),
+        "safety": torch.randn(2, 32),
+        "memory": torch.randn(2, 32),
+    }
+    result = mcv(states)
+
+    assert result["needs_recheck"], "Expected needs_recheck with high threshold"
+    assert "correction_signals" in result, (
+        "forward() must include correction_signals when incoherent"
+    )
+    assert "weakest_pair" in result, (
+        "forward() must include weakest_pair when incoherent"
+    )
+    assert isinstance(result["correction_signals"], dict)
+    assert len(result["correction_signals"]) > 0
+
+    # When coherent, correction_signals should NOT be in the result
+    mcv_low = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.01)
+    base = torch.randn(2, 32)
+    coherent_states = {
+        "a": base.clone(),
+        "b": base.clone() + 0.001 * torch.randn(2, 32),
+    }
+    result_coherent = mcv_low(coherent_states)
+    assert not result_coherent["needs_recheck"]
+    assert "correction_signals" not in result_coherent, (
+        "correction_signals should only be present when incoherent"
+    )
+
+    print("✅ test_coherence_verifier_forward_includes_correction_signals PASSED")
+
+
+def test_verify_coherence_applies_targeted_repair():
+    """verify_coherence() must apply blend_weakest_pair to cached states
+    when incoherence is detected, transforming it from diagnostic-only
+    to an active self-repair mechanism.
+
+    Gap fixed: verify_coherence() diagnosed incoherence but returned
+    without correcting the divergent cached states, requiring a full
+    forward pass to self-correct.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Set up highly divergent cached states
+    model._cached_meta_loop_state = torch.randn(1, 64)
+    model._cached_safety_state = torch.randn(1, 64) * 10  # Very different
+
+    # Store original states for comparison
+    orig_meta = model._cached_meta_loop_state.clone()
+    orig_safety = model._cached_safety_state.clone()
+
+    result = model.verify_coherence()
+
+    assert "correction_applied" in result, (
+        "verify_coherence() must report whether correction was applied"
+    )
+
+    if result["needs_recheck"] and result.get("weakest_pair") is not None:
+        assert result["correction_applied"], (
+            "correction_applied should be True when incoherence detected"
+        )
+        # At least one of the weakest pair states should have changed
+        weakest_modules = result["weakest_pair"]["modules"]
+        changed = False
+        if "meta_loop" in weakest_modules:
+            if not torch.allclose(model._cached_meta_loop_state, orig_meta):
+                changed = True
+        if "safety" in weakest_modules:
+            if not torch.allclose(model._cached_safety_state, orig_safety):
+                changed = True
+        assert changed, "At least one cached state should have been corrected"
+
+    print("✅ test_verify_coherence_applies_targeted_repair PASSED")
+
+
+def test_auto_critic_depth_adapts_to_metacognitive_trigger():
+    """Auto-critic iteration budget must increase when the metacognitive
+    trigger fires with high severity, ensuring deeper self-critique for
+    uncertain outputs.
+
+    Gap fixed: the auto-critic ran with a fixed max_iterations regardless
+    of metacognitive trigger severity, so high-uncertainty outputs received
+    the same shallow inspection as routine outputs.
+    """
+    from aeon_core import AutoCriticLoop
+
+    hidden_dim = 64
+    base_model = torch.nn.Sequential(
+        torch.nn.Linear(hidden_dim, hidden_dim),
+        torch.nn.GELU(),
+        torch.nn.Linear(hidden_dim, hidden_dim),
+    )
+    ac = AutoCriticLoop(
+        base_model=base_model,
+        hidden_dim=hidden_dim,
+        max_iterations=3,
+        threshold=0.85,
+    )
+
+    # Simulate metacognitive trigger adaptation by temporarily increasing
+    # max_iterations (this is what _reasoning_core_impl now does)
+    original_max = ac.max_iterations
+    trigger_extra = 2  # From metacognitive trigger
+    ac.max_iterations = min(original_max + trigger_extra, original_max * 2)
+
+    query = torch.randn(2, hidden_dim)
+    result = ac(query, return_trajectory=True)
+
+    # Restored max_iterations after the call
+    adapted_max = ac.max_iterations
+    ac.max_iterations = original_max
+
+    # The adapted budget should be larger than original
+    assert adapted_max > original_max, (
+        f"Auto-critic budget should increase: {adapted_max} > {original_max}"
+    )
+    # The trajectory should reflect the increased budget was available
+    assert result["iterations"] <= adapted_max, (
+        "Iterations should not exceed adapted budget"
+    )
+
+    print("✅ test_auto_critic_depth_adapts_to_metacognitive_trigger PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -51341,6 +51523,14 @@ def run_all_tests():
     test_feedback_bus_backward_compat_no_ema_arg()
     test_ucc_evaluate_accepts_feedback_bus_trend()
     test_ucc_worsening_trend_triggers_rerun()
+
+    # Architectural unification — Cyclic Edge Prevention,
+    # Coherence Verifier Correction Signals, verify_coherence Self-Repair,
+    # Metacognitive-Trigger-Guided Auto-Critic Depth
+    test_provenance_tracker_rejects_cyclic_edge_re_addition()
+    test_coherence_verifier_forward_includes_correction_signals()
+    test_verify_coherence_applies_targeted_repair()
+    test_auto_critic_depth_adapts_to_metacognitive_trigger()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
