@@ -300,8 +300,11 @@ except ImportError:
                             enriched["dominant_provenance_module"] = max(
                                 contribs, key=contribs.get,
                             )
-                    except Exception:
-                        pass
+                    except Exception as _prov_err:
+                        logger.debug(
+                            "Provenance enrichment failed in training monitor: %s",
+                            _prov_err,
+                        )
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
@@ -674,8 +677,11 @@ except ImportError:
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         _err_summary,
                     )
-                except Exception:
-                    pass
+                except Exception as _ae_err:
+                    logger.debug(
+                        "Metacognitive weight adaptation failed in training: %s",
+                        _ae_err,
+                    )
 
             # 2. Coherence verification
             if self.coherence_verifier is not None and subsystem_states:
