@@ -210,6 +210,13 @@ class AppState:
     log_queue: queue.Queue     = queue.Queue(maxsize=4000)
     log_history: List[dict]    = []
     session_meta: dict         = {"init_time": None, "init_count": 0}
+    # ── Thread safety lock ─────────────────────────────────────────
+    # Protects shared mutable state from concurrent access by
+    # background training/testing threads and async HTTP handlers.
+    # Use ``with APP.lock:`` around reads and writes to fields that
+    # are modified by background threads (training_active, v4_active,
+    # test_run_active, test_run_results, v4_progress, etc.).
+    lock: threading.RLock      = threading.RLock()
     # ── Test-runner state ──────────────────────────────────────────
     test_run_active: bool        = False
     test_run_stop_event          = None       # threading.Event
@@ -1219,8 +1226,9 @@ def _test_run_loop(names: list, meta_map: dict, log_format: str, stop_on_failure
     except Exception as e:
         logging.error(f"Test run loop fatal: {e}\n{traceback.format_exc()}")
     finally:
-        APP.test_run_active = False
-        APP.test_run_progress["active"] = False
+        with APP.lock:
+            APP.test_run_active = False
+            APP.test_run_progress["active"] = False
 
 
 # ── Progress broadcaster ──────────────────────────────────────────────────────
@@ -1283,18 +1291,19 @@ async def api_tests_run(req: TestRunRequest, background_tasks: BackgroundTasks):
     else:
         names = [t["name"] for g in cat for t in g["tests"]]
 
-    APP.test_run_active = True
-    APP.test_run_stop_event = threading.Event()
-    APP.test_run_results = []
-    APP.test_run_summary = {}
-    APP.test_run_progress = {
-        "active": True, "done": False,
-        "total": len(names), "current": 0,
-        "current_test": None,
-        "passed": 0, "failed": 0, "error": 0, "skipped": 0,
-        "log_format": req.log_format,
-        "started_at": time.time(),
-    }
+    with APP.lock:
+        APP.test_run_active = True
+        APP.test_run_stop_event = threading.Event()
+        APP.test_run_results = []
+        APP.test_run_summary = {}
+        APP.test_run_progress = {
+            "active": True, "done": False,
+            "total": len(names), "current": 0,
+            "current_test": None,
+            "passed": 0, "failed": 0, "error": 0, "skipped": 0,
+            "log_format": req.log_format,
+            "started_at": time.time(),
+        }
 
     logging.info(f"🧪 Test run started · {len(names)} tests · format={req.log_format}")
     background_tasks.add_task(
@@ -2271,7 +2280,8 @@ async def start_training(req: TrainRequest, background_tasks: BackgroundTasks):
 
 
 def _training_loop(req: TrainRequest):
-    APP.training_active = True
+    with APP.lock:
+        APP.training_active = True
     logging.info(f"Training started · epochs={req.num_epochs} · lr={req.learning_rate} · bs={req.batch_size}")
     try:
         import torch
@@ -2383,8 +2393,9 @@ def _training_loop(req: TrainRequest):
         logging.error(f"Training error: {e}\n{traceback.format_exc()}")
         APP.training_progress.update({"error": str(e), "active": False})
     finally:
-        APP.training_active = False
-        APP.training_progress["active"] = False
+        with APP.lock:
+            APP.training_active = False
+            APP.training_progress["active"] = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2494,38 +2505,40 @@ def _compute_velocity(history: list) -> float:
 # ── Training runner ────────────────────────────────────────────────────────────
 def _v4_training_loop(req: V4TrainRequest):
     """Full AEON v4 two-phase training, running in a background thread."""
-    APP.v4_active = True
-    APP.v4_stop = False
-    APP.v4_log_buffer.clear()
-    APP.v4_metrics_history = {"phase_A": [], "phase_B": []}
-    APP.v4_progress = {
-        "active": True,
-        "done": False,
-        "phase": "init",
-        "epoch": 0,
-        "total_epochs": req.epochs_A + req.epochs_B,
-        "epochs_A": req.epochs_A,
-        "epochs_B": req.epochs_B,
-        "current_loss": None,
-        "best_loss": None,
-        "batch": 0,
-        "total_batches": 0,
-        "codebook_usage": None,
-        "convergence_status": "warmup",
-        "convergence_velocity": 0.0,
-        "grad_norm": None,
-        "recon_loss": None,
-        "vq_loss": None,
-        "accuracy": None,
-        "started_at": time.time(),
-        "error": None,
-    }
+    with APP.lock:
+        APP.v4_active = True
+        APP.v4_stop = False
+        APP.v4_log_buffer.clear()
+        APP.v4_metrics_history = {"phase_A": [], "phase_B": []}
+        APP.v4_progress = {
+            "active": True,
+            "done": False,
+            "phase": "init",
+            "epoch": 0,
+            "total_epochs": req.epochs_A + req.epochs_B,
+            "epochs_A": req.epochs_A,
+            "epochs_B": req.epochs_B,
+            "current_loss": None,
+            "best_loss": None,
+            "batch": 0,
+            "total_batches": 0,
+            "codebook_usage": None,
+            "convergence_status": "warmup",
+            "convergence_velocity": 0.0,
+            "grad_norm": None,
+            "recon_loss": None,
+            "vq_loss": None,
+            "accuracy": None,
+            "started_at": time.time(),
+            "error": None,
+        }
 
     if not AE_TRAIN_LOADED:
         msg = f"ae_train.py not available: {AE_TRAIN_ERROR}"
         logging.error(msg)
-        APP.v4_progress.update({"active": False, "done": True, "error": msg})
-        APP.v4_active = False
+        with APP.lock:
+            APP.v4_progress.update({"active": False, "done": True, "error": msg})
+            APP.v4_active = False
         return
 
     try:
@@ -2818,8 +2831,9 @@ def _v4_training_loop(req: V4TrainRequest):
 
         if APP.v4_stop:
             logging.info("🛑 Training stopped after Phase A.")
-            APP.v4_progress.update({"active": False, "done": True, "stopped": True})
-            APP.v4_active = False
+            with APP.lock:
+                APP.v4_progress.update({"active": False, "done": True, "stopped": True})
+                APP.v4_active = False
             return
 
         # ── Build z_sequences ─────────────────────────────────────
@@ -2986,7 +3000,8 @@ def _v4_training_loop(req: V4TrainRequest):
             "phase": "error",
         })
     finally:
-        APP.v4_active = False
+        with APP.lock:
+            APP.v4_active = False
 
 
 @app.post("/api/train/v4/start")
