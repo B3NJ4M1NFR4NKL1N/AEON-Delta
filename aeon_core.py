@@ -14670,7 +14670,7 @@ class CausalDAGConsensus:
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors eleven independent signals:
+    Monitors twelve independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -14696,6 +14696,12 @@ class MetaCognitiveRecursionTrigger:
         representations that deeper reasoning may diversify.
     11. ``memory_trust_deficit`` — external memory trust is low, indicating
         unreliable data that deeper internal reasoning should compensate for.
+    12. ``convergence_conflict`` — convergence monitors disagree on the
+        system's convergence status.  Graduated: ``unified_status``
+        of "diverging" maps to 1.0, "conflict" to 0.7, enabling the
+        adaptive weight system to learn appropriate sensitivity from
+        historical error-recovery outcomes rather than relying on a
+        hard override.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -14716,8 +14722,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (11 signals × 1/11 ≈ 0.091 each)
-    _DEFAULT_WEIGHT = 1.0 / 11.0
+    # Default per-signal weight (12 signals × 1/12 ≈ 0.083 each)
+    _DEFAULT_WEIGHT = 1.0 / 12.0
 
     def __init__(
         self,
@@ -14759,6 +14765,7 @@ class MetaCognitiveRecursionTrigger:
             "safety_violation": self._DEFAULT_WEIGHT,
             "diversity_collapse": self._DEFAULT_WEIGHT,
             "memory_trust_deficit": self._DEFAULT_WEIGHT,
+            "convergence_conflict": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
 
@@ -14836,8 +14843,11 @@ class MetaCognitiveRecursionTrigger:
             "training_stagnation": "coherence_deficit",
             "training_training_divergence": "diverging",
             "training_training_stagnation": "coherence_deficit",
-            # Convergence arbiter conflict — monitors disagree
-            "convergence_conflict": "diverging",
+            # Convergence arbiter conflict — monitors disagree.
+            # Now maps to its own named signal rather than "diverging"
+            # so that error-evolution can independently adapt the
+            # convergence_conflict trigger weight.
+            "convergence_conflict": "convergence_conflict",
             # Memory-reasoning inconsistency
             "memory_reasoning_inconsistency": "memory_staleness",
             # World-model and memory signals — ensure prediction-error
@@ -15129,6 +15139,7 @@ class MetaCognitiveRecursionTrigger:
         safety_violation: bool = False,
         diversity_collapse: float = 0.0,
         memory_trust_deficit: float = 0.0,
+        convergence_conflict: float = 0.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -15165,6 +15176,13 @@ class MetaCognitiveRecursionTrigger:
                 external memory is.  Derived from ``1 - trust_score``; high
                 values indicate unreliable external data that deeper
                 reasoning should compensate for.
+            convergence_conflict: Scalar ∈ [0, 1] indicating convergence
+                monitor disagreement severity.  Derived from the
+                ``UnifiedConvergenceArbiter``'s ``unified_status``:
+                1.0 for "diverging" (most severe), 0.7 for "conflict"
+                (moderate disagreement), 0.0 otherwise.  Enables
+                graduated metacognitive response and adaptive weighting
+                via error-evolution history.
 
         Returns:
             Dict with:
@@ -15221,6 +15239,7 @@ class MetaCognitiveRecursionTrigger:
             "safety_violation": w["safety_violation"] * float(safety_violation),
             "diversity_collapse": w.get("diversity_collapse", 0.0) * max(0.0, min(1.0, diversity_collapse)),
             "memory_trust_deficit": w.get("memory_trust_deficit", 0.0) * max(0.0, min(1.0, memory_trust_deficit)),
+            "convergence_conflict": w.get("convergence_conflict", 0.0) * max(0.0, min(1.0, convergence_conflict)),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -20649,6 +20668,22 @@ class AEONDeltaV3(nn.Module):
                         },
                         severity="warning",
                     )
+        # Compute graduated convergence conflict signal from unified_status.
+        # "diverging" (at least one monitor detects divergence) maps to 1.0,
+        # "conflict" (monitors simply disagree) maps to 0.7, and all other
+        # statuses map to 0.0.  This replaces the previous binary
+        # _needs_deeper override with a signal that flows through the
+        # metacognitive trigger's adaptive weighting system, enabling
+        # error-evolution history to modulate sensitivity to convergence
+        # conflicts over time.
+        _convergence_conflict_signal = 0.0
+        _arbiter_unified_status = _convergence_arbiter_result.get(
+            "unified_status", "converging",
+        )
+        if _arbiter_unified_status == "diverging":
+            _convergence_conflict_signal = 1.0
+        elif _arbiter_unified_status == "conflict":
+            _convergence_conflict_signal = 0.7
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
         adaptive_safety_threshold = self.config.safety_threshold
@@ -21925,6 +21960,7 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
+                convergence_conflict=_convergence_conflict_signal,
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             if metacognitive_info.get("should_trigger", False):
@@ -22189,6 +22225,7 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
+                convergence_conflict=_convergence_conflict_signal,
             )
             # Cache trigger score so the feedback bus carries the deferred
             # assessment into the next pass.
@@ -27956,6 +27993,7 @@ class AEONDeltaV3(nn.Module):
                 world_model_surprise=self._cached_surprise,
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
+                convergence_conflict=_convergence_conflict_signal,
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
@@ -32155,6 +32193,9 @@ class AEONDeltaV3(nn.Module):
                     if hasattr(self, '_compute_recovery_pressure') else 0.0,
                 causal_quality=getattr(self, '_cached_causal_quality', 1.0),
                 memory_staleness=getattr(self, '_memory_stale', False),
+                convergence_conflict=1.0 if getattr(
+                    self, '_cached_arbiter_has_conflict', False,
+                ) else 0.0,
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
