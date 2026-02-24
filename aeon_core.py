@@ -18636,6 +18636,19 @@ class AEONDeltaV3(nn.Module):
         # can condition the meta-loop on neural↔symbolic round-trip quality.
         self._cached_ns_bridge_confidence: float = 1.0
 
+        # MCTS planning quality — caches the root value quality from the
+        # last MCTSPlanner invocation so _build_feedback_extra_signals
+        # can route planning confidence into the feedback bus.  Initialized
+        # explicitly to prevent getattr fallback on the first forward pass.
+        self._cached_mcts_quality: float = 1.0
+
+        # Active learning curiosity — caches the intrinsic reward from
+        # the last ActiveLearningPlanner invocation so
+        # _build_feedback_extra_signals can route exploration pressure
+        # into the feedback bus.  Initialized explicitly to prevent
+        # getattr fallback on the first forward pass.
+        self._cached_active_learning_curiosity: float = 0.0
+
         # Deferred metacognitive trigger pressure — when fast mode
         # evaluates the trigger but skips actual recursion, the trigger
         # score is cached here so _build_feedback_extra_signals can
@@ -20603,6 +20616,9 @@ class AEONDeltaV3(nn.Module):
         if (self.memory_validator is not None
                 and _pre_loop_memory_signal is not None
                 and not fast):
+            self.provenance_tracker.record_before(
+                "memory_validation", z_conditioned,
+            )
             try:
                 _pre_mem_validation = self.memory_validator.validate(
                     memory_signal=_pre_loop_memory_signal,
@@ -20654,6 +20670,9 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Pre-meta-loop memory validation failed: %s", _pmv_err,
                 )
+            self.provenance_tracker.record_after(
+                "memory_validation", z_conditioned,
+            )
         
         # 1. Meta-loop convergence
         self.provenance_tracker.record_before("meta_loop", z_conditioned)
@@ -29306,6 +29325,30 @@ class AEONDeltaV3(nn.Module):
         _reliability_factors['weakest_factor'] = _weakest_factor
         _reliability_factors['composite'] = _current_output_reliability
 
+        # 8i-oq-trace. Record output reliability assessment in the causal
+        # trace so that downstream root-cause analysis can trace reliability
+        # decisions back to their contributing factors.  Without this, the
+        # output reliability score is computed but its derivation (which
+        # factors degraded it) is not part of the causal chain, preventing
+        # full traceability of trustworthiness conclusions.
+        if self.causal_trace is not None and not fast:
+            self.causal_trace.record(
+                "output_reliability", "assessed",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "composite_reliability": _current_output_reliability,
+                    "weakest_factor": _weakest_factor,
+                    "verification_coverage": _verification_coverage,
+                    "uncertainty": uncertainty,
+                    "coherence_deficit": self._cached_coherence_deficit,
+                },
+                severity=(
+                    "warning"
+                    if _current_output_reliability < 0.5
+                    else "info"
+                ),
+            )
+
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
         # analysis, provenance dampening) is complete, refresh the cached
@@ -33088,6 +33131,9 @@ class AEONDeltaV3(nn.Module):
                     ("_cached_cross_validation_state", "cross_validation"),
                     ("_cached_ns_consistency_state", "ns_consistency"),
                     ("_cached_tkg_state", "temporal_knowledge_graph"),
+                    ("_cached_neurogenic_memory_state", "neurogenic_memory"),
+                    ("_cached_temporal_memory_state", "temporal_memory"),
+                    ("_cached_consolidating_memory_state", "consolidating_memory"),
                 ]
             }
             for label in _weakest.get("modules", []):
