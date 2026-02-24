@@ -18712,6 +18712,13 @@ class AEONDeltaV3(nn.Module):
             extra["deferred_trigger_pressure"] = max(
                 0.0, min(1.0, self._deferred_trigger_pressure),
             )
+            # Consume the deferred pressure so it is not re-emitted on
+            # every subsequent pass.  The signal is one-shot: fast mode
+            # produces it, the next pass's feedback bus consumes it, and
+            # the meta-loop acts on it.  Without this reset, the pressure
+            # persists indefinitely, causing phantom deeper reasoning on
+            # all future passes.
+            self._deferred_trigger_pressure = 0.0
         # Convergence certificate Lipschitz pressure — when the empirical
         # Lipschitz exceeds the target (> 0.85 typically), the excess is
         # carried into the feedback bus so the meta-loop can condition
@@ -19783,6 +19790,14 @@ class AEONDeltaV3(nn.Module):
         # discrete tokens to continuous embeddings (incompatible shapes
         # for L2 delta), but the modules are registered in the dependency
         # DAG and attribution order for root-cause traceability.
+        # Register the raw input as the pipeline root so that
+        # trace_root_cause() can walk backward through the ("input",
+        # "encoder") and ("input", "meta_loop") dependency edges.
+        # Without this, the provenance DAG's root node has no recorded
+        # state, causing root-cause traces to stop at "encoder" instead
+        # of reaching the true pipeline entry point.
+        self.provenance_tracker.record_before("input", z_in)
+        self.provenance_tracker.record_after("input", z_in)
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         # Register continual_learning stage as a placeholder when active.
@@ -25118,6 +25133,21 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            # Register grounded multimodal output in the causal context
+            # window so that cross-pass temporal reasoning can retrieve
+            # perceptual grounding signals.  Without this, the CLIP-style
+            # contrastive embedding enriches only the current pass and is
+            # lost to future reasoning, preventing the system from building
+            # persistent cross-modal knowledge across forward passes.
+            if self.causal_context is not None:
+                self.causal_context.add(
+                    source="grounded_multimodal",
+                    embedding=z_rssm.mean(dim=0).detach(),
+                    relevance=0.5,
+                    causal_weight=0.3,
+                    tier="mid_term",
+                    metadata={"grounded_multimodal": True},
+                )
         
         # 8. Integration with residual and normalization
         self.provenance_tracker.record_before("integration", z_rssm)
@@ -27097,6 +27127,36 @@ class AEONDeltaV3(nn.Module):
                     # stronger dampening of memory contribution.
                     _dampen = max(0.0, min(0.5, 0.3 - _mem_consistency))
                     z_out = z_out * (1.0 - _dampen) + C_star * _dampen
+                # Same-pass memory re-retrieval — when the UCC flags stale
+                # memories, attempt a fresh retrieval using the refined
+                # C_star (which has been through deeper reasoning and
+                # factor re-extraction) as the query.  This closes the
+                # gap where memory staleness was detected and dampened
+                # but never corrected within the same pass, requiring
+                # the NEXT pass to see fresh memories.
+                if (self.hierarchical_memory is not None
+                        and C_star is not None
+                        and torch.isfinite(C_star).all()):
+                    try:
+                        _re_retrieved, _ = self.hierarchical_memory(
+                            C_star.detach(),
+                        )
+                        if (torch.isfinite(_re_retrieved).all()
+                                and _re_retrieved.shape == z_out.shape):
+                            # Blend re-retrieved memory with dampened output
+                            z_out = z_out * 0.7 + _re_retrieved * 0.3
+                            self._cached_memory_state = _re_retrieved.detach()
+                            self._memory_stale = False
+                            self.audit_log.record(
+                                "memory_validation", "same_pass_re_retrieval", {
+                                    "consistency_before": _mem_consistency,
+                                },
+                            )
+                    except Exception as _re_ret_err:
+                        logger.debug(
+                            "Same-pass memory re-retrieval failed "
+                            "(non-fatal): %s", _re_ret_err,
+                        )
                 self.causal_context.add(
                     source="memory_validation",
                     embedding=z_out.mean(dim=0).detach(),
@@ -29449,10 +29509,25 @@ class AEONDeltaV3(nn.Module):
         if _ucc_results:
             _ucc_trigger = _ucc_results.get('trigger_detail', {})
             _ucc_should_rerun = _ucc_results.get('should_rerun', False)
+            # Continuous coherence deficit loss — always penalise cross-
+            # module incoherence proportionally to its magnitude, even
+            # when the composite trigger score is below the rerun
+            # threshold.  This closes the gap where mild coherence
+            # deficits (below the metacognitive trigger but above zero)
+            # generated no gradient signal, leaving training blind to
+            # progressive architectural drift between subsystems.
+            _ucc_coherence_deficit = _ucc_results.get(
+                'coherence_result', {},
+            ).get('coherence_deficit', 0.0)
+            if _ucc_coherence_deficit > 0.0:
+                ucc_loss = torch.tensor(
+                    min(1.0, _ucc_coherence_deficit), device=self.device,
+                )
             if _ucc_should_rerun:
                 _trigger_score = _ucc_trigger.get('trigger_score', 0.0)
                 ucc_loss = torch.tensor(
-                    min(1.0, _trigger_score), device=self.device,
+                    min(1.0, max(_trigger_score, _ucc_coherence_deficit)),
+                    device=self.device,
                 )
 
         # ===== 16. SELF-REPORT LOSS =====
