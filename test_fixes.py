@@ -51362,6 +51362,359 @@ def test_cached_active_learning_curiosity_initialized():
     print("✅ test_cached_active_learning_curiosity_initialized PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SECTION 50: ARCHITECTURAL UNIFICATION — SubsystemCoherenceRegistry,
+#  UncertaintyPropagationBus, SubsystemHealthGate, Learned Factor Projections
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_subsystem_coherence_registry_basic():
+    """SubsystemCoherenceRegistry tracks validated outputs per forward pass."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "meta_loop", "safety", "decoder"},
+        history_maxlen=10,
+    )
+
+    # Before any registration, deficit should be 1.0 (nothing validated)
+    registry.begin_pass()
+    assert registry.get_coverage_deficit() == 1.0, (
+        "Coverage deficit should be 1.0 when no outputs registered"
+    )
+
+    # Register some outputs
+    registry.register_output("encoder", validated=True)
+    registry.register_output("meta_loop", validated=True)
+    deficit = registry.get_coverage_deficit()
+    assert 0.0 < deficit < 1.0, (
+        f"Partial registration should give partial deficit, got {deficit}"
+    )
+
+    # Register all
+    registry.register_output("safety", validated=True)
+    registry.register_output("decoder", validated=True)
+    assert registry.get_coverage_deficit() == 0.0, (
+        "Full registration should give 0.0 deficit"
+    )
+
+    # Absent subsystems
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True)
+    absent = registry.get_absent_subsystems()
+    assert "meta_loop" in absent, "meta_loop should be absent"
+    assert "encoder" not in absent, "encoder should not be absent"
+
+    print("✅ test_subsystem_coherence_registry_basic PASSED")
+
+
+def test_subsystem_coherence_registry_persistent_absence():
+    """SubsystemCoherenceRegistry detects persistently absent subsystems."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "meta_loop", "safety"},
+        history_maxlen=10,
+    )
+
+    # Simulate 5 passes where safety is always absent
+    for _ in range(5):
+        registry.begin_pass()
+        registry.register_output("encoder", validated=True)
+        registry.register_output("meta_loop", validated=True)
+        # safety never registered
+
+    persistent = registry.get_persistently_absent(min_occurrences=3)
+    assert "safety" in persistent, (
+        "safety should be detected as persistently absent"
+    )
+    assert "encoder" not in persistent, (
+        "encoder should not be persistently absent"
+    )
+
+    print("✅ test_subsystem_coherence_registry_persistent_absence PASSED")
+
+
+def test_subsystem_coherence_registry_summary():
+    """SubsystemCoherenceRegistry.build_summary returns complete diagnostic."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+    registry.begin_pass()
+    summary = registry.build_summary()
+
+    assert "total_passes" in summary, "Missing total_passes"
+    assert "coverage_deficit" in summary, "Missing coverage_deficit"
+    assert "absent_subsystems" in summary, "Missing absent_subsystems"
+    assert "persistently_absent" in summary, "Missing persistently_absent"
+    assert summary["total_passes"] == 1, f"Expected 1 pass, got {summary['total_passes']}"
+
+    print("✅ test_subsystem_coherence_registry_summary PASSED")
+
+
+def test_uncertainty_propagation_bus_basic():
+    """UncertaintyPropagationBus propagates uncertainty through DAG edges."""
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(decay_factor=0.8, min_propagation=0.05)
+
+    edges = [("encoder", "meta_loop"), ("meta_loop", "safety"), ("safety", "decoder")]
+    uncertainties = {"encoder": 0.9}
+
+    propagated = bus.propagate(uncertainties, edges)
+
+    # Encoder should keep its uncertainty
+    assert propagated["encoder"] >= 0.9, (
+        f"Encoder uncertainty should be >= 0.9, got {propagated['encoder']}"
+    )
+    # Meta_loop should receive propagated uncertainty from encoder
+    assert propagated["meta_loop"] > 0.0, (
+        "meta_loop should receive propagated uncertainty from encoder"
+    )
+    # Safety should receive attenuated uncertainty
+    assert propagated["safety"] > 0.0, (
+        "safety should receive propagated uncertainty"
+    )
+    # Each downstream should be less than upstream (decay)
+    assert propagated["meta_loop"] <= propagated["encoder"], (
+        "Downstream uncertainty should be <= upstream"
+    )
+    assert propagated["safety"] <= propagated["meta_loop"], (
+        "Further downstream should have less propagated uncertainty"
+    )
+
+    print("✅ test_uncertainty_propagation_bus_basic PASSED")
+
+
+def test_uncertainty_propagation_bus_no_propagation_below_threshold():
+    """UncertaintyPropagationBus stops propagating below min_propagation."""
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(decay_factor=0.1, min_propagation=0.1)
+
+    edges = [("a", "b"), ("b", "c"), ("c", "d")]
+    uncertainties = {"a": 0.5}
+
+    propagated = bus.propagate(uncertainties, edges)
+
+    # With decay=0.1, a→b gets 0.05 which is below min_propagation=0.1
+    # so b→c and c→d should NOT propagate
+    assert propagated.get("d", 0.0) == 0.0, (
+        "Deep downstream should get no propagated uncertainty when below threshold"
+    )
+
+    print("✅ test_uncertainty_propagation_bus_no_propagation_below_threshold PASSED")
+
+
+def test_uncertainty_propagation_bus_multiple_sources():
+    """UncertaintyPropagationBus handles multiple upstream uncertainty sources."""
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(decay_factor=0.8)
+
+    edges = [("a", "c"), ("b", "c")]
+    uncertainties = {"a": 0.6, "b": 0.8}
+
+    propagated = bus.propagate(uncertainties, edges)
+
+    # c should get the max of propagated from a and b
+    assert propagated["c"] >= 0.6 * 0.8, (
+        f"c should get at least a's propagated uncertainty, got {propagated['c']}"
+    )
+
+    print("✅ test_uncertainty_propagation_bus_multiple_sources PASSED")
+
+
+def test_subsystem_health_gate_basic():
+    """SubsystemHealthGate gates output based on health features."""
+    from aeon_core import SubsystemHealthGate
+    import torch
+
+    gate = SubsystemHealthGate(hidden_dim=32, min_gate_value=0.1)
+
+    # Healthy output
+    healthy_output = torch.randn(2, 32)
+    gated, gate_val = gate(healthy_output, coherence_score=1.0)
+    assert gated.shape == healthy_output.shape, "Shape should be preserved"
+    assert gate_val >= 0.1, f"Gate value should be >= min_gate_value, got {gate_val}"
+    assert gate_val <= 1.0, f"Gate value should be <= 1.0, got {gate_val}"
+
+    # Non-finite output should get lower gate
+    bad_output = torch.full((2, 32), float('nan'))
+    gated_bad, gate_val_bad = gate(bad_output, coherence_score=0.0)
+    # Gate value with NaN and 0 coherence should be low
+    assert gate_val_bad >= 0.1, "Gate should respect min_gate_value even for bad input"
+
+    print("✅ test_subsystem_health_gate_basic PASSED")
+
+
+def test_subsystem_health_gate_gradient_flow():
+    """SubsystemHealthGate allows gradient flow through the gate."""
+    from aeon_core import SubsystemHealthGate
+    import torch
+
+    gate = SubsystemHealthGate(hidden_dim=32, min_gate_value=0.1)
+    x = torch.randn(2, 32, requires_grad=True)
+
+    gated, _ = gate(x, coherence_score=0.8)
+    loss = gated.sum()
+    loss.backward()
+
+    assert x.grad is not None, "Gradients should flow through the health gate"
+    assert torch.isfinite(x.grad).all(), "Gradients should be finite"
+
+    print("✅ test_subsystem_health_gate_gradient_flow PASSED")
+
+
+def test_subsystem_health_gate_min_gate_floor():
+    """SubsystemHealthGate enforces minimum gate value."""
+    from aeon_core import SubsystemHealthGate
+    import torch
+
+    gate = SubsystemHealthGate(hidden_dim=32, min_gate_value=0.3)
+    x = torch.randn(2, 32)
+
+    _, gate_val = gate(x, coherence_score=0.0)
+    assert gate_val >= 0.3, (
+        f"Gate value {gate_val} should be >= min_gate_value 0.3"
+    )
+
+    print("✅ test_subsystem_health_gate_min_gate_floor PASSED")
+
+
+def test_learned_factor_projection_parallel_pipeline():
+    """ParallelCognitivePipeline uses learned projections instead of zeros."""
+    from aeon_core import ParallelCognitivePipeline, AEONConfig
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    pipeline = ParallelCognitivePipeline(cfg)
+
+    assert hasattr(pipeline, 'factor_proj'), (
+        "ParallelCognitivePipeline must have a learned factor_proj"
+    )
+    assert hasattr(pipeline, 'action_proj'), (
+        "ParallelCognitivePipeline must have a learned action_proj"
+    )
+    assert isinstance(pipeline.factor_proj, torch.nn.Linear), (
+        "factor_proj should be nn.Linear"
+    )
+    assert isinstance(pipeline.action_proj, torch.nn.Linear), (
+        "action_proj should be nn.Linear"
+    )
+    assert pipeline.factor_proj.out_features == cfg.num_pillars, (
+        f"factor_proj output should be num_pillars={cfg.num_pillars}"
+    )
+    assert pipeline.action_proj.out_features == cfg.action_dim, (
+        f"action_proj output should be action_dim={cfg.action_dim}"
+    )
+
+    print("✅ test_learned_factor_projection_parallel_pipeline PASSED")
+
+
+def test_learned_factor_projection_hierarchical():
+    """HierarchicalCognitiveArchitecture uses learned projections when safety enabled."""
+    from aeon_core import HierarchicalCognitiveArchitecture, AEONConfig
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    arch = HierarchicalCognitiveArchitecture(cfg, enabled_levels=[0, 1, 2])
+
+    assert hasattr(arch, 'factor_proj'), (
+        "HierarchicalCognitiveArchitecture must have factor_proj when safety enabled"
+    )
+    assert hasattr(arch, 'action_proj'), (
+        "HierarchicalCognitiveArchitecture must have action_proj when safety enabled"
+    )
+
+    print("✅ test_learned_factor_projection_hierarchical PASSED")
+
+
+def test_coherence_registry_wired_in_aeonv3():
+    """AEONDeltaV3 initializes and exposes coherence_registry."""
+    from aeon_core import AEONConfig, AEONDeltaV3, SubsystemCoherenceRegistry
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert hasattr(model, 'coherence_registry'), (
+        "AEONDeltaV3 must have coherence_registry attribute"
+    )
+    assert isinstance(model.coherence_registry, SubsystemCoherenceRegistry), (
+        "coherence_registry must be SubsystemCoherenceRegistry instance"
+    )
+
+    print("✅ test_coherence_registry_wired_in_aeonv3 PASSED")
+
+
+def test_uncertainty_propagation_wired_in_aeonv3():
+    """AEONDeltaV3 initializes and exposes uncertainty_propagation bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3, UncertaintyPropagationBus
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert hasattr(model, 'uncertainty_propagation'), (
+        "AEONDeltaV3 must have uncertainty_propagation attribute"
+    )
+    assert isinstance(model.uncertainty_propagation, UncertaintyPropagationBus), (
+        "uncertainty_propagation must be UncertaintyPropagationBus instance"
+    )
+
+    print("✅ test_uncertainty_propagation_wired_in_aeonv3 PASSED")
+
+
+def test_health_gate_wired_in_aeonv3():
+    """AEONDeltaV3 initializes and exposes subsystem_health_gate."""
+    from aeon_core import AEONConfig, AEONDeltaV3, SubsystemHealthGate
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert hasattr(model, 'subsystem_health_gate'), (
+        "AEONDeltaV3 must have subsystem_health_gate attribute"
+    )
+    assert isinstance(model.subsystem_health_gate, SubsystemHealthGate), (
+        "subsystem_health_gate must be SubsystemHealthGate instance"
+    )
+
+    print("✅ test_health_gate_wired_in_aeonv3 PASSED")
+
+
+def test_self_diagnostic_includes_coherence_registry():
+    """self_diagnostic output includes coherence_registry data."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    assert 'coherence_registry' in diag, (
+        "self_diagnostic must include coherence_registry"
+    )
+    reg = diag['coherence_registry']
+    assert 'coverage_deficit' in reg, "coherence_registry missing coverage_deficit"
+    assert 'absent_subsystems' in reg, "coherence_registry missing absent_subsystems"
+
+    print("✅ test_self_diagnostic_includes_coherence_registry PASSED")
+
+
+def test_self_diagnostic_includes_directional_uncertainty():
+    """self_diagnostic output includes directional_uncertainty data."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    assert 'directional_uncertainty' in diag, (
+        "self_diagnostic must include directional_uncertainty"
+    )
+    du = diag['directional_uncertainty']
+    assert 'aggregate_uncertainty' in du, "directional_uncertainty missing aggregate"
+    assert 'flagged_modules' in du, "directional_uncertainty missing flagged_modules"
+
+    print("✅ test_self_diagnostic_includes_directional_uncertainty PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -53586,6 +53939,25 @@ def run_all_tests():
     test_output_reliability_causal_trace_recording()
     test_cached_mcts_quality_initialized()
     test_cached_active_learning_curiosity_initialized()
+
+    # Architectural Unification — SubsystemCoherenceRegistry,
+    # UncertaintyPropagationBus, SubsystemHealthGate, Learned Projections
+    test_subsystem_coherence_registry_basic()
+    test_subsystem_coherence_registry_persistent_absence()
+    test_subsystem_coherence_registry_summary()
+    test_uncertainty_propagation_bus_basic()
+    test_uncertainty_propagation_bus_no_propagation_below_threshold()
+    test_uncertainty_propagation_bus_multiple_sources()
+    test_subsystem_health_gate_basic()
+    test_subsystem_health_gate_gradient_flow()
+    test_subsystem_health_gate_min_gate_floor()
+    test_learned_factor_projection_parallel_pipeline()
+    test_learned_factor_projection_hierarchical()
+    test_coherence_registry_wired_in_aeonv3()
+    test_uncertainty_propagation_wired_in_aeonv3()
+    test_health_gate_wired_in_aeonv3()
+    test_self_diagnostic_includes_coherence_registry()
+    test_self_diagnostic_includes_directional_uncertainty()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
