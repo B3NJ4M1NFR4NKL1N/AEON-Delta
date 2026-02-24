@@ -22444,6 +22444,39 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
         
+        # 5b1b-ii-corr. World model surprise → state correction — when
+        # surprise exceeds the threshold, apply a small corrective nudge
+        # to C_star in the direction of the world model's prediction.
+        # This closes the gap where high surprise only escalated
+        # uncertainty: now the system actively adjusts its reasoning
+        # state toward the world model's expectation, making the world
+        # model an active participant in state refinement rather than
+        # a passive diagnostic signal.  The correction magnitude is
+        # proportional to surprise but capped to avoid destabilizing
+        # the converged state.
+        _WM_CORRECTION_SCALE = 0.05
+        if (world_model_results
+                and 'predicted_next' in world_model_results
+                and surprise.numel() > 0
+                and not fast):
+            _mean_surp = float(surprise.mean().item())
+            if (math.isfinite(_mean_surp)
+                    and _mean_surp > self.config.surprise_threshold):
+                _wm_pred = world_model_results['predicted_next']
+                if (torch.isfinite(_wm_pred).all()
+                        and _wm_pred.shape == C_star.shape):
+                    _corr_weight = min(
+                        _WM_CORRECTION_SCALE,
+                        _WM_CORRECTION_SCALE * _mean_surp,
+                    )
+                    C_star = C_star + _corr_weight * (_wm_pred - C_star).detach()
+                    self.audit_log.record(
+                        "world_model", "surprise_state_correction", {
+                            "correction_weight": _corr_weight,
+                            "mean_surprise": _mean_surp,
+                        },
+                    )
+
         # 5b1b-iii. Value network state quality signal — when the world
         # model's value network is available, score the current C_star to
         # estimate reasoning state quality.  Low-quality states (below the
@@ -23591,7 +23624,36 @@ class AEONDeltaV3(nn.Module):
             "causal_programmatic_executed": self.causal_programmatic is not None and not fast,
             "dag_loss": float(causal_model_results.get('dag_loss', torch.tensor(0.0)).item()) if causal_model_results else 0.0,
         })
-        
+
+        # 5d1c2-cq. Causal quality → convergence quality feedback — when
+        # the causal model(s) report poor DAG quality (< 0.5), penalize
+        # convergence_quality_scalar proportionally.  This closes the gap
+        # where causal model outputs were logged but never fed back into
+        # the meta-loop's convergence assessment: poor causal structure
+        # now lowers the system's confidence in convergence, making the
+        # UCC deeper-loop acceptance criterion harder to satisfy and
+        # forcing more thorough reasoning when causal grounding is weak.
+        _CAUSAL_CONVERGENCE_PENALTY_SCALE = 0.3
+        if (self._cached_causal_quality < 0.5
+                and math.isfinite(self._cached_causal_quality)
+                and _causal_healthy):
+            _causal_deficit = 0.5 - self._cached_causal_quality
+            _cq_penalty = _CAUSAL_CONVERGENCE_PENALTY_SCALE * _causal_deficit
+            convergence_quality_scalar = max(
+                0.0, convergence_quality_scalar - _cq_penalty,
+            )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "causal_convergence_feedback",
+                    "convergence_quality_penalized",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "causal_quality": self._cached_causal_quality,
+                        "penalty": _cq_penalty,
+                        "convergence_quality_after": convergence_quality_scalar,
+                    },
+                )
+
         # 5d1c3. Causal DAG consensus — cross-validate adjacency matrices
         # from all active causal models to detect structural disagreement.
         # When multiple models assert conflicting causal structures,
@@ -25633,6 +25695,49 @@ class AEONDeltaV3(nn.Module):
                         _uc_boost, _uc_deficit * 0.3,
                     )
                     high_uncertainty = uncertainty > 0.5
+                    # 8b2c-iter. Iterative auto-critic refinement — when
+                    # the first revision still yields a low quality score
+                    # (< 0.3), run a second revision pass to extract
+                    # further improvement.  This closes the gap where the
+                    # auto-critic was one-shot: the system now iteratively
+                    # self-corrects until quality is acceptable or the
+                    # iteration budget is exhausted.
+                    _AC_ITERATIVE_THRESHOLD = 0.3
+                    if (_auto_critic_final_score < _AC_ITERATIVE_THRESHOLD
+                            and _any_auto_critic_revised):
+                        try:
+                            _uc_critic_2 = self.auto_critic(z_out)
+                            _uc_revised_2 = _uc_critic_2.get(
+                                "candidate", None,
+                            )
+                            _uc_score_2 = _uc_critic_2.get(
+                                "final_score", 0.0,
+                            )
+                            if (_uc_revised_2 is not None
+                                    and torch.isfinite(_uc_revised_2).all()
+                                    and _uc_revised_2.shape == z_out.shape
+                                    and _uc_score_2 > _auto_critic_final_score):
+                                z_out = _uc_revised_2
+                                _auto_critic_final_score = _uc_score_2
+                                _auto_critic_all_scores.append(_uc_score_2)
+                            self.audit_log.record(
+                                "auto_critic",
+                                "iterative_second_pass",
+                                {
+                                    "first_score": _uc_critic.get(
+                                        "final_score", 0.0,
+                                    ),
+                                    "second_score": _uc_score_2,
+                                    "accepted": _uc_score_2 > _uc_critic.get(
+                                        "final_score", 0.0,
+                                    ),
+                                },
+                            )
+                        except Exception as _ac_iter_err:
+                            logger.debug(
+                                "Auto-critic iterative pass failed "
+                                "(non-fatal): %s", _ac_iter_err,
+                            )
                 # Wire unconditional auto-critic quality into the
                 # convergence monitor, matching the NS-violation and
                 # metacognitive paths so all critic invocations inform
@@ -27138,18 +27243,47 @@ class AEONDeltaV3(nn.Module):
                         and C_star is not None
                         and torch.isfinite(C_star).all()):
                     try:
-                        _re_retrieved, _ = self.hierarchical_memory(
-                            C_star.detach(),
-                        )
-                        if (torch.isfinite(_re_retrieved).all()
-                                and _re_retrieved.shape == z_out.shape):
-                            # Blend re-retrieved memory with dampened output
-                            z_out = z_out * 0.7 + _re_retrieved * 0.3
-                            self._cached_memory_state = _re_retrieved.detach()
-                            self._memory_stale = False
+                        # Use per-sample retrieve() (the same path that
+                        # detects staleness) instead of forward() so that
+                        # staleness is only cleared when retrieval content
+                        # is genuinely non-empty.
+                        _re_vecs = []
+                        _re_non_empty = 0
+                        for _ri in range(z_out.shape[0]):
+                            _rr = self.hierarchical_memory.retrieve(
+                                C_star[_ri].detach(), k=5,
+                            )
+                            _rw = _rr.get('working', [])
+                            if _rw:
+                                _rv = torch.stack([v for v, _s in _rw])
+                                _re_vecs.append(_rv.mean(dim=0))
+                                _re_non_empty += 1
+                            else:
+                                _re_vecs.append(
+                                    torch.zeros(
+                                        self.config.hidden_dim,
+                                        device=device,
+                                    )
+                                )
+                        if _re_non_empty > 0:
+                            _re_ctx = torch.stack(_re_vecs).to(device)
+                            _re_proj = self.memory_projection(_re_ctx)
+                            if (torch.isfinite(_re_proj).all()
+                                    and _re_proj.shape == z_out.shape):
+                                z_out = z_out * 0.7 + _re_proj * 0.3
+                                self._cached_memory_state = _re_proj.detach()
+                            # Only clear staleness when the majority of
+                            # samples returned non-empty results.
+                            _re_ratio = _re_non_empty / max(z_out.shape[0], 1)
+                            if _re_ratio > 0.5:
+                                self._memory_stale = False
                             self.audit_log.record(
-                                "memory_validation", "same_pass_re_retrieval", {
+                                "memory_validation",
+                                "same_pass_re_retrieval",
+                                {
                                     "consistency_before": _mem_consistency,
+                                    "re_non_empty": _re_non_empty,
+                                    "re_ratio": _re_ratio,
                                 },
                             )
                     except Exception as _re_ret_err:
@@ -27466,6 +27600,42 @@ class AEONDeltaV3(nn.Module):
                                 },
                                 severity="warning",
                             )
+                        # 8f-ucc-partial. Partial integration of rejected
+                        # deeper result — instead of fully discarding the
+                        # deeper meta-loop output, extract a small fraction
+                        # of the improvement direction when convergence
+                        # improved (even if not enough for full acceptance)
+                        # and coherence did not worsen.  This ensures that
+                        # computational effort invested in deeper reasoning
+                        # is never completely wasted, making the UCC a
+                        # continuous refinement mechanism rather than an
+                        # all-or-nothing gate.
+                        _PARTIAL_BLEND_MAX = 0.1
+                        if (_ucc_deeper_coherent
+                                and _ucc_deeper_rate > 0.0
+                                and convergence_quality_scalar > 0.0):
+                            _improvement_ratio = min(
+                                1.0,
+                                _ucc_deeper_rate / max(
+                                    convergence_quality_scalar, 1e-6,
+                                ),
+                            )
+                            _partial_blend = (
+                                _PARTIAL_BLEND_MAX * _improvement_ratio
+                            )
+                            if _partial_blend > 0.01:
+                                z_out = (
+                                    z_out * (1.0 - _partial_blend)
+                                    + _ucc_C_deeper * _partial_blend
+                                )
+                                self.audit_log.record(
+                                    "unified_cognitive_cycle",
+                                    "deeper_meta_loop_partial_blend",
+                                    {
+                                        "blend_fraction": _partial_blend,
+                                        "improvement_ratio": _improvement_ratio,
+                                    },
+                                )
             except Exception as _ucc_deep_err:
                 logger.warning(
                     "UCC-driven deeper meta-loop error (non-fatal): %s",
