@@ -14769,13 +14769,14 @@ def test_coherence_deficit_triggers_causal_trace_root_cause():
     with torch.no_grad():
         outputs = model(input_ids)
 
-    # The causal trace should contain a coherence_deficit root_cause_query entry
-    causal_trace_entries = model.causal_trace.recent(n=50)
-    root_cause_entries = [
-        e for e in causal_trace_entries
-        if e["subsystem"] == "coherence_deficit"
-        and e["decision"] == "root_cause_query"
-    ]
+    # The causal trace should contain a coherence_deficit root_cause_query entry.
+    # Use find() instead of recent(n=50) to scan the full buffer, avoiding
+    # false negatives when downstream modules generate enough entries to push
+    # the early coherence_deficit entry outside the recent(n=50) window.
+    root_cause_entries = model.causal_trace.find(
+        subsystem="coherence_deficit",
+        decision="root_cause_query",
+    )
     assert len(root_cause_entries) > 0, (
         "Coherence deficit should trigger a causal trace root-cause query"
     )

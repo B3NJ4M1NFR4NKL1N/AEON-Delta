@@ -13958,11 +13958,15 @@ class TemporalCausalTraceBuffer:
     ) -> Dict[str, Any]:
         """Identify subsystems that recurrently appear as root causes.
 
-        Scans the ``n_recent`` most recent entries for error/warning
-        severity events, traces each back to its root causes, and
+        Scans the full buffer for error/warning severity events (up to
+        ``n_recent`` matches), traces each back to its root causes, and
         tallies how often each subsystem appears.  Subsystems that
         recur frequently indicate systemic issues that deeper reasoning
         should prioritise.
+
+        Uses :meth:`find` instead of :meth:`recent` so that early-pipeline
+        root-cause events are not missed when later entries dominate the
+        tail of the buffer.
 
         This converts the causal trace from a passive audit trail into
         an actionable signal: downstream consumers (e.g. the
@@ -13970,7 +13974,7 @@ class TemporalCausalTraceBuffer:
         to guide targeted re-reasoning.
 
         Args:
-            n_recent: Number of recent entries to scan.
+            n_recent: Maximum number of matching entries to scan.
             severity_filter: If provided, only scan entries with this
                 severity (e.g. ``"warning"``).  If None, scans both
                 ``"error"`` and ``"warning"`` entries.
@@ -13982,16 +13986,21 @@ class TemporalCausalTraceBuffer:
                   subsystem.
                 - total_traces: int — number of entries analysed.
         """
-        recent = self.recent(n=n_recent)
         if severity_filter is not None:
-            candidates = [
-                e for e in recent if e.get("severity") == severity_filter
-            ]
+            candidates = self.find(severity=severity_filter, n=n_recent)
         else:
-            candidates = [
-                e for e in recent
-                if e.get("severity") in ("error", "warning")
-            ]
+            # find() accepts a single severity; query both and merge.
+            warnings_list = self.find(severity="warning", n=n_recent)
+            errors_list = self.find(severity="error", n=n_recent)
+            # Merge and deduplicate by entry id, keeping most-recent-first order
+            seen_ids: set = set()
+            candidates = []
+            for entry in warnings_list + errors_list:
+                eid = entry.get("id")
+                if eid not in seen_ids:
+                    seen_ids.add(eid)
+                    candidates.append(entry)
+            candidates = candidates[:n_recent]
 
         subsystem_counts: Dict[str, int] = {}
         for entry in candidates:
