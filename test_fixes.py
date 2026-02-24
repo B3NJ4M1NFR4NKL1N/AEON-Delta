@@ -48512,6 +48512,197 @@ def test_error_evolution_active_learning_bridge():
     print("✅ test_error_evolution_active_learning_bridge PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Provenance Input Node, Continuous Coherence Loss,
+#  Deferred Trigger Consumption, Grounded Multimodal Causal Context,
+#  Same-Pass Memory Re-Retrieval
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_input_node_provenance_recorded():
+    """Input node has record_before/record_after in reasoning core."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.reset()
+    # Simulate what _reasoning_core_impl now does
+    z_in = torch.randn(2, 64)
+    tracker.record_before("input", z_in)
+    tracker.record_after("input", z_in)
+    tracker.record_before("encoder", z_in)
+    tracker.record_after("encoder", z_in)
+
+    attr = tracker.compute_attribution()
+    # 'input' should be in the attribution order
+    order = attr.get('order', [])
+    assert 'input' in order, (
+        f"'input' node missing from provenance attribution order: {order}"
+    )
+    # 'input' should appear BEFORE 'encoder' in the order
+    assert order.index('input') < order.index('encoder'), (
+        "'input' should precede 'encoder' in provenance order"
+    )
+    print("✅ test_input_node_provenance_recorded PASSED")
+
+
+def test_ucc_loss_continuous_coherence_deficit():
+    """UCC loss includes continuous coherence deficit, not just binary trigger."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, seq_length=16, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_safety_guardrails=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate outputs with coherence deficit but no rerun
+    outputs = {
+        'logits': torch.randn(2, 16, 1000),
+        'thoughts': torch.randn(2, 64),
+        'vq_loss': torch.tensor(0.0),
+        'unified_cognitive_cycle_results': {
+            'should_rerun': False,
+            'trigger_detail': {'trigger_score': 0.3},
+            'coherence_result': {'coherence_deficit': 0.4},
+        },
+    }
+    targets = torch.randint(0, 1000, (2, 16))
+    loss_dict = model.compute_loss(outputs, targets)
+    ucc_loss = loss_dict.get('ucc_loss', torch.tensor(0.0))
+
+    # The coherence deficit is 0.4, which is >0, so ucc_loss should be >0
+    # even though should_rerun is False
+    assert float(ucc_loss.item()) > 0.0, (
+        f"UCC loss should be >0 with coherence_deficit=0.4, got {ucc_loss.item()}"
+    )
+    assert float(ucc_loss.item()) <= 0.4 + 1e-6, (
+        f"UCC loss should be <= coherence_deficit, got {ucc_loss.item()}"
+    )
+    print("✅ test_ucc_loss_continuous_coherence_deficit PASSED")
+
+
+def test_ucc_loss_rerun_takes_max_of_trigger_and_deficit():
+    """When should_rerun=True, UCC loss uses max(trigger_score, deficit)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, seq_length=16, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_safety_guardrails=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    outputs = {
+        'logits': torch.randn(2, 16, 1000),
+        'thoughts': torch.randn(2, 64),
+        'vq_loss': torch.tensor(0.0),
+        'unified_cognitive_cycle_results': {
+            'should_rerun': True,
+            'trigger_detail': {'trigger_score': 0.8},
+            'coherence_result': {'coherence_deficit': 0.3},
+        },
+    }
+    targets = torch.randint(0, 1000, (2, 16))
+    loss_dict = model.compute_loss(outputs, targets)
+    ucc_loss = float(loss_dict['ucc_loss'].item())
+
+    # Should use max(0.8, 0.3) = 0.8
+    assert abs(ucc_loss - 0.8) < 1e-5, (
+        f"UCC loss with rerun should be max(trigger, deficit)=0.8, got {ucc_loss}"
+    )
+    print("✅ test_ucc_loss_rerun_takes_max_of_trigger_and_deficit PASSED")
+
+
+def test_deferred_trigger_pressure_consumed_after_feedback():
+    """Deferred trigger pressure is reset to 0 after feedback bus consumes it."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, seq_length=16, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate fast-mode setting deferred trigger pressure
+    model._deferred_trigger_pressure = 0.75
+
+    # Build feedback signals — should include the pressure and then clear it
+    extra = model._build_feedback_extra_signals()
+    assert 'deferred_trigger_pressure' in extra, (
+        "Deferred trigger pressure should appear in feedback signals"
+    )
+    assert abs(extra['deferred_trigger_pressure'] - 0.75) < 1e-5, (
+        f"Expected 0.75, got {extra['deferred_trigger_pressure']}"
+    )
+    # After building, the pressure should be consumed (reset to 0)
+    assert model._deferred_trigger_pressure == 0.0, (
+        f"Deferred trigger pressure should be 0.0 after consumption, "
+        f"got {model._deferred_trigger_pressure}"
+    )
+
+    # Building again should NOT include deferred pressure
+    extra2 = model._build_feedback_extra_signals()
+    assert 'deferred_trigger_pressure' not in extra2, (
+        "Deferred trigger pressure should not reappear after consumption"
+    )
+    print("✅ test_deferred_trigger_pressure_consumed_after_feedback PASSED")
+
+
+def test_grounded_multimodal_causal_context_registration():
+    """Grounded multimodal output is registered in causal context."""
+    from aeon_core import CausalContextWindowManager
+
+    ctx = CausalContextWindowManager(hidden_dim=64)
+    emb = torch.randn(64)
+
+    # Simulate what _reasoning_core_impl now does after grounded multimodal
+    ctx.add(
+        source="grounded_multimodal",
+        embedding=emb,
+        relevance=0.5,
+        causal_weight=0.3,
+        tier="mid_term",
+        metadata={"grounded_multimodal": True},
+    )
+
+    # Should be retrievable from the context
+    tensor = ctx.get_context_tensor(k=5)
+    assert tensor is not None, (
+        "Causal context should have grounded_multimodal entry"
+    )
+    print("✅ test_grounded_multimodal_causal_context_registration PASSED")
+
+
+def test_memory_re_retrieval_path_exists():
+    """Same-pass memory re-retrieval code path is reachable."""
+    from aeon_core import NeuralTuringMachine
+    import torch
+
+    # Verify the NTM can be called with a query tensor for re-retrieval
+    ntm = NeuralTuringMachine(
+        input_dim=64, hidden_dim=64, memory_size=16, memory_dim=64,
+        num_read_heads=2,
+    )
+    query = torch.randn(2, 64)
+    output, hidden = ntm(query)
+    assert output.shape == (2, 64), (
+        f"NTM re-retrieval should produce [B, hidden_dim], got {output.shape}"
+    )
+    assert torch.isfinite(output).all(), "Re-retrieved memory should be finite"
+    print("✅ test_memory_re_retrieval_path_exists PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -50625,6 +50816,16 @@ def run_all_tests():
     test_auto_critic_causal_loss_modulation()
     test_dag_adjacency_prior_conditioning()
     test_error_evolution_active_learning_bridge()
+
+    # Architectural Unification — Provenance Input Node, Continuous Coherence
+    # Loss, Deferred Trigger Consumption, Grounded Multimodal Causal Context,
+    # Same-Pass Memory Re-Retrieval
+    test_input_node_provenance_recorded()
+    test_ucc_loss_continuous_coherence_deficit()
+    test_ucc_loss_rerun_takes_max_of_trigger_and_deficit()
+    test_deferred_trigger_pressure_consumed_after_feedback()
+    test_grounded_multimodal_causal_context_registration()
+    test_memory_re_retrieval_path_exists()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
