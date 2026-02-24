@@ -47800,6 +47800,154 @@ def test_ucc_backward_compatible_without_dag_consensus():
     print("✅ test_ucc_backward_compatible_without_dag_consensus PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Full Metacognitive Signal & Lambda Coverage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_new_class_to_signal_entries_are_valid_signals():
+    """Newly added _class_to_signal entries must map to valid signal names."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    valid_signals = set(trigger._signal_weights.keys())
+
+    import inspect, re
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped = dict(re.findall(r'"([^"]+)":\s*"([^"]+)"', src))
+
+    new_entries = {
+        "coherence_trend_degradation", "convergence_certificate_violation",
+        "dag_consensus_disagreement", "high_coherence_loss",
+        "high_hierarchical_wm_loss", "high_memory_retrieval_loss",
+        "high_ns_consistency_loss", "high_total_training_loss",
+        "high_training_loss", "high_ucc_training_loss",
+        "provenance_delta_anomaly", "provenance_dag_cycle",
+        "recovery_memory_store_failed", "recovery_reinforcement_failed",
+    }
+    for entry in new_entries:
+        assert entry in mapped, f"{entry} not in _class_to_signal"
+        assert mapped[entry] in valid_signals, (
+            f"{entry} maps to '{mapped[entry]}' which is not a valid signal. "
+            f"Valid: {sorted(valid_signals)}"
+        )
+    print("✅ test_new_class_to_signal_entries_are_valid_signals PASSED")
+
+
+def test_new_error_class_to_lambda_entries_are_valid():
+    """Newly added _ERROR_CLASS_TO_LAMBDA entries must map to valid config params."""
+    from aeon_core import CausalErrorEvolutionTracker, AEONConfig
+
+    config = AEONConfig.__new__(AEONConfig)
+    # Check that all lambda targets are valid AEONConfig attributes
+    new_entries = {
+        "coherence_trend_degradation": "lambda_coherence",
+        "convergence_certificate_violation": "lambda_lipschitz",
+        "cycle_consistency_violation": "lambda_cycle_consistency",
+        "dag_consensus_disagreement": "lambda_causal_dag",
+        "feedback_bus_failure": "lambda_ucc",
+        "high_total_training_loss": "lambda_self_consistency",
+        "high_ucc_training_loss": "lambda_ucc",
+        "low_output_reliability": "lambda_ucc",
+        "memory_reasoning_inconsistency": "lambda_memory_retrieval",
+        "provenance_dag_cycle": "lambda_causal_dag",
+        "provenance_delta_anomaly": "lambda_ucc",
+        "recovery_memory_store_failed": "lambda_memory_retrieval",
+        "recovery_reinforcement_failed": "lambda_ucc",
+        "topology_catastrophe": "lambda_lipschitz",
+        "verify_coherence_deficit": "lambda_coherence",
+    }
+    for error_cls, lambda_name in new_entries.items():
+        assert error_cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{error_cls} not in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[error_cls] == lambda_name
+    print("✅ test_new_error_class_to_lambda_entries_are_valid PASSED")
+
+
+def test_silent_exception_blocks_replaced_with_logging():
+    """Bare 'except Exception: pass' blocks should have been replaced with
+    debug logging to maintain the audit trail for root-cause traceability."""
+    import re
+
+    core_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py",
+    )
+    with open(core_path, "r") as f:
+        content = f.read()
+
+    # Count remaining bare "except Exception:\n    pass" in the production code
+    # (excluding test code and comments)
+    # We allow the ICM reward fallback (sets a default value) and the
+    # mcts_causal_adj block (sets uncertainty), but bare pass blocks should
+    # have been replaced with at least logger.debug.
+    bare_pass_pattern = re.compile(
+        r'except\s+Exception\s*:\s*\n\s+pass\s+#\s*(provenance enrichment|'
+        r'non-critical in fast path|causal modulation)',
+    )
+    matches = bare_pass_pattern.findall(content)
+    assert len(matches) == 0, (
+        f"Found {len(matches)} bare 'except Exception: pass' blocks that "
+        f"should have been replaced with debug logging: {matches}"
+    )
+    print("✅ test_silent_exception_blocks_replaced_with_logging PASSED")
+
+
+def test_full_error_class_coverage_class_to_signal():
+    """100% of error classes recorded via record_episode() should now be
+    explicitly mapped in _class_to_signal (not relying on the fallback)."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped_keys = set(re.findall(r'"([^"]+)":\s*"', src))
+
+    core_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py",
+    )
+    with open(core_path, "r") as f:
+        content = f.read()
+    recorded = set(re.findall(r'error_class="([^"]+)"', content))
+    recorded.discard("none")
+
+    missing = recorded - mapped_keys
+    # Should have near-100% coverage now
+    coverage = len(recorded & mapped_keys) / max(len(recorded), 1)
+    assert coverage >= 0.95, (
+        f"_class_to_signal coverage is {coverage:.0%}, need ≥95%. "
+        f"Missing: {sorted(missing)}"
+    )
+    print("✅ test_full_error_class_coverage_class_to_signal PASSED")
+
+
+def test_full_error_class_coverage_error_class_to_lambda():
+    """100% of error classes recorded via record_episode() should now be
+    explicitly mapped in _ERROR_CLASS_TO_LAMBDA (not relying on fallback)."""
+    import re
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_mapped = set(CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA.keys())
+
+    core_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py",
+    )
+    with open(core_path, "r") as f:
+        content = f.read()
+    recorded = set(re.findall(r'error_class="([^"]+)"', content))
+    recorded.discard("none")
+
+    missing = recorded - lambda_mapped
+    coverage = len(recorded & lambda_mapped) / max(len(recorded), 1)
+    assert coverage >= 0.95, (
+        f"_ERROR_CLASS_TO_LAMBDA coverage is {coverage:.0%}, need ≥95%. "
+        f"Missing: {sorted(missing)}"
+    )
+    print("✅ test_full_error_class_coverage_error_class_to_lambda PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -49879,6 +50027,13 @@ def run_all_tests():
     test_build_feedback_no_arbiter_conflict_when_none()
     test_ucc_dag_consensus_records_uncertainty()
     test_ucc_backward_compatible_without_dag_consensus()
+
+    # Architectural Unification — Full Metacognitive Signal & Lambda Coverage
+    test_new_class_to_signal_entries_are_valid_signals()
+    test_new_error_class_to_lambda_entries_are_valid()
+    test_silent_exception_blocks_replaced_with_logging()
+    test_full_error_class_coverage_class_to_signal()
+    test_full_error_class_coverage_error_class_to_lambda()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

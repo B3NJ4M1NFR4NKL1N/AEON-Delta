@@ -1735,8 +1735,11 @@ class ErrorRecoveryManager:
                     _provenance_info["dominant_provenance_module"] = max(
                         _contribs, key=_contribs.get,
                     )
-            except Exception:
-                pass  # provenance enrichment is best-effort
+            except Exception as _prov_err:
+                logger.debug(
+                    "Provenance enrichment failed during error recovery: %s",
+                    _prov_err,
+                )
 
         self.audit_log.record("error_recovery", error_class, {
             "context": context,
@@ -11368,8 +11371,8 @@ class MCTSPlanner(nn.Module):
                     self._POLICY_PRIOR_WEIGHT * effective_priors[:n_actions]
                     + self._CAUSAL_BIAS_WEIGHT * causal_bias
                 )
-            except Exception:
-                pass  # causal modulation is best-effort
+            except Exception as _cm_err:
+                logger.debug("Causal modulation failed in MCTS expand: %s", _cm_err)
         for a in range(n_actions):
             prior = effective_priors[a].item()
             # Use world model to predict next state
@@ -14824,6 +14827,24 @@ class MetaCognitiveRecursionTrigger:
             "training_loss_divergence": "diverging",
             "training_nan_loss": "uncertainty",
             "unified_simulator_divergence": "world_model_surprise",
+            # ── Newly mapped error classes for full coverage ───────
+            # These error classes were recorded via record_episode()
+            # but fell through to the generic "uncertainty" fallback,
+            # preventing targeted metacognitive signal adaptation.
+            "coherence_trend_degradation": "coherence_deficit",
+            "convergence_certificate_violation": "diverging",
+            "dag_consensus_disagreement": "low_causal_quality",
+            "high_coherence_loss": "coherence_deficit",
+            "high_hierarchical_wm_loss": "world_model_surprise",
+            "high_memory_retrieval_loss": "memory_staleness",
+            "high_ns_consistency_loss": "safety_violation",
+            "high_total_training_loss": "uncertainty",
+            "high_training_loss": "uncertainty",
+            "high_ucc_training_loss": "uncertainty",
+            "provenance_delta_anomaly": "low_causal_quality",
+            "provenance_dag_cycle": "low_causal_quality",
+            "recovery_memory_store_failed": "memory_staleness",
+            "recovery_reinforcement_failed": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15432,6 +15453,25 @@ class CausalErrorEvolutionTracker:
         "persistent_module_uncertainty": "lambda_ucc",
         # ── Generic / fallback error classes ───────────────────────────
         "subsystem": "lambda_safety",
+        # ── Newly mapped error classes for full loss-weight coverage ───
+        # These error classes were recorded via record_episode() but had
+        # no mapping to a lambda parameter, so their failure patterns
+        # could not influence training loss weight adjustments.
+        "coherence_trend_degradation": "lambda_coherence",
+        "convergence_certificate_violation": "lambda_lipschitz",
+        "cycle_consistency_violation": "lambda_cycle_consistency",
+        "dag_consensus_disagreement": "lambda_causal_dag",
+        "feedback_bus_failure": "lambda_ucc",
+        "high_total_training_loss": "lambda_self_consistency",
+        "high_ucc_training_loss": "lambda_ucc",
+        "low_output_reliability": "lambda_ucc",
+        "memory_reasoning_inconsistency": "lambda_memory_retrieval",
+        "provenance_dag_cycle": "lambda_causal_dag",
+        "provenance_delta_anomaly": "lambda_ucc",
+        "recovery_memory_store_failed": "lambda_memory_retrieval",
+        "recovery_reinforcement_failed": "lambda_ucc",
+        "topology_catastrophe": "lambda_lipschitz",
+        "verify_coherence_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -18683,8 +18723,10 @@ class AEONDeltaV3(nn.Module):
                 metadata["dominant_provenance_module"] = max(
                     contributions, key=contributions.get,
                 )
-        except Exception:
-            pass  # provenance enrichment is best-effort
+        except Exception as _prov_err:
+            logger.debug(
+                "Provenance enrichment failed in metadata: %s", _prov_err,
+            )
         return metadata
 
     def _compute_diversity(
@@ -21949,8 +21991,10 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass  # non-critical in fast path
+                except Exception as _ae_err:
+                    logger.debug(
+                        "Metacognitive weight adaptation failed: %s", _ae_err,
+                    )
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
                 is_diverging=is_diverging,
