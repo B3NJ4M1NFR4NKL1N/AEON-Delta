@@ -506,13 +506,13 @@ except ImportError:
     class MetaCognitiveRecursionTrigger:
         """Metacognitive trigger (fallback when aeon_core unavailable).
 
-        Monitors the same nine signals as
+        Monitors the same twelve signals as
         ``aeon_core.MetaCognitiveRecursionTrigger`` and uses weighted-sum
         evaluation so that standalone training can detect uncertainty,
         divergence, and coherence deficits that warrant re-reasoning.
         """
 
-        _DEFAULT_WEIGHT = 1.0 / 9.0
+        _DEFAULT_WEIGHT = 1.0 / 12.0
 
         def __init__(self, trigger_threshold: float = 0.5,
                      max_recursions: int = 2,
@@ -540,6 +540,9 @@ except ImportError:
                 "world_model_surprise": self._DEFAULT_WEIGHT,
                 "low_causal_quality": self._DEFAULT_WEIGHT,
                 "safety_violation": self._DEFAULT_WEIGHT,
+                "diversity_collapse": self._DEFAULT_WEIGHT,
+                "memory_trust_deficit": self._DEFAULT_WEIGHT,
+                "convergence_conflict": self._DEFAULT_WEIGHT,
             }
 
         def reset(self):
@@ -554,6 +557,9 @@ except ImportError:
                      world_model_surprise: float = 0.0,
                      causal_quality: float = 1.0,
                      safety_violation: bool = False,
+                     diversity_collapse: float = 0.0,
+                     memory_trust_deficit: float = 0.0,
+                     convergence_conflict: float = 0.0,
                      **kwargs) -> Dict[str, Any]:
             can_recurse = self._recursion_count < self.max_recursions
             signals: Dict[str, float] = {
@@ -570,6 +576,9 @@ except ImportError:
                     1.0 if causal_quality < self._causal_quality_threshold else 0.0
                 ),
                 "safety_violation": 1.0 if safety_violation else 0.0,
+                "diversity_collapse": min(max(diversity_collapse, 0.0), 1.0),
+                "memory_trust_deficit": min(max(memory_trust_deficit, 0.0), 1.0),
+                "convergence_conflict": min(max(convergence_conflict, 0.0), 1.0),
             }
             trigger_score = sum(
                 self._signal_weights.get(k, 0.0) * v
@@ -600,13 +609,50 @@ except ImportError:
             error_classes = error_summary.get("error_classes", {})
             if not error_classes:
                 return
+            # Map error classes to the trigger signals they most relate to.
+            # Mirrors the mapping in aeon_core.MetaCognitiveRecursionTrigger
+            # so that training-time error patterns properly sensitise the
+            # metacognitive trigger for corresponding signals.
             _class_to_signal = {
                 "convergence_diverging": "diverging",
                 "convergence_divergence": "diverging",
                 "coherence_deficit": "coherence_deficit",
+                "post_integration_coherence_deficit": "coherence_deficit",
+                "post_auto_critic_coherence_deficit": "coherence_deficit",
+                "post_rerun_coherence_deficit": "coherence_deficit",
                 "metacognitive_rerun": "uncertainty",
                 "numerical": "uncertainty",
                 "safety_rollback": "safety_violation",
+                "reconciliation_disagreement": "coherence_deficit",
+                "world_model_prediction_error": "world_model_surprise",
+                "low_causal_quality": "low_causal_quality",
+                "mcts_low_confidence": "uncertainty",
+                "causal_programmatic_forward": "low_causal_quality",
+                "causal_dag_disagreement": "low_causal_quality",
+                "convergence_success": "uncertainty",
+                "certified_convergence_failure": "uncertainty",
+                "safety_critic_revision": "safety_violation",
+                "vq_codebook_collapse": "uncertainty",
+                "diversity_collapse": "diversity_collapse",
+                "memory_staleness": "memory_staleness",
+                "memory_subsystem": "memory_staleness",
+                "critical_uncertainty": "uncertainty",
+                "auto_critic_low_quality": "uncertainty",
+                "convergence_conflict": "convergence_conflict",
+                "memory_reasoning_inconsistency": "memory_staleness",
+                "low_memory_trust": "memory_trust_deficit",
+                "low_output_reliability": "uncertainty",
+                "topology_catastrophe": "topology_catastrophe",
+                "coherence_trend_degradation": "coherence_deficit",
+                "convergence_certificate_violation": "diverging",
+                "dag_consensus_disagreement": "low_causal_quality",
+                "high_total_training_loss": "uncertainty",
+                "high_training_loss": "uncertainty",
+                "training_divergence": "diverging",
+                "training_stagnation": "coherence_deficit",
+                "training_ucc_failure": "uncertainty",
+                "inter_memory_disagreement": "memory_staleness",
+                "decoder_degenerate_output": "coherence_deficit",
             }
             for cls_name, cls_stats in error_classes.items():
                 signal = _class_to_signal.get(cls_name)
@@ -658,6 +704,7 @@ except ImportError:
                      world_model_surprise=0.0, causal_quality=1.0,
                      memory_staleness=False, recovery_pressure=0.0,
                      safety_violation=False, feedback_signal=None,
+                     diversity_collapse=0.0, memory_trust_deficit=0.0,
                      **kwargs):
             # 1. Convergence check
             convergence_verdict = self.convergence_monitor.check(delta_norm)
@@ -724,14 +771,20 @@ except ImportError:
                     world_model_surprise=world_model_surprise,
                     causal_quality=causal_quality,
                     safety_violation=safety_violation,
+                    diversity_collapse=diversity_collapse,
+                    memory_trust_deficit=memory_trust_deficit,
                 )
             else:
                 _should = (is_diverging or coherence_deficit > 0.5
                            or uncertainty > 0.7 or safety_violation
-                           or topology_catastrophe)
+                           or topology_catastrophe
+                           or diversity_collapse > 0.5
+                           or memory_trust_deficit > 0.5)
                 trigger_detail = {
                     "should_trigger": _should,
                     "trigger_score": max(uncertainty, coherence_deficit,
+                                         diversity_collapse,
+                                         memory_trust_deficit,
                                          1.0 if is_diverging else 0.0),
                     "triggers_active": [s for s, v in [
                         ("diverging", is_diverging),
@@ -739,12 +792,23 @@ except ImportError:
                         ("uncertainty", uncertainty > 0.7),
                         ("safety_violation", safety_violation),
                         ("topology_catastrophe", topology_catastrophe),
+                        ("diversity_collapse", diversity_collapse > 0.5),
+                        ("memory_trust_deficit", memory_trust_deficit > 0.5),
                     ] if v],
                 }
             should_rerun = trigger_detail.get("should_trigger", False) or needs_recheck
 
             # 4. Provenance snapshot
             provenance = self.provenance_tracker.compute_attribution()
+
+            # 4b. Weakest-pair identification for consistency with
+            # aeon_core.UnifiedCognitiveCycle return structure.
+            weakest_pair = None
+            if (self.coherence_verifier is not None
+                    and hasattr(self.coherence_verifier, 'get_weakest_pair')):
+                weakest_pair = self.coherence_verifier.get_weakest_pair(
+                    coherence_result.get("pairwise", {}),
+                )
 
             # 5. Restore coherence threshold
             if _original_threshold is not None and self.coherence_verifier is not None:
@@ -756,6 +820,7 @@ except ImportError:
                     "coherence_score": coherence_result["coherence_score"],
                     "needs_recheck": needs_recheck,
                     "coherence_deficit": coherence_deficit,
+                    "weakest_pair": weakest_pair,
                 },
                 "should_rerun": should_rerun,
                 "trigger_detail": trigger_detail,
