@@ -23176,8 +23176,10 @@ class AEONDeltaV3(nn.Module):
             _dag_prior_applied = False
             if (self._cached_dag_adj_matrices
                     and hasattr(self.causal_world_model, 'causal_model')
-                    and hasattr(self.causal_world_model.causal_model, 'adjacency')):
-                _cw_adj = self.causal_world_model.causal_model.adjacency
+                    and hasattr(self.causal_world_model.causal_model, 'adjacency_logits')):
+                _cw_cm = self.causal_world_model.causal_model
+                _cw_logits = _cw_cm.adjacency_logits
+                _cw_adj = _cw_cm.adjacency  # derived from logits
                 _prior_sum = None
                 _prior_count = 0
                 for _adj_t in self._cached_dag_adj_matrices.values():
@@ -23186,10 +23188,17 @@ class AEONDeltaV3(nn.Module):
                         _prior_count += 1
                 if _prior_count > 0 and _prior_sum is not None:
                     _DAG_PRIOR_BLEND = 0.05
-                    _mean_prior = _prior_sum / _prior_count
-                    self.causal_world_model.causal_model.adjacency.data.copy_(
-                        (1.0 - _DAG_PRIOR_BLEND) * _cw_adj.data
-                        + _DAG_PRIOR_BLEND * _mean_prior.to(_cw_adj.device)
+                    _mean_prior = (_prior_sum / _prior_count).to(_cw_logits.device)
+                    # Convert the prior adjacency to logit-space for
+                    # blending with adjacency_logits.  Clamp to avoid
+                    # log(0) producing -inf.
+                    _prior_logits = torch.log(
+                        _mean_prior.clamp(min=1e-6, max=1.0 - 1e-6)
+                        / (1.0 - _mean_prior.clamp(min=1e-6, max=1.0 - 1e-6))
+                    )
+                    _cw_logits.data.copy_(
+                        (1.0 - _DAG_PRIOR_BLEND) * _cw_logits.data
+                        + _DAG_PRIOR_BLEND * _prior_logits
                     )
                     _dag_prior_applied = True
             causal_world_results = self.causal_world_model(C_star)

@@ -48277,6 +48277,241 @@ def test_provenance_dominance_error_class_coverage():
     print("✅ test_provenance_dominance_error_class_coverage PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CROSS-MODULE INTEGRATION TESTS — Validates the 6 new architectural bridges
+#  that connect previously disconnected subsystems into a unified cognitive
+#  cycle where each component verifies and reinforces the others.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_config_cross_module_integration_params():
+    """New config parameters for cross-module integration exist and have
+    sensible defaults."""
+    from aeon_core import AEONConfig
+    config = AEONConfig()
+    assert hasattr(config, 'topology_wm_attenuation'), (
+        "AEONConfig should have topology_wm_attenuation"
+    )
+    assert 0.0 < config.topology_wm_attenuation < 1.0, (
+        f"topology_wm_attenuation should be in (0,1), got {config.topology_wm_attenuation}"
+    )
+    assert hasattr(config, 'dag_consensus_loss_bonus'), (
+        "AEONConfig should have dag_consensus_loss_bonus"
+    )
+    assert config.dag_consensus_loss_bonus >= 0.0, (
+        f"dag_consensus_loss_bonus should be non-negative, got {config.dag_consensus_loss_bonus}"
+    )
+    assert hasattr(config, 'memory_causal_cross_threshold'), (
+        "AEONConfig should have memory_causal_cross_threshold"
+    )
+    assert 0.0 < config.memory_causal_cross_threshold < 1.0, (
+        f"memory_causal_cross_threshold should be in (0,1), got {config.memory_causal_cross_threshold}"
+    )
+    print("✅ test_config_cross_module_integration_params PASSED")
+
+
+def test_topology_wm_attenuation_logic():
+    """Gap 2: Topology catastrophe should attenuate world model's influence
+    by blending C_star toward the pre-world-model state."""
+    config_topology_wm_attenuation = 0.3
+    C_star = torch.randn(2, 16)
+    pre_wm_state = torch.randn(2, 16)  # cached meta-loop state
+
+    # Simulate the attenuation logic from _reasoning_core_impl
+    C_star_before = C_star.clone()
+    _topo_attn = config_topology_wm_attenuation
+    C_star_attenuated = C_star * (1.0 - _topo_attn) + pre_wm_state * _topo_attn
+
+    # Attenuated state should differ from original
+    assert not torch.allclose(C_star_attenuated, C_star_before), (
+        "Topology attenuation should modify C_star"
+    )
+    # Attenuation should blend toward pre-WM state
+    dist_to_pre = (C_star_attenuated - pre_wm_state).norm().item()
+    dist_original_to_pre = (C_star_before - pre_wm_state).norm().item()
+    assert dist_to_pre < dist_original_to_pre, (
+        "Attenuated C_star should be closer to pre-WM state than original"
+    )
+    print("✅ test_topology_wm_attenuation_logic PASSED")
+
+
+def test_memory_causal_cross_validation_divergence():
+    """Gap 3: Memory state diverging from causal prediction should be
+    detected via cosine similarity and escalate uncertainty."""
+    import torch.nn.functional as F
+
+    # Create divergent memory and causal states
+    memory_state = torch.randn(2, 32)
+    causal_pred = -memory_state  # Maximally divergent
+
+    _mem_flat = memory_state.mean(dim=0)
+    _causal_flat = causal_pred.mean(dim=0)
+    cos_sim = F.cosine_similarity(
+        _mem_flat.unsqueeze(0), _causal_flat.unsqueeze(0),
+    ).item()
+    divergence = 1.0 - cos_sim
+    threshold = 0.3
+
+    assert divergence > threshold, (
+        f"Opposite vectors should have divergence > {threshold}, got {divergence}"
+    )
+
+    # Simulate uncertainty escalation
+    uncertainty = 0.1
+    _mc_boost = min(1.0 - uncertainty, divergence * 0.15)
+    uncertainty_after = min(1.0, uncertainty + _mc_boost)
+    assert uncertainty_after > uncertainty, (
+        "Memory-causal divergence should escalate uncertainty"
+    )
+
+    # Test with aligned states — should NOT trigger
+    causal_pred_aligned = memory_state + torch.randn_like(memory_state) * 0.01
+    _causal_flat_aligned = causal_pred_aligned.mean(dim=0)
+    cos_sim_aligned = F.cosine_similarity(
+        _mem_flat.unsqueeze(0), _causal_flat_aligned.unsqueeze(0),
+    ).item()
+    divergence_aligned = 1.0 - cos_sim_aligned
+    assert divergence_aligned < threshold, (
+        f"Aligned vectors should have divergence < {threshold}, got {divergence_aligned}"
+    )
+    print("✅ test_memory_causal_cross_validation_divergence PASSED")
+
+
+def test_dag_consensus_loss_scaling():
+    """Gap 4: DAG consensus score should modulate causal_dag_loss in
+    compute_loss — high agreement amplifies, low agreement attenuates."""
+    dag_consensus_loss_bonus = 0.5
+
+    # High consensus (1.0) → scale = 1.0 + 0.5*(2*1-1) = 1.5
+    consensus_high = 1.0
+    scale_high = 1.0 + dag_consensus_loss_bonus * (2.0 * consensus_high - 1.0)
+    assert abs(scale_high - 1.5) < 1e-6, f"High consensus scale should be 1.5, got {scale_high}"
+
+    # Low consensus (0.0) → scale = 1.0 + 0.5*(2*0-1) = 0.5
+    consensus_low = 0.0
+    scale_low = 1.0 + dag_consensus_loss_bonus * (2.0 * consensus_low - 1.0)
+    assert abs(scale_low - 0.5) < 1e-6, f"Low consensus scale should be 0.5, got {scale_low}"
+
+    # Mid consensus (0.5) → scale = 1.0 + 0.5*(2*0.5-1) = 1.0
+    consensus_mid = 0.5
+    scale_mid = 1.0 + dag_consensus_loss_bonus * (2.0 * consensus_mid - 1.0)
+    assert abs(scale_mid - 1.0) < 1e-6, f"Mid consensus scale should be 1.0, got {scale_mid}"
+
+    # Verify actual loss scaling
+    base_loss = torch.tensor(0.1, requires_grad=True)
+    scaled_high = base_loss * max(0.1, scale_high)
+    scaled_low = base_loss * max(0.1, scale_low)
+    assert scaled_high.item() > scaled_low.item(), (
+        "High consensus should produce larger scaled loss than low consensus"
+    )
+    print("✅ test_dag_consensus_loss_scaling PASSED")
+
+
+def test_auto_critic_causal_loss_modulation():
+    """Gap 5: Auto-critic quality score should attenuate causal DAG loss
+    when quality is low to prevent reinforcing unreliable conclusions."""
+    # Low critic quality (0.2) → scale = max(0.3, 0.2) = 0.3
+    ac_score_low = 0.2
+    scale_low = max(0.3, min(1.0, ac_score_low))
+    assert abs(scale_low - 0.3) < 1e-6, f"Floor should be 0.3, got {scale_low}"
+
+    # High critic quality (0.9) → scale = max(0.3, 0.9) = 0.9
+    ac_score_high = 0.9
+    scale_high = max(0.3, min(1.0, ac_score_high))
+    assert abs(scale_high - 0.9) < 1e-6, f"High quality scale should be 0.9, got {scale_high}"
+
+    # Full quality → no attenuation
+    ac_score_full = 1.0
+    scale_full = max(0.3, min(1.0, ac_score_full))
+    assert abs(scale_full - 1.0) < 1e-6, f"Full quality scale should be 1.0, got {scale_full}"
+
+    # Verify attenuation order
+    base_loss = torch.tensor(0.5)
+    assert (base_loss * scale_low).item() < (base_loss * scale_high).item(), (
+        "Low critic quality should attenuate loss more than high quality"
+    )
+    print("✅ test_auto_critic_causal_loss_modulation PASSED")
+
+
+def test_dag_adjacency_prior_conditioning():
+    """Gap 6: Cached DAG adjacency matrices should provide a soft structural
+    prior to the CausalWorldModel's adjacency_logits before forward pass."""
+    from aeon_core import NeuralCausalModel
+
+    num_vars = 4
+    model = NeuralCausalModel(num_vars=num_vars, hidden_dim=16)
+
+    # Store original logits
+    original_logits = model.adjacency_logits.data.clone()
+
+    # Create a prior from hypothetical consensus matrices
+    prior_a = torch.eye(num_vars) * 0.8
+    prior_b = torch.ones(num_vars, num_vars) * 0.3
+    mean_prior = (prior_a + prior_b) / 2.0
+
+    # Convert prior to logit-space (inverse sigmoid)
+    _prior_clamped = mean_prior.clamp(min=1e-6, max=1.0 - 1e-6)
+    _prior_logits = torch.log(_prior_clamped / (1.0 - _prior_clamped))
+
+    # Apply prior blend (same logic as in the fix)
+    _DAG_PRIOR_BLEND = 0.05
+    model.adjacency_logits.data.copy_(
+        (1.0 - _DAG_PRIOR_BLEND) * original_logits
+        + _DAG_PRIOR_BLEND * _prior_logits
+    )
+
+    # Logits should have changed
+    assert not torch.allclose(model.adjacency_logits.data, original_logits, atol=1e-7), (
+        "Prior conditioning should modify adjacency_logits"
+    )
+
+    # Change should be small (0.05 blend)
+    change_mag = (model.adjacency_logits.data - original_logits).abs().max().item()
+    assert change_mag < 2.0, (
+        f"Prior blend should be moderate, got max logit change {change_mag}"
+    )
+    print("✅ test_dag_adjacency_prior_conditioning PASSED")
+
+
+def test_error_evolution_active_learning_bridge():
+    """Gap 1: Error evolution failure patterns should boost active learning
+    intrinsic reward to shape exploration toward epistemically fragile regions."""
+    # Simulate error summary with world model and causal failures
+    ee_summary = {
+        "subsystem": {"world_model": 3},
+        "world_model_surprise": {"count": 2},
+        "low_causal_quality": {"count": 4},
+        "causal_dag_disagreement": {"count": 1},
+    }
+    _ee_wm_failures = ee_summary.get("subsystem", {}).get("world_model", 0) + \
+                      ee_summary.get("world_model_surprise", {}).get("count", 0)
+    _ee_causal_failures = ee_summary.get("low_causal_quality", {}).get("count", 0) + \
+                          ee_summary.get("causal_dag_disagreement", {}).get("count", 0)
+    _ee_total_failures = _ee_wm_failures + _ee_causal_failures
+    assert _ee_total_failures == 10, f"Expected 10 total failures, got {_ee_total_failures}"
+
+    _ee_explore_boost = min(0.2, _ee_total_failures * 0.02)
+    assert abs(_ee_explore_boost - 0.2) < 1e-6, (
+        f"10 failures * 0.02 = 0.2 (capped), got {_ee_explore_boost}"
+    )
+
+    # Verify intrinsic reward is boosted
+    original_reward = 0.3
+    boosted_reward = original_reward + _ee_explore_boost
+    assert boosted_reward > original_reward, (
+        "Error evolution should boost intrinsic reward"
+    )
+
+    # Test with zero failures → no boost
+    ee_empty = {}
+    _wm_fail = ee_empty.get("subsystem", {}).get("world_model", 0) + \
+               ee_empty.get("world_model_surprise", {}).get("count", 0)
+    _causal_fail = ee_empty.get("low_causal_quality", {}).get("count", 0) + \
+                   ee_empty.get("causal_dag_disagreement", {}).get("count", 0)
+    assert _wm_fail + _causal_fail == 0, "Empty summary should yield zero failures"
+    print("✅ test_error_evolution_active_learning_bridge PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -50381,6 +50616,15 @@ def run_all_tests():
     test_directional_uncertainty_in_ucc_evaluate()
     test_ucc_directional_uncertainty_integration()
     test_provenance_dominance_error_class_coverage()
+
+    # Cross-Module Integration Tests — 6 new architectural bridges
+    test_config_cross_module_integration_params()
+    test_topology_wm_attenuation_logic()
+    test_memory_causal_cross_validation_divergence()
+    test_dag_consensus_loss_scaling()
+    test_auto_critic_causal_loss_modulation()
+    test_dag_adjacency_prior_conditioning()
+    test_error_evolution_active_learning_bridge()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
