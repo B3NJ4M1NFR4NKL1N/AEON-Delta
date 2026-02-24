@@ -46622,6 +46622,7 @@ def test_gap4_lipschitz_pressure_in_feedback_bus():
         _deferred_trigger_pressure = 0.0
         # Empirical Lipschitz exceeds target
         _cached_empirical_lipschitz = 1.2
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     mock = _MockModel()
@@ -46665,6 +46666,7 @@ def test_gap4_lipschitz_pressure_absent_when_below_target():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.5  # Below target
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     mock = _MockModel()
