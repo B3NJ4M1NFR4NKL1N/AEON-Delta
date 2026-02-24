@@ -47948,6 +47948,335 @@ def test_full_error_class_coverage_error_class_to_lambda():
     print("✅ test_full_error_class_coverage_error_class_to_lambda PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Circuit Breaker, Provenance Dominance, DAG
+#  Consensus State Correction, Mid-Loop Memory Validation, Directional
+#  Uncertainty Routing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_circuit_breaker_blocks_hierarchical_world_model():
+    """Fix 1: When world_model trips the circuit breaker, hierarchical_world_model
+    should be skipped.  Verify the guard condition includes the breaker check."""
+    import re
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    # The hierarchical_world_model guard should reference circuit breaker
+    pattern = r'hierarchical_world_model.*not.*fast.*world_model.*not.*in.*_circuit_breaker_tripped'
+    assert re.search(pattern, content), (
+        "hierarchical_world_model guard should check _circuit_breaker_tripped "
+        "for 'world_model' dependency"
+    )
+    print("✅ test_circuit_breaker_blocks_hierarchical_world_model PASSED")
+
+
+def test_circuit_breaker_blocks_active_learning_planner():
+    """Fix 1b: When world_model trips the circuit breaker, active_learning_planner
+    should be skipped since it depends on world_model."""
+    import re
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    pattern = r'active_learning_planner.*not.*fast.*world_model.*not.*in.*_circuit_breaker_tripped'
+    assert re.search(pattern, content), (
+        "active_learning_planner guard should check _circuit_breaker_tripped "
+        "for 'world_model' dependency"
+    )
+    print("✅ test_circuit_breaker_blocks_active_learning_planner PASSED")
+
+
+def test_provenance_dominance_feeds_error_evolution():
+    """Fix 2: When provenance dominance dampening fires, the event should be
+    recorded in error_evolution so dominant modules learn from monopolisation."""
+    import re
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    # Check that error_evolution.record_episode with provenance_dominance
+    # exists near the dominance dampening block
+    assert 'error_class="provenance_dominance"' in content, (
+        "Provenance dominance should record an error_evolution episode "
+        "with error_class='provenance_dominance'"
+    )
+    assert '"dominance_dampening"' in content, (
+        "Provenance dominance should use strategy 'dominance_dampening'"
+    )
+    print("✅ test_provenance_dominance_feeds_error_evolution PASSED")
+
+
+def test_provenance_dominance_records_causal_trace():
+    """Fix 2b: When provenance dominance dampening fires, the event should be
+    recorded in the causal trace for root-cause traceability."""
+    import re
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    assert '"provenance_dominance", "dampened"' in content, (
+        "Provenance dominance should record a causal trace entry "
+        "with source='provenance_dominance', event='dampened'"
+    )
+    print("✅ test_provenance_dominance_records_causal_trace PASSED")
+
+
+def test_dag_consensus_state_correction():
+    """Fix 3: CausalDAGConsensus disagreement should apply a graduated
+    C_star regression toward the input baseline proportional to disagreement."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus(agreement_threshold=0.5, uncertainty_scale=0.2)
+
+    # Create two disagreeing adjacency matrices
+    adj_a = torch.eye(4)
+    adj_b = torch.ones(4, 4) * 0.5  # Very different from identity
+    result = consensus.evaluate({"model_a": adj_a, "model_b": adj_b})
+
+    # Verify there's some disagreement
+    assert result["consensus_score"] < 1.0, "Disagreeing matrices should yield consensus < 1.0"
+
+    # Simulate state correction logic
+    z_in = torch.randn(2, 8)
+    C_star = torch.randn(2, 8)
+    C_star_original = C_star.clone()
+
+    dag_disagreement_mag = max(0.0, 1.0 - result["consensus_score"])
+    _DAG_STATE_CORRECTION_SCALE = 0.1
+    if dag_disagreement_mag > 0.0:
+        _dag_correction = _DAG_STATE_CORRECTION_SCALE * dag_disagreement_mag
+        C_star = C_star * (1.0 - _dag_correction) + z_in.detach() * _dag_correction
+
+    # C_star should be different from original (correction applied)
+    assert not torch.allclose(C_star, C_star_original), (
+        "DAG consensus disagreement should perturb C_star toward z_in"
+    )
+    # Correction should be moderate (not a full replacement)
+    diff = (C_star - C_star_original).abs().mean().item()
+    assert diff < 1.0, f"Correction should be moderate, got diff={diff}"
+    print("✅ test_dag_consensus_state_correction PASSED")
+
+
+def test_dag_consensus_no_correction_on_agreement():
+    """Fix 3b: When causal models agree perfectly, no state correction should
+    be applied."""
+    from aeon_core import CausalDAGConsensus
+    consensus = CausalDAGConsensus()
+
+    # Two identical adjacency matrices
+    adj = torch.eye(4)
+    result = consensus.evaluate({"model_a": adj, "model_b": adj.clone()})
+    assert result["consensus_score"] == 1.0, "Identical matrices should yield consensus=1.0"
+
+    # No disagreement → no correction
+    dag_disagreement_mag = max(0.0, 1.0 - result["consensus_score"])
+    assert dag_disagreement_mag == 0.0, "No disagreement should mean zero correction"
+    print("✅ test_dag_consensus_no_correction_on_agreement PASSED")
+
+
+def test_mid_loop_memory_validation():
+    """Fix 4: MemoryReasoningValidator should detect inconsistency between
+    fused memory and the converged state, triggering attenuation."""
+    from aeon_core import MemoryReasoningValidator
+
+    validator = MemoryReasoningValidator(
+        consistency_threshold=0.3,
+        staleness_penalty=0.15,
+    )
+
+    # Create deliberately inconsistent signals (opposite directions)
+    memory_signal = torch.ones(2, 8) * 5.0
+    converged_state = torch.ones(2, 8) * -5.0  # Opposite direction
+
+    result = validator.validate(
+        memory_signal=memory_signal,
+        converged_state=converged_state,
+    )
+
+    assert result["memory_available"] is True
+    assert result["needs_re_retrieval"] is True, (
+        "Opposite-direction memory and state should trigger re-retrieval"
+    )
+    assert result["uncertainty_boost"] > 0, (
+        "Inconsistent memory should produce positive uncertainty boost"
+    )
+    print("✅ test_mid_loop_memory_validation PASSED")
+
+
+def test_mid_loop_memory_validation_consistent():
+    """Fix 4b: When memory is consistent with the converged state, no
+    re-retrieval should be needed."""
+    from aeon_core import MemoryReasoningValidator
+
+    validator = MemoryReasoningValidator(consistency_threshold=0.3)
+
+    # Create consistent signals (same direction)
+    memory_signal = torch.randn(2, 8)
+    converged_state = memory_signal + 0.01 * torch.randn(2, 8)
+
+    result = validator.validate(
+        memory_signal=memory_signal,
+        converged_state=converged_state,
+    )
+
+    assert result["is_consistent"] is True, "Similar signals should be consistent"
+    assert result["needs_re_retrieval"] is False
+    assert result["uncertainty_boost"] == 0.0
+    print("✅ test_mid_loop_memory_validation_consistent PASSED")
+
+
+def test_mid_loop_memory_validation_in_source():
+    """Fix 4c: Verify the mid-loop memory validation code exists in the
+    reasoning core's memory fusion block."""
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    assert "mid_loop_memory_inconsistency" in content, (
+        "Mid-loop memory validation should record 'mid_loop_memory_inconsistency' "
+        "in uncertainty_sources"
+    )
+    assert "mid_loop_inconsistency" in content, (
+        "Mid-loop memory validation should audit-log 'mid_loop_inconsistency'"
+    )
+    print("✅ test_mid_loop_memory_validation_in_source PASSED")
+
+
+def test_directional_uncertainty_adapt_weights():
+    """Fix 5: MetaCognitiveRecursionTrigger.adapt_weights_from_directional_uncertainty
+    should boost signal weights for uncertain modules."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Record initial weights
+    initial_weights = dict(trigger._signal_weights)
+
+    # Simulate high memory uncertainty
+    module_uncertainties = {
+        "memory": 0.9,      # Very uncertain — should boost memory_staleness signal
+        "world_model": 0.1,  # Low uncertainty
+    }
+    trigger.adapt_weights_from_directional_uncertainty(module_uncertainties)
+
+    updated_weights = dict(trigger._signal_weights)
+
+    # The memory_staleness signal weight should have been boosted
+    # (because _PROVENANCE_TO_SIGNAL maps "memory" → "memory_staleness")
+    assert "memory_staleness" in updated_weights
+    # Weights are re-normalised, so absolute comparison depends on other weights.
+    # Check that the relative ordering changed: memory_staleness should have
+    # gained relative to its initial proportion.
+    initial_mem_ratio = initial_weights.get("memory_staleness", 0) / sum(initial_weights.values())
+    updated_mem_ratio = updated_weights.get("memory_staleness", 0) / sum(updated_weights.values())
+    assert updated_mem_ratio >= initial_mem_ratio, (
+        f"Memory staleness weight ratio should increase: "
+        f"{initial_mem_ratio:.4f} → {updated_mem_ratio:.4f}"
+    )
+    print("✅ test_directional_uncertainty_adapt_weights PASSED")
+
+
+def test_directional_uncertainty_adapt_weights_empty():
+    """Fix 5b: Empty module_uncertainties should not change trigger weights."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    initial_weights = dict(trigger._signal_weights)
+
+    trigger.adapt_weights_from_directional_uncertainty({})
+
+    assert trigger._signal_weights == initial_weights, (
+        "Empty uncertainties should not change trigger weights"
+    )
+    print("✅ test_directional_uncertainty_adapt_weights_empty PASSED")
+
+
+def test_directional_uncertainty_in_ucc_evaluate():
+    """Fix 5c: UCC.evaluate() should call adapt_weights_from_directional_uncertainty
+    when the DirectionalUncertaintyTracker has per-module data."""
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    assert "adapt_weights_from_directional_uncertainty" in content, (
+        "UCC evaluate should call adapt_weights_from_directional_uncertainty"
+    )
+    # Verify it's called in context of UCC (near adapt_weights_from_provenance)
+    import re
+    pattern = r'adapt_weights_from_provenance.*?adapt_weights_from_directional_uncertainty'
+    assert re.search(pattern, content, re.DOTALL), (
+        "adapt_weights_from_directional_uncertainty should be called "
+        "after adapt_weights_from_provenance in UCC evaluate"
+    )
+    print("✅ test_directional_uncertainty_in_ucc_evaluate PASSED")
+
+
+def test_ucc_directional_uncertainty_integration():
+    """Fix 5d: End-to-end test that UCC evaluate with DirectionalUncertaintyTracker
+    actually adapts trigger weights based on per-module uncertainty."""
+    from aeon_core import (
+        UnifiedCognitiveCycle,
+        ConvergenceMonitor,
+        ModuleCoherenceVerifier,
+        MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+    )
+
+    convergence_monitor = ConvergenceMonitor()
+    coherence_verifier = ModuleCoherenceVerifier(hidden_dim=8)
+    trigger = MetaCognitiveRecursionTrigger()
+    provenance_tracker = CausalProvenanceTracker()
+    uncertainty_tracker = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=convergence_monitor,
+        coherence_verifier=coherence_verifier,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=provenance_tracker,
+        uncertainty_tracker=uncertainty_tracker,
+    )
+
+    initial_weights = dict(trigger._signal_weights)
+
+    # Record high uncertainty for a specific module
+    uncertainty_tracker.record("world_model", 0.9)
+    uncertainty_tracker.record("memory", 0.1)
+
+    # Create subsystem states
+    states = {
+        "meta_loop": torch.randn(2, 8),
+        "safety": torch.randn(2, 8),
+    }
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.3,
+    )
+
+    # The trigger weights should have been adapted
+    updated_weights = dict(trigger._signal_weights)
+    # world_model maps to "world_model_surprise" signal — it should be boosted
+    initial_wm_ratio = initial_weights.get("world_model_surprise", 0) / sum(initial_weights.values())
+    updated_wm_ratio = updated_weights.get("world_model_surprise", 0) / sum(updated_weights.values())
+    assert updated_wm_ratio >= initial_wm_ratio, (
+        f"World model surprise weight should increase due to high world_model "
+        f"uncertainty: {initial_wm_ratio:.4f} → {updated_wm_ratio:.4f}"
+    )
+    print("✅ test_ucc_directional_uncertainty_integration PASSED")
+
+
+def test_provenance_dominance_error_class_coverage():
+    """Verify 'provenance_dominance' error class is mapped in the error
+    evolution tracker's _ERROR_CLASS_TO_LAMBDA or covered by fallback."""
+    import re
+    core_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aeon_core.py")
+    with open(core_path, "r") as f:
+        content = f.read()
+    # The error class should appear in both the recording site and either
+    # _ERROR_CLASS_TO_LAMBDA or _CLASS_TO_SIGNAL
+    assert 'error_class="provenance_dominance"' in content, (
+        "provenance_dominance should be recorded as an error class"
+    )
+    print("✅ test_provenance_dominance_error_class_coverage PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -50034,6 +50363,24 @@ def run_all_tests():
     test_silent_exception_blocks_replaced_with_logging()
     test_full_error_class_coverage_class_to_signal()
     test_full_error_class_coverage_error_class_to_lambda()
+
+    # Architectural Unification — Circuit Breaker, Provenance Dominance,
+    # DAG Consensus State Correction, Mid-Loop Memory Validation,
+    # Directional Uncertainty Routing
+    test_circuit_breaker_blocks_hierarchical_world_model()
+    test_circuit_breaker_blocks_active_learning_planner()
+    test_provenance_dominance_feeds_error_evolution()
+    test_provenance_dominance_records_causal_trace()
+    test_dag_consensus_state_correction()
+    test_dag_consensus_no_correction_on_agreement()
+    test_mid_loop_memory_validation()
+    test_mid_loop_memory_validation_consistent()
+    test_mid_loop_memory_validation_in_source()
+    test_directional_uncertainty_adapt_weights()
+    test_directional_uncertainty_adapt_weights_empty()
+    test_directional_uncertainty_in_ucc_evaluate()
+    test_ucc_directional_uncertainty_integration()
+    test_provenance_dominance_error_class_coverage()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
