@@ -14842,6 +14842,7 @@ class MetaCognitiveRecursionTrigger:
             "high_training_loss": "uncertainty",
             "high_ucc_training_loss": "uncertainty",
             "provenance_delta_anomaly": "low_causal_quality",
+            "provenance_dominance": "coherence_deficit",
             "provenance_dag_cycle": "low_causal_quality",
             "recovery_memory_store_failed": "memory_staleness",
             "recovery_reinforcement_failed": "uncertainty",
@@ -14993,6 +14994,46 @@ class MetaCognitiveRecursionTrigger:
             # Boost proportional to how far above mean this module is
             excess = max(0.0, contrib - _mean)
             boost = excess * scale
+            raw_weights[signal] = raw_weights[signal] + boost
+
+        total = sum(raw_weights.values())
+        if total > 0:
+            self._signal_weights = {
+                k: v / total for k, v in raw_weights.items()
+            }
+
+    def adapt_weights_from_directional_uncertainty(
+        self,
+        module_uncertainties: Dict[str, float],
+        scale: float = 0.2,
+    ) -> None:
+        """Adjust signal weights based on per-module directional uncertainty.
+
+        When the :class:`DirectionalUncertaintyTracker` identifies specific
+        modules as highly uncertain, the corresponding trigger signal weight
+        is boosted so that re-reasoning prioritises the uncertain subsystem.
+        This closes the gap where per-module uncertainty was recorded but
+        only the aggregate scalar influenced the trigger — directional
+        information was lost in the fusion, preventing targeted correction.
+
+        Args:
+            module_uncertainties: Mapping from module name to uncertainty
+                scalar ∈ [0, 1].  Typically from
+                ``DirectionalUncertaintyTracker.get_module_uncertainties()``.
+            scale: Maximum fractional weight boost for a module with
+                uncertainty = 1.0.  Default 0.2 provides moderate
+                adaptation without destabilising the trigger.
+        """
+        if not module_uncertainties:
+            return
+
+        raw_weights = dict(self._signal_weights)
+        for module_name, unc_val in module_uncertainties.items():
+            signal = self._PROVENANCE_TO_SIGNAL.get(module_name)
+            if signal is None or signal not in raw_weights:
+                continue
+            # Boost proportional to module uncertainty magnitude
+            boost = max(0.0, min(1.0, unc_val)) * scale
             raw_weights[signal] = raw_weights[signal] + boost
 
         total = sum(raw_weights.values())
@@ -15468,6 +15509,7 @@ class CausalErrorEvolutionTracker:
         "memory_reasoning_inconsistency": "lambda_memory_retrieval",
         "provenance_dag_cycle": "lambda_causal_dag",
         "provenance_delta_anomaly": "lambda_ucc",
+        "provenance_dominance": "lambda_ucc",
         "recovery_memory_store_failed": "lambda_memory_retrieval",
         "recovery_reinforcement_failed": "lambda_ucc",
         "topology_catastrophe": "lambda_lipschitz",
@@ -16313,6 +16355,24 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_provenance failed (non-fatal): %s",
                     _prov_adapt_err,
                 )
+            # 2b. Directional uncertainty weight adaptation — feed per-module
+            # uncertainty from the DirectionalUncertaintyTracker into the
+            # metacognitive trigger's signal weights so that re-reasoning
+            # prioritises the specific uncertain subsystem.  This closes
+            # the gap where per-module directional information was recorded
+            # but collapsed into a scalar for trigger evaluation.
+            if self.uncertainty_tracker is not None:
+                try:
+                    _dir_unc = self.uncertainty_tracker.get_module_uncertainties()
+                    if _dir_unc:
+                        self.metacognitive_trigger.adapt_weights_from_directional_uncertainty(
+                            _dir_unc,
+                        )
+                except Exception as _dir_adapt_err:
+                    logger.warning(
+                        "UCC: adapt_weights_from_directional_uncertainty "
+                        "failed (non-fatal): %s", _dir_adapt_err,
+                    )
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
@@ -22175,7 +22235,7 @@ class AEONDeltaV3(nn.Module):
         # prediction.  The strategic-level prediction is blended as a
         # residual to ground the reasoning state in long-horizon planning.
         hierarchical_wm_results: Dict[str, Any] = {}
-        if self.hierarchical_world_model is not None and not fast:
+        if self.hierarchical_world_model is not None and not fast and "world_model" not in _circuit_breaker_tripped:
             try:
                 self.provenance_tracker.record_before("hierarchical_world_model", C_star)
                 _hwm_pred, _hwm_hiddens = self.hierarchical_world_model(C_star)
@@ -22425,6 +22485,63 @@ class AEONDeltaV3(nn.Module):
                     # Fuse via projection
                     C_star = C_star + self.memory_projection(memory_context)
                     memory_retrieved = memory_context
+                    # 5c-midloop. Immediate post-fusion memory validation —
+                    # validate the fused state against the retrieved memory
+                    # right after blending, rather than deferring to the
+                    # post-convergence UCC check.  If retrieved memories are
+                    # inconsistent with the fused state (indicating the
+                    # projection distorted the signal), attenuate the memory
+                    # contribution immediately and escalate uncertainty
+                    # within this reasoning pass.  This ensures that stale
+                    # or corrupted memories cannot silently pollute C_star
+                    # through the full pipeline before being detected.
+                    if (self.memory_validator is not None
+                            and memory_context is not None):
+                        try:
+                            _mid_mem_val = self.memory_validator.validate(
+                                memory_signal=memory_context,
+                                converged_state=C_star,
+                            )
+                            if _mid_mem_val.get("needs_re_retrieval", False):
+                                _mid_consistency = _mid_mem_val.get(
+                                    "consistency_score", 0.0,
+                                )
+                                _mid_attenuation = max(
+                                    0.1, abs(_mid_consistency),
+                                )
+                                # Regress C_star toward pre-memory state
+                                C_star = (
+                                    _mid_attenuation * C_star
+                                    + (1.0 - _mid_attenuation) * z_in.detach()
+                                )
+                                _mid_unc_boost = min(
+                                    1.0 - uncertainty,
+                                    _mid_mem_val.get(
+                                        "uncertainty_boost", 0.1,
+                                    ),
+                                )
+                                if _mid_unc_boost > 0:
+                                    uncertainty = min(
+                                        1.0, uncertainty + _mid_unc_boost,
+                                    )
+                                    uncertainty_sources[
+                                        "mid_loop_memory_inconsistency"
+                                    ] = _mid_unc_boost
+                                    high_uncertainty = uncertainty > 0.5
+                                self._memory_stale = True
+                                self.audit_log.record(
+                                    "memory_validator",
+                                    "mid_loop_inconsistency",
+                                    {
+                                        "consistency_score": _mid_consistency,
+                                        "attenuation": _mid_attenuation,
+                                    },
+                                )
+                        except Exception as _mmv_err:
+                            logger.debug(
+                                "Mid-loop memory validation failed "
+                                "(non-fatal): %s", _mmv_err,
+                            )
                 # Store after reasoning (batched importance scoring)
                 importance_scores = self.importance_scorer(C_star).squeeze(-1)  # [B]
                 for i in range(B):
@@ -23441,6 +23558,20 @@ class AEONDeltaV3(nn.Module):
                 self._cached_causal_quality = min(
                     self._cached_causal_quality, _consensus_score,
                 )
+                # 5d1c-dag-state. DAG consensus → C_star state correction —
+                # when causal models disagree (consensus_score < 1.0), apply
+                # a graduated regression of C_star toward the pre-causal
+                # baseline proportional to the disagreement magnitude.
+                # This ensures that conflicting causal structures actively
+                # weaken the pipeline's confidence in the current state
+                # rather than merely escalating a scalar uncertainty flag,
+                # making each causal component verify and reinforce the
+                # others through direct state feedback.
+                _dag_disagreement_mag = max(0.0, 1.0 - _consensus_score)
+                _DAG_STATE_CORRECTION_SCALE = 0.1
+                if _dag_disagreement_mag > 0.0:
+                    _dag_correction = _DAG_STATE_CORRECTION_SCALE * _dag_disagreement_mag
+                    C_star = C_star * (1.0 - _dag_correction) + z_in.detach() * _dag_correction
                 # Cache the reconciled adjacency so that the next
                 # forward pass's coherence verifier and downstream
                 # modules can reference the structural consensus.
@@ -23858,7 +23989,7 @@ class AEONDeltaV3(nn.Module):
         
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
-        if self.active_learning_planner is not None and self.world_model is not None and not fast:
+        if self.active_learning_planner is not None and self.world_model is not None and not fast and "world_model" not in _circuit_breaker_tripped:
             try:
                 self.provenance_tracker.record_before("active_learning", C_star)
                 self.active_learning_planner.eval()
@@ -27821,6 +27952,33 @@ class AEONDeltaV3(nn.Module):
                     "dampen_alpha": _dampen_alpha,
                     "weakest_pair_escalated": _weakest_pair_escalated,
                 })
+                # 8h-0b. Feed provenance dominance into error evolution so
+                # that the metacognitive trigger can learn from repeated
+                # module monopolisation.  Without this feedback the dominant
+                # module is dampened in-place but never told its output was
+                # overridden, preventing long-term adaptation of trigger
+                # weights toward the offending module.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="provenance_dominance",
+                        strategy_used="dominance_dampening",
+                        success=True,
+                        metadata=self._provenance_enriched_metadata({
+                            "dominant_module": _dominant_module,
+                            "dominance_ratio": _max_contrib,
+                            "dampen_alpha": _dampen_alpha,
+                            "weakest_pair_escalated": _weakest_pair_escalated,
+                        }),
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "provenance_dominance", "dampened",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "dominant_module": _dominant_module,
+                            "dominance_ratio": _max_contrib,
+                        },
+                    )
         
         # 8h-1. Provenance-weighted safety adaptation — when a single
         # module dominates the output (high provenance concentration),
