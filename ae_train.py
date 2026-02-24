@@ -2633,6 +2633,14 @@ class SafeThoughtAETrainerV4:
             )
         
         return outputs
+
+    def _provenance_causal_quality(self) -> float:
+        """Compute causal quality from provenance attribution balance.
+
+        Delegates to the shared :func:`_compute_provenance_causal_quality`
+        utility so the formula is maintained in a single location.
+        """
+        return _compute_provenance_causal_quality(self.provenance)
     
     def _forward_pass(self, tokens: torch.Tensor) -> Dict[str, Any]:
         # Track per-component provenance so training errors can be
@@ -2925,6 +2933,11 @@ class SafeThoughtAETrainerV4:
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
                     recovery_pressure=1.0 if _is_diverging else 0.0,
+                    # Feed provenance-derived causal quality so the UCC
+                    # can detect when a single training subsystem dominates
+                    # the output attribution (quality = 1 when balanced,
+                    # degrades toward 0 when one module dominates entirely).
+                    causal_quality=self._provenance_causal_quality(),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
@@ -3263,6 +3276,14 @@ class ContextualRSSMTrainer:
             "decoder_valid": _decoder_valid,
         }
 
+    def _provenance_causal_quality(self) -> float:
+        """Compute causal quality from provenance attribution balance.
+
+        Delegates to the shared :func:`_compute_provenance_causal_quality`
+        utility, matching Phase A's provenance-derived quality wiring.
+        """
+        return _compute_provenance_causal_quality(self.provenance)
+
     def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
             batch_size: int = 128, log_every_batch: int = 5):
         """
@@ -3453,6 +3474,10 @@ class ContextualRSSMTrainer:
                     delta_norm=_loss_delta,
                     uncertainty=_uncertainty,
                     recovery_pressure=1.0 if _is_diverging else 0.0,
+                    # Feed provenance-derived causal quality so the UCC
+                    # can detect when a single training subsystem dominates
+                    # the output attribution, matching Phase A's wiring.
+                    causal_quality=self._provenance_causal_quality(),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
@@ -3779,6 +3804,43 @@ _ERROR_CLASS_TO_DEPENDENCY_MAP: Dict[str, Tuple[str, str]] = {
     "stagnation": ("encoder", "meta_loop"),
     "training_stagnation": ("encoder", "meta_loop"),
 }
+
+
+def _compute_provenance_causal_quality(provenance_tracker) -> float:
+    """Compute causal quality from provenance attribution balance.
+
+    Shared utility used by both Phase A (SafeThoughtAETrainerV4) and
+    Phase B (ContextualRSSMTrainer) to derive a balance score from
+    the provenance tracker's per-module attribution.
+
+    The formula ``1.0 - max_val + 1/n`` computes how far the dominant
+    module's contribution (``max_val``) is from the perfectly balanced
+    case where each of ``n`` modules contributes ``1/n``.  When all
+    modules contribute equally, ``max_val = 1/n`` and the score is 1.0.
+    When one module fully dominates (``max_val → 1.0``), the score
+    approaches ``1/n`` (near zero for many modules).
+
+    Args:
+        provenance_tracker: A provenance tracker with a
+            ``compute_attribution()`` method returning a dict with
+            a ``'contributions'`` key mapping module names to floats.
+
+    Returns:
+        Score in [0, 1] where 1.0 = balanced, approaching 0.0 = dominated.
+    """
+    try:
+        attrib = provenance_tracker.compute_attribution()
+        contribs = attrib.get('contributions', {})
+        if len(contribs) < 2:
+            return 1.0  # Cannot assess balance with < 2 modules
+        vals = list(contribs.values())
+        max_val = max(vals)
+        n = len(vals)
+        # Score = 1.0 when max_val == 1/n (perfect balance);
+        # degrades toward 1/n when max_val → 1.0 (single-module dominance).
+        return max(0.0, min(1.0, 1.0 - max_val + (1.0 / n)))
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return 1.0  # Default healthy when provenance unavailable
 
 
 def bridge_training_errors_to_inference(

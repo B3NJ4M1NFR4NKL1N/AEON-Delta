@@ -18080,6 +18080,18 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "active_learning_curiosity", default=0.0,
         )
+        # Error evolution aggregate pressure — carries the severity of
+        # recurring historical error patterns into the meta-loop so that
+        # cross-pass reasoning depth adapts to cumulative failure history.
+        self.feedback_bus.register_signal(
+            "error_evolution_pressure", default=0.0,
+        )
+        # Uncertainty propagation cascade pressure — when upstream
+        # uncertainty cascades through the pipeline DAG, the total
+        # amplification magnitude signals systemic uncertainty spread.
+        self.feedback_bus.register_signal(
+            "uncertainty_propagation_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -18975,6 +18987,13 @@ class AEONDeltaV3(nn.Module):
         # bus so the next pass's meta-loop can condition on it.
         self._cached_arbiter_has_conflict: bool = False
 
+        # Cached uncertainty propagation delta — total additional
+        # uncertainty injected by the UncertaintyPropagationBus when
+        # upstream failures cascade to downstream modules.  Fed into
+        # the feedback bus so the meta-loop can distinguish localised
+        # uncertainty from cascading systemic uncertainty.
+        self._cached_propagation_delta: float = 0.0
+
         # Cached DAG adjacency matrices — built during the causal-model
         # section of the reasoning core and forwarded to the UCC's
         # evaluate() call so that CausalDAGConsensus can independently
@@ -19546,6 +19565,45 @@ class AEONDeltaV3(nn.Module):
                 extra["ucc_coherence_trend"] = max(
                     0.0, min(1.0, _trend_ema),
                 )
+        # Error evolution aggregate pressure — when historical error
+        # patterns indicate recurring systemic failures (low success
+        # rate across multiple error classes), carry the aggregate
+        # failure pressure into the feedback bus so the next pass's
+        # meta-loop allocates proportionally deeper reasoning.  This
+        # closes the gap where error evolution influenced loss weights
+        # and pre-loop guidance but never directly conditioned the
+        # feedback bus, leaving the meta-loop blind to the cumulative
+        # severity of historical failures during cross-pass conditioning.
+        _ee = getattr(self, 'error_evolution', None)
+        if _ee is not None:
+            try:
+                _ee_summary = _ee.get_error_summary()
+                _ee_classes = _ee_summary.get("error_classes", {})
+                _total_pressure = 0.0
+                _active_classes = 0
+                for _cls_stats in _ee_classes.values():
+                    _sr = _cls_stats.get("success_rate", 1.0)
+                    if _sr < 0.5 and _cls_stats.get("count", 0) >= 2:
+                        _total_pressure += 1.0 - _sr
+                        _active_classes += 1
+                if _active_classes > 0:
+                    extra["error_evolution_pressure"] = max(
+                        0.0, min(1.0, _total_pressure / max(_active_classes, 1)),
+                    )
+            except Exception:
+                pass
+        # Uncertainty propagation cascade pressure — when the
+        # UncertaintyPropagationBus amplified upstream uncertainty
+        # into downstream modules, the total amplification magnitude
+        # signals systemic uncertainty spread.  Feeding this into the
+        # feedback bus conditions the next pass's meta-loop to reason
+        # deeper when uncertainty is not localised but cascading
+        # through the pipeline DAG.
+        _prop_delta = getattr(self, '_cached_propagation_delta', 0.0)
+        if _prop_delta > 0.05:
+            extra["uncertainty_propagation_pressure"] = max(
+                0.0, min(1.0, _prop_delta),
+            )
         return extra
 
     @staticmethod
@@ -27405,13 +27463,21 @@ class AEONDeltaV3(nn.Module):
                 _propagated = self.uncertainty_propagation.propagate(
                     _base_uncertainties, _active_edges,
                 )
-                # Update the tracker with propagated values
+                # Update the tracker with propagated values and compute
+                # the total amplification delta for feedback bus routing.
+                _propagation_delta_sum = 0.0
                 for mod_name, prop_unc in _propagated.items():
                     if prop_unc > _base_uncertainties.get(mod_name, 0.0):
+                        _propagation_delta_sum += (
+                            prop_unc - _base_uncertainties.get(mod_name, 0.0)
+                        )
                         self.uncertainty_tracker.record(
                             mod_name, prop_unc,
                             source_label=f"{mod_name}_propagated",
                         )
+                self._cached_propagation_delta = min(
+                    1.0, _propagation_delta_sum,
+                )
                 # Integrate coherence registry coverage deficit into
                 # the aggregate uncertainty so missing subsystems are
                 # reflected in the overall confidence.
@@ -33039,6 +33105,57 @@ class AEONDeltaV3(nn.Module):
                 'error_recovery → error_evolution bridge ensures all '
                 'subsystem failures feed into the evolution learning system'
             )
+
+        # --- Error evolution → feedback bus closure verification ---
+        # Verify that error evolution aggregate failure pressure flows
+        # into the feedback bus so the next pass's meta-loop can adapt
+        # reasoning depth based on historical error severity.
+        if (self.error_evolution is not None
+                and self.feedback_bus is not None
+                and 'error_evolution_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'error_evolution → feedback_bus.error_evolution_pressure '
+                '→ meta_loop (historical failure severity conditioning)'
+            )
+        elif self.error_evolution is not None and self.feedback_bus is not None:
+            gaps.append({
+                'component': 'error_evolution_feedback',
+                'gap': (
+                    'Error evolution active but error_evolution_pressure '
+                    'signal not registered in feedback bus — historical '
+                    'error severity invisible to meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register error_evolution_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Uncertainty propagation → feedback bus closure ---
+        # Verify that cascaded uncertainty from the propagation bus is
+        # surfaced as a feedback bus signal so the meta-loop can
+        # distinguish localised from systemic uncertainty.
+        if (self.feedback_bus is not None
+                and 'uncertainty_propagation_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'uncertainty_propagation → feedback_bus.propagation_pressure '
+                '→ meta_loop (cascade vs. localised uncertainty visible)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'uncertainty_propagation_feedback',
+                'gap': (
+                    'Uncertainty propagation pressure signal not '
+                    'registered in feedback bus — cascading uncertainty '
+                    'invisible to meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register uncertainty_propagation_pressure signal '
+                    'in CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
 
         # --- Extension points (defined but not instantiated in the pipeline) ---
         # These classes are defined in the module for architectural
