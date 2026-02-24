@@ -17742,6 +17742,13 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_arbiter_conflict", default=0.0,
         )
+        # UCC coherence trend EMA — carries the cross-pass coherence
+        # degradation trend into the feedback bus so the meta-loop can
+        # proactively deepen reasoning when architectural drift is
+        # detected, even if individual passes appear healthy.
+        self.feedback_bus.register_signal(
+            "ucc_coherence_trend", default=0.0,
+        )
         # Hierarchical VAE abstraction pressure — when the HVAE's KL
         # divergence indicates high abstraction uncertainty, this signal
         # conditions the meta-loop to reason deeper.
@@ -19130,6 +19137,20 @@ class AEONDeltaV3(nn.Module):
             extra["active_learning_curiosity"] = max(
                 0.0, min(1.0, _al_curiosity),
             )
+        # UCC coherence trend EMA — when the UnifiedCognitiveCycle's
+        # cross-pass coherence trend indicates systematic architectural
+        # drift (rising EMA of coherence deficit), signal the meta-loop
+        # to reason deeper.  This closes the gap where the UCC's trend
+        # tracker detected progressive degradation but the signal was
+        # only used for within-pass uncertainty escalation, never for
+        # cross-pass feedback conditioning.
+        _ucc = getattr(self, 'unified_cognitive_cycle', None)
+        if _ucc is not None:
+            _trend_ema = getattr(_ucc, '_coherence_trend_ema', 0.0)
+            if _trend_ema > 0.1:
+                extra["ucc_coherence_trend"] = max(
+                    0.0, min(1.0, _trend_ema),
+                )
         return extra
 
     @staticmethod
@@ -27625,6 +27646,73 @@ class AEONDeltaV3(nn.Module):
                             ),
                         }
 
+        # 8f-ucc-fast. Lightweight UCC evaluation in fast mode — when
+        # fast=True the full corrective pipeline (deeper meta-loop,
+        # auto-critic revision, weakest-pair blending) is skipped for
+        # latency, but the UCC is still evaluated so that:
+        # (a) coherence deficits are detected and deferred to the next
+        #     pass via feedback bus signals,
+        # (b) the convergence monitor records secondary signals,
+        # (c) the audit log captures the verdict for traceability.
+        # This closes the gap where fast mode bypassed all meta-cognitive
+        # verification, violating "any uncertainty triggers a
+        # meta-cognitive cycle" — now every forward pass at minimum
+        # evaluates coherence and defers corrective action.
+        if (self.unified_cognitive_cycle is not None
+                and fast
+                and not unified_cycle_results):
+            _fast_ucc_states: Dict[str, torch.Tensor] = {
+                "integrated_output": z_out,
+                "core_state": C_star,
+            }
+            if embedded_factors is not None:
+                _fast_ucc_states["factor_embedding"] = embedded_factors
+            if (self._cached_memory_state is not None
+                    and self._cached_memory_state.shape[-1] == z_out.shape[-1]):
+                _fast_ucc_states["memory"] = self._cached_memory_state
+            if len(_fast_ucc_states) >= 2:
+                try:
+                    unified_cycle_results = self.unified_cognitive_cycle.evaluate(
+                        subsystem_states=_fast_ucc_states,
+                        delta_norm=residual_norm_scalar,
+                        uncertainty=uncertainty,
+                        world_model_surprise=self._cached_surprise,
+                        causal_quality=self._cached_causal_quality,
+                        memory_staleness=self._memory_stale,
+                        safety_violation=safety_enforced,
+                    )
+                    # Cache deferred trigger pressure so the feedback bus
+                    # carries the assessment into the next pass, where the
+                    # full corrective pipeline can act on it.
+                    _fast_trigger_score = unified_cycle_results.get(
+                        "trigger_detail", {},
+                    ).get("trigger_score", 0.0)
+                    self._deferred_trigger_pressure = max(
+                        getattr(self, '_deferred_trigger_pressure', 0.0),
+                        min(1.0, _fast_trigger_score),
+                    )
+                    # Cache coherence deficit for next-pass feedback bus
+                    _fast_deficit = unified_cycle_results.get(
+                        "coherence_result", {},
+                    ).get("coherence_deficit", 0.0)
+                    if _fast_deficit > self._cached_coherence_deficit:
+                        self._cached_coherence_deficit = _fast_deficit
+                    self.audit_log.record(
+                        "unified_cognitive_cycle", "fast_mode_evaluation", {
+                            "should_rerun": unified_cycle_results.get(
+                                "should_rerun", False,
+                            ),
+                            "coherence_deficit": _fast_deficit,
+                            "trigger_score": _fast_trigger_score,
+                            "deferred": True,
+                        },
+                    )
+                except Exception as _fast_ucc_err:
+                    logger.debug(
+                        "Fast-mode UCC evaluation failed (non-fatal): %s",
+                        _fast_ucc_err,
+                    )
+
         # 8f-ucc-ctx-all. Record UCC coherence assessment in the
         # CausalContextWindowManager regardless of rerun status so that
         # cross-temporal reasoning benefits from every UCC evaluation.
@@ -30213,6 +30301,36 @@ class AEONDeltaV3(nn.Module):
                     min(1.0, max(_trigger_score, _ucc_coherence_deficit)),
                     device=self.device,
                 )
+            # Convergence certificate violation penalty — when the formal
+            # Banach contraction condition is violated, add a graduated
+            # penalty proportional to the excess empirical Lipschitz
+            # constant.  This closes the gap where convergence certificate
+            # violations triggered meta-cognitive re-reasoning at runtime
+            # but generated no training gradient, leaving the model with
+            # no incentive to maintain the contraction mapping property.
+            _ucc_cert = _ucc_results.get('convergence_certificate', {})
+            if _ucc_cert and not _ucc_cert.get('contraction_satisfied', True):
+                _cert_lip = _ucc_cert.get('empirical_lipschitz', 1.0)
+                _cert_penalty = min(1.0, max(0.0, _cert_lip - 1.0) * 0.5)
+                ucc_loss = ucc_loss + torch.tensor(
+                    _cert_penalty, device=self.device,
+                )
+            # DAG consensus disagreement penalty — when multiple causal
+            # models disagree on the underlying causal structure, add a
+            # graduated penalty proportional to the disagreement severity.
+            # This closes the gap where DAG consensus was used for runtime
+            # uncertainty escalation but generated no training gradient,
+            # leaving the causal models with no incentive to converge
+            # toward a shared structure.
+            _ucc_dag = _ucc_results.get('dag_consensus', {})
+            _ucc_dag_score = _ucc_dag.get('consensus_score', None)
+            if (_ucc_dag_score is not None
+                    and isinstance(_ucc_dag_score, (int, float))
+                    and _ucc_dag_score < 1.0):
+                _dag_penalty = min(1.0, max(0.0, 1.0 - _ucc_dag_score) * 0.3)
+                ucc_loss = ucc_loss + torch.tensor(
+                    _dag_penalty, device=self.device,
+                )
 
         # ===== 16. SELF-REPORT LOSS =====
         # When TransparentSelfReporting is enabled, penalize low honesty
@@ -31695,6 +31813,32 @@ class AEONDeltaV3(nn.Module):
                     'component': 'unified_cognitive_cycle',
                     'gap': 'UCC causal_trace not linked to model causal_trace',
                     'remediation': 'Pass self.causal_trace to UnifiedCognitiveCycle',
+                })
+                _ucc_wiring_ok = False
+            # Verify UCC coherence trend EMA feeds into feedback bus —
+            # the UCC tracks cross-pass coherence degradation via
+            # _coherence_trend_ema, which must be wired into the
+            # feedback bus so the meta-loop can proactively deepen
+            # reasoning when architectural drift is detected.
+            if (self.feedback_bus is not None
+                    and 'ucc_coherence_trend' in self.feedback_bus._extra_signals):
+                verified.append(
+                    'unified_cognitive_cycle → coherence_trend_ema → '
+                    'feedback_bus (cross-pass drift detection)'
+                )
+            elif self.feedback_bus is not None:
+                gaps.append({
+                    'component': 'unified_cognitive_cycle',
+                    'gap': (
+                        'UCC coherence trend EMA not registered in '
+                        'feedback bus — cross-pass drift is invisible '
+                        'to the meta-loop'
+                    ),
+                    'remediation': (
+                        'Register ucc_coherence_trend signal in '
+                        'CognitiveFeedbackBus and populate it from '
+                        '_build_feedback_extra_signals()'
+                    ),
                 })
                 _ucc_wiring_ok = False
             if _ucc_wiring_ok:

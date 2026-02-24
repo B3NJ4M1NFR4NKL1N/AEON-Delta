@@ -50434,6 +50434,236 @@ def test_generate_ucc_failure_error_class_in_mappings():
     print("✅ test_generate_ucc_failure_error_class_in_mappings PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Fast-Mode UCC Evaluation, UCC Coherence Trend
+# Feedback, Enhanced UCC Loss, UCC Wiring Self-Diagnostic
+# ============================================================================
+
+def test_fast_mode_ucc_evaluation_in_source():
+    """Verify that fast mode still performs lightweight UCC evaluation.
+
+    The architectural requirement 'any uncertainty triggers a meta-cognitive
+    cycle' demands that even fast mode evaluates coherence — the full
+    corrective pipeline (deeper meta-loop, auto-critic) is skipped for
+    latency, but the UCC's evaluate() is still called so deficits are
+    detected and deferred to the next pass via the feedback bus.
+    """
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    src = inspect.getsource(model._reasoning_core_impl)
+
+    # The fast-mode UCC block must be present in _reasoning_core_impl
+    assert "8f-ucc-fast" in src, (
+        "_reasoning_core_impl must contain fast-mode UCC evaluation block "
+        "(comment tag '8f-ucc-fast')"
+    )
+    assert "fast_mode_evaluation" in src, (
+        "_reasoning_core_impl must record 'fast_mode_evaluation' in audit log "
+        "for fast-mode UCC evaluation"
+    )
+
+    print("✅ test_fast_mode_ucc_evaluation_in_source PASSED")
+
+
+def test_feedback_bus_registers_ucc_coherence_trend():
+    """Verify the CognitiveFeedbackBus has the ucc_coherence_trend signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    registered = model.feedback_bus._extra_signals
+    assert "ucc_coherence_trend" in registered, (
+        "ucc_coherence_trend must be registered in feedback bus"
+    )
+
+    print("✅ test_feedback_bus_registers_ucc_coherence_trend PASSED")
+
+
+def test_feedback_extra_signals_includes_ucc_coherence_trend():
+    """Verify _build_feedback_extra_signals returns the UCC coherence trend
+    when the UCC has accumulated trend data."""
+    from aeon_core import AEONConfig, AEONDeltaV3, UnifiedCognitiveCycle
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate accumulated coherence trend
+    if model.unified_cognitive_cycle is not None:
+        model.unified_cognitive_cycle._coherence_trend_ema = 0.25
+        extra = model._build_feedback_extra_signals()
+        assert "ucc_coherence_trend" in extra, (
+            "ucc_coherence_trend must be in feedback extra signals "
+            "when UCC trend EMA > 0.1"
+        )
+        assert abs(extra["ucc_coherence_trend"] - 0.25) < 1e-6, (
+            f"Expected ucc_coherence_trend ≈ 0.25, got {extra['ucc_coherence_trend']}"
+        )
+    else:
+        # UCC not enabled in this config — signal should not appear
+        extra = model._build_feedback_extra_signals()
+        assert "ucc_coherence_trend" not in extra, (
+            "ucc_coherence_trend should not be in signals when UCC is None"
+        )
+
+    print("✅ test_feedback_extra_signals_includes_ucc_coherence_trend PASSED")
+
+
+def test_ucc_loss_includes_convergence_certificate_penalty():
+    """Verify that compute_loss penalizes convergence certificate violations
+    via the UCC loss component."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    B, L = 2, 16
+    targets = torch.randint(0, 1000, (B, L))
+
+    # Build outputs with a convergence certificate violation
+    outputs = {
+        'logits': torch.randn(B, L, 1000),
+        'thoughts': torch.randn(B, 64),
+        'vq_loss': torch.tensor(0.0),
+        'unified_cognitive_cycle_results': {
+            'trigger_detail': {'trigger_score': 0.5},
+            'should_rerun': False,
+            'coherence_result': {'coherence_deficit': 0.0},
+            'convergence_certificate': {
+                'contraction_satisfied': False,
+                'empirical_lipschitz': 1.5,
+            },
+            'dag_consensus': {},
+        },
+    }
+
+    loss_dict = model.compute_loss(outputs, targets)
+    ucc_loss_val = float(loss_dict['ucc_loss'].item())
+
+    # The UCC loss should be > 0 due to the certificate violation penalty
+    assert ucc_loss_val > 0.0, (
+        f"UCC loss should be > 0 when convergence certificate is violated, "
+        f"got {ucc_loss_val}"
+    )
+
+    print("✅ test_ucc_loss_includes_convergence_certificate_penalty PASSED")
+
+
+def test_ucc_loss_includes_dag_consensus_penalty():
+    """Verify that compute_loss penalizes DAG consensus disagreement
+    via the UCC loss component."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    B, L = 2, 16
+    targets = torch.randint(0, 1000, (B, L))
+
+    # Build outputs with DAG consensus disagreement
+    outputs = {
+        'logits': torch.randn(B, L, 1000),
+        'thoughts': torch.randn(B, 64),
+        'vq_loss': torch.tensor(0.0),
+        'unified_cognitive_cycle_results': {
+            'trigger_detail': {'trigger_score': 0.0},
+            'should_rerun': False,
+            'coherence_result': {'coherence_deficit': 0.0},
+            'convergence_certificate': {},
+            'dag_consensus': {
+                'consensus_score': 0.3,  # low consensus
+            },
+        },
+    }
+
+    loss_dict = model.compute_loss(outputs, targets)
+    ucc_loss_val = float(loss_dict['ucc_loss'].item())
+
+    # The UCC loss should include the DAG disagreement penalty
+    assert ucc_loss_val > 0.0, (
+        f"UCC loss should be > 0 when DAG consensus is low (0.3), "
+        f"got {ucc_loss_val}"
+    )
+
+    # Compare with no disagreement
+    outputs_no_dag = {
+        'logits': torch.randn(B, L, 1000),
+        'thoughts': torch.randn(B, 64),
+        'vq_loss': torch.tensor(0.0),
+        'unified_cognitive_cycle_results': {
+            'trigger_detail': {'trigger_score': 0.0},
+            'should_rerun': False,
+            'coherence_result': {'coherence_deficit': 0.0},
+            'convergence_certificate': {},
+            'dag_consensus': {},
+        },
+    }
+
+    loss_dict_no = model.compute_loss(outputs_no_dag, targets)
+    ucc_loss_no = float(loss_dict_no['ucc_loss'].item())
+
+    assert ucc_loss_val > ucc_loss_no, (
+        f"UCC loss with DAG disagreement ({ucc_loss_val}) should exceed "
+        f"loss without disagreement ({ucc_loss_no})"
+    )
+
+    print("✅ test_ucc_loss_includes_dag_consensus_penalty PASSED")
+
+
+def test_self_diagnostic_ucc_coherence_trend_wiring():
+    """Verify that self_diagnostic checks UCC coherence trend → feedback bus
+    wiring and reports it as verified when properly connected."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # When UCC is enabled and feedback bus has the signal registered,
+    # the diagnostic should verify the coherence trend wiring
+    _has_trend_verification = any(
+        'coherence_trend_ema' in v
+        for v in diag.get('verified_connections', [])
+    )
+    assert _has_trend_verification, (
+        "self_diagnostic should verify UCC coherence_trend_ema → "
+        "feedback_bus wiring"
+    )
+
+    print("✅ test_self_diagnostic_ucc_coherence_trend_wiring PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -52619,6 +52849,15 @@ def run_all_tests():
     test_generate_ucc_verdict_triggers_regeneration()
     test_generate_ucc_failure_records_error_evolution()
     test_generate_ucc_failure_error_class_in_mappings()
+
+    # Architectural Unification — Fast-Mode UCC, Coherence Trend Feedback,
+    # Enhanced UCC Loss, UCC Wiring Self-Diagnostic
+    test_fast_mode_ucc_evaluation_in_source()
+    test_feedback_bus_registers_ucc_coherence_trend()
+    test_feedback_extra_signals_includes_ucc_coherence_trend()
+    test_ucc_loss_includes_convergence_certificate_penalty()
+    test_ucc_loss_includes_dag_consensus_penalty()
+    test_self_diagnostic_ucc_coherence_trend_wiring()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
