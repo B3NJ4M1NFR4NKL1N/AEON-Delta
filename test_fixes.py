@@ -51715,6 +51715,175 @@ def test_self_diagnostic_includes_directional_uncertainty():
     print("✅ test_self_diagnostic_includes_directional_uncertainty PASSED")
 
 
+def test_feedback_bus_registers_error_evolution_pressure():
+    """Feedback bus must register the error_evolution_pressure signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert model.feedback_bus is not None, "feedback_bus must be initialized"
+    assert "error_evolution_pressure" in model.feedback_bus._extra_signals, (
+        "error_evolution_pressure signal must be registered in feedback bus "
+        "so historical error severity conditions the meta-loop"
+    )
+
+    print("✅ test_feedback_bus_registers_error_evolution_pressure PASSED")
+
+
+def test_feedback_bus_registers_uncertainty_propagation_pressure():
+    """Feedback bus must register uncertainty_propagation_pressure signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert model.feedback_bus is not None, "feedback_bus must be initialized"
+    assert "uncertainty_propagation_pressure" in model.feedback_bus._extra_signals, (
+        "uncertainty_propagation_pressure signal must be registered in feedback "
+        "bus so cascading DAG uncertainty conditions the meta-loop"
+    )
+
+    print("✅ test_feedback_bus_registers_uncertainty_propagation_pressure PASSED")
+
+
+def test_build_feedback_extra_signals_includes_error_evolution():
+    """_build_feedback_extra_signals must emit error_evolution_pressure
+    when error evolution has recurring low-success-rate classes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Seed error evolution with a recurring low-success-rate class
+    assert model.error_evolution is not None
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class="coherence_deficit",
+            strategy_used="deeper_meta_loop",
+            success=False,
+        )
+
+    extra = model._build_feedback_extra_signals()
+    assert "error_evolution_pressure" in extra, (
+        "_build_feedback_extra_signals must include error_evolution_pressure "
+        "when error evolution has recurring failures"
+    )
+    assert 0.0 < extra["error_evolution_pressure"] <= 1.0, (
+        f"error_evolution_pressure must be in (0, 1], got "
+        f"{extra['error_evolution_pressure']}"
+    )
+
+    print("✅ test_build_feedback_extra_signals_includes_error_evolution PASSED")
+
+
+def test_build_feedback_extra_signals_includes_propagation_delta():
+    """_build_feedback_extra_signals must emit uncertainty_propagation_pressure
+    when the cached propagation delta is elevated."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Simulate elevated propagation delta
+    model._cached_propagation_delta = 0.3
+
+    extra = model._build_feedback_extra_signals()
+    assert "uncertainty_propagation_pressure" in extra, (
+        "_build_feedback_extra_signals must include "
+        "uncertainty_propagation_pressure when propagation delta is elevated"
+    )
+    assert abs(extra["uncertainty_propagation_pressure"] - 0.3) < 1e-6, (
+        f"Expected propagation pressure ~0.3, got "
+        f"{extra['uncertainty_propagation_pressure']}"
+    )
+
+    print("✅ test_build_feedback_extra_signals_includes_propagation_delta PASSED")
+
+
+def test_propagation_delta_below_threshold_excluded():
+    """uncertainty_propagation_pressure must NOT appear when delta is below
+    the 0.05 threshold to avoid noise."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Below threshold
+    model._cached_propagation_delta = 0.02
+
+    extra = model._build_feedback_extra_signals()
+    assert "uncertainty_propagation_pressure" not in extra, (
+        "Propagation pressure signal should be suppressed below 0.05 threshold"
+    )
+
+    print("✅ test_propagation_delta_below_threshold_excluded PASSED")
+
+
+def test_cached_propagation_delta_initialized():
+    """AEONDeltaV3 must initialize _cached_propagation_delta to 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert hasattr(model, '_cached_propagation_delta'), (
+        "AEONDeltaV3 must have _cached_propagation_delta attribute"
+    )
+    assert model._cached_propagation_delta == 0.0, (
+        f"_cached_propagation_delta should initialize to 0.0, "
+        f"got {model._cached_propagation_delta}"
+    )
+
+    print("✅ test_cached_propagation_delta_initialized PASSED")
+
+
+def test_self_diagnostic_verifies_error_evolution_feedback_closure():
+    """self_diagnostic must verify error_evolution→feedback_bus closure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    # When error evolution and feedback bus are both active, the connection
+    # should appear in verified_connections
+    verified = diag['verified_connections']
+    found = any(
+        'error_evolution' in v and 'feedback_bus' in v
+        for v in verified
+    )
+    assert found, (
+        "self_diagnostic verified_connections must include "
+        "error_evolution→feedback_bus closure when both are active. "
+        f"Verified: {[v for v in verified if 'error' in v.lower()]}"
+    )
+
+    print("✅ test_self_diagnostic_verifies_error_evolution_feedback_closure PASSED")
+
+
+def test_self_diagnostic_verifies_uncertainty_propagation_feedback():
+    """self_diagnostic must verify uncertainty_propagation→feedback_bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    verified = diag['verified_connections']
+    found = any(
+        'propagation' in v and 'feedback_bus' in v
+        for v in verified
+    )
+    assert found, (
+        "self_diagnostic verified_connections must include "
+        "uncertainty_propagation→feedback_bus closure. "
+        f"Verified: {[v for v in verified if 'propagat' in v.lower()]}"
+    )
+
+    print("✅ test_self_diagnostic_verifies_uncertainty_propagation_feedback PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -53958,6 +54127,17 @@ def run_all_tests():
     test_health_gate_wired_in_aeonv3()
     test_self_diagnostic_includes_coherence_registry()
     test_self_diagnostic_includes_directional_uncertainty()
+
+    # Architectural Unification — Error Evolution→Feedback Bus,
+    # Uncertainty Propagation→Feedback Bus, Self-Diagnostic Verification
+    test_feedback_bus_registers_error_evolution_pressure()
+    test_feedback_bus_registers_uncertainty_propagation_pressure()
+    test_build_feedback_extra_signals_includes_error_evolution()
+    test_build_feedback_extra_signals_includes_propagation_delta()
+    test_propagation_delta_below_threshold_excluded()
+    test_cached_propagation_delta_initialized()
+    test_self_diagnostic_verifies_error_evolution_feedback_closure()
+    test_self_diagnostic_verifies_uncertainty_propagation_feedback()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
