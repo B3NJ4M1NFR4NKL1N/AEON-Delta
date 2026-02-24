@@ -4759,6 +4759,11 @@ class InferenceCache:
         self._history: deque = deque(maxlen=maxlen)
         self._model_version: Optional[int] = None
         self._lock = threading.Lock()
+        # Cached reasoning-core result: (z_out, outputs) from the last
+        # forward pass.  When a cache hit is detected the reasoning core
+        # is skipped entirely and these values are reused, closing the
+        # architectural gap where _cache_hit was computed but never acted on.
+        self._cached_reasoning_result: Optional[Tuple[torch.Tensor, Dict[str, Any]]] = None
 
     @staticmethod
     def _quantize_int8(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -4820,12 +4825,27 @@ class InferenceCache:
         with self._lock:
             return len(self._history)
 
+    def get_reasoning_result(self) -> Optional[Tuple[torch.Tensor, Dict[str, Any]]]:
+        """Return the cached reasoning-core (z_out, outputs) tuple, or None."""
+        with self._lock:
+            return self._cached_reasoning_result
+
+    def set_reasoning_result(
+        self,
+        z_out: torch.Tensor,
+        outputs: Dict[str, Any],
+    ) -> None:
+        """Store a reasoning-core result for future cache-hit reuse."""
+        with self._lock:
+            self._cached_reasoning_result = (z_out.detach(), outputs)
+
     def reset(self):
         with self._lock:
             self._ssm_states = None
             self._attn_states = None
             self._step = 0
             self._history.clear()
+            self._cached_reasoning_result = None
 
     def validate_model_version(self, model_version: int) -> bool:
         """Check if cache is valid for the current model version.
@@ -6122,11 +6142,19 @@ class CognitiveFeedbackBus(nn.Module):
     #   self_report_consistency, output_quality, memory_quality
     NUM_SIGNAL_CHANNELS = 12
     
-    def __init__(self, hidden_dim: int):
+    def __init__(self, hidden_dim: int, ema_alpha: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
         self._extra_signals: Dict[str, float] = {}
         self._build_projection(self.NUM_SIGNAL_CHANNELS)
+        # --- Temporal EMA tracking ---
+        # Maintains an exponential moving average of each signal channel
+        # so that the bus can detect trends (improving / worsening) across
+        # forward passes.  Without this the bus is purely stateless and
+        # cannot distinguish a transient spike from a persistent deficit.
+        self._ema_alpha = ema_alpha  # smoothing factor ∈ (0, 1]
+        self._ema_values: Optional[torch.Tensor] = None  # [num_channels]
+        self._signal_trend: Optional[torch.Tensor] = None  # [num_channels]
     
     def _build_projection(self, num_channels: int) -> None:
         """(Re)build the projection layer for *num_channels* input signals."""
@@ -6158,6 +6186,19 @@ class CognitiveFeedbackBus(nn.Module):
     def total_channels(self) -> int:
         """Total number of signal channels (core + dynamic)."""
         return self.NUM_SIGNAL_CHANNELS + len(self._extra_signals)
+
+    def get_signal_trend(self) -> Optional[torch.Tensor]:
+        """Return the per-channel signal trend (current − EMA).
+
+        Positive values indicate the signal is *increasing* (e.g. rising
+        uncertainty); negative values indicate *decreasing*.  Returns
+        ``None`` if no EMA history has been accumulated yet.
+        """
+        return self._signal_trend
+
+    def get_ema_values(self) -> Optional[torch.Tensor]:
+        """Return the current EMA-smoothed signal vector, or ``None``."""
+        return self._ema_values
     
     def forward(
         self,
@@ -6301,7 +6342,23 @@ class CognitiveFeedbackBus(nn.Module):
             )
         
         signals = torch.stack(core_signals, dim=-1)
-        
+
+        # --- EMA update: track signal trends across forward passes ---
+        # Compute the batch-mean signal vector [num_channels] and update
+        # the exponential moving average.  The trend (current − EMA) tells
+        # the meta-loop whether conditions are improving or deteriorating.
+        with torch.no_grad():
+            _mean_signals = signals.mean(dim=0)  # [num_channels]
+            if self._ema_values is None or self._ema_values.shape[0] != _mean_signals.shape[0]:
+                self._ema_values = _mean_signals.clone()
+                self._signal_trend = torch.zeros_like(_mean_signals)
+            else:
+                self._ema_values = self._ema_values.to(_mean_signals.device)
+                alpha = self._ema_alpha
+                new_ema = alpha * _mean_signals + (1 - alpha) * self._ema_values
+                self._signal_trend = (_mean_signals - self._ema_values).clone()
+                self._ema_values = new_ema
+
         return self.projection(signals)
 
 
@@ -16096,6 +16153,7 @@ class UnifiedCognitiveCycle:
         memory_trust_deficit: float = 0.0,
         convergence_certificate: Optional[Dict[str, Any]] = None,
         dag_adjacency_matrices: Optional[Dict[str, torch.Tensor]] = None,
+        feedback_bus_trend: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -16447,6 +16505,35 @@ class UnifiedCognitiveCycle:
                 ),
             }
         should_rerun = trigger_detail.get('should_trigger', False) or needs_recheck
+
+        # 3a. Feedback bus signal trend — when the EMA trend shows
+        # worsening conditions (rising uncertainty or coherence deficit),
+        # boost the trigger score and force a rerun even if the point-in-time
+        # signals are below threshold.  This closes the gap where the
+        # feedback bus was stateless and could not detect persistent
+        # degradation across forward passes.
+        if feedback_bus_trend is not None:
+            try:
+                # uncertainty channel is index 2, coherence_deficit is index 6
+                _unc_trend = float(feedback_bus_trend[2].item()) if feedback_bus_trend.shape[0] > 2 else 0.0
+                _coh_trend = float(feedback_bus_trend[6].item()) if feedback_bus_trend.shape[0] > 6 else 0.0
+                _worsening = _unc_trend > 0.05 or _coh_trend > 0.05
+                if _worsening and not should_rerun:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'feedback_trend_worsening'}
+                    )
+                trigger_detail['feedback_bus_trend'] = {
+                    'uncertainty_trend': _unc_trend,
+                    'coherence_trend': _coh_trend,
+                    'worsening_detected': _worsening,
+                }
+            except Exception as _trend_err:
+                logger.debug(
+                    "UCC: feedback_bus_trend processing failed (non-fatal): %s",
+                    _trend_err,
+                )
 
         # 3b. Convergence certificate → rerun trigger — when the formal
         # Banach contraction condition is violated, force a rerun even if
@@ -18086,6 +18173,11 @@ class AEONDeltaV3(nn.Module):
         self.register_buffer('_total_forward_calls', torch.tensor(0, dtype=torch.long))
         self.register_buffer('_total_nan_events', torch.tensor(0, dtype=torch.long))
         self._step_counter = 0
+        # Dedicated weight-version counter for InferenceCache invalidation.
+        # Incremented only when model weights change (training steps), not
+        # on every forward call.  This prevents the cache from being reset
+        # on every inference pass.
+        self._weight_version: int = 0
         
         self.metrics_log = {
             'iterations': deque(maxlen=10000),
@@ -26835,6 +26927,15 @@ class AEONDeltaV3(nn.Module):
                         if self._cached_dag_adj_matrices
                         else None
                     ),
+                    # Signal trend from the CognitiveFeedbackBus EMA so
+                    # the UCC can detect persistent degradation across
+                    # forward passes and trigger re-reasoning even when
+                    # point-in-time signals are below threshold.
+                    feedback_bus_trend=(
+                        self.feedback_bus.get_signal_trend()
+                        if self.feedback_bus is not None
+                        else None
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -29016,7 +29117,7 @@ class AEONDeltaV3(nn.Module):
         if (self.inference_cache is not None
                 and decode_mode == 'inference'
                 and not self.training):
-            self.inference_cache.validate_model_version(self._step_counter)
+            self.inference_cache.validate_model_version(self._weight_version)
             _cached_ssm = self.inference_cache.get_ssm_state()
             if _cached_ssm is not None and len(_cached_ssm) > 0:
                 _prev_z = _cached_ssm[0]
@@ -29035,20 +29136,48 @@ class AEONDeltaV3(nn.Module):
         if self.encoder_reasoning_norm is not None:
             z_quantized = self.encoder_reasoning_norm(z_quantized)
 
-        # ===== REASONING CORE =====
-        z_out, outputs = self.reasoning_core(
-            z_quantized,
-            attention_mask=attention_mask,
-            memory_retrieval=not fast,
-            planning=not fast,
-            fast=fast
-        )
+        # ===== REASONING CORE (with cache short-circuit) =====
+        # When a cache hit is detected, reuse the previous reasoning-core
+        # result instead of re-executing the full reasoning pipeline.
+        # This closes the architectural gap where _cache_hit was computed
+        # but never acted upon — the reasoning core always ran regardless.
+        if _cache_hit and self.inference_cache is not None:
+            _cached_result = self.inference_cache.get_reasoning_result()
+            if _cached_result is not None:
+                z_out, outputs = _cached_result
+                # Re-attach to current computation graph (detached cache)
+                z_out = z_out.to(z_quantized.device)
+                logger.debug("Inference cache hit: reusing cached reasoning result")
+            else:
+                # Cache hit by cosine similarity but no stored result yet;
+                # fall through to full reasoning core.
+                _cache_hit = False
+                z_out, outputs = self.reasoning_core(
+                    z_quantized,
+                    attention_mask=attention_mask,
+                    memory_retrieval=not fast,
+                    planning=not fast,
+                    fast=fast
+                )
+        else:
+            z_out, outputs = self.reasoning_core(
+                z_quantized,
+                attention_mask=attention_mask,
+                memory_retrieval=not fast,
+                planning=not fast,
+                fast=fast
+            )
 
-        # Store current reasoning input in inference cache for future hits
+        # Store current reasoning input and output in inference cache for
+        # future hits.  Both the input (SSM state) and the reasoning result
+        # are cached so that a subsequent near-identical input can skip the
+        # reasoning core entirely.
         if (self.inference_cache is not None
                 and decode_mode == 'inference'
                 and not self.training):
             self.inference_cache.set_ssm_state([z_quantized.detach()])
+            if not _cache_hit:
+                self.inference_cache.set_reasoning_result(z_out, outputs)
 
         outputs['cache_hit'] = _cache_hit
 
@@ -30431,6 +30560,11 @@ class AEONDeltaV3(nn.Module):
                                 (1.0 - _gen_uncertainty)
                                 * max(0.0, 1.0 - self._cached_coherence_deficit)
                             )),
+                            feedback_bus_trend=(
+                                self.feedback_bus.get_signal_trend()
+                                if self.feedback_bus is not None
+                                else None
+                            ),
                         )
                 except Exception as _gen_ucc_err:
                     logger.debug(
@@ -33015,6 +33149,7 @@ class AEONTrainer:
             )
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            self.model._weight_version += 1
         else:
             total_loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -33022,6 +33157,7 @@ class AEONTrainer:
                 self.config.gradient_clip_norm
             )
             self.optimizer.step()
+            self.model._weight_version += 1
         
         # Gradient anomaly detection
         grad_norm_val = float(grad_norm) if torch.isfinite(grad_norm) else 0.0
