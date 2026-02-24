@@ -15876,8 +15876,13 @@ class UnifiedCognitiveCycle:
     4. Evaluates whether re-reasoning is needed via
        :class:`MetaCognitiveRecursionTrigger`.
     5. Traces all decisions via :class:`CausalProvenanceTracker`.
+    6. Verifies causal DAG consensus via :class:`CausalDAGConsensus`
+       when multiple causal models are active, feeding structural
+       disagreement into both the uncertainty tracker and metacognitive
+       trigger so that conflicting causal structures trigger deeper
+       reasoning.
 
-    By routing all five concerns through one call the cycle guarantees that:
+    By routing all concerns through one call the cycle guarantees that:
 
     - Each component verifies and reinforces the others.
     - Any uncertainty triggers a meta-cognitive re-evaluation.
@@ -15901,6 +15906,11 @@ class UnifiedCognitiveCycle:
             catastrophes.
         provenance_tracker: Instance recording per-module attribution.
         causal_trace: Optional temporal causal trace buffer.
+        causal_dag_consensus: Optional instance cross-validating causal DAG
+            adjacency matrices.  When provided along with
+            ``dag_adjacency_matrices`` in :meth:`evaluate`, structural
+            disagreement feeds into the uncertainty tracker and
+            metacognitive trigger.
     """
 
     def __init__(
@@ -15914,6 +15924,7 @@ class UnifiedCognitiveCycle:
         convergence_arbiter: Optional['UnifiedConvergenceArbiter'] = None,
         uncertainty_tracker: Optional['DirectionalUncertaintyTracker'] = None,
         memory_validator: Optional['MemoryReasoningValidator'] = None,
+        causal_dag_consensus: Optional['CausalDAGConsensus'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -15924,6 +15935,7 @@ class UnifiedCognitiveCycle:
         self.convergence_arbiter = convergence_arbiter
         self.uncertainty_tracker = uncertainty_tracker
         self.memory_validator = memory_validator
+        self.causal_dag_consensus = causal_dag_consensus
 
         # Cross-pass coherence trend tracking — EMA of coherence deficit
         # across successive evaluate() calls.  When coherence is
@@ -15984,6 +15996,7 @@ class UnifiedCognitiveCycle:
         diversity_collapse: float = 0.0,
         memory_trust_deficit: float = 0.0,
         convergence_certificate: Optional[Dict[str, Any]] = None,
+        dag_adjacency_matrices: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -16473,6 +16486,45 @@ class UnifiedCognitiveCycle:
                         | {'convergence_conflict'}
                     )
 
+        # 7b-ii. Causal DAG consensus verification — when the UCC owns a
+        # CausalDAGConsensus instance and the caller provides adjacency
+        # matrices from multiple causal models, evaluate structural
+        # agreement.  Disagreement escalates uncertainty and feeds into the
+        # metacognitive trigger, closing the gap where DAG consensus was
+        # computed in the main reasoning core but never independently
+        # verified by the UCC's coherence orchestration.
+        dag_consensus_result: Dict[str, Any] = {}
+        if (self.causal_dag_consensus is not None
+                and dag_adjacency_matrices is not None
+                and len(dag_adjacency_matrices) >= 2):
+            dag_consensus_result = self.causal_dag_consensus.evaluate(
+                dag_adjacency_matrices,
+            )
+            _dag_needs_esc = dag_consensus_result.get("needs_escalation", False)
+            _dag_unc_boost = dag_consensus_result.get("uncertainty_boost", 0.0)
+            if _dag_needs_esc:
+                uncertainty = min(1.0, uncertainty + _dag_unc_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='dag_consensus_disagreement',
+                        strategy_used='consensus_escalation',
+                        success=False,
+                        metadata={
+                            'consensus_score': dag_consensus_result.get(
+                                "consensus_score", 0.0,
+                            ),
+                            'num_models': dag_consensus_result.get(
+                                "num_models", 0,
+                            ),
+                        },
+                    )
+                if not should_rerun:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'dag_consensus_disagreement'}
+                    )
+
         # 7c. Directional uncertainty tracking — record per-module
         # uncertainty so downstream consumers know WHICH module is most
         # uncertain, enabling targeted re-reasoning.
@@ -16497,6 +16549,12 @@ class UnifiedCognitiveCycle:
                 self.uncertainty_tracker.record("topology", 0.9)
             if convergence_arbiter_result.get("has_conflict", False):
                 self.uncertainty_tracker.record("convergence_arbiter", 0.6)
+            if dag_consensus_result.get("needs_escalation", False):
+                _dag_c_score = dag_consensus_result.get("consensus_score", 1.0)
+                self.uncertainty_tracker.record(
+                    "dag_consensus", min(1.0, 1.0 - _dag_c_score),
+                    source_label="causal_dag_structural_disagreement",
+                )
             if auto_critic_quality is not None:
                 _ac_q = max(0.0, min(1.0, auto_critic_quality))
                 if _ac_q < 0.5:
@@ -16743,6 +16801,7 @@ class UnifiedCognitiveCycle:
             'error_evolution_root_causes': error_evolution_root_causes,
             'causal_chain': causal_chain,
             'convergence_arbiter': convergence_arbiter_result,
+            'dag_consensus': dag_consensus_result,
             'uncertainty_summary': uncertainty_summary,
             'memory_validation': memory_validation,
             'memory_cross_validation': memory_cross_validation,
@@ -17247,6 +17306,14 @@ class AEONDeltaV3(nn.Module):
         # signal conditions the next pass's meta-loop to be more cautious.
         self.feedback_bus.register_signal(
             "deception_pressure", default=0.0,
+        )
+        # Convergence arbiter conflict — when multiple convergence monitors
+        # disagree, the conflict signal conditions the next pass's meta-loop
+        # to demand tighter convergence, closing the gap where arbiter
+        # conflicts were detected within the UCC but never fed back into
+        # the feedback bus for cross-pass conditioning.
+        self.feedback_bus.register_signal(
+            "convergence_arbiter_conflict", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -18106,6 +18173,18 @@ class AEONDeltaV3(nn.Module):
         # carry it into the feedback bus for the next pass.
         self._deferred_trigger_pressure: float = 0.0
 
+        # Convergence arbiter conflict cross-pass state — when the
+        # UnifiedConvergenceArbiter detects monitor conflicts inside the
+        # UCC, this flag carries the conflict signal into the feedback
+        # bus so the next pass's meta-loop can condition on it.
+        self._cached_arbiter_has_conflict: bool = False
+
+        # Cached DAG adjacency matrices — built during the causal-model
+        # section of the reasoning core and forwarded to the UCC's
+        # evaluate() call so that CausalDAGConsensus can independently
+        # verify structural agreement within the cognitive cycle.
+        self._cached_dag_adj_matrices: Dict[str, torch.Tensor] = {}
+
         # ===== CAUSAL DAG CONSENSUS =====
         # Cross-validates adjacency matrices from multiple causal models
         # to detect structural disagreement.  Active whenever ≥2 causal
@@ -18235,6 +18314,7 @@ class AEONDeltaV3(nn.Module):
                     convergence_arbiter=self.convergence_arbiter,
                     uncertainty_tracker=self.uncertainty_tracker,
                     memory_validator=self.memory_validator,
+                    causal_dag_consensus=self.causal_dag_consensus,
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -18549,6 +18629,14 @@ class AEONDeltaV3(nn.Module):
                     extra[f"coherence_correction:{_mod_name}"] = max(
                         0.0, min(1.0, _pressure),
                     )
+        # Convergence arbiter conflict — when the UCC's arbiter detected
+        # disagreement between convergence monitors, carry the conflict
+        # signal into the feedback bus so the next pass's meta-loop demands
+        # tighter convergence.  This closes the gap where arbiter conflicts
+        # escalated uncertainty within the UCC but never conditioned the
+        # next pass's fixed-point iteration dynamics.
+        if self._cached_arbiter_has_conflict:
+            extra["convergence_arbiter_conflict"] = 1.0
         return extra
 
     @staticmethod
@@ -23255,6 +23343,10 @@ class AEONDeltaV3(nn.Module):
             if causal_prog_results and 'adjacency' in causal_prog_results:
                 _adj_matrices['causal_programmatic'] = causal_prog_results['adjacency']
             if len(_adj_matrices) >= 2:
+                # Cache adjacency matrices for UCC DAG consensus verification
+                self._cached_dag_adj_matrices = {
+                    k: v.detach() for k, v in _adj_matrices.items()
+                }
                 self.provenance_tracker.record_before("causal_dag_consensus", C_star)
                 try:
                     _dag_consensus_results = self.causal_dag_consensus.evaluate(
@@ -26232,6 +26324,15 @@ class AEONDeltaV3(nn.Module):
                     # so the UCC can check Banach fixed-point conditions and
                     # trigger re-reasoning when contraction is not satisfied.
                     convergence_certificate=_convergence_certificate,
+                    # DAG adjacency matrices for UCC-level consensus
+                    # verification so structural disagreement between
+                    # causal models is detected within the unified
+                    # cognitive cycle, not just in the main pipeline.
+                    dag_adjacency_matrices=(
+                        self._cached_dag_adj_matrices
+                        if self._cached_dag_adj_matrices
+                        else None
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -26364,6 +26465,14 @@ class AEONDeltaV3(nn.Module):
                 # feedback bus signals registered as ucc_flagged_pressure.
                 self._cached_ucc_flagged_modules = list(_ucc_flagged_modules)
                 self._cached_ucc_most_uncertain = _ucc_most_uncertain
+                # Cache convergence arbiter conflict for next-pass feedback
+                # bus conditioning.  When the UCC's arbiter detects monitor
+                # conflicts, the signal persists into the next pass so the
+                # meta-loop can demand tighter convergence.
+                _ucc_arb = unified_cycle_results.get("convergence_arbiter", {})
+                self._cached_arbiter_has_conflict = _ucc_arb.get(
+                    "has_conflict", False,
+                )
                 # Cache per-module coherence correction signals for the
                 # feedback bus.  Computed from the UCC's pairwise coherence
                 # so that modules with the most inter-module divergence
@@ -26382,6 +26491,23 @@ class AEONDeltaV3(nn.Module):
                     uncertainty_sources[
                         "ucc_most_uncertain_module"
                     ] = _ucc_unc_summary.get("aggregate_uncertainty", 0.0)
+                    # Merge per-module uncertainty from the UCC's
+                    # DirectionalUncertaintyTracker into the forward
+                    # pass's uncertainty_sources dict so that
+                    # _cached_uncertainty_sources (populated later)
+                    # contains the full per-module breakdown.  This
+                    # closes the gap where the tracker's per-module
+                    # detail was logged but never fed into the feedback
+                    # bus's unc_peak and unc_source_count signals.
+                    _ucc_mod_unc = _ucc_unc_summary.get(
+                        "module_uncertainties", {},
+                    )
+                    for _mod, _unc_val in _ucc_mod_unc.items():
+                        _key = f"ucc_dir:{_mod}"
+                        if _key not in uncertainty_sources:
+                            uncertainty_sources[_key] = max(
+                                0.0, min(1.0, float(_unc_val)),
+                            )
                     self.audit_log.record(
                         "directional_uncertainty", "ucc_assessment", {
                             "most_uncertain_module": _ucc_most_uncertain,

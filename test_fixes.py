@@ -41892,6 +41892,7 @@ def test_build_feedback_extra_signals_helper():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -42110,6 +42111,7 @@ def test_uncertainty_sources_values_clamped():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -42988,6 +42990,7 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     mock = _MockModel()
@@ -43058,6 +43061,7 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     mock = _MockModel()
@@ -43194,6 +43198,7 @@ def test_systematic_uncertainty_in_feedback_bus():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -43265,6 +43270,7 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -43306,6 +43312,7 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -44481,6 +44488,7 @@ def test_build_feedback_extra_signals_hybrid_ns_cv():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockDegraded())
@@ -44534,6 +44542,7 @@ def test_build_feedback_extra_signals_omits_healthy():
         _cached_causal_quality = 1.0
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
         provenance_tracker = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockHealthy())
@@ -47462,6 +47471,333 @@ def test_inter_memory_disagreement_in_trigger_signal_mapping():
     print("✅ test_inter_memory_disagreement_in_trigger_signal_mapping PASSED")
 
 
+# ============================================================================
+# Tests for architectural gap closure — CausalDAGConsensus ↔ UCC wiring,
+# convergence arbiter ↔ feedback bus, and directional uncertainty enrichment
+# ============================================================================
+
+
+def test_ucc_accepts_causal_dag_consensus():
+    """UCC __init__ accepts and stores CausalDAGConsensus instance."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalDAGConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    dag = CausalDAGConsensus()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        causal_dag_consensus=dag,
+    )
+    assert ucc.causal_dag_consensus is dag
+
+    print("✅ test_ucc_accepts_causal_dag_consensus PASSED")
+
+
+def test_ucc_evaluate_uses_dag_adjacency_matrices():
+    """UCC.evaluate() invokes CausalDAGConsensus when matrices are provided."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalDAGConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.5)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        causal_dag_consensus=dag,
+    )
+
+    h = 32
+    states = {"core": torch.randn(1, h)}
+    # Two identical adjacency matrices → full agreement
+    adj = {
+        "model_a": torch.eye(4),
+        "model_b": torch.eye(4),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        dag_adjacency_matrices=adj,
+    )
+    dag_result = result.get("dag_consensus", {})
+    assert dag_result.get("consensus_score", 0) == 1.0, (
+        "Identical adjacency matrices should produce consensus_score = 1.0"
+    )
+    assert dag_result.get("needs_escalation") is False
+
+    print("✅ test_ucc_evaluate_uses_dag_adjacency_matrices PASSED")
+
+
+def test_ucc_dag_disagreement_triggers_rerun():
+    """UCC triggers rerun when causal DAG consensus falls below threshold."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalDAGConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.99, uncertainty_scale=0.3)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        causal_dag_consensus=dag,
+    )
+
+    h = 32
+    states = {"core": torch.randn(1, h)}
+    # Maximally disagreeing adjacency matrices
+    adj = {
+        "model_a": torch.eye(4),
+        "model_b": torch.ones(4, 4),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        dag_adjacency_matrices=adj,
+    )
+    dag_result = result.get("dag_consensus", {})
+    assert dag_result.get("needs_escalation") is True, (
+        "Disagreeing adjacency matrices should trigger escalation"
+    )
+    assert result["should_rerun"] is True, (
+        "DAG consensus disagreement should trigger rerun"
+    )
+    assert 'dag_consensus_disagreement' in result['trigger_detail'].get(
+        'triggers_active', []
+    ), "trigger_detail should contain dag_consensus_disagreement"
+
+    print("✅ test_ucc_dag_disagreement_triggers_rerun PASSED")
+
+
+def test_ucc_dag_consensus_in_output():
+    """UCC evaluate return dict contains dag_consensus key."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+
+    h = 32
+    states = {"core": torch.randn(1, h)}
+    result = ucc.evaluate(subsystem_states=states, delta_norm=0.01)
+    assert "dag_consensus" in result, "UCC result must contain dag_consensus key"
+    # Without dag_consensus instance, should be empty dict
+    assert result["dag_consensus"] == {}
+
+    print("✅ test_ucc_dag_consensus_in_output PASSED")
+
+
+def test_model_passes_dag_consensus_to_ucc():
+    """AEONDeltaV3 passes causal_dag_consensus to UCC when available."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        enable_causal_model=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+
+    if model.causal_dag_consensus is not None and model.unified_cognitive_cycle is not None:
+        assert model.unified_cognitive_cycle.causal_dag_consensus is model.causal_dag_consensus, (
+            "UCC's causal_dag_consensus must be the same instance as the model's"
+        )
+
+    print("✅ test_model_passes_dag_consensus_to_ucc PASSED")
+
+
+def test_convergence_arbiter_conflict_feedback_signal_registered():
+    """Feedback bus registers convergence_arbiter_conflict signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert "convergence_arbiter_conflict" in model.feedback_bus._extra_signals, (
+        "convergence_arbiter_conflict must be a registered feedback bus signal"
+    )
+
+    print("✅ test_convergence_arbiter_conflict_feedback_signal_registered PASSED")
+
+
+def test_build_feedback_routes_arbiter_conflict():
+    """_build_feedback_extra_signals includes convergence_arbiter_conflict when cached."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = True  # conflict detected
+        provenance_tracker = None
+
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "convergence_arbiter_conflict" in extra, (
+        "convergence_arbiter_conflict must appear in feedback signals when conflict is cached"
+    )
+    assert extra["convergence_arbiter_conflict"] == 1.0
+
+    print("✅ test_build_feedback_routes_arbiter_conflict PASSED")
+
+
+def test_build_feedback_no_arbiter_conflict_when_none():
+    """_build_feedback_extra_signals omits convergence_arbiter_conflict when no conflict."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _MockModel:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False  # no conflict
+        provenance_tracker = None
+
+    mock = _MockModel()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "convergence_arbiter_conflict" not in extra, (
+        "convergence_arbiter_conflict must be absent when no conflict is cached"
+    )
+
+    print("✅ test_build_feedback_no_arbiter_conflict_when_none PASSED")
+
+
+def test_ucc_dag_consensus_records_uncertainty():
+    """UCC directional uncertainty tracker records dag_consensus disagreement."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalDAGConsensus,
+        DirectionalUncertaintyTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.99, uncertainty_scale=0.3)
+    tracker = DirectionalUncertaintyTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        causal_dag_consensus=dag,
+        uncertainty_tracker=tracker,
+    )
+
+    h = 32
+    states = {"core": torch.randn(1, h)}
+    adj = {
+        "model_a": torch.eye(4),
+        "model_b": torch.ones(4, 4),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        dag_adjacency_matrices=adj,
+    )
+    unc_summary = result.get("uncertainty_summary", {})
+    mod_unc = unc_summary.get("module_uncertainties", {})
+    assert "dag_consensus" in mod_unc, (
+        "Directional uncertainty tracker should record dag_consensus module"
+    )
+
+    print("✅ test_ucc_dag_consensus_records_uncertainty PASSED")
+
+
+def test_ucc_backward_compatible_without_dag_consensus():
+    """UCC works correctly when causal_dag_consensus is not provided."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+    assert ucc.causal_dag_consensus is None
+
+    h = 32
+    states = {"core": torch.randn(1, h)}
+    result = ucc.evaluate(subsystem_states=states, delta_norm=0.01)
+    assert result["dag_consensus"] == {}
+    assert result["should_rerun"] is False
+
+    print("✅ test_ucc_backward_compatible_without_dag_consensus PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -49528,6 +49864,19 @@ def run_all_tests():
     test_ee_boost_applied_to_cross_validation_loss()
     test_error_class_to_lambda_maps_to_valid_config_params()
     test_decoder_degenerate_check_logs_instead_of_pass()
+
+    # Architectural unification — CausalDAGConsensus ↔ UCC wiring,
+    # convergence arbiter ↔ feedback bus, directional uncertainty enrichment
+    test_ucc_accepts_causal_dag_consensus()
+    test_ucc_evaluate_uses_dag_adjacency_matrices()
+    test_ucc_dag_disagreement_triggers_rerun()
+    test_ucc_dag_consensus_in_output()
+    test_model_passes_dag_consensus_to_ucc()
+    test_convergence_arbiter_conflict_feedback_signal_registered()
+    test_build_feedback_routes_arbiter_conflict()
+    test_build_feedback_no_arbiter_conflict_when_none()
+    test_ucc_dag_consensus_records_uncertainty()
+    test_ucc_backward_compatible_without_dag_consensus()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
