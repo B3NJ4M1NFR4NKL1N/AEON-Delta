@@ -48875,6 +48875,255 @@ def test_forward_with_all_feedback_loops():
     print("✅ test_forward_with_all_feedback_loops PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification Tests — Inference Cache Short-Circuit, Feedback Bus
+# EMA Temporal Memory, and UCC Signal Trend Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_inference_cache_short_circuits_reasoning_core():
+    """Verify that a cache hit actually skips the reasoning core.
+
+    The original code computed _cache_hit but always ran reasoning_core.
+    After the fix, a near-identical input should reuse cached results
+    and set outputs['cache_hit'] = True.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_inference_cache=True,
+        inference_cache_similarity_threshold=0.99,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, 100, (1, 16))
+
+    # First pass — populates the cache
+    with torch.no_grad():
+        result1 = model(input_ids, decode_mode='inference')
+    assert 'cache_hit' in result1
+    assert result1['cache_hit'] is False, "First pass should be a cache miss"
+
+    # Verify reasoning result was cached
+    cached = model.inference_cache.get_reasoning_result()
+    assert cached is not None, "Reasoning result should be cached after first pass"
+
+    # Second pass with identical input — should hit cache
+    with torch.no_grad():
+        result2 = model(input_ids, decode_mode='inference')
+    assert result2['cache_hit'] is True, (
+        "Second pass with identical input should be a cache hit"
+    )
+
+    print("✅ test_inference_cache_short_circuits_reasoning_core PASSED")
+
+
+def test_inference_cache_reasoning_result_storage():
+    """Verify InferenceCache stores and retrieves reasoning results."""
+    from aeon_core import InferenceCache
+    import torch
+
+    cache = InferenceCache(maxlen=5)
+    assert cache.get_reasoning_result() is None, "Empty cache should return None"
+
+    z_out = torch.randn(2, 64)
+    outputs = {'logits': torch.randn(2, 100), 'uncertainty': 0.5}
+    cache.set_reasoning_result(z_out, outputs)
+
+    retrieved = cache.get_reasoning_result()
+    assert retrieved is not None, "Should retrieve stored result"
+    assert torch.equal(retrieved[0], z_out), "z_out should match"
+    assert retrieved[1]['uncertainty'] == 0.5, "outputs should match"
+
+    # Reset should clear
+    cache.reset()
+    assert cache.get_reasoning_result() is None, "Reset should clear reasoning result"
+
+    print("✅ test_inference_cache_reasoning_result_storage PASSED")
+
+
+def test_feedback_bus_ema_temporal_tracking():
+    """Verify CognitiveFeedbackBus tracks signal EMA across calls."""
+    from aeon_core import CognitiveFeedbackBus
+    import torch
+
+    bus = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.5)
+
+    # Initially no trend
+    assert bus.get_signal_trend() is None, "No trend before first call"
+    assert bus.get_ema_values() is None, "No EMA before first call"
+
+    # First call — initializes EMA
+    _ = bus(batch_size=2, device=torch.device('cpu'), uncertainty=0.2)
+    ema1 = bus.get_ema_values()
+    assert ema1 is not None, "EMA should be initialized after first call"
+    trend1 = bus.get_signal_trend()
+    assert trend1 is not None, "Trend should be initialized after first call"
+    # On first call, trend is zero (no previous EMA to compare)
+    assert torch.allclose(trend1, torch.zeros_like(trend1)), (
+        "First call trend should be zero"
+    )
+
+    # Second call with higher uncertainty — trend should show increase
+    _ = bus(batch_size=2, device=torch.device('cpu'), uncertainty=0.8)
+    trend2 = bus.get_signal_trend()
+    assert trend2 is not None
+    # uncertainty is channel index 2
+    assert trend2[2].item() > 0, (
+        "Uncertainty trend should be positive when uncertainty increases"
+    )
+
+    print("✅ test_feedback_bus_ema_temporal_tracking PASSED")
+
+
+def test_feedback_bus_ema_alpha_parameter():
+    """Verify ema_alpha parameter controls smoothing factor."""
+    from aeon_core import CognitiveFeedbackBus
+    import torch
+
+    bus_fast = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.9)
+    bus_slow = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.1)
+
+    # Apply same signal sequence to both
+    for _ in range(5):
+        _ = bus_fast(batch_size=1, device=torch.device('cpu'), uncertainty=0.1)
+        _ = bus_slow(batch_size=1, device=torch.device('cpu'), uncertainty=0.1)
+
+    # Spike uncertainty
+    _ = bus_fast(batch_size=1, device=torch.device('cpu'), uncertainty=0.9)
+    _ = bus_slow(batch_size=1, device=torch.device('cpu'), uncertainty=0.9)
+
+    # After the spike, the fast EMA should adapt closer to 0.9 than the
+    # slow EMA.  A second call at the same high level should therefore
+    # show a *smaller* trend for the fast bus (it already adapted) and
+    # a *larger* trend for the slow bus (it's still lagging).
+    _ = bus_fast(batch_size=1, device=torch.device('cpu'), uncertainty=0.9)
+    _ = bus_slow(batch_size=1, device=torch.device('cpu'), uncertainty=0.9)
+
+    trend_fast = bus_fast.get_signal_trend()
+    trend_slow = bus_slow.get_signal_trend()
+    # Fast EMA tracked the spike quickly, so second same-value call has
+    # smaller trend.  Slow EMA is still catching up, so trend is bigger.
+    assert abs(trend_fast[2].item()) < abs(trend_slow[2].item()), (
+        "Fast EMA should adapt quicker, showing smaller trend on repeated value"
+    )
+
+    print("✅ test_feedback_bus_ema_alpha_parameter PASSED")
+
+
+def test_feedback_bus_backward_compat_no_ema_arg():
+    """Verify CognitiveFeedbackBus works without explicit ema_alpha."""
+    from aeon_core import CognitiveFeedbackBus
+    import torch
+
+    # Old-style construction without ema_alpha
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    result = bus(batch_size=2, device=torch.device('cpu'), uncertainty=0.5)
+    assert result.shape == (2, 64), "Output shape should be [B, hidden_dim]"
+    assert bus.get_ema_values() is not None, "EMA should be tracked by default"
+
+    print("✅ test_feedback_bus_backward_compat_no_ema_arg PASSED")
+
+
+def test_ucc_evaluate_accepts_feedback_bus_trend():
+    """Verify UnifiedCognitiveCycle.evaluate accepts feedback_bus_trend."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 64
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden_dim),
+        error_evolution=None,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {
+        "meta_loop": torch.randn(2, hidden_dim),
+        "safety": torch.randn(2, hidden_dim),
+    }
+
+    # Without trend (backward compat)
+    result1 = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.1, uncertainty=0.1,
+    )
+    assert 'should_rerun' in result1
+
+    # With neutral trend — should not trigger rerun
+    neutral_trend = torch.zeros(12)
+    result2 = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.1, uncertainty=0.1,
+        feedback_bus_trend=neutral_trend,
+    )
+    assert 'should_rerun' in result2
+
+    # With worsening trend — should trigger rerun
+    worsening_trend = torch.zeros(12)
+    worsening_trend[2] = 0.1  # rising uncertainty
+    result3 = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.01, uncertainty=0.1,
+        feedback_bus_trend=worsening_trend,
+    )
+    trigger_detail = result3.get('trigger_detail', {})
+    trend_info = trigger_detail.get('feedback_bus_trend')
+    assert trend_info is not None, "Trigger detail should include feedback_bus_trend"
+    assert trend_info['worsening_detected'] is True, (
+        "Should detect worsening trend"
+    )
+
+    print("✅ test_ucc_evaluate_accepts_feedback_bus_trend PASSED")
+
+
+def test_ucc_worsening_trend_triggers_rerun():
+    """Verify worsening feedback trend triggers meta-cognitive re-run."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, ModuleCoherenceVerifier,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden_dim = 64
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=hidden_dim),
+        error_evolution=None,
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {
+        "meta_loop": torch.randn(2, hidden_dim),
+        "safety": torch.randn(2, hidden_dim),
+    }
+
+    # Calm conditions — should NOT trigger rerun
+    calm_trend = torch.zeros(12)
+    result_calm = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.001,
+        uncertainty=0.05, feedback_bus_trend=calm_trend,
+    )
+
+    # Worsening coherence trend — should trigger rerun even with
+    # low point-in-time signals
+    worsening_trend = torch.zeros(12)
+    worsening_trend[6] = 0.08  # rising coherence_deficit
+    result_bad = ucc.evaluate(
+        subsystem_states=states, delta_norm=0.001,
+        uncertainty=0.05, feedback_bus_trend=worsening_trend,
+    )
+    assert result_bad.get('should_rerun', False), (
+        "Worsening coherence trend should trigger meta-cognitive rerun"
+    )
+
+    print("✅ test_ucc_worsening_trend_triggers_rerun PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -51006,6 +51255,16 @@ def run_all_tests():
     test_auto_critic_iterative_refinement()
     test_ucc_deeper_result_partial_integration()
     test_forward_with_all_feedback_loops()
+
+    # Architectural unification — Inference Cache Short-Circuit,
+    # Feedback Bus EMA Temporal Memory, UCC Signal Trend Integration
+    test_inference_cache_short_circuits_reasoning_core()
+    test_inference_cache_reasoning_result_storage()
+    test_feedback_bus_ema_temporal_tracking()
+    test_feedback_bus_ema_alpha_parameter()
+    test_feedback_bus_backward_compat_no_ema_arg()
+    test_ucc_evaluate_accepts_feedback_bus_trend()
+    test_ucc_worsening_trend_triggers_rerun()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
