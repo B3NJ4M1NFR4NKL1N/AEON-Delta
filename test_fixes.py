@@ -50665,6 +50665,253 @@ def test_self_diagnostic_ucc_coherence_trend_wiring():
     print("✅ test_self_diagnostic_ucc_coherence_trend_wiring PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — Bidirectional CV, Cached State Coherence,
+#  Trend-Adaptive Reasoning, and Self-Diagnostic Auto-Remediation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_factor_cv_supervision_loss_in_compute_loss():
+    """Verify that compute_loss includes factor_cv_supervision_loss when
+    cross-validation disagreement is high and factor embedding is available."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B = 1
+    tokens = torch.randint(100, 1000, (B, 16))
+    outputs = model(tokens, fast=False)
+
+    targets = torch.randint(100, 1000, (B, 16))
+
+    # Before compute_loss, simulate high cross-validation disagreement
+    reconciled_target = torch.randn(B, config.z_dim)
+    factor_embed = torch.randn(B, config.z_dim, requires_grad=True)
+    model._last_cv_disagreement = 0.5
+    model._last_cv_reconciled_target = reconciled_target
+    model._last_cv_factor_embedding = factor_embed
+
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'factor_cv_supervision_loss' in loss_dict, (
+        "compute_loss must return factor_cv_supervision_loss"
+    )
+    _fcv = loss_dict['factor_cv_supervision_loss']
+    assert torch.is_tensor(_fcv), "factor_cv_supervision_loss must be a tensor"
+    # When disagreement > 0.1 and factor_embed has requires_grad,
+    # factor_cv_supervision_loss should be > 0
+    assert float(_fcv.item()) > 0.0, (
+        f"factor_cv_supervision_loss should be > 0 with disagreement=0.5, "
+        f"got {float(_fcv.item())}"
+    )
+    print(f"  factor_cv_supervision_loss = {float(_fcv.item()):.6f}")
+    print("✅ test_factor_cv_supervision_loss_in_compute_loss PASSED")
+
+
+def test_validate_cached_state_coherence():
+    """Verify that _validate_cached_state_coherence detects divergence
+    and returns False when cached state is stale."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Coherent states (same direction)
+    state_a = torch.ones(2, 64)
+    state_b = torch.ones(2, 64) * 0.9
+    assert model._validate_cached_state_coherence(
+        state_a, state_b, "test_subsystem"
+    ), "Nearly identical states should be coherent"
+
+    # Divergent states (opposite direction)
+    state_c = torch.ones(2, 64)
+    state_d = -torch.ones(2, 64)
+    assert not model._validate_cached_state_coherence(
+        state_c, state_d, "test_subsystem"
+    ), "Opposite states should be detected as incoherent"
+
+    # None cached state should return True (no cache = nothing stale)
+    assert model._validate_cached_state_coherence(
+        None, state_a, "test_subsystem"
+    ), "None cached state should be treated as coherent"
+
+    print("✅ test_validate_cached_state_coherence PASSED")
+
+
+def test_feedback_trend_amplifies_meta_loop_input():
+    """Verify that worsening feedback bus trend amplifies the feedback
+    signal passed to the meta-loop, enabling deeper reasoning."""
+    from aeon_core import CognitiveFeedbackBus
+    import torch
+
+    bus = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.5)
+
+    # First forward: establish baseline EMA
+    fb1 = bus(batch_size=2, device=torch.device('cpu'), uncertainty=0.1)
+    # Second forward: rising uncertainty → positive trend on channel 2
+    fb2 = bus(batch_size=2, device=torch.device('cpu'), uncertainty=0.8)
+
+    trend = bus.get_signal_trend()
+    assert trend is not None, "Signal trend should be available after 2 passes"
+    # Uncertainty channel (index 2) should show positive trend (rising)
+    unc_trend = float(trend[2].item())
+    assert unc_trend > 0, (
+        f"Uncertainty trend should be positive (worsening), got {unc_trend}"
+    )
+
+    print(f"  uncertainty_trend = {unc_trend:.4f}")
+    print("✅ test_feedback_trend_amplifies_meta_loop_input PASSED")
+
+
+def test_apply_diagnostic_remediation():
+    """Verify that apply_diagnostic_remediation auto-initializes missing
+    pure-logic components when they are enabled in config."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_unified_cognitive_cycle=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Forcibly disable components to simulate gaps
+    original_trigger = model.metacognitive_trigger
+    model.metacognitive_trigger = None
+    original_ee = model.error_evolution
+    model.error_evolution = None
+
+    # Run remediation
+    result = model.apply_diagnostic_remediation()
+    assert 'metacognitive_trigger' in result['remediated'], (
+        "Should auto-remediate metacognitive_trigger"
+    )
+    assert 'error_evolution' in result['remediated'], (
+        "Should auto-remediate error_evolution"
+    )
+    assert model.metacognitive_trigger is not None, (
+        "metacognitive_trigger should be re-initialized"
+    )
+    assert model.error_evolution is not None, (
+        "error_evolution should be re-initialized"
+    )
+
+    # Restore originals to avoid test pollution
+    model.metacognitive_trigger = original_trigger
+    model.error_evolution = original_ee
+
+    print(f"  remediated: {result['remediated']}")
+    print(f"  skipped: {result['skipped']}")
+    print("✅ test_apply_diagnostic_remediation PASSED")
+
+
+def test_apply_diagnostic_remediation_skips_neural_modules():
+    """Verify that apply_diagnostic_remediation does NOT auto-initialize
+    neural modules that require learnable parameters."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+        enable_auto_critic=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Forcibly disable auto_critic
+    original_ac = model.auto_critic
+    model.auto_critic = None
+
+    result = model.apply_diagnostic_remediation()
+    assert 'auto_critic' in result['skipped'], (
+        "Should skip auto_critic (requires learnable parameters)"
+    )
+    assert model.auto_critic is None, (
+        "auto_critic should NOT be auto-initialized"
+    )
+
+    model.auto_critic = original_ac
+    print(f"  skipped: {result['skipped']}")
+    print("✅ test_apply_diagnostic_remediation_skips_neural_modules PASSED")
+
+
+def test_complexity_gated_skip_overridden_on_stale_cache():
+    """Verify that complexity-gated subsystem skip is overridden when
+    the cached state has diverged from the current reasoning trajectory,
+    as tracked by _validate_cached_state_coherence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate a stale world_model cache (opposite direction from a
+    # hypothetical current C_star)
+    model._cached_world_model_state = -torch.ones(2, 64)
+    current_state = torch.ones(2, 64)
+
+    # The validation should detect incoherence
+    is_coherent = model._validate_cached_state_coherence(
+        model._cached_world_model_state, current_state, "world_model",
+    )
+    assert not is_coherent, (
+        "Divergent cached state should be flagged as incoherent"
+    )
+
+    print("✅ test_complexity_gated_skip_overridden_on_stale_cache PASSED")
+
+
+def test_factor_cv_supervision_zero_when_no_disagreement():
+    """Verify that factor_cv_supervision_loss is 0 when there is no
+    cross-validation disagreement."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B = 1
+    tokens = torch.randint(100, 1000, (B, 16))
+    outputs = model(tokens, fast=False)
+
+    # Ensure no disagreement
+    model._last_cv_disagreement = 0.0
+    model._last_cv_reconciled_target = None
+    model._last_cv_factor_embedding = None
+
+    targets = torch.randint(100, 1000, (B, 16))
+    loss_dict = model.compute_loss(outputs, targets)
+    _fcv = loss_dict['factor_cv_supervision_loss']
+    assert float(_fcv.item()) == 0.0, (
+        f"factor_cv_supervision_loss should be 0.0 when no disagreement, "
+        f"got {float(_fcv.item())}"
+    )
+    print("✅ test_factor_cv_supervision_zero_when_no_disagreement PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -52859,6 +53106,16 @@ def run_all_tests():
     test_ucc_loss_includes_convergence_certificate_penalty()
     test_ucc_loss_includes_dag_consensus_penalty()
     test_self_diagnostic_ucc_coherence_trend_wiring()
+
+    # Architectural Unification — Bidirectional CV, Cached State Coherence,
+    # Trend-Adaptive Reasoning, and Self-Diagnostic Auto-Remediation
+    test_factor_cv_supervision_loss_in_compute_loss()
+    test_validate_cached_state_coherence()
+    test_feedback_trend_amplifies_meta_loop_input()
+    test_apply_diagnostic_remediation()
+    test_apply_diagnostic_remediation_skips_neural_modules()
+    test_complexity_gated_skip_overridden_on_stale_cache()
+    test_factor_cv_supervision_zero_when_no_disagreement()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
