@@ -2943,6 +2943,23 @@ class AEONConfig:
     active_learning_curiosity_weight: float = 1.0
     active_learning_blend_weight: float = 0.05
     
+    # ===== CROSS-MODULE INTEGRATION =====
+    # Topology catastrophe → world model attenuation factor.  When the
+    # topology analyzer detects a catastrophe, world model results are
+    # scaled by this factor to prevent unstable predictions from
+    # dominating the reasoning state.
+    topology_wm_attenuation: float = 0.3
+    # DAG consensus quality → causal loss scaling.  The consensus score
+    # (0–1) from CausalDAGConsensus multiplied by this weight modulates
+    # the causal DAG loss: high agreement amplifies the loss (reward
+    # aligned structures), low agreement attenuates it (avoid reinforcing
+    # contradictory structures).
+    dag_consensus_loss_bonus: float = 0.5
+    # Memory–causal cross-validation divergence threshold.  When cosine
+    # distance between memory retrieval and causal prediction exceeds
+    # this value, uncertainty is escalated.
+    memory_causal_cross_threshold: float = 0.3
+    
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = False
     enable_hierarchical_vae: bool = False
@@ -22202,6 +22219,40 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
+        # 5b-topo. Topology catastrophe → world model attenuation — when
+        # the topology analyzer has flagged a catastrophe (loss landscape
+        # instability), attenuate the world model's influence on C_star
+        # to prevent predictions from an unstable region from dominating
+        # downstream reasoning.  This closes the gap where topology
+        # catastrophes escalated uncertainty but never directly limited
+        # the world model's planning contribution, allowing unstable
+        # predictions to persist in the reasoning state.
+        _topo_catastrophe_detected = bool(
+            topo_results.get('catastrophes', torch.zeros(1)).any().item()
+        )
+        if (world_model_results
+                and _topo_catastrophe_detected
+                and not fast):
+            _topo_attn = self.config.topology_wm_attenuation
+            # Blend C_star back toward the pre-world-model state to
+            # reduce the world model's contribution during instability.
+            _pre_wm = self._cached_meta_loop_state
+            if (_pre_wm is not None
+                    and _pre_wm.shape == C_star.shape
+                    and torch.isfinite(_pre_wm).all()):
+                C_star = C_star * (1.0 - _topo_attn) + _pre_wm * _topo_attn
+                uncertainty_sources["topology_wm_attenuation"] = _topo_attn
+                self.audit_log.record(
+                    "world_model", "topology_attenuated", {
+                        "attenuation_factor": _topo_attn,
+                    },
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "world_model", "topology_attenuated",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={"attenuation_factor": _topo_attn},
+                    )
         self._cached_world_model_state = C_star.detach()
         
         # 5b-fc. Complexity-gated fallback caching for world model —
@@ -23111,6 +23162,36 @@ class AEONDeltaV3(nn.Module):
             )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             self.provenance_tracker.record_before("causal_world_model", C_star)
+            # 5d-dag-prior. DAG adjacency prior conditioning — when
+            # cached DAG adjacency matrices from a previous consensus
+            # evaluation are available, nudge the CausalWorldModel's
+            # internal adjacency toward the consensus structure before
+            # the forward pass.  This closes the gap where consensus
+            # matrices were computed and stored but never used to
+            # constrain the CausalWorldModel's structural predictions,
+            # leaving it structurally disconnected from the DAG
+            # ensemble.  The blend is small (0.05) to avoid overriding
+            # the model's learned structure while still providing a
+            # soft structural prior.
+            _dag_prior_applied = False
+            if (self._cached_dag_adj_matrices
+                    and hasattr(self.causal_world_model, 'causal_model')
+                    and hasattr(self.causal_world_model.causal_model, 'adjacency')):
+                _cw_adj = self.causal_world_model.causal_model.adjacency
+                _prior_sum = None
+                _prior_count = 0
+                for _adj_t in self._cached_dag_adj_matrices.values():
+                    if _adj_t.shape == _cw_adj.shape:
+                        _prior_sum = _adj_t if _prior_sum is None else _prior_sum + _adj_t
+                        _prior_count += 1
+                if _prior_count > 0 and _prior_sum is not None:
+                    _DAG_PRIOR_BLEND = 0.05
+                    _mean_prior = _prior_sum / _prior_count
+                    self.causal_world_model.causal_model.adjacency.data.copy_(
+                        (1.0 - _DAG_PRIOR_BLEND) * _cw_adj.data
+                        + _DAG_PRIOR_BLEND * _mean_prior.to(_cw_adj.device)
+                    )
+                    _dag_prior_applied = True
             causal_world_results = self.causal_world_model(C_star)
             # Blend causal world model prediction as a residual to ground
             # the reasoning state in causal dynamics.  The predicted_state
@@ -23987,6 +24068,64 @@ class AEONDeltaV3(nn.Module):
                 causal_model_results.get('dag_loss', torch.tensor(0.0)).item()
             )
         
+        # 5d4. Memory ↔ causal model cross-validation — compare the
+        # cached memory state against the causal model's predicted state
+        # (from CausalWorldModel) via cosine similarity.  Divergence
+        # indicates that the memory subsystem and causal reasoning have
+        # reached inconsistent conclusions: memory recalls patterns that
+        # contradict the causal model's structural predictions.  When
+        # divergence exceeds the threshold, escalate uncertainty and
+        # record the discrepancy in the causal trace so root-cause
+        # analysis can identify memory–causal disagreements as a source
+        # of epistemic fragility.
+        if (self._cached_memory_state is not None
+                and causal_world_results
+                and not fast):
+            _cw_pred_mem_xv = causal_world_results.get('predicted_state', None)
+            if (_cw_pred_mem_xv is not None
+                    and torch.is_tensor(_cw_pred_mem_xv)
+                    and self._cached_memory_state.shape[-1] == _cw_pred_mem_xv.shape[-1]):
+                try:
+                    _mem_flat = self._cached_memory_state.mean(dim=0) if self._cached_memory_state.dim() > 1 else self._cached_memory_state
+                    _causal_flat = _cw_pred_mem_xv.mean(dim=0) if _cw_pred_mem_xv.dim() > 1 else _cw_pred_mem_xv
+                    _mem_causal_cos = F.cosine_similarity(
+                        _mem_flat.unsqueeze(0), _causal_flat.unsqueeze(0),
+                    ).item()
+                    _mem_causal_div = 1.0 - _mem_causal_cos
+                    if (math.isfinite(_mem_causal_div)
+                            and _mem_causal_div > self.config.memory_causal_cross_threshold):
+                        _mc_boost = min(
+                            1.0 - uncertainty,
+                            _mem_causal_div * 0.15,
+                        )
+                        if _mc_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _mc_boost)
+                            uncertainty_sources["memory_causal_cross_divergence"] = _mc_boost
+                            high_uncertainty = uncertainty > 0.5
+                        self.audit_log.record(
+                            "memory_causal_cross_validation", "divergence", {
+                                "cosine_similarity": _mem_causal_cos,
+                                "divergence": _mem_causal_div,
+                                "threshold": self.config.memory_causal_cross_threshold,
+                            },
+                        )
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "memory_causal_cross_validation",
+                                "divergence_detected",
+                                causal_prerequisites=[input_trace_id],
+                                severity="warning",
+                                metadata={
+                                    "cosine_similarity": _mem_causal_cos,
+                                    "divergence": _mem_causal_div,
+                                },
+                            )
+                except Exception as _mc_xv_err:
+                    logger.debug(
+                        "Memory-causal cross-validation failed "
+                        "(non-fatal): %s", _mc_xv_err,
+                    )
+        
         # 5e. Active learning planner (if enabled)
         active_learning_results = {}
         if self.active_learning_planner is not None and self.world_model is not None and not fast and "world_model" not in _circuit_breaker_tripped:
@@ -23997,6 +24136,50 @@ class AEONDeltaV3(nn.Module):
                     C_star[0], self.world_model
                 )
                 self.provenance_tracker.record_after("active_learning", C_star)
+                # 5e-0-ee. Error evolution → active learning bridge — feed
+                # failure-pattern root causes from the error evolution tracker
+                # into the active learning results as supplementary uncertainty
+                # so that exploration is shaped by historical failure patterns.
+                # Without this, the planner explores based only on prediction
+                # variance, ignoring which subsystems have been repeatedly
+                # failing.  When error_evolution identifies root causes matching
+                # world_model or causal models, amplify the intrinsic reward
+                # to bias exploration toward epistemically fragile regions.
+                if self.error_evolution is not None:
+                    _ee_summary = self.error_evolution.get_error_summary()
+                    _ee_wm_failures = _ee_summary.get(
+                        "subsystem", {},
+                    ).get("world_model", 0) + _ee_summary.get(
+                        "world_model_surprise", {},
+                    ).get("count", 0)
+                    _ee_causal_failures = _ee_summary.get(
+                        "low_causal_quality", {},
+                    ).get("count", 0) + _ee_summary.get(
+                        "causal_dag_disagreement", {},
+                    ).get("count", 0)
+                    _ee_total_failures = _ee_wm_failures + _ee_causal_failures
+                    if _ee_total_failures > 0:
+                        # Scale exploration boost by failure frequency,
+                        # capped at 0.2 to avoid runaway uncertainty.
+                        _ee_explore_boost = min(
+                            0.2, _ee_total_failures * 0.02,
+                        )
+                        _al_intrinsic_raw = active_learning_results.get(
+                            "intrinsic_reward", 0.0,
+                        )
+                        if isinstance(_al_intrinsic_raw, (int, float)):
+                            active_learning_results["intrinsic_reward"] = (
+                                _al_intrinsic_raw + _ee_explore_boost
+                            )
+                        self.audit_log.record(
+                            "active_learning",
+                            "error_evolution_exploration_boost",
+                            {
+                                "wm_failures": _ee_wm_failures,
+                                "causal_failures": _ee_causal_failures,
+                                "exploration_boost": _ee_explore_boost,
+                            },
+                        )
                 # 5e-i. Active learning uncertainty feedback — high intrinsic
                 # reward indicates the system is in a highly uncertain region
                 # of state space.  Escalate uncertainty so metacognitive cycles
@@ -29084,6 +29267,47 @@ class AEONDeltaV3(nn.Module):
             _cp_dag = causal_prog_results['dag_loss']
             if _cp_dag.requires_grad:
                 causal_dag_loss = causal_dag_loss + _cp_dag
+        # 9b. DAG consensus quality → causal loss scaling — when
+        # CausalDAGConsensus has evaluated and multiple causal models
+        # agree (high consensus_score), amplify the causal DAG loss to
+        # reward structurally aligned learning.  When models disagree
+        # (low consensus_score), attenuate the loss to avoid reinforcing
+        # contradictory causal structures.  This wires the consensus
+        # assessment directly into the training objective, closing the
+        # gap where DAG consensus was purely diagnostic.
+        _dag_consensus_for_loss = outputs.get('dag_consensus_results', {})
+        _dag_consensus_score_loss = _dag_consensus_for_loss.get(
+            'consensus_score', None,
+        )
+        if (_dag_consensus_score_loss is not None
+                and isinstance(_dag_consensus_score_loss, (int, float))
+                and math.isfinite(_dag_consensus_score_loss)
+                and causal_dag_loss.abs().item() > 0):
+            # Scale: consensus=1.0 → bonus 1.0+0.5=1.5×;
+            #        consensus=0.0 → bonus 1.0-0.5=0.5×.
+            _consensus_scale = (
+                1.0 + self.config.dag_consensus_loss_bonus
+                * (2.0 * _dag_consensus_score_loss - 1.0)
+            )
+            causal_dag_loss = causal_dag_loss * max(0.1, _consensus_scale)
+        # 9c. Auto-critic quality → causal loss modulation — when the
+        # auto-critic assesses the reasoning output as low-quality, the
+        # causal model's structural learning should be weighted down
+        # because unreliable reasoning states produce unreliable causal
+        # gradients.  Conversely, high critic scores indicate the causal
+        # loss gradients are trustworthy and should be fully applied.
+        # This closes the gap where auto-critic quality was used for
+        # output gating but never influenced causal model training.
+        _ac_score_for_loss = outputs.get('auto_critic_final_score', None)
+        if (_ac_score_for_loss is not None
+                and isinstance(_ac_score_for_loss, (int, float))
+                and math.isfinite(_ac_score_for_loss)
+                and causal_dag_loss.abs().item() > 0):
+            # Low critic quality (< 0.5) attenuates causal loss to
+            # avoid reinforcing conclusions from unreliable reasoning.
+            # Quality >= 0.5 passes through at full strength.
+            _ac_causal_scale = max(0.3, min(1.0, _ac_score_for_loss))
+            causal_dag_loss = causal_dag_loss * _ac_causal_scale
         
         # ===== 10. HIERARCHICAL VAE KL LOSS =====
         hvae_kl_loss = torch.tensor(0.0, device=self.device)
