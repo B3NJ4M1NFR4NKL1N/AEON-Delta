@@ -14985,6 +14985,9 @@ class MetaCognitiveRecursionTrigger:
             # back into trigger weight adaptation.
             "low_executive_health": "uncertainty",
             "low_decoder_quality": "coherence_deficit",
+            # Generation-time UCC failure — the meta-cognitive cycle
+            # could not evaluate generation quality, degrading trust.
+            "generate_ucc_failure": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15674,6 +15677,10 @@ class CausalErrorEvolutionTracker:
         # between runtime health signals and training loss adaptation.
         "low_executive_health": "lambda_ucc",
         "low_decoder_quality": "lambda_cycle_consistency",
+        # Generation-time UCC failure maps to the UCC loss weight
+        # so that training adapts to persistent generation verification
+        # failures.
+        "generate_ucc_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -30976,15 +30983,102 @@ class AEONDeltaV3(nn.Module):
             # Run UCC evaluation on the generated output so that generation
             # quality is verified through the same meta-cognitive cycle as
             # inference, enabling post-generation coherence checks.
+            #
+            # All available cached subsystem states are included so that
+            # the coherence verifier has full visibility into subsystem
+            # drift during generation — previously only meta_loop and
+            # decoder were passed, leaving the verifier blind to memory,
+            # world-model, causal, and safety divergence.
+            #
+            # Subsystem health signals (topology_catastrophe,
+            # diversity_collapse, auto_critic_quality, executive_health,
+            # decoder_quality, ns_consistency_score, memory_trust_deficit,
+            # convergence_certificate) are now forwarded so the UCC's
+            # metacognitive trigger can fire on the same conditions
+            # during generation as during inference.
+            #
+            # When the UCC recommends re-reasoning (should_rerun=True),
+            # a single re-generation pass with elevated temperature is
+            # attempted (guarded by a flag to prevent infinite loops),
+            # closing the gap where the UCC verdict was computed but
+            # never acted upon.
             _gen_ucc_result: Dict[str, Any] = {}
             if (self.unified_cognitive_cycle is not None
                     and self._cached_meta_loop_state is not None):
                 try:
+                    # Collect all available cached subsystem states
                     _gen_ucc_states: Dict[str, torch.Tensor] = {}
+                    _gen_hidden_dim: Optional[int] = None
                     if self._cached_meta_loop_state is not None:
                         _gen_ucc_states["meta_loop"] = self._cached_meta_loop_state
-                    if self._cached_decoder_state is not None:
-                        _gen_ucc_states["decoder"] = self._cached_decoder_state
+                        _gen_hidden_dim = self._cached_meta_loop_state.shape[-1]
+                    # Include all cached subsystem states that match the
+                    # hidden_dim, mirroring the inline UCC invocation in
+                    # _reasoning_core_impl.
+                    _gen_cached_state_map = [
+                        ("decoder", self._cached_decoder_state),
+                        ("factor_embedding", self._cached_factor_state),
+                        ("safety", self._cached_safety_state),
+                        ("memory", self._cached_memory_state),
+                        ("world_model", self._cached_world_model_state),
+                        ("integration", self._cached_integration_state),
+                        ("cognitive_executive", self._cached_executive_state),
+                        ("rssm", self._cached_rssm_state),
+                        ("auto_critic", self._cached_auto_critic_state),
+                        ("neurogenic_memory", self._cached_neurogenic_memory_state),
+                        ("temporal_memory", self._cached_temporal_memory_state),
+                        ("consolidating_memory", self._cached_consolidating_memory_state),
+                        ("grounded_multimodal", self._cached_grounded_multimodal_state),
+                        ("mcts_planning", self._cached_mcts_state),
+                        ("hierarchical_vae", self._cached_hvae_state),
+                        ("unified_simulator", self._cached_unified_sim_state),
+                        ("cross_validation", self._cached_cross_validation_state),
+                        ("ns_consistency", self._cached_ns_consistency_state),
+                        ("temporal_knowledge_graph", self._cached_tkg_state),
+                        ("self_report", getattr(self, '_cached_self_report_state', None)),
+                    ]
+                    for _state_name, _state_val in _gen_cached_state_map:
+                        if (_state_val is not None
+                                and _gen_hidden_dim is not None
+                                and _state_val.shape[-1] == _gen_hidden_dim):
+                            _gen_ucc_states[_state_name] = _state_val
+
+                    # Extract subsystem health signals from the forward
+                    # pass outputs so the UCC can evaluate them.
+                    _gen_topo_cat = bool(
+                        outputs.get('topo_results', {}).get(
+                            'catastrophe_detected', False,
+                        )
+                    )
+                    _gen_div_collapse = float(
+                        outputs.get('diversity_results', {}).get(
+                            'collapse_severity', 0.0,
+                        )
+                    ) if outputs.get('diversity_results') else 0.0
+                    _gen_ac_quality = outputs.get('auto_critic_final_score')
+                    _gen_exec_health = None
+                    _exec_res = outputs.get('executive_results', {})
+                    if _exec_res and 'health' in _exec_res:
+                        _gen_exec_health = float(_exec_res['health'])
+                    _gen_decoder_quality = outputs.get(
+                        'output_reliability', None,
+                    )
+                    _gen_ns_score = None
+                    _ns_res = outputs.get('ns_consistency_results', {})
+                    if _ns_res:
+                        _gen_ns_violations = _ns_res.get(
+                            'num_violations', torch.zeros(1),
+                        )
+                        if torch.is_tensor(_gen_ns_violations):
+                            _gen_ns_score = max(
+                                0.0,
+                                1.0 - float(_gen_ns_violations.sum().item()) * 0.1,
+                            )
+                    _gen_mem_trust_deficit = 0.0
+                    if self._memory_stale:
+                        _gen_mem_trust_deficit = 0.5
+                    _gen_conv_cert = outputs.get('certified_results', None)
+
                     if len(_gen_ucc_states) >= 2:
                         _gen_ucc_result = self.unified_cognitive_cycle.evaluate(
                             subsystem_states=_gen_ucc_states,
@@ -30995,6 +31089,14 @@ class AEONDeltaV3(nn.Module):
                             memory_staleness=self._memory_stale,
                             recovery_pressure=self._compute_recovery_pressure(),
                             feedback_signal=self._cached_feedback,
+                            topology_catastrophe=_gen_topo_cat,
+                            diversity_collapse=_gen_div_collapse,
+                            memory_trust_deficit=_gen_mem_trust_deficit,
+                            auto_critic_quality=_gen_ac_quality,
+                            executive_health=_gen_exec_health,
+                            decoder_quality=_gen_decoder_quality,
+                            ns_consistency_score=_gen_ns_score,
+                            convergence_certificate=_gen_conv_cert,
                             output_reliability=max(0.0, min(1.0,
                                 (1.0 - _gen_uncertainty)
                                 * max(0.0, 1.0 - self._cached_coherence_deficit)
@@ -31005,11 +31107,64 @@ class AEONDeltaV3(nn.Module):
                                 else None
                             ),
                         )
+                    # Act on UCC verdict: when re-reasoning is recommended
+                    # and we haven't already regenerated due to uncertainty,
+                    # perform a single re-generation pass with tightened
+                    # parameters so the meta-cognitive verdict actively
+                    # influences generation quality.
+                    if (_gen_ucc_result.get("should_rerun", False)
+                            and not _uncertainty_regenerated):
+                        _uncertainty_regenerated = True
+                        _ucc_temp_boost = min(0.3, 0.1 * max(1.0,
+                            _gen_ucc_result.get("trigger_detail", {}).get(
+                                "trigger_score", 0.5,
+                            )
+                        ))
+                        outputs = self.forward(
+                            input_ids,
+                            attention_mask=attention_mask,
+                            decode_mode='inference',
+                            fast=False,
+                            temperature=temperature + _ucc_temp_boost,
+                            top_k=top_k,
+                            sample=sample,
+                            max_length=max_length,
+                        )
+                        _gen_uncertainty = outputs.get('uncertainty', 0.0)
+                        generated_ids = outputs.get('generated_ids')
+                        if generated_ids is not None and generated_ids.numel() > 0:
+                            generated_text = self.tokenizer.decode(
+                                generated_ids[0],
+                                skip_special_tokens=True,
+                            )
+                            generated_text = ' '.join(generated_text.split())
+                        self.audit_log.record(
+                            "generate", "ucc_rerun_regeneration", {
+                                "trigger_score": _gen_ucc_result.get(
+                                    "trigger_detail", {},
+                                ).get("trigger_score", 0.0),
+                                "triggers_active": _gen_ucc_result.get(
+                                    "trigger_detail", {},
+                                ).get("triggers_active", []),
+                                "temperature_boost": _ucc_temp_boost,
+                            },
+                        )
                 except Exception as _gen_ucc_err:
-                    logger.debug(
+                    logger.warning(
                         "Generate UCC evaluation error (non-fatal): %s",
                         _gen_ucc_err,
                     )
+                    # Record in error evolution so the system can learn
+                    # from generation-time UCC failures, closing the gap
+                    # where generation-time verification errors were
+                    # invisible to the learning system.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='generate_ucc_failure',
+                            strategy_used='graceful_degradation',
+                            success=False,
+                            metadata={'error': str(_gen_ucc_err)},
+                        )
 
             return {
                 'text': generated_text,
