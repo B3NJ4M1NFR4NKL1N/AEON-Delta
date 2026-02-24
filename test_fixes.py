@@ -27665,6 +27665,9 @@ def test_convergence_conflict_signal_contributes_to_sum():
     )
 
     print("✅ test_convergence_conflict_signal_contributes_to_sum PASSED")
+
+
+def test_get_weakest_pair_identifies_lowest_similarity():
     """Verify ModuleCoherenceVerifier.get_weakest_pair correctly identifies
     the pair with the lowest mean cosine similarity."""
     from aeon_core import ModuleCoherenceVerifier
