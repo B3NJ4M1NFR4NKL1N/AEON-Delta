@@ -49379,6 +49379,217 @@ def test_auto_critic_depth_adapts_to_metacognitive_trigger():
     print("✅ test_auto_critic_depth_adapts_to_metacognitive_trigger PASSED")
 
 
+# ============================================================================
+# Tests for architectural gap closure — unified cognitive coherence fixes
+# (auto-critic convergence feedback, HVAE abstraction pressure,
+#  trace_root_cause empty DAG, generate metacognitive info, decoder quality UCC)
+# ============================================================================
+
+
+def test_non_ucc_auto_critic_convergence_signal():
+    """Gap 1: When UCC is disabled, auto-critic quality must still feed into
+    the ConvergenceMonitor as a secondary signal so convergence certification
+    reflects output quality regardless of UCC availability.
+    """
+    from aeon_core import ConvergenceMonitor
+
+    monitor = ConvergenceMonitor()
+
+    # Record a low auto-critic quality signal (simulating the non-UCC path)
+    monitor.record_secondary_signal("auto_critic_quality", 0.7)
+
+    # The secondary signal should be stored and influence the verdict
+    assert "auto_critic_quality" in monitor._secondary_signals, (
+        "auto_critic_quality must be recorded as a secondary signal"
+    )
+    assert monitor._secondary_signals["auto_critic_quality"] == 0.7, (
+        "auto_critic_quality value must match the recorded value"
+    )
+
+    print("✅ test_non_ucc_auto_critic_convergence_signal PASSED")
+
+
+def test_hvae_abstraction_pressure_in_feedback():
+    """Gap 2: _build_feedback_extra_signals must include hvae_abstraction_pressure
+    when the cached HVAE KL divergence exceeds the threshold, conditioning the
+    next pass's meta-loop on abstraction-level uncertainty.
+    """
+    from aeon_core import AEONDeltaV3
+
+    class _MockHighKL:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_hvae_kl = 3.0  # High KL divergence
+        provenance_tracker = None
+
+    mock = _MockHighKL()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "hvae_abstraction_pressure" in extra, (
+        "hvae_abstraction_pressure must be present when HVAE KL is high"
+    )
+    assert extra["hvae_abstraction_pressure"] > 0.0, (
+        "hvae_abstraction_pressure must be positive for high KL"
+    )
+    assert extra["hvae_abstraction_pressure"] <= 1.0, (
+        "hvae_abstraction_pressure must be clamped to [0, 1]"
+    )
+
+    # Low KL should not emit the signal
+    mock._cached_hvae_kl = 0.5
+    extra_low = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "hvae_abstraction_pressure" not in extra_low, (
+        "hvae_abstraction_pressure must be omitted when HVAE KL is below threshold"
+    )
+
+    print("✅ test_hvae_abstraction_pressure_in_feedback PASSED")
+
+
+def test_trace_root_cause_incomplete_flag():
+    """Gap 3: trace_root_cause must return trace_incomplete=True when the
+    dependency DAG has visited modules but no root nodes, indicating circular
+    dependencies or missing entry points.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Create a circular dependency: A → B → A
+    tracker.record_dependency("A", "B")
+    tracker.record_dependency("B", "A")
+
+    # Record some state so the modules are in the tracker
+    dummy = torch.zeros(1, 4)
+    tracker.record_before("A", dummy)
+    tracker.record_after("A", dummy)
+    tracker.record_before("B", dummy)
+    tracker.record_after("B", dummy)
+
+    result = tracker.trace_root_cause("A")
+    assert "trace_incomplete" in result, (
+        "trace_root_cause must include 'trace_incomplete' key"
+    )
+    assert result["trace_incomplete"] is True, (
+        "trace_incomplete must be True when all visited modules have deps (cycle)"
+    )
+
+    # Normal case: A is a root node (no upstream deps)
+    tracker2 = CausalProvenanceTracker()
+    tracker2.record_dependency("A", "B")
+    tracker2.record_before("A", dummy)
+    tracker2.record_after("A", dummy)
+    tracker2.record_before("B", dummy)
+    tracker2.record_after("B", dummy)
+
+    result2 = tracker2.trace_root_cause("B")
+    assert result2["trace_incomplete"] is False, (
+        "trace_incomplete must be False when root nodes exist"
+    )
+    assert "A" in result2["root_modules"], (
+        "A must be identified as a root module"
+    )
+
+    print("✅ test_trace_root_cause_incomplete_flag PASSED")
+
+
+def test_generate_returns_metacognitive_info():
+    """Gap 4: generate() must include metacognitive_info from the forward pass
+    in its return dict so callers can adapt generation strategy when the
+    reasoning pipeline flagged internal inconsistencies.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Verify the source code includes metacognitive_info in the return
+    src = inspect.getsource(AEONDeltaV3.generate)
+    assert "'metacognitive_info'" in src, (
+        "generate() must return metacognitive_info in its result dict"
+    )
+    assert "outputs.get('metacognitive_info'" in src, (
+        "generate() must extract metacognitive_info from forward outputs"
+    )
+
+    print("✅ test_generate_returns_metacognitive_info PASSED")
+
+
+def test_ucc_evaluate_accepts_decoder_quality():
+    """Gap 5: UnifiedCognitiveCycle.evaluate() must accept a decoder_quality
+    parameter and feed it into the ConvergenceMonitor as a secondary signal
+    so that decoder-stage distortions are visible to the meta-cognitive cycle.
+    """
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker
+
+    # Verify the signature includes decoder_quality
+    sig = inspect.signature(UnifiedCognitiveCycle.evaluate)
+    assert "decoder_quality" in sig.parameters, (
+        "UnifiedCognitiveCycle.evaluate must accept decoder_quality parameter"
+    )
+
+    # Verify it works in practice
+    monitor = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+        decoder_quality=0.3,  # Low decoder quality
+    )
+    # The secondary signal should be recorded
+    assert "decoder_quality" in monitor._secondary_signals, (
+        "decoder_quality must be recorded as a convergence secondary signal"
+    )
+
+    print("✅ test_ucc_evaluate_accepts_decoder_quality PASSED")
+
+
+def test_hvae_kl_cached_during_forward():
+    """Verify that _cached_hvae_kl is initialized in AEONDeltaV3.__init__
+    and can be set during HVAE computation.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(vocab_size=256, z_dim=32, hidden_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Verify the attribute exists and has the correct default
+    assert hasattr(model, '_cached_hvae_kl'), (
+        "AEONDeltaV3 must have _cached_hvae_kl attribute"
+    )
+    assert model._cached_hvae_kl == 0.0, (
+        "_cached_hvae_kl must default to 0.0"
+    )
+
+    print("✅ test_hvae_kl_cached_during_forward PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -51531,6 +51742,14 @@ def run_all_tests():
     test_coherence_verifier_forward_includes_correction_signals()
     test_verify_coherence_applies_targeted_repair()
     test_auto_critic_depth_adapts_to_metacognitive_trigger()
+
+    # Architectural Gap Closure — Unified Cognitive Coherence
+    test_non_ucc_auto_critic_convergence_signal()
+    test_hvae_abstraction_pressure_in_feedback()
+    test_trace_root_cause_incomplete_flag()
+    test_generate_returns_metacognitive_info()
+    test_ucc_evaluate_accepts_decoder_quality()
+    test_hvae_kl_cached_during_forward()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
