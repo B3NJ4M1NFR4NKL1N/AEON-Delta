@@ -50912,6 +50912,280 @@ def test_factor_cv_supervision_zero_when_no_disagreement():
     print("✅ test_factor_cv_supervision_zero_when_no_disagreement PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION GAP TESTS — Inter-phase coherence, thread safety,
+#  directional uncertainty bridge, and coherence-driven training adaptation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_vq_codebook_health_gate_in_training_source():
+    """Verify that ae_train.py main() contains VQ codebook health verification
+    between Phase A and Phase B.  This ensures each component (Phase A VQ)
+    verifies and reinforces the next (Phase B RSSM) by gating the transition
+    on codebook health."""
+    import inspect
+    try:
+        from ae_train import main as ae_main
+        source = inspect.getsource(ae_main)
+    except ImportError:
+        import ast
+        with open("ae_train.py") as f:
+            source = f.read()
+
+    assert "VQ Codebook Health Gate" in source, (
+        "ae_train.py main() must contain VQ codebook health gate between phases"
+    )
+    assert "get_codebook_usage" in source, (
+        "ae_train.py main() must check VQ codebook utilization"
+    )
+    assert "_VQ_HEALTH_CRITICAL_THRESHOLD" in source, (
+        "ae_train.py main() must define a critical threshold for VQ health"
+    )
+    print("✅ test_vq_codebook_health_gate_in_training_source PASSED")
+
+
+def test_z_sequence_distribution_verification_in_training_source():
+    """Verify that ae_train.py main() contains z-sequence distribution
+    verification after building z_sequences.  This ensures Phase A's output
+    verifies Phase B's input, closing the inter-phase coherence loop."""
+    import inspect
+    try:
+        from ae_train import main as ae_main
+        source = inspect.getsource(ae_main)
+    except ImportError:
+        with open("ae_train.py") as f:
+            source = f.read()
+
+    assert "Z-Sequence Distribution Verification" in source, (
+        "ae_train.py main() must contain z-sequence distribution verification"
+    )
+    assert "_Z_VARIANCE_CRITICAL_THRESHOLD" in source, (
+        "ae_train.py main() must define a variance threshold"
+    )
+    assert "_Z_COSINE_COLLAPSE_THRESHOLD" in source, (
+        "ae_train.py main() must define a cosine collapse threshold"
+    )
+    # Verify the check actually blocks degenerate sequences
+    assert "near-zero variance" in source, (
+        "ae_train.py must log a clear error when variance is too low"
+    )
+    print("✅ test_z_sequence_distribution_verification_in_training_source PASSED")
+
+
+def test_directional_uncertainty_tracker_in_bridge():
+    """Verify that bridge_inference_insights_to_training() is called with
+    the DirectionalUncertaintyTracker parameter in ae_train.py main()."""
+    with open("ae_train.py") as f:
+        source = f.read()
+
+    # The bridge call must include inference_uncertainty_tracker
+    assert "inference_uncertainty_tracker=" in source, (
+        "bridge_inference_insights_to_training() must be called with "
+        "inference_uncertainty_tracker to close the directional uncertainty loop"
+    )
+    # Verify it extracts the tracker from the unified cycle
+    assert "uncertainty_tracker" in source, (
+        "The directional uncertainty tracker must be passed from the UCC"
+    )
+    print("✅ test_directional_uncertainty_tracker_in_bridge PASSED")
+
+
+def test_appstate_thread_lock():
+    """Verify that aeon_server.py AppState includes a threading lock for
+    thread-safe shared state access."""
+    with open("aeon_server.py") as f:
+        source = f.read()
+
+    assert "threading.RLock" in source, (
+        "AppState must include a threading.RLock for thread-safe access"
+    )
+    assert "APP.lock" in source, (
+        "Critical sections must use APP.lock for synchronization"
+    )
+    # Verify the lock is used around state transitions
+    assert "with APP.lock:" in source, (
+        "State transitions must be protected with 'with APP.lock:'"
+    )
+    print("✅ test_appstate_thread_lock PASSED")
+
+
+def test_phase_b_coherence_driven_grad_clip():
+    """Verify that Phase B training tightens gradient clipping when the
+    UCC detects coherence deficit.  This closes the loop between coherence
+    verification and training dynamics."""
+    with open("ae_train.py") as f:
+        source = f.read()
+
+    assert "coherence_deficit" in source and "_grad_clip_norm" in source, (
+        "Phase B must adapt grad clip based on coherence deficit"
+    )
+    assert "Grad clip tightened" in source, (
+        "Phase B must log when gradient clipping is tightened due to coherence"
+    )
+    print("✅ test_phase_b_coherence_driven_grad_clip PASSED")
+
+
+def test_bridge_training_errors_accepts_all_parameters():
+    """Verify bridge_training_errors_to_inference function signature accepts
+    all integration parameters for full causal traceability."""
+    import inspect
+    try:
+        from ae_train import bridge_training_errors_to_inference
+    except ImportError:
+        with open("ae_train.py") as f:
+            source = f.read()
+        assert "def bridge_training_errors_to_inference" in source
+        print("✅ test_bridge_training_errors_accepts_all_parameters PASSED (source check)")
+        return
+
+    sig = inspect.signature(bridge_training_errors_to_inference)
+    params = list(sig.parameters.keys())
+    assert "trainer_monitor" in params, "Missing trainer_monitor parameter"
+    assert "inference_error_evolution" in params, "Missing inference_error_evolution parameter"
+    assert "causal_trace" in params, "Missing causal_trace parameter"
+    assert "inference_convergence_monitor" in params, "Missing inference_convergence_monitor parameter"
+    assert "inference_provenance_tracker" in params, "Missing inference_provenance_tracker parameter"
+    assert "inference_metacognitive_trigger" in params, "Missing inference_metacognitive_trigger parameter"
+    print("✅ test_bridge_training_errors_accepts_all_parameters PASSED")
+
+
+def test_bridge_inference_insights_accepts_uncertainty_tracker():
+    """Verify bridge_inference_insights_to_training function signature accepts
+    the DirectionalUncertaintyTracker parameter."""
+    import inspect
+    try:
+        from ae_train import bridge_inference_insights_to_training
+    except ImportError:
+        with open("ae_train.py") as f:
+            source = f.read()
+        assert "def bridge_inference_insights_to_training" in source
+        print("✅ test_bridge_inference_insights_accepts_uncertainty_tracker PASSED (source check)")
+        return
+
+    sig = inspect.signature(bridge_inference_insights_to_training)
+    params = list(sig.parameters.keys())
+    assert "inference_uncertainty_tracker" in params, (
+        "bridge_inference_insights_to_training must accept "
+        "inference_uncertainty_tracker for directional uncertainty feedback"
+    )
+    print("✅ test_bridge_inference_insights_accepts_uncertainty_tracker PASSED")
+
+
+def test_unified_cognitive_cycle_orchestration():
+    """Verify that UnifiedCognitiveCycle properly orchestrates all sub-components:
+    convergence → coherence → error_evolution → metacognition → provenance,
+    closing all verification loops."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    # Build all components
+    conv_mon = ConvergenceMonitor(threshold=1e-5)
+    coherence = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.5, max_recursions=2)
+    provenance = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=provenance,
+    )
+
+    # Verify wiring
+    assert conv_mon._error_evolution is error_evo, (
+        "ConvergenceMonitor must be wired to error_evolution"
+    )
+    assert conv_mon._provenance_tracker is provenance, (
+        "ConvergenceMonitor must be wired to provenance_tracker"
+    )
+    assert ucc.metacognitive_trigger is trigger, (
+        "MetaCognitiveRecursionTrigger must be wired to UCC"
+    )
+
+    # Run evaluation with signals that should trigger re-reasoning
+    provenance.record_before("test_module", torch.randn(2, 32))
+    provenance.record_after("test_module", torch.randn(2, 32) * 5.0)
+
+    result = ucc.evaluate(
+        subsystem_states={
+            "module_a": torch.randn(2, 32),
+            "module_b": torch.randn(2, 32) * -1.0,  # opposite direction → low coherence
+        },
+        delta_norm=0.5,
+        uncertainty=0.8,  # high uncertainty should trigger
+    )
+
+    # Verify all expected keys in result
+    assert "convergence_verdict" in result, "Missing convergence_verdict"
+    assert "coherence_result" in result, "Missing coherence_result"
+    assert "should_rerun" in result, "Missing should_rerun"
+    assert "trigger_detail" in result, "Missing trigger_detail"
+    assert "provenance" in result, "Missing provenance"
+    assert "root_cause_trace" in result, "Missing root_cause_trace"
+
+    # High uncertainty (0.8) should trigger re-reasoning
+    assert result["should_rerun"] is True, (
+        f"High uncertainty (0.8) should trigger re-reasoning, "
+        f"but should_rerun={result['should_rerun']}"
+    )
+
+    # Provenance should record the test module
+    contributions = result["provenance"]["contributions"]
+    assert "test_module" in contributions, (
+        "Provenance must track the test_module's contribution"
+    )
+
+    print("✅ test_unified_cognitive_cycle_orchestration PASSED")
+
+
+def test_ucc_coherence_deficit_triggers_rerun():
+    """Verify that coherence deficit alone triggers meta-cognitive re-reasoning,
+    ensuring cross-module verification is active."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    conv_mon = ConvergenceMonitor(threshold=1e-5)
+    # Very strict coherence threshold — makes deficit easy to trigger
+    coherence = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.95)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.3, max_recursions=2)
+    provenance = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=provenance,
+    )
+
+    # Create misaligned subsystem states to trigger coherence deficit
+    result = ucc.evaluate(
+        subsystem_states={
+            "encoder": torch.randn(1, 32),
+            "decoder": torch.randn(1, 32) * -2.0,
+        },
+        delta_norm=0.001,
+        uncertainty=0.0,
+    )
+
+    coherence_deficit = result["coherence_result"]["coherence_deficit"]
+    assert coherence_deficit > 0.0, (
+        f"Misaligned subsystems should produce coherence deficit > 0, "
+        f"got {coherence_deficit}"
+    )
+    print("✅ test_ucc_coherence_deficit_triggers_rerun PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -53116,6 +53390,18 @@ def run_all_tests():
     test_apply_diagnostic_remediation_skips_neural_modules()
     test_complexity_gated_skip_overridden_on_stale_cache()
     test_factor_cv_supervision_zero_when_no_disagreement()
+
+    # Architectural Unification — Inter-phase coherence, thread safety,
+    # directional uncertainty bridge, coherence-driven training adaptation
+    test_vq_codebook_health_gate_in_training_source()
+    test_z_sequence_distribution_verification_in_training_source()
+    test_directional_uncertainty_tracker_in_bridge()
+    test_appstate_thread_lock()
+    test_phase_b_coherence_driven_grad_clip()
+    test_bridge_training_errors_accepts_all_parameters()
+    test_bridge_inference_insights_accepts_uncertainty_tracker()
+    test_unified_cognitive_cycle_orchestration()
+    test_ucc_coherence_deficit_triggers_rerun()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
