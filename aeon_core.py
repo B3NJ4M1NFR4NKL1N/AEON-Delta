@@ -2788,6 +2788,8 @@ class AEONConfig:
     lambda_decoder_provenance: float = 0.005
     lambda_ns_consistency: float = 0.01
     lambda_hierarchical_wm: float = 0.01
+    lambda_unified_sim: float = 0.01
+    lambda_mcts_value: float = 0.005
     lambda_memory_retrieval: float = 0.005
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
@@ -14964,6 +14966,8 @@ class MetaCognitiveRecursionTrigger:
             "dag_consensus_disagreement": "low_causal_quality",
             "high_coherence_loss": "coherence_deficit",
             "high_hierarchical_wm_loss": "world_model_surprise",
+            "high_unified_sim_loss": "low_causal_quality",
+            "high_mcts_value_loss": "world_model_surprise",
             "high_memory_retrieval_loss": "memory_staleness",
             "high_ns_consistency_loss": "safety_violation",
             "high_total_training_loss": "uncertainty",
@@ -15577,6 +15581,8 @@ class CausalErrorEvolutionTracker:
         "high_training_loss": "lambda_self_consistency",
         "high_ns_consistency_loss": "lambda_ns_consistency",
         "high_hierarchical_wm_loss": "lambda_hierarchical_wm",
+        "high_unified_sim_loss": "lambda_unified_sim",
+        "high_mcts_value_loss": "lambda_mcts_value",
         "high_memory_retrieval_loss": "lambda_memory_retrieval",
         "training_gradient_explosion": "lambda_reg",
         "training_nan_loss": "lambda_safety",
@@ -17735,6 +17741,17 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "hvae_abstraction_pressure", default=0.0,
         )
+        # MCTS planning quality — when the planner's root value is low,
+        # signal the meta-loop to deepen reasoning for planning regions.
+        self.feedback_bus.register_signal(
+            "mcts_planning_quality", default=1.0,
+        )
+        # Active learning curiosity pressure — when the epistemic
+        # exploration signal is high, condition the meta-loop to allocate
+        # deeper reasoning to uncertain state-space regions.
+        self.feedback_bus.register_signal(
+            "active_learning_curiosity", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -19087,6 +19104,24 @@ class AEONDeltaV3(nn.Module):
             extra["hvae_abstraction_pressure"] = max(
                 0.0,
                 min(1.0, (_hvae_kl - _HVAE_KL_FEEDBACK_THRESHOLD) * 0.2),
+            )
+        # MCTS planning quality — when the planner produces low root-value
+        # results, signal the meta-loop that planning confidence is weak.
+        # This closes the feedback loop: MCTS low confidence → feedback
+        # bus → meta-loop conditioning → deeper reasoning on next pass.
+        _mcts_quality = getattr(self, '_cached_mcts_quality', 1.0)
+        if _mcts_quality < 1.0:
+            extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_quality))
+        # Active learning curiosity pressure — when the planner's
+        # intrinsic reward is high, signal the meta-loop that the system
+        # is in an epistemically uncertain region requiring deeper
+        # reasoning.  This closes the loop: active learning curiosity →
+        # feedback bus → meta-loop conditioning → exploration-aware
+        # reasoning depth.
+        _al_curiosity = getattr(self, '_cached_active_learning_curiosity', 0.0)
+        if _al_curiosity > 0.3:
+            extra["active_learning_curiosity"] = max(
+                0.0, min(1.0, _al_curiosity),
             )
         return extra
 
@@ -23523,6 +23558,12 @@ class AEONDeltaV3(nn.Module):
                         )
             self.provenance_tracker.record_after("mcts_planning", C_star)
             self._cached_mcts_state = C_star.detach()
+            # Cache MCTS quality for the CognitiveFeedbackBus so that
+            # planning confidence feeds into the next pass's meta-loop
+            # conditioning, closing the planning → feedback loop.
+            self._cached_mcts_quality = max(
+                0.0, min(1.0, float(_mcts_root_val))
+            ) if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val) else 1.0
             # Record MCTS planning in causal trace for full root-cause
             # traceability — ensures planning decisions can be traced
             # back to their search tree root and world model predictions.
@@ -24623,6 +24664,11 @@ class AEONDeltaV3(nn.Module):
                 _AL_INTRINSIC_THRESHOLD = 0.5
                 _AL_UNCERTAINTY_SCALE = 0.1
                 _al_intrinsic = active_learning_results.get("intrinsic_reward", 0.0)
+                # Cache active learning curiosity for the CognitiveFeedbackBus
+                # so that epistemic exploration pressure feeds into the next
+                # pass's meta-loop conditioning.
+                if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
+                    self._cached_active_learning_curiosity = max(0.0, min(1.0, float(_al_intrinsic)))
                 if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
                     if _al_intrinsic > _AL_INTRINSIC_THRESHOLD:
                         _al_boost = min(
@@ -24675,6 +24721,24 @@ class AEONDeltaV3(nn.Module):
                             "blend_weight": self.config.active_learning_blend_weight,
                             "action_norm": float(_al_best_action.norm().item()),
                         })
+                        # 5e-iii-trace. Record successful active-learning
+                        # blend in the causal trace so that downstream
+                        # root-cause analysis can attribute state changes
+                        # to the epistemic exploration signal.  Previously
+                        # only errors were traced, leaving the success path
+                        # invisible to causal provenance queries.
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "active_learning", "state_blended",
+                                causal_prerequisites=[input_trace_id],
+                                metadata={
+                                    "blend_weight": self.config.active_learning_blend_weight,
+                                    "action_norm": float(_al_best_action.norm().item()),
+                                    "intrinsic_reward": active_learning_results.get(
+                                        "intrinsic_reward", 0.0,
+                                    ),
+                                },
+                            )
             except Exception as _al_err:
                 logger.warning(f"ActiveLearningPlanner error (non-fatal): {_al_err}")
                 self.error_recovery.record_event(
@@ -30282,6 +30346,43 @@ class AEONDeltaV3(nn.Module):
                 and torch.isfinite(_hwm_pred).all()):
             hierarchical_wm_loss = F.mse_loss(_hwm_pred, _hwm_target.detach())
 
+        # ===== 18d-i. UNIFIED SIMULATOR PREDICTION LOSS =====
+        # When the UnifiedCausalSimulator produces a counterfactual
+        # next_state, penalize its divergence from the actual reasoning
+        # core output so the simulator learns accurate causal dynamics.
+        # Without this, the simulator's counterfactual predictions are
+        # blended into C_star but never directly supervised — the
+        # simulator has no gradient incentive to improve its predictions
+        # beyond the indirect signal from downstream losses.
+        unified_sim_loss = torch.tensor(0.0, device=self.device)
+        _usim_results = outputs.get('unified_simulator_results', {})
+        _usim_pred = _usim_results.get('next_state', None)
+        _usim_target = outputs.get('core_state', None)
+        if (_usim_pred is not None and _usim_target is not None
+                and torch.is_tensor(_usim_pred) and torch.is_tensor(_usim_target)
+                and _usim_pred.shape == _usim_target.shape
+                and torch.isfinite(_usim_pred).all()):
+            unified_sim_loss = F.mse_loss(_usim_pred, _usim_target.detach())
+
+        # ===== 18d-ii. MCTS VALUE QUALITY LOSS =====
+        # When the MCTS planner produces a root_value, penalize low
+        # planning confidence so the value network learns to produce
+        # well-calibrated state evaluations.  Without this, the MCTS
+        # planner's value estimates are used for uncertainty escalation
+        # but the value network receives no direct training signal —
+        # planning quality degrades without corrective gradients.
+        mcts_value_loss = torch.tensor(0.0, device=self.device)
+        _mcts_results_for_loss = outputs.get('mcts_results', {})
+        _mcts_root_val_loss = _mcts_results_for_loss.get('root_value', None)
+        if (_mcts_root_val_loss is not None
+                and isinstance(_mcts_root_val_loss, (int, float))
+                and math.isfinite(_mcts_root_val_loss)):
+            # Penalize low root value: loss = max(0, 1 - root_value)
+            mcts_value_loss = torch.tensor(
+                max(0.0, 1.0 - float(_mcts_root_val_loss)),
+                device=self.device,
+            )
+
         # ===== 18d. MEMORY RETRIEVAL QUALITY LOSS =====
         # Penalize poor memory retrieval quality so that memory systems
         # receive a gradient signal.  Without this, memory subsystems
@@ -30565,6 +30666,8 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_decoder_provenance * decoder_provenance_loss +
             _ee_boost("lambda_ns_consistency") * self.config.lambda_ns_consistency * ns_consistency_loss +
             _ee_boost("lambda_hierarchical_wm") * self.config.lambda_hierarchical_wm * hierarchical_wm_loss +
+            _ee_boost("lambda_unified_sim") * self.config.lambda_unified_sim * unified_sim_loss +
+            _ee_boost("lambda_mcts_value") * self.config.lambda_mcts_value * mcts_value_loss +
             _ee_boost("lambda_memory_retrieval") * self.config.lambda_memory_retrieval * memory_retrieval_loss +
             grounded_mm_loss +
             _ee_boost("lambda_meta_recovery") * getattr(self.config, 'lambda_meta_recovery', 0.01) * meta_recovery_loss +
@@ -30638,6 +30741,26 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'memory_retrieval_loss': _mrl_val},
                     )
+            # Unified simulator loss → error evolution bridge
+            if torch.is_tensor(unified_sim_loss) and torch.isfinite(unified_sim_loss):
+                _usim_val = float(unified_sim_loss.detach().item())
+                if _usim_val > 0.5:
+                    self.error_evolution.record_episode(
+                        error_class='high_unified_sim_loss',
+                        strategy_used='unified_sim_supervision',
+                        success=False,
+                        metadata={'unified_sim_loss': _usim_val},
+                    )
+            # MCTS value loss → error evolution bridge
+            if torch.is_tensor(mcts_value_loss) and torch.isfinite(mcts_value_loss):
+                _mcts_val = float(mcts_value_loss.detach().item())
+                if _mcts_val > 0.5:
+                    self.error_evolution.record_episode(
+                        error_class='high_mcts_value_loss',
+                        strategy_used='mcts_value_supervision',
+                        success=False,
+                        metadata={'mcts_value_loss': _mcts_val},
+                    )
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
@@ -30667,6 +30790,8 @@ class AEONDeltaV3(nn.Module):
             'decoder_provenance_loss': decoder_provenance_loss,
             'ns_consistency_loss': ns_consistency_loss,
             'hierarchical_wm_loss': hierarchical_wm_loss,
+            'unified_sim_loss': unified_sim_loss,
+            'mcts_value_loss': mcts_value_loss,
             'memory_retrieval_loss': memory_retrieval_loss,
             'grounded_mm_loss': grounded_mm_loss,
             'meta_recovery_loss': meta_recovery_loss,
@@ -32389,6 +32514,9 @@ class AEONDeltaV3(nn.Module):
             ("_cached_cross_validation_state", "cross_validation"),
             ("_cached_ns_consistency_state", "ns_consistency"),
             ("_cached_tkg_state", "temporal_knowledge_graph"),
+            ("_cached_neurogenic_memory_state", "neurogenic_memory"),
+            ("_cached_temporal_memory_state", "temporal_memory"),
+            ("_cached_consolidating_memory_state", "consolidating_memory"),
         ]:
             cached = getattr(self, attr_name, None)
             if (cached is not None
