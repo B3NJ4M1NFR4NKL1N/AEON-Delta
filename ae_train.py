@@ -3466,6 +3466,34 @@ class ContextualRSSMTrainer:
                     )
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
+                    # When the UCC detects coherence issues, tighten gradient
+                    # clipping to stabilize the RSSM and prevent further
+                    # latent-space drift.  This closes the loop between
+                    # coherence verification and training dynamics: detected
+                    # coherence deficits translate into stricter optimization
+                    # constraints rather than just softer learning rates.
+                    _coherence_deficit = _cycle_result["coherence_result"].get(
+                        "coherence_deficit", 0.0,
+                    )
+                    if _coherence_deficit > 0.3:
+                        # _COHERENCE_MIN_GRAD_CLIP: absolute floor to prevent
+                        # gradient clipping from becoming so tight that
+                        # learning effectively stalls.
+                        _COHERENCE_MIN_GRAD_CLIP = 0.1
+                        # _COHERENCE_CLIP_FACTOR: scales how aggressively the
+                        # deficit reduces the clip norm (0.5 = deficit of 1.0
+                        # halves the clip norm).
+                        _COHERENCE_CLIP_FACTOR = 0.5
+                        _tightened_clip = max(
+                            _COHERENCE_MIN_GRAD_CLIP,
+                            self._grad_clip_norm * (1.0 - _coherence_deficit * _COHERENCE_CLIP_FACTOR),
+                        )
+                        if _tightened_clip < self._grad_clip_norm:
+                            self._grad_clip_norm = _tightened_clip
+                            logger.info(
+                                f"   🔧 Grad clip tightened to {_tightened_clip:.3f} "
+                                f"due to coherence deficit={_coherence_deficit:.3f}"
+                            )
             except Exception as _cycle_err:
                 logger.warning("Phase B unified cognitive cycle failed: %s", _cycle_err)
                 if self._error_evolution is not None:
@@ -4484,6 +4512,43 @@ def main(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # ===== VQ Codebook Health Gate =====
+    # Verify that the VQ codebook is healthy before building z_sequences.
+    # If codebook utilization collapsed during Phase A (e.g., < 10%),
+    # all subsequent z_sequences will map to a tiny number of codes,
+    # making Phase B RSSM training futile.  This check ensures that
+    # each component (Phase A VQ) verifies and reinforces the next
+    # (Phase B RSSM) by gating the transition on codebook health.
+    _VQ_HEALTH_CRITICAL_THRESHOLD = 5.0   # % — below this, abort Phase B
+    _VQ_HEALTH_WARNING_THRESHOLD = 20.0   # % — below this, warn and attempt reset
+    try:
+        _codebook_usage = model.vq.get_codebook_usage()
+        logger.info(f"🔍 VQ codebook utilization: {_codebook_usage:.1f}%")
+        if _codebook_usage < _VQ_HEALTH_CRITICAL_THRESHOLD:
+            logger.error(
+                f"❌ VQ codebook critically collapsed ({_codebook_usage:.1f}% < "
+                f"{_VQ_HEALTH_CRITICAL_THRESHOLD}%). Phase B cannot proceed "
+                f"with degenerate z-sequences."
+            )
+            convergence_monitor_A.update(float('nan'))
+            return
+        elif _codebook_usage < _VQ_HEALTH_WARNING_THRESHOLD:
+            logger.warning(
+                f"⚠️ VQ codebook utilization low ({_codebook_usage:.1f}% < "
+                f"{_VQ_HEALTH_WARNING_THRESHOLD}%). Attempting codebook reset "
+                f"before z-sequence construction."
+            )
+            try:
+                model.vq.reset_unused_codes()
+                _codebook_usage_after = model.vq.get_codebook_usage()
+                logger.info(
+                    f"   Codebook usage after reset: {_codebook_usage_after:.1f}%"
+                )
+            except (AttributeError, RuntimeError) as _reset_err:
+                logger.warning(f"   Codebook reset failed (non-fatal): {_reset_err}")
+    except (AttributeError, RuntimeError) as _vq_err:
+        logger.warning(f"⚠️ VQ health check skipped (non-fatal): {_vq_err}")
+
     # ===== Построение z_sequences =====
     logger.info("\n🔧 Построение z_sequences для Phase B...")
     model.eval()
@@ -4538,6 +4603,47 @@ def main(
         logger.error("❌ No z_sequences created — cannot run Phase B. "
                       "Check that documents have enough chunks (>= context_window + 1).")
         return
+
+    # ===== Z-Sequence Distribution Verification =====
+    # Verify that the z_sequences have meaningful variance/diversity.
+    # If VQ collapsed silently, all z-vectors would be nearly identical,
+    # making RSSM training futile (predicting constants).  This check
+    # ensures that Phase A's output verifies Phase B's input, closing
+    # the inter-phase coherence loop.
+    _Z_VARIANCE_CRITICAL_THRESHOLD = 1e-6
+    _Z_COSINE_COLLAPSE_THRESHOLD = 0.999
+    try:
+        _all_z = torch.cat(z_sequences, dim=0)  # [total_chunks, D]
+        _z_var = _all_z.var(dim=0).mean().item()
+        logger.info(f"🔍 Z-sequence mean variance: {_z_var:.6f}")
+        if _z_var < _Z_VARIANCE_CRITICAL_THRESHOLD:
+            logger.error(
+                f"❌ Z-sequences have near-zero variance ({_z_var:.2e} < "
+                f"{_Z_VARIANCE_CRITICAL_THRESHOLD:.2e}). VQ likely collapsed — "
+                f"Phase B cannot learn from constant inputs."
+            )
+            return
+        # Check pairwise cosine similarity on a sample to detect collapse
+        if _all_z.shape[0] >= 2:
+            _sample_size = min(100, _all_z.shape[0])
+            _sample = _all_z[:_sample_size]
+            _cos_matrix = F.cosine_similarity(
+                _sample.unsqueeze(0), _sample.unsqueeze(1), dim=-1,
+            )
+            # Mean off-diagonal similarity
+            _n = _cos_matrix.shape[0]
+            _mask = ~torch.eye(_n, dtype=torch.bool)
+            _mean_cos = _cos_matrix[_mask].mean().item()
+            logger.info(f"   Z-sequence mean pairwise cosine similarity: {_mean_cos:.4f}")
+            if _mean_cos > _Z_COSINE_COLLAPSE_THRESHOLD:
+                logger.warning(
+                    f"⚠️ Z-sequences show near-identical representations "
+                    f"(mean cosine={_mean_cos:.4f} > {_Z_COSINE_COLLAPSE_THRESHOLD}). "
+                    f"Phase B RSSM may struggle to learn meaningful transitions."
+                )
+        del _all_z  # Free memory
+    except Exception as _zv_err:
+        logger.warning(f"⚠️ Z-sequence verification skipped (non-fatal): {_zv_err}")
 
     # ===== Phase B =====
     logger.info("\n" + "▶" * 38)
@@ -4629,6 +4735,9 @@ def main(
     _inference_adjustments = bridge_inference_insights_to_training(
         inference_error_evolution=getattr(trainer_B, '_error_evolution', None),
         trainer=trainer_B,
+        inference_uncertainty_tracker=getattr(
+            trainer_B._unified_cycle, 'uncertainty_tracker', None,
+        ),
     )
     if _inference_adjustments:
         logger.info(
