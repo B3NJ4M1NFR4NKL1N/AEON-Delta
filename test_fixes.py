@@ -15494,11 +15494,18 @@ def test_causal_quality_in_metacognitive_trigger():
         causal_quality_threshold=0.3,
     )
 
-    # Low causal quality → should trigger
-    result = trigger.evaluate(causal_quality=0.1)
+    # Low causal quality → should trigger (graduated signal: (0.3 - 0.0) / 0.3 = 1.0)
+    result = trigger.evaluate(causal_quality=0.0)
     assert result["should_trigger"] is True
     assert "low_causal_quality" in result["triggers_active"]
-    assert abs(result["trigger_score"] - _w) < 1e-9
+    assert abs(result["trigger_score"] - _w) < 1e-6
+
+    # Intermediate causal quality → graduated (not binary) signal
+    trigger.reset()
+    result_mid = trigger.evaluate(causal_quality=0.15)
+    assert "low_causal_quality" in result_mid["triggers_active"]
+    _expected_mid = (0.3 - 0.15) / 0.3  # = 0.5
+    assert abs(result_mid["trigger_score"] - _w * _expected_mid) < 1e-6
 
     # Exactly at threshold (0.3) → should NOT trigger (strict <)
     trigger.reset()
@@ -49590,6 +49597,283 @@ def test_hvae_kl_cached_during_forward():
     print("✅ test_hvae_kl_cached_during_forward PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Graduated Causal Quality, Error Evolution
+#  Recording for Subsystem Health, Executive Health Convergence Signal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_graduated_causal_quality_signal():
+    """Verify that the low_causal_quality signal is graduated (proportional
+    to distance below threshold) rather than binary, so the metacognitive
+    trigger reacts proportionally to causal quality degradation."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(causal_quality_threshold=0.3)
+
+    # causal_quality = 0.0 → maximum graduated signal = 1.0
+    result_zero = trigger.evaluate(causal_quality=0.0)
+    _w = trigger._signal_weights["low_causal_quality"]
+    assert abs(result_zero["trigger_score"] - _w * 1.0) < 1e-6, (
+        "causal_quality=0.0 should give full signal weight"
+    )
+
+    # causal_quality = 0.15 → graduated signal = (0.3 - 0.15) / 0.3 = 0.5
+    trigger.reset()
+    result_mid = trigger.evaluate(causal_quality=0.15)
+    expected_mid = (0.3 - 0.15) / 0.3
+    assert abs(result_mid["trigger_score"] - _w * expected_mid) < 1e-6, (
+        f"causal_quality=0.15 should give graduated signal ~{expected_mid:.3f}, "
+        f"got {result_mid['trigger_score'] / _w:.3f}"
+    )
+
+    # causal_quality = 0.29 → small graduated signal = (0.3 - 0.29) / 0.3 ≈ 0.033
+    trigger.reset()
+    result_near = trigger.evaluate(causal_quality=0.29)
+    expected_near = (0.3 - 0.29) / 0.3
+    assert abs(result_near["trigger_score"] - _w * expected_near) < 1e-6, (
+        f"causal_quality=0.29 should give small graduated signal ~{expected_near:.3f}"
+    )
+
+    # Graduated signal should be strictly less than binary for intermediate values
+    assert result_mid["trigger_score"] < _w * 1.0, (
+        "Intermediate causal quality should produce less signal than causal_quality=0"
+    )
+
+    print("✅ test_graduated_causal_quality_signal PASSED")
+
+
+def test_executive_health_recorded_in_error_evolution():
+    """Verify that low executive_health is recorded in error evolution
+    so the system learns from executive-level arbitration failures."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker,
+    )
+
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=32),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        error_evolution=error_evo,
+        provenance_tracker=CausalProvenanceTracker(),
+        uncertainty_tracker=DirectionalUncertaintyTracker(),
+    )
+
+    states = {
+        "core_state": torch.randn(2, 32),
+        "integrated_output": torch.randn(2, 32),
+    }
+
+    # Low executive health should be recorded in error evolution
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        executive_health=0.2,
+    )
+
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "low_executive_health" in error_classes, (
+        f"low_executive_health not recorded in error evolution; "
+        f"got classes: {sorted(error_classes.keys())}"
+    )
+
+    print("✅ test_executive_health_recorded_in_error_evolution PASSED")
+
+
+def test_executive_health_convergence_secondary_signal():
+    """Verify that low executive_health is recorded as a convergence
+    monitor secondary signal, closing the gap where executive health
+    was invisible to convergence certification."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    monitor = ConvergenceMonitor()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        metacognitive_trigger=None,
+        error_evolution=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {"core_state": torch.randn(2, 32)}
+
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        executive_health=0.3,
+    )
+
+    # Check that executive_health was recorded as secondary signal
+    secondary = getattr(monitor, '_secondary_signals', {})
+    assert "executive_health" in secondary, (
+        f"executive_health not recorded as convergence secondary signal; "
+        f"got: {sorted(secondary.keys())}"
+    )
+
+    print("✅ test_executive_health_convergence_secondary_signal PASSED")
+
+
+def test_decoder_quality_recorded_in_error_evolution():
+    """Verify that low decoder_quality is recorded in error evolution
+    so the system learns from decoder-stage failures."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+    )
+
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        metacognitive_trigger=None,
+        error_evolution=error_evo,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {"core_state": torch.randn(2, 32)}
+
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        decoder_quality=0.3,
+    )
+
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "low_decoder_quality" in error_classes, (
+        f"low_decoder_quality not recorded in error evolution; "
+        f"got classes: {sorted(error_classes.keys())}"
+    )
+
+    print("✅ test_decoder_quality_recorded_in_error_evolution PASSED")
+
+
+def test_auto_critic_quality_recorded_in_error_evolution():
+    """Verify that low auto_critic_quality is recorded in error evolution
+    so the system learns from self-verification failures."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+    )
+
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        metacognitive_trigger=None,
+        error_evolution=error_evo,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {"core_state": torch.randn(2, 32)}
+
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        auto_critic_quality=0.2,
+    )
+
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "auto_critic_low_quality" in error_classes, (
+        f"auto_critic_low_quality not recorded in error evolution; "
+        f"got classes: {sorted(error_classes.keys())}"
+    )
+
+    print("✅ test_auto_critic_quality_recorded_in_error_evolution PASSED")
+
+
+def test_healthy_signals_not_recorded_in_error_evolution():
+    """Verify that healthy signals (executive_health >= 0.5, decoder_quality >= 0.5,
+    auto_critic_quality >= 0.5) are NOT recorded in error evolution."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+    )
+
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        metacognitive_trigger=None,
+        error_evolution=error_evo,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {"core_state": torch.randn(2, 32)}
+
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        executive_health=0.9,
+        decoder_quality=0.8,
+        auto_critic_quality=0.7,
+    )
+
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "low_executive_health" not in error_classes, (
+        "Healthy executive_health should not be recorded"
+    )
+    assert "low_decoder_quality" not in error_classes, (
+        "Healthy decoder_quality should not be recorded"
+    )
+    assert "auto_critic_low_quality" not in error_classes, (
+        "Healthy auto_critic_quality should not be recorded"
+    )
+
+    print("✅ test_healthy_signals_not_recorded_in_error_evolution PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """Verify that the new error classes (low_executive_health,
+    low_decoder_quality) are mapped in _class_to_signal."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped_keys = set(re.findall(r'"([^"]+)":\s*"', src))
+
+    assert "low_executive_health" in mapped_keys, (
+        "low_executive_health missing from _class_to_signal"
+    )
+    assert "low_decoder_quality" in mapped_keys, (
+        "low_decoder_quality missing from _class_to_signal"
+    )
+
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """Verify that the new error classes are mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    assert "low_executive_health" in lambda_map, (
+        "low_executive_health missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert "low_decoder_quality" in lambda_map, (
+        "low_decoder_quality missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -51750,6 +52034,14 @@ def run_all_tests():
     test_generate_returns_metacognitive_info()
     test_ucc_evaluate_accepts_decoder_quality()
     test_hvae_kl_cached_during_forward()
+    test_graduated_causal_quality_signal()
+    test_executive_health_recorded_in_error_evolution()
+    test_executive_health_convergence_secondary_signal()
+    test_decoder_quality_recorded_in_error_evolution()
+    test_auto_critic_quality_recorded_in_error_evolution()
+    test_healthy_signals_not_recorded_in_error_evolution()
+    test_new_error_classes_in_class_to_signal()
+    test_new_error_classes_in_error_class_to_lambda()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
