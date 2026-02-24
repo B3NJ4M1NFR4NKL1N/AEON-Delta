@@ -27595,7 +27595,76 @@ def test_twelve_signals_in_metacognitive_trigger():
     print("✅ test_twelve_signals_in_metacognitive_trigger PASSED")
 
 
-def test_get_weakest_pair_identifies_lowest_similarity():
+def test_convergence_conflict_signal_graduated_response():
+    """Verify convergence_conflict signal enables graduated response based
+    on unified_status severity (diverging=1.0 > conflict=0.7 > none=0.0)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    # diverging (severity 1.0) should score higher than conflict (severity 0.7)
+    t_div = MetaCognitiveRecursionTrigger()
+    r_div = t_div.evaluate(convergence_conflict=1.0)
+
+    t_conf = MetaCognitiveRecursionTrigger()
+    r_conf = t_conf.evaluate(convergence_conflict=0.7)
+
+    t_none = MetaCognitiveRecursionTrigger()
+    r_none = t_none.evaluate(convergence_conflict=0.0)
+
+    assert r_div["trigger_score"] > r_conf["trigger_score"], (
+        "Diverging should produce higher score than conflict"
+    )
+    assert r_conf["trigger_score"] > r_none["trigger_score"], (
+        "Conflict should produce higher score than no conflict"
+    )
+    assert r_none["trigger_score"] == 0.0
+    assert "convergence_conflict" in r_div["triggers_active"]
+    assert "convergence_conflict" in r_conf["triggers_active"]
+    assert "convergence_conflict" not in r_none["triggers_active"]
+
+    print("✅ test_convergence_conflict_signal_graduated_response PASSED")
+
+
+def test_convergence_conflict_adapts_via_error_evolution():
+    """Verify convergence_conflict weight adapts from error-evolution history."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    original_w = trigger._signal_weights["convergence_conflict"]
+
+    # Low success rate should boost the weight
+    trigger.adapt_weights_from_evolution({
+        "error_classes": {
+            "convergence_conflict": {"success_rate": 0.0, "count": 10},
+        },
+    })
+    boosted_w = trigger._signal_weights["convergence_conflict"]
+    assert boosted_w > original_w, (
+        f"Low success_rate should boost weight: {original_w} -> {boosted_w}"
+    )
+
+    print("✅ test_convergence_conflict_adapts_via_error_evolution PASSED")
+
+
+def test_convergence_conflict_signal_contributes_to_sum():
+    """Verify convergence_conflict participates in weighted trigger sum."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    _w = 1.0 / 12.0
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Single signal — score should equal weight * magnitude
+    r = trigger.evaluate(convergence_conflict=1.0)
+    assert abs(r["trigger_score"] - _w) < 1e-9, (
+        f"Expected score {_w}, got {r['trigger_score']}"
+    )
+
+    # Partial magnitude
+    r2 = trigger.evaluate(convergence_conflict=0.5)
+    assert abs(r2["trigger_score"] - _w * 0.5) < 1e-9, (
+        f"Expected score {_w * 0.5}, got {r2['trigger_score']}"
+    )
+
+    print("✅ test_convergence_conflict_signal_contributes_to_sum PASSED")
     """Verify ModuleCoherenceVerifier.get_weakest_pair correctly identifies
     the pair with the lowest mean cosine similarity."""
     from aeon_core import ModuleCoherenceVerifier
@@ -50345,6 +50414,9 @@ def run_all_tests():
     test_get_metacognitive_state_includes_safety_critic_bridge()
     test_architecture_summary_includes_safety_critic_bridge()
     test_twelve_signals_in_metacognitive_trigger()
+    test_convergence_conflict_signal_graduated_response()
+    test_convergence_conflict_adapts_via_error_evolution()
+    test_convergence_conflict_signal_contributes_to_sum()
     test_get_weakest_pair_identifies_lowest_similarity()
     test_pipeline_dependencies_include_causal_auto_critic()
 
