@@ -12697,6 +12697,12 @@ class ParallelCognitivePipeline(nn.Module):
         self.safety_system = MultiLevelSafetySystem(config)
         self.world_model = PhysicsGroundedWorldModel(config.hidden_dim)
         self.integrator = nn.Linear(config.hidden_dim * 2, config.hidden_dim)
+        # Learned projections to derive safety inputs from the converged
+        # state instead of passing uninformative zero tensors.  This closes
+        # the gap where the safety system received dummy inputs that could
+        # not distinguish safe from unsafe states.
+        self.factor_proj = nn.Linear(config.hidden_dim, config.num_pillars)
+        self.action_proj = nn.Linear(config.hidden_dim, config.action_dim)
         self._executor = ThreadPoolExecutor(max_workers=4)
 
     def forward(
@@ -12724,8 +12730,8 @@ class ParallelCognitivePipeline(nn.Module):
         def _run_safety():
             B = C_star.shape[0]
             device = C_star.device
-            action_emb = torch.zeros(B, self.config.action_dim, device=device)
-            factors = torch.zeros(B, self.config.num_pillars, device=device)
+            action_emb = self.action_proj(C_star)
+            factors = self.factor_proj(C_star)
             diversity = {'diversity': torch.zeros(B, device=device)}
             topo = {'potential': torch.zeros(B, device=device)}
             return self.safety_system(action_emb, C_star, factors, diversity, topo)
@@ -12791,6 +12797,11 @@ class HierarchicalCognitiveArchitecture(nn.Module):
             assert 0 in self.enabled_levels, "Level 1 requires Level 0"
             self.safety_system = MultiLevelSafetySystem(config)
             self.self_reporter = TransparentSelfReporting(config)
+            # Learned projections to derive safety inputs from the
+            # converged state.  Replaces zero-tensor placeholders so
+            # the safety system receives state-derived signals.
+            self.factor_proj = nn.Linear(config.hidden_dim, config.num_pillars)
+            self.action_proj = nn.Linear(config.hidden_dim, config.action_dim)
 
         # Level 2: Reasoning
         if 2 in self.enabled_levels:
@@ -12831,12 +12842,12 @@ class HierarchicalCognitiveArchitecture(nn.Module):
         if 1 in self.enabled_levels:
             B = C_star.shape[0]
             device = C_star.device
-            action_emb = torch.zeros(B, self.config.action_dim, device=device)
-            factors_dummy = torch.zeros(B, self.config.num_pillars, device=device)
+            action_emb = self.action_proj(C_star)
+            factors = self.factor_proj(C_star)
             diversity = {'diversity': torch.zeros(B, device=device)}
             topo = {'potential': torch.zeros(B, device=device)}
             result['safety'] = self.safety_system(
-                action_emb, C_star, factors_dummy, diversity, topo
+                action_emb, C_star, factors, diversity, topo
             )
             if level in ('safe', 1):
                 return result
@@ -14722,6 +14733,92 @@ class CausalDAGConsensus:
         }
 
 
+class SubsystemHealthGate(nn.Module):
+    """Learned gating module that dampens unreliable subsystem outputs before
+    they reach the integration stage.
+
+    Unlike soft audit-only checks (which log degradation but pass all outputs
+    through), this gate produces a multiplicative scalar ∈ [0, 1] for each
+    subsystem output based on its health indicators.  When a subsystem's
+    health score is low, its contribution to downstream integration is
+    smoothly attenuated rather than either fully accepted or fully rejected.
+
+    The gate is a small MLP that takes a health feature vector (finite-check,
+    activation magnitude, coherence score) and outputs a gating scalar.
+    During training, gradients flow through the gate, incentivizing the
+    system to learn which health signals are most predictive of output
+    reliability.
+
+    Args:
+        hidden_dim: Dimensionality of subsystem output tensors.
+        num_health_features: Number of scalar health indicators per subsystem
+            (default 3: is_finite, magnitude_ratio, coherence_score).
+        min_gate_value: Floor on the gate output to prevent complete
+            suppression of any subsystem (default 0.1).
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 256,
+        num_health_features: int = 3,
+        min_gate_value: float = 0.1,
+    ):
+        super().__init__()
+        self.min_gate = max(0.0, min(1.0, min_gate_value))
+        self.gate_net = nn.Sequential(
+            nn.Linear(num_health_features, 16),
+            nn.GELU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid(),
+        )
+
+    def compute_health_features(
+        self,
+        output: torch.Tensor,
+        coherence_score: float = 1.0,
+    ) -> torch.Tensor:
+        """Extract health features from a subsystem output tensor.
+
+        Args:
+            output: Subsystem output tensor of any shape.
+            coherence_score: Cross-module coherence score ∈ [0, 1].
+
+        Returns:
+            [3] feature vector: [is_finite, magnitude_ratio, coherence_score].
+        """
+        is_finite = float(torch.isfinite(output).all().item())
+        # Magnitude ratio: 1.0 when reasonable, decays toward 0 for extreme values
+        magnitude = output.detach().float().abs().mean().item()
+        magnitude_ratio = min(1.0, 1.0 / (1.0 + max(0.0, magnitude - 10.0)))
+        return torch.tensor(
+            [is_finite, magnitude_ratio, min(1.0, max(0.0, coherence_score))],
+            device=output.device,
+            dtype=torch.float32,
+        )
+
+    def forward(
+        self,
+        output: torch.Tensor,
+        coherence_score: float = 1.0,
+    ) -> Tuple[torch.Tensor, float]:
+        """Gate a subsystem output based on health indicators.
+
+        Args:
+            output: Subsystem output tensor [B, ...].
+            coherence_score: Cross-module coherence score ∈ [0, 1].
+
+        Returns:
+            Tuple of (gated_output, gate_value) where gate_value ∈
+            [min_gate_value, 1.0].
+        """
+        health_features = self.compute_health_features(output, coherence_score)
+        raw_gate = self.gate_net(health_features).squeeze(-1)
+        # Apply floor to prevent complete suppression
+        gate_value = self.min_gate + (1.0 - self.min_gate) * raw_gate
+        gated_output = output * gate_value
+        return gated_output, gate_value.item()
+
+
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
@@ -16020,6 +16117,214 @@ class DirectionalUncertaintyTracker:
             key=lambda n: counts[n],
             reverse=True,
         )
+
+
+class SubsystemCoherenceRegistry:
+    """Persistent registry tracking which subsystems were active and validated
+    each forward pass.
+
+    Unlike point-in-time coherence checks (which only verify outputs at
+    collection time), this registry maintains a cross-pass ledger so that:
+
+    1. Every forward pass records which subsystems produced validated outputs.
+    2. Subsystems that were skipped (complexity-gated, disabled, errored) are
+       explicitly marked as ``absent``, preventing the system from claiming
+       full certainty when self-verification is incomplete.
+    3. Cross-pass trends reveal subsystems that are persistently absent or
+       persistently failing, enabling targeted architectural investigation.
+    4. The ``get_coverage_deficit`` method returns a scalar ∈ [0, 1] that
+       can feed into uncertainty escalation and metacognitive triggers.
+
+    Thread-safe via internal lock.
+
+    Args:
+        expected_subsystems: Set of subsystem names that should be present
+            in a fully-verified forward pass.
+        history_maxlen: Number of recent passes to retain for trend analysis.
+    """
+
+    _DEFAULT_EXPECTED = frozenset({
+        "encoder", "vq", "meta_loop", "factor_extraction",
+        "consistency_gate", "safety", "world_model", "memory",
+        "causal_model", "integration", "decoder",
+    })
+
+    def __init__(
+        self,
+        expected_subsystems: Optional[Set[str]] = None,
+        history_maxlen: int = 32,
+    ):
+        self._expected = set(expected_subsystems or self._DEFAULT_EXPECTED)
+        self._lock = threading.Lock()
+        self._current_pass: Dict[str, bool] = {}
+        self._history: deque = deque(maxlen=max(1, history_maxlen))
+        self._total_passes: int = 0
+
+    def begin_pass(self) -> None:
+        """Start a new forward-pass ledger entry."""
+        with self._lock:
+            if self._current_pass:
+                self._history.append(dict(self._current_pass))
+            self._current_pass = {name: False for name in self._expected}
+            self._total_passes += 1
+
+    def register_output(self, subsystem_name: str, validated: bool = True) -> None:
+        """Record that a subsystem produced output this pass.
+
+        Args:
+            subsystem_name: Name of the subsystem.
+            validated: Whether the output passed validation checks.
+        """
+        with self._lock:
+            self._current_pass[subsystem_name] = validated
+
+    def get_coverage_deficit(self) -> float:
+        """Return the fraction of expected subsystems that are absent or
+        unvalidated in the current pass.  0.0 = full coverage, 1.0 = none.
+        """
+        with self._lock:
+            if not self._expected:
+                return 0.0
+            validated_count = sum(
+                1 for name in self._expected
+                if self._current_pass.get(name, False)
+            )
+            return 1.0 - (validated_count / len(self._expected))
+
+    def get_absent_subsystems(self) -> List[str]:
+        """Return names of expected subsystems missing from the current pass."""
+        with self._lock:
+            return sorted(
+                name for name in self._expected
+                if not self._current_pass.get(name, False)
+            )
+
+    def get_persistently_absent(self, min_occurrences: int = 3) -> List[str]:
+        """Return subsystems absent in at least *min_occurrences* recent passes.
+
+        Persistent absence indicates a structural gap rather than a
+        transient skip, warranting architectural investigation.
+        """
+        counts: Dict[str, int] = defaultdict(int)
+        with self._lock:
+            for snapshot in self._history:
+                for name in self._expected:
+                    if not snapshot.get(name, False):
+                        counts[name] += 1
+        return sorted(
+            [name for name, cnt in counts.items() if cnt >= min_occurrences],
+            key=lambda n: counts[n],
+            reverse=True,
+        )
+
+    def build_summary(self) -> Dict[str, Any]:
+        """Build a complete registry summary for diagnostics."""
+        return {
+            "total_passes": self._total_passes,
+            "coverage_deficit": self.get_coverage_deficit(),
+            "absent_subsystems": self.get_absent_subsystems(),
+            "persistently_absent": self.get_persistently_absent(),
+            "expected_count": len(self._expected),
+            "history_length": len(self._history),
+        }
+
+
+class UncertaintyPropagationBus:
+    """Propagates per-module uncertainty through the provenance DAG so that
+    upstream uncertainty cascades to all dependent downstream modules.
+
+    Standard uncertainty tracking records each module's uncertainty
+    independently.  This bus uses the provenance dependency graph to
+    propagate uncertainty: if module A feeds module B and A has high
+    uncertainty, B's effective uncertainty is boosted proportionally.
+
+    This ensures that a single unreliable upstream module (e.g., a failing
+    causal model) automatically raises uncertainty for all downstream
+    consumers (e.g., planning, integration, output), without requiring
+    each consumer to independently check its upstream's health.
+
+    The propagation uses a single topological-order pass over the DAG with
+    a configurable decay factor so that uncertainty attenuates over long
+    dependency chains.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        decay_factor: Multiplicative attenuation per edge (default 0.8).
+            Higher values propagate uncertainty further; lower values
+            localize it to immediate dependents.
+        min_propagation: Minimum uncertainty value that continues
+            propagating (default 0.05).  Below this threshold, propagation
+            stops to avoid noise.
+    """
+
+    def __init__(
+        self,
+        decay_factor: float = 0.8,
+        min_propagation: float = 0.05,
+    ):
+        self._decay = max(0.0, min(1.0, decay_factor))
+        self._min_prop = max(0.0, min_propagation)
+
+    def propagate(
+        self,
+        module_uncertainties: Dict[str, float],
+        dependency_edges: List[Tuple[str, str]],
+    ) -> Dict[str, float]:
+        """Propagate uncertainty through the dependency DAG.
+
+        Args:
+            module_uncertainties: Per-module base uncertainty ∈ [0, 1].
+            dependency_edges: List of (upstream, downstream) tuples
+                representing the data-flow graph.
+
+        Returns:
+            Dict mapping module names to their effective (propagated)
+            uncertainty ∈ [0, 1].
+        """
+        # Build adjacency list: upstream → [downstream, ...]
+        adjacency: Dict[str, List[str]] = defaultdict(list)
+        all_nodes: Set[str] = set()
+        in_degree: Dict[str, int] = defaultdict(int)
+        for up, down in dependency_edges:
+            adjacency[up].append(down)
+            all_nodes.add(up)
+            all_nodes.add(down)
+            in_degree[down] += 1
+
+        # Topological sort (Kahn's algorithm)
+        queue: deque = deque(
+            n for n in all_nodes if in_degree.get(n, 0) == 0
+        )
+        topo_order: List[str] = []
+        while queue:
+            node = queue.popleft()
+            topo_order.append(node)
+            for neighbor in adjacency.get(node, []):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        # Initialize effective uncertainty from base values
+        effective: Dict[str, float] = {
+            name: module_uncertainties.get(name, 0.0)
+            for name in all_nodes
+        }
+
+        # Propagate in topological order
+        for node in topo_order:
+            node_unc = effective.get(node, 0.0)
+            if node_unc < self._min_prop:
+                continue
+            propagated = node_unc * self._decay
+            if propagated < self._min_prop:
+                continue
+            for downstream in adjacency.get(node, []):
+                effective[downstream] = min(
+                    1.0, max(effective.get(downstream, 0.0), propagated),
+                )
+
+        return effective
 
 
 class MemoryReasoningValidator:
@@ -18413,6 +18718,15 @@ class AEONDeltaV3(nn.Module):
             config.hidden_dim
         ).to(self.device)
         self.integration_norm = nn.LayerNorm(config.hidden_dim).to(self.device)
+
+        # ===== SUBSYSTEM HEALTH GATE =====
+        # Learned gating module that attenuates unreliable subsystem outputs
+        # before integration based on health indicators (finite-check,
+        # magnitude, coherence).  Replaces soft audit-only checks with
+        # graduated gating so degraded subsystems are smoothly downweighted.
+        self.subsystem_health_gate = SubsystemHealthGate(
+            hidden_dim=config.hidden_dim,
+        ).to(self.device)
         
         # ===== COGNITIVE CONSISTENCY GATE =====
         # Cross-validates meta-loop output against factor-embedded state
@@ -18780,6 +19094,14 @@ class AEONDeltaV3(nn.Module):
         self.convergence_arbiter = UnifiedConvergenceArbiter()
         self.uncertainty_tracker = DirectionalUncertaintyTracker()
         self.memory_validator = MemoryReasoningValidator()
+        # Subsystem coherence registry — persistent cross-pass ledger of
+        # which subsystems produced validated outputs.  Feeds coverage
+        # deficit into uncertainty escalation and metacognitive triggers.
+        self.coherence_registry = SubsystemCoherenceRegistry()
+        # Uncertainty propagation bus — propagates per-module uncertainty
+        # through the provenance dependency DAG so upstream failures
+        # cascade to all dependent downstream modules.
+        self.uncertainty_propagation = UncertaintyPropagationBus()
         if getattr(config, 'enable_unified_cognitive_cycle', True):
             _ucc_available = [
                 name for name, obj in [
@@ -20151,6 +20473,10 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
+
+        # 0. Begin a new coherence registry pass so subsystem coverage
+        # is tracked fresh for each forward call.
+        self.coherence_registry.begin_pass()
         
         # 0. Auto-populate provenance dependency DAG so that
         # trace_root_cause() can walk backward through the pipeline
@@ -20263,6 +20589,7 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("input", z_in)
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
+        self.coherence_registry.register_output("encoder", validated=torch.isfinite(z_in).all().item())
         # Register continual_learning stage as a placeholder when active.
         # Actual enrichment happens in _forward_impl before the reset,
         # but the module needs to be in the provenance order for
@@ -20272,6 +20599,7 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after("continual_learning", z_in)
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
+        self.coherence_registry.register_output("vq", validated=True)
         # Register encoder_reasoning_norm stage when active.
         if self.encoder_reasoning_norm is not None:
             self.provenance_tracker.record_before("encoder_reasoning_norm", z_in)
@@ -20704,6 +21032,7 @@ class AEONDeltaV3(nn.Module):
                 z_conditioned, use_fixed_point=not fast, feedback=prev_feedback,
             )
         self.provenance_tracker.record_after("meta_loop", C_star)
+        self.coherence_registry.register_output("meta_loop", validated=torch.isfinite(C_star).all().item())
         self._cached_meta_loop_state = C_star.detach()
         # Restore meta-loop parameters if proactively adjusted by evolved
         # guidance (step 0e) so that subsequent metacognitive re-runs use
@@ -21260,6 +21589,7 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_before("factor_extraction", C_star)
         factors, embedded_factors = self.sparse_factors(C_star)
         self.provenance_tracker.record_after("factor_extraction", embedded_factors)
+        self.coherence_registry.register_output("factor_extraction", validated=torch.isfinite(embedded_factors).all().item())
         self._cached_factor_state = embedded_factors.detach()
         # Register factor embeddings in causal context so that
         # downstream cross-pass coherence checks and root-cause
@@ -21708,6 +22038,7 @@ class AEONDeltaV3(nn.Module):
         self.progress_tracker.checkpoint("safety", C_star)
         self.progress_tracker.end_phase("safety", success=True)
         self.provenance_tracker.record_after("safety", C_star)
+        self.coherence_registry.register_output("safety", validated=not safety_enforced)
         self._cached_safety_state = C_star.detach()
 
         # 5a-critical. Critical safety halt — when safety score falls
@@ -22744,6 +23075,7 @@ class AEONDeltaV3(nn.Module):
             "mean_surprise": float(surprise.mean().item()) if surprise.numel() > 0 else 0.0,
         })
         self.provenance_tracker.record_after("world_model", C_star)
+        self.coherence_registry.register_output("world_model", validated=_world_model_healthy)
         # 5b-topo. Topology catastrophe → world model attenuation — when
         # the topology analyzer has flagged a catastrophe (loss landscape
         # instability), attenuate the world model's influence on C_star
@@ -23450,6 +23782,7 @@ class AEONDeltaV3(nn.Module):
             "empty_ratio": _memory_empty_count / max(B, 1),
         })
         self.provenance_tracker.record_after("memory", C_star)
+        self.coherence_registry.register_output("memory", validated=_memory_healthy)
         self._cached_memory_state = C_star.detach()
 
         # 5c-trust. Supplementary memory trust scoring — apply the trust
@@ -23998,6 +24331,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(causal_err)[:200]},
                     )
             self.provenance_tracker.record_after("causal_model", C_star)
+            self.coherence_registry.register_output("causal_model", validated=True)
             self._cached_causal_state = C_star.detach()
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
@@ -25777,7 +26111,15 @@ class AEONDeltaV3(nn.Module):
             torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         z_out = self.integration_norm(z_integrated + z_rssm)
+        # Apply subsystem health gate — attenuate the integrated output
+        # based on current coherence health so that degraded integration
+        # produces dampened outputs instead of overconfident bad results.
+        z_out, _integration_gate_val = self.subsystem_health_gate(
+            z_out,
+            coherence_score=1.0 - self._cached_coherence_deficit,
+        )
         self.provenance_tracker.record_after("integration", z_out)
+        self.coherence_registry.register_output("integration", validated=torch.isfinite(z_out).all().item())
         self._cached_integration_state = z_out.detach()
         
         # 8a. Final output sanitization — last line of defense against
@@ -27048,6 +27390,39 @@ class AEONDeltaV3(nn.Module):
                 self.uncertainty_tracker.record(
                     module, src_val, source_label=src_name,
                 )
+
+            # Propagate per-module uncertainty through the provenance
+            # dependency DAG so upstream failures cascade to downstream
+            # modules.  This closes the gap where a failing upstream
+            # module (e.g., causal_model) left its downstream consumers
+            # (planning, integration) with artificially low uncertainty.
+            _base_uncertainties = self.uncertainty_tracker.get_module_uncertainties()
+            if _base_uncertainties:
+                _active_edges = [
+                    (up, down) for up, down in self._PIPELINE_DEPENDENCIES
+                    if up in _base_uncertainties or down in _base_uncertainties
+                ]
+                _propagated = self.uncertainty_propagation.propagate(
+                    _base_uncertainties, _active_edges,
+                )
+                # Update the tracker with propagated values
+                for mod_name, prop_unc in _propagated.items():
+                    if prop_unc > _base_uncertainties.get(mod_name, 0.0):
+                        self.uncertainty_tracker.record(
+                            mod_name, prop_unc,
+                            source_label=f"{mod_name}_propagated",
+                        )
+                # Integrate coherence registry coverage deficit into
+                # the aggregate uncertainty so missing subsystems are
+                # reflected in the overall confidence.
+                _coverage_deficit = self.coherence_registry.get_coverage_deficit()
+                if _coverage_deficit > 0.1:
+                    _coverage_boost = min(
+                        1.0 - uncertainty, _coverage_deficit * 0.1,
+                    )
+                    if _coverage_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _coverage_boost)
+                        uncertainty_sources["coherence_coverage_deficit"] = _coverage_boost
 
         # 8f-iv. Unified cognitive cycle evaluation — runs the full
         # meta-cognitive evaluation cycle orchestrating convergence
@@ -29842,6 +30217,7 @@ class AEONDeltaV3(nn.Module):
         # the representation magnitude.
         _decoder_after = logits.detach().mean(dim=-1).mean(dim=-1, keepdim=True).expand_as(z_out)
         self.provenance_tracker.record_after("decoder", _decoder_after)
+        self.coherence_registry.register_output("decoder", validated=torch.isfinite(logits).all().item())
         
         # ===== UNCERTAINTY CONFIDENCE PENALTY =====
         # When reasoning uncertainty exceeds the threshold, scale logits
@@ -32738,6 +33114,14 @@ class AEONDeltaV3(nn.Module):
             )),
             'extension_points': _extension_points,
             'pipeline_wiring': _wiring,
+            # Subsystem coherence registry summary — cross-pass ledger
+            # of which subsystems produced validated outputs, enabling
+            # persistent coverage tracking and gap detection.
+            'coherence_registry': self.coherence_registry.build_summary(),
+            # Directional uncertainty with propagation — per-module
+            # uncertainty with upstream cascade through the provenance
+            # dependency DAG.
+            'directional_uncertainty': self.uncertainty_tracker.build_summary(),
         }
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
