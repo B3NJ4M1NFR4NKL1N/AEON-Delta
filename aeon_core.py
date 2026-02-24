@@ -9073,6 +9073,43 @@ class MemoryManager:
     def size(self) -> int:
         return self._size
 
+    def decay_stale_entries(self, max_age: float = 300.0) -> int:
+        """Decay (remove) memory entries older than *max_age* seconds.
+
+        Called when :class:`MemoryReasoningValidator` detects inconsistent
+        memories, signalling that some stored entries are stale and
+        degrading reasoning quality.  This closes the gap where memory
+        staleness was detected and dampened at the output level but the
+        stale entries themselves were never evicted, allowing them to
+        persist and re-contaminate future retrieval queries.
+
+        Args:
+            max_age: Maximum age in seconds for a memory entry.
+                Entries older than this are removed.
+
+        Returns:
+            Number of entries evicted.
+        """
+        with self._lock:
+            if not self.fallback_timestamps:
+                return 0
+            now = time.monotonic()
+            keep_indices = [
+                i for i, ts in enumerate(self.fallback_timestamps)
+                if (now - ts) <= max_age
+            ]
+            evicted = len(self.fallback_timestamps) - len(keep_indices)
+            if evicted > 0:
+                self.fallback_vectors = [self.fallback_vectors[i] for i in keep_indices]
+                self.fallback_metas = [self.fallback_metas[i] for i in keep_indices]
+                self.fallback_timestamps = [self.fallback_timestamps[i] for i in keep_indices]
+                self._size = len(self.fallback_vectors)
+                logger.debug(
+                    "MemoryManager: evicted %d stale entries (max_age=%.0fs)",
+                    evicted, max_age,
+                )
+            return evicted
+
 
 # ============================================================================
 # SECTION 13b: WORLD MODEL (Physics-Grounded)
@@ -14920,9 +14957,23 @@ class MetaCognitiveRecursionTrigger:
             "convergence_conflict": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
+        # Cross-pass trigger score EMA — accumulates near-threshold
+        # trigger pressure so that successive sub-threshold passes
+        # eventually fire the trigger.  Without this, a trigger score
+        # of 0.48 (just below 0.5) resets to 0 on the next pass,
+        # preventing the meta-cognitive cycle from responding to
+        # persistent low-grade pressure.
+        self._cross_pass_trigger_ema: float = 0.0
+        self._CROSS_PASS_EMA_ALPHA: float = 0.3
+        self._CROSS_PASS_EMA_BOOST: float = 0.15
 
     def reset(self) -> None:
-        """Reset recursion counter at the start of each forward pass."""
+        """Reset recursion counter at the start of each forward pass.
+
+        Note: ``_cross_pass_trigger_ema`` is intentionally NOT reset here
+        because it accumulates pressure across passes.  Only the per-pass
+        recursion counter is cleared.
+        """
         self._recursion_count = 0
 
     def adapt_weights_from_evolution(
@@ -15412,8 +15463,22 @@ class MetaCognitiveRecursionTrigger:
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
 
+        # Cross-pass pressure accumulation — blend the current trigger
+        # score into the EMA and add a fraction of the accumulated
+        # pressure to the effective score.  This ensures that persistent
+        # sub-threshold pressure (e.g. 0.48 → 0.48 → 0.48 across three
+        # passes) eventually fires the trigger, closing the gap where
+        # near-threshold scores were silently discarded every pass.
+        self._cross_pass_trigger_ema = (
+            self._CROSS_PASS_EMA_ALPHA * trigger_score
+            + (1.0 - self._CROSS_PASS_EMA_ALPHA) * self._cross_pass_trigger_ema
+        )
+        effective_trigger_score = trigger_score + (
+            self._cross_pass_trigger_ema * self._CROSS_PASS_EMA_BOOST
+        )
+
         can_recurse = self._recursion_count < self.max_recursions
-        should_trigger = trigger_score >= self.trigger_threshold and can_recurse
+        should_trigger = effective_trigger_score >= self.trigger_threshold and can_recurse
 
         # High-uncertainty override: when uncertainty alone is
         # sufficiently high, force a meta-cognitive cycle even if the
@@ -15443,10 +15508,18 @@ class MetaCognitiveRecursionTrigger:
 
         if should_trigger:
             self._recursion_count += 1
+            # Track when cross-pass EMA was the decisive factor so
+            # root-cause analysis can distinguish accumulated pressure
+            # from single-pass triggers.
+            if (trigger_score < self.trigger_threshold
+                    and effective_trigger_score >= self.trigger_threshold):
+                triggers_active.append("cross_pass_pressure")
 
         result = {
             "should_trigger": should_trigger,
             "trigger_score": trigger_score,
+            "effective_trigger_score": effective_trigger_score,
+            "cross_pass_trigger_ema": self._cross_pass_trigger_ema,
             "tightened_threshold": self.tightening_factor,
             "extra_iterations": self.extra_iterations,
             "triggers_active": triggers_active,
@@ -16157,6 +16230,9 @@ class SubsystemCoherenceRegistry:
         self._expected = set(expected_subsystems or self._DEFAULT_EXPECTED)
         self._lock = threading.Lock()
         self._current_pass: Dict[str, bool] = {}
+        # Graded validation scores ∈ [0, 1] per subsystem.
+        # 1.0 = fully validated, 0.0 = absent/invalid.
+        self._current_pass_quality: Dict[str, float] = {}
         self._history: deque = deque(maxlen=max(1, history_maxlen))
         self._total_passes: int = 0
 
@@ -16166,30 +16242,51 @@ class SubsystemCoherenceRegistry:
             if self._current_pass:
                 self._history.append(dict(self._current_pass))
             self._current_pass = {name: False for name in self._expected}
+            self._current_pass_quality = {name: 0.0 for name in self._expected}
             self._total_passes += 1
 
-    def register_output(self, subsystem_name: str, validated: bool = True) -> None:
+    def register_output(
+        self, subsystem_name: str, validated: bool = True,
+        quality: Optional[float] = None,
+    ) -> None:
         """Record that a subsystem produced output this pass.
 
         Args:
             subsystem_name: Name of the subsystem.
             validated: Whether the output passed validation checks.
+            quality: Optional graded quality score ∈ [0, 1].  When
+                provided, partially degrades coverage deficit for
+                low-quality outputs instead of treating all validated
+                outputs identically.  When None, defaults to 1.0 if
+                validated, 0.0 otherwise.
         """
         with self._lock:
             self._current_pass[subsystem_name] = validated
+            if quality is not None:
+                self._current_pass_quality[subsystem_name] = max(
+                    0.0, min(1.0, float(quality)),
+                )
+            else:
+                self._current_pass_quality[subsystem_name] = (
+                    1.0 if validated else 0.0
+                )
 
     def get_coverage_deficit(self) -> float:
         """Return the fraction of expected subsystems that are absent or
         unvalidated in the current pass.  0.0 = full coverage, 1.0 = none.
+
+        Uses graded quality scores when available: a subsystem with
+        quality 0.5 contributes half a validated unit, partially
+        degrading coverage instead of counting as fully present.
         """
         with self._lock:
             if not self._expected:
                 return 0.0
-            validated_count = sum(
-                1 for name in self._expected
-                if self._current_pass.get(name, False)
+            quality_sum = sum(
+                self._current_pass_quality.get(name, 0.0)
+                for name in self._expected
             )
-            return 1.0 - (validated_count / len(self._expected))
+            return 1.0 - (quality_sum / len(self._expected))
 
     def get_absent_subsystems(self) -> List[str]:
         """Return names of expected subsystems missing from the current pass."""
@@ -27478,6 +27575,25 @@ class AEONDeltaV3(nn.Module):
                 self._cached_propagation_delta = min(
                     1.0, _propagation_delta_sum,
                 )
+                # Per-module uncertainty attenuation — attenuate the
+                # integrated output proportionally to the propagated
+                # uncertainty of the integration and factor modules.
+                # This closes the gap where propagated uncertainty was
+                # computed and tracked but never used to re-weight
+                # per-module contributions in the integrated output,
+                # allowing high-uncertainty modules to contribute
+                # equally to low-uncertainty ones.
+                _integration_unc = _propagated.get("integration", 0.0)
+                _factor_unc = _propagated.get("factor_extraction", 0.0)
+                _max_mod_unc = max(_integration_unc, _factor_unc)
+                if _max_mod_unc > 0.3 and torch.isfinite(z_out).all():
+                    # Dampen z_out toward C_star (pre-integration state)
+                    # proportionally to the worst upstream uncertainty.
+                    # C_star has been through the meta-loop and is the
+                    # most verified representation in the pipeline.
+                    _unc_dampen = min(0.3, _max_mod_unc * 0.3)
+                    z_out = z_out * (1.0 - _unc_dampen) + C_star * _unc_dampen
+                    uncertainty_sources["propagation_attenuation"] = _unc_dampen
                 # Integrate coherence registry coverage deficit into
                 # the aggregate uncertainty so missing subsystems are
                 # reflected in the overall confidence.
@@ -28043,6 +28159,29 @@ class AEONDeltaV3(nn.Module):
                     )
                 else:
                     self._cached_coherence_correction_signals = {}
+                # Same-pass coherence correction attenuation — when
+                # correction signals indicate significant divergence for
+                # the integrated_output module, attenuate z_out toward
+                # C_star within the CURRENT pass.  Previously, correction
+                # signals were only cached for next-pass feedback bus
+                # conditioning, leaving the current pass's output
+                # uncorrected despite the specific divergence being known.
+                if self._cached_coherence_correction_signals:
+                    _int_correction = self._cached_coherence_correction_signals.get(
+                        "integrated_output", 0.0,
+                    )
+                    _core_correction = self._cached_coherence_correction_signals.get(
+                        "core_state", 0.0,
+                    )
+                    _max_correction = max(_int_correction, _core_correction)
+                    if (_max_correction > 0.2
+                            and torch.isfinite(z_out).all()
+                            and torch.isfinite(C_star).all()):
+                        _corr_dampen = min(0.2, _max_correction * 0.2)
+                        z_out = z_out * (1.0 - _corr_dampen) + C_star * _corr_dampen
+                        uncertainty_sources[
+                            "coherence_correction_attenuation"
+                        ] = _corr_dampen
                 if _ucc_most_uncertain is not None:
                     uncertainty_sources[
                         "ucc_most_uncertain_module"
@@ -28360,6 +28499,28 @@ class AEONDeltaV3(nn.Module):
                 # gap where memory staleness was detected and dampened
                 # but never corrected within the same pass, requiring
                 # the NEXT pass to see fresh memories.
+                #
+                # Decay stale entries in the MemoryManager before re-
+                # retrieval so the fresh query hits only non-stale data.
+                # This closes the gap where stale entries persisted
+                # indefinitely despite being flagged as inconsistent,
+                # allowing them to re-contaminate future retrieval
+                # queries across forward passes.
+                if hasattr(self, 'memory_manager') and self.memory_manager is not None:
+                    try:
+                        _evicted = self.memory_manager.decay_stale_entries()
+                        if _evicted > 0:
+                            self.audit_log.record(
+                                "memory_validation", "stale_decay", {
+                                    "evicted": _evicted,
+                                    "consistency_score": _mem_consistency,
+                                },
+                            )
+                    except Exception as _decay_err:
+                        logger.debug(
+                            "Memory stale decay failed (non-fatal): %s",
+                            _decay_err,
+                        )
                 if (self.hierarchical_memory is not None
                         and C_star is not None
                         and torch.isfinite(C_star).all()):
