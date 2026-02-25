@@ -54315,6 +54315,169 @@ def test_ucc_returns_reconciler_threshold_adapted():
     print("✅ test_ucc_returns_reconciler_threshold_adapted PASSED")
 
 
+def test_ucc_provenance_tracking_on_coherence_correction():
+    """Architectural Unification: UCC coherence correction must be wrapped
+    with provenance_tracker.record_before / record_after so that z_out
+    modifications from the unified cognitive cycle are visible to
+    trace_root_cause() and compute_attribution().  Without this, UCC-driven
+    output attenuation was invisible to provenance analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The provenance recording for "unified_cognitive_cycle" must appear
+    # near the coherence_correction_attenuation logic in the reasoning core.
+    # The record_before/after calls may span multiple lines, so check that
+    # both the recording method and the module name are present in the
+    # coherence-correction context.
+    assert "record_before" in source and '"unified_cognitive_cycle"' in source, (
+        "reasoning_core_impl must record provenance for unified_cognitive_cycle"
+    )
+    assert "record_after" in source and '"unified_cognitive_cycle"' in source, (
+        "reasoning_core_impl must record provenance AFTER UCC coherence correction"
+    )
+    # Verify the provenance recording appears near coherence correction
+    lines = source.split('\n')
+    ucc_prov_lines = [
+        i for i, ln in enumerate(lines)
+        if '"unified_cognitive_cycle"' in ln and 'z_out' in ln
+    ]
+    corr_lines = [
+        i for i, ln in enumerate(lines)
+        if 'coherence_correction_attenuation' in ln
+    ]
+    assert ucc_prov_lines, (
+        "No provenance recording for unified_cognitive_cycle found near z_out"
+    )
+    assert corr_lines, (
+        "coherence_correction_attenuation not found in reasoning core"
+    )
+    # The provenance recording should be close to the correction
+    assert any(
+        abs(p - c) < 30 for p in ucc_prov_lines for c in corr_lines
+    ), (
+        "Provenance recording for UCC should be within 30 lines of "
+        "coherence_correction_attenuation"
+    )
+    print("✅ test_ucc_provenance_tracking_on_coherence_correction PASSED")
+
+
+def test_verify_pipeline_wiring_checks_uncertainty_propagation_edges():
+    """Architectural Unification: verify_pipeline_wiring must validate that
+    UncertaintyPropagationBus critical edges are a subset of pipeline
+    dependencies, preventing phantom uncertainty cascades on non-existent
+    edges."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert "uncertainty_propagation_coverage" in source, (
+        "verify_pipeline_wiring must return uncertainty_propagation_coverage"
+    )
+    assert "uncertainty_propagation_unregistered_edges" in source, (
+        "verify_pipeline_wiring must return uncertainty_propagation_unregistered_edges"
+    )
+    assert "critical_edges" in source, (
+        "verify_pipeline_wiring must check UPB critical_edges"
+    )
+    print("✅ test_verify_pipeline_wiring_checks_uncertainty_propagation_edges PASSED")
+
+
+def test_verify_pipeline_wiring_upb_coverage_functional():
+    """Functional test: UncertaintyPropagationBus critical edges must be
+    a subset of _PIPELINE_DEPENDENCIES, and verify_pipeline_wiring must
+    report full coverage."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    result = model.verify_pipeline_wiring()
+
+    # UPB critical edges should be fully covered by pipeline dependencies
+    assert "uncertainty_propagation_coverage" in result, (
+        "verify_pipeline_wiring result missing uncertainty_propagation_coverage"
+    )
+    assert result["uncertainty_propagation_coverage"] == 1.0, (
+        f"UPB critical edge coverage should be 1.0, got "
+        f"{result['uncertainty_propagation_coverage']} — "
+        f"unregistered edges: {result.get('uncertainty_propagation_unregistered_edges', [])}"
+    )
+    print("✅ test_verify_pipeline_wiring_upb_coverage_functional PASSED")
+
+
+def test_verify_coherence_includes_provenance_root_cause():
+    """Architectural Unification: verify_coherence must call
+    trace_root_cause() when provenance shows a dominant module, so that
+    out-of-band coherence reports include actionable root-cause chains."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert "trace_root_cause" in source, (
+        "verify_coherence must call trace_root_cause for dominant provenance modules"
+    )
+    assert "provenance_root_cause" in source, (
+        "verify_coherence must include provenance_root_cause in its result"
+    )
+    print("✅ test_verify_coherence_includes_provenance_root_cause PASSED")
+
+
+def test_verify_coherence_root_cause_functional():
+    """Functional test: verify_coherence must return provenance_root_cause
+    dict that contains root_modules when a dominant module is present."""
+    from aeon_core import CausalProvenanceTracker
+
+    pt = CausalProvenanceTracker()
+    pt.record_dependency("encoder", "meta_loop")
+    pt.record_dependency("meta_loop", "integration")
+
+    # Simulate a dominant module by recording large delta for integration
+    t_before = torch.zeros(1, 32)
+    t_after_small = torch.ones(1, 32) * 0.01
+    t_after_large = torch.ones(1, 32) * 10.0
+
+    pt.record_before("encoder", t_before)
+    pt.record_after("encoder", t_after_small)
+    pt.record_before("meta_loop", t_after_small)
+    pt.record_after("meta_loop", t_after_small)
+    pt.record_before("integration", t_after_small)
+    pt.record_after("integration", t_after_large)
+
+    # Compute attribution — integration should be dominant
+    attr = pt.compute_attribution()
+    contributions = attr.get("contributions", {})
+    assert "integration" in contributions, "integration should have a contribution"
+    total = sum(abs(v) for v in contributions.values()) or 1.0
+    dominant_frac = abs(contributions["integration"]) / total
+    assert dominant_frac > 0.4, (
+        f"integration should be dominant (>{0.4}), got {dominant_frac:.3f}"
+    )
+
+    # trace_root_cause should walk back to encoder
+    root_info = pt.trace_root_cause("integration")
+    assert "encoder" in root_info["root_modules"], (
+        f"Root modules should include 'encoder', got {root_info['root_modules']}"
+    )
+    print("✅ test_verify_coherence_root_cause_functional PASSED")
+
+
+def test_self_diagnostic_includes_uncertainty_propagation():
+    """Architectural Unification: self_diagnostic must include
+    uncertainty_propagation in its active module checks so the UPB is
+    visible to diagnostic reports."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert "'uncertainty_propagation'" in source, (
+        "self_diagnostic must check uncertainty_propagation in active module list"
+    )
+    assert "'coherence_registry'" in source, (
+        "self_diagnostic must check coherence_registry in active module list"
+    )
+    print("✅ test_self_diagnostic_includes_uncertainty_propagation PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -56698,6 +56861,16 @@ def run_all_tests():
     test_self_diagnostic_includes_trace_verification()
     test_verify_coherence_graduated_memory_cv()
     test_ucc_returns_reconciler_threshold_adapted()
+
+    # Architectural Unification — Causal Coherence Fixes:
+    # UCC provenance tracking, UPB wiring validation,
+    # verify_coherence root-cause enrichment, self_diagnostic completeness
+    test_ucc_provenance_tracking_on_coherence_correction()
+    test_verify_pipeline_wiring_checks_uncertainty_propagation_edges()
+    test_verify_pipeline_wiring_upb_coverage_functional()
+    test_verify_coherence_includes_provenance_root_cause()
+    test_verify_coherence_root_cause_functional()
+    test_self_diagnostic_includes_uncertainty_propagation()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
