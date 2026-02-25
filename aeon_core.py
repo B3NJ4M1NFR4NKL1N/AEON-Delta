@@ -28959,8 +28959,20 @@ class AEONDeltaV3(nn.Module):
                     if (_max_correction > 0.2
                             and torch.isfinite(z_out).all()
                             and torch.isfinite(C_star).all()):
+                        # Record provenance before the UCC's coherence
+                        # correction so that this z_out transformation is
+                        # visible to trace_root_cause() and compute_attribution().
+                        # Without this, UCC-driven output modifications were
+                        # invisible to provenance analysis, preventing root-cause
+                        # attribution of coherence-corrected outputs.
+                        self.provenance_tracker.record_before(
+                            "unified_cognitive_cycle", z_out,
+                        )
                         _corr_dampen = min(0.2, _max_correction * 0.2)
                         z_out = z_out * (1.0 - _corr_dampen) + C_star * _corr_dampen
+                        self.provenance_tracker.record_after(
+                            "unified_cognitive_cycle", z_out,
+                        )
                         uncertainty_sources[
                             "coherence_correction_attenuation"
                         ] = _corr_dampen
@@ -33186,6 +33198,8 @@ class AEONDeltaV3(nn.Module):
             'continual_learning': getattr(self, 'continual_learning', None),
             'grounded_multimodal': getattr(self, 'grounded_multimodal', None),
             'encoder_reasoning_norm': getattr(self, 'encoder_reasoning_norm', None),
+            'uncertainty_propagation': getattr(self, 'uncertainty_propagation', None),
+            'coherence_registry': getattr(self, 'coherence_registry', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -34727,6 +34741,27 @@ class AEONDeltaV3(nn.Module):
         # --- Provenance trace completeness verification ---
         trace_verification = self.provenance_tracker.verify_trace_completeness()
 
+        # --- UncertaintyPropagationBus critical edge validation ---
+        # Verify that the UPB's critical edges (high-decay uncertainty
+        # cascade paths) are a subset of the declared pipeline
+        # dependencies.  Without this check, the uncertainty propagation
+        # bus could reference edges that don't exist in the pipeline DAG,
+        # producing phantom uncertainty cascades, or miss critical edges
+        # that should receive higher decay.
+        _upb = getattr(self, 'uncertainty_propagation', None)
+        _upb_critical: Set[Tuple[str, str]] = set()
+        _upb_unregistered: List[Tuple[str, str]] = []
+        if _upb is not None:
+            _upb_critical = getattr(_upb, 'critical_edges', set()) or set()
+            _pipeline_edge_set = set(self._PIPELINE_DEPENDENCIES)
+            for edge in _upb_critical:
+                if edge not in _pipeline_edge_set:
+                    _upb_unregistered.append(edge)
+        _upb_coverage = (
+            1.0 - len(_upb_unregistered) / max(len(_upb_critical), 1)
+            if _upb_critical else 1.0
+        )
+
         return {
             'total_edges': total,
             'verified_edges': verified_edges,
@@ -34739,6 +34774,8 @@ class AEONDeltaV3(nn.Module):
             'provenance_coverage': _provenance_coverage,
             'unregistered_provenance_edges': _unregistered_edges,
             'trace_verification': trace_verification,
+            'uncertainty_propagation_coverage': _upb_coverage,
+            'uncertainty_propagation_unregistered_edges': _upb_unregistered,
         }
 
     @torch.no_grad()
@@ -34770,6 +34807,30 @@ class AEONDeltaV3(nn.Module):
         # --- Provenance attribution snapshot ---
         prov = self.provenance_tracker.compute_attribution()
         result["provenance_attribution"] = prov.get("contributions", {})
+
+        # --- Provenance root-cause enrichment ---
+        # When provenance shows a dominant module (>40% of total L2 delta),
+        # walk the dependency DAG backward to identify which upstream
+        # modules had the largest impact.  This makes verify_coherence()
+        # reports *actionable*: callers know not just that coherence is
+        # degraded but which root-cause modules are driving the output,
+        # enabling targeted re-reasoning.  Without this, verify_coherence()
+        # computed attribution but never traced root causes, leaving the
+        # causal chain incomplete for out-of-band coherence reports.
+        _prov_contributions = prov.get("contributions", {})
+        _prov_root_cause: Dict[str, Any] = {}
+        if _prov_contributions:
+            _prov_dominant_mod = max(
+                _prov_contributions, key=_prov_contributions.get,
+            )
+            _prov_total = sum(
+                abs(v) for v in _prov_contributions.values()
+            ) or 1.0
+            if abs(_prov_contributions[_prov_dominant_mod]) / _prov_total > 0.4:
+                _prov_root_cause = self.provenance_tracker.trace_root_cause(
+                    _prov_dominant_mod,
+                )
+        result["provenance_root_cause"] = _prov_root_cause
 
         # --- State consistency validation on cached meta-loop output ---
         # Bridges the StateConsistencyValidator into the coherence check
