@@ -52957,6 +52957,254 @@ def test_self_diagnostic_verifies_self_report_coherence():
         "self_diagnostic must verify self_report → verify_coherence wiring"
     )
     print("✅ test_self_diagnostic_verifies_self_report_coherence PASSED")
+
+
+# =============================================================================
+# Architectural Unification — Coherence Registry → UCC Integration,
+# Coverage Deficit in Metacognitive Trigger, Self-Diagnostic Verification
+# =============================================================================
+
+def test_ucc_receives_coherence_registry():
+    """UnifiedCognitiveCycle must accept and store a coherence_registry."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry,
+    )
+    registry = SubsystemCoherenceRegistry()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        coherence_registry=registry,
+    )
+    assert ucc.coherence_registry is registry, (
+        "UCC must store the coherence_registry passed at construction"
+    )
+    print("✅ test_ucc_receives_coherence_registry PASSED")
+
+
+def test_ucc_coverage_deficit_boosts_coherence_deficit():
+    """When coverage_deficit is high, UCC must boost the coherence_deficit
+    signal so that missing subsystem outputs degrade confidence."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry,
+    )
+    registry = SubsystemCoherenceRegistry()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        coherence_registry=registry,
+    )
+    dim = 64
+    states = {
+        "a": torch.randn(1, dim),
+        "b": torch.randn(1, dim),
+    }
+    # Without coverage deficit — coherence_deficit should be ~0
+    result_clean = ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.0)
+    deficit_clean = result_clean["coherence_result"]["coherence_deficit"]
+
+    # With high coverage deficit — coherence_deficit should be boosted
+    result_high = ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.8)
+    deficit_high = result_high["coherence_result"]["coherence_deficit"]
+
+    assert deficit_high > deficit_clean, (
+        f"High coverage_deficit ({0.8}) must boost coherence_deficit: "
+        f"got {deficit_high:.4f} vs clean {deficit_clean:.4f}"
+    )
+    print("✅ test_ucc_coverage_deficit_boosts_coherence_deficit PASSED")
+
+
+def test_ucc_auto_reads_registry_coverage_deficit():
+    """When coverage_deficit=None but a coherence_registry is wired,
+    the UCC must read coverage deficit from the registry automatically."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry,
+    )
+    registry = SubsystemCoherenceRegistry()
+    # Begin a pass and register only a few subsystems — coverage deficit
+    # will be > 0 because the registry has default expected subsystems.
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True)
+    registry.register_output("meta_loop", validated=True)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        coherence_registry=registry,
+    )
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    # coverage_deficit=None triggers auto-read from registry
+    result = ucc.evaluate(states, delta_norm=0.01)
+    returned_deficit = result.get("coverage_deficit", 0.0)
+    assert returned_deficit > 0.0, (
+        f"UCC must auto-read coverage_deficit from registry when not "
+        f"passed explicitly; got {returned_deficit}"
+    )
+    print("✅ test_ucc_auto_reads_registry_coverage_deficit PASSED")
+
+
+def test_ucc_coverage_deficit_in_return_dict():
+    """UCC.evaluate() return dict must include coverage_deficit."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    result = ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.5)
+    assert "coverage_deficit" in result, (
+        "UCC.evaluate() return dict must include 'coverage_deficit'"
+    )
+    assert result["coverage_deficit"] == 0.5, (
+        f"coverage_deficit should be 0.5, got {result['coverage_deficit']}"
+    )
+    print("✅ test_ucc_coverage_deficit_in_return_dict PASSED")
+
+
+def test_ucc_high_coverage_deficit_triggers_recheck():
+    """When coverage_deficit > 0.3, UCC must set needs_recheck=True."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    result = ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.5)
+    assert result["should_rerun"], (
+        "High coverage_deficit (0.5) must trigger should_rerun=True"
+    )
+    print("✅ test_ucc_high_coverage_deficit_triggers_recheck PASSED")
+
+
+def test_aeonv3_passes_coherence_registry_to_ucc():
+    """AEONDeltaV3 must pass coherence_registry to the UCC constructor."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    if model.unified_cognitive_cycle is not None:
+        assert model.unified_cognitive_cycle.coherence_registry is model.coherence_registry, (
+            "AEONDeltaV3 must pass its coherence_registry instance to UCC"
+        )
+    print("✅ test_aeonv3_passes_coherence_registry_to_ucc PASSED")
+
+
+def test_self_diagnostic_verifies_coherence_registry_ucc_wiring():
+    """self_diagnostic must verify coherence_registry → UCC wiring."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    all_verified = "\n".join(diag.get("verified_connections", []))
+    assert "coherence_registry" in all_verified.lower(), (
+        "self_diagnostic must verify coherence_registry → UCC wiring; "
+        f"verified_connections: {diag.get('verified_connections', [])}"
+    )
+    print("✅ test_self_diagnostic_verifies_coherence_registry_ucc_wiring PASSED")
+
+
+def test_ucc_backward_compat_no_coherence_registry():
+    """UCC must work without coherence_registry (backward compatibility)."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+    )
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        # No coherence_registry — backward compat
+    )
+    assert ucc.coherence_registry is None
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    result = ucc.evaluate(states, delta_norm=0.01)
+    assert "coverage_deficit" in result, (
+        "coverage_deficit must be in result even without registry"
+    )
+    assert result["coverage_deficit"] == 0.0, (
+        f"Without registry, coverage_deficit should be 0.0, "
+        f"got {result['coverage_deficit']}"
+    )
+    print("✅ test_ucc_backward_compat_no_coherence_registry PASSED")
+
+
+def test_coverage_deficit_error_class_in_class_to_signal():
+    """high_coverage_deficit error class must map to coherence_deficit signal."""
+    src = open('aeon_core.py').read()
+    assert '"high_coverage_deficit": "coherence_deficit"' in src, (
+        "high_coverage_deficit must be mapped to coherence_deficit in _class_to_signal"
+    )
+    print("✅ test_coverage_deficit_error_class_in_class_to_signal PASSED")
+
+
+def test_coverage_deficit_error_class_in_lambda_mapping():
+    """high_coverage_deficit must be in the error_class_to_lambda mapping."""
+    src = open('aeon_core.py').read()
+    assert '"high_coverage_deficit": "lambda_coverage_deficit"' in src, (
+        "high_coverage_deficit must map to lambda_coverage_deficit in "
+        "the training-side error class mapping"
+    )
+    print("✅ test_coverage_deficit_error_class_in_lambda_mapping PASSED")
+
+
+def test_ucc_high_coverage_deficit_records_error_evolution():
+    """When coverage_deficit > 0.3, UCC must record in error_evolution."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker,
+    )
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=error_evo,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.8)
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "high_coverage_deficit" in error_classes, (
+        f"high_coverage_deficit must be recorded in error_evolution "
+        f"when coverage_deficit > 0.3; got classes: {sorted(error_classes.keys())}"
+    )
+    print("✅ test_ucc_high_coverage_deficit_records_error_evolution PASSED")
+
+
+def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -55268,6 +55516,20 @@ def test_self_diagnostic_verifies_self_report_coherence():
     test_training_bridge_error_classes_in_trigger_signal_mapping()
     test_self_diagnostic_verifies_memory_cv_feedback()
     test_self_diagnostic_verifies_self_report_coherence()
+
+    # Architectural Unification — Coherence Registry → UCC Integration,
+    # Coverage Deficit in Metacognitive Trigger, Self-Diagnostic Verification
+    test_ucc_receives_coherence_registry()
+    test_ucc_coverage_deficit_boosts_coherence_deficit()
+    test_ucc_auto_reads_registry_coverage_deficit()
+    test_ucc_coverage_deficit_in_return_dict()
+    test_ucc_high_coverage_deficit_triggers_recheck()
+    test_aeonv3_passes_coherence_registry_to_ucc()
+    test_self_diagnostic_verifies_coherence_registry_ucc_wiring()
+    test_ucc_backward_compat_no_coherence_registry()
+    test_coverage_deficit_error_class_in_class_to_signal()
+    test_coverage_deficit_error_class_in_lambda_mapping()
+    test_ucc_high_coverage_deficit_records_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
