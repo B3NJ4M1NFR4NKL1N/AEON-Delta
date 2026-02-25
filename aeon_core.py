@@ -20396,7 +20396,8 @@ class AEONDeltaV3(nn.Module):
         # that auxiliary subsystem instability persists across passes as
         # a conditioning signal rather than being discarded after the
         # convergence verdict.
-        _conv_sec = self.convergence_monitor.get_secondary_signals()
+        _conv_monitor = getattr(self, 'convergence_monitor', None)
+        _conv_sec = _conv_monitor.get_secondary_signals() if _conv_monitor is not None else {}
         if _conv_sec:
             _sec_mean = sum(_conv_sec.values()) / max(len(_conv_sec), 1)
             if _sec_mean > 0.1:
