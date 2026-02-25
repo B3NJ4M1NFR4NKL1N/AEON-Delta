@@ -16207,6 +16207,15 @@ class CausalErrorEvolutionTracker:
         # maps to the coherence lambda so training can strengthen
         # integration reliability when gate confidence is persistently low.
         "integration_gate_low_confidence": "lambda_coherence",
+        # ── Architectural unification error classes ─────────────────
+        # max_recursions_capped: when the metacognitive trigger is
+        # prevented from re-reasoning by the recursion cap, map to
+        # lambda_ucc so training can adapt to resource exhaustion.
+        "max_recursions_capped": "lambda_ucc",
+        # critical_coverage_deficit: when more than half the expected
+        # subsystems are missing, map to lambda_coherence so training
+        # strengthens pipeline coverage reliability.
+        "critical_coverage_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
