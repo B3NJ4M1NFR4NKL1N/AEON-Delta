@@ -15821,6 +15821,14 @@ class MetaCognitiveRecursionTrigger:
                     and effective_trigger_score >= self.trigger_threshold):
                 triggers_active.append("cross_pass_pressure")
 
+        # Detect when re-reasoning was warranted but prevented by the
+        # max_recursions safety cap.  This enables callers to record the
+        # event in error evolution and provenance so that conclusions
+        # produced without full meta-cognitive review are traceable and
+        # the system can learn from resource-constrained reasoning.
+        _would_trigger = effective_trigger_score >= self.trigger_threshold
+        _max_recursions_capped = _would_trigger and not can_recurse
+
         result = {
             "should_trigger": should_trigger,
             "trigger_score": trigger_score,
@@ -15831,6 +15839,8 @@ class MetaCognitiveRecursionTrigger:
             "triggers_active": triggers_active,
             "recursion_count": self._recursion_count,
             "signal_weights": dict(w),
+            "max_recursions_capped": _max_recursions_capped,
+            "capped_trigger_score": effective_trigger_score if _max_recursions_capped else 0.0,
         }
         self._last_triggers_active = list(triggers_active)
         return result
@@ -16816,6 +16826,87 @@ class UncertaintyPropagationBus:
         self._min_prop = max(0.0, min_propagation)
         self._critical_edges: Set[Tuple[str, str]] = critical_edges or set()
         self._critical_decay = max(0.0, min(1.0, critical_decay_factor))
+        # Per-edge adaptive decay overrides, populated by
+        # adapt_decay_from_evolution().  Maps (upstream, downstream) → decay.
+        self._edge_decay_overrides: Dict[Tuple[str, str], float] = {}
+
+    def adapt_decay_from_evolution(
+        self,
+        error_summary: Dict[str, Any],
+        dependency_edges: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        """Adapt per-edge decay factors from error evolution history.
+
+        When a module has a high failure rate (low recovery success), edges
+        incident to that module receive a higher decay factor so upstream
+        uncertainty propagates further through it.  This replaces the
+        static decay model with one that adapts to runtime failure patterns,
+        ensuring that chronically failing modules amplify rather than
+        attenuate uncertainty propagation.
+
+        Args:
+            error_summary: Dict from CausalErrorEvolutionTracker.get_error_summary().
+                Expected keys per error class: ``count``, ``success_rate``.
+            dependency_edges: Optional list of (upstream, downstream) tuples
+                to consider.  If None, only existing overrides are updated.
+        """
+        if not error_summary:
+            return
+
+        # Build a mapping: module_name → max failure pressure ∈ [0, 1].
+        # Higher pressure means more frequent or less recoverable failures.
+        module_pressure: Dict[str, float] = {}
+        for error_class, stats in error_summary.items():
+            if not isinstance(stats, dict):
+                continue
+            count = stats.get("count", 0)
+            success_rate = stats.get("success_rate", 1.0)
+            if count < 2:
+                continue
+            # Extract module name from error class (e.g., 'coherence_deficit')
+            pressure = (1.0 - success_rate) * min(1.0, count / 10.0)
+            if pressure < 0.1:
+                continue
+            # Map common error classes to their associated pipeline modules
+            _class_to_modules = {
+                "coherence_deficit": ["meta_loop", "factor_extraction"],
+                "convergence_certificate_violation": ["meta_loop"],
+                "dag_consensus_disagreement": ["causal_model", "causal_notears"],
+                "inter_memory_disagreement": ["memory", "neurogenic_memory"],
+                "low_output_reliability": ["integration", "decoder"],
+                "low_decoder_quality": ["decoder"],
+                "low_executive_health": ["cognitive_executive"],
+                "diversity_collapse": ["slot_binding", "vq"],
+                "topology_catastrophe": ["meta_loop"],
+                "low_memory_trust": ["memory"],
+                "high_coverage_deficit": ["integration"],
+                "auto_critic_low_quality": ["auto_critic"],
+                "ns_consistency_violation": ["neuro_symbolic"],
+            }
+            for mod in _class_to_modules.get(error_class, []):
+                module_pressure[mod] = max(
+                    module_pressure.get(mod, 0.0), pressure,
+                )
+
+        if not module_pressure:
+            return
+
+        # Update per-edge decay overrides: edges incident to high-pressure
+        # modules get decay boosted toward the critical_decay factor so
+        # uncertainty propagates further along those failing paths.
+        edges = dependency_edges or []
+        for up, down in edges:
+            up_pressure = module_pressure.get(up, 0.0)
+            down_pressure = module_pressure.get(down, 0.0)
+            edge_pressure = max(up_pressure, down_pressure)
+            if edge_pressure > 0.1:
+                # Interpolate between base decay and critical decay
+                adapted = self._decay + edge_pressure * (
+                    self._critical_decay - self._decay
+                )
+                self._edge_decay_overrides[(up, down)] = max(
+                    0.0, min(1.0, adapted),
+                )
 
     def propagate(
         self,
@@ -16878,11 +16969,14 @@ class UncertaintyPropagationBus:
                 continue
             for downstream in adjacency.get(node, []):
                 edge = (node, downstream)
-                decay = (
-                    self._critical_decay
-                    if edge in self._critical_edges
-                    else self._decay
-                )
+                # Prefer per-edge adaptive override, then critical-edge
+                # decay, then base decay.
+                if edge in self._edge_decay_overrides:
+                    decay = self._edge_decay_overrides[edge]
+                elif edge in self._critical_edges:
+                    decay = self._critical_decay
+                else:
+                    decay = self._decay
                 propagated = node_unc * decay
                 if propagated < self._min_prop:
                     continue
@@ -17143,6 +17237,7 @@ class UnifiedCognitiveCycle:
         ns_consistency_score: Optional[float] = None,
         coverage_deficit: Optional[float] = None,
         feedback_oscillation_score: float = 0.0,
+        propagation_delta: float = 0.0,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -17311,6 +17406,7 @@ class UnifiedCognitiveCycle:
         # successive forward passes.
         _original_threshold = None
         _original_reconciler_threshold = None
+        _original_dag_consensus_threshold = None
         if self.error_evolution is not None and self.coherence_verifier is not None:
             _err_summary = self.error_evolution.get_error_summary()
             _original_threshold = self.coherence_verifier.threshold
@@ -17397,6 +17493,30 @@ class UnifiedCognitiveCycle:
                         success=False,
                         metadata={
                             'coverage_deficit': _registry_coverage_deficit,
+                        },
+                    )
+            # Critical coverage deficit escalation — when more than half
+            # the expected subsystems are missing or unvalidated, apply a
+            # stronger uncertainty boost and force re-reasoning.  This
+            # ensures that severely degraded pipelines do not silently
+            # produce unverified conclusions, satisfying the requirement
+            # that each component verifies and reinforces the others.
+            if _registry_coverage_deficit > 0.5:
+                _critical_cov_boost = min(
+                    1.0 - uncertainty,
+                    _registry_coverage_deficit * 0.4,
+                )
+                uncertainty = min(1.0, uncertainty + _critical_cov_boost)
+                if self.error_evolution is not None:
+                    _cov_contribs, _cov_dominant = self._provenance_snapshot()
+                    self.error_evolution.record_episode(
+                        error_class='critical_coverage_deficit',
+                        strategy_used='forced_rerun',
+                        success=False,
+                        metadata={
+                            'coverage_deficit': _registry_coverage_deficit,
+                            'uncertainty_boost': _critical_cov_boost,
+                            'dominant_provenance_module': _cov_dominant,
                         },
                     )
 
@@ -17812,6 +17932,14 @@ class UnifiedCognitiveCycle:
                 _original_reconciler_threshold
             )
 
+        # 7-iii. Restore DAG consensus threshold to prevent unbounded drift,
+        # mirroring the coherence verifier and reconciler restorations.
+        if (_original_dag_consensus_threshold is not None
+                and self.causal_dag_consensus is not None):
+            self.causal_dag_consensus.agreement_threshold = (
+                _original_dag_consensus_threshold
+            )
+
         # 7b. Convergence arbitration re-reasoning override — the arbiter
         # was already called in section 2g (before the trigger).  Here we
         # only handle the re-reasoning override that depends on the
@@ -17833,9 +17961,27 @@ class UnifiedCognitiveCycle:
         # computed in the main reasoning core but never independently
         # verified by the UCC's coherence orchestration.
         dag_consensus_result: Dict[str, Any] = {}
+        _original_dag_consensus_threshold = None
         if (self.causal_dag_consensus is not None
                 and dag_adjacency_matrices is not None
                 and len(dag_adjacency_matrices) >= 2):
+            # Adapt DAG consensus threshold from causal quality: when
+            # causal quality is low, tighten the agreement threshold so
+            # structural disagreement is flagged earlier.  This wires the
+            # metacognitive trigger's causal_quality signal back into the
+            # DAG consensus verifier, closing the feedback loop where low
+            # causal quality was observed but the consensus threshold
+            # remained static, allowing potentially corrupted DAGs to
+            # pass verification unchallenged.
+            if causal_quality < 0.7:
+                _original_dag_consensus_threshold = (
+                    self.causal_dag_consensus.agreement_threshold
+                )
+                _tightening = (0.7 - causal_quality) * 0.3
+                self.causal_dag_consensus.agreement_threshold = min(
+                    1.0,
+                    self.causal_dag_consensus.agreement_threshold + _tightening,
+                )
             dag_consensus_result = self.causal_dag_consensus.evaluate(
                 dag_adjacency_matrices,
             )
@@ -17932,6 +18078,19 @@ class UnifiedCognitiveCycle:
                         "ns_consistency", 1.0 - _ns,
                         source_label="symbolic_rule_violation",
                     )
+            # 7c-ii. Uncertainty propagation delta — when the
+            # UncertaintyPropagationBus amplified uncertainty across the
+            # dependency DAG, record the delta so the directional tracker
+            # can identify propagation-induced uncertainty as a distinct
+            # source.  This wires the propagation bus output into the
+            # per-module uncertainty ledger, closing the gap where
+            # propagated uncertainty was computed in the forward pass but
+            # never entered the UCC's directional uncertainty summary.
+            if propagation_delta > 0.05:
+                self.uncertainty_tracker.record(
+                    "uncertainty_propagation", min(1.0, propagation_delta),
+                    source_label="dag_propagated_uncertainty",
+                )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -18224,6 +18383,11 @@ class UnifiedCognitiveCycle:
                 _original_reconciler_threshold is not None
                 and self.cross_validation_reconciler is not None
             ),
+            'dag_consensus_threshold_adapted': (
+                _original_dag_consensus_threshold is not None
+                and self.causal_dag_consensus is not None
+            ),
+            'propagation_delta': propagation_delta,
         }
 
     def reset(self) -> None:
@@ -23977,6 +24141,50 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
         
+        # 5a-iv-c. Max-recursions-capped recording — when the metacognitive
+        # trigger WOULD have fired but was prevented by the max_recursions
+        # safety cap, record this event in error evolution and provenance
+        # so that conclusions produced without full meta-cognitive review
+        # are traceable.  This satisfies the requirement that all outputs
+        # can be traced to their root causes: the root cause here is
+        # resource exhaustion rather than confidence in the result.
+        if metacognitive_info.get("max_recursions_capped", False):
+            _capped_score = metacognitive_info.get("capped_trigger_score", 0.0)
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="max_recursions_capped",
+                    strategy_used="resource_exhaustion",
+                    success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        "capped_trigger_score": _capped_score,
+                        "recursion_count": metacognitive_info.get(
+                            "recursion_count", 0,
+                        ),
+                        "triggers_active": metacognitive_info.get(
+                            "triggers_active", [],
+                        ),
+                    }),
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "metacognitive_recursion",
+                    "capped_by_max_recursions",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "capped_trigger_score": _capped_score,
+                        "recursion_count": metacognitive_info.get(
+                            "recursion_count", 0,
+                        ),
+                    },
+                    severity="warning",
+                )
+            # Boost uncertainty to reflect that conclusions were produced
+            # without the meta-cognitive review the system requested.
+            _cap_unc_boost = min(1.0 - uncertainty, _capped_score * 0.15)
+            if _cap_unc_boost > 0:
+                uncertainty = min(1.0, uncertainty + _cap_unc_boost)
+                uncertainty_sources["max_recursions_capped"] = _cap_unc_boost
+
         # 5a-v. Record accumulated uncertainty sources in the causal trace
         # so that any downstream decision can be traced back to the specific
         # modules that contributed to the uncertainty signal.  Without this,
@@ -28554,6 +28762,24 @@ class AEONDeltaV3(nn.Module):
                     (up, down) for up, down in self._PIPELINE_DEPENDENCIES
                     if up in _base_uncertainties or down in _base_uncertainties
                 ]
+                # Adapt per-edge decay factors from error evolution before
+                # propagation so that chronically failing modules amplify
+                # rather than attenuate uncertainty propagation.  This
+                # replaces the static decay model with one that adapts to
+                # runtime failure patterns, closing the gap where the
+                # UncertaintyPropagationBus used fixed decay factors
+                # regardless of historical failure frequency.
+                if self.error_evolution is not None:
+                    try:
+                        self.uncertainty_propagation.adapt_decay_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                            dependency_edges=_active_edges,
+                        )
+                    except Exception as _adapt_err:
+                        logger.debug(
+                            "UPB adapt_decay_from_evolution failed: %s",
+                            _adapt_err,
+                        )
                 _propagated = self.uncertainty_propagation.propagate(
                     _base_uncertainties, _active_edges,
                 )
@@ -29027,6 +29253,15 @@ class AEONDeltaV3(nn.Module):
                         if ns_consistency_results
                         and "overall_consistency" in ns_consistency_results
                         else None
+                    ),
+                    # Uncertainty propagation delta from the
+                    # UncertaintyPropagationBus so the UCC records
+                    # DAG-propagated uncertainty as a directional source,
+                    # closing the gap where propagation amplification was
+                    # computed in the forward pass but invisible to the
+                    # UCC's per-module uncertainty ledger.
+                    propagation_delta=getattr(
+                        self, '_cached_propagation_delta', 0.0,
                     ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
