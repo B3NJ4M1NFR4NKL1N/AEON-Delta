@@ -53158,6 +53158,52 @@ def test_ucc_backward_compat_no_coherence_registry():
     print("✅ test_ucc_backward_compat_no_coherence_registry PASSED")
 
 
+def test_coverage_deficit_error_class_in_class_to_signal():
+    """high_coverage_deficit error class must map to coherence_deficit signal."""
+    src = open('aeon_core.py').read()
+    assert '"high_coverage_deficit": "coherence_deficit"' in src, (
+        "high_coverage_deficit must be mapped to coherence_deficit in _class_to_signal"
+    )
+    print("✅ test_coverage_deficit_error_class_in_class_to_signal PASSED")
+
+
+def test_coverage_deficit_error_class_in_lambda_mapping():
+    """high_coverage_deficit must be in the error_class_to_lambda mapping."""
+    src = open('aeon_core.py').read()
+    assert '"high_coverage_deficit": "lambda_coverage_deficit"' in src, (
+        "high_coverage_deficit must map to lambda_coverage_deficit in "
+        "the training-side error class mapping"
+    )
+    print("✅ test_coverage_deficit_error_class_in_lambda_mapping PASSED")
+
+
+def test_ucc_high_coverage_deficit_records_error_evolution():
+    """When coverage_deficit > 0.3, UCC must record in error_evolution."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker,
+    )
+    error_evo = CausalErrorEvolutionTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(),
+        coherence_verifier=None,
+        error_evolution=error_evo,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+    dim = 64
+    states = {"a": torch.randn(1, dim), "b": torch.randn(1, dim)}
+    ucc.evaluate(states, delta_norm=0.01, coverage_deficit=0.8)
+    summary = error_evo.get_error_summary()
+    error_classes = summary.get("error_classes", {})
+    assert "high_coverage_deficit" in error_classes, (
+        f"high_coverage_deficit must be recorded in error_evolution "
+        f"when coverage_deficit > 0.3; got classes: {sorted(error_classes.keys())}"
+    )
+    print("✅ test_ucc_high_coverage_deficit_records_error_evolution PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -55481,6 +55527,9 @@ def run_all_tests():
     test_aeonv3_passes_coherence_registry_to_ucc()
     test_self_diagnostic_verifies_coherence_registry_ucc_wiring()
     test_ucc_backward_compat_no_coherence_registry()
+    test_coverage_deficit_error_class_in_class_to_signal()
+    test_coverage_deficit_error_class_in_lambda_mapping()
+    test_ucc_high_coverage_deficit_records_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

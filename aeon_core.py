@@ -15167,6 +15167,9 @@ class MetaCognitiveRecursionTrigger:
             "high_factor_cv_supervision_training_loss": "coherence_deficit",
             "high_decoder_provenance_training_loss": "coherence_deficit",
             "high_ns_consistency_training_loss": "safety_violation",
+            # Coverage deficit — subsystems failed to produce validated
+            # outputs, degrading verification completeness.
+            "high_coverage_deficit": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15901,6 +15904,7 @@ class CausalErrorEvolutionTracker:
         "high_factor_cv_supervision_training_loss": "lambda_cross_validation",
         "high_decoder_provenance_training_loss": "lambda_cycle_consistency",
         "high_ns_consistency_training_loss": "lambda_ns_consistency",
+        "high_coverage_deficit": "lambda_coverage_deficit",
     }
 
     def recommend_loss_adjustments(
@@ -16955,6 +16959,15 @@ class UnifiedCognitiveCycle:
             coherence_deficit = min(1.0, coherence_deficit + _cov_boost)
             if _registry_coverage_deficit > 0.3:
                 needs_recheck = True
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='high_coverage_deficit',
+                        strategy_used='meta_rerun',
+                        success=False,
+                        metadata={
+                            'coverage_deficit': _registry_coverage_deficit,
+                        },
+                    )
 
         # Record coherence deficit in error evolution if significant.
         # Enrich with provenance attribution so downstream root-cause
