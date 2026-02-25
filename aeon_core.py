@@ -16258,9 +16258,23 @@ class SubsystemCoherenceRegistry:
     """
 
     _DEFAULT_EXPECTED = frozenset({
-        "encoder", "vq", "meta_loop", "factor_extraction",
-        "consistency_gate", "safety", "world_model", "memory",
-        "causal_model", "integration", "decoder",
+        "input", "encoder", "continual_learning", "vq",
+        "encoder_reasoning_norm", "meta_loop", "certified_meta_loop",
+        "convergence_arbiter", "slot_binding", "factor_extraction",
+        "consistency_gate", "diversity_analysis", "topology_analysis",
+        "self_report", "safety", "cognitive_executive",
+        "metacognitive_trigger", "world_model",
+        "hierarchical_world_model", "memory", "neurogenic_memory",
+        "consolidating_memory", "temporal_memory", "memory_trust",
+        "memory_validation", "memory_cross_validation",
+        "causal_model", "notears_causal", "causal_programmatic",
+        "causal_world_model", "causal_dag_consensus",
+        "cross_validation", "active_learning",
+        "unified_simulator", "hybrid_reasoning", "ns_bridge",
+        "temporal_knowledge_graph", "hierarchical_vae",
+        "causal_context", "rssm", "multimodal", "grounded_multimodal",
+        "integration", "auto_critic", "unified_cognitive_cycle",
+        "decoder",
     })
 
     def __init__(

@@ -52846,6 +52846,105 @@ def test_self_diagnostic_verifies_memory_cv_feedback():
     print("✅ test_self_diagnostic_verifies_memory_cv_feedback PASSED")
 
 
+def test_expanded_coherence_registry_defaults():
+    """SubsystemCoherenceRegistry._DEFAULT_EXPECTED now covers all major
+    pipeline modules so coverage deficit is meaningful out-of-the-box."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+    registry.begin_pass()
+
+    # The expanded default should include key pipeline modules
+    expected_modules = {
+        "encoder", "vq", "meta_loop", "factor_extraction",
+        "safety", "world_model", "memory", "causal_model",
+        "integration", "decoder", "slot_binding", "self_report",
+        "rssm", "causal_context", "diversity_analysis",
+        "topology_analysis", "consistency_gate",
+    }
+    absent = registry.get_absent_subsystems()
+    for mod in expected_modules:
+        assert mod in absent, (
+            f"{mod} should be in default expected subsystems"
+        )
+
+    # Coverage deficit should be 1.0 when nothing registered
+    assert registry.get_coverage_deficit() == 1.0, (
+        "Deficit should be 1.0 with no registrations"
+    )
+    print("✅ test_expanded_coherence_registry_defaults PASSED")
+
+
+def test_coherence_registry_comprehensive_forward_pass():
+    """A forward pass through AEONDeltaV3 should register significantly more
+    subsystems than the old 10-module baseline."""
+    gc.collect()
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # After a forward pass, the coherence registry should have many
+    # subsystems registered (previously only ~10, now should be 15+)
+    absent = model.coherence_registry.get_absent_subsystems()
+    registered = model.coherence_registry._current_pass
+    num_registered = sum(1 for v in registered.values() if v)
+
+    assert num_registered >= 15, (
+        f"Forward pass should register at least 15 subsystems in the "
+        f"coherence registry, got {num_registered}. "
+        f"Registered: {[k for k, v in registered.items() if v]}"
+    )
+
+    # Coverage deficit should be less than 1.0
+    deficit = model.coherence_registry.get_coverage_deficit()
+    assert deficit < 1.0, (
+        f"Coverage deficit should decrease after forward pass, got {deficit}"
+    )
+    print("✅ test_coherence_registry_comprehensive_forward_pass PASSED")
+
+
+def test_provenance_covers_pipeline_modules():
+    """After a forward pass, provenance tracker should have attribution
+    entries for key pipeline modules."""
+    gc.collect()
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        _ = model(input_ids)
+
+    # Provenance attribution should cover key pipeline stages
+    attribution = model.provenance_tracker.compute_attribution()
+    contributions = attribution.get("contributions", {})
+
+    # At minimum, these core modules must be instrumented
+    core_modules = {"input", "encoder", "vq", "meta_loop",
+                    "slot_binding", "factor_extraction", "safety",
+                    "rssm", "integration", "decoder"}
+    for mod in core_modules:
+        assert mod in contributions, (
+            f"Provenance attribution must include '{mod}', "
+            f"got keys: {sorted(contributions.keys())}"
+        )
+    print("✅ test_provenance_covers_pipeline_modules PASSED")
+
+
 def test_self_diagnostic_verifies_self_report_coherence():
     """self_diagnostic() must verify that self_report state participates
     in verify_coherence when the self_reporter is active."""
