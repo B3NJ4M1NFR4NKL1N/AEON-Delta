@@ -6389,6 +6389,15 @@ class CausalProvenanceTracker:
     # Epsilon for normalization to prevent division by zero
     _NORM_EPSILON = 1e-10
     
+    # Modules whose transformations are always recorded in the causal
+    # trace regardless of delta magnitude, because even tiny adjustments
+    # (e.g., a safety rollback of 0.005 L2 norm) are architecturally
+    # significant and must be traceable to their root cause.
+    _ALWAYS_TRACE_MODULES: Set[str] = {
+        "safety", "deception_suppressor", "self_report",
+        "convergence_gate", "consistency_gate",
+    }
+
     def __init__(self):
         self._before_states: Dict[str, torch.Tensor] = {}
         self._deltas: Dict[str, float] = {}
@@ -6485,9 +6494,16 @@ class CausalProvenanceTracker:
             # Accumulate deltas for repeated invocations
             self._deltas[module_name] = self._deltas.get(module_name, 0.0) + new_delta
             self._timestamps[module_name] = time.monotonic()
-            # Bridge to causal trace for significant transformations
+            # Bridge to causal trace for significant transformations.
+            # Safety-critical modules are always traced regardless of
+            # delta magnitude so that even tiny safety rollbacks have
+            # verifiable provenance in the causal chain.
             _trace = getattr(self, '_causal_trace', None)
-            if _trace is not None and new_delta > self._delta_trace_threshold:
+            _should_trace = (
+                new_delta > self._delta_trace_threshold
+                or module_name in self._ALWAYS_TRACE_MODULES
+            )
+            if _trace is not None and _should_trace:
                 _trace.record(
                     subsystem=f"provenance/{module_name}",
                     decision=f"delta={new_delta:.6f}",
@@ -14927,7 +14943,7 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: int = 10,
         surprise_threshold: float = 0.5,
         causal_quality_threshold: float = 0.3,
-        high_uncertainty_override: float = 0.7,
+        high_uncertainty_override: float = 0.5,
     ):
         self.trigger_threshold = trigger_threshold
         self.max_recursions = max(1, max_recursions)
@@ -16382,9 +16398,27 @@ class SubsystemCoherenceRegistry:
             "coverage_deficit": self.get_coverage_deficit(),
             "absent_subsystems": self.get_absent_subsystems(),
             "persistently_absent": self.get_persistently_absent(),
+            "low_quality_subsystems": self.get_low_quality_subsystems(),
             "expected_count": len(self._expected),
             "history_length": len(self._history),
         }
+
+    def get_low_quality_subsystems(
+        self, quality_threshold: float = 0.5,
+    ) -> Dict[str, float]:
+        """Return subsystems whose quality score is below the threshold.
+
+        Returns:
+            Dict mapping subsystem name → quality deficit (1 − quality),
+            suitable for direct injection into per-module uncertainty.
+            Only includes subsystems with quality < ``quality_threshold``.
+        """
+        with self._lock:
+            return {
+                name: 1.0 - quality
+                for name, quality in self._current_pass_quality.items()
+                if quality < quality_threshold
+            }
 
 
 class UncertaintyPropagationBus:
@@ -16403,26 +16437,44 @@ class UncertaintyPropagationBus:
 
     The propagation uses a single topological-order pass over the DAG with
     a configurable decay factor so that uncertainty attenuates over long
-    dependency chains.
+    dependency chains.  Uncertainty is propagated **additively** so that
+    multiple uncertain upstream modules compound their effect on shared
+    downstream consumers, rather than being capped by the single worst
+    upstream (the previous ``max()`` semantics).
+
+    Per-edge decay can optionally be customised via ``critical_edges``:
+    edges on the critical path (e.g., encoder→meta_loop) use a higher
+    decay factor so uncertainty propagates further, while peripheral
+    edges attenuate faster.
 
     This is a pure-logic utility with no learnable parameters.
 
     Args:
-        decay_factor: Multiplicative attenuation per edge (default 0.8).
+        decay_factor: Default multiplicative attenuation per edge (0.8).
             Higher values propagate uncertainty further; lower values
             localize it to immediate dependents.
         min_propagation: Minimum uncertainty value that continues
             propagating (default 0.05).  Below this threshold, propagation
             stops to avoid noise.
+        critical_edges: Optional set of ``(upstream, downstream)`` tuples
+            representing high-criticality edges.  These edges use
+            ``critical_decay_factor`` instead of ``decay_factor``.
+        critical_decay_factor: Decay factor for critical edges (default
+            0.95).  Higher than the base decay so uncertainty propagates
+            with less attenuation on critical paths.
     """
 
     def __init__(
         self,
         decay_factor: float = 0.8,
         min_propagation: float = 0.05,
+        critical_edges: Optional[Set[Tuple[str, str]]] = None,
+        critical_decay_factor: float = 0.95,
     ):
         self._decay = max(0.0, min(1.0, decay_factor))
         self._min_prop = max(0.0, min_propagation)
+        self._critical_edges: Set[Tuple[str, str]] = critical_edges or set()
+        self._critical_decay = max(0.0, min(1.0, critical_decay_factor))
 
     def propagate(
         self,
@@ -16430,6 +16482,11 @@ class UncertaintyPropagationBus:
         dependency_edges: List[Tuple[str, str]],
     ) -> Dict[str, float]:
         """Propagate uncertainty through the dependency DAG.
+
+        Uses additive propagation so multiple uncertain upstream modules
+        compound their effect on shared downstream consumers, clamped to
+        [0, 1].  Critical edges (if configured) use a higher decay factor
+        so uncertainty travels further on the most important data paths.
 
         Args:
             module_uncertainties: Per-module base uncertainty ∈ [0, 1].
@@ -16444,11 +16501,13 @@ class UncertaintyPropagationBus:
         adjacency: Dict[str, List[str]] = defaultdict(list)
         all_nodes: Set[str] = set()
         in_degree: Dict[str, int] = defaultdict(int)
+        edge_set: Set[Tuple[str, str]] = set()
         for up, down in dependency_edges:
             adjacency[up].append(down)
             all_nodes.add(up)
             all_nodes.add(down)
             in_degree[down] += 1
+            edge_set.add((up, down))
 
         # Topological sort (Kahn's algorithm)
         queue: deque = deque(
@@ -16469,17 +16528,25 @@ class UncertaintyPropagationBus:
             for name in all_nodes
         }
 
-        # Propagate in topological order
+        # Propagate in topological order — additive accumulation from
+        # all upstream parents so that multiple uncertain sources compound
+        # their effect rather than being capped by the single worst one.
         for node in topo_order:
             node_unc = effective.get(node, 0.0)
             if node_unc < self._min_prop:
                 continue
-            propagated = node_unc * self._decay
-            if propagated < self._min_prop:
-                continue
             for downstream in adjacency.get(node, []):
+                edge = (node, downstream)
+                decay = (
+                    self._critical_decay
+                    if edge in self._critical_edges
+                    else self._decay
+                )
+                propagated = node_unc * decay
+                if propagated < self._min_prop:
+                    continue
                 effective[downstream] = min(
-                    1.0, max(effective.get(downstream, 0.0), propagated),
+                    1.0, effective.get(downstream, 0.0) + propagated,
                 )
 
         return effective
@@ -19383,8 +19450,24 @@ class AEONDeltaV3(nn.Module):
         self.coherence_registry = SubsystemCoherenceRegistry()
         # Uncertainty propagation bus — propagates per-module uncertainty
         # through the provenance dependency DAG so upstream failures
-        # cascade to all dependent downstream modules.
-        self.uncertainty_propagation = UncertaintyPropagationBus()
+        # cascade to all dependent downstream modules.  Critical edges
+        # on the core data path (encoder→VQ→meta_loop→integration→output)
+        # use a higher decay factor so uncertainty propagates with less
+        # attenuation on the most important reasoning path.
+        _critical_edges: Set[Tuple[str, str]] = {
+            ("encoder", "vq"),
+            ("vq", "meta_loop"),
+            ("meta_loop", "slot_binding"),
+            ("slot_binding", "factor_extraction"),
+            ("factor_extraction", "consistency_gate"),
+            ("consistency_gate", "safety"),
+            ("rssm", "integration"),
+            ("integration", "auto_critic"),
+            ("auto_critic", "unified_cognitive_cycle"),
+        }
+        self.uncertainty_propagation = UncertaintyPropagationBus(
+            critical_edges=_critical_edges,
+        )
         if getattr(config, 'enable_unified_cognitive_cycle', True):
             _ucc_available = [
                 name for name, obj in [
@@ -27918,6 +28001,20 @@ class AEONDeltaV3(nn.Module):
                     if _coverage_boost > 0:
                         uncertainty = min(1.0, uncertainty + _coverage_boost)
                         uncertainty_sources["coherence_coverage_deficit"] = _coverage_boost
+                # Quality-driven per-module uncertainty injection — when
+                # the registry reports low-quality subsystem outputs,
+                # inject their quality deficit into the directional
+                # uncertainty tracker so the UCC's metacognitive trigger
+                # can adapt weights toward the specific weak subsystems.
+                # This closes the gap where quality scores were recorded
+                # in the registry but never propagated as per-module
+                # uncertainty signals.
+                _low_quality = self.coherence_registry.get_low_quality_subsystems()
+                for _lq_name, _lq_deficit in _low_quality.items():
+                    self.uncertainty_tracker.record(
+                        _lq_name, _lq_deficit,
+                        source_label=f"{_lq_name}_low_quality",
+                    )
 
         # 8f-iv. Unified cognitive cycle evaluation — runs the full
         # meta-cognitive evaluation cycle orchestrating convergence
