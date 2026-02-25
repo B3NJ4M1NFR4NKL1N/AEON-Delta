@@ -15328,6 +15328,11 @@ class MetaCognitiveRecursionTrigger:
             # diverged from self-reported confidence, indicating
             # miscalibrated self-assessment.
             "deception_suppression": "safety_violation",
+            # Deception detected — the DeceptionSuppressor recorded a
+            # high-pressure event in error_evolution.  Maps to
+            # safety_violation so adaptive weights learn from deception
+            # history alongside other integrity-related failures.
+            "deception_detected": "safety_violation",
             # ── Additional error classes for full coverage ─────────
             "active_learning_error": "uncertainty",
             "auto_critic_failure": "uncertainty",
@@ -22768,6 +22773,7 @@ class AEONDeltaV3(nn.Module):
         deception_results: Dict[str, Any] = {}
         if self.deception_suppressor is not None and self_report:
             try:
+                self.provenance_tracker.record_before("deception_suppressor", C_star)
                 deception_results = self.deception_suppressor(
                     z_in, C_star, self_report,
                 )
@@ -22825,6 +22831,7 @@ class AEONDeltaV3(nn.Module):
                                 'uncertainty_boost': _ds_unc_boost,
                             },
                         )
+                self.provenance_tracker.record_after("deception_suppressor", C_star)
             except Exception as _ds_err:
                 logger.debug(
                     "DeceptionSuppressor forward failed (non-fatal): %s",

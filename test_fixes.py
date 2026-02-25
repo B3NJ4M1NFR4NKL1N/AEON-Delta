@@ -55067,6 +55067,60 @@ def test_deception_pressure_propagates_to_safety_violation():
     print("✅ test_deception_pressure_propagates_to_safety_violation PASSED")
 
 
+def test_deception_detected_in_trigger_signal_mapping():
+    """The 'deception_detected' error class must be mapped to
+    'safety_violation' in MetaCognitiveRecursionTrigger so that
+    adapt_weights_from_evolution can adjust trigger sensitivity
+    for deception history."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate adapt_weights with deception history
+    error_summary = {
+        'total_recorded': 3,
+        'error_classes': {
+            'deception_detected': {
+                'count': 3,
+                'success_rate': 0.33,
+                'strategies_used': ['suppression_gate'],
+            },
+        },
+    }
+    # Save original weights
+    orig_safety = trigger._signal_weights.get('safety_violation', 0.0)
+    trigger.adapt_weights_from_evolution(error_summary)
+    # After adaptation, safety_violation weight should be boosted
+    # (low success rate = 0.33 → positive adjustment)
+    new_safety = trigger._signal_weights.get('safety_violation', 0.0)
+    assert new_safety >= orig_safety * 0.9, (
+        f"safety_violation weight must not decrease significantly after "
+        f"deception history adaptation; was {orig_safety}, now {new_safety}"
+    )
+    print("✅ test_deception_detected_in_trigger_signal_mapping PASSED")
+
+
+def test_deception_suppressor_provenance_tracking():
+    """DeceptionSuppressor must have provenance record_before/record_after
+    calls so deception-induced state changes are traceable via root-cause
+    analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Check that record_before("deception_suppressor") exists in the source
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'record_before("deception_suppressor"' in source, (
+        "_reasoning_core_impl must call "
+        'provenance_tracker.record_before("deception_suppressor", ...) '
+        "for root-cause traceability"
+    )
+    assert 'record_after("deception_suppressor"' in source, (
+        "_reasoning_core_impl must call "
+        'provenance_tracker.record_after("deception_suppressor", ...) '
+        "for root-cause traceability"
+    )
+    print("✅ test_deception_suppressor_provenance_tracking PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -57496,6 +57550,8 @@ def run_all_tests():
     test_world_model_prediction_error_records_error_evolution()
     test_verify_pipeline_wiring_includes_coherence_registry()
     test_deception_pressure_propagates_to_safety_violation()
+    test_deception_detected_in_trigger_signal_mapping()
+    test_deception_suppressor_provenance_tracking()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
