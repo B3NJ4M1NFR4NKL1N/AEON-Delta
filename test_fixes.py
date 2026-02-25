@@ -54733,6 +54733,177 @@ def test_self_diagnostic_verifies_integration_gate_wiring():
     print("✅ test_self_diagnostic_verifies_integration_gate_wiring PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Gap Closures for Unified Cognitive Coherence
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_self_diagnostic_includes_subsystem_health_gate():
+    """self_diagnostic module checks must include subsystem_health_gate so
+    the always-initialized gate is visible to diagnostics."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    active = diag.get('active_modules', [])
+    assert 'subsystem_health_gate' in active, (
+        "subsystem_health_gate must appear in self_diagnostic active_modules; "
+        f"got: {active}"
+    )
+    print("✅ test_self_diagnostic_includes_subsystem_health_gate PASSED")
+
+
+def test_get_metacognitive_state_includes_meta_recovery():
+    """get_metacognitive_state must include MetaRecoveryLearner state when
+    the recovery learner is active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_meta_recovery_integration=True,
+    )
+    model = AEONDeltaV3(cfg)
+
+    state = model.get_metacognitive_state()
+    assert 'meta_recovery' in state, (
+        "get_metacognitive_state must include 'meta_recovery' key"
+    )
+    mr = state['meta_recovery']
+    assert mr['available'] is True, (
+        "meta_recovery.available must be True when learner is active"
+    )
+    assert 'buffer_size' in mr, (
+        "meta_recovery must expose buffer_size"
+    )
+    assert 'strategies' in mr, (
+        "meta_recovery must expose strategies list"
+    )
+    print("✅ test_get_metacognitive_state_includes_meta_recovery PASSED")
+
+
+def test_get_metacognitive_state_meta_recovery_unavailable():
+    """get_metacognitive_state must report meta_recovery as unavailable
+    when the learner is disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    state = model.get_metacognitive_state()
+    assert 'meta_recovery' in state, (
+        "get_metacognitive_state must always include 'meta_recovery' key"
+    )
+    assert state['meta_recovery']['available'] is False, (
+        "meta_recovery.available must be False when learner is disabled"
+    )
+    print("✅ test_get_metacognitive_state_meta_recovery_unavailable PASSED")
+
+
+def test_ucc_root_cause_meta_recovery_wiring():
+    """When UCC identifies root causes, MetaRecoveryLearner must be
+    consulted for adaptive strategy selection.  Verify the code path
+    exists in the reasoning core implementation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The new integration block must reference both UCC root causes and
+    # the meta_recovery learner.
+    assert 'ucc_strategy_selected' in source, (
+        "_reasoning_core_impl must include UCC → MetaRecoveryLearner "
+        "strategy selection (audit log record 'ucc_strategy_selected')"
+    )
+    assert '_ucc_recovery_ctx' in source, (
+        "_reasoning_core_impl must encode UCC context for recovery learner"
+    )
+    print("✅ test_ucc_root_cause_meta_recovery_wiring PASSED")
+
+
+def test_verify_coherence_records_convergence_secondary_signal():
+    """verify_coherence must record coherence deficit as a convergence
+    monitor secondary signal for historical trend analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_coherence)
+    assert 'verify_coherence_deficit' in source, (
+        "verify_coherence must record 'verify_coherence_deficit' as a "
+        "convergence_monitor secondary signal"
+    )
+    assert 'record_secondary_signal' in source, (
+        "verify_coherence must call convergence_monitor.record_secondary_signal"
+    )
+    print("✅ test_verify_coherence_records_convergence_secondary_signal PASSED")
+
+
+def test_verify_coherence_secondary_signal_functional():
+    """verify_coherence must actually populate the convergence monitor's
+    secondary signals when coherence deficit exceeds threshold."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Force a coherence deficit by setting a low cached state
+    model._cached_meta_loop_state = torch.randn(1, 64)
+    model._cached_safety_state = -torch.randn(1, 64)  # opposite direction
+
+    result = model.verify_coherence()
+    # Check that the convergence monitor received the secondary signal
+    sec_signals = model.convergence_monitor.get_secondary_signals()
+    coherence_deficit = max(0.0, 1.0 - result.get('coherence_score', 1.0))
+    if coherence_deficit > 0.1:
+        assert 'verify_coherence_deficit' in sec_signals, (
+            "convergence_monitor must have verify_coherence_deficit signal "
+            f"when deficit={coherence_deficit:.2f}; got: {sec_signals}"
+        )
+    print("✅ test_verify_coherence_secondary_signal_functional PASSED")
+
+
+def test_self_diagnostic_inflates_coherence_deficit():
+    """self_diagnostic must inflate _cached_coherence_deficit when
+    architectural gaps are detected, so the next forward pass reasons
+    more cautiously."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert '_gap_inflation' in source, (
+        "self_diagnostic must compute _gap_inflation from detected gaps"
+    )
+    assert '_cached_coherence_deficit' in source, (
+        "self_diagnostic must update _cached_coherence_deficit on gap detection"
+    )
+    print("✅ test_self_diagnostic_inflates_coherence_deficit PASSED")
+
+
+def test_self_diagnostic_gap_inflation_functional():
+    """self_diagnostic must actually inflate _cached_coherence_deficit
+    proportionally to the number of detected gaps."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    initial_deficit = model._cached_coherence_deficit
+    diag = model.self_diagnostic()
+    gap_count = diag.get('gap_count', 0)
+
+    if gap_count > 0:
+        assert model._cached_coherence_deficit >= initial_deficit, (
+            "_cached_coherence_deficit must not decrease after gap detection; "
+            f"was {initial_deficit}, now {model._cached_coherence_deficit}"
+        )
+        expected_inflation = min(0.3, gap_count * 0.03)
+        assert model._cached_coherence_deficit >= expected_inflation, (
+            f"_cached_coherence_deficit must be >= {expected_inflation} "
+            f"for {gap_count} gaps; got {model._cached_coherence_deficit}"
+        )
+    print("✅ test_self_diagnostic_gap_inflation_functional PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -57143,6 +57314,16 @@ def run_all_tests():
     test_integration_gate_records_error_evolution_in_source()
     test_self_diagnostic_includes_integration_gate_feedback()
     test_self_diagnostic_verifies_integration_gate_wiring()
+
+    # Architectural Unification — Gap Closures for Unified Cognitive Coherence
+    test_self_diagnostic_includes_subsystem_health_gate()
+    test_get_metacognitive_state_includes_meta_recovery()
+    test_get_metacognitive_state_meta_recovery_unavailable()
+    test_ucc_root_cause_meta_recovery_wiring()
+    test_verify_coherence_records_convergence_secondary_signal()
+    test_verify_coherence_secondary_signal_functional()
+    test_self_diagnostic_inflates_coherence_deficit()
+    test_self_diagnostic_gap_inflation_functional()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
