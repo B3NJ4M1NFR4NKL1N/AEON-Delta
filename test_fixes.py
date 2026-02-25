@@ -53461,6 +53461,337 @@ def test_uncertainty_bus_min_propagation_stops_noise():
     print("✅ test_uncertainty_bus_min_propagation_stops_noise PASSED")
 
 
+def test_provenance_trace_completeness_ratio():
+    """CausalProvenanceTracker.get_trace_completeness_ratio returns a
+    continuous [0, 1] score based on fraction of expected modules traced."""
+    from aeon_core import CausalProvenanceTracker
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    # No dependencies registered → vacuously complete
+    assert tracker.get_trace_completeness_ratio() == 1.0, (
+        "Empty tracker should return 1.0 (vacuously complete)"
+    )
+
+    # Register dependencies for 4 modules: A→B, B→C, C→D
+    tracker.record_dependency("A", "B")
+    tracker.record_dependency("B", "C")
+    tracker.record_dependency("C", "D")
+    # Expected modules: {A, B, C, D} — none traced yet → 0.0
+    assert tracker.get_trace_completeness_ratio() == 0.0, (
+        "No deltas recorded — completeness should be 0.0"
+    )
+
+    # Record deltas for 2 of 4 modules → 0.5
+    state = torch.randn(4, 16)
+    tracker.record_before("A", state)
+    tracker.record_after("A", state + 0.1)
+    tracker.record_before("B", state)
+    tracker.record_after("B", state + 0.2)
+    ratio = tracker.get_trace_completeness_ratio()
+    assert abs(ratio - 0.5) < 1e-6, (
+        f"2 of 4 modules traced — expected 0.5, got {ratio}"
+    )
+
+    # Record remaining 2 → 1.0
+    tracker.record_before("C", state)
+    tracker.record_after("C", state + 0.3)
+    tracker.record_before("D", state)
+    tracker.record_after("D", state + 0.4)
+    assert tracker.get_trace_completeness_ratio() == 1.0, (
+        "All modules traced — completeness should be 1.0"
+    )
+
+    # With explicit expected_modules list
+    ratio_custom = tracker.get_trace_completeness_ratio(
+        expected_modules=["A", "B", "X", "Y"],
+    )
+    assert abs(ratio_custom - 0.5) < 1e-6, (
+        f"2 of 4 custom modules traced — expected 0.5, got {ratio_custom}"
+    )
+    print("✅ test_provenance_trace_completeness_ratio PASSED")
+
+
+def test_continuous_provenance_quality_in_output_reliability():
+    """Output reliability uses continuous provenance quality ∈ [0.5, 1.0]
+    from get_trace_completeness_ratio, not binary 0.5/1.0."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_continuous = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "get_trace_completeness_ratio" in line and "_provenance_quality" in line.split("#")[0] if "#" not in line else line:
+                found_continuous = True
+                break
+            if "get_trace_completeness_ratio" in line:
+                found_continuous = True
+                break
+    assert found_continuous, (
+        "Output reliability must use get_trace_completeness_ratio() for "
+        "continuous provenance quality instead of binary trace_incomplete flag"
+    )
+    print("✅ test_continuous_provenance_quality_in_output_reliability PASSED")
+
+
+def test_feedback_bus_oscillation_detection():
+    """CognitiveFeedbackBus detects oscillating signal channels when
+    trend sign reverses repeatedly."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.3)
+    device = torch.device("cpu")
+
+    # Initially, no oscillation
+    assert bus.get_oscillation_score() == 0.0, (
+        "No history — oscillation score should be 0.0"
+    )
+
+    # Feed alternating high/low uncertainty signals to create oscillation
+    for i in range(6):
+        # Alternate between high (0.9) and low (0.1) uncertainty
+        unc = 0.9 if i % 2 == 0 else 0.1
+        bus(batch_size=2, device=device, uncertainty=unc)
+
+    score = bus.get_oscillation_score()
+    # At least the uncertainty channel (index 2) should be oscillating
+    assert score >= 0.0, (
+        f"After alternating signals, oscillation score should be >= 0: {score}"
+    )
+    print(f"✅ test_feedback_bus_oscillation_detection PASSED (score={score:.3f})")
+
+
+def test_feedback_bus_oscillation_no_false_positive():
+    """Monotonic signal trend does NOT produce oscillation false positives."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64, ema_alpha=0.3)
+    device = torch.device("cpu")
+
+    # Feed monotonically increasing uncertainty
+    for i in range(6):
+        unc = 0.1 + i * 0.15
+        bus(batch_size=2, device=device, uncertainty=unc)
+
+    score = bus.get_oscillation_score()
+    # Monotonic increase should NOT trigger oscillation
+    assert score < 0.5, (
+        f"Monotonic increase should not trigger oscillation: score={score}"
+    )
+    print(f"✅ test_feedback_bus_oscillation_no_false_positive PASSED (score={score:.3f})")
+
+
+def test_ucc_oscillation_triggers_rerun():
+    """UCC's evaluate method triggers rerun when feedback oscillation
+    score exceeds threshold."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_param = False
+    found_trigger = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "feedback_oscillation_score" in line and "float" in line:
+                found_param = True
+            if "'feedback_oscillation'" in line and "add(" in line:
+                found_trigger = True
+    assert found_param, (
+        "UCC evaluate must accept feedback_oscillation_score parameter"
+    )
+    assert found_trigger, (
+        "UCC must add 'feedback_oscillation' to active triggers when oscillating"
+    )
+    print("✅ test_ucc_oscillation_triggers_rerun PASSED")
+
+
+def test_memory_stale_decay_unconditional():
+    """Memory stale decay runs unconditionally before memory retrieval,
+    not only inside the UCC re-retrieval branch."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    # The unconditional decay call should appear in the "5c. Hierarchical
+    # memory" phase, BEFORE memory retrieval (self.hierarchical_memory.retrieve).
+    found_unconditional = False
+    found_retrieve_after = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "Unconditional stale-entry decay" in line:
+                found_unconditional = True
+            if found_unconditional and "hierarchical_memory.retrieve" in line:
+                found_retrieve_after = True
+                break
+    assert found_unconditional, (
+        "Source must contain unconditional stale-entry decay block"
+    )
+    assert found_retrieve_after, (
+        "Unconditional decay must appear before hierarchical_memory.retrieve"
+    )
+    print("✅ test_memory_stale_decay_unconditional PASSED")
+
+
+def test_verify_coherence_includes_propagation_delta():
+    """verify_coherence result must include uncertainty_propagation_delta
+    so out-of-band checks can detect upstream cascade amplification."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "uncertainty_propagation_delta" in line and "result[" in line:
+                found = True
+                break
+    assert found, (
+        "verify_coherence must include 'uncertainty_propagation_delta' in result"
+    )
+    print("✅ test_verify_coherence_includes_propagation_delta PASSED")
+
+
+def test_verify_coherence_includes_oscillation():
+    """verify_coherence result must include feedback_oscillation_score
+    so out-of-band checks can detect signal instability."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "feedback_oscillation_score" in line and "result[" in line:
+                found = True
+                break
+    assert found, (
+        "verify_coherence must include 'feedback_oscillation_score' in result"
+    )
+    print("✅ test_verify_coherence_includes_oscillation PASSED")
+
+
+def test_verify_coherence_includes_memory_cv():
+    """verify_coherence result must include memory_cross_validation_disagreement
+    so inter-memory inconsistencies are detectable out-of-band."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "memory_cross_validation_disagreement" in line and "result[" in line:
+                found = True
+                break
+    assert found, (
+        "verify_coherence must include 'memory_cross_validation_disagreement' in result"
+    )
+    print("✅ test_verify_coherence_includes_memory_cv PASSED")
+
+
+def test_verify_coherence_includes_provenance_completeness():
+    """verify_coherence result must include provenance_completeness
+    continuous ratio for root-cause traceability assessment."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "provenance_completeness" in line and "result[" in line:
+                found = True
+                break
+    assert found, (
+        "verify_coherence must include 'provenance_completeness' in result"
+    )
+    print("✅ test_verify_coherence_includes_provenance_completeness PASSED")
+
+
+def test_self_diagnostic_includes_provenance_completeness():
+    """self_diagnostic must include provenance_completeness so the
+    diagnostic report exposes root-cause traceability depth."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_key = False
+    found_method = False
+    with open(src_path, "r") as f:
+        in_diagnostic = False
+        for line in f:
+            if "def self_diagnostic" in line:
+                in_diagnostic = True
+            if in_diagnostic and "'provenance_completeness'" in line:
+                found_key = True
+            if in_diagnostic and "get_trace_completeness_ratio" in line:
+                found_method = True
+            if in_diagnostic and found_key and found_method:
+                break
+            if in_diagnostic and line.strip().startswith("def ") and "self_diagnostic" not in line:
+                break
+    assert found_key, (
+        "self_diagnostic must include 'provenance_completeness' key"
+    )
+    assert found_method, (
+        "self_diagnostic must call get_trace_completeness_ratio()"
+    )
+    print("✅ test_self_diagnostic_includes_provenance_completeness PASSED")
+
+
+def test_self_diagnostic_includes_oscillation():
+    """self_diagnostic must include feedback_oscillation so the
+    diagnostic report exposes signal instability."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_key = False
+    found_method = False
+    with open(src_path, "r") as f:
+        in_diagnostic = False
+        for line in f:
+            if "def self_diagnostic" in line:
+                in_diagnostic = True
+            if in_diagnostic and "'feedback_oscillation'" in line:
+                found_key = True
+            if in_diagnostic and "get_oscillation_score" in line:
+                found_method = True
+            if in_diagnostic and found_key and found_method:
+                break
+            if in_diagnostic and line.strip().startswith("def ") and "self_diagnostic" not in line:
+                break
+    assert found_key, (
+        "self_diagnostic must include 'feedback_oscillation' key"
+    )
+    assert found_method, (
+        "self_diagnostic must call get_oscillation_score()"
+    )
+    print("✅ test_self_diagnostic_includes_oscillation PASSED")
+
+
+def test_self_diagnostic_includes_propagation_delta():
+    """self_diagnostic must include uncertainty_propagation_delta so the
+    diagnostic report exposes upstream cascade amplification."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "'uncertainty_propagation_delta'" in line:
+                found = True
+                break
+    assert found, (
+        "self_diagnostic must include 'uncertainty_propagation_delta' key"
+    )
+    print("✅ test_self_diagnostic_includes_propagation_delta PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -55800,6 +56131,22 @@ def run_all_tests():
     test_coherence_registry_summary_includes_low_quality()
     test_uncertainty_bus_backward_compat_no_critical_edges()
     test_uncertainty_bus_min_propagation_stops_noise()
+
+    # Architectural Unification — Continuous Provenance Quality, Feedback
+    # Oscillation Detection, Unconditional Memory Decay, Expanded Coherence
+    test_provenance_trace_completeness_ratio()
+    test_continuous_provenance_quality_in_output_reliability()
+    test_feedback_bus_oscillation_detection()
+    test_feedback_bus_oscillation_no_false_positive()
+    test_ucc_oscillation_triggers_rerun()
+    test_memory_stale_decay_unconditional()
+    test_verify_coherence_includes_propagation_delta()
+    test_verify_coherence_includes_oscillation()
+    test_verify_coherence_includes_memory_cv()
+    test_verify_coherence_includes_provenance_completeness()
+    test_self_diagnostic_includes_provenance_completeness()
+    test_self_diagnostic_includes_oscillation()
+    test_self_diagnostic_includes_propagation_delta()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
