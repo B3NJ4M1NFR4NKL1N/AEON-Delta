@@ -31727,7 +31727,12 @@ def test_unified_convergence_arbiter_conflict():
         certified_results={"certified_convergence": True},
     )
     assert result["has_conflict"] is True, "Should detect conflict"
-    assert result["uncertainty_boost"] == 0.2
+    # Severity-scaled boost: proportional to number of disagreeing monitors
+    # and severity (diverging = highest). Must be > 0 and <= base boost.
+    assert result["uncertainty_boost"] > 0, "Conflict should produce positive boost"
+    assert result["uncertainty_boost"] <= 0.2, "Boost should not exceed base"
+    # Severity should reflect the diverging state
+    assert result["conflict_severity"] == 1.0, "Diverging should have max severity"
     assert len(result["conflict_details"]) > 0
     assert result["unified_status"] in ("diverging", "conflict")
     print("✅ test_unified_convergence_arbiter_conflict PASSED")
@@ -53792,6 +53797,253 @@ def test_self_diagnostic_includes_propagation_delta():
     print("✅ test_self_diagnostic_includes_propagation_delta PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — Cross-module verification, adaptive
+#  thresholds, severity-scaled arbitration, and correction signal wiring
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_cross_validation_reconciler_adapt_threshold_tightens():
+    """CrossValidationReconciler.adapt_threshold tightens on poor error history."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=32, agreement_threshold=0.7)
+    initial = rec.agreement_threshold
+    # Simulate poor error history with low success rate
+    error_summary = {
+        "error_classes": {
+            "reconciliation_disagreement": {"count": 5, "success_rate": 0.2},
+        },
+    }
+    rec.adapt_threshold(error_summary)
+    assert rec.agreement_threshold > initial, (
+        f"Threshold should tighten: {rec.agreement_threshold} > {initial}"
+    )
+    assert rec.agreement_threshold <= rec._ADAPT_CAP, "Should not exceed cap"
+    print("✅ test_cross_validation_reconciler_adapt_threshold_tightens PASSED")
+
+
+def test_cross_validation_reconciler_adapt_threshold_relaxes():
+    """CrossValidationReconciler.adapt_threshold relaxes on healthy error history."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=32, agreement_threshold=0.7)
+    # Manually raise threshold above initial
+    rec.agreement_threshold = 0.85
+    # Simulate healthy error history
+    error_summary = {
+        "error_classes": {
+            "reconciliation_disagreement": {"count": 5, "success_rate": 0.95},
+            "cross_validation_low_agreement": {"count": 3, "success_rate": 0.9},
+        },
+    }
+    rec.adapt_threshold(error_summary)
+    assert rec.agreement_threshold < 0.85, (
+        f"Threshold should relax: {rec.agreement_threshold} < 0.85"
+    )
+    assert rec.agreement_threshold >= rec._initial_threshold, (
+        "Should not relax below initial baseline"
+    )
+    print("✅ test_cross_validation_reconciler_adapt_threshold_relaxes PASSED")
+
+
+def test_cross_validation_reconciler_adapt_threshold_noop():
+    """CrossValidationReconciler.adapt_threshold no-ops without relevant history."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=32, agreement_threshold=0.7)
+    initial = rec.agreement_threshold
+    # Empty or irrelevant error history should not change threshold
+    rec.adapt_threshold({})
+    assert rec.agreement_threshold == initial
+    rec.adapt_threshold({"error_classes": {}})
+    assert rec.agreement_threshold == initial
+    rec.adapt_threshold({"error_classes": {"unrelated_error": {"count": 10, "success_rate": 0.1}}})
+    assert rec.agreement_threshold == initial
+    print("✅ test_cross_validation_reconciler_adapt_threshold_noop PASSED")
+
+
+def test_convergence_arbiter_severity_scaling():
+    """UnifiedConvergenceArbiter scales boost by severity and disagreement count."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.3)
+
+    # Case 1: All diverging — maximum severity
+    result_div = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.1, "residual_norm": 2.0},
+        convergence_monitor_verdict={"status": "converging", "certified": False},
+        certified_results={"certified_convergence": True},
+    )
+    assert result_div["has_conflict"] is True
+    assert result_div["conflict_severity"] == 1.0, "Diverging should have max severity"
+
+    # Case 2: Low coherence only — moderate severity
+    result_coh = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        certified_results={"certified_convergence": True},
+        coherence_score=0.3,
+    )
+    assert result_coh["has_conflict"] is True
+    assert result_coh["conflict_severity"] < 1.0, "Incoherent-only should have lower severity"
+
+    # Case 3: Diverging + incoherent — boost should be higher than incoherent-only
+    assert result_div["uncertainty_boost"] >= result_coh["uncertainty_boost"], (
+        "Diverging conflict should produce >= boost than coherence-only conflict"
+    )
+    print("✅ test_convergence_arbiter_severity_scaling PASSED")
+
+
+def test_convergence_arbiter_no_conflict_zero_severity():
+    """UnifiedConvergenceArbiter produces zero severity when all agree."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.3)
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        certified_results={"certified_convergence": True},
+    )
+    assert result["has_conflict"] is False
+    assert result["conflict_severity"] == 0.0
+    assert result["uncertainty_boost"] == 0.0
+    print("✅ test_convergence_arbiter_no_conflict_zero_severity PASSED")
+
+
+def test_convergence_arbiter_boost_floor():
+    """UnifiedConvergenceArbiter enforces minimum 30% of base boost on conflict."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=1.0)
+    # Even with minimal disagreement, boost should be at least 30% of base
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+        coherence_score=0.3,
+    )
+    assert result["has_conflict"] is True
+    assert result["uncertainty_boost"] >= 1.0 * 0.3, (
+        f"Boost {result['uncertainty_boost']} should be >= 30% of base (0.3)"
+    )
+    print("✅ test_convergence_arbiter_boost_floor PASSED")
+
+
+def test_ucc_correction_signals_in_output():
+    """UnifiedCognitiveCycle includes correction_signals in coherence_result."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalProvenanceTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.99)
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=cv,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    # Use highly divergent states to trigger low coherence
+    states = {
+        "module_a": torch.randn(1, 16) * 10,
+        "module_b": torch.randn(1, 16) * -10,
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.3,
+    )
+    # correction_signals should be in the coherence_result
+    assert "correction_signals" in result["coherence_result"], (
+        "coherence_result should include correction_signals"
+    )
+    print("✅ test_ucc_correction_signals_in_output PASSED")
+
+
+def test_ucc_reconciler_threshold_adaptation():
+    """UnifiedCognitiveCycle adapts CrossValidationReconciler threshold."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker, CrossValidationReconciler,
+        UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+    rec = CrossValidationReconciler(hidden_dim=16, agreement_threshold=0.7)
+
+    # Record some poor error history
+    for _ in range(3):
+        ee.record_episode(
+            error_class='reconciliation_disagreement',
+            strategy_used='meta_rerun',
+            success=False,
+        )
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=ee,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        cross_validation_reconciler=rec,
+    )
+
+    initial_threshold = rec.agreement_threshold
+
+    # Run evaluate — should temporarily adapt threshold then restore
+    states = {"module_a": torch.randn(1, 16)}
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+    )
+
+    # After evaluate, threshold should be restored to initial value
+    assert rec.agreement_threshold == initial_threshold, (
+        f"Threshold should be restored: {rec.agreement_threshold} == {initial_threshold}"
+    )
+    print("✅ test_ucc_reconciler_threshold_adaptation PASSED")
+
+
+def test_cross_validation_reconciler_stores_initial_threshold():
+    """CrossValidationReconciler stores initial threshold for relaxation baseline."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(hidden_dim=16, agreement_threshold=0.6)
+    assert rec._initial_threshold == 0.6, (
+        "Should store initial threshold as relaxation baseline"
+    )
+    print("✅ test_cross_validation_reconciler_stores_initial_threshold PASSED")
+
+
+def test_aeonv3_wires_reconciler_to_ucc():
+    """AEONDeltaV3 passes cross_validator to UnifiedCognitiveCycle."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_cross_validation=True,
+    )
+    model = AEONDeltaV3(cfg)
+
+    # UCC should be enabled and cross_validator should be wired
+    ucc = getattr(model, 'unified_cognitive_cycle', None)
+    assert ucc is not None, "UCC should be initialized"
+    cv = getattr(model, 'cross_validator', None)
+    assert cv is not None, "cross_validator should exist on model"
+    assert ucc.cross_validation_reconciler is cv, (
+        "UCC.cross_validation_reconciler should reference model's cross_validator"
+    )
+    print("✅ test_aeonv3_wires_reconciler_to_ucc PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -56147,6 +56399,19 @@ def run_all_tests():
     test_self_diagnostic_includes_provenance_completeness()
     test_self_diagnostic_includes_oscillation()
     test_self_diagnostic_includes_propagation_delta()
+
+    # Architectural Unification — Adaptive Thresholds, Severity-Scaled
+    # Arbitration, Correction Signal Wiring, Health Gating Integration
+    test_cross_validation_reconciler_adapt_threshold_tightens()
+    test_cross_validation_reconciler_adapt_threshold_relaxes()
+    test_cross_validation_reconciler_adapt_threshold_noop()
+    test_convergence_arbiter_severity_scaling()
+    test_convergence_arbiter_no_conflict_zero_severity()
+    test_convergence_arbiter_boost_floor()
+    test_ucc_correction_signals_in_output()
+    test_ucc_reconciler_threshold_adaptation()
+    test_cross_validation_reconciler_stores_initial_threshold()
+    test_aeonv3_wires_reconciler_to_ucc()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

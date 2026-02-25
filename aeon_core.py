@@ -14181,6 +14181,11 @@ class CrossValidationReconciler(nn.Module):
         max_reconcile_steps: Maximum self-critique iterations.
     """
 
+    # Adaptive threshold constants (mirror ModuleCoherenceVerifier pattern)
+    _ADAPT_STEP: float = 0.05
+    _ADAPT_CAP: float = 0.95
+    _RELAX_STEP: float = 0.02
+
     def __init__(
         self,
         hidden_dim: int = 256,
@@ -14190,6 +14195,7 @@ class CrossValidationReconciler(nn.Module):
     ):
         super().__init__()
         self.agreement_threshold = agreement_threshold
+        self._initial_threshold = agreement_threshold
         self.max_reconcile_steps = max_reconcile_steps
 
         self.factor_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -14266,6 +14272,56 @@ class CrossValidationReconciler(nn.Module):
             "attenuation": attenuation,
             "low_agreement": bool(low),
         }
+
+    def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
+        """Adapt agreement threshold bidirectionally based on error history.
+
+        Inspects the ``reconciliation_disagreement`` and
+        ``cross_validation_low_agreement`` error classes in the supplied
+        error summary.  When any class has a success rate below 50 % and
+        at least two episodes recorded, the threshold is tightened (raised)
+        by a small step (capped at ``_ADAPT_CAP``).  Conversely, when all
+        inspected classes have success rates above 80 %, the threshold is
+        gradually relaxed toward the initial baseline.
+
+        This mirrors the :meth:`ModuleCoherenceVerifier.adapt_threshold`
+        pattern, closing the gap where the reconciler's agreement threshold
+        was static and could not respond to historical cross-validation
+        failure patterns.
+
+        Args:
+            error_summary: Output of
+                ``CausalErrorEvolutionTracker.get_error_summary()``.
+        """
+        classes = error_summary.get("error_classes", {})
+        _tighten = False
+        _any_class_found = False
+        _all_healthy = True
+        for _cls_name in (
+            "reconciliation_disagreement",
+            "cross_validation_low_agreement",
+            "coherence_deficit",
+        ):
+            _stats = classes.get(_cls_name)
+            if _stats is None or _stats.get("count", 0) < 2:
+                continue
+            _any_class_found = True
+            _sr = _stats.get("success_rate", 1.0)
+            if _sr < 0.5:
+                _tighten = True
+            if _sr <= 0.8:
+                _all_healthy = False
+        if not _any_class_found:
+            return
+        if _tighten:
+            self.agreement_threshold = min(
+                self._ADAPT_CAP, self.agreement_threshold + self._ADAPT_STEP,
+            )
+        elif _all_healthy and self.agreement_threshold > self._initial_threshold:
+            self.agreement_threshold = max(
+                self._initial_threshold,
+                self.agreement_threshold - self._RELAX_STEP,
+            )
 
 class ExternalDataTrustScorer(nn.Module):
     """
@@ -16166,7 +16222,28 @@ class UnifiedConvergenceArbiter:
         else:
             unified_status = "converging"
 
-        uncertainty_boost = self.conflict_uncertainty_boost if has_conflict else 0.0
+        # Severity-scaled uncertainty boost: instead of a static constant,
+        # scale the boost proportionally to the number of disagreeing
+        # monitors and the severity of the disagreement (diverging > conflict
+        # > incoherent).  This closes the gap where the arbiter applied the
+        # same uncertainty penalty regardless of whether one or all monitors
+        # disagreed, preventing the meta-cognitive cycle from distinguishing
+        # minor disagreements from systemic convergence failure.
+        if has_conflict:
+            _num_monitors = max(1, len(verdicts))
+            _num_disagreeing = len(unique_verdicts) if len(unique_verdicts) > 1 else 1
+            _severity_ratio = min(1.0, _num_disagreeing / max(1, _num_monitors))
+            # Diverging is the most severe outcome (1.0×), followed by
+            # explicit conflict (0.7×), then incoherent-only (0.5×).
+            _severity_multiplier = 1.0 if any_diverging else (0.7 if len(unique_verdicts) > 1 else 0.5)
+            uncertainty_boost = self.conflict_uncertainty_boost * _severity_ratio * _severity_multiplier
+            # Floor: always at least 30% of the base boost when conflict is present
+            uncertainty_boost = max(
+                self.conflict_uncertainty_boost * 0.3,
+                uncertainty_boost,
+            )
+        else:
+            uncertainty_boost = 0.0
 
         return {
             "unified_status": unified_status,
@@ -16174,6 +16251,7 @@ class UnifiedConvergenceArbiter:
             "has_conflict": has_conflict,
             "conflict_details": conflict_details,
             "uncertainty_boost": uncertainty_boost,
+            "conflict_severity": _severity_multiplier if has_conflict else 0.0,
             "individual_verdicts": verdicts,
         }
 
@@ -16795,6 +16873,7 @@ class UnifiedCognitiveCycle:
         memory_validator: Optional['MemoryReasoningValidator'] = None,
         causal_dag_consensus: Optional['CausalDAGConsensus'] = None,
         coherence_registry: Optional['SubsystemCoherenceRegistry'] = None,
+        cross_validation_reconciler: Optional['CrossValidationReconciler'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -16807,6 +16886,7 @@ class UnifiedCognitiveCycle:
         self.memory_validator = memory_validator
         self.causal_dag_consensus = causal_dag_consensus
         self.coherence_registry = coherence_registry
+        self.cross_validation_reconciler = cross_validation_reconciler
 
         # Cross-pass coherence trend tracking — EMA of coherence deficit
         # across successive evaluate() calls.  When coherence is
@@ -17040,12 +17120,27 @@ class UnifiedCognitiveCycle:
         # evaluation cycle, preventing unbounded threshold drift across
         # successive forward passes.
         _original_threshold = None
+        _original_reconciler_threshold = None
         if self.error_evolution is not None and self.coherence_verifier is not None:
             _err_summary = self.error_evolution.get_error_summary()
             _original_threshold = self.coherence_verifier.threshold
             self.coherence_verifier.adapt_threshold(_err_summary)
         else:
             _err_summary = {}
+
+        # 1b-ii. Adapt cross-validation reconciler threshold from error
+        # evolution history so repeated cross-validation failures tighten
+        # the agreement requirement.  This closes the gap where the
+        # reconciler's agreement threshold was static and could not
+        # respond to historical failure patterns.
+        if (self.cross_validation_reconciler is not None
+                and self.error_evolution is not None):
+            if not _err_summary:
+                _err_summary = self.error_evolution.get_error_summary()
+            _original_reconciler_threshold = (
+                self.cross_validation_reconciler.agreement_threshold
+            )
+            self.cross_validation_reconciler.adapt_threshold(_err_summary)
 
         # 1c. Pre-adapt metacognitive trigger weights from error evolution
         # so that historically problematic signals have higher sensitivity
@@ -17519,6 +17614,14 @@ class UnifiedCognitiveCycle:
         if _original_threshold is not None and self.coherence_verifier is not None:
             self.coherence_verifier.threshold = _original_threshold
 
+        # 7-ii. Restore cross-validation reconciler threshold to prevent
+        # unbounded drift, mirroring the coherence verifier restoration.
+        if (_original_reconciler_threshold is not None
+                and self.cross_validation_reconciler is not None):
+            self.cross_validation_reconciler.agreement_threshold = (
+                _original_reconciler_threshold
+            )
+
         # 7b. Convergence arbitration re-reasoning override — the arbiter
         # was already called in section 2g (before the trigger).  Here we
         # only handle the re-reasoning override that depends on the
@@ -17905,6 +18008,7 @@ class UnifiedCognitiveCycle:
                 'needs_recheck': needs_recheck,
                 'coherence_deficit': coherence_deficit,
                 'weakest_pair': weakest_pair,
+                'correction_signals': coherence_result.get('correction_signals', {}),
             },
             'should_rerun': should_rerun,
             'trigger_detail': trigger_detail,
@@ -19577,6 +19681,9 @@ class AEONDeltaV3(nn.Module):
                     memory_validator=self.memory_validator,
                     causal_dag_consensus=self.causal_dag_consensus,
                     coherence_registry=self.coherence_registry,
+                    cross_validation_reconciler=getattr(
+                        self, 'cross_validator', None,
+                    ),
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -34291,6 +34398,9 @@ class AEONDeltaV3(nn.Module):
                 uncertainty_tracker=getattr(self, 'uncertainty_tracker', None),
                 memory_validator=getattr(self, 'memory_validator', None),
                 causal_dag_consensus=getattr(self, 'causal_dag_consensus', None),
+                cross_validation_reconciler=getattr(
+                    self, 'cross_validator', None,
+                ),
             )
             remediated.append('unified_cognitive_cycle')
 
