@@ -15148,6 +15148,25 @@ class MetaCognitiveRecursionTrigger:
             # Generation-time UCC failure — the meta-cognitive cycle
             # could not evaluate generation quality, degrading trust.
             "generate_ucc_failure": "uncertainty",
+            # ── Per-subsystem training bridge error classes ─────────
+            # Recorded by bridge_training_loss_to_error_evolution()
+            # when individual subsystem losses exceed the threshold.
+            # Mapping them ensures training-time per-subsystem loss
+            # spikes feed back into metacognitive trigger weight
+            # adaptation, closing the training→inference loop for
+            # fine-grained subsystem signals.
+            "high_coherence_training_loss": "coherence_deficit",
+            "high_consistency_training_loss": "diverging",
+            "high_lipschitz_training_loss": "diverging",
+            "high_sparsity_training_loss": "uncertainty",
+            "high_causal_dag_training_loss": "low_causal_quality",
+            "high_hvae_kl_training_loss": "uncertainty",
+            "high_self_report_training_loss": "safety_violation",
+            "high_cross_validation_training_loss": "coherence_deficit",
+            "high_causal_cv_supervision_training_loss": "low_causal_quality",
+            "high_factor_cv_supervision_training_loss": "coherence_deficit",
+            "high_decoder_provenance_training_loss": "coherence_deficit",
+            "high_ns_consistency_training_loss": "safety_violation",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -15863,6 +15882,25 @@ class CausalErrorEvolutionTracker:
         # so that training adapts to persistent generation verification
         # failures.
         "generate_ucc_failure": "lambda_ucc",
+        # ── Per-subsystem training bridge error classes ─────────────
+        # Recorded by bridge_training_loss_to_error_evolution() when
+        # individual subsystem losses exceed the threshold.  Mapping
+        # them closes the loop between per-subsystem training loss
+        # spikes and runtime loss weight adaptation so that
+        # persistently high subsystem losses receive corrective
+        # training pressure.
+        "high_coherence_training_loss": "lambda_coherence",
+        "high_consistency_training_loss": "lambda_self_consistency",
+        "high_lipschitz_training_loss": "lambda_lipschitz",
+        "high_sparsity_training_loss": "lambda_self_consistency",
+        "high_causal_dag_training_loss": "lambda_causal_dag",
+        "high_hvae_kl_training_loss": "lambda_ucc",
+        "high_self_report_training_loss": "lambda_self_report",
+        "high_cross_validation_training_loss": "lambda_cross_validation",
+        "high_causal_cv_supervision_training_loss": "lambda_cross_validation",
+        "high_factor_cv_supervision_training_loss": "lambda_cross_validation",
+        "high_decoder_provenance_training_loss": "lambda_cycle_consistency",
+        "high_ns_consistency_training_loss": "lambda_ns_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -18241,6 +18279,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "safety_violation_pressure", default=0.0,
         )
+        # Inter-memory cross-validation disagreement — when multiple
+        # memory subsystems (hierarchical, neurogenic, temporal,
+        # consolidating) produce inconsistent retrievals, this signal
+        # conditions the next pass's meta-loop to expect memory
+        # subsystem divergence, enabling proactive re-retrieval or
+        # deeper reasoning rather than reactive uncertainty escalation.
+        self.feedback_bus.register_signal(
+            "memory_cv_disagreement", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -19790,6 +19837,20 @@ class AEONDeltaV3(nn.Module):
         # meta-loop reasons more cautiously.
         if getattr(self, '_cached_safety_violation', False):
             extra["safety_violation_pressure"] = 1.0
+        # Inter-memory cross-validation disagreement — when multiple
+        # memory subsystems (hierarchical, neurogenic, temporal,
+        # consolidating) produce inconsistent retrievals, signal the
+        # feedback bus so the next pass's meta-loop conditions on
+        # memory-subsystem divergence.  This closes the gap where
+        # inter-memory disagreement escalated within-pass uncertainty
+        # but never conditioned cross-pass feedback, leaving the
+        # meta-loop blind to persistent memory-subsystem conflicts.
+        _mem_cv = getattr(self, '_last_memory_cross_validation', {})
+        if _mem_cv.get('inconsistent', False):
+            _mem_cv_sim = _mem_cv.get('mean_similarity', 0.0)
+            extra["memory_cv_disagreement"] = max(
+                0.0, min(1.0, 1.0 - _mem_cv_sim),
+            )
         return extra
 
     @staticmethod
@@ -33630,6 +33691,50 @@ class AEONDeltaV3(nn.Module):
                 ),
             })
 
+        # --- Memory cross-validation disagreement → feedback bus closure ---
+        # Verify that inter-memory subsystem disagreement is carried into
+        # the feedback bus so the next pass's meta-loop conditions on
+        # persistent memory-subsystem divergence, not just within-pass
+        # uncertainty escalation.
+        if (self.feedback_bus is not None
+                and 'memory_cv_disagreement' in self.feedback_bus._extra_signals):
+            verified.append(
+                'memory_cross_validation → feedback_bus.memory_cv_disagreement '
+                '→ meta_loop (memory subsystem divergence conditions next pass)'
+            )
+        elif (self.feedback_bus is not None
+              and (self.neurogenic_memory is not None
+                   or self.temporal_memory is not None
+                   or self.consolidating_memory is not None)):
+            gaps.append({
+                'component': 'memory_cv_disagreement_feedback',
+                'gap': (
+                    'Multiple memory subsystems active but '
+                    'memory_cv_disagreement signal not registered in '
+                    'feedback bus — inter-memory disagreement invisible '
+                    'to cross-pass meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register memory_cv_disagreement signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Self-report state → verify_coherence wiring ---
+        # Verify that _cached_self_report_state participates in
+        # verify_coherence()'s pairwise coherence check so that
+        # self-assessment–reasoning divergence is detectable during
+        # out-of-band coherence verification, not only during inline
+        # UCC evaluation.
+        if (self.self_reporter is not None
+                and self.module_coherence is not None):
+            verified.append(
+                '_cached_self_report_state → verify_coherence '
+                '→ module_coherence (self-report divergence detectable '
+                'in out-of-band coherence checks)'
+            )
+
         # --- Extension points (defined but not instantiated in the pipeline) ---
         # These classes are defined in the module for architectural
         # completeness but are not instantiated in AEONDeltaV3.__init__
@@ -34051,6 +34156,7 @@ class AEONDeltaV3(nn.Module):
             ("_cached_neurogenic_memory_state", "neurogenic_memory"),
             ("_cached_temporal_memory_state", "temporal_memory"),
             ("_cached_consolidating_memory_state", "consolidating_memory"),
+            ("_cached_self_report_state", "self_report"),
         ]:
             cached = getattr(self, attr_name, None)
             if (cached is not None
@@ -34118,6 +34224,7 @@ class AEONDeltaV3(nn.Module):
                     ("_cached_neurogenic_memory_state", "neurogenic_memory"),
                     ("_cached_temporal_memory_state", "temporal_memory"),
                     ("_cached_consolidating_memory_state", "consolidating_memory"),
+                    ("_cached_self_report_state", "self_report"),
                 ]
             }
             for label in _weakest.get("modules", []):

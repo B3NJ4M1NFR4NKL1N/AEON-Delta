@@ -52614,7 +52614,245 @@ def test_dag_acyclic_cached_in_reasoning_core():
     print("✅ test_dag_acyclic_cached_in_reasoning_core PASSED")
 
 
-def run_all_tests():
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Self-Report Coherence Verification,
+#  Memory Cross-Validation Feedback, Training Bridge Error Class Mappings
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_verify_coherence_includes_self_report_state():
+    """verify_coherence() must include _cached_self_report_state in the
+    subsystem state collection so self-assessment–reasoning divergence is
+    detectable during out-of-band coherence checks, not only during inline
+    UCC evaluation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_coherence)
+    assert "_cached_self_report_state" in src, (
+        "verify_coherence must include _cached_self_report_state in "
+        "subsystem state collection for self-report coherence checking"
+    )
+    # Also verify the repair mapping includes self_report
+    assert '"self_report"' in src, (
+        "verify_coherence repair mapping must include self_report label"
+    )
+
+    print("✅ test_verify_coherence_includes_self_report_state PASSED")
+
+
+def test_verify_coherence_self_report_repair_mapping():
+    """verify_coherence()'s targeted repair _label_to_attr mapping must
+    include the self_report → _cached_self_report_state entry so that
+    when self_report is part of the weakest pair, the corrected state can
+    be written back to the cache."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_coherence)
+    # The repair mapping is a dict comprehension from label→attr tuples.
+    # Check that self_report appears in the _label_to_attr construction.
+    assert (
+        '_cached_self_report_state' in src
+        and 'self_report' in src
+    ), (
+        "verify_coherence repair _label_to_attr must include "
+        "(_cached_self_report_state, self_report) for targeted repair"
+    )
+
+    print("✅ test_verify_coherence_self_report_repair_mapping PASSED")
+
+
+def test_feedback_bus_memory_cv_disagreement_registered():
+    """Verify memory_cv_disagreement signal is registered in the feedback bus
+    so inter-memory subsystem disagreement conditions the next pass's
+    meta-loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert "memory_cv_disagreement" in model.feedback_bus._extra_signals, (
+        "memory_cv_disagreement must be registered in feedback bus "
+        "so inter-memory disagreement conditions next-pass reasoning"
+    )
+    print("✅ test_feedback_bus_memory_cv_disagreement_registered PASSED")
+
+
+def test_build_feedback_includes_memory_cv_disagreement():
+    """When _last_memory_cross_validation shows inconsistency,
+    _build_feedback_extra_signals must include memory_cv_disagreement."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Default: no disagreement → no signal
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("memory_cv_disagreement", 0.0) == 0.0, (
+        "memory_cv_disagreement should be absent when memories are consistent"
+    )
+
+    # Simulate inter-memory disagreement
+    model._last_memory_cross_validation = {
+        "inconsistent": True,
+        "mean_similarity": 0.1,
+    }
+    extra = model._build_feedback_extra_signals()
+    assert "memory_cv_disagreement" in extra, (
+        "memory_cv_disagreement must be present when memories are inconsistent"
+    )
+    assert 0.0 < extra["memory_cv_disagreement"] <= 1.0, (
+        f"memory_cv_disagreement must be in (0, 1], got "
+        f"{extra['memory_cv_disagreement']}"
+    )
+    print("✅ test_build_feedback_includes_memory_cv_disagreement PASSED")
+
+
+def test_build_feedback_memory_cv_no_signal_when_consistent():
+    """When inter-memory cross-validation shows consistency,
+    memory_cv_disagreement should not appear in the feedback signals."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Consistent memories → no signal
+    model._last_memory_cross_validation = {
+        "inconsistent": False,
+        "mean_similarity": 0.9,
+    }
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("memory_cv_disagreement", 0.0) == 0.0, (
+        "memory_cv_disagreement should be absent when memories are consistent"
+    )
+    print("✅ test_build_feedback_memory_cv_no_signal_when_consistent PASSED")
+
+
+def test_training_bridge_error_classes_in_lambda_mapping():
+    """Verify that all per-subsystem training bridge error classes are
+    mapped in _ERROR_CLASS_TO_LAMBDA so their failure patterns influence
+    runtime loss weight adaptation."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    expected = {
+        "high_coherence_training_loss": "lambda_coherence",
+        "high_consistency_training_loss": "lambda_self_consistency",
+        "high_lipschitz_training_loss": "lambda_lipschitz",
+        "high_sparsity_training_loss": "lambda_self_consistency",
+        "high_causal_dag_training_loss": "lambda_causal_dag",
+        "high_hvae_kl_training_loss": "lambda_ucc",
+        "high_self_report_training_loss": "lambda_self_report",
+        "high_cross_validation_training_loss": "lambda_cross_validation",
+        "high_causal_cv_supervision_training_loss": "lambda_cross_validation",
+        "high_factor_cv_supervision_training_loss": "lambda_cross_validation",
+        "high_decoder_provenance_training_loss": "lambda_cycle_consistency",
+        "high_ns_consistency_training_loss": "lambda_ns_consistency",
+    }
+
+    for cls_name, expected_lambda in expected.items():
+        assert cls_name in lambda_map, (
+            f"{cls_name} missing from _ERROR_CLASS_TO_LAMBDA — "
+            f"training bridge records this but it can't influence loss weights"
+        )
+        assert lambda_map[cls_name] == expected_lambda, (
+            f"{cls_name} should map to {expected_lambda}, "
+            f"got {lambda_map[cls_name]}"
+        )
+
+    print("✅ test_training_bridge_error_classes_in_lambda_mapping PASSED")
+
+
+def test_training_bridge_error_classes_in_trigger_signal_mapping():
+    """Verify that all per-subsystem training bridge error classes are
+    mapped in the metacognitive trigger's _class_to_signal so their
+    failure patterns influence trigger weight adaptation."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped_keys = set(re.findall(r'"([^"]+)":\s*"', src))
+
+    expected_classes = [
+        "high_coherence_training_loss",
+        "high_consistency_training_loss",
+        "high_lipschitz_training_loss",
+        "high_sparsity_training_loss",
+        "high_causal_dag_training_loss",
+        "high_hvae_kl_training_loss",
+        "high_self_report_training_loss",
+        "high_cross_validation_training_loss",
+        "high_causal_cv_supervision_training_loss",
+        "high_factor_cv_supervision_training_loss",
+        "high_decoder_provenance_training_loss",
+        "high_ns_consistency_training_loss",
+    ]
+
+    for cls_name in expected_classes:
+        assert cls_name in mapped_keys, (
+            f"{cls_name} missing from _class_to_signal in "
+            f"adapt_weights_from_evolution — training bridge records "
+            f"this but it can't influence trigger weights"
+        )
+
+    print("✅ test_training_bridge_error_classes_in_trigger_signal_mapping PASSED")
+
+
+def test_self_diagnostic_verifies_memory_cv_feedback():
+    """self_diagnostic() must verify that memory_cv_disagreement signal
+    is registered in the feedback bus when memory subsystems are active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    # The signal is registered unconditionally, so it should appear in verified
+    all_verified = "\n".join(diag.get("verified_connections", []))
+    all_gaps = "\n".join(g.get("component", "") for g in diag.get("gaps", []))
+    # Either verified or a gap — should not be silently absent
+    assert (
+        "memory_cv_disagreement" in all_verified
+        or "memory_cv_disagreement" in all_gaps
+    ), (
+        "self_diagnostic must check memory_cv_disagreement feedback bus "
+        "wiring — currently absent from both verified and gaps"
+    )
+    print("✅ test_self_diagnostic_verifies_memory_cv_feedback PASSED")
+
+
+def test_self_diagnostic_verifies_self_report_coherence():
+    """self_diagnostic() must verify that self_report state participates
+    in verify_coherence when the self_reporter is active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    all_verified = "\n".join(diag.get("verified_connections", []))
+    assert "self_report" in all_verified.lower(), (
+        "self_diagnostic must verify self_report → verify_coherence wiring"
+    )
+    print("✅ test_self_diagnostic_verifies_self_report_coherence PASSED")
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -54914,6 +55152,18 @@ def run_all_tests():
     test_cached_trace_incomplete_initialized()
     test_cached_dag_acyclic_initialized()
     test_dag_acyclic_cached_in_reasoning_core()
+
+    # Architectural Unification — Self-Report Coherence Verification,
+    # Memory Cross-Validation Feedback, Training Bridge Error Class Mappings
+    test_verify_coherence_includes_self_report_state()
+    test_verify_coherence_self_report_repair_mapping()
+    test_feedback_bus_memory_cv_disagreement_registered()
+    test_build_feedback_includes_memory_cv_disagreement()
+    test_build_feedback_memory_cv_no_signal_when_consistent()
+    test_training_bridge_error_classes_in_lambda_mapping()
+    test_training_bridge_error_classes_in_trigger_signal_mapping()
+    test_self_diagnostic_verifies_memory_cv_feedback()
+    test_self_diagnostic_verifies_self_report_coherence()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
