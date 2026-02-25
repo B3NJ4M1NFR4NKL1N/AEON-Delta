@@ -21874,7 +21874,12 @@ class AEONDeltaV3(nn.Module):
         # avoids introducing additional learnable parameters.
         self.provenance_tracker.record_before("slot_binding", C_star)
         slot_assignments = self.slot_binder(C_star.unsqueeze(1))  # [B, num_pillars, hidden_dim]
-        C_star = C_star + slot_assignments.mean(dim=1)
+        _slot_residual = slot_assignments.mean(dim=1)
+        if torch.isfinite(_slot_residual).all():
+            C_star = C_star + _slot_residual
+        else:
+            logger.warning("Non-finite slot_binding output; skipping blend")
+            self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "slot_binding"})
         self.provenance_tracker.record_after("slot_binding", C_star)
         # Register slot binding output in causal context so that
         # cross-pass retrieval can access which compositional bindings
@@ -22808,12 +22813,17 @@ class AEONDeltaV3(nn.Module):
                 and not fast
                 and self._cached_feedback is not None):
             _intra_feedback = self._cached_feedback.to(device)
-            if _intra_feedback.shape[0] == B:
+            if _intra_feedback.shape[0] == B and torch.isfinite(_intra_feedback).all():
+                self.provenance_tracker.record_before("feedback_bus_intra", C_star)
                 C_star = C_star + _INTRA_PASS_FEEDBACK_SCALE * _intra_feedback
+                self.provenance_tracker.record_after("feedback_bus_intra", C_star)
                 self.audit_log.record("feedback_bus", "intra_pass_modulation", {
                     "uncertainty": uncertainty,
                     "feedback_norm": float(_intra_feedback.norm().item()),
                 })
+            elif _intra_feedback.shape[0] == B:
+                logger.warning("Non-finite intra-pass feedback; skipping blend")
+                self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "feedback_bus_intra"})
         
         # 5a-iv. Meta-cognitive recursion trigger — evaluate whether
         # accumulated signals warrant re-running the meta-loop with
@@ -23330,7 +23340,11 @@ class AEONDeltaV3(nn.Module):
                     v_predicted = self.value_net(predicted_next)  # [B, 1]
                     # Select better state per-sample
                     use_predicted = (v_predicted > v_original).squeeze(-1) & high_surprise
-                    C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+                    if torch.isfinite(predicted_next).all():
+                        C_star = torch.where(use_predicted.unsqueeze(-1), predicted_next, C_star)
+                    else:
+                        logger.warning("Non-finite world_model predicted_next; skipping surprise switch")
+                        self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "world_model_surprise"})
                     self.audit_log.record("world_model", "surprise_switch", {
                         "high_surprise_count": int(high_surprise.sum().item()),
                         "predicted_used": int(use_predicted.sum().item()),
@@ -23338,7 +23352,13 @@ class AEONDeltaV3(nn.Module):
                     })
                 else:
                     # Low surprise or no value_net: blend
-                    C_star = C_star + 0.1 * predicted_next
+                    self.provenance_tracker.record_before("world_model_blend", C_star)
+                    if torch.isfinite(predicted_next).all():
+                        C_star = C_star + 0.1 * predicted_next
+                    else:
+                        logger.warning("Non-finite world_model predicted_next; skipping low-surprise blend")
+                        self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "world_model_blend"})
+                    self.provenance_tracker.record_after("world_model_blend", C_star)
                 world_model_results['surprise'] = surprise
                 world_model_results['predicted_next'] = predicted_next
                 # Cache mean surprise for the feedback bus on the next
@@ -23625,7 +23645,9 @@ class AEONDeltaV3(nn.Module):
                         _WM_CORRECTION_SCALE,
                         _WM_CORRECTION_SCALE * _mean_surp,
                     )
+                    self.provenance_tracker.record_before("world_model_correction", C_star)
                     C_star = C_star + _corr_weight * (_wm_pred - C_star).detach()
+                    self.provenance_tracker.record_after("world_model_correction", C_star)
                     self.audit_log.record(
                         "world_model", "surprise_state_correction", {
                             "correction_weight": _corr_weight,
@@ -23743,7 +23765,12 @@ class AEONDeltaV3(nn.Module):
                             _memory_empty_count += 1
                     memory_context = torch.stack(retrieved_memories)  # [B, hidden_dim]
                     # Fuse via projection
-                    C_star = C_star + self.memory_projection(memory_context)
+                    _mem_proj = self.memory_projection(memory_context)
+                    if torch.isfinite(_mem_proj).all():
+                        C_star = C_star + _mem_proj
+                    else:
+                        logger.warning("Non-finite memory_projection output; skipping blend")
+                        self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "memory_retrieval"})
                     memory_retrieved = memory_context
                     # 5c-midloop. Immediate post-fusion memory validation —
                     # validate the fused state against the retrieved memory
@@ -23955,7 +23982,14 @@ class AEONDeltaV3(nn.Module):
                     # Only blend if re-retrieval improved over original
                     _orig_quality = 1.0 - (_memory_empty_count / max(B, 1))
                     if _re_quality > _orig_quality:
-                        C_star = C_star + self.memory_projection(_re_ctx)
+                        _re_proj = self.memory_projection(_re_ctx)
+                        if torch.isfinite(_re_proj).all():
+                            self.provenance_tracker.record_before("memory_re_retrieval", C_star)
+                            C_star = C_star + _re_proj
+                            self.provenance_tracker.record_after("memory_re_retrieval", C_star)
+                        else:
+                            logger.warning("Non-finite memory re-retrieval projection; skipping blend")
+                            self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "memory_re_retrieval"})
                         _memory_retrieval_quality = _re_quality
                         _memory_empty_count = _re_empty
                         self._memory_stale = (
@@ -24123,6 +24157,10 @@ class AEONDeltaV3(nn.Module):
             try:
                 _mem_trust_result = self.trust_scorer(C_star, z_in)
                 _mem_trust_score = _mem_trust_result['trust_score']  # [B, 1]
+                if not torch.isfinite(_mem_trust_score).all():
+                    logger.warning("Non-finite memory trust score; skipping dampening")
+                    self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "memory_trust"})
+                    raise ValueError("Non-finite trust score")
                 _mean_mem_trust = float(_mem_trust_score.mean().item())
                 _MEM_TRUST_THRESHOLD = 0.5
                 if _mean_mem_trust < _MEM_TRUST_THRESHOLD:
@@ -24548,7 +24586,12 @@ class AEONDeltaV3(nn.Module):
                 }
                 # Blend causal signal into factor embedding as a residual
                 causal_residual = causal_vars - factors.detach()
-                C_star = C_star + self.config.causal_blend_weight * causal_residual.mean(dim=-1, keepdim=True)
+                _causal_blend = self.config.causal_blend_weight * causal_residual.mean(dim=-1, keepdim=True)
+                if torch.isfinite(_causal_blend).all():
+                    C_star = C_star + _causal_blend
+                else:
+                    logger.warning("Non-finite causal_model residual; skipping blend")
+                    self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "causal_model"})
                 self.audit_log.record("causal_model", "computed", {
                     "dag_loss": float(causal_model_results['dag_loss'].item()),
                 })
@@ -25683,6 +25726,10 @@ class AEONDeltaV3(nn.Module):
                     else:
                         _cached_cf_expanded = _cached_cf.expand(B, -1)
                     C_star = C_star + (self.config.unified_simulator_blend * _decay) * _cached_cf_expanded
+                    if not torch.isfinite(C_star).all():
+                        C_star = C_star - (self.config.unified_simulator_blend * _decay) * _cached_cf_expanded
+                        logger.warning("Non-finite gated_fallback blend; rolling back")
+                        self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "gated_fallback_cache"})
                 self._gated_fallback_cache["unified_sim_next_state"] = _cached_cf * _decay
                 self.audit_log.record("gated_fallback", "unified_sim_used", {
                     "decay_factor": _decay,
@@ -26087,10 +26134,17 @@ class AEONDeltaV3(nn.Module):
                 causal_ctx_tensor = causal_ctx_tensor.to(device)
                 causal_ctx_mean = causal_ctx_tensor.mean(dim=0)  # [hidden_dim]
                 causal_ctx_residual = self.causal_context_proj(causal_ctx_mean)
-                C_star = C_star + _CAUSAL_CONTEXT_RESIDUAL_SCALE * causal_ctx_residual.unsqueeze(0).expand(B, -1)
+                _causal_ctx_blend = _CAUSAL_CONTEXT_RESIDUAL_SCALE * causal_ctx_residual.unsqueeze(0).expand(B, -1)
+                if torch.isfinite(_causal_ctx_blend).all():
+                    self.provenance_tracker.record_before("causal_context_blend", C_star)
+                    C_star = C_star + _causal_ctx_blend
+                    self.provenance_tracker.record_after("causal_context_blend", C_star)
+                else:
+                    logger.warning("Non-finite causal_context residual; skipping blend")
+                    self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "causal_context"})
             # 5f-ii. Store: record current state for future retrieval
             agreement = reconciliation_results.get("agreement_score", None)
-            causal_w = float(agreement.mean()) if agreement is not None else 0.0
+            causal_w = float(agreement.detach().mean()) if agreement is not None else 0.0
             self.causal_context.add(
                 source="reasoning_core",
                 embedding=C_star.mean(dim=0).detach(),

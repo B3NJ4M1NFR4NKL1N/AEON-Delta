@@ -16,6 +16,7 @@ import json
 import time
 import traceback
 import logging
+import gc
 
 # Add the project directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15070,6 +15071,10 @@ def test_consistency_loss_differentiable():
     torch.no_grad()), so it actively participates in backpropagation and
     is included in the total_loss aggregation.  This ensures the meta-loop
     is trained toward self-consistent fixed points."""
+    # Collect stale autograd graphs from prior tests to prevent
+    # "backward through the graph a second time" errors caused by
+    # accumulated autograd state across many test-created models.
+    gc.collect()
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
