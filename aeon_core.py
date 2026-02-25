@@ -6162,6 +6162,13 @@ class CognitiveFeedbackBus(nn.Module):
         self._ema_alpha = ema_alpha  # smoothing factor ∈ (0, 1]
         self._ema_values: Optional[torch.Tensor] = None  # [num_channels]
         self._signal_trend: Optional[torch.Tensor] = None  # [num_channels]
+        # --- Oscillation detection ---
+        # Rolling buffer of recent per-channel trend signs (+1/−1).
+        # When the sign alternates frequently (≥3 reversals in the last
+        # 4 samples), the channel is flagged as oscillating, indicating
+        # instability rather than monotonic drift.
+        self._trend_sign_history: List[Optional[torch.Tensor]] = []
+        self._oscillation_window: int = 4
     
     def _build_projection(self, num_channels: int) -> None:
         """(Re)build the projection layer for *num_channels* input signals."""
@@ -6202,6 +6209,31 @@ class CognitiveFeedbackBus(nn.Module):
         ``None`` if no EMA history has been accumulated yet.
         """
         return self._signal_trend
+
+    def get_oscillation_score(self) -> float:
+        """Return the fraction of signal channels currently oscillating.
+
+        A channel is considered oscillating when its trend sign reversed
+        at least ``_oscillation_window - 1`` times in the last
+        ``_oscillation_window`` observations.  This complements
+        :meth:`get_signal_trend` which only detects monotonic degradation:
+        oscillation (repeatedly improving then degrading) indicates
+        instability that may not surface as a consistent trend but
+        still degrades reasoning reliability.
+
+        Returns 0.0 when insufficient history has been accumulated.
+        """
+        window = self._oscillation_window
+        history = self._trend_sign_history
+        if len(history) < window:
+            return 0.0
+        recent = history[-window:]
+        # Stack into [window, num_channels] and count sign reversals
+        stacked = torch.stack(recent, dim=0)  # [W, C]
+        reversals = (stacked[1:] != stacked[:-1]).sum(dim=0).float()
+        # A channel oscillates if it reversed ≥ (window - 1) times
+        oscillating = (reversals >= (window - 1)).float()
+        return float(oscillating.mean().item())
 
     def get_ema_values(self) -> Optional[torch.Tensor]:
         """Return the current EMA-smoothed signal vector, or ``None``."""
@@ -6365,6 +6397,12 @@ class CognitiveFeedbackBus(nn.Module):
                 new_ema = alpha * _mean_signals + (1 - alpha) * self._ema_values
                 self._signal_trend = (_mean_signals - self._ema_values).clone()
                 self._ema_values = new_ema
+            # Record trend sign for oscillation detection: +1 when
+            # rising, −1 when falling, 0 when flat.
+            _sign = torch.sign(self._signal_trend)
+            self._trend_sign_history.append(_sign.clone())
+            if len(self._trend_sign_history) > self._oscillation_window + 1:
+                self._trend_sign_history = self._trend_sign_history[-(self._oscillation_window + 1):]
 
         return self.projection(signals)
 
@@ -6558,6 +6596,41 @@ class CausalProvenanceTracker:
             'timestamps': dict(self._timestamps),
             'order': list(self._order),
         }
+
+    def get_trace_completeness_ratio(
+        self,
+        expected_modules: Optional[List[str]] = None,
+    ) -> float:
+        """Compute continuous provenance trace completeness ∈ [0, 1].
+
+        Returns the fraction of *expected* pipeline modules that recorded
+        at least one provenance delta in the current forward pass.  A
+        ratio of 1.0 means every expected module was traced; 0.0 means
+        none were.  This replaces the binary ``_cached_trace_incomplete``
+        flag with a granular quality signal so that output reliability
+        degrades proportionally to missing provenance coverage rather
+        than jumping between 0.5 and 1.0.
+
+        Args:
+            expected_modules: Whitelist of module names that *should*
+                appear in the provenance trace.  When ``None``, falls
+                back to the set of modules registered via
+                :meth:`record_dependency` (i.e. every node in the
+                dependency DAG).
+        """
+        if expected_modules is not None:
+            _expected = set(expected_modules)
+        else:
+            deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
+            _expected = set()
+            for target, sources in deps.items():
+                _expected.add(target)
+                _expected.update(sources)
+        if not _expected:
+            return 1.0  # no expectation → vacuously complete
+        _traced = set(self._deltas.keys())
+        _covered = _expected & _traced
+        return len(_covered) / len(_expected)
 
     # ------------------------------------------------------------------
     # Inter-module dependency tracking
@@ -16799,6 +16872,7 @@ class UnifiedCognitiveCycle:
         decoder_quality: Optional[float] = None,
         ns_consistency_score: Optional[float] = None,
         coverage_deficit: Optional[float] = None,
+        feedback_oscillation_score: float = 0.0,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -17278,16 +17352,26 @@ class UnifiedCognitiveCycle:
                 _unc_trend = float(feedback_bus_trend[2].item()) if feedback_bus_trend.shape[0] > 2 else 0.0
                 _coh_trend = float(feedback_bus_trend[6].item()) if feedback_bus_trend.shape[0] > 6 else 0.0
                 _worsening = _unc_trend > 0.05 or _coh_trend > 0.05
-                if _worsening and not should_rerun:
+                # Oscillation detection — when feedback signals
+                # alternate direction frequently, the system is
+                # unstable even if point-in-time trends are small.
+                _oscillating = feedback_oscillation_score > 0.3
+                if (_worsening or _oscillating) and not should_rerun:
                     should_rerun = True
-                    trigger_detail['triggers_active'] = list(
-                        set(trigger_detail.get('triggers_active', []))
-                        | {'feedback_trend_worsening'}
+                    _active_triggers = set(
+                        trigger_detail.get('triggers_active', [])
                     )
+                    if _worsening:
+                        _active_triggers.add('feedback_trend_worsening')
+                    if _oscillating:
+                        _active_triggers.add('feedback_oscillation')
+                    trigger_detail['triggers_active'] = list(_active_triggers)
                 trigger_detail['feedback_bus_trend'] = {
                     'uncertainty_trend': _unc_trend,
                     'coherence_trend': _coh_trend,
                     'worsening_detected': _worsening,
+                    'oscillation_score': feedback_oscillation_score,
+                    'oscillation_detected': _oscillating,
                 }
             except Exception as _trend_err:
                 logger.debug(
@@ -23909,6 +23993,16 @@ class AEONDeltaV3(nn.Module):
             )
         
         # 5c. Hierarchical memory — retrieve then store
+        # Unconditional stale-entry decay: evict entries older than
+        # ``max_age`` *before* retrieval so every forward pass starts
+        # from a clean memory store.  Previously this only ran inside
+        # the UCC memory-validation branch, meaning stale entries
+        # persisted across passes that never triggered re-retrieval.
+        if hasattr(self, 'memory_manager') and self.memory_manager is not None:
+            try:
+                self.memory_manager.decay_stale_entries()
+            except Exception:
+                pass  # non-fatal; detailed logging in decay_stale_entries
         memory_retrieved = None
         _memory_empty_count = 0
         _memory_healthy = True
@@ -28390,6 +28484,14 @@ class AEONDeltaV3(nn.Module):
                         if self.feedback_bus is not None
                         else None
                     ),
+                    # Oscillation score from the feedback bus detects
+                    # signal channels that alternate direction repeatedly
+                    # (instability rather than monotonic drift).
+                    feedback_oscillation_score=(
+                        self.feedback_bus.get_oscillation_score()
+                        if self.feedback_bus is not None
+                        else 0.0
+                    ),
                     # Decoder quality from the previous pass's provenance
                     # delta.  When the decoder introduced significant
                     # distortion (high L2 delta), quality is low.  This
@@ -30312,11 +30414,13 @@ class AEONDeltaV3(nn.Module):
         # are disabled, the output reliability is correspondingly reduced,
         # ensuring the system is self-aware about its verification depth.
         _verification_coverage = self._compute_verification_coverage()
-        # Provenance quality factor — when the provenance trace is
-        # incomplete (DAG cycles or missing entry points), the system
-        # cannot verify that conclusions are root-cause traceable, so
-        # the reliability score is attenuated.
-        _provenance_quality = 0.5 if self._cached_trace_incomplete else 1.0
+        # Provenance quality factor — continuous trace completeness
+        # ratio ∈ [0.5, 1.0].  When the provenance trace covers all
+        # expected pipeline modules, quality is 1.0; when coverage is
+        # partial, quality degrades proportionally.  The floor of 0.5
+        # ensures a fully incomplete trace cannot zero-out reliability.
+        _trace_ratio = self.provenance_tracker.get_trace_completeness_ratio()
+        _provenance_quality = 0.5 + 0.5 * _trace_ratio
         # Causal DAG consensus factor — when multiple causal formalisms
         # disagree on the underlying structure, the reliability of
         # causal conclusions is reduced proportionally.
@@ -32503,6 +32607,11 @@ class AEONDeltaV3(nn.Module):
                                 if self.feedback_bus is not None
                                 else None
                             ),
+                            feedback_oscillation_score=(
+                                self.feedback_bus.get_oscillation_score()
+                                if self.feedback_bus is not None
+                                else 0.0
+                            ),
                         )
                     # Act on UCC verdict: when re-reasoning is recommended
                     # and we haven't already regenerated due to uncertainty,
@@ -34102,6 +34211,25 @@ class AEONDeltaV3(nn.Module):
             # uncertainty with upstream cascade through the provenance
             # dependency DAG.
             'directional_uncertainty': self.uncertainty_tracker.build_summary(),
+            # Continuous provenance trace completeness ∈ [0, 1] — the
+            # fraction of pipeline modules with recorded L2 deltas.
+            # Replaces the binary trace_incomplete flag with a granular
+            # quality signal for root-cause traceability assessment.
+            'provenance_completeness': (
+                self.provenance_tracker.get_trace_completeness_ratio()
+            ),
+            # Feedback oscillation score ∈ [0, 1] — the fraction of
+            # feedback signal channels that reversed direction frequently,
+            # indicating instability rather than monotonic drift.
+            'feedback_oscillation': (
+                self.feedback_bus.get_oscillation_score()
+                if self.feedback_bus is not None else 0.0
+            ),
+            # Uncertainty propagation delta — cumulative amplification
+            # from upstream→downstream cascade through the dependency DAG.
+            'uncertainty_propagation_delta': getattr(
+                self, '_cached_propagation_delta', 0.0,
+            ),
         }
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
@@ -34542,6 +34670,44 @@ class AEONDeltaV3(nn.Module):
                 result["needs_recheck"] = True
             if _aux.get("ns_consistency", 1.0) < 0.5:
                 result["needs_recheck"] = True
+
+        # --- Uncertainty propagation state ---
+        # Include the cached propagation delta so that out-of-band
+        # coherence checks can detect when upstream uncertainty was
+        # amplified through the dependency DAG.  High propagation
+        # delta means failures cascaded significantly, warranting
+        # deeper reasoning even if individual subsystems look healthy.
+        _prop_delta = getattr(self, '_cached_propagation_delta', 0.0)
+        result["uncertainty_propagation_delta"] = _prop_delta
+        if _prop_delta > 0.3:
+            result["needs_recheck"] = True
+
+        # --- Feedback oscillation ---
+        # Detect signal oscillation in the feedback bus: channels
+        # that alternate direction repeatedly indicate instability
+        # that monotonic trend detection cannot catch.
+        _oscillation = 0.0
+        if self.feedback_bus is not None:
+            _oscillation = self.feedback_bus.get_oscillation_score()
+        result["feedback_oscillation_score"] = _oscillation
+        if _oscillation > 0.3:
+            result["needs_recheck"] = True
+
+        # --- Memory cross-validation ---
+        # Include the cached memory cross-validation result so that
+        # inter-memory disagreement (neurogenic vs temporal vs
+        # consolidating) surfaces in out-of-band coherence checks.
+        _mem_cv = getattr(self, '_cached_memory_cv_disagreement', False)
+        result["memory_cross_validation_disagreement"] = _mem_cv
+        if _mem_cv:
+            result["needs_recheck"] = True
+
+        # --- Provenance trace completeness ---
+        # Include the continuous provenance quality ratio so that
+        # callers can assess root-cause traceability depth.
+        result["provenance_completeness"] = (
+            self.provenance_tracker.get_trace_completeness_ratio()
+        )
 
         # --- Trigger meta-cognitive evaluation on low coherence ---
         # Incorporates integrity_health degradation into the coherence
