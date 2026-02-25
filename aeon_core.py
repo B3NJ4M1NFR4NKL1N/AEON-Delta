@@ -29569,6 +29569,52 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            # 8f-ucc-recovery. UCC root-cause → MetaRecoveryLearner —
+            # when UCC identifies root causes, consult the recovery
+            # learner for adaptive strategy selection so that corrective
+            # actions are informed by the learned recovery policy, not
+            # just generic deeper reasoning.  This closes the gap where
+            # UCC root-cause analysis and MetaRecoveryLearner operated
+            # independently: UCC identified WHICH subsystems failed but
+            # never consulted the learner's policy for HOW to recover.
+            if (self.meta_recovery is not None
+                    and _ucc_root_causes
+                    and z_out is not None):
+                try:
+                    _recovery_dim = self.meta_recovery.state_dim
+                    _ucc_recovery_ctx = self._encode_state_for_recovery(
+                        z_out, _recovery_dim, device,
+                    )
+                    _ucc_recovery_info = self.meta_recovery(
+                        _ucc_recovery_ctx,
+                    )
+                    _ucc_strategy = _ucc_recovery_info.get(
+                        "strategy", "retry",
+                    )
+                    self.audit_log.record(
+                        "meta_recovery", "ucc_strategy_selected", {
+                            "strategy": _ucc_strategy,
+                            "root_causes": list(_ucc_root_causes.keys()),
+                            "recurring_root": _ucc_top_recurrent,
+                        },
+                    )
+                    # Record the UCC-informed recovery selection in the
+                    # experience replay buffer with a neutral reward;
+                    # the next pass's success/failure will provide the
+                    # true reinforcement signal.
+                    self.meta_recovery.recovery_buffer.push(
+                        state=_ucc_recovery_ctx.squeeze(0),
+                        action=self.meta_recovery.STRATEGIES.index(
+                            _ucc_strategy,
+                        ),
+                        reward=0.0,
+                        next_state=_ucc_recovery_ctx.squeeze(0),
+                    )
+                except Exception as _ucc_rec_err:
+                    logger.debug(
+                        "UCC → MetaRecoveryLearner failed (non-fatal): %s",
+                        _ucc_rec_err,
+                    )
             # 8f-ucc-deeper. UCC-driven deeper meta-loop re-reasoning —
             # re-run the meta-loop with tightened parameters so the UCC's
             # rerun signal triggers actual deeper reasoning (like the
@@ -33297,6 +33343,7 @@ class AEONDeltaV3(nn.Module):
             'encoder_reasoning_norm': getattr(self, 'encoder_reasoning_norm', None),
             'uncertainty_propagation': getattr(self, 'uncertainty_propagation', None),
             'coherence_registry': getattr(self, 'coherence_registry', None),
+            'subsystem_health_gate': getattr(self, 'subsystem_health_gate', None),
         }
         for name, module in _module_checks.items():
             if module is not None:
@@ -34603,6 +34650,23 @@ class AEONDeltaV3(nn.Module):
         else:
             status = 'healthy'
 
+        # --- Inflate coherence deficit when gaps are detected ---
+        # When the diagnostic identifies architectural gaps, inflate
+        # _cached_coherence_deficit proportionally so that the next
+        # forward pass's feedback bus and metacognitive trigger are
+        # conditioned on the detected disconnections.  This closes
+        # the gap where self_diagnostic() produced a detailed report
+        # but left no internal state change, allowing the next forward
+        # pass to proceed at full confidence despite known wiring
+        # failures.  The inflation is capped at 0.3 to avoid
+        # overwhelming the system with diagnostic-driven uncertainty
+        # that might mask genuine runtime signals.
+        if gaps:
+            _gap_inflation = min(0.3, len(gaps) * 0.03)
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _gap_inflation,
+            )
+
         return {
             'status': status,
             'active_modules': active_modules,
@@ -35339,6 +35403,20 @@ class AEONDeltaV3(nn.Module):
                 "should_trigger", False
             )
 
+        # --- Record coherence deficit as convergence secondary signal ---
+        # When out-of-band coherence verification detects degradation,
+        # record it as a convergence_monitor secondary signal so that
+        # the convergence history captures coherence-driven instability
+        # alongside delta-norm-based convergence tracking.  Without
+        # this, out-of-band coherence checks influence the metacognitive
+        # trigger but leave no trace in the convergence monitor's
+        # secondary signal history, breaking the requirement that all
+        # subsystem assessments feed into historical trend analysis.
+        if coherence_deficit > 0.1:
+            self.convergence_monitor.record_secondary_signal(
+                "verify_coherence_deficit", coherence_deficit,
+            )
+
         # --- Record coherence result in error evolution for learning ---
         # When coherence is degraded, record the episode so the system
         # learns from historical coherence failures and can proactively
@@ -35627,6 +35705,23 @@ class AEONDeltaV3(nn.Module):
                 ),
             }
 
+        # --- MetaRecoveryLearner state ---
+        # Expose the recovery learner's buffer size and learned strategy
+        # preferences so external observers can assess whether the recovery
+        # subsystem is contributing meaningfully to the cognitive cycle.
+        # Without this, the MetaRecoveryLearner operates as a black box
+        # whose contribution to error recovery is invisible to
+        # metacognitive state consumers.
+        meta_recovery_state: Dict[str, Any] = {"available": False}
+        if self.meta_recovery is not None:
+            _buf_len = len(self.meta_recovery.recovery_buffer)
+            meta_recovery_state = {
+                "available": True,
+                "buffer_size": _buf_len,
+                "strategies": list(self.meta_recovery.STRATEGIES),
+                "state_dim": self.meta_recovery.state_dim,
+            }
+
         return {
             "trigger": trigger_state,
             "error_evolution": error_evolution_state,
@@ -35640,6 +35735,7 @@ class AEONDeltaV3(nn.Module):
             "uncertainty_tracker": uncertainty_tracker_state,
             "memory_validator": memory_validator_state,
             "feedback_bus": feedback_bus_state,
+            "meta_recovery": meta_recovery_state,
             "recovery_pressure": _recovery_pressure,
             "coherence_score": _coherence_score,
             "coherence_verdict": (
