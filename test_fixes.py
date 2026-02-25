@@ -52325,6 +52325,7 @@ def test_safety_violation_cached_in_reasoning_core():
 
 
 
+def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
