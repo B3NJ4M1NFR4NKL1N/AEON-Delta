@@ -20089,6 +20089,9 @@ class AEONDeltaV3(nn.Module):
                     verification_weight = trust_result['verification_weight']  # [B, 1]
                     memory_context = memory_context * trust_score
                     self._last_trust_score = float(trust_score.mean().item())
+                    self.coherence_registry.register_output("memory_trust", validated=self._last_trust_score > 0.3)
+                    self.provenance_tracker.record_before("memory_trust", memory_context)
+                    self.provenance_tracker.record_after("memory_trust", memory_context)
                     self._last_verification_weight = float(
                         verification_weight.mean().item()
                     )
@@ -20893,6 +20896,7 @@ class AEONDeltaV3(nn.Module):
         # of reaching the true pipeline entry point.
         self.provenance_tracker.record_before("input", z_in)
         self.provenance_tracker.record_after("input", z_in)
+        self.coherence_registry.register_output("input", validated=torch.isfinite(z_in).all().item())
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         self.coherence_registry.register_output("encoder", validated=torch.isfinite(z_in).all().item())
@@ -20903,6 +20907,7 @@ class AEONDeltaV3(nn.Module):
         if self.continual_learning is not None:
             self.provenance_tracker.record_before("continual_learning", z_in)
             self.provenance_tracker.record_after("continual_learning", z_in)
+            self.coherence_registry.register_output("continual_learning", validated=torch.isfinite(z_in).all().item())
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
         self.coherence_registry.register_output("vq", validated=True)
@@ -20910,6 +20915,7 @@ class AEONDeltaV3(nn.Module):
         if self.encoder_reasoning_norm is not None:
             self.provenance_tracker.record_before("encoder_reasoning_norm", z_in)
             self.provenance_tracker.record_after("encoder_reasoning_norm", z_in)
+            self.coherence_registry.register_output("encoder_reasoning_norm", validated=torch.isfinite(z_in).all().item())
         
         # 0. Reset meta-cognitive recursion trigger
         if self.metacognitive_trigger is not None:
@@ -20950,6 +20956,9 @@ class AEONDeltaV3(nn.Module):
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
             self._last_complexity_gates = _complexity_gates
+            self.coherence_registry.register_output("complexity_estimator", validated=_complexity_score_val is not None)
+            self.provenance_tracker.record_before("complexity_estimator", z_in)
+            self.provenance_tracker.record_after("complexity_estimator", z_in)
             logger.debug(
                 f"Complexity: {_complexity_score_val:.3f}"
             )
@@ -21307,8 +21316,7 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after(
                 "memory_validation", z_conditioned,
             )
-        
-        # 1. Meta-loop convergence
+            self.coherence_registry.register_output("memory_validation", validated=True)
         self.provenance_tracker.record_before("meta_loop", z_conditioned)
         _adaptive_meta_used = False
         if self.recursive_meta_loop is not None and not fast:
@@ -21572,6 +21580,7 @@ class AEONDeltaV3(nn.Module):
                 _cert_guaranteed = _cert_meta.get("certified_convergence", False)
                 _cert_error_bound = _cert_meta.get("certified_error_bound", None)
                 self.provenance_tracker.record_after("certified_meta_loop", C_star)
+                self.coherence_registry.register_output("certified_meta_loop", validated=_cert_guaranteed)
                 self.integrity_monitor.record_health(
                     "certified_meta_loop",
                     1.0 if _cert_guaranteed else 0.0,
@@ -21638,6 +21647,9 @@ class AEONDeltaV3(nn.Module):
                 certified_results=_certified_results if _certified_results else None,
                 coherence_score=max(0.0, 1.0 - self._cached_coherence_deficit),
             )
+            self.coherence_registry.register_output("convergence_arbiter", validated=not _convergence_arbiter_result.get("has_conflict", False))
+            self.provenance_tracker.record_before("convergence_arbiter", C_star)
+            self.provenance_tracker.record_after("convergence_arbiter", C_star)
             if _convergence_arbiter_result.get("has_conflict", False):
                 _arb_boost = _convergence_arbiter_result.get("uncertainty_boost", 0.0)
                 uncertainty = min(1.0, uncertainty + _arb_boost)
@@ -21881,7 +21893,7 @@ class AEONDeltaV3(nn.Module):
             logger.warning("Non-finite slot_binding output; skipping blend")
             self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "slot_binding"})
         self.provenance_tracker.record_after("slot_binding", C_star)
-        # Register slot binding output in causal context so that
+        self.coherence_registry.register_output("slot_binding", validated=torch.isfinite(C_star).all().item())
         # cross-pass retrieval can access which compositional bindings
         # were active, enabling root-cause traceability through the
         # slot decomposition stage.
@@ -21955,11 +21967,13 @@ class AEONDeltaV3(nn.Module):
             diversity_results = self._compute_diversity(factors, B, device, fast)
         finally:
             self.provenance_tracker.record_after("diversity_analysis", C_star)
+        self.coherence_registry.register_output("diversity_analysis", validated=True)
         self.provenance_tracker.record_before("topology_analysis", C_star)
         try:
             topo_results = self._compute_topology(factors, iterations, B, device, fast)
         finally:
             self.provenance_tracker.record_after("topology_analysis", C_star)
+        self.coherence_registry.register_output("topology_analysis", validated=True)
 
         # Cache diversity and topology states for coherence verification.
         _div_t = diversity_results.get('diversity')
@@ -22083,8 +22097,7 @@ class AEONDeltaV3(nn.Module):
         # so provenance is complete even when self_report is empty.
         self.provenance_tracker.record_before("self_report", C_star)
         self.provenance_tracker.record_after("self_report", C_star)
-        
-        # 5-sr. Self-report-driven uncertainty escalation and safety
+        self.coherence_registry.register_output("self_report", validated=True)
         # adaptation — when TransparentSelfReporting produces low
         # honesty or low confidence, escalate uncertainty so the
         # metacognitive trigger is more likely to invoke deeper
@@ -22415,6 +22428,7 @@ class AEONDeltaV3(nn.Module):
                     _exec_blend = self.config.cognitive_executive_blend
                     C_star = C_star + _exec_blend * _winner
                 self.provenance_tracker.record_after("cognitive_executive", C_star)
+                self.coherence_registry.register_output("cognitive_executive", validated=torch.isfinite(C_star).all().item())
                 self.audit_log.record("cognitive_executive", "dispatched", {
                     "executed_subsystems": executive_results.get("executed", []),
                     "top_k": self.cognitive_executive.top_k,
@@ -22993,6 +23007,7 @@ class AEONDeltaV3(nn.Module):
                 convergence_conflict=_convergence_conflict_signal,
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
+            self.coherence_registry.register_output("metacognitive_trigger", validated=True)
             if metacognitive_info.get("should_trigger", False):
                 # Consult error evolution for historically best strategy
                 # when facing metacognitive re-reasoning decisions.
@@ -23125,7 +23140,7 @@ class AEONDeltaV3(nn.Module):
                     z_in, use_fixed_point=True, feedback=_refreshed_feedback,
                 )
                 self.provenance_tracker.record_after("deeper_meta_loop", C_star_deeper)
-                # Restore original parameters
+                self.coherence_registry.register_output("deeper_meta_loop", validated=torch.isfinite(C_star_deeper).all().item())
                 self.meta_loop.convergence_threshold = orig_threshold
                 self.meta_loop.max_iterations = orig_max_iter
                 # Only accept deeper result if it's finite and converged better
@@ -23489,6 +23504,7 @@ class AEONDeltaV3(nn.Module):
                     _hwm_blend = self.config.hierarchical_world_model_blend
                     C_star = C_star + _hwm_blend * _hwm_pred
                 self.provenance_tracker.record_after("hierarchical_world_model", C_star)
+                self.coherence_registry.register_output("hierarchical_world_model", validated=torch.isfinite(C_star).all().item())
                 self.audit_log.record("hierarchical_world_model", "computed", {
                     "num_levels": len(_hwm_hiddens),
                 })
@@ -24054,8 +24070,7 @@ class AEONDeltaV3(nn.Module):
                 # invisible to the meta-cognitive recursion trigger.
                 self._memory_stale = True
             self.provenance_tracker.record_after("neurogenic_memory", C_star)
-        
-        # 5c3. Consolidating memory — store current states and retrieve
+            self.coherence_registry.register_output("neurogenic_memory", validated=torch.isfinite(C_star).all().item())
         # semantic prototypes for context enrichment.  This connects the
         # three-stage consolidation pipeline (working → episodic → semantic)
         # into the main reasoning flow.
@@ -24072,6 +24087,7 @@ class AEONDeltaV3(nn.Module):
                     vecs = torch.stack([v for v, _s in semantic_items])
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
             self.provenance_tracker.record_after("consolidating_memory", C_star)
+            self.coherence_registry.register_output("consolidating_memory", validated=torch.isfinite(C_star).all().item())
         
         # 5c4. Temporal memory — store current states with importance-based
         # retention and retrieve temporally-relevant patterns.  Each stored
@@ -24120,8 +24136,7 @@ class AEONDeltaV3(nn.Module):
                 # pass, matching the neurogenic staleness propagation.
                 self._memory_stale = True
             self.provenance_tracker.record_after("temporal_memory", C_star)
-        
-        # Record memory subsystem health — covers hierarchical, neurogenic,
+            self.coherence_registry.register_output("temporal_memory", validated=torch.isfinite(C_star).all().item())
         # consolidating, and temporal memory stages.
         _memory_retrieval_quality = 1.0 - (_memory_empty_count / max(B, 1))
         self.integrity_monitor.record_health("memory", _memory_retrieval_quality if _memory_healthy else 0.0, {
@@ -24295,6 +24310,9 @@ class AEONDeltaV3(nn.Module):
                         severity="warning",
                         metadata=self._last_memory_cross_validation,
                     )
+            self.coherence_registry.register_output("memory_cross_validation", validated=not _mem_inconsistent)
+            self.provenance_tracker.record_before("memory_cross_validation", C_star)
+            self.provenance_tracker.record_after("memory_cross_validation", C_star)
 
         # 5c5. Cross-populate CausalContextWindowManager with memory-enriched
         # state so that memory retrievals contribute to the causal context
@@ -24495,8 +24513,7 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
             self.provenance_tracker.record_after("causal_world_model", C_star)
-
-        # 5d1a-xv. Causal-world-model cross-validation — extend the
+            self.coherence_registry.register_output("causal_world_model", validated=torch.isfinite(C_star).all().item())
         # physics ↔ hierarchical cross-validation (5b1a-xv) to include
         # the CausalWorldModel prediction.  When the causal model's
         # predicted state diverges from the physics or hierarchical
@@ -24751,6 +24768,7 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
             self.provenance_tracker.record_after("notears_causal", C_star)
+            self.coherence_registry.register_output("notears_causal", validated=torch.isfinite(C_star).all().item())
             # Populate _cached_causal_state when NOTEARS is the only
             # causal model active so that verify_coherence() can include
             # causal state in cross-module coherence checks even when
@@ -24792,6 +24810,7 @@ class AEONDeltaV3(nn.Module):
                 if torch.isfinite(_prog_residual).all():
                     C_star = C_star + self.config.causal_programmatic_blend * _prog_residual
                 self.provenance_tracker.record_after("causal_programmatic", C_star)
+                self.coherence_registry.register_output("causal_programmatic", validated=torch.isfinite(C_star).all().item())
                 self.audit_log.record("causal_programmatic", "computed", {
                     "dag_loss": float(_prog_dag_loss.item()),
                     "log_prob": float(_prog_log_prob.mean().item()),
@@ -24905,6 +24924,7 @@ class AEONDeltaV3(nn.Module):
                     )
                 finally:
                     self.provenance_tracker.record_after("causal_dag_consensus", C_star)
+                self.coherence_registry.register_output("causal_dag_consensus", validated=True)
                 _consensus_score = _dag_consensus_results["consensus_score"]
                 if _dag_consensus_results["needs_escalation"]:
                     _dag_unc_boost = _dag_consensus_results["uncertainty_boost"]
@@ -25222,6 +25242,7 @@ class AEONDeltaV3(nn.Module):
             self.cross_validator.agreement_threshold = _orig_reconcile_threshold
             C_star = reconciliation_results["reconciled_state"]
             self.provenance_tracker.record_after("cross_validation", C_star)
+            self.coherence_registry.register_output("cross_validation", validated=torch.isfinite(C_star).all().item())
             self._cached_cross_validation_state = C_star.detach()
             self.audit_log.record("cross_validation", "reconciled", {
                 "agreement": reconciliation_results["agreement_score"].mean().item(),
@@ -25450,7 +25471,7 @@ class AEONDeltaV3(nn.Module):
                     C_star[0], self.world_model
                 )
                 self.provenance_tracker.record_after("active_learning", C_star)
-                # 5e-0-ee. Error evolution → active learning bridge — feed
+                self.coherence_registry.register_output("active_learning", validated=torch.isfinite(C_star).all().item())
                 # failure-pattern root causes from the error evolution tracker
                 # into the active learning results as supplementary uncertainty
                 # so that exploration is shaped by historical failure patterns.
@@ -25641,6 +25662,7 @@ class AEONDeltaV3(nn.Module):
             if cf_next is not None and torch.isfinite(cf_next).all():
                 C_star = C_star + self.config.unified_simulator_blend * cf_next
             self.provenance_tracker.record_after("unified_simulator", C_star)
+            self.coherence_registry.register_output("unified_simulator", validated=torch.isfinite(C_star).all().item())
             self._cached_unified_sim_state = C_star.detach()
             self.audit_log.record("unified_simulator", "computed", {
                 "interventional": bool(
@@ -25852,6 +25874,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(hr_err)[:200]},
                     )
             self.provenance_tracker.record_after("hybrid_reasoning", C_star)
+            self.coherence_registry.register_output("hybrid_reasoning", validated=torch.isfinite(C_star).all().item())
         self.integrity_monitor.record_health("hybrid_reasoning", 1.0 if _hybrid_healthy else 0.0, {
             "executed": self.hybrid_reasoning is not None and not fast,
         })
@@ -25892,6 +25915,7 @@ class AEONDeltaV3(nn.Module):
                     'reembedded': _ns_reembedded,
                 }
                 self.provenance_tracker.record_after("ns_bridge", C_star)
+                self.coherence_registry.register_output("ns_bridge", validated=torch.isfinite(C_star).all().item())
                 self.audit_log.record("standalone_ns_bridge", "grounded", {
                     "fact_activation": float(_ns_facts.mean().item()),
                     "rule_activation": float(_ns_rules.mean().item()),
@@ -26015,9 +26039,8 @@ class AEONDeltaV3(nn.Module):
                         uncertainty_sources["tkg_retrieval_error"] = _tkg_err_boost
                         high_uncertainty = uncertainty > 0.5
             self.provenance_tracker.record_after("temporal_knowledge_graph", C_star)
+            self.coherence_registry.register_output("temporal_knowledge_graph", validated=torch.isfinite(C_star).all().item())
             self._cached_tkg_state = C_star.detach()
-
-        # 5e4. Hierarchical VAE — multi-scale latent enrichment.
         # Encodes C_star through a ladder VAE to extract representations
         # at multiple abstraction levels (tokens → concepts → goals).
         # The auto-selected level is blended as a residual to enrich
@@ -26092,8 +26115,8 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(hvae_err)[:200]},
                     )
             self.provenance_tracker.record_after("hierarchical_vae", C_star)
+            self.coherence_registry.register_output("hierarchical_vae", validated=torch.isfinite(C_star).all().item())
             self._cached_hvae_state = C_star.detach()
-            # 5e-gate. HVAE → complexity gate refinement — when the HVAE
             # selects a high-abstraction level (large KL divergence or
             # high-norm selected_level), the input is conceptually complex
             # and all subsystems should remain active.  Refine the
@@ -26153,8 +26176,7 @@ class AEONDeltaV3(nn.Module):
                 tier="short_term",
             )
         self.provenance_tracker.record_after("causal_context", C_star)
-        
-        # 6. Memory fusion (delegated to helper)
+        self.coherence_registry.register_output("causal_context", validated=torch.isfinite(C_star).all().item())
         self._consolidating_memory_error = False
         self._neurogenic_memory_error = False
         self._temporal_memory_error = False
@@ -26308,8 +26330,8 @@ class AEONDeltaV3(nn.Module):
             high_uncertainty = uncertainty > 0.5
             z_rssm = C_fused
         self.provenance_tracker.record_after("rssm", z_rssm)
+        self.coherence_registry.register_output("rssm", validated=torch.isfinite(z_rssm).all().item())
         self._cached_rssm_state = z_rssm.detach()
-        # Record RSSM dynamics in causal trace so that state transitions
         # through the recurrent cell are traceable as causal prerequisites
         # for downstream integration and decoding decisions.
         if self.causal_trace is not None:
@@ -26385,6 +26407,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(mm_err)[:200]},
                     )
             self.provenance_tracker.record_after("multimodal", z_rssm)
+            self.coherence_registry.register_output("multimodal", validated=torch.isfinite(z_rssm).all().item())
         self.integrity_monitor.record_health(
             "multimodal",
             1.0 if _multimodal_healthy else 0.0,
@@ -26448,8 +26471,8 @@ class AEONDeltaV3(nn.Module):
                     f"GroundedMultimodalLearning error (non-fatal): {gm_err}"
                 )
             self.provenance_tracker.record_after("grounded_multimodal", z_rssm)
+            self.coherence_registry.register_output("grounded_multimodal", validated=torch.isfinite(z_rssm).all().item())
             self._cached_grounded_multimodal_state = z_rssm.detach()
-            # Record grounded multimodal execution in causal trace so that
             # perceptual grounding contributions are traceable for root-cause
             # analysis.  Without this, CLIP-style contrastive grounding is
             # invisible in the causal DAG.
@@ -28233,7 +28256,7 @@ class AEONDeltaV3(nn.Module):
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
                 )
-                # Record the UCC evaluation verdict in causal trace so
+                self.coherence_registry.register_output("unified_cognitive_cycle", validated=not _ucc_should_rerun)
                 # the meta-cognitive decision (rerun vs. accept) is fully
                 # traceable for root-cause analysis.  Without this, the
                 # UCC's reasoning verdict is only in the audit log.
