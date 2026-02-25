@@ -53204,6 +53204,263 @@ def test_ucc_high_coverage_deficit_records_error_evolution():
     print("✅ test_ucc_high_coverage_deficit_records_error_evolution PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Additive Uncertainty Propagation, Critical-Edge
+#  Decay, Always-Trace Provenance, Lowered Uncertainty Override, Quality-Driven
+#  Per-Module Uncertainty
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_uncertainty_bus_additive_propagation():
+    """UncertaintyPropagationBus uses additive propagation so multiple
+    uncertain upstream modules compound their effect on shared downstream
+    consumers instead of being capped by the single worst upstream (the
+    previous ``max()`` semantics).
+    """
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(decay_factor=1.0, min_propagation=0.0)
+
+    # Two upstream modules A and B both feed downstream C.
+    # A has uncertainty 0.3, B has 0.4, C has base 0.0.
+    # With additive propagation: C_eff = 0.0 + 0.3*1.0 + 0.4*1.0 = 0.7
+    # With old max() semantics: C_eff = max(0.0, max(0.3, 0.4)) = 0.4
+    result = bus.propagate(
+        module_uncertainties={"A": 0.3, "B": 0.4, "C": 0.0},
+        dependency_edges=[("A", "C"), ("B", "C")],
+    )
+    assert result["C"] > 0.5, (
+        f"Additive propagation should yield C > 0.5 (A=0.3 + B=0.4), got {result['C']}"
+    )
+    assert abs(result["C"] - 0.7) < 1e-6, (
+        f"Expected C = 0.7 with decay=1.0, got {result['C']}"
+    )
+    print("✅ test_uncertainty_bus_additive_propagation PASSED")
+
+
+def test_uncertainty_bus_critical_edge_decay():
+    """UncertaintyPropagationBus applies higher decay on critical edges
+    and lower decay on non-critical edges.
+    """
+    from aeon_core import UncertaintyPropagationBus
+
+    critical_edges = {("A", "B")}
+    bus = UncertaintyPropagationBus(
+        decay_factor=0.5,
+        critical_decay_factor=0.9,
+        critical_edges=critical_edges,
+        min_propagation=0.0,
+    )
+
+    # A → B (critical, decay 0.9), A → C (non-critical, decay 0.5)
+    result = bus.propagate(
+        module_uncertainties={"A": 1.0, "B": 0.0, "C": 0.0},
+        dependency_edges=[("A", "B"), ("A", "C")],
+    )
+    assert result["B"] > result["C"], (
+        f"Critical edge should propagate more uncertainty: B={result['B']} vs C={result['C']}"
+    )
+    assert abs(result["B"] - 0.9) < 1e-6, f"Expected B=0.9, got {result['B']}"
+    assert abs(result["C"] - 0.5) < 1e-6, f"Expected C=0.5, got {result['C']}"
+    print("✅ test_uncertainty_bus_critical_edge_decay PASSED")
+
+
+def test_uncertainty_bus_clamped_to_one():
+    """UncertaintyPropagationBus clamps propagated uncertainty to [0, 1]."""
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(decay_factor=1.0, min_propagation=0.0)
+
+    # Three sources each contributing 0.5 to the same downstream
+    result = bus.propagate(
+        module_uncertainties={"A": 0.5, "B": 0.5, "C": 0.5, "D": 0.0},
+        dependency_edges=[("A", "D"), ("B", "D"), ("C", "D")],
+    )
+    assert result["D"] == 1.0, (
+        f"Expected D clamped to 1.0, got {result['D']}"
+    )
+    print("✅ test_uncertainty_bus_clamped_to_one PASSED")
+
+
+def test_provenance_always_trace_safety_modules():
+    """CausalProvenanceTracker always emits causal trace entries for
+    safety-critical modules regardless of delta magnitude.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Verify the _ALWAYS_TRACE_MODULES set contains expected modules
+    assert "safety" in tracker._ALWAYS_TRACE_MODULES
+    assert "deception_suppressor" in tracker._ALWAYS_TRACE_MODULES
+    assert "self_report" in tracker._ALWAYS_TRACE_MODULES
+    assert "consistency_gate" in tracker._ALWAYS_TRACE_MODULES
+
+    # Attach a mock causal trace
+    _trace_entries = []
+
+    class MockTrace:
+        def record(self, subsystem, decision, metadata=None, severity="info"):
+            _trace_entries.append({
+                "subsystem": subsystem,
+                "decision": decision,
+                "metadata": metadata,
+                "severity": severity,
+            })
+            return f"entry_{len(_trace_entries)}"
+
+    tracker.set_causal_trace(MockTrace())
+
+    # Record a tiny delta for a safety module — should still be traced
+    state_before = torch.zeros(1, 64)
+    state_after = state_before + 0.001  # L2 delta = 0.008 (< default threshold 0.01)
+    tracker.record_before("safety", state_before)
+    tracker.record_after("safety", state_after)
+
+    safety_entries = [e for e in _trace_entries if "safety" in e["subsystem"]]
+    assert len(safety_entries) > 0, (
+        "Safety module's tiny delta should still be traced due to _ALWAYS_TRACE_MODULES"
+    )
+
+    # Record the same tiny delta for a non-critical module — should NOT be traced
+    _trace_entries.clear()
+    tracker.record_before("integration", state_before)
+    tracker.record_after("integration", state_after)
+
+    integration_entries = [e for e in _trace_entries if "integration" in e["subsystem"]]
+    assert len(integration_entries) == 0, (
+        "Non-critical module's tiny delta should not be traced (below threshold)"
+    )
+    print("✅ test_provenance_always_trace_safety_modules PASSED")
+
+
+def test_metacognitive_trigger_lowered_uncertainty_override():
+    """MetaCognitiveRecursionTrigger fires at uncertainty=0.5 (lowered from 0.7).
+
+    The architectural requirement is that any significant uncertainty triggers
+    a meta-cognitive re-reasoning cycle.  The previous 0.7 threshold was too
+    strict, allowing moderate sustained uncertainty (0.5-0.69) to persist
+    without triggering deeper reasoning.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Verify default threshold is now 0.5
+    assert trigger._high_uncertainty_override == 0.5, (
+        f"Expected high_uncertainty_override=0.5, got {trigger._high_uncertainty_override}"
+    )
+
+    # Uncertainty=0.55 should trigger via override (previously wouldn't at 0.7)
+    result = trigger.evaluate(uncertainty=0.55)
+    assert result["should_trigger"] is True, (
+        f"uncertainty=0.55 should trigger via high_uncertainty_override=0.5; "
+        f"got should_trigger={result['should_trigger']}, score={result['trigger_score']}"
+    )
+
+    # Uncertainty=0.45 should NOT trigger via override alone
+    trigger.reset()
+    result_low = trigger.evaluate(uncertainty=0.45)
+    # The trigger should NOT fire overall (override requires > 0.5)
+    # The uncertainty signal still appears in triggers_active because it has
+    # nonzero graduated weight, but should_trigger should be False since
+    # the composite score is well below trigger_threshold=0.5.
+    assert result_low["should_trigger"] is False, (
+        f"uncertainty=0.45 should not trigger (below override threshold 0.5); "
+        f"got should_trigger={result_low['should_trigger']}"
+    )
+    print("✅ test_metacognitive_trigger_lowered_uncertainty_override PASSED")
+
+
+def test_coherence_registry_low_quality_subsystems():
+    """SubsystemCoherenceRegistry.get_low_quality_subsystems() returns
+    subsystems whose quality score is below the threshold.
+    """
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "meta_loop", "safety", "decoder"},
+    )
+    registry.begin_pass()
+
+    # Register with varying quality scores
+    registry.register_output("encoder", validated=True, quality=0.9)
+    registry.register_output("meta_loop", validated=True, quality=0.3)
+    registry.register_output("safety", validated=True, quality=0.1)
+    # decoder not registered → quality defaults to 0.0
+
+    low_quality = registry.get_low_quality_subsystems(quality_threshold=0.5)
+
+    assert "meta_loop" in low_quality, "meta_loop (quality=0.3) should be in low_quality"
+    assert "safety" in low_quality, "safety (quality=0.1) should be in low_quality"
+    assert "decoder" in low_quality, "decoder (quality=0.0) should be in low_quality"
+    assert "encoder" not in low_quality, "encoder (quality=0.9) should NOT be in low_quality"
+
+    # Verify deficit values
+    assert abs(low_quality["meta_loop"] - 0.7) < 1e-6
+    assert abs(low_quality["safety"] - 0.9) < 1e-6
+    assert abs(low_quality["decoder"] - 1.0) < 1e-6
+    print("✅ test_coherence_registry_low_quality_subsystems PASSED")
+
+
+def test_coherence_registry_summary_includes_low_quality():
+    """SubsystemCoherenceRegistry.build_summary() includes low_quality_subsystems."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "safety"},
+    )
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.9)
+    registry.register_output("safety", validated=True, quality=0.2)
+
+    summary = registry.build_summary()
+    assert "low_quality_subsystems" in summary, (
+        "build_summary() should include low_quality_subsystems"
+    )
+    assert "safety" in summary["low_quality_subsystems"]
+    print("✅ test_coherence_registry_summary_includes_low_quality PASSED")
+
+
+def test_uncertainty_bus_backward_compat_no_critical_edges():
+    """UncertaintyPropagationBus works correctly without critical_edges
+    (backward compatibility with existing callers).
+    """
+    from aeon_core import UncertaintyPropagationBus
+
+    # Default constructor — no critical edges
+    bus = UncertaintyPropagationBus()
+    result = bus.propagate(
+        module_uncertainties={"A": 0.5, "B": 0.0},
+        dependency_edges=[("A", "B")],
+    )
+    # B should get A's uncertainty * default decay (0.8)
+    expected_b = 0.5 * 0.8
+    assert abs(result["B"] - expected_b) < 1e-6, (
+        f"Expected B={expected_b}, got {result['B']}"
+    )
+    print("✅ test_uncertainty_bus_backward_compat_no_critical_edges PASSED")
+
+
+def test_uncertainty_bus_min_propagation_stops_noise():
+    """UncertaintyPropagationBus stops propagating below min_propagation threshold."""
+    from aeon_core import UncertaintyPropagationBus
+
+    bus = UncertaintyPropagationBus(
+        decay_factor=0.1,
+        min_propagation=0.05,
+    )
+    # A has low uncertainty (0.3), after decay: 0.3*0.1 = 0.03 < 0.05 min
+    result = bus.propagate(
+        module_uncertainties={"A": 0.3, "B": 0.0},
+        dependency_edges=[("A", "B")],
+    )
+    assert result["B"] == 0.0, (
+        f"Propagated value 0.03 should be below min_propagation 0.05, got B={result['B']}"
+    )
+    print("✅ test_uncertainty_bus_min_propagation_stops_noise PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -55530,6 +55787,19 @@ def run_all_tests():
     test_coverage_deficit_error_class_in_class_to_signal()
     test_coverage_deficit_error_class_in_lambda_mapping()
     test_ucc_high_coverage_deficit_records_error_evolution()
+
+    # Architectural Unification — Additive Uncertainty Propagation,
+    # Critical-Edge Decay, Always-Trace Provenance, Lowered Uncertainty
+    # Override, Quality-Driven Per-Module Uncertainty
+    test_uncertainty_bus_additive_propagation()
+    test_uncertainty_bus_critical_edge_decay()
+    test_uncertainty_bus_clamped_to_one()
+    test_provenance_always_trace_safety_modules()
+    test_metacognitive_trigger_lowered_uncertainty_override()
+    test_coherence_registry_low_quality_subsystems()
+    test_coherence_registry_summary_includes_low_quality()
+    test_uncertainty_bus_backward_compat_no_critical_edges()
+    test_uncertainty_bus_min_propagation_stops_noise()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
