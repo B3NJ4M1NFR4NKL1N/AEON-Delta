@@ -54559,6 +54559,180 @@ def test_self_diagnostic_includes_convergence_secondary_feedback():
     print("✅ test_self_diagnostic_includes_convergence_secondary_feedback PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — SubsystemHealthGate Feedback Loop Closure
+#
+#  These tests verify that the SubsystemHealthGate's gate confidence signal
+#  is properly cached, fed into the feedback bus for cross-pass meta-loop
+#  conditioning, escalates directional uncertainty on low confidence, records
+#  error evolution episodes, and is verified by self_diagnostic.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_integration_gate_val_cached():
+    """_cached_integration_gate_val must be initialized on AEONDeltaV3."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert hasattr(model, '_cached_integration_gate_val'), (
+        "AEONDeltaV3 must have _cached_integration_gate_val attribute"
+    )
+    assert model._cached_integration_gate_val == 1.0, (
+        "_cached_integration_gate_val must initialize to 1.0 (healthy)"
+    )
+    print("✅ test_integration_gate_val_cached PASSED")
+
+
+def test_feedback_bus_registers_integration_gate_confidence():
+    """Feedback bus must have integration_gate_confidence registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    assert 'integration_gate_confidence' in model.feedback_bus._extra_signals, (
+        "CognitiveFeedbackBus must register integration_gate_confidence signal"
+    )
+    print("✅ test_feedback_bus_registers_integration_gate_confidence PASSED")
+
+
+def test_build_feedback_includes_integration_gate():
+    """_build_feedback_extra_signals must include integration_gate_confidence
+    when gate value is below 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    # Default (healthy) — signal should not appear
+    extra = model._build_feedback_extra_signals()
+    assert 'integration_gate_confidence' not in extra, (
+        "integration_gate_confidence should not appear when gate is healthy (1.0)"
+    )
+
+    # Simulate low gate confidence
+    model._cached_integration_gate_val = 0.4
+    extra = model._build_feedback_extra_signals()
+    assert 'integration_gate_confidence' in extra, (
+        "integration_gate_confidence must appear when gate < 1.0"
+    )
+    # Inverted: 1 - 0.4 = 0.6
+    assert abs(extra['integration_gate_confidence'] - 0.6) < 0.01, (
+        f"Expected ~0.6, got {extra['integration_gate_confidence']}"
+    )
+    print("✅ test_build_feedback_includes_integration_gate PASSED")
+
+
+def test_integration_gate_error_class_in_trigger_signal_mapping():
+    """integration_gate_low_confidence must map to a trigger signal in
+    MetaCognitiveRecursionTrigger.adapt_weights_from_evolution()."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+
+    source = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert 'integration_gate_low_confidence' in source, (
+        "integration_gate_low_confidence must be in _class_to_signal mapping"
+    )
+    print("✅ test_integration_gate_error_class_in_trigger_signal_mapping PASSED")
+
+
+def test_integration_gate_error_class_in_lambda_mapping():
+    """integration_gate_low_confidence must map to a lambda parameter in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    assert 'integration_gate_low_confidence' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "integration_gate_low_confidence must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+        'integration_gate_low_confidence'
+    ] == 'lambda_coherence', (
+        "integration_gate_low_confidence should map to lambda_coherence"
+    )
+    print("✅ test_integration_gate_error_class_in_lambda_mapping PASSED")
+
+
+def test_integration_gate_low_escalates_uncertainty_in_source():
+    """The reasoning core must escalate uncertainty when integration gate
+    confidence is low (below threshold)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_integration_gate_val' in source, (
+        "_reasoning_core_impl must reference _integration_gate_val"
+    )
+    assert '_cached_integration_gate_val' in source, (
+        "_reasoning_core_impl must cache the integration gate value"
+    )
+    assert 'integration_gate_low' in source, (
+        "_reasoning_core_impl must escalate uncertainty on low gate "
+        "(integration_gate_low uncertainty source)"
+    )
+    assert 'health_gate_low_confidence' in source, (
+        "_reasoning_core_impl must record low gate in uncertainty tracker "
+        "with health_gate_low_confidence label"
+    )
+    print("✅ test_integration_gate_low_escalates_uncertainty_in_source PASSED")
+
+
+def test_integration_gate_records_error_evolution_in_source():
+    """The reasoning core must record integration_gate_low_confidence
+    in error evolution when gate is below threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'integration_gate_low_confidence' in source, (
+        "_reasoning_core_impl must record integration_gate_low_confidence "
+        "in error evolution when gate is low"
+    )
+    assert 'gate_attenuation' in source, (
+        "_reasoning_core_impl must use 'gate_attenuation' strategy "
+        "when recording low gate confidence"
+    )
+    print("✅ test_integration_gate_records_error_evolution_in_source PASSED")
+
+
+def test_self_diagnostic_includes_integration_gate_feedback():
+    """self_diagnostic must verify integration_gate_confidence feedback
+    bus wiring."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert 'integration_gate_confidence' in source, (
+        "self_diagnostic must check integration_gate_confidence "
+        "in feedback bus closure verification"
+    )
+    assert 'integration_gate_feedback' in source, (
+        "self_diagnostic must include integration_gate_feedback "
+        "gap component for missing integration gate signals"
+    )
+    print("✅ test_self_diagnostic_includes_integration_gate_feedback PASSED")
+
+
+def test_self_diagnostic_verifies_integration_gate_wiring():
+    """self_diagnostic must report integration gate wiring as verified
+    when feedback bus signal is registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+
+    diag = model.self_diagnostic()
+    verified = diag.get('verified_connections', [])
+    # The signal is registered, so the diagnostic should report it as verified
+    found = any('integration_gate_confidence' in v for v in verified)
+    assert found, (
+        "self_diagnostic must report integration_gate_confidence wiring "
+        f"as verified; verified connections: {verified}"
+    )
+    print("✅ test_self_diagnostic_verifies_integration_gate_wiring PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -56958,6 +57132,17 @@ def run_all_tests():
     test_convergence_secondary_signals_in_feedback_bus()
     test_verify_coherence_correction_recorded_in_provenance()
     test_self_diagnostic_includes_convergence_secondary_feedback()
+
+    # Architectural Unification — SubsystemHealthGate Feedback Loop Closure
+    test_integration_gate_val_cached()
+    test_feedback_bus_registers_integration_gate_confidence()
+    test_build_feedback_includes_integration_gate()
+    test_integration_gate_error_class_in_trigger_signal_mapping()
+    test_integration_gate_error_class_in_lambda_mapping()
+    test_integration_gate_low_escalates_uncertainty_in_source()
+    test_integration_gate_records_error_evolution_in_source()
+    test_self_diagnostic_includes_integration_gate_feedback()
+    test_self_diagnostic_verifies_integration_gate_wiring()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

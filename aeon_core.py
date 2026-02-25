@@ -15403,6 +15403,10 @@ class MetaCognitiveRecursionTrigger:
             # Coverage deficit — subsystems failed to produce validated
             # outputs, degrading verification completeness.
             "high_coverage_deficit": "coherence_deficit",
+            # Integration health gate — the SubsystemHealthGate
+            # significantly attenuated the integrated output, indicating
+            # degraded integration reliability.
+            "integration_gate_low_confidence": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -16153,6 +16157,10 @@ class CausalErrorEvolutionTracker:
         "high_decoder_provenance_training_loss": "lambda_cycle_consistency",
         "high_ns_consistency_training_loss": "lambda_ns_consistency",
         "high_coverage_deficit": "lambda_coverage_deficit",
+        # Integration health gate — SubsystemHealthGate attenuation
+        # maps to the coherence lambda so training can strengthen
+        # integration reliability when gate confidence is persistently low.
+        "integration_gate_low_confidence": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -18776,6 +18784,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_secondary_pressure", default=0.0,
         )
+        # Integration health gate confidence — when the SubsystemHealthGate
+        # attenuates the integrated output (low gate value), this signal
+        # conditions the next pass's meta-loop to reason more carefully.
+        # This closes the gap where the gate value was computed during
+        # integration but immediately discarded, leaving the meta-loop
+        # blind to integration-stage reliability.
+        self.feedback_bus.register_signal(
+            "integration_gate_confidence", default=1.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -19540,6 +19557,12 @@ class AEONDeltaV3(nn.Module):
         # consistency verification loop.
         self._cached_decoder_state: Optional[torch.Tensor] = None
         self._cached_integration_state: Optional[torch.Tensor] = None
+        # SubsystemHealthGate confidence — the gate scalar ∈ [min_gate, 1.0]
+        # computed during integration.  Cached so the feedback bus can
+        # condition the next pass's meta-loop on integration reliability,
+        # and the uncertainty tracker can escalate when gate confidence is
+        # persistently low.
+        self._cached_integration_gate_val: float = 1.0
         self._cached_executive_state: Optional[torch.Tensor] = None
         # Grounded multimodal output — cached so verify_coherence can
         # cross-validate perceptual-grounding consistency against
@@ -20380,6 +20403,14 @@ class AEONDeltaV3(nn.Module):
                 extra["convergence_secondary_pressure"] = max(
                     0.0, min(1.0, _sec_mean),
                 )
+        # Integration health gate confidence — surface the SubsystemHealthGate's
+        # gate scalar so the meta-loop can condition on integration reliability.
+        # Inverted: 1.0 = fully degraded (gate at floor), 0.0 = healthy.
+        _gate_val = getattr(self, '_cached_integration_gate_val', 1.0)
+        if _gate_val < 1.0:
+            extra["integration_gate_confidence"] = max(
+                0.0, min(1.0, 1.0 - _gate_val),
+            )
         return extra
 
     @staticmethod
@@ -27057,6 +27088,43 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("integration", z_out)
         self.coherence_registry.register_output("integration", validated=torch.isfinite(z_out).all().item())
         self._cached_integration_state = z_out.detach()
+        # Cache integration health gate value for cross-pass feedback.
+        # Low gate values indicate degraded integration reliability;
+        # the feedback bus routes this into the next pass's meta-loop
+        # so reasoning depth adapts to integration health.
+        self._cached_integration_gate_val = _integration_gate_val
+        # Escalate uncertainty when the health gate significantly
+        # attenuates the integrated output, indicating the subsystem
+        # health indicators detected unreliable integration.
+        _GATE_LOW_THRESHOLD = 0.5
+        if _integration_gate_val < _GATE_LOW_THRESHOLD:
+            _gate_deficit = _GATE_LOW_THRESHOLD - _integration_gate_val
+            _gate_unc_boost = min(1.0 - uncertainty, _gate_deficit * 0.2)
+            if _gate_unc_boost > 0:
+                uncertainty = min(1.0, uncertainty + _gate_unc_boost)
+                uncertainty_sources["integration_gate_low"] = _gate_unc_boost
+                high_uncertainty = uncertainty > 0.5
+            # Record low gate confidence in directional uncertainty
+            # tracker so the UCC's metacognitive trigger can adapt
+            # weights toward integration-stage instability.
+            if self.uncertainty_tracker is not None:
+                self.uncertainty_tracker.record(
+                    "integration", _gate_deficit,
+                    source_label="health_gate_low_confidence",
+                )
+            # Record in error evolution so persistent gate degradation
+            # adapts metacognitive trigger weights via
+            # adapt_weights_from_evolution().
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="integration_gate_low_confidence",
+                    strategy_used="gate_attenuation",
+                    success=(_integration_gate_val > 0.3),
+                    metadata=self._provenance_enriched_metadata({
+                        "gate_value": _integration_gate_val,
+                        "coherence_deficit": self._cached_coherence_deficit,
+                    }),
+                )
         
         # 8a. Final output sanitization — last line of defense against
         # non-finite values before decoding.  Falls back to z_rssm to
@@ -34457,6 +34525,34 @@ class AEONDeltaV3(nn.Module):
                     'CognitiveFeedbackBus and populate from '
                     '_build_feedback_extra_signals() using '
                     'convergence_monitor.get_secondary_signals()'
+                ),
+            })
+
+        # --- Health gate → feedback bus closure ---
+        # Verify that the SubsystemHealthGate's gate confidence signal
+        # is surfaced through the feedback bus so the meta-loop can
+        # condition on integration-stage reliability.  Without this,
+        # gate attenuation is applied but the reasoning core cannot
+        # adapt its depth in response to degraded integration health.
+        if (self.feedback_bus is not None
+                and 'integration_gate_confidence' in self.feedback_bus._extra_signals):
+            verified.append(
+                'subsystem_health_gate → feedback_bus.integration_gate_confidence '
+                '→ meta_loop (integration reliability conditions reasoning depth)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'integration_gate_feedback',
+                'gap': (
+                    'SubsystemHealthGate computes gate confidence but '
+                    'integration_gate_confidence signal not registered '
+                    'in feedback bus — integration reliability invisible '
+                    'to cross-pass meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register integration_gate_confidence signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
                 ),
             })
 
