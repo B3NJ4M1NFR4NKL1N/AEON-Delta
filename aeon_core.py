@@ -199,6 +199,8 @@ __all__ = [
     # Unified AGI architecture components
     "UnifiedConvergenceArbiter", "DirectionalUncertaintyTracker",
     "MemoryReasoningValidator",
+    "SubsystemCoherenceRegistry", "UncertaintyPropagationBus",
+    "SubsystemHealthGate",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
@@ -16591,11 +16593,14 @@ class UnifiedCognitiveCycle:
 
     1. Checks convergence via :class:`ConvergenceMonitor`.
     2. Verifies cross-module coherence via :class:`ModuleCoherenceVerifier`.
-    3. Records any anomalies in :class:`CausalErrorEvolutionTracker`.
-    4. Evaluates whether re-reasoning is needed via
+    3. Integrates subsystem coverage deficit from
+       :class:`SubsystemCoherenceRegistry` so that missing subsystem
+       outputs degrade confidence alongside misaligned outputs.
+    4. Records any anomalies in :class:`CausalErrorEvolutionTracker`.
+    5. Evaluates whether re-reasoning is needed via
        :class:`MetaCognitiveRecursionTrigger`.
-    5. Traces all decisions via :class:`CausalProvenanceTracker`.
-    6. Verifies causal DAG consensus via :class:`CausalDAGConsensus`
+    6. Traces all decisions via :class:`CausalProvenanceTracker`.
+    7. Verifies causal DAG consensus via :class:`CausalDAGConsensus`
        when multiple causal models are active, feeding structural
        disagreement into both the uncertainty tracker and metacognitive
        trigger so that conflicting causal structures trigger deeper
