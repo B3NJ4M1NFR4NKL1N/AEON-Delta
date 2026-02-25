@@ -26148,7 +26148,7 @@ class AEONDeltaV3(nn.Module):
             self.causal_context.add(
                 source="reasoning_core",
                 embedding=C_star.mean(dim=0).detach(),
-                relevance=float(safety_score.mean()),
+                relevance=float(safety_score.detach().mean()),
                 causal_weight=causal_w,
                 tier="short_term",
             )
@@ -30302,6 +30302,14 @@ class AEONDeltaV3(nn.Module):
             except Exception as _lip_err:
                 logger.debug("Pre-computed lipschitz loss failed: %s", _lip_err)
 
+        # Cache graph-connected pre-computed losses on the instance so
+        # compute_loss() can consume them with gradients intact, while
+        # only detached copies enter the output dict (preventing stale
+        # autograd graph references in long-running test suites).
+        self._precomputed_consistency = _precomputed_consistency
+        self._precomputed_consistency_loss = _precomputed_consistency_loss
+        self._precomputed_lipschitz_loss = _precomputed_lipschitz_loss
+
         # Reconcile auto-critic scores across multiple invocations:
         # use the minimum (worst) score so the final assessment reflects
         # the most pessimistic view, ensuring that quality issues detected
@@ -30401,9 +30409,13 @@ class AEONDeltaV3(nn.Module):
             'output_reliability_factors': _reliability_factors,
             'verification_coverage': _verification_coverage,
             # Pre-computed loss components (avoids second spectral-norm pass)
-            '_precomputed_consistency': _precomputed_consistency,
-            '_precomputed_consistency_loss': _precomputed_consistency_loss,
-            '_precomputed_lipschitz_loss': _precomputed_lipschitz_loss,
+            # Store graph-connected originals on instance for compute_loss()
+            # to use directly. Only detached copies go in the output dict
+            # so that callers retaining the dict don't keep stale autograd
+            # graph references that interfere with future backward passes.
+            '_precomputed_consistency': _precomputed_consistency.detach(),
+            '_precomputed_consistency_loss': _precomputed_consistency_loss.detach(),
+            '_precomputed_lipschitz_loss': _precomputed_lipschitz_loss.detach(),
             'grounded_multimodal_results': _grounded_mm_results,
         }
 
@@ -30993,9 +31005,14 @@ class AEONDeltaV3(nn.Module):
         # avoid a second forward pass through spectral-normalized lambda_op
         # which would invalidate saved autograd tensors.  Gradients still
         # flow through lambda_op parameters because the values were computed
-        # as part of the forward graph.
-        _precomp_consistency = outputs.get('_precomputed_consistency', None)
-        _precomp_consistency_loss = outputs.get('_precomputed_consistency_loss', None)
+        # as part of the forward graph.  Prefer instance attributes (graph-
+        # connected) over the output dict (detached copies).
+        _precomp_consistency = getattr(self, '_precomputed_consistency', None)
+        _precomp_consistency_loss = getattr(self, '_precomputed_consistency_loss', None)
+        if _precomp_consistency is None:
+            _precomp_consistency = outputs.get('_precomputed_consistency', None)
+        if _precomp_consistency_loss is None:
+            _precomp_consistency_loss = outputs.get('_precomputed_consistency_loss', None)
         if (_precomp_consistency is not None
                 and _precomp_consistency_loss is not None
                 and torch.is_tensor(_precomp_consistency)):
@@ -31029,7 +31046,10 @@ class AEONDeltaV3(nn.Module):
         # ===== 4. LIPSCHITZ REGULARIZATION =====
         # Use pre-computed lipschitz loss from _reasoning_core_impl when
         # available, for the same spectral-norm safety reason as above.
-        _precomp_lipschitz = outputs.get('_precomputed_lipschitz_loss', None)
+        # Prefer instance attribute (graph-connected) over output dict.
+        _precomp_lipschitz = getattr(self, '_precomputed_lipschitz_loss', None)
+        if _precomp_lipschitz is None:
+            _precomp_lipschitz = outputs.get('_precomputed_lipschitz_loss', None)
         if (_precomp_lipschitz is not None
                 and torch.is_tensor(_precomp_lipschitz)
                 and self.training):
