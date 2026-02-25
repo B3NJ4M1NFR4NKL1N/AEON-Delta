@@ -31727,7 +31727,12 @@ def test_unified_convergence_arbiter_conflict():
         certified_results={"certified_convergence": True},
     )
     assert result["has_conflict"] is True, "Should detect conflict"
-    assert result["uncertainty_boost"] == 0.2
+    # Severity-scaled boost: proportional to number of disagreeing monitors
+    # and severity (diverging = highest). Must be > 0 and <= base boost.
+    assert result["uncertainty_boost"] > 0, "Conflict should produce positive boost"
+    assert result["uncertainty_boost"] <= 0.2, "Boost should not exceed base"
+    # Severity should reflect the diverging state
+    assert result["conflict_severity"] == 1.0, "Diverging should have max severity"
     assert len(result["conflict_details"]) > 0
     assert result["unified_status"] in ("diverging", "conflict")
     print("✅ test_unified_convergence_arbiter_conflict PASSED")
