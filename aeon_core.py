@@ -18486,6 +18486,14 @@ class AEONDeltaV3(nn.Module):
         # so that low-confidence outputs are explicitly dampened, wiring
         # self-reporting into active output control.
         ("self_report", "integration"),
+        # ── Deception suppressor path ──────────────────────────────
+        # The deception suppressor independently probes consistency
+        # between pre-/post-meta-loop states and self-report confidence.
+        # Its output gates C_star and escalates safety/uncertainty when
+        # internal inconsistency is detected.
+        ("self_report", "deception_suppressor"),
+        ("deception_suppressor", "safety"),
+        ("deception_suppressor", "metacognitive_trigger"),
         # ── Memory re-retrieval path ───────────────────────────────
         # When memory staleness triggers consolidation, a re-retrieval
         # pass feeds fresh memories back into the converged state,
@@ -21415,6 +21423,7 @@ class AEONDeltaV3(nn.Module):
             "grounded_multimodal": "grounded_multimodal",
             "encoder_reasoning_norm": "encoder_reasoning_norm",
             "decoder": "decoder",
+            "deception_suppressor": "deception_suppressor",
             # output_reliability is a virtual node gated by the same
             # module_coherence attribute used in verify_pipeline_wiring.
             # Without this mapping, edges referencing output_reliability
@@ -22832,6 +22841,11 @@ class AEONDeltaV3(nn.Module):
                             },
                         )
                 self.provenance_tracker.record_after("deception_suppressor", C_star)
+                self.coherence_registry.register_output(
+                    "deception_suppressor",
+                    validated=torch.isfinite(C_star).all().item(),
+                    quality=max(0.0, 1.0 - _deception_pressure),
+                )
             except Exception as _ds_err:
                 logger.debug(
                     "DeceptionSuppressor forward failed (non-fatal): %s",
@@ -34966,6 +34980,7 @@ class AEONDeltaV3(nn.Module):
             'encoder_reasoning_norm': 'encoder_reasoning_norm',
             'continual_learning': 'continual_learning',
             'feedback_bus': 'feedback_bus',
+            'deception_suppressor': 'deception_suppressor',
         }
 
         verified_edges: List[Tuple[str, str]] = []
