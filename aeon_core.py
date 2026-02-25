@@ -17179,6 +17179,25 @@ class UnifiedCognitiveCycle:
                 _prov_dom,
             )
 
+        # 5b2. Provenance trace_incomplete → rerun trigger — when the
+        # dependency DAG has structural issues (cycles or missing entry
+        # points), the trace cannot attribute root causes, so trigger
+        # re-reasoning to ensure conclusions are not accepted without
+        # verifiable provenance.  This closes the gap where
+        # trace_incomplete was returned but never checked by callers.
+        if not should_rerun and provenance_root_cause:
+            if provenance_root_cause.get('trace_incomplete', False):
+                should_rerun = True
+                trigger_detail['triggers_active'] = list(
+                    set(trigger_detail.get('triggers_active', []))
+                    | {'provenance_trace_incomplete'}
+                )
+                logger.warning(
+                    "UCC: provenance trace incomplete for '%s' — "
+                    "triggering re-reasoning for verifiable attribution",
+                    _prov_dom,
+                )
+
         # 5c. Provenance root-cause → rerun trigger — when the root-cause
         # analysis reveals that a single upstream module contributes more
         # than 60% of the total L2 delta and the overall provenance shows
@@ -18930,6 +18949,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_meta_loop_state: Optional[torch.Tensor] = None
         self._cached_factor_state: Optional[torch.Tensor] = None
         self._cached_safety_state: Optional[torch.Tensor] = None
+        self._cached_safety_violation: bool = False
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
         # coherence verification so that neurogenic, temporal, and
@@ -22216,6 +22236,10 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("safety", C_star)
         self.coherence_registry.register_output("safety", validated=not safety_enforced)
         self._cached_safety_state = C_star.detach()
+        # Cache safety violation flag for out-of-band coherence checks
+        # (verify_coherence) so the metacognitive trigger receives the
+        # full set of 12 signals during out-of-band evaluation.
+        self._cached_safety_violation: bool = safety_enforced
 
         # 5a-critical. Critical safety halt — when safety score falls
         # below the critical threshold for the *entire batch*, the output
@@ -33094,6 +33118,33 @@ class AEONDeltaV3(nn.Module):
                 f'({_wiring["verified_count"]}/{_wiring["total_edges"]} edges)'
             )
 
+        # --- Provenance DAG acyclicity check ---
+        # Verify that the provenance tracker's dependency graph is acyclic
+        # so that trace_root_cause() can always reach entry-point modules.
+        # Cycles prevent root-cause attribution, silently producing
+        # incomplete provenance chains that violate the "all conclusions
+        # traceable to root causes" contract.
+        if not _wiring.get('dag_acyclic', True):
+            _dag_val = _wiring.get('dag_validation', {})
+            gaps.append({
+                'component': 'provenance_dag',
+                'gap': (
+                    'Provenance dependency DAG contains cycles — '
+                    'trace_root_cause() cannot reach entry-point modules. '
+                    f'Cycle nodes: {_dag_val.get("cycle_nodes", [])}'
+                ),
+                'remediation': (
+                    'Remove circular dependencies from '
+                    '_PIPELINE_DEPENDENCIES or fix dynamic dependency '
+                    'registration to ensure a valid DAG'
+                ),
+            })
+        else:
+            verified.append(
+                'provenance_dag → dependency graph is acyclic '
+                '(trace_root_cause can reach all entry points)'
+            )
+
         _runtime_score = _runtime_coherence.get('coherence_score', 1.0)
         if _runtime_score < 0.5:
             gaps.append({
@@ -33681,6 +33732,14 @@ class AEONDeltaV3(nn.Module):
         total = len(self._PIPELINE_DEPENDENCIES)
         coverage = len(verified_edges) / total if total > 0 else 1.0
 
+        # --- DAG acyclicity validation ---
+        # Verify that the provenance tracker's dependency graph is acyclic.
+        # Cycles prevent trace_root_cause() from identifying entry-point
+        # modules, silently producing incomplete attribution chains.  This
+        # closes the gap where pipeline wiring was validated for module
+        # existence but never for structural correctness.
+        dag_validation = self.provenance_tracker.validate_dag_acyclic()
+
         return {
             'total_edges': total,
             'verified_edges': verified_edges,
@@ -33688,6 +33747,8 @@ class AEONDeltaV3(nn.Module):
             'missing_edges': missing_edges,
             'missing_count': len(missing_edges),
             'wiring_coverage': coverage,
+            'dag_acyclic': dag_validation.get('is_acyclic', True),
+            'dag_validation': dag_validation,
         }
 
     @torch.no_grad()
@@ -33958,6 +34019,31 @@ class AEONDeltaV3(nn.Module):
                 convergence_conflict=1.0 if getattr(
                     self, '_cached_arbiter_has_conflict', False,
                 ) else 0.0,
+                # Pass cached topology, safety, diversity, and memory trust
+                # signals so the trigger makes a fully-informed decision.
+                # This closes the gap where verify_coherence() passed only
+                # a subset of the 12 trigger inputs, leaving the trigger
+                # blind to catastrophes, safety violations, diversity
+                # collapse, and memory trust deficits during out-of-band
+                # coherence checks.
+                topology_catastrophe=bool(
+                    self._cached_topology_state is not None
+                    and self._cached_topology_state.any().item()
+                ),
+                safety_violation=getattr(
+                    self, '_cached_safety_violation', False,
+                ),
+                diversity_collapse=float(
+                    max(0.0, min(1.0,
+                        (self.config.diversity_collapse_threshold
+                         - float(self._cached_diversity_state.mean().item()))
+                        / max(self.config.diversity_collapse_threshold, 1e-6)
+                    ))
+                    if self._cached_diversity_state is not None else 0.0
+                ),
+                memory_trust_deficit=max(0.0, min(1.0,
+                    1.0 - getattr(self, '_last_trust_score', 1.0),
+                )),
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
