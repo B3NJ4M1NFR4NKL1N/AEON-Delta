@@ -15328,6 +15328,11 @@ class MetaCognitiveRecursionTrigger:
             # diverged from self-reported confidence, indicating
             # miscalibrated self-assessment.
             "deception_suppression": "safety_violation",
+            # Deception detected — the DeceptionSuppressor recorded a
+            # high-pressure event in error_evolution.  Maps to
+            # safety_violation so adaptive weights learn from deception
+            # history alongside other integrity-related failures.
+            "deception_detected": "safety_violation",
             # ── Additional error classes for full coverage ─────────
             "active_learning_error": "uncertainty",
             "auto_critic_failure": "uncertainty",
@@ -18481,6 +18486,14 @@ class AEONDeltaV3(nn.Module):
         # so that low-confidence outputs are explicitly dampened, wiring
         # self-reporting into active output control.
         ("self_report", "integration"),
+        # ── Deception suppressor path ──────────────────────────────
+        # The deception suppressor independently probes consistency
+        # between pre-/post-meta-loop states and self-report confidence.
+        # Its output gates C_star and escalates safety/uncertainty when
+        # internal inconsistency is detected.
+        ("self_report", "deception_suppressor"),
+        ("deception_suppressor", "safety"),
+        ("deception_suppressor", "metacognitive_trigger"),
         # ── Memory re-retrieval path ───────────────────────────────
         # When memory staleness triggers consolidation, a re-retrieval
         # pass feeds fresh memories back into the converged state,
@@ -21410,6 +21423,7 @@ class AEONDeltaV3(nn.Module):
             "grounded_multimodal": "grounded_multimodal",
             "encoder_reasoning_norm": "encoder_reasoning_norm",
             "decoder": "decoder",
+            "deception_suppressor": "deception_suppressor",
             # output_reliability is a virtual node gated by the same
             # module_coherence attribute used in verify_pipeline_wiring.
             # Without this mapping, edges referencing output_reliability
@@ -21587,6 +21601,24 @@ class AEONDeltaV3(nn.Module):
                                 if _verified_prediction_error > 0.5
                                 else "info"
                             ),
+                        )
+                    # Record high prediction error in error_evolution so
+                    # the metacognitive trigger can adapt its sensitivity
+                    # to world model prediction failures and the coherence
+                    # threshold tightens after persistent world model
+                    # inaccuracy.  Without this, prediction errors were
+                    # only used for within-pass uncertainty escalation
+                    # and never contributed to evolutionary learning.
+                    if (self.error_evolution is not None
+                            and _verified_prediction_error > 0.5):
+                        self.error_evolution.record_episode(
+                            error_class='world_model_prediction_error',
+                            strategy_used='uncertainty_escalation',
+                            success=False,
+                            metadata={
+                                'verified_error': _verified_prediction_error,
+                                'uncertainty_boost': _vpe_boost,
+                            },
                         )
             except Exception as _vpe_err:
                 logger.debug(
@@ -22750,6 +22782,7 @@ class AEONDeltaV3(nn.Module):
         deception_results: Dict[str, Any] = {}
         if self.deception_suppressor is not None and self_report:
             try:
+                self.provenance_tracker.record_before("deception_suppressor", C_star)
                 deception_results = self.deception_suppressor(
                     z_in, C_star, self_report,
                 )
@@ -22787,6 +22820,32 @@ class AEONDeltaV3(nn.Module):
                                 "deception_pressure": _deception_pressure,
                             },
                         )
+                    # Record deception episode in error_evolution so that
+                    # the metacognitive trigger and coherence thresholds
+                    # can adapt to historical deception patterns.  Without
+                    # this, deception events were audited and uncertainty
+                    # was boosted, but the error_evolution tracker never
+                    # learned from deception episodes, preventing adaptive
+                    # sensitivity to recurring internal inconsistencies.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='deception_detected',
+                            strategy_used='suppression_gate',
+                            success=True,
+                            metadata={
+                                'deception_pressure': _deception_pressure,
+                                'suppression_gate_mean': float(
+                                    _gate.mean().item(),
+                                ),
+                                'uncertainty_boost': _ds_unc_boost,
+                            },
+                        )
+                self.provenance_tracker.record_after("deception_suppressor", C_star)
+                self.coherence_registry.register_output(
+                    "deception_suppressor",
+                    validated=torch.isfinite(C_star).all().item(),
+                    quality=max(0.0, 1.0 - _deception_pressure),
+                )
             except Exception as _ds_err:
                 logger.debug(
                     "DeceptionSuppressor forward failed (non-fatal): %s",
@@ -27884,11 +27943,25 @@ class AEONDeltaV3(nn.Module):
             # Record uncertainty-triggered auto-critic in error evolution
             # so every self-critique path contributes to evolutionary
             # learning, not just the post-integration metacognitive path.
+            # Enriched with provenance attribution so downstream root-
+            # cause analysis can identify which module dominated the
+            # output that triggered the self-correction, closing the gap
+            # where auto-critic revision quality lacked per-revision
+            # root-cause metadata.
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class=f"uncertainty_auto_critic_{_trigger}",
                     strategy_used="auto_critic",
                     success=revised is not None and torch.isfinite(revised).all(),
+                    metadata=self._provenance_enriched_metadata({
+                        "trigger": _trigger,
+                        "final_score": _auto_critic_final_score,
+                        "revision_applied": (
+                            revised is not None
+                            and torch.isfinite(revised).all()
+                        ),
+                        "provenance_dominant_module": _pre_critic_dominant,
+                    }),
                 )
         
         # 8b5. Post-auto-critic coherence re-verification — when an auto-
@@ -28782,7 +28855,11 @@ class AEONDeltaV3(nn.Module):
                     causal_quality=self._cached_causal_quality,
                     memory_staleness=self._memory_stale,
                     recovery_pressure=self._compute_recovery_pressure(),
-                    safety_violation=safety_enforced or _ucc_ns_violated,
+                    safety_violation=(
+                        safety_enforced
+                        or _ucc_ns_violated
+                        or getattr(self, '_cached_deception_pressure', 0.0) > 0.3
+                    ),
                     feedback_signal=self._cached_feedback,
                     topology_catastrophe=_topo_catastrophe,
                     meta_loop_results=meta_results,
@@ -33714,6 +33791,7 @@ class AEONDeltaV3(nn.Module):
             'continual_learning', 'grounded_multimodal',
             'encoder_reasoning_norm',
             'icm_curiosity', 'memory_cross_validation',
+            'deception_suppressor',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
@@ -34903,6 +34981,7 @@ class AEONDeltaV3(nn.Module):
             'encoder_reasoning_norm': 'encoder_reasoning_norm',
             'continual_learning': 'continual_learning',
             'feedback_bus': 'feedback_bus',
+            'deception_suppressor': 'deception_suppressor',
         }
 
         verified_edges: List[Tuple[str, str]] = []
@@ -34987,6 +35066,31 @@ class AEONDeltaV3(nn.Module):
             if _upb_critical else 1.0
         )
 
+        # --- Coherence registry coverage validation ---
+        # Verify that the coherence registry's expected subsystems are a
+        # subset of the modules actually initialized in the model.  This
+        # catches configuration drift where the registry expects outputs
+        # from modules that were never instantiated, inflating coverage
+        # deficits and triggering spurious metacognitive re-reasoning.
+        # Conversely, modules that are initialized but missing from the
+        # registry's expected set are blind spots: they produce outputs
+        # that never contribute to coverage tracking.
+        _registry = getattr(self, 'coherence_registry', None)
+        _registry_coverage: Dict[str, Any] = {}
+        if _registry is not None:
+            _expected = set(_registry._expected)
+            _absent = _registry.get_absent_subsystems()
+            _persistently_absent = _registry.get_persistently_absent()
+            _low_quality = _registry.get_low_quality_subsystems()
+            _registry_coverage = {
+                'expected_count': len(_expected),
+                'absent_count': len(_absent),
+                'absent_subsystems': _absent,
+                'persistently_absent': _persistently_absent,
+                'low_quality_subsystems': _low_quality,
+                'coverage_deficit': _registry.get_coverage_deficit(),
+            }
+
         return {
             'total_edges': total,
             'verified_edges': verified_edges,
@@ -35001,6 +35105,7 @@ class AEONDeltaV3(nn.Module):
             'trace_verification': trace_verification,
             'uncertainty_propagation_coverage': _upb_coverage,
             'uncertainty_propagation_unregistered_edges': _upb_unregistered,
+            'coherence_registry_coverage': _registry_coverage,
         }
 
     @torch.no_grad()

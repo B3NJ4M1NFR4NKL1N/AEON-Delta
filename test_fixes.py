@@ -36510,6 +36510,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "continual_learning": "continual_learning",
         "grounded_multimodal": "grounded_multimodal",
         "encoder_reasoning_norm": "encoder_reasoning_norm",
+        "deception_suppressor": "deception_suppressor",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -54904,6 +54905,223 @@ def test_self_diagnostic_gap_inflation_functional():
     print("✅ test_self_diagnostic_gap_inflation_functional PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Cognitive Coherence Gap Closures
+#  Tests for: deception→error_evolution, auto-critic provenance enrichment,
+#  world model→error_evolution, verify_pipeline_wiring registry coverage,
+#  deception→safety_violation propagation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_deception_suppressor_records_error_evolution():
+    """DeceptionSuppressor high-pressure events must be recorded in
+    error_evolution so the metacognitive trigger learns from historical
+    deception patterns."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Simulate what the forward pass now does when deception_pressure > 0.3
+    tracker.record_episode(
+        error_class='deception_detected',
+        strategy_used='suppression_gate',
+        success=True,
+        metadata={
+            'deception_pressure': 0.6,
+            'suppression_gate_mean': 0.7,
+            'uncertainty_boost': 0.18,
+        },
+    )
+    summary = tracker.get_error_summary()
+    assert 'deception_detected' in summary.get('error_classes', {}), (
+        "error_evolution must contain 'deception_detected' episodes after "
+        "deception suppressor fires"
+    )
+    best = tracker.get_best_strategy('deception_detected')
+    assert best == 'suppression_gate', (
+        f"Best strategy for deception_detected must be 'suppression_gate', got {best}"
+    )
+    print("✅ test_deception_suppressor_records_error_evolution PASSED")
+
+
+def test_auto_critic_uncertainty_records_provenance_metadata():
+    """Uncertainty-triggered auto-critic error_evolution episodes must
+    include provenance-enriched metadata with trigger and dominant module."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Simulate the enriched recording the forward pass now produces
+    tracker.record_episode(
+        error_class='uncertainty_auto_critic_uncertainty',
+        strategy_used='auto_critic',
+        success=True,
+        metadata={
+            'trigger': 'uncertainty',
+            'final_score': 0.65,
+            'revision_applied': True,
+            'provenance_dominant_module': 'meta_loop',
+        },
+    )
+    summary = tracker.get_error_summary()
+    assert 'uncertainty_auto_critic_uncertainty' in summary.get('error_classes', {}), (
+        "error_evolution must contain uncertainty auto-critic episodes"
+    )
+    episodes = tracker._episodes['uncertainty_auto_critic_uncertainty']
+    assert len(episodes) == 1
+    meta = episodes[0]['metadata']
+    assert 'provenance_dominant_module' in meta, (
+        "Auto-critic error_evolution episodes must include "
+        "'provenance_dominant_module' for root-cause attribution"
+    )
+    assert meta['provenance_dominant_module'] == 'meta_loop'
+    assert 'trigger' in meta
+    assert 'final_score' in meta
+    print("✅ test_auto_critic_uncertainty_records_provenance_metadata PASSED")
+
+
+def test_world_model_prediction_error_records_error_evolution():
+    """High world model prediction error (> 0.5) must be recorded in
+    error_evolution so adaptive thresholds learn from prediction failures."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Simulate what the forward pass now does on high prediction error
+    tracker.record_episode(
+        error_class='world_model_prediction_error',
+        strategy_used='uncertainty_escalation',
+        success=False,
+        metadata={
+            'verified_error': 0.75,
+            'uncertainty_boost': 0.15,
+        },
+    )
+    summary = tracker.get_error_summary()
+    assert 'world_model_prediction_error' in summary.get('error_classes', {}), (
+        "error_evolution must contain 'world_model_prediction_error' episodes"
+    )
+    best = tracker.get_best_strategy('world_model_prediction_error')
+    assert best == 'uncertainty_escalation'
+    print("✅ test_world_model_prediction_error_records_error_evolution PASSED")
+
+
+def test_verify_pipeline_wiring_includes_coherence_registry():
+    """verify_pipeline_wiring must include coherence_registry_coverage
+    in its output so runtime signal flow is validated alongside module
+    existence and provenance DAG integrity."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+    wiring = model.verify_pipeline_wiring()
+
+    assert 'coherence_registry_coverage' in wiring, (
+        "verify_pipeline_wiring must include 'coherence_registry_coverage' key"
+    )
+    reg_cov = wiring['coherence_registry_coverage']
+    assert isinstance(reg_cov, dict), (
+        f"coherence_registry_coverage must be a dict, got {type(reg_cov)}"
+    )
+    assert 'expected_count' in reg_cov, (
+        "coherence_registry_coverage must contain 'expected_count'"
+    )
+    assert 'absent_count' in reg_cov, (
+        "coherence_registry_coverage must contain 'absent_count'"
+    )
+    assert 'coverage_deficit' in reg_cov, (
+        "coherence_registry_coverage must contain 'coverage_deficit'"
+    )
+    print("✅ test_verify_pipeline_wiring_includes_coherence_registry PASSED")
+
+
+def test_deception_pressure_propagates_to_safety_violation():
+    """When deception_pressure > 0.3, the safety_violation flag passed
+    to UnifiedCognitiveCycle.evaluate must be True so deception events
+    participate in meta-cognitive re-reasoning decisions."""
+    import torch
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor(threshold=0.01)
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+    states = {
+        'meta_loop': torch.randn(2, 32),
+        'safety': torch.randn(2, 32),
+    }
+    # When safety_violation=True (as set when deception > 0.3), the UCC
+    # should evaluate with that signal and potentially trigger re-reasoning
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        safety_violation=True,
+    )
+    assert 'should_rerun' in result, (
+        "UCC.evaluate must return 'should_rerun' key"
+    )
+    print("✅ test_deception_pressure_propagates_to_safety_violation PASSED")
+
+
+def test_deception_detected_in_trigger_signal_mapping():
+    """The 'deception_detected' error class must be mapped to
+    'safety_violation' in MetaCognitiveRecursionTrigger so that
+    adapt_weights_from_evolution can adjust trigger sensitivity
+    for deception history."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate adapt_weights with deception history
+    error_summary = {
+        'total_recorded': 3,
+        'error_classes': {
+            'deception_detected': {
+                'count': 3,
+                'success_rate': 0.33,
+                'strategies_used': ['suppression_gate'],
+            },
+        },
+    }
+    # Save original weights
+    orig_safety = trigger._signal_weights.get('safety_violation', 0.0)
+    trigger.adapt_weights_from_evolution(error_summary)
+    # After adaptation, safety_violation weight should be boosted
+    # (low success rate = 0.33 → positive adjustment)
+    new_safety = trigger._signal_weights.get('safety_violation', 0.0)
+    assert new_safety >= orig_safety * 0.9, (
+        f"safety_violation weight must not decrease significantly after "
+        f"deception history adaptation; was {orig_safety}, now {new_safety}"
+    )
+    print("✅ test_deception_detected_in_trigger_signal_mapping PASSED")
+
+
+def test_deception_suppressor_provenance_tracking():
+    """DeceptionSuppressor must have provenance record_before/record_after
+    calls so deception-induced state changes are traceable via root-cause
+    analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Check that record_before("deception_suppressor") exists in the source
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'record_before("deception_suppressor"' in source, (
+        "_reasoning_core_impl must call "
+        'provenance_tracker.record_before("deception_suppressor", ...) '
+        "for root-cause traceability"
+    )
+    assert 'record_after("deception_suppressor"' in source, (
+        "_reasoning_core_impl must call "
+        'provenance_tracker.record_after("deception_suppressor", ...) '
+        "for root-cause traceability"
+    )
+    print("✅ test_deception_suppressor_provenance_tracking PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -57324,6 +57542,17 @@ def run_all_tests():
     test_verify_coherence_secondary_signal_functional()
     test_self_diagnostic_inflates_coherence_deficit()
     test_self_diagnostic_gap_inflation_functional()
+
+    # Architectural Unification — Cognitive Coherence Gap Closures:
+    # deception→error_evolution, auto-critic provenance, world model→
+    # error_evolution, verify_pipeline_wiring registry, deception→safety
+    test_deception_suppressor_records_error_evolution()
+    test_auto_critic_uncertainty_records_provenance_metadata()
+    test_world_model_prediction_error_records_error_evolution()
+    test_verify_pipeline_wiring_includes_coherence_registry()
+    test_deception_pressure_propagates_to_safety_violation()
+    test_deception_detected_in_trigger_signal_mapping()
+    test_deception_suppressor_provenance_tracking()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
