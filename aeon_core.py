@@ -15826,7 +15826,14 @@ class MetaCognitiveRecursionTrigger:
         # event in error evolution and provenance so that conclusions
         # produced without full meta-cognitive review are traceable and
         # the system can learn from resource-constrained reasoning.
-        _would_trigger = effective_trigger_score >= self.trigger_threshold
+        # Account for override conditions (high uncertainty, topology
+        # catastrophe, safety violation) in addition to the composite score.
+        _would_trigger = (
+            effective_trigger_score >= self.trigger_threshold
+            or uncertainty > self._high_uncertainty_override
+            or topology_catastrophe
+            or safety_violation
+        )
         _max_recursions_capped = _would_trigger and not can_recurse
 
         result = {
@@ -17932,14 +17939,6 @@ class UnifiedCognitiveCycle:
                 _original_reconciler_threshold
             )
 
-        # 7-iii. Restore DAG consensus threshold to prevent unbounded drift,
-        # mirroring the coherence verifier and reconciler restorations.
-        if (_original_dag_consensus_threshold is not None
-                and self.causal_dag_consensus is not None):
-            self.causal_dag_consensus.agreement_threshold = (
-                _original_dag_consensus_threshold
-            )
-
         # 7b. Convergence arbitration re-reasoning override — the arbiter
         # was already called in section 2g (before the trigger).  Here we
         # only handle the re-reasoning override that depends on the
@@ -17961,7 +17960,6 @@ class UnifiedCognitiveCycle:
         # computed in the main reasoning core but never independently
         # verified by the UCC's coherence orchestration.
         dag_consensus_result: Dict[str, Any] = {}
-        _original_dag_consensus_threshold = None
         if (self.causal_dag_consensus is not None
                 and dag_adjacency_matrices is not None
                 and len(dag_adjacency_matrices) >= 2):
@@ -18009,6 +18007,14 @@ class UnifiedCognitiveCycle:
                         set(trigger_detail.get('triggers_active', []))
                         | {'dag_consensus_disagreement'}
                     )
+
+        # 7b-iii. Restore DAG consensus threshold to prevent unbounded drift,
+        # mirroring the coherence verifier and reconciler restorations.
+        if (_original_dag_consensus_threshold is not None
+                and self.causal_dag_consensus is not None):
+            self.causal_dag_consensus.agreement_threshold = (
+                _original_dag_consensus_threshold
+            )
 
         # 7c. Directional uncertainty tracking — record per-module
         # uncertainty so downstream consumers know WHICH module is most

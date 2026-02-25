@@ -55433,6 +55433,393 @@ def test_aeonv3_module_coherence_has_semantic_groups():
     print("✅ test_aeonv3_module_coherence_has_semantic_groups PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — verify the seven architectural changes
+#  that transform AEON-Delta from a disjointed module collection into a
+#  unified, self-reflective, causally coherent cognitive system.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_max_recursions_capped_signal():
+    """MetaCognitiveRecursionTrigger returns max_recursions_capped when the
+    recursion cap prevents triggering despite high signal scores.  This
+    ensures that conclusions produced without full meta-cognitive review
+    are traceable to resource exhaustion."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.3, max_recursions=1,
+    )
+    # First call with high uncertainty: should trigger and consume the
+    # single available recursion.
+    r1 = trigger.evaluate(
+        uncertainty=0.9,
+        is_diverging=True,
+        topology_catastrophe=False,
+        coherence_deficit=0.8,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        safety_violation=False,
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+        convergence_conflict=0.0,
+    )
+    assert r1["should_trigger"] is True, "First call should trigger"
+    assert r1["max_recursions_capped"] is False, (
+        "First call should NOT be capped"
+    )
+    assert r1["capped_trigger_score"] == 0.0, (
+        "Capped trigger score should be 0 when not capped"
+    )
+
+    # Second call with same high signals: should NOT trigger because
+    # max_recursions exhausted, but should signal capped.
+    r2 = trigger.evaluate(
+        uncertainty=0.9,
+        is_diverging=True,
+        topology_catastrophe=False,
+        coherence_deficit=0.8,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        safety_violation=False,
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+        convergence_conflict=0.0,
+    )
+    assert r2["should_trigger"] is False, "Second call should NOT trigger"
+    assert r2["max_recursions_capped"] is True, (
+        "Second call must signal max_recursions_capped"
+    )
+    assert r2["capped_trigger_score"] > 0.0, (
+        "Capped trigger score should reflect what would have triggered"
+    )
+
+    print("✅ test_max_recursions_capped_signal PASSED")
+
+
+def test_max_recursions_capped_not_set_when_below_threshold():
+    """max_recursions_capped should be False when the trigger score is below
+    threshold, even if max_recursions is exhausted."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.9, max_recursions=0,
+    )
+    r = trigger.evaluate(
+        uncertainty=0.1,
+        is_diverging=False,
+        topology_catastrophe=False,
+        coherence_deficit=0.0,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        safety_violation=False,
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+        convergence_conflict=0.0,
+    )
+    assert r["should_trigger"] is False
+    assert r["max_recursions_capped"] is False, (
+        "Should NOT signal capped when trigger score is below threshold"
+    )
+    print("✅ test_max_recursions_capped_not_set_when_below_threshold PASSED")
+
+
+def test_upb_adaptive_decay_from_evolution():
+    """UncertaintyPropagationBus.adapt_decay_from_evolution() boosts decay
+    on edges incident to failing modules, replacing static decay."""
+    from aeon_core import UncertaintyPropagationBus
+
+    upb = UncertaintyPropagationBus(
+        decay_factor=0.5, critical_decay_factor=0.95,
+    )
+    assert len(upb._edge_decay_overrides) == 0
+
+    edges = [
+        ("encoder", "vq"),
+        ("vq", "meta_loop"),
+        ("meta_loop", "decoder"),
+        ("decoder", "output"),
+    ]
+    error_summary = {
+        "coherence_deficit": {
+            "count": 10,
+            "success_rate": 0.2,  # high failure → pressure on meta_loop
+        },
+    }
+    upb.adapt_decay_from_evolution(error_summary, dependency_edges=edges)
+
+    # meta_loop is mapped from coherence_deficit; edges incident to it
+    # should have boosted decay.
+    assert ("vq", "meta_loop") in upb._edge_decay_overrides, (
+        "Edge to meta_loop should have adaptive decay override"
+    )
+    assert ("meta_loop", "decoder") in upb._edge_decay_overrides, (
+        "Edge from meta_loop should have adaptive decay override"
+    )
+    # Boosted decay should be > base decay (0.5)
+    assert upb._edge_decay_overrides[("vq", "meta_loop")] > 0.5, (
+        "Adaptive decay should exceed base decay"
+    )
+    # Edges NOT incident to meta_loop should be unaffected
+    assert ("encoder", "vq") not in upb._edge_decay_overrides
+    assert ("decoder", "output") not in upb._edge_decay_overrides
+
+    print("✅ test_upb_adaptive_decay_from_evolution PASSED")
+
+
+def test_upb_adaptive_decay_propagation():
+    """Adaptive decay overrides are actually used during propagation."""
+    from aeon_core import UncertaintyPropagationBus
+
+    upb = UncertaintyPropagationBus(decay_factor=0.5)
+    edges = [("A", "B"), ("B", "C")]
+
+    # Propagate with base decay
+    base_result = upb.propagate({"A": 0.8}, edges)
+    base_C = base_result.get("C", 0.0)
+
+    # Now set an adaptive override with higher decay on (A, B)
+    upb._edge_decay_overrides[("A", "B")] = 0.95
+    adapted_result = upb.propagate({"A": 0.8}, edges)
+    adapted_C = adapted_result.get("C", 0.0)
+
+    # With higher decay on A→B, more uncertainty reaches B and then C
+    assert adapted_C > base_C, (
+        f"Adaptive higher decay should propagate more uncertainty: "
+        f"adapted={adapted_C:.4f} > base={base_C:.4f}"
+    )
+
+    print("✅ test_upb_adaptive_decay_propagation PASSED")
+
+
+def test_upb_adapt_empty_summary():
+    """adapt_decay_from_evolution with empty summary should be a no-op."""
+    from aeon_core import UncertaintyPropagationBus
+
+    upb = UncertaintyPropagationBus()
+    upb.adapt_decay_from_evolution({})
+    assert len(upb._edge_decay_overrides) == 0
+    upb.adapt_decay_from_evolution(None)
+    assert len(upb._edge_decay_overrides) == 0
+
+    print("✅ test_upb_adapt_empty_summary PASSED")
+
+
+def test_ucc_critical_coverage_deficit_escalation():
+    """UnifiedCognitiveCycle escalates uncertainty and records error evolution
+    when coverage deficit exceeds 0.5 (critical)."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=ee,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.2,
+        coverage_deficit=0.7,  # Critical coverage deficit
+    )
+
+    # Error evolution should have a critical_coverage_deficit entry
+    summary = ee.get_error_summary()
+    error_classes = summary.get("error_classes", summary)
+    assert "critical_coverage_deficit" in error_classes, (
+        "critical_coverage_deficit should be recorded in error evolution"
+    )
+    # Also the regular high_coverage_deficit should be recorded (> 0.3)
+    assert "high_coverage_deficit" in error_classes, (
+        "high_coverage_deficit should also be recorded"
+    )
+    # The coverage_deficit in the result should be > 0.5 * 0.3 = 0.15
+    assert result["coverage_deficit"] >= 0.7, (
+        "coverage_deficit should be preserved in result"
+    )
+    print("✅ test_ucc_critical_coverage_deficit_escalation PASSED")
+
+
+def test_ucc_propagation_delta_in_uncertainty_tracker():
+    """UnifiedCognitiveCycle records propagation_delta in directional
+    uncertainty tracker when above threshold."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dut = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=dut,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.3,
+        propagation_delta=0.4,  # Above 0.05 threshold
+    )
+
+    summary = result.get("uncertainty_summary", {})
+    # The propagation delta should appear in the uncertainty summary
+    module_uncertainties = dut.get_module_uncertainties()
+    assert "uncertainty_propagation" in module_uncertainties, (
+        "uncertainty_propagation should be recorded in directional tracker"
+    )
+    # Verify the return dict includes propagation_delta
+    assert "propagation_delta" in result
+    assert result["propagation_delta"] == 0.4
+
+    print("✅ test_ucc_propagation_delta_in_uncertainty_tracker PASSED")
+
+
+def test_ucc_propagation_delta_below_threshold_ignored():
+    """propagation_delta below 0.05 should NOT be recorded."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dut = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=dut,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        propagation_delta=0.01,  # Below threshold
+    )
+
+    module_uncertainties = dut.get_module_uncertainties()
+    assert "uncertainty_propagation" not in module_uncertainties, (
+        "Sub-threshold propagation_delta should not be recorded"
+    )
+    print("✅ test_ucc_propagation_delta_below_threshold_ignored PASSED")
+
+
+def test_ucc_dag_consensus_threshold_adaptation():
+    """UnifiedCognitiveCycle tightens DAG consensus threshold when
+    causal_quality is low, then restores it after evaluation."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalDAGConsensus, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.5)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        causal_dag_consensus=dag,
+    )
+
+    initial_threshold = dag.agreement_threshold
+
+    # Provide two DAG adjacency matrices so consensus is evaluated
+    adj_a = torch.eye(4)
+    adj_b = torch.eye(4)
+    adj_b[0, 1] = 1.0  # Make them slightly different
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        causal_quality=0.3,  # Low causal quality should tighten threshold
+        dag_adjacency_matrices={"model_a": adj_a, "model_b": adj_b},
+    )
+
+    # After evaluation, threshold should be restored
+    assert dag.agreement_threshold == initial_threshold, (
+        f"DAG consensus threshold should be restored: "
+        f"got {dag.agreement_threshold}, expected {initial_threshold}"
+    )
+    # Result should indicate that adaptation happened
+    assert result.get("dag_consensus_threshold_adapted") is True, (
+        "dag_consensus_threshold_adapted should be True when causal_quality < 0.7"
+    )
+
+    print("✅ test_ucc_dag_consensus_threshold_adaptation PASSED")
+
+
+def test_ucc_dag_consensus_no_adaptation_high_quality():
+    """DAG consensus threshold should NOT be adapted when causal_quality is
+    high (>= 0.7)."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalDAGConsensus, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.5)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        causal_dag_consensus=dag,
+    )
+
+    adj_a = torch.eye(4)
+    adj_b = torch.eye(4)
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        causal_quality=0.9,  # High quality — no adaptation
+        dag_adjacency_matrices={"model_a": adj_a, "model_b": adj_b},
+    )
+
+    assert result.get("dag_consensus_threshold_adapted") is False, (
+        "dag_consensus_threshold_adapted should be False when causal_quality >= 0.7"
+    )
+
+    print("✅ test_ucc_dag_consensus_no_adaptation_high_quality PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -57881,6 +58268,18 @@ def run_all_tests():
     test_coherence_verifier_no_groups_backward_compat()
     test_coherence_verifier_per_group_gradient_flow()
     test_aeonv3_module_coherence_has_semantic_groups()
+
+    # Architectural unification tests
+    test_max_recursions_capped_signal()
+    test_max_recursions_capped_not_set_when_below_threshold()
+    test_upb_adaptive_decay_from_evolution()
+    test_upb_adaptive_decay_propagation()
+    test_upb_adapt_empty_summary()
+    test_ucc_critical_coverage_deficit_escalation()
+    test_ucc_propagation_delta_in_uncertainty_tracker()
+    test_ucc_propagation_delta_below_threshold_ignored()
+    test_ucc_dag_consensus_threshold_adaptation()
+    test_ucc_dag_consensus_no_adaptation_high_quality()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
