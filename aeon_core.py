@@ -18211,6 +18211,36 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "uncertainty_propagation_pressure", default=0.0,
         )
+        # Subsystem verification coverage deficit — when the coherence
+        # registry shows that a significant fraction of expected
+        # subsystems did not produce validated outputs, this signal
+        # conditions the meta-loop to reason deeper to compensate.
+        self.feedback_bus.register_signal(
+            "coverage_deficit_pressure", default=0.0,
+        )
+        # Provenance trace incomplete — when trace_root_cause() cannot
+        # reach entry-point modules due to DAG cycles or missing nodes,
+        # this signal conditions the next pass's meta-loop to demand
+        # verifiable attribution, ensuring conclusions are not accepted
+        # without traceable provenance.
+        self.feedback_bus.register_signal(
+            "trace_incomplete_pressure", default=0.0,
+        )
+        # DAG acyclicity violation — when the provenance dependency DAG
+        # contains cycles, root-cause attribution is structurally broken.
+        # This signal conditions the meta-loop to deepen reasoning until
+        # the DAG stabilises into a valid acyclic structure.
+        self.feedback_bus.register_signal(
+            "dag_acyclicity_pressure", default=0.0,
+        )
+        # Safety violation cross-pass pressure — when the previous pass
+        # triggered a safety enforcement, this signal conditions the next
+        # pass's meta-loop to reason more cautiously, ensuring safety
+        # violations propagate into the meta-cognitive cycle rather than
+        # being silently consumed within a single pass.
+        self.feedback_bus.register_signal(
+            "safety_violation_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -18950,6 +18980,8 @@ class AEONDeltaV3(nn.Module):
         self._cached_factor_state: Optional[torch.Tensor] = None
         self._cached_safety_state: Optional[torch.Tensor] = None
         self._cached_safety_violation: bool = False
+        self._cached_trace_incomplete: bool = False
+        self._cached_dag_acyclic: bool = True
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
         # coherence verification so that neurogenic, temporal, and
@@ -19738,6 +19770,26 @@ class AEONDeltaV3(nn.Module):
                 extra["coverage_deficit_pressure"] = max(
                     0.0, min(1.0, _cov_deficit),
                 )
+        # Provenance trace incomplete pressure — when the most recent
+        # trace_root_cause() call returned trace_incomplete=True, the
+        # provenance chain could not reach entry-point modules.  Route
+        # this into the feedback bus so the next pass's meta-loop
+        # demands verifiable attribution.
+        if getattr(self, '_cached_trace_incomplete', False):
+            extra["trace_incomplete_pressure"] = 1.0
+        # DAG acyclicity pressure — when the provenance dependency DAG
+        # contains cycles (detected during forward-pass DAG validation),
+        # root-cause attribution is structurally broken.  Route this
+        # into the feedback bus so the meta-loop deepens reasoning until
+        # the DAG stabilises.
+        if getattr(self, '_cached_dag_acyclic', True) is False:
+            extra["dag_acyclicity_pressure"] = 1.0
+        # Safety violation cross-pass pressure — when the previous pass
+        # triggered a safety enforcement (cached in _cached_safety_violation),
+        # carry the signal into the feedback bus so the next pass's
+        # meta-loop reasons more cautiously.
+        if getattr(self, '_cached_safety_violation', False):
+            extra["safety_violation_pressure"] = 1.0
         return extra
 
     @staticmethod
@@ -20753,6 +20805,7 @@ class AEONDeltaV3(nn.Module):
         # If cycles are detected, the validator removes the offending
         # back-edges and logs a warning so trace_root_cause() remains safe.
         _dag_validation = self.provenance_tracker.validate_dag_acyclic()
+        self._cached_dag_acyclic = _dag_validation.get('is_acyclic', True)
         if not _dag_validation['is_acyclic']:
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -28094,6 +28147,9 @@ class AEONDeltaV3(nn.Module):
                 self._cached_provenance_root_modules = list(
                     _ucc_prov_rc.get("root_modules", []),
                 )
+                self._cached_trace_incomplete = _ucc_prov_rc.get(
+                    "trace_incomplete", False,
+                )
                 if _ucc_should_rerun:
                     self.audit_log.record(
                         "unified_cognitive_cycle", "rerun_recommended", {
@@ -29955,11 +30011,22 @@ class AEONDeltaV3(nn.Module):
         # are disabled, the output reliability is correspondingly reduced,
         # ensuring the system is self-aware about its verification depth.
         _verification_coverage = self._compute_verification_coverage()
+        # Provenance quality factor — when the provenance trace is
+        # incomplete (DAG cycles or missing entry points), the system
+        # cannot verify that conclusions are root-cause traceable, so
+        # the reliability score is attenuated.
+        _provenance_quality = 0.5 if self._cached_trace_incomplete else 1.0
+        # Causal DAG consensus factor — when multiple causal formalisms
+        # disagree on the underlying structure, the reliability of
+        # causal conclusions is reduced proportionally.
+        _causal_quality_factor = max(0.0, self._cached_causal_quality)
         _raw_reliability = (
             (1.0 - uncertainty)
             * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
             * max(0.0, meta_results.get('convergence_rate', 1.0))
             * max(0.0, 1.0 - self._cached_coherence_deficit)
+            * _provenance_quality
+            * _causal_quality_factor
         )
         _current_output_reliability = max(0.0, min(1.0,
             _raw_reliability * (0.5 + 0.5 * _verification_coverage)
@@ -29982,6 +30049,8 @@ class AEONDeltaV3(nn.Module):
                 meta_results.get('convergence_rate', 1.0)),
             'coherence_contribution': max(0.0,
                 1.0 - self._cached_coherence_deficit),
+            'provenance_quality': _provenance_quality,
+            'causal_quality': _causal_quality_factor,
             'verification_coverage': _verification_coverage,
         }
         # Identify the weakest factor — this is the bottleneck
@@ -33457,6 +33526,106 @@ class AEONDeltaV3(nn.Module):
                 'remediation': (
                     'Register uncertainty_propagation_pressure signal '
                     'in CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Coherence registry → feedback bus closure ---
+        # Verify that subsystem coverage deficit from the coherence registry
+        # is surfaced as a feedback bus signal so the meta-loop can
+        # compensate for incomplete verification by reasoning deeper.
+        if (self.feedback_bus is not None
+                and 'coverage_deficit_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'coherence_registry → feedback_bus.coverage_deficit_pressure '
+                '→ meta_loop (incomplete verification triggers deeper reasoning)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'coherence_registry_feedback',
+                'gap': (
+                    'Coherence registry coverage deficit signal not '
+                    'registered in feedback bus — incomplete subsystem '
+                    'verification invisible to meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register coverage_deficit_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Safety violation → feedback bus cross-pass closure ---
+        # Verify that safety violations are carried across passes via the
+        # feedback bus so the meta-loop reasons cautiously after unsafe
+        # states, not just within the pass where the violation occurred.
+        if (self.feedback_bus is not None
+                and 'safety_violation_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'safety_violation → feedback_bus.safety_violation_pressure '
+                '→ meta_loop (cross-pass cautious reasoning after unsafe states)'
+            )
+        elif self.feedback_bus is not None and self.safety_system is not None:
+            gaps.append({
+                'component': 'safety_violation_feedback',
+                'gap': (
+                    'Safety system active but safety_violation_pressure '
+                    'signal not registered in feedback bus — safety '
+                    'violations do not condition next-pass reasoning'
+                ),
+                'remediation': (
+                    'Register safety_violation_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Provenance trace incomplete → feedback bus closure ---
+        # Verify that provenance trace failures are carried into the
+        # feedback bus so the next pass's meta-loop demands verifiable
+        # attribution when conclusions cannot be traced to root causes.
+        if (self.feedback_bus is not None
+                and 'trace_incomplete_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'trace_incomplete → feedback_bus.trace_incomplete_pressure '
+                '→ meta_loop (unverifiable provenance triggers deeper reasoning)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'trace_incomplete_feedback',
+                'gap': (
+                    'Provenance trace incomplete signal not registered '
+                    'in feedback bus — unverifiable attribution chains '
+                    'invisible to meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register trace_incomplete_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- DAG acyclicity → feedback bus closure ---
+        # Verify that DAG cycle detection feeds into the feedback bus so
+        # the meta-loop deepens reasoning when structural provenance is
+        # broken.
+        if (self.feedback_bus is not None
+                and 'dag_acyclicity_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'dag_acyclicity → feedback_bus.dag_acyclicity_pressure '
+                '→ meta_loop (DAG cycles trigger deeper reasoning)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'dag_acyclicity_feedback',
+                'gap': (
+                    'DAG acyclicity pressure signal not registered in '
+                    'feedback bus — provenance DAG cycles invisible to '
+                    'meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register dag_acyclicity_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
                     '_build_feedback_extra_signals()'
                 ),
             })
