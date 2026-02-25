@@ -19681,6 +19681,9 @@ class AEONDeltaV3(nn.Module):
                     memory_validator=self.memory_validator,
                     causal_dag_consensus=self.causal_dag_consensus,
                     coherence_registry=self.coherence_registry,
+                    cross_validation_reconciler=getattr(
+                        self, 'cross_validator', None,
+                    ),
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -34395,6 +34398,9 @@ class AEONDeltaV3(nn.Module):
                 uncertainty_tracker=getattr(self, 'uncertainty_tracker', None),
                 memory_validator=getattr(self, 'memory_validator', None),
                 causal_dag_consensus=getattr(self, 'causal_dag_consensus', None),
+                cross_validation_reconciler=getattr(
+                    self, 'cross_validator', None,
+                ),
             )
             remediated.append('unified_cognitive_cycle')
 
