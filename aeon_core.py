@@ -6964,6 +6964,92 @@ class CausalProvenanceTracker:
             'anomaly_delta': self._delta_anomaly_threshold - old_anomaly,
         }
 
+    def verify_trace_completeness(
+        self,
+        expected_modules: Optional[List[str]] = None,
+        completeness_threshold: float = 0.8,
+    ) -> Dict[str, Any]:
+        """Verify that the provenance trace covers expected modules and
+        the dependency DAG is structurally sound.
+
+        Unlike :meth:`get_trace_completeness_ratio` which returns a single
+        scalar, this method returns a structured verification result with:
+
+        - Pass/fail verdict against a configurable completeness threshold.
+        - List of missing modules (expected but not traced).
+        - DAG acyclicity check (cycles prevent root-cause attribution).
+        - Actionable repair suggestions for each detected gap.
+
+        This bridges the gap between continuous quality monitoring
+        (``get_trace_completeness_ratio``) and binary verification
+        (``is the trace complete enough for reliable attribution?``),
+        enabling the meta-cognitive cycle to make informed re-reasoning
+        decisions based on provenance health.
+
+        Args:
+            expected_modules: Whitelist of module names that should
+                appear in the provenance trace.  When ``None``, falls
+                back to dependency DAG nodes.
+            completeness_threshold: Minimum ratio ∈ [0, 1] for the
+                trace to be considered complete.  Default 0.8.
+
+        Returns:
+            Dict with:
+                - ``complete``: bool — whether completeness ≥ threshold.
+                - ``completeness_ratio``: float ∈ [0, 1].
+                - ``missing_modules``: list of untraced expected modules.
+                - ``dag_acyclic``: bool — whether the dependency DAG is
+                  acyclic (required for root-cause attribution).
+                - ``repair_suggestions``: list of actionable suggestions.
+        """
+        ratio = self.get_trace_completeness_ratio(expected_modules)
+
+        # Determine which modules are missing from the trace
+        if expected_modules is not None:
+            _expected = set(expected_modules)
+        else:
+            deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
+            _expected = set()
+            for target, sources in deps.items():
+                _expected.add(target)
+                _expected.update(sources)
+        _traced = set(self._deltas.keys())
+        _missing = sorted(_expected - _traced)
+
+        # DAG acyclicity check
+        dag_result = self.validate_dag_acyclic()
+        dag_acyclic = dag_result.get('is_acyclic', True)
+
+        complete = ratio >= completeness_threshold and dag_acyclic
+
+        # Build repair suggestions
+        repairs: List[str] = []
+        if _missing:
+            repairs.append(
+                f"Add provenance instrumentation (record_before/record_after) "
+                f"for modules: {', '.join(_missing[:10])}"
+            )
+        if not dag_acyclic:
+            _cycles = dag_result.get('cycles', [])
+            repairs.append(
+                f"Resolve dependency cycles in provenance DAG: "
+                f"{_cycles[:3]}"
+            )
+        if ratio < completeness_threshold and not _missing and dag_acyclic:
+            repairs.append(
+                "Completeness ratio is below threshold despite no missing "
+                "modules — check that record_after() is called after each "
+                "module transformation."
+            )
+
+        return {
+            'complete': complete,
+            'completeness_ratio': ratio,
+            'missing_modules': _missing,
+            'dag_acyclic': dag_acyclic,
+            'repair_suggestions': repairs,
+        }
+
 
 class ProvablyConvergentMetaLoop(nn.Module):
     """
@@ -15678,6 +15764,21 @@ class MetaCognitiveRecursionTrigger:
             if "topology_catastrophe" not in triggers_active:
                 triggers_active.append("topology_catastrophe")
 
+        # Safety violation override: a safety rollback is a critical
+        # event indicating the reasoning pipeline produced unsafe output.
+        # Without this override, a single safety_violation signal
+        # (weight 1/12 ≈ 0.083) cannot reach typical trigger thresholds
+        # (0.3+), leaving safety events unaddressed by the meta-cognitive
+        # cycle.  This ensures safety violations always trigger deeper
+        # re-reasoning to search for a safe alternative, satisfying the
+        # requirement that any safety concern activates meta-cognition.
+        if (not should_trigger
+                and safety_violation
+                and can_recurse):
+            should_trigger = True
+            if "safety_violation" not in triggers_active:
+                triggers_active.append("safety_violation")
+
         if should_trigger:
             self._recursion_count += 1
             # Track when cross-pass EMA was the decisive factor so
@@ -16570,6 +16671,58 @@ class SubsystemCoherenceRegistry:
                 for name, quality in self._current_pass_quality.items()
                 if quality < quality_threshold
             }
+
+    def adjust_expected_for_config(self, config: 'AEONConfig') -> None:
+        """Adjust the expected subsystems set based on which modules are
+        actually enabled in the given configuration.
+
+        Without this adjustment the registry treats all 46 default
+        subsystems as mandatory, producing artificially high coverage
+        deficits when optional modules (neurogenic_memory, temporal_memory,
+        etc.) are disabled by configuration.  This inflated deficit
+        incorrectly triggers meta-cognitive re-reasoning for missing
+        modules that were never intended to run.
+
+        After calling this method, ``get_coverage_deficit()`` and
+        ``get_absent_subsystems()`` only consider subsystems that the
+        configuration actually enables, producing accurate coverage
+        signals that distinguish "intentionally disabled" from "failed
+        to produce output".
+
+        Args:
+            config: The AEONConfig instance whose feature flags determine
+                which subsystems are expected.
+        """
+        # Map config flags to the subsystem names they gate.
+        _CONFIG_GATED: Dict[str, List[str]] = {
+            "enable_neurogenic_memory": ["neurogenic_memory"],
+            "enable_temporal_memory": ["temporal_memory"],
+            "enable_consolidating_memory": ["consolidating_memory"],
+            "enable_hierarchical_world_model": ["hierarchical_world_model"],
+            "enable_notears_causal": ["notears_causal"],
+            "enable_causal_programmatic": ["causal_programmatic"],
+            "enable_causal_world_model": ["causal_world_model"],
+            "enable_hybrid_reasoning": ["hybrid_reasoning", "ns_bridge"],
+            "enable_temporal_knowledge_graph": ["temporal_knowledge_graph"],
+            "enable_hierarchical_vae": ["hierarchical_vae"],
+            "enable_mcts_planner": ["active_learning"],
+            "enable_unified_simulator": ["unified_simulator"],
+            "enable_cognitive_executive": ["cognitive_executive"],
+            "enable_multimodal": ["multimodal", "grounded_multimodal"],
+            "enable_causal_trace": ["causal_context"],
+            "enable_error_evolution": ["error_evolution"],
+            "enable_safety_guardrails": ["safety"],
+            "enable_catastrophe_detection": ["topology_analysis"],
+            "enable_diversity_metric": ["diversity_analysis"],
+            "enable_metacognitive_recursion": ["metacognitive_trigger"],
+            "enable_auto_critic": ["auto_critic"],
+            "enable_certified_convergence": ["certified_meta_loop"],
+        }
+        with self._lock:
+            for flag, subsystems in _CONFIG_GATED.items():
+                if not getattr(config, flag, True):
+                    for name in subsystems:
+                        self._expected.discard(name)
 
 
 class UncertaintyPropagationBus:
@@ -18030,6 +18183,10 @@ class UnifiedCognitiveCycle:
             },
             'convergence_certificate': convergence_certificate or {},
             'coverage_deficit': _registry_coverage_deficit or 0.0,
+            'reconciler_threshold_adapted': (
+                _original_reconciler_threshold is not None
+                and self.cross_validation_reconciler is not None
+            ),
         }
 
     def reset(self) -> None:
@@ -19636,6 +19793,9 @@ class AEONDeltaV3(nn.Module):
         # which subsystems produced validated outputs.  Feeds coverage
         # deficit into uncertainty escalation and metacognitive triggers.
         self.coherence_registry = SubsystemCoherenceRegistry()
+        # Adjust expected subsystems based on enabled config flags so that
+        # disabled optional modules don't inflate the coverage deficit.
+        self.coherence_registry.adjust_expected_for_config(config)
         # Uncertainty propagation bus — propagates per-module uncertainty
         # through the provenance dependency DAG so upstream failures
         # cascade to all dependent downstream modules.  Critical edges
@@ -34318,6 +34478,12 @@ class AEONDeltaV3(nn.Module):
             # uncertainty with upstream cascade through the provenance
             # dependency DAG.
             'directional_uncertainty': self.uncertainty_tracker.build_summary(),
+            # Structured provenance trace verification — pass/fail
+            # verdict with missing modules, DAG acyclicity, and repair
+            # suggestions for root-cause traceability gaps.
+            'provenance_trace_verification': (
+                self.provenance_tracker.verify_trace_completeness()
+            ),
             # Continuous provenance trace completeness ∈ [0, 1] — the
             # fraction of pipeline modules with recorded L2 deltas.
             # Replaces the binary trace_incomplete flag with a granular
@@ -34537,6 +34703,30 @@ class AEONDeltaV3(nn.Module):
         # existence but never for structural correctness.
         dag_validation = self.provenance_tracker.validate_dag_acyclic()
 
+        # --- Provenance DAG ↔ pipeline dependency cross-validation ---
+        # Verify that the provenance tracker has dependency edges
+        # registered for each verified pipeline edge.  Without this
+        # check, verify_pipeline_wiring only confirms module existence
+        # but not that the provenance tracker can actually trace data
+        # flow between them — leaving root-cause attribution blind to
+        # edges that exist in code but not in the provenance DAG.
+        _prov_deps = self.provenance_tracker.get_dependency_graph()
+        _prov_edges: Set[Tuple[str, str]] = set()
+        for _target, _sources in _prov_deps.items():
+            for _src in (_sources if isinstance(_sources, (set, list)) else []):
+                _prov_edges.add((_src, _target))
+        _unregistered_edges: List[Tuple[str, str]] = []
+        for up, down in verified_edges:
+            if (up, down) not in _prov_edges:
+                _unregistered_edges.append((up, down))
+        _provenance_coverage = (
+            1.0 - len(_unregistered_edges) / max(len(verified_edges), 1)
+            if verified_edges else 1.0
+        )
+
+        # --- Provenance trace completeness verification ---
+        trace_verification = self.provenance_tracker.verify_trace_completeness()
+
         return {
             'total_edges': total,
             'verified_edges': verified_edges,
@@ -34546,6 +34736,9 @@ class AEONDeltaV3(nn.Module):
             'wiring_coverage': coverage,
             'dag_acyclic': dag_validation.get('is_acyclic', True),
             'dag_validation': dag_validation,
+            'provenance_coverage': _provenance_coverage,
+            'unregistered_provenance_edges': _unregistered_edges,
+            'trace_verification': trace_verification,
         }
 
     @torch.no_grad()
@@ -34807,9 +35000,16 @@ class AEONDeltaV3(nn.Module):
         # Include the cached memory cross-validation result so that
         # inter-memory disagreement (neurogenic vs temporal vs
         # consolidating) surfaces in out-of-band coherence checks.
-        _mem_cv = getattr(self, '_cached_memory_cv_disagreement', False)
-        result["memory_cross_validation_disagreement"] = _mem_cv
-        if _mem_cv:
+        # Uses the graduated mean_similarity signal from the most recent
+        # cross-validation rather than a binary flag, so that feedback
+        # and uncertainty respond proportionally to the degree of
+        # inter-memory disagreement.
+        _mem_cv_info = getattr(self, '_last_memory_cross_validation', {})
+        _mem_cv_inconsistent = _mem_cv_info.get('inconsistent', False)
+        _mem_cv_similarity = _mem_cv_info.get('mean_similarity', 1.0)
+        _mem_cv_disagreement = max(0.0, 1.0 - _mem_cv_similarity) if _mem_cv_inconsistent else 0.0
+        result["memory_cross_validation_disagreement"] = _mem_cv_disagreement
+        if _mem_cv_disagreement > 0.1:
             result["needs_recheck"] = True
 
         # --- Provenance trace completeness ---

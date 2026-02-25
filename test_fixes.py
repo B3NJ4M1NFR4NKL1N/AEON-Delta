@@ -54044,6 +54044,277 @@ def test_aeonv3_wires_reconciler_to_ucc():
     print("✅ test_aeonv3_wires_reconciler_to_ucc PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Gap Fixes: Provenance Verification,
+# Config-Aware Registry, Safety Override, Pipeline Cross-Validation
+# ============================================================================
+
+
+def test_verify_trace_completeness_returns_structured_result():
+    """Gap 1: CausalProvenanceTracker.verify_trace_completeness() must return
+    a structured verification result with complete, completeness_ratio,
+    missing_modules, dag_acyclic, and repair_suggestions keys."""
+    from aeon_core import CausalProvenanceTracker
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    tracker.record_before("encoder", torch.randn(2, 64))
+    tracker.record_after("encoder", torch.randn(2, 64))
+    tracker.record_before("decoder", torch.randn(2, 64))
+    tracker.record_after("decoder", torch.randn(2, 64))
+    tracker.record_dependency("encoder", "decoder")
+
+    result = tracker.verify_trace_completeness()
+    assert isinstance(result, dict), "Must return a dict"
+    for key in ("complete", "completeness_ratio", "missing_modules",
+                "dag_acyclic", "repair_suggestions"):
+        assert key in result, f"Missing key '{key}' in verify_trace_completeness result"
+    assert isinstance(result["complete"], bool)
+    assert 0.0 <= result["completeness_ratio"] <= 1.0
+    assert isinstance(result["missing_modules"], list)
+    assert isinstance(result["dag_acyclic"], bool)
+    assert isinstance(result["repair_suggestions"], list)
+
+    print("✅ test_verify_trace_completeness_returns_structured_result PASSED")
+
+
+def test_verify_trace_completeness_detects_missing_modules():
+    """Gap 1: When expected modules are not traced, verify_trace_completeness
+    must list them as missing and set complete=False."""
+    from aeon_core import CausalProvenanceTracker
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    tracker.record_before("encoder", torch.randn(2, 64))
+    tracker.record_after("encoder", torch.randn(2, 64))
+
+    result = tracker.verify_trace_completeness(
+        expected_modules=["encoder", "decoder", "meta_loop"],
+    )
+    assert not result["complete"], "Should be incomplete when modules are missing"
+    assert "decoder" in result["missing_modules"]
+    assert "meta_loop" in result["missing_modules"]
+    assert "encoder" not in result["missing_modules"]
+    assert result["completeness_ratio"] < 1.0
+    assert len(result["repair_suggestions"]) > 0
+
+    print("✅ test_verify_trace_completeness_detects_missing_modules PASSED")
+
+
+def test_verify_trace_completeness_full_coverage():
+    """Gap 1: When all expected modules are traced and DAG is acyclic,
+    verify_trace_completeness returns complete=True."""
+    from aeon_core import CausalProvenanceTracker
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    for name in ["encoder", "decoder", "meta_loop"]:
+        tracker.record_before(name, torch.randn(2, 64))
+        tracker.record_after(name, torch.randn(2, 64))
+    tracker.record_dependency("encoder", "meta_loop")
+    tracker.record_dependency("meta_loop", "decoder")
+
+    result = tracker.verify_trace_completeness(
+        expected_modules=["encoder", "decoder", "meta_loop"],
+    )
+    assert result["complete"] is True
+    assert result["completeness_ratio"] == 1.0
+    assert result["missing_modules"] == []
+    assert result["dag_acyclic"] is True
+    assert result["repair_suggestions"] == []
+
+    print("✅ test_verify_trace_completeness_full_coverage PASSED")
+
+
+def test_adjust_expected_for_config_removes_disabled_subsystems():
+    """Gap 2: SubsystemCoherenceRegistry.adjust_expected_for_config must
+    remove subsystems whose config flags are disabled."""
+    from aeon_core import SubsystemCoherenceRegistry, AEONConfig
+
+    registry = SubsystemCoherenceRegistry()
+    orig_count = len(registry._expected)
+    assert "neurogenic_memory" in registry._expected
+
+    config = AEONConfig(device_str="cpu")
+    registry.adjust_expected_for_config(config)
+
+    # Default config disables neurogenic_memory, temporal_memory, etc.
+    assert "neurogenic_memory" not in registry._expected, (
+        "Disabled subsystem should be removed from expected set"
+    )
+    assert len(registry._expected) < orig_count, (
+        "Config-aware filtering should reduce expected count"
+    )
+    # Core subsystems must remain
+    assert "encoder" in registry._expected
+    assert "meta_loop" in registry._expected
+    assert "decoder" in registry._expected
+
+    print("✅ test_adjust_expected_for_config_removes_disabled_subsystems PASSED")
+
+
+def test_adjust_expected_for_config_preserves_enabled():
+    """Gap 2: When a feature flag is enabled, its subsystems remain expected."""
+    from aeon_core import SubsystemCoherenceRegistry, AEONConfig
+
+    registry = SubsystemCoherenceRegistry()
+    config = AEONConfig(
+        device_str="cpu",
+        enable_safety_guardrails=True,
+        enable_catastrophe_detection=True,
+    )
+    registry.adjust_expected_for_config(config)
+
+    assert "safety" in registry._expected, (
+        "Enabled safety subsystem should remain in expected set"
+    )
+    assert "topology_analysis" in registry._expected, (
+        "Enabled topology_analysis should remain in expected set"
+    )
+
+    print("✅ test_adjust_expected_for_config_preserves_enabled PASSED")
+
+
+def test_aeonv3_initializes_registry_with_config_filtering():
+    """Gap 2+6: AEONDeltaV3 must call adjust_expected_for_config on its
+    coherence_registry during __init__ so coverage deficit reflects
+    actually-enabled subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+
+    # The registry should have been filtered by config
+    assert "neurogenic_memory" not in model.coherence_registry._expected, (
+        "AEONDeltaV3 must filter coherence_registry by config at init"
+    )
+    assert "encoder" in model.coherence_registry._expected
+
+    print("✅ test_aeonv3_initializes_registry_with_config_filtering PASSED")
+
+
+def test_safety_violation_override_forces_trigger():
+    """Gap 3: A safety_violation must always trigger the metacognitive cycle
+    regardless of the composite trigger score."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+    result = trigger.evaluate(
+        safety_violation=True,
+        uncertainty=0.0,
+        is_diverging=False,
+        topology_catastrophe=False,
+        coherence_deficit=0.0,
+        memory_staleness=False,
+        recovery_pressure=0.0,
+        world_model_surprise=0.0,
+        causal_quality=1.0,
+        diversity_collapse=0.0,
+        memory_trust_deficit=0.0,
+        convergence_conflict=0.0,
+    )
+
+    assert result["should_trigger"] is True, (
+        "Safety violation alone must force metacognitive trigger"
+    )
+    assert "safety_violation" in result["triggers_active"]
+
+    print("✅ test_safety_violation_override_forces_trigger PASSED")
+
+
+def test_safety_violation_override_respects_max_recursions():
+    """Gap 3: Safety violation override must respect max_recursions cap."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.5, max_recursions=1,
+    )
+    # First call: should trigger
+    r1 = trigger.evaluate(safety_violation=True)
+    assert r1["should_trigger"] is True
+
+    # Second call: max_recursions exhausted, should NOT trigger
+    r2 = trigger.evaluate(safety_violation=True)
+    assert r2["should_trigger"] is False, (
+        "Safety override must respect max_recursions limit"
+    )
+
+    print("✅ test_safety_violation_override_respects_max_recursions PASSED")
+
+
+def test_verify_pipeline_wiring_includes_provenance_coverage():
+    """Gap 5: verify_pipeline_wiring must include provenance_coverage and
+    unregistered_provenance_edges in its return dict."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert "provenance_coverage" in source, (
+        "verify_pipeline_wiring must return provenance_coverage"
+    )
+    assert "unregistered_provenance_edges" in source, (
+        "verify_pipeline_wiring must return unregistered_provenance_edges"
+    )
+    assert "trace_verification" in source, (
+        "verify_pipeline_wiring must return trace_verification"
+    )
+
+    print("✅ test_verify_pipeline_wiring_includes_provenance_coverage PASSED")
+
+
+def test_self_diagnostic_includes_trace_verification():
+    """Gap 6: self_diagnostic must include provenance_trace_verification
+    in its output to surface structured trace health."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert "provenance_trace_verification" in source, (
+        "self_diagnostic must include provenance_trace_verification"
+    )
+    assert "verify_trace_completeness" in source, (
+        "self_diagnostic must call verify_trace_completeness"
+    )
+
+    print("✅ test_self_diagnostic_includes_trace_verification PASSED")
+
+
+def test_verify_coherence_graduated_memory_cv():
+    """Gap 7: verify_coherence must use graduated memory_cv_disagreement
+    float signal instead of boolean."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_coherence)
+    # Should reference _last_memory_cross_validation for graduated signal
+    assert "_last_memory_cross_validation" in source, (
+        "verify_coherence must read _last_memory_cross_validation for graduated signal"
+    )
+    assert "mean_similarity" in source, (
+        "verify_coherence must extract mean_similarity for graduated disagreement"
+    )
+    # Should NOT use the boolean _cached_memory_cv_disagreement anymore
+    assert "_cached_memory_cv_disagreement" not in source, (
+        "verify_coherence should use graduated signal, not boolean _cached_memory_cv_disagreement"
+    )
+
+    print("✅ test_verify_coherence_graduated_memory_cv PASSED")
+
+
+def test_ucc_returns_reconciler_threshold_adapted():
+    """Gap 4: UCC evaluate must return reconciler_threshold_adapted
+    in its output dict."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    source = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "reconciler_threshold_adapted" in source, (
+        "UCC evaluate must include reconciler_threshold_adapted in return dict"
+    )
+
+    print("✅ test_ucc_returns_reconciler_threshold_adapted PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -56412,6 +56683,21 @@ def run_all_tests():
     test_ucc_reconciler_threshold_adaptation()
     test_cross_validation_reconciler_stores_initial_threshold()
     test_aeonv3_wires_reconciler_to_ucc()
+
+    # Architectural Unification — Gap Fixes: Provenance Verification,
+    # Config-Aware Registry, Safety Override, Pipeline Cross-Validation
+    test_verify_trace_completeness_returns_structured_result()
+    test_verify_trace_completeness_detects_missing_modules()
+    test_verify_trace_completeness_full_coverage()
+    test_adjust_expected_for_config_removes_disabled_subsystems()
+    test_adjust_expected_for_config_preserves_enabled()
+    test_aeonv3_initializes_registry_with_config_filtering()
+    test_safety_violation_override_forces_trigger()
+    test_safety_violation_override_respects_max_recursions()
+    test_verify_pipeline_wiring_includes_provenance_coverage()
+    test_self_diagnostic_includes_trace_verification()
+    test_verify_coherence_graduated_memory_cv()
+    test_ucc_returns_reconciler_threshold_adapted()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
