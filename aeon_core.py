@@ -14619,13 +14619,31 @@ class ModuleCoherenceVerifier(nn.Module):
     _ADAPT_CAP: float = 0.9
     _RELAX_STEP: float = 0.02  # gradual relaxation when coherence improves
 
-    def __init__(self, hidden_dim: int = 256, threshold: float = 0.5):
+    def __init__(self, hidden_dim: int = 256, threshold: float = 0.5,
+                 semantic_groups: Optional[Dict[str, List[str]]] = None):
         super().__init__()
         self.threshold = threshold
         self._initial_threshold = threshold  # store baseline for relaxation
         # Lightweight projection so each subsystem signal occupies
         # a comparable subspace before similarity comparison.
         self.proj = nn.Linear(hidden_dim, hidden_dim)
+
+        # --- Per-semantic-group projections (optional) ----------------
+        # When *semantic_groups* is provided, each group of subsystems
+        # gets its own learned projection, so semantically distinct
+        # representations (e.g. memory embeddings vs. causal adjacency
+        # vectors) are projected through a space that preserves their
+        # distinctive structure before cross-comparison.  Subsystems
+        # not listed in any group fall back to the shared ``self.proj``.
+        self._subsystem_to_group: Dict[str, str] = {}
+        self.group_projections = nn.ModuleDict()
+        if semantic_groups is not None:
+            for group_name, members in semantic_groups.items():
+                self.group_projections[group_name] = nn.Linear(
+                    hidden_dim, hidden_dim,
+                )
+                for member in members:
+                    self._subsystem_to_group[member] = group_name
 
     def forward(
         self,
@@ -14653,7 +14671,13 @@ class ModuleCoherenceVerifier(nn.Module):
                 "needs_recheck": False,
             }
 
-        projected = {k: self.proj(v) for k, v in states.items()}
+        projected = {}
+        for k, v in states.items():
+            _group = self._subsystem_to_group.get(k)
+            if _group is not None and _group in self.group_projections:
+                projected[k] = self.group_projections[_group](v)
+            else:
+                projected[k] = self.proj(v)
         pairwise: Dict[tuple, torch.Tensor] = {}
         sims = []
         for i in range(len(names)):
@@ -18501,6 +18525,87 @@ class AEONDeltaV3(nn.Module):
         # memory correction.
         ("memory_validation", "memory"),
     ]
+
+    # Canonical mapping from pipeline-dependency node names to model
+    # attribute names.  This single dict is the authoritative source
+    # used by both ``_reasoning_core_impl`` (to gate provenance-DAG
+    # edges for disabled modules) and ``verify_pipeline_wiring`` (to
+    # check that declared dependencies map to initialized modules).
+    #
+    # Previously, these two methods maintained separate local dicts
+    # (``_DAG_NODE_TO_ATTR`` and ``_NODE_ATTR_MAP``) that could
+    # silently diverge — for example, ``deeper_meta_loop`` mapped to
+    # ``recursive_meta_loop`` in one but ``meta_loop`` in the other.
+    # Unifying the mapping at the class level eliminates this category
+    # of inconsistency and ensures that provenance tracing and wiring
+    # verification always agree on the module backing each node.
+    _NODE_ATTR_MAP: Dict[str, str] = {
+        "input": "encoder",
+        "encoder": "encoder",
+        "vq": "vector_quantizer",
+        "meta_loop": "meta_loop",
+        "certified_meta_loop": "certified_meta_loop",
+        "convergence_arbiter": "convergence_arbiter",
+        "slot_binding": "slot_binder",
+        "factor_extraction": "sparse_factors",
+        "topology_analysis": "topology_analyzer",
+        "diversity_analysis": "diversity_metric",
+        "complexity_estimator": "complexity_estimator",
+        "consistency_gate": "consistency_gate",
+        "cross_validation": "cross_validator",
+        "self_report": "self_reporter",
+        "safety": "safety_system",
+        "cognitive_executive": "cognitive_executive",
+        # deeper_meta_loop is backed by the dedicated RecursiveMetaLoop
+        # module, NOT the main meta_loop.  The previous
+        # verify_pipeline_wiring mapping incorrectly pointed to
+        # 'meta_loop', which caused wiring verification to report
+        # deeper_meta_loop edges as verified even when
+        # recursive_meta_loop was disabled.
+        "deeper_meta_loop": "recursive_meta_loop",
+        "world_model": "world_model",
+        "hierarchical_world_model": "hierarchical_world_model",
+        "causal_world_model": "causal_world_model",
+        "memory": "hierarchical_memory",
+        "temporal_memory": "temporal_memory",
+        "neurogenic_memory": "neurogenic_memory",
+        "consolidating_memory": "consolidating_memory",
+        "memory_trust": "trust_scorer",
+        "memory_validation": "memory_validator",
+        "memory_cross_validation": "hierarchical_memory",
+        "mcts_planning": "mcts_planner",
+        "active_learning": "active_learning_planner",
+        # ICM curiosity is a sub-module of active_learning_planner;
+        # the icm_curiosity node maps to the same attribute so the
+        # DAG correctly reflects that both are gated together.
+        "icm_curiosity": "active_learning_planner",
+        "causal_model": "causal_model",
+        "notears_causal": "notears_causal",
+        "causal_programmatic": "causal_programmatic",
+        "causal_dag_consensus": "causal_dag_consensus",
+        "unified_simulator": "unified_simulator",
+        "hybrid_reasoning": "hybrid_reasoning",
+        "ns_bridge": "standalone_ns_bridge",
+        "temporal_knowledge_graph": "temporal_knowledge_graph",
+        "hierarchical_vae": "hierarchical_vae",
+        "causal_context": "causal_context",
+        "rssm": "rssm_cell",
+        "multimodal": "multimodal",
+        "grounded_multimodal": "grounded_multimodal",
+        "integration": "integration_proj",
+        "auto_critic": "auto_critic",
+        # output_reliability is a virtual node gated by the
+        # module_coherence attribute.
+        "output_reliability": "module_coherence",
+        "metacognitive_trigger": "metacognitive_trigger",
+        "error_evolution": "error_evolution",
+        "unified_cognitive_cycle": "unified_cognitive_cycle",
+        "decoder": "decoder",
+        "encoder_reasoning_norm": "encoder_reasoning_norm",
+        "continual_learning": "continual_learning",
+        "feedback_bus": "feedback_bus",
+        "deception_suppressor": "deception_suppressor",
+    }
     
     def __init__(self, config: AEONConfig):
         super().__init__()
@@ -19254,6 +19359,22 @@ class AEONDeltaV3(nn.Module):
             self.module_coherence = ModuleCoherenceVerifier(
                 hidden_dim=config.hidden_dim,
                 threshold=config.module_coherence_threshold,
+                semantic_groups={
+                    "perception": [
+                        "meta_loop", "factor_extraction", "integration",
+                        "grounded_multimodal", "rssm",
+                    ],
+                    "reasoning": [
+                        "causal_model", "world_model", "unified_simulator",
+                        "auto_critic", "mcts_planning", "hierarchical_vae",
+                    ],
+                    "memory": [
+                        "memory", "cognitive_executive",
+                    ],
+                    "safety": [
+                        "safety", "feedback_bus", "decoder",
+                    ],
+                },
             ).to(self.device)
         else:
             self.module_coherence = None
@@ -21370,71 +21491,12 @@ class AEONDeltaV3(nn.Module):
         # provenance DAG accurately reflects the active pipeline,
         # preventing ghost dependencies from appearing in root-cause
         # traces when optional subsystems are not enabled.
-        _DAG_NODE_TO_ATTR = {
-            "world_model": "world_model",
-            "hierarchical_world_model": "hierarchical_world_model",
-            "causal_model": "causal_model",
-            "notears_causal": "notears_causal",
-            "causal_programmatic": "causal_programmatic",
-            "causal_world_model": "causal_world_model",
-            "unified_simulator": "unified_simulator",
-            "hybrid_reasoning": "hybrid_reasoning",
-            "ns_bridge": "standalone_ns_bridge",
-            "hierarchical_vae": "hierarchical_vae",
-            "auto_critic": "auto_critic",
-            "mcts_planning": "mcts_planner",
-            "active_learning": "active_learning_planner",
-            # ICM curiosity is a sub-module of active_learning_planner;
-            # the icm_curiosity node maps to the same attribute so the
-            # DAG correctly reflects that both are gated together.
-            "icm_curiosity": "active_learning_planner",
-            "cognitive_executive": "cognitive_executive",
-            "causal_dag_consensus": "causal_dag_consensus",
-            "certified_meta_loop": "certified_meta_loop",
-            "multimodal": "multimodal",
-            "temporal_knowledge_graph": "temporal_knowledge_graph",
-            "complexity_estimator": "complexity_estimator",
-            "unified_cognitive_cycle": "unified_cognitive_cycle",
-            # ── Nodes previously missing from the mapping ──────────
-            # Without these entries the provenance DAG silently
-            # dropped edges referencing unmapped nodes, breaking
-            # trace_root_cause() for roughly half the pipeline.
-            "slot_binding": "slot_binder",
-            "factor_extraction": "sparse_factors",
-            "consistency_gate": "consistency_gate",
-            "self_report": "self_reporter",
-            "safety": "safety_system",
-            "memory": "hierarchical_memory",
-            "cross_validation": "cross_validator",
-            "deeper_meta_loop": "recursive_meta_loop",
-            "diversity_analysis": "diversity_metric",
-            "topology_analysis": "topology_analyzer",
-            "metacognitive_trigger": "metacognitive_trigger",
-            "error_evolution": "error_evolution",
-            "causal_context": "causal_context",
-            "convergence_arbiter": "convergence_arbiter",
-            "memory_validation": "memory_validator",
-            "memory_trust": "trust_scorer",
-            "neurogenic_memory": "neurogenic_memory",
-            "temporal_memory": "temporal_memory",
-            "consolidating_memory": "consolidating_memory",
-            "vq": "vector_quantizer",
-            "continual_learning": "continual_learning",
-            "grounded_multimodal": "grounded_multimodal",
-            "encoder_reasoning_norm": "encoder_reasoning_norm",
-            "decoder": "decoder",
-            "deception_suppressor": "deception_suppressor",
-            # output_reliability is a virtual node gated by the same
-            # module_coherence attribute used in verify_pipeline_wiring.
-            # Without this mapping, edges referencing output_reliability
-            # are always registered even when module_coherence is
-            # disabled, creating phantom edges in the provenance DAG.
-            "output_reliability": "module_coherence",
-        }
+        _attr_map = self._NODE_ATTR_MAP
         for _up, _down in self._PIPELINE_DEPENDENCIES:
-            # Skip edge if either node maps to a disabled (None) module
-            _up_attr = _DAG_NODE_TO_ATTR.get(_up)
-            _down_attr = _DAG_NODE_TO_ATTR.get(_down)
+            # Skip edge if either node maps to a disabled (None) module.
+            # Uses the unified class-level _NODE_ATTR_MAP.
+            _up_attr = _attr_map.get(_up)
+            _down_attr = _attr_map.get(_down)
             if _up_attr is not None and getattr(self, _up_attr, None) is None:
                 continue
             if _down_attr is not None and getattr(self, _down_attr, None) is None:
@@ -21496,14 +21558,21 @@ class AEONDeltaV3(nn.Module):
         if self.metacognitive_trigger is not None:
             self.metacognitive_trigger.reset()
         
-        # 0. Reset per-pass causal quality to 1.0 (perfect) so that
-        # stale degraded values from a prior pass — where causal models
-        # ran and detected issues — do not persist when complexity gating
-        # skips causal models in the current pass.  Each causal model
-        # that runs will overwrite or min-degrade this value; if none
-        # run, quality correctly defaults to "unknown = assume OK" for
-        # this pass.
-        self._cached_causal_quality = 1.0
+        # 0. EMA-decay causal quality toward 1.0 (perfect).
+        # Instead of a hard reset, retain 20 % of the previous pass's
+        # quality so that *chronic* causal degradation (e.g. persistent
+        # DAG constraint violations) is still visible for 3–4 passes
+        # before it fades.  This closes the gap where a single good
+        # pass could completely erase evidence of prior causal issues,
+        # preventing the metacognitive trigger from detecting recurring
+        # patterns.  If no causal model runs in this pass, quality
+        # stays near 1.0 (≥ 0.8 after one degraded pass).
+        _CAUSAL_QUALITY_EMA_DECAY = 0.8
+        self._cached_causal_quality = min(
+            1.0,
+            _CAUSAL_QUALITY_EMA_DECAY * 1.0
+            + (1.0 - _CAUSAL_QUALITY_EMA_DECAY) * self._cached_causal_quality,
+        )
 
         # 0. Circuit breaker — tracks which pipeline stages failed during
         # this forward pass.  Downstream modules consult this set to
@@ -34925,71 +34994,16 @@ class AEONDeltaV3(nn.Module):
                   whose upstream or downstream module is None.
                 - ``wiring_coverage``: fraction of edges verified ∈ [0, 1].
         """
-        # Map pipeline-dependency node names to model attribute names.
-        # Most nodes map directly; a few use different attribute names.
-        _NODE_ATTR_MAP: Dict[str, str] = {
-            'input': 'encoder',
-            'encoder': 'encoder',
-            'vq': 'vector_quantizer',
-            'meta_loop': 'meta_loop',
-            'certified_meta_loop': 'certified_meta_loop',
-            'convergence_arbiter': 'convergence_arbiter',
-            'slot_binding': 'slot_binder',
-            'factor_extraction': 'sparse_factors',
-            'topology_analysis': 'topology_analyzer',
-            'diversity_analysis': 'diversity_metric',
-            'complexity_estimator': 'complexity_estimator',
-            'consistency_gate': 'consistency_gate',
-            'cross_validation': 'cross_validator',
-            'self_report': 'self_reporter',
-            'safety': 'safety_system',
-            'cognitive_executive': 'cognitive_executive',
-            'deeper_meta_loop': 'meta_loop',
-            'world_model': 'world_model',
-            'hierarchical_world_model': 'hierarchical_world_model',
-            'causal_world_model': 'causal_world_model',
-            'memory': 'hierarchical_memory',
-            'temporal_memory': 'temporal_memory',
-            'neurogenic_memory': 'neurogenic_memory',
-            'consolidating_memory': 'consolidating_memory',
-            'memory_trust': 'trust_scorer',
-            'memory_validation': 'memory_validator',
-            'memory_cross_validation': 'hierarchical_memory',
-            'mcts_planning': 'mcts_planner',
-            'active_learning': 'active_learning_planner',
-            'icm_curiosity': 'active_learning_planner',
-            'causal_model': 'causal_model',
-            'notears_causal': 'notears_causal',
-            'causal_programmatic': 'causal_programmatic',
-            'causal_dag_consensus': 'causal_dag_consensus',
-            'unified_simulator': 'unified_simulator',
-            'hybrid_reasoning': 'hybrid_reasoning',
-            'ns_bridge': 'standalone_ns_bridge',
-            'temporal_knowledge_graph': 'temporal_knowledge_graph',
-            'hierarchical_vae': 'hierarchical_vae',
-            'causal_context': 'causal_context',
-            'rssm': 'rssm_cell',
-            'multimodal': 'multimodal',
-            'grounded_multimodal': 'grounded_multimodal',
-            'integration': 'integration_proj',
-            'auto_critic': 'auto_critic',
-            'output_reliability': 'module_coherence',
-            'metacognitive_trigger': 'metacognitive_trigger',
-            'error_evolution': 'error_evolution',
-            'unified_cognitive_cycle': 'unified_cognitive_cycle',
-            'decoder': 'decoder',
-            'encoder_reasoning_norm': 'encoder_reasoning_norm',
-            'continual_learning': 'continual_learning',
-            'feedback_bus': 'feedback_bus',
-            'deception_suppressor': 'deception_suppressor',
-        }
+        # Use the class-level _NODE_ATTR_MAP (authoritative source for
+        # node-to-attribute mapping, shared with _reasoning_core_impl).
+        _attr_map = self._NODE_ATTR_MAP
 
         verified_edges: List[Tuple[str, str]] = []
         missing_edges: List[Dict[str, str]] = []
 
         for upstream, downstream in self._PIPELINE_DEPENDENCIES:
-            up_attr = _NODE_ATTR_MAP.get(upstream, upstream)
-            down_attr = _NODE_ATTR_MAP.get(downstream, downstream)
+            up_attr = _attr_map.get(upstream, upstream)
+            down_attr = _attr_map.get(downstream, downstream)
             up_ok = getattr(self, up_attr, None) is not None
             down_ok = getattr(self, down_attr, None) is not None
 
