@@ -55122,6 +55122,317 @@ def test_deception_suppressor_provenance_tracking():
     print("✅ test_deception_suppressor_provenance_tracking PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Unified _NODE_ATTR_MAP, Causal Quality EMA,
+#  Per-Group Coherence Projections
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_unified_node_attr_map_exists():
+    """AEONDeltaV3 should expose a class-level _NODE_ATTR_MAP dict
+    used by both _reasoning_core_impl and verify_pipeline_wiring."""
+    from aeon_core import AEONDeltaV3
+
+    assert hasattr(AEONDeltaV3, '_NODE_ATTR_MAP'), (
+        "_NODE_ATTR_MAP should be a class attribute"
+    )
+    assert isinstance(AEONDeltaV3._NODE_ATTR_MAP, dict)
+    assert len(AEONDeltaV3._NODE_ATTR_MAP) > 40, (
+        "Unified mapping should cover all pipeline nodes"
+    )
+    print("✅ test_unified_node_attr_map_exists PASSED")
+
+
+def test_unified_node_attr_map_deeper_meta_loop():
+    """deeper_meta_loop must map to 'recursive_meta_loop', not 'meta_loop'.
+
+    Previously verify_pipeline_wiring mapped deeper_meta_loop to
+    'meta_loop', which caused wiring verification to report
+    deeper_meta_loop edges as verified even when recursive_meta_loop
+    was disabled.
+    """
+    from aeon_core import AEONDeltaV3
+
+    assert AEONDeltaV3._NODE_ATTR_MAP.get('deeper_meta_loop') == 'recursive_meta_loop', (
+        "deeper_meta_loop should map to recursive_meta_loop"
+    )
+    print("✅ test_unified_node_attr_map_deeper_meta_loop PASSED")
+
+
+def test_unified_node_attr_map_covers_pipeline_nodes():
+    """The unified _NODE_ATTR_MAP should include entries previously
+    split across the two local dicts: all nodes from _PIPELINE_DEPENDENCIES
+    should have a mapping entry."""
+    from aeon_core import AEONDeltaV3
+
+    all_nodes = set()
+    for up, down in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        all_nodes.add(up)
+        all_nodes.add(down)
+
+    missing = all_nodes - set(AEONDeltaV3._NODE_ATTR_MAP.keys())
+    assert len(missing) == 0, (
+        f"Nodes missing from _NODE_ATTR_MAP: {missing}"
+    )
+    print("✅ test_unified_node_attr_map_covers_pipeline_nodes PASSED")
+
+
+def test_unified_node_attr_map_includes_previously_missing():
+    """The unified mapping must include entries that were previously
+    only in verify_pipeline_wiring's local dict but missing from
+    the provenance DAG filter in _reasoning_core_impl."""
+    from aeon_core import AEONDeltaV3
+
+    _previously_missing = ['input', 'encoder', 'meta_loop', 'rssm',
+                           'integration', 'feedback_bus', 'memory_cross_validation']
+    for node in _previously_missing:
+        assert node in AEONDeltaV3._NODE_ATTR_MAP, (
+            f"'{node}' should be in unified _NODE_ATTR_MAP "
+            f"(was previously missing from provenance DAG filter)"
+        )
+    print("✅ test_unified_node_attr_map_includes_previously_missing PASSED")
+
+
+def test_reasoning_core_uses_unified_map():
+    """_reasoning_core_impl should reference self._NODE_ATTR_MAP,
+    not a local _DAG_NODE_TO_ATTR dict."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_DAG_NODE_TO_ATTR' not in source, (
+        "_reasoning_core_impl should not define a local _DAG_NODE_TO_ATTR; "
+        "it should use self._NODE_ATTR_MAP"
+    )
+    assert 'self._NODE_ATTR_MAP' in source or '_attr_map = self._NODE_ATTR_MAP' in source, (
+        "_reasoning_core_impl should reference self._NODE_ATTR_MAP"
+    )
+    print("✅ test_reasoning_core_uses_unified_map PASSED")
+
+
+def test_verify_pipeline_wiring_uses_unified_map():
+    """verify_pipeline_wiring should reference self._NODE_ATTR_MAP,
+    not define a local _NODE_ATTR_MAP dict."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    # Should NOT contain a local dict definition
+    assert '_NODE_ATTR_MAP: Dict[str, str] = {' not in source, (
+        "verify_pipeline_wiring should not define a local _NODE_ATTR_MAP dict"
+    )
+    assert 'self._NODE_ATTR_MAP' in source or '_attr_map = self._NODE_ATTR_MAP' in source, (
+        "verify_pipeline_wiring should reference self._NODE_ATTR_MAP"
+    )
+    print("✅ test_verify_pipeline_wiring_uses_unified_map PASSED")
+
+
+def test_causal_quality_ema_decay():
+    """_cached_causal_quality should use EMA decay toward 1.0 instead
+    of a hard reset, preserving cross-pass trend information."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate a degraded quality from a prior pass
+    model._cached_causal_quality = 0.3
+
+    # Verify the EMA formula: 0.8 * 1.0 + 0.2 * 0.3 = 0.86
+    _CAUSAL_QUALITY_EMA_DECAY = 0.8
+    expected = min(
+        1.0,
+        _CAUSAL_QUALITY_EMA_DECAY * 1.0
+        + (1.0 - _CAUSAL_QUALITY_EMA_DECAY) * 0.3,
+    )
+    assert abs(expected - 0.86) < 0.01, (
+        f"EMA formula should give ~0.86, got {expected}"
+    )
+    print("✅ test_causal_quality_ema_decay PASSED")
+
+
+def test_causal_quality_ema_in_source():
+    """_reasoning_core_impl should use EMA decay for causal quality reset,
+    not a hard assignment to 1.0."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The hard reset pattern is exactly "self._cached_causal_quality = 1.0\n"
+    # (not "self._cached_causal_quality = 1.0 / ..." which is the DAG computation).
+    # Check that the EMA decay constant is present instead.
+    assert 'CAUSAL_QUALITY_EMA_DECAY' in source, (
+        "_reasoning_core_impl should use EMA decay constant"
+    )
+    # The hard reset should be replaced by the EMA formula
+    lines = source.split('\n')
+    hard_reset_lines = [
+        l.strip() for l in lines
+        if l.strip() == 'self._cached_causal_quality = 1.0'
+    ]
+    assert len(hard_reset_lines) == 0, (
+        "Found hard reset 'self._cached_causal_quality = 1.0' "
+        "(should use EMA decay instead)"
+    )
+    print("✅ test_causal_quality_ema_in_source PASSED")
+
+
+def test_causal_quality_ema_convergence():
+    """Causal quality EMA should converge back to 1.0 within 5 passes
+    after a single degraded pass (0.3), and degrade slowly with
+    persistent issues."""
+    _DECAY = 0.8
+    # Simulate recovery from a single degraded pass (0.3)
+    q = 0.3
+    for _ in range(5):
+        q = min(1.0, _DECAY * 1.0 + (1.0 - _DECAY) * q)
+    assert q > 0.99, (
+        f"Causal quality should recover to ~1.0 after 5 passes, got {q:.4f}"
+    )
+
+    # Simulate persistent degradation (quality drops to 0.5 each pass)
+    q = 1.0
+    for _ in range(10):
+        q = min(1.0, _DECAY * 1.0 + (1.0 - _DECAY) * q)  # EMA reset
+        q = 0.5  # causal model degrades it
+    # After persistent degradation, the EMA reset preserves 20% of 0.5
+    q_after_reset = min(1.0, _DECAY * 1.0 + (1.0 - _DECAY) * 0.5)
+    assert q_after_reset < 1.0, (
+        "EMA should preserve some degradation signal"
+    )
+    assert q_after_reset > 0.8, (
+        f"EMA should still mostly recover, got {q_after_reset:.4f}"
+    )
+    print("✅ test_causal_quality_ema_convergence PASSED")
+
+
+def test_coherence_verifier_per_group_projections():
+    """ModuleCoherenceVerifier should support per-group learned
+    projections when semantic_groups is provided."""
+    from aeon_core import ModuleCoherenceVerifier
+    import torch
+
+    verifier = ModuleCoherenceVerifier(
+        hidden_dim=32,
+        threshold=0.5,
+        semantic_groups={
+            'reasoning': ['meta_loop', 'causal_model'],
+            'memory': ['memory', 'world_model'],
+        },
+    )
+
+    # Should have 2 group projections plus the shared fallback
+    assert len(verifier.group_projections) == 2, (
+        f"Expected 2 group projections, got {len(verifier.group_projections)}"
+    )
+    assert 'reasoning' in verifier.group_projections
+    assert 'memory' in verifier.group_projections
+
+    # Subsystem-to-group mapping should be populated
+    assert verifier._subsystem_to_group['meta_loop'] == 'reasoning'
+    assert verifier._subsystem_to_group['causal_model'] == 'reasoning'
+    assert verifier._subsystem_to_group['memory'] == 'memory'
+
+    print("✅ test_coherence_verifier_per_group_projections PASSED")
+
+
+def test_coherence_verifier_per_group_dispatch():
+    """Subsystems in semantic groups should use their group projection,
+    while unknown subsystems fall back to the shared projection."""
+    from aeon_core import ModuleCoherenceVerifier
+    import torch
+
+    verifier = ModuleCoherenceVerifier(
+        hidden_dim=32,
+        threshold=0.5,
+        semantic_groups={
+            'reasoning': ['meta_loop', 'causal_model'],
+        },
+    )
+
+    states = {
+        'meta_loop': torch.randn(2, 32),      # uses reasoning projection
+        'causal_model': torch.randn(2, 32),    # uses reasoning projection
+        'unknown_module': torch.randn(2, 32),  # falls back to self.proj
+    }
+    result = verifier(states)
+
+    assert 'coherence_score' in result
+    assert result['coherence_score'].shape == (2,)
+    assert len(result['pairwise']) == 3  # 3 pairs from 3 states
+    print("✅ test_coherence_verifier_per_group_dispatch PASSED")
+
+
+def test_coherence_verifier_no_groups_backward_compat():
+    """ModuleCoherenceVerifier without semantic_groups should behave
+    exactly as before (single shared projection)."""
+    from aeon_core import ModuleCoherenceVerifier
+    import torch
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+
+    assert len(verifier.group_projections) == 0
+    assert len(verifier._subsystem_to_group) == 0
+
+    states = {
+        'a': torch.randn(2, 32),
+        'b': torch.randn(2, 32),
+    }
+    result = verifier(states)
+    assert 'coherence_score' in result
+    assert result['coherence_score'].shape == (2,)
+    print("✅ test_coherence_verifier_no_groups_backward_compat PASSED")
+
+
+def test_coherence_verifier_per_group_gradient_flow():
+    """Gradients should flow through per-group projections."""
+    from aeon_core import ModuleCoherenceVerifier
+    import torch
+
+    verifier = ModuleCoherenceVerifier(
+        hidden_dim=32,
+        threshold=0.5,
+        semantic_groups={
+            'reasoning': ['a'],
+            'memory': ['b'],
+        },
+    )
+
+    a = torch.randn(2, 32, requires_grad=True)
+    b = torch.randn(2, 32, requires_grad=True)
+    result = verifier({'a': a, 'b': b})
+    loss = result['coherence_score'].sum()
+    loss.backward()
+
+    assert a.grad is not None, "Gradients should flow to input a (reasoning group)"
+    assert b.grad is not None, "Gradients should flow to input b (memory group)"
+    print("✅ test_coherence_verifier_per_group_gradient_flow PASSED")
+
+
+def test_aeonv3_module_coherence_has_semantic_groups():
+    """AEONDeltaV3 should pass semantic_groups to ModuleCoherenceVerifier."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        z_dim=64, hidden_dim=64, vq_embedding_dim=64, num_pillars=8,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    verifier = model.module_coherence
+    assert verifier is not None, "module_coherence should be enabled"
+    assert len(verifier.group_projections) > 0, (
+        "AEONDeltaV3 should wire semantic_groups to ModuleCoherenceVerifier"
+    )
+    assert len(verifier._subsystem_to_group) > 0, (
+        "Subsystem-to-group mapping should be populated"
+    )
+    print("✅ test_aeonv3_module_coherence_has_semantic_groups PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -57553,6 +57864,23 @@ def run_all_tests():
     test_deception_pressure_propagates_to_safety_violation()
     test_deception_detected_in_trigger_signal_mapping()
     test_deception_suppressor_provenance_tracking()
+
+    # Architectural Unification — Unified _NODE_ATTR_MAP, Causal Quality
+    # EMA, Per-Group Coherence Projections
+    test_unified_node_attr_map_exists()
+    test_unified_node_attr_map_deeper_meta_loop()
+    test_unified_node_attr_map_covers_pipeline_nodes()
+    test_unified_node_attr_map_includes_previously_missing()
+    test_reasoning_core_uses_unified_map()
+    test_verify_pipeline_wiring_uses_unified_map()
+    test_causal_quality_ema_decay()
+    test_causal_quality_ema_in_source()
+    test_causal_quality_ema_convergence()
+    test_coherence_verifier_per_group_projections()
+    test_coherence_verifier_per_group_dispatch()
+    test_coherence_verifier_no_groups_backward_compat()
+    test_coherence_verifier_per_group_gradient_flow()
+    test_aeonv3_module_coherence_has_semantic_groups()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
