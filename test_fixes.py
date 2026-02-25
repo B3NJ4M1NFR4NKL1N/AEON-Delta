@@ -54478,6 +54478,87 @@ def test_self_diagnostic_includes_uncertainty_propagation():
     print("✅ test_self_diagnostic_includes_uncertainty_propagation PASSED")
 
 
+def test_convergence_secondary_signals_in_feedback_bus():
+    """Architectural Unification: convergence_monitor.get_secondary_signals()
+    must be consumed by _build_feedback_extra_signals() and surfaced as the
+    convergence_secondary_pressure signal on the feedback bus."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=31000, hidden_dim=64, z_dim=64,
+        meta_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+
+    # Signal must be registered on the feedback bus
+    assert 'convergence_secondary_pressure' in model.feedback_bus._extra_signals, (
+        "convergence_secondary_pressure must be registered on feedback bus"
+    )
+
+    # With no secondary signals, pressure should not appear
+    extra_before = model._build_feedback_extra_signals()
+    assert 'convergence_secondary_pressure' not in extra_before, (
+        "convergence_secondary_pressure should not appear when no secondary signals recorded"
+    )
+
+    # Record a secondary signal on the convergence monitor
+    model.convergence_monitor.record_secondary_signal('world_model_surprise', 0.7)
+    extra_after = model._build_feedback_extra_signals()
+    assert 'convergence_secondary_pressure' in extra_after, (
+        "convergence_secondary_pressure must appear when secondary signals are elevated"
+    )
+    assert 0.0 < extra_after['convergence_secondary_pressure'] <= 1.0, (
+        f"convergence_secondary_pressure out of range: {extra_after['convergence_secondary_pressure']}"
+    )
+    print("✅ test_convergence_secondary_signals_in_feedback_bus PASSED")
+
+
+def test_verify_coherence_correction_recorded_in_provenance():
+    """Architectural Unification: verify_coherence() blend_weakest_pair
+    corrections must be recorded in the provenance tracker so that
+    coherence corrections are traceable via root-cause analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_coherence)
+    # The correction block must use provenance_tracker.record_before and
+    # record_after so corrections are traceable
+    assert 'provenance_tracker.record_before' in source, (
+        "verify_coherence must record_before in provenance_tracker "
+        "when applying blend_weakest_pair corrections"
+    )
+    assert 'provenance_tracker.record_after' in source, (
+        "verify_coherence must record_after in provenance_tracker "
+        "when applying blend_weakest_pair corrections"
+    )
+    # The correction must also be recorded in causal trace
+    assert 'blend_weakest_pair' in source and 'causal_trace' in source, (
+        "verify_coherence must record blend_weakest_pair corrections "
+        "in causal_trace for temporal traceability"
+    )
+    print("✅ test_verify_coherence_correction_recorded_in_provenance PASSED")
+
+
+def test_self_diagnostic_includes_convergence_secondary_feedback():
+    """Architectural Unification: self_diagnostic must verify that
+    convergence_secondary_pressure is registered on the feedback bus,
+    detecting if the convergence secondary → feedback loop is broken."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert 'convergence_secondary_pressure' in source, (
+        "self_diagnostic must check convergence_secondary_pressure "
+        "in feedback bus closure verification"
+    )
+    assert 'convergence_secondary_feedback' in source, (
+        "self_diagnostic must include convergence_secondary_feedback "
+        "gap component for missing convergence secondary signals"
+    )
+    print("✅ test_self_diagnostic_includes_convergence_secondary_feedback PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -56871,6 +56952,12 @@ def run_all_tests():
     test_verify_coherence_includes_provenance_root_cause()
     test_verify_coherence_root_cause_functional()
     test_self_diagnostic_includes_uncertainty_propagation()
+
+    # Architectural Unification — Convergence Secondary Signals Feedback,
+    # Verify-Coherence Provenance Tracking, Self-Diagnostic Coverage
+    test_convergence_secondary_signals_in_feedback_bus()
+    test_verify_coherence_correction_recorded_in_provenance()
+    test_self_diagnostic_includes_convergence_secondary_feedback()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
