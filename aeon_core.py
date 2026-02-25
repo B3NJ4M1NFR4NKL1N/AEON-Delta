@@ -16626,6 +16626,11 @@ class UnifiedCognitiveCycle:
             ``dag_adjacency_matrices`` in :meth:`evaluate`, structural
             disagreement feeds into the uncertainty tracker and
             metacognitive trigger.
+        coherence_registry: Optional :class:`SubsystemCoherenceRegistry`
+            tracking which subsystems produced validated outputs.  When
+            provided, the coverage deficit is automatically blended into
+            the coherence assessment so that missing subsystem outputs
+            degrade confidence and trigger re-reasoning.
     """
 
     def __init__(
@@ -16640,6 +16645,7 @@ class UnifiedCognitiveCycle:
         uncertainty_tracker: Optional['DirectionalUncertaintyTracker'] = None,
         memory_validator: Optional['MemoryReasoningValidator'] = None,
         causal_dag_consensus: Optional['CausalDAGConsensus'] = None,
+        coherence_registry: Optional['SubsystemCoherenceRegistry'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -16651,6 +16657,7 @@ class UnifiedCognitiveCycle:
         self.uncertainty_tracker = uncertainty_tracker
         self.memory_validator = memory_validator
         self.causal_dag_consensus = causal_dag_consensus
+        self.coherence_registry = coherence_registry
 
         # Cross-pass coherence trend tracking — EMA of coherence deficit
         # across successive evaluate() calls.  When coherence is
@@ -16715,6 +16722,7 @@ class UnifiedCognitiveCycle:
         feedback_bus_trend: Optional[torch.Tensor] = None,
         decoder_quality: Optional[float] = None,
         ns_consistency_score: Optional[float] = None,
+        coverage_deficit: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -16763,6 +16771,14 @@ class UnifiedCognitiveCycle:
                 rule violations explicitly inform the meta-cognitive cycle,
                 closing the gap where NS consistency results were only
                 indirectly reflected via the safety_violation flag.
+            coverage_deficit: Optional subsystem coverage deficit ∈ [0, 1]
+                from :class:`SubsystemCoherenceRegistry`.  When provided
+                (or read from the wired registry), a high deficit boosts
+                the coherence_deficit signal and feeds into the
+                metacognitive trigger, ensuring that missing subsystem
+                outputs degrade confidence and trigger re-reasoning.
+                When ``None`` and a ``coherence_registry`` was provided
+                at construction, the deficit is read automatically.
 
         Returns:
             Dict with:
@@ -16923,6 +16939,22 @@ class UnifiedCognitiveCycle:
             }
             coherence_deficit = 0.0
             needs_recheck = False
+
+        # 2-cov. Coverage deficit integration — when a coherence registry
+        # is available, its coverage deficit represents the fraction of
+        # expected subsystems that failed to produce validated outputs.
+        # Blending this into coherence_deficit ensures that *missing*
+        # outputs degrade confidence alongside *misaligned* outputs,
+        # closing the gap where unverified subsystems were invisible to
+        # the UCC's coherence assessment.
+        _registry_coverage_deficit = coverage_deficit
+        if _registry_coverage_deficit is None and self.coherence_registry is not None:
+            _registry_coverage_deficit = self.coherence_registry.get_coverage_deficit()
+        if _registry_coverage_deficit is not None and _registry_coverage_deficit > 0.0:
+            _cov_boost = _registry_coverage_deficit * 0.3
+            coherence_deficit = min(1.0, coherence_deficit + _cov_boost)
+            if _registry_coverage_deficit > 0.3:
+                needs_recheck = True
 
         # Record coherence deficit in error evolution if significant.
         # Enrich with provenance attribution so downstream root-cause
@@ -17724,6 +17756,7 @@ class UnifiedCognitiveCycle:
                 'pass_count': self._coherence_trend_count,
             },
             'convergence_certificate': convergence_certificate or {},
+            'coverage_deficit': _registry_coverage_deficit or 0.0,
         }
 
     def reset(self) -> None:
@@ -19358,6 +19391,7 @@ class AEONDeltaV3(nn.Module):
                     uncertainty_tracker=self.uncertainty_tracker,
                     memory_validator=self.memory_validator,
                     causal_dag_consensus=self.causal_dag_consensus,
+                    coherence_registry=self.coherence_registry,
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -33724,6 +33758,31 @@ class AEONDeltaV3(nn.Module):
                     'Register coverage_deficit_pressure signal in '
                     'CognitiveFeedbackBus and populate from '
                     '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Coherence registry → UCC closure ---
+        # Verify that the subsystem coherence registry is wired into the
+        # UnifiedCognitiveCycle so coverage deficit influences coherence
+        # assessment and metacognitive trigger decisions.
+        if (self.unified_cognitive_cycle is not None
+                and getattr(self.unified_cognitive_cycle, 'coherence_registry', None)
+                is self.coherence_registry):
+            verified.append(
+                'coherence_registry → unified_cognitive_cycle '
+                '(coverage deficit feeds UCC coherence assessment)'
+            )
+        elif self.unified_cognitive_cycle is not None:
+            gaps.append({
+                'component': 'coherence_registry_ucc',
+                'gap': (
+                    'Coherence registry not wired into '
+                    'UnifiedCognitiveCycle — coverage deficit '
+                    'invisible to UCC coherence assessment'
+                ),
+                'remediation': (
+                    'Pass coherence_registry to UnifiedCognitiveCycle '
+                    'constructor'
                 ),
             })
 
