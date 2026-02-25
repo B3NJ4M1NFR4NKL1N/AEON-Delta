@@ -18765,6 +18765,17 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "memory_cv_disagreement", default=0.0,
         )
+        # Convergence secondary signal pressure — when the convergence
+        # monitor's auxiliary subsystem health indicators (world_model_surprise,
+        # safety_violation, executive_health, etc.) are elevated, this signal
+        # conditions the next pass's meta-loop to demand tighter convergence.
+        # This closes the gap where secondary signals were recorded in the
+        # convergence monitor and used internally for the convergence verdict,
+        # but never surfaced through the feedback bus for cross-pass
+        # meta-loop conditioning.
+        self.feedback_bus.register_signal(
+            "convergence_secondary_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -20351,6 +20362,24 @@ class AEONDeltaV3(nn.Module):
             extra["memory_cv_disagreement"] = max(
                 0.0, min(1.0, 1.0 - _mem_cv_sim),
             )
+        # Convergence secondary signal pressure — surface the convergence
+        # monitor's accumulated secondary signals (world_model_surprise,
+        # safety_violation, executive_health, decoder_quality, etc.) into
+        # the feedback bus.  These signals are recorded by the UCC's
+        # evaluate() method but were never consumed by anything: the
+        # get_secondary_signals() accessor existed with no callers.  This
+        # closes the feedback loop: convergence monitor secondary signals
+        # → feedback bus → next pass's meta-loop conditioning, ensuring
+        # that auxiliary subsystem instability persists across passes as
+        # a conditioning signal rather than being discarded after the
+        # convergence verdict.
+        _conv_sec = self.convergence_monitor.get_secondary_signals()
+        if _conv_sec:
+            _sec_mean = sum(_conv_sec.values()) / max(len(_conv_sec), 1)
+            if _sec_mean > 0.1:
+                extra["convergence_secondary_pressure"] = max(
+                    0.0, min(1.0, _sec_mean),
+                )
         return extra
 
     @staticmethod
@@ -34396,6 +34425,41 @@ class AEONDeltaV3(nn.Module):
                 ),
             })
 
+        # --- Convergence secondary signals → feedback bus closure ---
+        # Verify that the convergence monitor's accumulated secondary
+        # signals (world_model_surprise, safety_violation, executive_health,
+        # etc.) are surfaced through the feedback bus via
+        # convergence_secondary_pressure.  Without this, secondary signals
+        # influence the within-pass convergence verdict but are discarded
+        # at the end of the pass, leaving the next pass's meta-loop blind
+        # to persistent auxiliary subsystem instability.
+        if (self.feedback_bus is not None
+                and 'convergence_secondary_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'convergence_monitor.get_secondary_signals() → '
+                'feedback_bus.convergence_secondary_pressure '
+                '→ meta_loop (auxiliary subsystem instability persists '
+                'across passes)'
+            )
+        elif self.feedback_bus is not None:
+            gaps.append({
+                'component': 'convergence_secondary_feedback',
+                'gap': (
+                    'Convergence monitor records secondary signals '
+                    '(world_model_surprise, safety_violation, '
+                    'executive_health, etc.) but '
+                    'convergence_secondary_pressure signal not registered '
+                    'in feedback bus — auxiliary instability invisible to '
+                    'cross-pass meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register convergence_secondary_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals() using '
+                    'convergence_monitor.get_secondary_signals()'
+                ),
+            })
+
         # --- Self-report state → verify_coherence wiring ---
         # Verify that _cached_self_report_state participates in
         # verify_coherence()'s pairwise coherence check so that
@@ -35009,6 +35073,38 @@ class AEONDeltaV3(nn.Module):
                 if attr_name is not None and label in corrected:
                     setattr(self, attr_name, corrected[label].detach())
             result["correction_applied"] = True
+
+            # Record the coherence correction in the provenance tracker
+            # so that blend_weakest_pair adjustments are traceable via
+            # root-cause analysis.  Without this, corrections applied
+            # by verify_coherence() were invisible to the provenance
+            # chain, violating the requirement that all conclusions
+            # can be traced back to their root causes.
+            _corr_modules = _weakest.get("modules", [])
+            for _corr_label in _corr_modules:
+                _corr_tensor = corrected.get(_corr_label)
+                if _corr_tensor is not None and isinstance(_corr_tensor, torch.Tensor):
+                    self.provenance_tracker.record_before(
+                        f"verify_coherence/{_corr_label}",
+                        subsystem_states.get(_corr_label, _corr_tensor),
+                    )
+                    self.provenance_tracker.record_after(
+                        f"verify_coherence/{_corr_label}",
+                        _corr_tensor,
+                    )
+            # Record correction in causal trace for temporal traceability
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem='verify_coherence',
+                    decision=f"blend_weakest_pair: {_corr_modules}",
+                    metadata={
+                        'correction_applied': True,
+                        'weakest_pair': str(_weakest),
+                        'modules_corrected': _corr_modules,
+                        'similarity_before': _weakest.get('similarity', 0.0),
+                    },
+                    severity='warning',
+                )
 
         # Include scalar subsystem states as auxiliary coherence signals
         # so that diversity collapse, topology instability, and NS-rule
