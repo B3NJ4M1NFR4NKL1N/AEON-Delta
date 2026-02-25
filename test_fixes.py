@@ -52324,6 +52324,295 @@ def test_safety_violation_cached_in_reasoning_core():
     print("✅ test_safety_violation_cached_in_reasoning_core PASSED")
 
 
+def test_feedback_bus_coverage_deficit_registered():
+    """Verify coverage_deficit_pressure signal is registered in the feedback bus
+    so the coherence registry output actually reaches the meta-loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert "coverage_deficit_pressure" in model.feedback_bus._extra_signals, (
+        "coverage_deficit_pressure must be registered in feedback bus "
+        "so coverage deficit is visible to meta-loop conditioning"
+    )
+    print("✅ test_feedback_bus_coverage_deficit_registered PASSED")
+
+
+def test_feedback_bus_trace_incomplete_registered():
+    """Verify trace_incomplete_pressure signal is registered in the feedback bus
+    so provenance trace failures condition the next pass's meta-loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert "trace_incomplete_pressure" in model.feedback_bus._extra_signals, (
+        "trace_incomplete_pressure must be registered in feedback bus "
+        "so unverifiable provenance triggers deeper reasoning"
+    )
+    print("✅ test_feedback_bus_trace_incomplete_registered PASSED")
+
+
+def test_feedback_bus_dag_acyclicity_registered():
+    """Verify dag_acyclicity_pressure signal is registered in the feedback bus
+    so DAG cycle detection conditions the next pass's meta-loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert "dag_acyclicity_pressure" in model.feedback_bus._extra_signals, (
+        "dag_acyclicity_pressure must be registered in feedback bus "
+        "so DAG cycles trigger deeper reasoning"
+    )
+    print("✅ test_feedback_bus_dag_acyclicity_registered PASSED")
+
+
+def test_feedback_bus_safety_violation_registered():
+    """Verify safety_violation_pressure signal is registered in the feedback bus
+    so safety violations propagate across passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert "safety_violation_pressure" in model.feedback_bus._extra_signals, (
+        "safety_violation_pressure must be registered in feedback bus "
+        "so safety violations condition next-pass reasoning"
+    )
+    print("✅ test_feedback_bus_safety_violation_registered PASSED")
+
+
+def test_build_feedback_includes_trace_incomplete():
+    """When _cached_trace_incomplete is True, _build_feedback_extra_signals
+    must include trace_incomplete_pressure=1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    # Default: trace not incomplete → no signal
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("trace_incomplete_pressure", 0.0) == 0.0, (
+        "trace_incomplete_pressure should be absent when trace is complete"
+    )
+    # Set trace_incomplete → signal appears
+    model._cached_trace_incomplete = True
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("trace_incomplete_pressure") == 1.0, (
+        "trace_incomplete_pressure must be 1.0 when trace is incomplete"
+    )
+    print("✅ test_build_feedback_includes_trace_incomplete PASSED")
+
+
+def test_build_feedback_includes_dag_acyclicity():
+    """When _cached_dag_acyclic is False, _build_feedback_extra_signals
+    must include dag_acyclicity_pressure=1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    # Default: DAG is acyclic → no signal
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("dag_acyclicity_pressure", 0.0) == 0.0, (
+        "dag_acyclicity_pressure should be absent when DAG is acyclic"
+    )
+    # Set dag_acyclic to False → signal appears
+    model._cached_dag_acyclic = False
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("dag_acyclicity_pressure") == 1.0, (
+        "dag_acyclicity_pressure must be 1.0 when DAG contains cycles"
+    )
+    print("✅ test_build_feedback_includes_dag_acyclicity PASSED")
+
+
+def test_build_feedback_includes_safety_violation():
+    """When _cached_safety_violation is True, _build_feedback_extra_signals
+    must include safety_violation_pressure=1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    # Default: no safety violation → no signal
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("safety_violation_pressure", 0.0) == 0.0, (
+        "safety_violation_pressure should be absent when no violation"
+    )
+    # Set violation → signal appears
+    model._cached_safety_violation = True
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("safety_violation_pressure") == 1.0, (
+        "safety_violation_pressure must be 1.0 when safety violated"
+    )
+    print("✅ test_build_feedback_includes_safety_violation PASSED")
+
+
+def test_output_reliability_includes_provenance_quality():
+    """Output reliability decomposition must include provenance_quality factor
+    so incomplete provenance degrades output trust."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_factor = False
+    found_decomp = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "* _provenance_quality" in line:
+                found_factor = True
+            if "'provenance_quality'" in line and "_provenance_quality" in line:
+                found_decomp = True
+            if found_factor and found_decomp:
+                break
+    assert found_factor, (
+        "Output reliability formula must include _provenance_quality "
+        "as a multiplicative factor"
+    )
+    assert found_decomp, (
+        "Output reliability decomposition must include 'provenance_quality' "
+        "so root-cause analysis can identify provenance issues"
+    )
+    print("✅ test_output_reliability_includes_provenance_quality PASSED")
+
+
+def test_output_reliability_includes_causal_quality():
+    """Output reliability decomposition must include causal_quality factor
+    so causal DAG disagreement degrades output trust."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_factor = False
+    found_decomp = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "* _causal_quality_factor" in line:
+                found_factor = True
+            if "'causal_quality'" in line and "_causal_quality_factor" in line:
+                found_decomp = True
+            if found_factor and found_decomp:
+                break
+    assert found_factor, (
+        "Output reliability formula must include _causal_quality_factor "
+        "as a multiplicative factor"
+    )
+    assert found_decomp, (
+        "Output reliability decomposition must include 'causal_quality' "
+        "so root-cause analysis can identify causal disagreement"
+    )
+    print("✅ test_output_reliability_includes_causal_quality PASSED")
+
+
+def test_self_diagnostic_verifies_coverage_deficit_feedback():
+    """self_diagnostic must verify coverage_deficit_pressure signal is
+    registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get("verified_connections", [])
+    found = any("coverage_deficit_pressure" in v for v in verified)
+    assert found, (
+        "self_diagnostic must verify that coverage_deficit_pressure "
+        "signal is registered in feedback bus"
+    )
+    print("✅ test_self_diagnostic_verifies_coverage_deficit_feedback PASSED")
+
+
+def test_self_diagnostic_verifies_safety_violation_feedback():
+    """self_diagnostic must verify safety_violation_pressure signal is
+    registered in the feedback bus when safety system is active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_safety_guardrails=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get("verified_connections", [])
+    found = any("safety_violation_pressure" in v for v in verified)
+    assert found, (
+        "self_diagnostic must verify that safety_violation_pressure "
+        "signal is registered in feedback bus"
+    )
+    print("✅ test_self_diagnostic_verifies_safety_violation_feedback PASSED")
+
+
+def test_self_diagnostic_verifies_trace_incomplete_feedback():
+    """self_diagnostic must verify trace_incomplete_pressure signal is
+    registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get("verified_connections", [])
+    found = any("trace_incomplete_pressure" in v for v in verified)
+    assert found, (
+        "self_diagnostic must verify that trace_incomplete_pressure "
+        "signal is registered in feedback bus"
+    )
+    print("✅ test_self_diagnostic_verifies_trace_incomplete_feedback PASSED")
+
+
+def test_self_diagnostic_verifies_dag_acyclicity_feedback():
+    """self_diagnostic must verify dag_acyclicity_pressure signal is
+    registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get("verified_connections", [])
+    found = any("dag_acyclicity_pressure" in v for v in verified)
+    assert found, (
+        "self_diagnostic must verify that dag_acyclicity_pressure "
+        "signal is registered in feedback bus"
+    )
+    print("✅ test_self_diagnostic_verifies_dag_acyclicity_feedback PASSED")
+
+
+def test_cached_trace_incomplete_initialized():
+    """_cached_trace_incomplete must be initialized to False in __init__."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_trace_incomplete'), (
+        "AEONDeltaV3 must have _cached_trace_incomplete attribute"
+    )
+    assert model._cached_trace_incomplete is False, (
+        "_cached_trace_incomplete must be initialized to False"
+    )
+    print("✅ test_cached_trace_incomplete_initialized PASSED")
+
+
+def test_cached_dag_acyclic_initialized():
+    """_cached_dag_acyclic must be initialized to True in __init__."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_dag_acyclic'), (
+        "AEONDeltaV3 must have _cached_dag_acyclic attribute"
+    )
+    assert model._cached_dag_acyclic is True, (
+        "_cached_dag_acyclic must be initialized to True"
+    )
+    print("✅ test_cached_dag_acyclic_initialized PASSED")
+
+
+def test_dag_acyclic_cached_in_reasoning_core():
+    """_reasoning_core_impl must cache the DAG acyclicity result so
+    _build_feedback_extra_signals can route it to the feedback bus."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_assignment = False
+    found_init = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "_cached_dag_acyclic" in line and "is_acyclic" in line:
+                found_assignment = True
+            if "_cached_dag_acyclic" in line and "bool" in line and "True" in line:
+                found_init = True
+            if found_assignment and found_init:
+                break
+    assert found_assignment, (
+        "_reasoning_core_impl must cache DAG acyclicity result as "
+        "_cached_dag_acyclic for cross-pass feedback bus routing"
+    )
+    assert found_init, (
+        "_cached_dag_acyclic must be initialized to True in __init__"
+    )
+    print("✅ test_dag_acyclic_cached_in_reasoning_core PASSED")
+
 
 def run_all_tests():
     """Main test runner — chains all test functions."""
@@ -54605,6 +54894,26 @@ def run_all_tests():
     test_verify_coherence_passes_all_trigger_signals()
     test_cached_safety_violation_initialized()
     test_safety_violation_cached_in_reasoning_core()
+
+    # Architectural Unification — Feedback bus signal closures,
+    # output reliability provenance/causal factors, self-diagnostic
+    # verification for new feedback bus signals
+    test_feedback_bus_coverage_deficit_registered()
+    test_feedback_bus_trace_incomplete_registered()
+    test_feedback_bus_dag_acyclicity_registered()
+    test_feedback_bus_safety_violation_registered()
+    test_build_feedback_includes_trace_incomplete()
+    test_build_feedback_includes_dag_acyclicity()
+    test_build_feedback_includes_safety_violation()
+    test_output_reliability_includes_provenance_quality()
+    test_output_reliability_includes_causal_quality()
+    test_self_diagnostic_verifies_coverage_deficit_feedback()
+    test_self_diagnostic_verifies_safety_violation_feedback()
+    test_self_diagnostic_verifies_trace_incomplete_feedback()
+    test_self_diagnostic_verifies_dag_acyclicity_feedback()
+    test_cached_trace_incomplete_initialized()
+    test_cached_dag_acyclic_initialized()
+    test_dag_acyclic_cached_in_reasoning_core()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
