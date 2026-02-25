@@ -52171,6 +52171,160 @@ def test_memory_stale_decay_wired_in_reasoning_core():
     print("✅ test_memory_stale_decay_wired_in_reasoning_core PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Provenance trace_incomplete escalation,
+#  DAG acyclicity in verify_pipeline_wiring, provenance DAG completeness
+#  in self_diagnostic, full metacognitive trigger signals in verify_coherence,
+#  cached safety_violation flag
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_trace_incomplete_triggers_rerun():
+    """When provenance trace_root_cause returns trace_incomplete=True, the UCC
+    evaluate method must escalate should_rerun so that conclusions with
+    incomplete provenance chains are not accepted without re-reasoning."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    source = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "trace_incomplete" in source, (
+        "UCC evaluate must check provenance_root_cause['trace_incomplete'] "
+        "to trigger re-reasoning when the dependency DAG is structurally broken"
+    )
+    assert "provenance_trace_incomplete" in source, (
+        "UCC evaluate must add 'provenance_trace_incomplete' to triggers_active "
+        "when trace is incomplete"
+    )
+
+    print("✅ test_ucc_trace_incomplete_triggers_rerun PASSED")
+
+
+def test_verify_pipeline_wiring_includes_dag_acyclicity():
+    """verify_pipeline_wiring must validate that the provenance DAG is acyclic,
+    not just that declared edges have initialized modules."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    wiring = model.verify_pipeline_wiring()
+
+    assert "dag_acyclic" in wiring, (
+        "verify_pipeline_wiring must include 'dag_acyclic' key from "
+        "provenance tracker DAG validation"
+    )
+    assert "dag_validation" in wiring, (
+        "verify_pipeline_wiring must include 'dag_validation' dict "
+        "with full DAG validation results"
+    )
+    # The pipeline's declared dependencies should form a valid DAG
+    assert wiring["dag_acyclic"] is True, (
+        "The default pipeline dependencies should form an acyclic DAG"
+    )
+
+    print("✅ test_verify_pipeline_wiring_includes_dag_acyclicity PASSED")
+
+
+def test_self_diagnostic_reports_dag_acyclicity():
+    """self_diagnostic must report provenance DAG acyclicity status and flag
+    cycles as architectural gaps."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert "dag_acyclic" in source, (
+        "self_diagnostic must check dag_acyclic from verify_pipeline_wiring "
+        "and report cycles as architectural gaps"
+    )
+    assert "provenance_dag" in source, (
+        "self_diagnostic must report provenance DAG issues under the "
+        "'provenance_dag' component name"
+    )
+
+    print("✅ test_self_diagnostic_reports_dag_acyclicity PASSED")
+
+
+def test_verify_coherence_passes_all_trigger_signals():
+    """verify_coherence must pass all 12 metacognitive trigger signals when
+    invoking self.metacognitive_trigger.evaluate(), not just a subset."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_coherence)
+    # All 12 signals should be present in the evaluate() call
+    expected_signals = [
+        "coherence_deficit",
+        "uncertainty",
+        "is_diverging",
+        "world_model_surprise",
+        "recovery_pressure",
+        "causal_quality",
+        "memory_staleness",
+        "convergence_conflict",
+        "topology_catastrophe",
+        "safety_violation",
+        "diversity_collapse",
+        "memory_trust_deficit",
+    ]
+    for signal in expected_signals:
+        assert signal in source, (
+            f"verify_coherence must pass '{signal}' to "
+            f"metacognitive_trigger.evaluate() for fully-informed "
+            f"meta-cognitive decisions during out-of-band checks"
+        )
+
+    print("✅ test_verify_coherence_passes_all_trigger_signals PASSED")
+
+
+def test_cached_safety_violation_initialized():
+    """_cached_safety_violation must be initialized in __init__ so that
+    verify_coherence can access it before any forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_safety_violation'), (
+        "AEONDeltaV3 must have _cached_safety_violation attribute "
+        "initialized in __init__"
+    )
+    assert model._cached_safety_violation is False, (
+        "_cached_safety_violation must default to False before any "
+        "forward pass"
+    )
+
+    print("✅ test_cached_safety_violation_initialized PASSED")
+
+
+def test_safety_violation_cached_in_reasoning_core():
+    """_reasoning_core_impl must cache safety_enforced as _cached_safety_violation
+    so verify_coherence can pass it to the metacognitive trigger."""
+    # Search the source file directly (no module import needed) to avoid
+    # network-timeout overhead from HuggingFace model loading on import.
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    )
+    found_assignment = False
+    found_init = False
+    with open(src_path, "r") as f:
+        for line in f:
+            if "_cached_safety_violation" in line and "safety_enforced" in line:
+                found_assignment = True
+            if "_cached_safety_violation" in line and "bool" in line and "False" in line:
+                found_init = True
+            if found_assignment and found_init:
+                break
+    assert found_assignment, (
+        "_reasoning_core_impl must cache safety_enforced as "
+        "_cached_safety_violation for out-of-band coherence checks"
+    )
+    assert found_init, (
+        "_cached_safety_violation must be initialized to False in __init__"
+    )
+
+    print("✅ test_safety_violation_cached_in_reasoning_core PASSED")
+
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -54442,6 +54596,15 @@ def run_all_tests():
     test_propagation_attenuation_source_code_exists()
     test_coherence_correction_attenuation_source_code_exists()
     test_memory_stale_decay_wired_in_reasoning_core()
+
+    # Architectural Unification — Provenance trace_incomplete escalation,
+    # DAG acyclicity, full metacognitive trigger signals, safety caching
+    test_ucc_trace_incomplete_triggers_rerun()
+    test_verify_pipeline_wiring_includes_dag_acyclicity()
+    test_self_diagnostic_reports_dag_acyclicity()
+    test_verify_coherence_passes_all_trigger_signals()
+    test_cached_safety_violation_initialized()
+    test_safety_violation_cached_in_reasoning_core()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
