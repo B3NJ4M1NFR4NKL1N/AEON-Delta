@@ -36514,6 +36514,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "grounded_multimodal": "grounded_multimodal",
         "encoder_reasoning_norm": "encoder_reasoning_norm",
         "deception_suppressor": "deception_suppressor",
+        "feedback_bus": "feedback_bus",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -57807,6 +57808,116 @@ def test_node_config_flag_includes_deception():
     print("✅ test_node_config_flag_includes_deception PASSED")
 
 
+def test_provenance_dag_pre_populated_at_init():
+    """Provenance dependency DAG should be pre-populated at __init__ time
+    so that verify_cognitive_unity() reports accurate root-cause
+    traceability before any forward pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    deps = model.provenance_tracker.get_dependency_graph()
+    # The DAG should have entries — not be empty as it was before the fix
+    assert len(deps) > 0, (
+        "Provenance dependency DAG should be pre-populated at init time, "
+        f"but get_dependency_graph() returned {len(deps)} entries"
+    )
+    # Core pipeline edges should be present (encoder ← input, vq ← encoder)
+    assert "input" in deps.get("encoder", []), (
+        "encoder should depend on input in the pre-populated DAG"
+    )
+    assert "encoder" in deps.get("vq", []), (
+        "vq should depend on encoder in the pre-populated DAG"
+    )
+    print("✅ test_provenance_dag_pre_populated_at_init PASSED")
+
+
+def test_provenance_dag_survives_forward_pass():
+    """The init-time provenance DAG should not interfere with forward-pass
+    DAG registration — trace_root_cause should work correctly after a
+    forward pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        model(input_ids)
+
+    trace = model.provenance_tracker.trace_root_cause("decoder")
+    root_modules = trace.get("root_modules", [])
+    assert "input" in root_modules, (
+        f"After forward pass with init-time DAG, trace_root_cause('decoder') "
+        f"should reach 'input'. Root modules: {root_modules}"
+    )
+    print("✅ test_provenance_dag_survives_forward_pass PASSED")
+
+
+def test_feedback_bus_in_pipeline_dependencies():
+    """feedback_bus should appear in _PIPELINE_DEPENDENCIES so it is
+    no longer an unverified node in mutual-verification checks.
+    """
+    from aeon_core import AEONDeltaV3
+
+    all_nodes = set()
+    for up, down in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        all_nodes.add(up)
+        all_nodes.add(down)
+
+    assert "feedback_bus" in all_nodes, (
+        "feedback_bus should appear in _PIPELINE_DEPENDENCIES"
+    )
+    print("✅ test_feedback_bus_in_pipeline_dependencies PASSED")
+
+
+def test_verify_cognitive_unity_traceability_before_forward():
+    """verify_cognitive_unity should report high root-cause traceability
+    coverage even before any forward pass, thanks to init-time DAG
+    pre-population.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    result = model.verify_cognitive_unity()
+    rc = result['root_cause_traceability']
+    assert rc['coverage'] >= 0.9, (
+        f"Before forward pass, root-cause coverage should be >= 0.9 "
+        f"(was 0.0 before the init-time DAG fix), got {rc['coverage']}"
+    )
+    assert rc['pipeline_provenance_coverage'] >= 0.9, (
+        f"Pipeline provenance coverage should be >= 0.9 before forward "
+        f"pass, got {rc['pipeline_provenance_coverage']}"
+    )
+    print("✅ test_verify_cognitive_unity_traceability_before_forward PASSED")
+
+
+def test_mutual_verification_covers_feedback_bus():
+    """feedback_bus should be a verified node in mutual-verification
+    checks now that it has pipeline dependency edges.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    result = model.verify_cognitive_unity()
+    mv = result['mutual_verification']
+    unverified = mv['unverified_modules']
+    assert "feedback_bus" not in unverified, (
+        f"feedback_bus should not be unverified after adding pipeline "
+        f"dependency edges. Unverified: {unverified}"
+    )
+    print("✅ test_mutual_verification_covers_feedback_bus PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -60371,6 +60482,13 @@ def run_all_tests():
     test_config_gated_mcts_and_icm()
     test_deception_suppressor_in_arch_nodes()
     test_node_config_flag_includes_deception()
+
+    # Architectural Unification — Init-Time DAG Pre-Population & Feedback Bus
+    test_provenance_dag_pre_populated_at_init()
+    test_provenance_dag_survives_forward_pass()
+    test_feedback_bus_in_pipeline_dependencies()
+    test_verify_cognitive_unity_traceability_before_forward()
+    test_mutual_verification_covers_feedback_bus()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
