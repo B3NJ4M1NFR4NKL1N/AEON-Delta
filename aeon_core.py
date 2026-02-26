@@ -18946,6 +18946,18 @@ class AEONDeltaV3(nn.Module):
         # ensures trace_root_cause() can attribute the corrective
         # re-reasoning to the UCC's verdict.
         ("unified_cognitive_cycle", "ucc_rerun_meta_loop"),
+        # ── Feedback bus cross-pass conditioning path ──────────────
+        # The feedback bus aggregates signals from subsystems.  These
+        # edges ensure trace_root_cause() can attribute feedback bus
+        # state to its upstream signal sources, closing the gap where
+        # the feedback bus was an unverified node invisible to mutual-
+        # verification checks.  Note: the feedback_bus → meta_loop
+        # edge is intentionally omitted because it is a cross-pass
+        # temporal dependency (pass N's feedback conditions pass N+1),
+        # not an intra-pass causal edge, and including it would create
+        # a cycle in the provenance DAG.
+        ("unified_cognitive_cycle", "feedback_bus"),
+        ("error_evolution", "feedback_bus"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -20578,7 +20590,30 @@ class AEONDeltaV3(nn.Module):
         # Auto-initialize Task2Vec meta-learner when enabled.
         if getattr(config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
             self.init_task2vec_meta_learner()
-        
+
+        # ===== PRE-POPULATE PROVENANCE DEPENDENCY DAG =====
+        # Register pipeline dependency edges at init time so that
+        # verify_cognitive_unity() and verify_pipeline_wiring() can
+        # report accurate root-cause traceability and provenance
+        # coverage *before* any forward pass.  Previously, the DAG
+        # was only populated inside _reasoning_core_impl(), leaving
+        # all diagnostic methods blind to the dependency structure
+        # until the first forward call.
+        # NOTE: validate_dag_acyclic() is intentionally NOT called
+        # here because it would add removed edges to
+        # _removed_cyclic_edges, preventing their re-registration
+        # during _reasoning_core_impl().  Cycle detection is handled
+        # per forward pass as before.
+        _attr_map = self._NODE_ATTR_MAP
+        for _up, _down in self._PIPELINE_DEPENDENCIES:
+            _up_attr = _attr_map.get(_up)
+            _down_attr = _attr_map.get(_down)
+            if _up_attr is not None and getattr(self, _up_attr, None) is None:
+                continue
+            if _down_attr is not None and getattr(self, _down_attr, None) is None:
+                continue
+            self.provenance_tracker.record_dependency(_up, _down)
+
         # Print summary
         self.print_architecture_summary()
         logger.info("="*70)

@@ -36514,6 +36514,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "grounded_multimodal": "grounded_multimodal",
         "encoder_reasoning_norm": "encoder_reasoning_norm",
         "deception_suppressor": "deception_suppressor",
+        "feedback_bus": "feedback_bus",
     }
 
     # Verify every optional node has a known attribute mapping
