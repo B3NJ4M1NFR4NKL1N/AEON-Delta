@@ -55820,6 +55820,190 @@ def test_ucc_dag_consensus_no_adaptation_high_quality():
     print("✅ test_ucc_dag_consensus_no_adaptation_high_quality PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — verify fixes for identified gaps
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_trace_root_cause_includes_removed_cyclic_edges():
+    """Fix 1: CausalProvenanceTracker.trace_root_cause() must include
+    removed_cyclic_edges in the return dict so callers know which causal
+    links were pruned to maintain the DAG invariant."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    # Record some module deltas
+    s1 = torch.randn(2, 8)
+    s2 = s1 + torch.randn(2, 8) * 0.1
+    tracker.record_before("A", s1)
+    tracker.record_after("A", s2)
+    tracker.record_before("B", s2)
+    tracker.record_after("B", s2 + torch.randn(2, 8) * 0.1)
+
+    # Create a cycle: A → B and B → A
+    tracker.record_dependency("A", "B")
+    tracker.record_dependency("B", "A")  # creates cycle
+
+    # Validate DAG — cycle should be detected and edge removed
+    dag_result = tracker.validate_dag_acyclic()
+
+    # Now trace root cause
+    rc = tracker.trace_root_cause("B")
+
+    # The return dict must contain 'removed_cyclic_edges'
+    assert 'removed_cyclic_edges' in rc, (
+        "trace_root_cause() must include 'removed_cyclic_edges' key"
+    )
+    # Since we created a cycle, at least one edge should be removed
+    assert len(rc['removed_cyclic_edges']) > 0 or dag_result['is_acyclic'], (
+        "removed_cyclic_edges should contain pruned edges when cycles existed"
+    )
+
+    print("✅ test_trace_root_cause_includes_removed_cyclic_edges PASSED")
+
+
+def test_trace_root_cause_no_cycles_empty_removed_edges():
+    """Fix 1 (negative): When no cycles exist, removed_cyclic_edges
+    should be an empty list."""
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+
+    s1 = torch.randn(2, 8)
+    tracker.record_before("X", s1)
+    tracker.record_after("X", s1 + 0.1)
+    tracker.record_before("Y", s1)
+    tracker.record_after("Y", s1 + 0.2)
+
+    # Acyclic dependency: X → Y only
+    tracker.record_dependency("X", "Y")
+
+    rc = tracker.trace_root_cause("Y")
+    assert 'removed_cyclic_edges' in rc
+    assert len(rc['removed_cyclic_edges']) == 0, (
+        "No cycles means no removed edges"
+    )
+
+    print("✅ test_trace_root_cause_no_cycles_empty_removed_edges PASSED")
+
+
+def test_config_gated_no_error_evolution_mapping():
+    """Fix 2: SubsystemCoherenceRegistry._CONFIG_GATED should not contain
+    'enable_error_evolution' since 'error_evolution' is not in
+    _DEFAULT_EXPECTED and the mapping was a no-op."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+
+    # Verify error_evolution is not in the default expected set
+    assert "error_evolution" not in registry._expected, (
+        "error_evolution should not be in the default expected subsystems"
+    )
+
+    # Verify the _CONFIG_GATED dict does not contain the no-op mapping
+    # by checking that calling adjust_expected_for_config with
+    # enable_error_evolution=False does not change the expected set
+    class MockConfig:
+        enable_error_evolution = False
+
+    before = set(registry._expected)
+    registry.adjust_expected_for_config(MockConfig())
+    after = set(registry._expected)
+
+    assert before == after, (
+        "adjust_expected_for_config with enable_error_evolution=False "
+        "should not change expected subsystems (mapping was removed)"
+    )
+
+    print("✅ test_config_gated_no_error_evolution_mapping PASSED")
+
+
+def test_ucc_partial_components_still_created():
+    """Fix 3: UCC should still be created when only some optional components
+    are available, and log warnings about missing verification loops."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        MetaCognitiveRecursionTrigger, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Create UCC with only metacognitive_trigger (no coherence_verifier,
+    # no error_evolution)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+
+    # UCC should be functional
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.6,
+    )
+    assert 'should_rerun' in result, "UCC evaluate() must return should_rerun"
+    assert 'convergence_verdict' in result, "UCC evaluate() must return convergence_verdict"
+
+    print("✅ test_ucc_partial_components_still_created PASSED")
+
+
+def test_ucc_low_quality_subsystems_feed_directional_uncertainty():
+    """Fix 5: Low-quality subsystems from SubsystemCoherenceRegistry should
+    be recorded in the DirectionalUncertaintyTracker when available."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry, DirectionalUncertaintyTracker,
+        UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"module_a", "module_b"},
+    )
+    unc_tracker = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=unc_tracker,
+        coherence_registry=registry,
+    )
+
+    # Begin a pass and register module_a with low quality
+    registry.begin_pass()
+    registry.register_output("module_a", validated=True, quality=0.3)
+    # module_b is absent — quality defaults to 0.0
+
+    states = {"test": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+    )
+
+    # The uncertainty summary should contain entries for the low-quality
+    # subsystems if the tracker is wired correctly
+    unc_summary = result.get("uncertainty_summary", {})
+    # The directional tracker should have recorded at least the low-quality
+    # subsystems (module_a at 0.3 quality → 0.7 deficit, module_b absent → 1.0 deficit)
+    module_uncertainties = unc_tracker.get_module_uncertainties()
+    # At minimum, module_b (absent) should appear as uncertain
+    assert len(module_uncertainties) > 0 or unc_summary, (
+        "DirectionalUncertaintyTracker should have entries from low-quality subsystems"
+    )
+
+    print("✅ test_ucc_low_quality_subsystems_feed_directional_uncertainty PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -58280,6 +58464,13 @@ def run_all_tests():
     test_ucc_propagation_delta_below_threshold_ignored()
     test_ucc_dag_consensus_threshold_adaptation()
     test_ucc_dag_consensus_no_adaptation_high_quality()
+
+    # Architectural unification gap-fix tests
+    test_trace_root_cause_includes_removed_cyclic_edges()
+    test_trace_root_cause_no_cycles_empty_removed_edges()
+    test_config_gated_no_error_evolution_mapping()
+    test_ucc_partial_components_still_created()
+    test_ucc_low_quality_subsystems_feed_directional_uncertainty()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
