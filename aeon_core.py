@@ -3425,6 +3425,36 @@ class AEONConfig:
             )
         object.__setattr__(self, name, value)
     
+    @classmethod
+    def unified_cognitive_preset(cls, **overrides) -> 'AEONConfig':
+        """Create a configuration with all cognitive subsystems enabled.
+
+        This factory method returns an ``AEONConfig`` where
+        ``enable_full_coherence`` is ``True`` and all subsystem flags
+        are activated, producing a fully connected pipeline where:
+
+        * Each component verifies and reinforces the others via the
+          :class:`ModuleCoherenceVerifier` and
+          :class:`UnifiedCognitiveCycle`.
+        * Any uncertainty triggers a meta-cognitive cycle via the
+          :class:`MetaCognitiveRecursionTrigger`.
+        * All conclusions can be traced back to their root causes via
+          the :class:`CausalProvenanceTracker` and
+          :class:`TemporalCausalTraceBuffer`.
+
+        Callers may pass keyword ``overrides`` (e.g. ``vocab_size``,
+        ``hidden_dim``) to customize non-flag parameters while keeping
+        the full-coherence preset active.
+
+        Returns:
+            A fully-coherent :class:`AEONConfig` instance.
+        """
+        defaults = {
+            'enable_full_coherence': True,
+        }
+        defaults.update(overrides)
+        return cls(**defaults)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
         config_dict = asdict(self)
@@ -34699,18 +34729,63 @@ class AEONDeltaV3(nn.Module):
         # _PIPELINE_DEPENDENCIES map to actually-initialized modules,
         # surfacing any declared but unrealized data-flow edges.
         _wiring = self.verify_pipeline_wiring()
+        _config_disabled_gaps: List[Dict[str, str]] = []
+        # Map pipeline node names to their config enable flags.
+        # Nodes without an explicit entry fall back to
+        # ``enable_{_NODE_ATTR_MAP[node]}`` heuristic.
+        _NODE_CONFIG_FLAG: Dict[str, str] = {
+            'causal_dag_consensus': 'enable_causal_model',
+            'notears_causal': 'enable_notears_causal',
+            'causal_programmatic': 'enable_causal_programmatic',
+            'memory_trust': 'enable_external_trust',
+            'ns_bridge': 'enable_standalone_ns_bridge',
+            'deeper_meta_loop': 'enable_recursive_meta_loop',
+            'memory': 'enable_hierarchical_memory',
+            'mcts_planning': 'enable_mcts_planner',
+            'active_learning': 'enable_active_learning_planner',
+            'icm_curiosity': 'enable_active_learning_planner',
+            'temporal_knowledge_graph': 'enable_temporal_knowledge_graph',
+            'memory_cross_validation': 'enable_hierarchical_memory',
+            'memory_validation': 'enable_hierarchical_memory',
+        }
         for _missing in _wiring.get('missing_edges', []):
-            gaps.append({
-                'component': 'pipeline_wiring',
-                'gap': (
-                    f'Declared dependency {_missing["edge"]} is not '
-                    f'realized: {_missing["reason"]}'
-                ),
-                'remediation': (
-                    'Enable the disabled module or remove the dependency '
-                    'from _PIPELINE_DEPENDENCIES'
-                ),
-            })
+            _edge = _missing['edge']
+            # Classify: is this gap caused by a config-disabled module
+            # (resolvable via enable_full_coherence) or a true wiring
+            # failure where an enabled module is unexpectedly None?
+            _is_config_disabled = False
+            for _node in _edge:
+                _attr = self._NODE_ATTR_MAP.get(_node, _node)
+                # Check if the module's config flag is explicitly False
+                _enable_flag = _NODE_CONFIG_FLAG.get(
+                    _node, f'enable_{_attr}',
+                )
+                if hasattr(self.config, _enable_flag) and not getattr(self.config, _enable_flag, True):
+                    _is_config_disabled = True
+                    break
+            if _is_config_disabled:
+                _config_disabled_gaps.append({
+                    'component': 'pipeline_wiring',
+                    'edge': _edge,
+                    'reason': _missing['reason'],
+                    'remediation': (
+                        'Use AEONConfig.unified_cognitive_preset() or '
+                        'set enable_full_coherence=True to activate '
+                        'all subsystems'
+                    ),
+                })
+            else:
+                gaps.append({
+                    'component': 'pipeline_wiring',
+                    'gap': (
+                        f'Declared dependency {_edge} is not '
+                        f'realized: {_missing["reason"]}'
+                    ),
+                    'remediation': (
+                        'Enable the disabled module or remove the dependency '
+                        'from _PIPELINE_DEPENDENCIES'
+                    ),
+                })
         if _wiring['wiring_coverage'] == 1.0:
             verified.append(
                 'pipeline_wiring → all declared dependencies verified '
@@ -35416,6 +35491,13 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_propagation_delta': getattr(
                 self, '_cached_propagation_delta', 0.0,
             ),
+            # Config-disabled gaps — pipeline wiring gaps caused by
+            # optional modules being disabled in the configuration.
+            # These are NOT true architectural defects; they are
+            # resolved by using ``AEONConfig.unified_cognitive_preset()``
+            # or setting ``enable_full_coherence=True``.
+            'config_disabled_gaps': _config_disabled_gaps,
+            'config_disabled_gap_count': len(_config_disabled_gaps),
         }
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
@@ -36213,6 +36295,165 @@ class AEONDeltaV3(nn.Module):
                 result["most_uncertain_module"] = _most_uncertain
 
         return result
+
+    @torch.no_grad()
+    def verify_cognitive_unity(self) -> Dict[str, Any]:
+        """Validate the three AGI coherence requirements.
+
+        This method checks the full cognitive pipeline against the
+        three requirements for unified AGI operation:
+
+        1. **Mutual verification** — each active component has at least
+           one other component that cross-validates its output.
+        2. **Uncertainty → metacognition** — every uncertainty source
+           feeds into the :class:`MetaCognitiveRecursionTrigger` so
+           that uncertainty always triggers a meta-cognitive cycle.
+        3. **Root-cause traceability** — every active module is
+           registered in the :class:`CausalProvenanceTracker`'s
+           dependency DAG so that all conclusions can be traced back
+           to their root causes.
+
+        Returns:
+            Dict with:
+                - ``unified``: bool — True when all three requirements
+                  are fully satisfied.
+                - ``mutual_verification``: dict with coverage score and
+                  unverified modules.
+                - ``uncertainty_metacognition``: dict with coverage
+                  score and uncovered sources.
+                - ``root_cause_traceability``: dict with coverage score
+                  and untraceable modules.
+                - ``recommendations``: list of actionable suggestions.
+        """
+        recommendations: List[str] = []
+
+        # ── 1. Mutual verification ────────────────────────────────
+        # Each active module should appear as either upstream or
+        # downstream in at least one verified pipeline dependency,
+        # ensuring it has a cross-validation partner.
+        _wiring = self.verify_pipeline_wiring()
+        _verified_edges = _wiring.get('verified_edges', [])
+        _verified_nodes: Set[str] = set()
+        for up, down in _verified_edges:
+            _verified_nodes.add(up)
+            _verified_nodes.add(down)
+
+        # Collect all active module node names (from _NODE_ATTR_MAP).
+        _active_nodes: Set[str] = set()
+        for node, attr in self._NODE_ATTR_MAP.items():
+            if getattr(self, attr, None) is not None:
+                _active_nodes.add(node)
+
+        _unverified = sorted(_active_nodes - _verified_nodes)
+        _mv_coverage = (
+            1.0 - len(_unverified) / max(len(_active_nodes), 1)
+            if _active_nodes else 1.0
+        )
+        if _unverified:
+            recommendations.append(
+                f"Enable modules that cross-validate: "
+                f"{', '.join(_unverified[:5])}"
+            )
+
+        mutual_verification = {
+            'coverage': _mv_coverage,
+            'active_modules': len(_active_nodes),
+            'verified_modules': len(_verified_nodes & _active_nodes),
+            'unverified_modules': _unverified,
+        }
+
+        # ── 2. Uncertainty → metacognition ────────────────────────
+        # The metacognitive trigger should have signal weights for
+        # every uncertainty source that the pipeline can produce.
+        _expected_signals = {
+            "uncertainty", "diverging", "topology_catastrophe",
+            "coherence_deficit", "memory_staleness",
+            "recovery_pressure", "world_model_surprise",
+            "low_causal_quality", "safety_violation",
+            "diversity_collapse", "memory_trust_deficit",
+            "convergence_conflict",
+        }
+        _trigger = self.metacognitive_trigger
+        if _trigger is not None:
+            _covered = set(_trigger._signal_weights.keys())
+            _uncovered = sorted(_expected_signals - _covered)
+            _um_coverage = (
+                1.0 - len(_uncovered) / max(len(_expected_signals), 1)
+            )
+            if _uncovered:
+                recommendations.append(
+                    f"Add metacognitive trigger weights for: "
+                    f"{', '.join(_uncovered)}"
+                )
+        else:
+            _uncovered = sorted(_expected_signals)
+            _um_coverage = 0.0
+            recommendations.append(
+                "Enable metacognitive recursion "
+                "(enable_metacognitive_recursion=True)"
+            )
+
+        uncertainty_metacognition = {
+            'coverage': _um_coverage,
+            'expected_signals': len(_expected_signals),
+            'covered_signals': len(_expected_signals) - len(_uncovered),
+            'uncovered_signals': _uncovered,
+            'trigger_active': _trigger is not None,
+        }
+
+        # ── 3. Root-cause traceability ────────────────────────────
+        # Every active module should be reachable via the provenance
+        # tracker's dependency DAG.
+        _prov_deps = self.provenance_tracker.get_dependency_graph()
+        _traceable_nodes: Set[str] = set()
+        for target, sources in _prov_deps.items():
+            _traceable_nodes.add(target)
+            if isinstance(sources, (set, list)):
+                _traceable_nodes.update(sources)
+
+        _untraceable = sorted(_active_nodes - _traceable_nodes)
+        _rc_coverage = (
+            1.0 - len(_untraceable) / max(len(_active_nodes), 1)
+            if _active_nodes else 1.0
+        )
+        _dag_acyclic = _wiring.get('dag_acyclic', True)
+        if _untraceable:
+            recommendations.append(
+                f"Register provenance dependencies for: "
+                f"{', '.join(_untraceable[:5])}"
+            )
+        if not _dag_acyclic:
+            recommendations.append(
+                "Fix provenance DAG cycles to restore full "
+                "root-cause traceability"
+            )
+
+        root_cause_traceability = {
+            'coverage': _rc_coverage,
+            'active_modules': len(_active_nodes),
+            'traceable_modules': len(_traceable_nodes & _active_nodes),
+            'untraceable_modules': _untraceable,
+            'dag_acyclic': _dag_acyclic,
+        }
+
+        # ── Composite verdict ─────────────────────────────────────
+        is_unified = (
+            _mv_coverage >= 0.9
+            and _um_coverage >= 1.0
+            and _rc_coverage >= 0.9
+            and _dag_acyclic
+        )
+
+        if not recommendations:
+            recommendations.append("All cognitive unity checks passed.")
+
+        return {
+            'unified': is_unified,
+            'mutual_verification': mutual_verification,
+            'uncertainty_metacognition': uncertainty_metacognition,
+            'root_cause_traceability': root_cause_traceability,
+            'recommendations': recommendations,
+        }
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.

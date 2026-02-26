@@ -56465,6 +56465,172 @@ def test_trainer_bridge_adapts_on_coherence_deficit():
     print("✅ test_trainer_bridge_adapts_on_coherence_deficit PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification — Cognitive Unity Verification
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_unified_cognitive_preset_creates_full_config():
+    """AEONConfig.unified_cognitive_preset() must return a config with
+    enable_full_coherence=True and all subsystem flags activated."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig.unified_cognitive_preset(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+    )
+    assert config.enable_full_coherence is True, (
+        "unified_cognitive_preset must set enable_full_coherence=True"
+    )
+    # Verify critical subsystem flags are enabled
+    assert config.enable_world_model is True
+    assert config.enable_causal_model is True
+    assert config.enable_hierarchical_memory is True
+    assert config.enable_mcts_planner is True
+    assert config.enable_unified_cognitive_cycle is True
+    assert config.enable_metacognitive_recursion is True
+    assert config.enable_causal_trace is True
+    assert config.enable_error_evolution is True
+    assert config.enable_module_coherence is True
+    assert config.enable_auto_critic is True
+    print("✅ test_unified_cognitive_preset_creates_full_config PASSED")
+
+
+def test_unified_cognitive_preset_allows_overrides():
+    """Callers should be able to override non-flag parameters."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig.unified_cognitive_preset(
+        vocab_size=500, hidden_dim=128, z_dim=128,
+        vq_embedding_dim=128, meta_dim=128, knowledge_dim=128,
+    )
+    assert config.vocab_size == 500
+    assert config.hidden_dim == 128
+    assert config.enable_full_coherence is True
+    print("✅ test_unified_cognitive_preset_allows_overrides PASSED")
+
+
+def test_verify_cognitive_unity_method_exists():
+    """AEONDeltaV3 should expose verify_cognitive_unity()."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, 'verify_cognitive_unity'), (
+        "AEONDeltaV3 should expose verify_cognitive_unity()"
+    )
+    result = model.verify_cognitive_unity()
+    assert 'unified' in result
+    assert 'mutual_verification' in result
+    assert 'uncertainty_metacognition' in result
+    assert 'root_cause_traceability' in result
+    assert 'recommendations' in result
+    print("✅ test_verify_cognitive_unity_method_exists PASSED")
+
+
+def test_verify_cognitive_unity_uncertainty_coverage():
+    """All 12 metacognitive trigger signals must be covered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+
+    um = result['uncertainty_metacognition']
+    assert um['coverage'] == 1.0, (
+        f"All 12 trigger signals should be covered, got coverage={um['coverage']}"
+    )
+    assert um['trigger_active'] is True
+    assert um['uncovered_signals'] == []
+    print("✅ test_verify_cognitive_unity_uncertainty_coverage PASSED")
+
+
+def test_verify_cognitive_unity_after_forward_pass():
+    """After a forward pass, root-cause traceability should be high."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        model.forward(ids)
+
+    result = model.verify_cognitive_unity()
+    rc = result['root_cause_traceability']
+    assert rc['coverage'] >= 0.9, (
+        f"After forward pass, root-cause coverage should be >= 0.9, "
+        f"got {rc['coverage']}"
+    )
+    assert rc['dag_acyclic'] is True
+    print("✅ test_verify_cognitive_unity_after_forward_pass PASSED")
+
+
+def test_self_diagnostic_separates_config_disabled_gaps():
+    """self_diagnostic should distinguish config-disabled gaps from
+    true architectural defects."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    assert 'config_disabled_gaps' in diag, (
+        "self_diagnostic should include config_disabled_gaps"
+    )
+    assert 'config_disabled_gap_count' in diag
+    # With default config (many modules disabled), config_disabled_gaps
+    # should be non-empty
+    assert diag['config_disabled_gap_count'] > 0, (
+        "Default config should have config-disabled gaps"
+    )
+    # True gaps should be much fewer than the total wiring gaps
+    # (most are config-disabled, not structural defects)
+    _pipeline_gaps = [
+        g for g in diag['gaps'] if g['component'] == 'pipeline_wiring'
+    ]
+    assert len(_pipeline_gaps) < diag['config_disabled_gap_count'], (
+        "True pipeline wiring gaps should be fewer than config-disabled gaps"
+    )
+    print("✅ test_self_diagnostic_separates_config_disabled_gaps PASSED")
+
+
+def test_self_diagnostic_config_disabled_gaps_have_remediation():
+    """Config-disabled gaps should recommend unified_cognitive_preset."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    for gap in diag['config_disabled_gaps'][:3]:
+        assert 'unified_cognitive_preset' in gap['remediation'], (
+            f"Config-disabled gap remediation should mention "
+            f"unified_cognitive_preset, got: {gap['remediation']}"
+        )
+    print("✅ test_self_diagnostic_config_disabled_gaps_have_remediation PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -58953,6 +59119,15 @@ def run_all_tests():
     test_trainer_bridge_epoch_feedback_returns_counts()
     test_trainer_train_calls_bridge()
     test_trainer_bridge_adapts_on_coherence_deficit()
+
+    # Architectural Unification — Cognitive Unity Verification
+    test_unified_cognitive_preset_creates_full_config()
+    test_unified_cognitive_preset_allows_overrides()
+    test_verify_cognitive_unity_method_exists()
+    test_verify_cognitive_unity_uncertainty_coverage()
+    test_verify_cognitive_unity_after_forward_pass()
+    test_self_diagnostic_separates_config_disabled_gaps()
+    test_self_diagnostic_config_disabled_gaps_have_remediation()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
