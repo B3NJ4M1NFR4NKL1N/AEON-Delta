@@ -6670,6 +6670,50 @@ class CausalProvenanceTracker:
         _covered = _expected & _traced
         return len(_covered) / len(_expected)
 
+    def validate_against_pipeline(
+        self,
+        pipeline_dependencies: List[Tuple[str, str]],
+    ) -> Dict[str, Any]:
+        """Validate that all modules in the declared pipeline have been traced.
+
+        Cross-references the set of unique module names extracted from
+        ``pipeline_dependencies`` against the modules that recorded at
+        least one provenance delta in the current forward pass.  Returns
+        a dict with the untraced module names, the coverage ratio, and
+        a boolean indicating whether every module was covered.
+
+        This closes the gap where ``get_trace_completeness_ratio`` only
+        checked against the internal dependency DAG or an explicit
+        whitelist, but never verified coverage against the authoritative
+        ``_PIPELINE_DEPENDENCIES`` declaration.
+
+        Args:
+            pipeline_dependencies: List of ``(upstream, downstream)``
+                edges from ``_PIPELINE_DEPENDENCIES``.
+
+        Returns:
+            Dict with:
+                - ``expected``: set of all module names in the pipeline.
+                - ``traced``: set of modules with recorded deltas.
+                - ``untraced``: set of expected modules without deltas.
+                - ``coverage``: fraction of expected modules traced ∈ [0, 1].
+                - ``fully_covered``: True when every module was traced.
+        """
+        _expected: Set[str] = set()
+        for _up, _down in pipeline_dependencies:
+            _expected.add(_up)
+            _expected.add(_down)
+        _traced = set(self._deltas.keys())
+        _untraced = _expected - _traced
+        _coverage = len(_expected - _untraced) / max(len(_expected), 1)
+        return {
+            'expected': _expected,
+            'traced': _traced,
+            'untraced': _untraced,
+            'coverage': _coverage,
+            'fully_covered': len(_untraced) == 0,
+        }
+
     # ------------------------------------------------------------------
     # Inter-module dependency tracking
     # ------------------------------------------------------------------
@@ -17256,6 +17300,7 @@ class UnifiedCognitiveCycle:
         causal_dag_consensus: Optional['CausalDAGConsensus'] = None,
         coherence_registry: Optional['SubsystemCoherenceRegistry'] = None,
         cross_validation_reconciler: Optional['CrossValidationReconciler'] = None,
+        pipeline_dependencies: Optional[List[Tuple[str, str]]] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -17269,6 +17314,11 @@ class UnifiedCognitiveCycle:
         self.causal_dag_consensus = causal_dag_consensus
         self.coherence_registry = coherence_registry
         self.cross_validation_reconciler = cross_validation_reconciler
+        # Authoritative pipeline dependency list — when provided, the
+        # evaluate() method cross-validates provenance trace coverage
+        # against this declaration so that untraced modules degrade
+        # confidence proportionally to missing coverage.
+        self._pipeline_dependencies_ref = pipeline_dependencies
 
         # Cross-pass coherence trend tracking — EMA of coherence deficit
         # across successive evaluate() calls.  When coherence is
@@ -17617,6 +17667,26 @@ class UnifiedCognitiveCycle:
                             'dominant_provenance_module': _cov_dominant,
                         },
                     )
+
+        # 2-prov. Provenance pipeline coverage validation — cross-reference
+        # the provenance tracker's recorded deltas against the declared
+        # pipeline dependencies.  When modules declared in the pipeline
+        # were not traced, their contribution is invisible to root-cause
+        # analysis.  A low provenance coverage ratio boosts coherence
+        # deficit and signals re-reasoning, closing the gap where
+        # ``get_trace_completeness_ratio`` checked the internal DAG but
+        # never validated against ``_PIPELINE_DEPENDENCIES``.
+        _provenance_pipeline_deps = getattr(
+            self, '_pipeline_dependencies_ref', None,
+        )
+        if _provenance_pipeline_deps is not None:
+            _prov_validation = self.provenance_tracker.validate_against_pipeline(
+                _provenance_pipeline_deps,
+            )
+            if not _prov_validation['fully_covered']:
+                _prov_deficit = 1.0 - _prov_validation['coverage']
+                _prov_cov_boost = _prov_deficit * 0.2
+                coherence_deficit = min(1.0, coherence_deficit + _prov_cov_boost)
 
         # Record coherence deficit in error evolution if significant.
         # Enrich with provenance attribution so downstream root-cause
@@ -18233,6 +18303,18 @@ class UnifiedCognitiveCycle:
                 memory_signal=memory_signal,
                 converged_state=converged_state,
             )
+            # 7d-blend. Memory consistency → coherence deficit — when the
+            # memory-reasoning consistency score is low, blend it into
+            # coherence_deficit so that stale/inconsistent memories
+            # degrade the coherence assessment alongside cross-module
+            # misalignment.  Previously, memory consistency only
+            # escalated uncertainty and triggered re-reasoning but
+            # never influenced the coherence score that the UCC reports
+            # to downstream consumers.
+            _mem_consistency = memory_validation.get("consistency_score", 1.0)
+            if isinstance(_mem_consistency, (int, float)) and _mem_consistency < 0.5:
+                _mem_coh_boost = (1.0 - max(0.0, min(1.0, _mem_consistency))) * 0.2
+                coherence_deficit = min(1.0, coherence_deficit + _mem_coh_boost)
             if memory_validation.get("needs_re_retrieval", False):
                 _mem_boost = memory_validation.get("uncertainty_boost", 0.0)
                 uncertainty = min(1.0, uncertainty + _mem_boost)
@@ -20129,6 +20211,14 @@ class AEONDeltaV3(nn.Module):
         # to allocate deeper reasoning to repeatedly problematic subsystems.
         self._cached_provenance_root_modules: List[str] = []
 
+        # Prior-pass provenance max delta — caches the largest per-module
+        # L2 delta from the provenance tracker so the next pass's
+        # uncertainty estimation can pre-escalate base uncertainty when
+        # the previous pass contained anomalously large transformations.
+        # This closes the feedback path from per-module provenance deltas
+        # back into the forward pass's initial uncertainty estimate.
+        self._cached_provenance_max_delta: float = 0.0
+
         # Per-module coherence correction pressure — caches the correction
         # signals computed by ModuleCoherenceVerifier.compute_correction_signals()
         # so the feedback bus can route targeted pressure to modules with
@@ -20392,6 +20482,7 @@ class AEONDeltaV3(nn.Module):
                     cross_validation_reconciler=getattr(
                         self, 'cross_validator', None,
                     ),
+                    pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -22969,6 +23060,24 @@ class AEONDeltaV3(nn.Module):
                 -_UNCERTAINTY_STEEPNESS * (residual_var - _UNCERTAINTY_MIDPOINT)
             ))
         uncertainty_sources["residual_variance"] = uncertainty
+        # 1a-iii-prov. Prior-pass provenance delta feedback — when the
+        # previous forward pass's provenance tracker recorded an
+        # anomalously large per-module L2 delta, pre-escalate the base
+        # uncertainty so the current pass starts with heightened
+        # metacognitive sensitivity.  The threshold (50.0) matches
+        # the provenance tracker's ``_delta_anomaly_threshold``;
+        # the scale (0.05) is conservative to avoid runaway escalation.
+        _PROV_DELTA_ANOMALY_THRESHOLD = 50.0
+        _PROV_DELTA_UNCERTAINTY_SCALE = 0.05
+        _prior_max_delta = getattr(self, '_cached_provenance_max_delta', 0.0)
+        if _prior_max_delta > _PROV_DELTA_ANOMALY_THRESHOLD:
+            _prov_delta_boost = min(
+                1.0 - uncertainty,
+                _PROV_DELTA_UNCERTAINTY_SCALE * (_prior_max_delta / _PROV_DELTA_ANOMALY_THRESHOLD),
+            )
+            if _prov_delta_boost > 0:
+                uncertainty = min(1.0, uncertainty + _prov_delta_boost)
+                uncertainty_sources["prior_provenance_anomaly"] = _prov_delta_boost
         high_uncertainty = uncertainty > 0.5
         if high_uncertainty and not fast:
             logger.debug(
@@ -26859,6 +26968,10 @@ class AEONDeltaV3(nn.Module):
                 # provides a principled novelty signal.  High ICM reward
                 # indicates the transition dynamics are poorly modelled,
                 # warranting deeper reasoning.
+                # Provenance instrumentation: record before/after so
+                # trace_root_cause() can attribute downstream quality
+                # changes to ICM forward/inverse model predictions.
+                self.provenance_tracker.record_before("icm_curiosity", C_star)
                 _ICM_INTRINSIC_THRESHOLD = 0.3
                 _ICM_UNCERTAINTY_SCALE = 0.05
                 _icm_reward = active_learning_results.get("icm_reward", 0.0)
@@ -26872,6 +26985,11 @@ class AEONDeltaV3(nn.Module):
                             uncertainty = min(1.0, uncertainty + _icm_boost)
                             uncertainty_sources["icm_curiosity"] = _icm_boost
                             high_uncertainty = uncertainty > 0.5
+                self.provenance_tracker.record_after("icm_curiosity", C_star)
+                self.coherence_registry.register_output(
+                    "icm_curiosity",
+                    validated=isinstance(_icm_reward, (int, float)) and math.isfinite(_icm_reward),
+                )
                 # 5e-iii. Active learning state blending — blend the
                 # planner's best_action into C_star as a small residual
                 # so the epistemic exploration signal shapes downstream
@@ -31551,7 +31669,14 @@ class AEONDeltaV3(nn.Module):
         
         _provenance = self.provenance_tracker.compute_attribution()
 
-        # 8g-trace. Non-UCC provenance trace-completeness check — when the
+        # Cache prior-pass provenance max delta — the largest per-module
+        # L2 delta feeds into the next pass's base uncertainty estimation
+        # so that anomalously large transformations on pass N elevate
+        # the starting uncertainty on pass N+1.
+        _prov_deltas = _provenance.get('deltas', {})
+        self._cached_provenance_max_delta = (
+            max(_prov_deltas.values()) if _prov_deltas else 0.0
+        )
         # UCC is disabled, trace_root_cause() completeness is never verified
         # by the UCC's evaluate().  Check it here so that conclusions are
         # not accepted without verifiable provenance regardless of whether
@@ -35961,6 +36086,7 @@ class AEONDeltaV3(nn.Module):
                 cross_validation_reconciler=getattr(
                     self, 'cross_validator', None,
                 ),
+                pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
             )
             remediated.append('unified_cognitive_cycle')
 
