@@ -19199,6 +19199,23 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "integration_gate_confidence", default=1.0,
         )
+        # Feedback signal trend — worst-case monotonic worsening across
+        # all EMA-tracked signal channels.  When the feedback bus detects
+        # that conditions are systematically deteriorating (positive
+        # trend), this signal conditions the meta-loop to deepen
+        # reasoning.  Closes the gap where signal trends were tracked
+        # by the feedback bus but never re-injected into meta-loop
+        # conditioning.
+        self.feedback_bus.register_signal(
+            "feedback_signal_trend", default=0.0,
+        )
+        # Feedback oscillation pressure — fraction of signal channels
+        # exhibiting unstable alternating trends.  When oscillation is
+        # high, the meta-loop should deepen reasoning to stabilise
+        # signal dynamics rather than reacting to individual fluctuations.
+        self.feedback_bus.register_signal(
+            "feedback_oscillation_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -20920,6 +20937,7 @@ class AEONDeltaV3(nn.Module):
             "topology_catastrophe": "topology_catastrophe",
             "ns_consistency_violation": "ns_bridge_confidence",
             "integration_gate_low_confidence": "integration_gate_confidence",
+            "provenance_dag_cycle": "dag_acyclicity_pressure",
         }
         if _ee is not None:
             try:
@@ -20939,6 +20957,33 @@ class AEONDeltaV3(nn.Module):
                             extra[_fb_signal] = _pressure_val
             except Exception:
                 pass
+        # Feedback bus signal trend — when the EMA-tracked signal trend
+        # shows monotonically worsening conditions (e.g. rising uncertainty
+        # or falling coherence), carry the worst-case trend magnitude into
+        # the feedback bus.  This closes the gap where signal trends were
+        # computed by the feedback bus's EMA tracker but never re-injected
+        # into the meta-loop's conditioning vector, leaving the meta-loop
+        # blind to cross-pass signal drift patterns.
+        _fb = getattr(self, 'feedback_bus', None)
+        if _fb is not None:
+            _trend = _fb.get_signal_trend()
+            if _trend is not None:
+                # Worst-case worsening: max positive trend across channels
+                # (positive trend = signal is rising, e.g. increasing
+                # uncertainty or coherence deficit).
+                _worst_trend = float(_trend.max().item())
+                if _worst_trend > 0.05:
+                    extra["feedback_signal_trend"] = max(
+                        0.0, min(1.0, _worst_trend),
+                    )
+            # Oscillation score — fraction of channels with unstable
+            # alternating trends.  When oscillation is high, the meta-loop
+            # should deepen reasoning to stabilise signal dynamics.
+            _osc = _fb.get_oscillation_score()
+            if _osc > 0.1:
+                extra["feedback_oscillation_pressure"] = max(
+                    0.0, min(1.0, _osc),
+                )
         return extra
 
     @staticmethod
@@ -21922,6 +21967,9 @@ class AEONDeltaV3(nn.Module):
                     success=True,
                     metadata={
                         'cycles_found': len(_dag_validation['cycles_found']),
+                        'edges_removed': _dag_validation.get(
+                            'cycles_found', [],
+                        ),
                     },
                 )
         
@@ -35571,6 +35619,20 @@ class AEONDeltaV3(nn.Module):
                 self._cached_coherence_deficit, _gap_inflation,
             )
 
+        # --- AGI coherence validation ---
+        # Invoke verify_cognitive_unity() to assess the three
+        # requirements for unified AGI operation (mutual verification,
+        # uncertainty → metacognition, root-cause traceability).
+        # Including the result in the diagnostic report ensures that
+        # every self_diagnostic() call explicitly surfaces whether
+        # the architecture achieves cognitive unity, closing the gap
+        # where verify_cognitive_unity() was available but only
+        # exercised on-demand.
+        try:
+            _cognitive_unity = self.verify_cognitive_unity()
+        except Exception:
+            _cognitive_unity = {'unified': False, 'error': 'evaluation_failed'}
+
         return {
             'status': status,
             'active_modules': active_modules,
@@ -35652,6 +35714,12 @@ class AEONDeltaV3(nn.Module):
             # or setting ``enable_full_coherence=True``.
             'config_disabled_gaps': _config_disabled_gaps,
             'config_disabled_gap_count': len(_config_disabled_gaps),
+            # AGI coherence validation — assesses the three unified
+            # cognitive requirements (mutual verification, uncertainty
+            # → metacognition, root-cause traceability).  Including
+            # the result in self_diagnostic ensures every diagnostic
+            # call reports whether cognitive unity is achieved.
+            'cognitive_unity': _cognitive_unity,
         }
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:

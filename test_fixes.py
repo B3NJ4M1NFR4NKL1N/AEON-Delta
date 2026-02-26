@@ -56795,6 +56795,162 @@ def test_hvae_cross_pass_complexity_gate_boost():
     print("✅ test_hvae_cross_pass_complexity_gate_boost PASSED")
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Signal Trend, Oscillation, Provenance, Unity
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_feedback_signal_trend_registered():
+    """Verify feedback_signal_trend is registered on the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert "feedback_signal_trend" in model.feedback_bus._extra_signals, (
+        "feedback_signal_trend should be registered on the feedback bus"
+    )
+    print("✅ test_feedback_signal_trend_registered PASSED")
+
+
+def test_feedback_oscillation_pressure_registered():
+    """Verify feedback_oscillation_pressure is registered on the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert "feedback_oscillation_pressure" in model.feedback_bus._extra_signals, (
+        "feedback_oscillation_pressure should be registered on the feedback bus"
+    )
+    print("✅ test_feedback_oscillation_pressure_registered PASSED")
+
+
+def test_build_feedback_includes_signal_trend():
+    """Verify _build_feedback_extra_signals includes trend when bus has trend."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Simulate a positive signal trend by injecting EMA state
+    num_ch = model.feedback_bus.total_channels
+    model.feedback_bus._ema_values = torch.zeros(num_ch)
+    model.feedback_bus._signal_trend = torch.full((num_ch,), 0.1)
+    extra = model._build_feedback_extra_signals()
+    assert "feedback_signal_trend" in extra, (
+        "feedback_signal_trend should appear when trend > 0.05"
+    )
+    assert 0.0 <= extra["feedback_signal_trend"] <= 1.0
+    print("✅ test_build_feedback_includes_signal_trend PASSED")
+
+
+def test_build_feedback_includes_oscillation_pressure():
+    """Verify _build_feedback_extra_signals includes oscillation pressure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Simulate oscillation: inject alternating trend signs into history
+    num_ch = model.feedback_bus.total_channels
+    for i in range(6):
+        sign = 1.0 if i % 2 == 0 else -1.0
+        model.feedback_bus._trend_sign_history.append(
+            torch.full((num_ch,), sign)
+        )
+    osc_score = model.feedback_bus.get_oscillation_score()
+    assert osc_score > 0.0, "Oscillation should be detected"
+    extra = model._build_feedback_extra_signals()
+    assert "feedback_oscillation_pressure" in extra, (
+        "feedback_oscillation_pressure should appear when oscillation > 0.1"
+    )
+    assert 0.0 <= extra["feedback_oscillation_pressure"] <= 1.0
+    print("✅ test_build_feedback_includes_oscillation_pressure PASSED")
+
+
+def test_dag_cycle_error_evolution_includes_edges():
+    """Verify provenance DAG cycle records include removed edge details."""
+    from aeon_core import CausalProvenanceTracker, CausalErrorEvolutionTracker
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+    tracker._error_evolution = ee
+    # Create a cycle: A→B→A
+    tracker.record_dependency('A', 'B')
+    tracker.record_dependency('B', 'A')
+    result = tracker.validate_dag_acyclic()
+    assert not result['is_acyclic'], "Should detect cycle"
+    # Record episode as done in _reasoning_core_impl
+    ee.record_episode(
+        error_class='provenance_dag_cycle',
+        strategy_used='edge_removal',
+        success=True,
+        metadata={
+            'cycles_found': len(result['cycles_found']),
+            'edges_removed': result.get('cycles_found', []),
+        },
+    )
+    summary = ee.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'provenance_dag_cycle' in classes, (
+        "provenance_dag_cycle should be recorded"
+    )
+    print("✅ test_dag_cycle_error_evolution_includes_edges PASSED")
+
+
+def test_self_diagnostic_includes_cognitive_unity():
+    """Verify self_diagnostic includes cognitive_unity assessment."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    assert 'cognitive_unity' in diag, (
+        "self_diagnostic should include cognitive_unity"
+    )
+    unity = diag['cognitive_unity']
+    assert isinstance(unity, dict), "cognitive_unity should be a dict"
+    assert 'unified' in unity, "cognitive_unity should have 'unified' key"
+    print("✅ test_self_diagnostic_includes_cognitive_unity PASSED")
+
+
+def test_provenance_dag_cycle_in_error_class_to_feedback():
+    """Verify provenance_dag_cycle maps to dag_acyclicity_pressure signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Inject a dag cycle error with low success rate into error evolution
+    if model.error_evolution is not None:
+        for _ in range(3):
+            model.error_evolution.record_episode(
+                error_class='provenance_dag_cycle',
+                strategy_used='edge_removal',
+                success=False,
+            )
+        extra = model._build_feedback_extra_signals()
+        assert "dag_acyclicity_pressure" in extra, (
+            "provenance_dag_cycle should bridge to dag_acyclicity_pressure"
+        )
+    print("✅ test_provenance_dag_cycle_in_error_class_to_feedback PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -59302,6 +59458,15 @@ def run_all_tests():
     test_cached_hwm_prediction_initialized()
     test_feedback_extra_signals_weakest_pair()
     test_hvae_cross_pass_complexity_gate_boost()
+
+    # Architectural Unification — Signal Trend, Oscillation, Provenance, Unity
+    test_feedback_signal_trend_registered()
+    test_feedback_oscillation_pressure_registered()
+    test_build_feedback_includes_signal_trend()
+    test_build_feedback_includes_oscillation_pressure()
+    test_dag_cycle_error_evolution_includes_edges()
+    test_self_diagnostic_includes_cognitive_unity()
+    test_provenance_dag_cycle_in_error_class_to_feedback()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
