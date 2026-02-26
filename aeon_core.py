@@ -12701,7 +12701,8 @@ class DifferentiableForwardChainer(nn.Module):
         )
 
     def forward(
-        self, facts: torch.Tensor, rules: torch.Tensor
+        self, facts: torch.Tensor, rules: torch.Tensor,
+        causal_adjacency: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Apply differentiable forward chaining.
@@ -12709,13 +12710,34 @@ class DifferentiableForwardChainer(nn.Module):
         Args:
             facts: [B, P] soft truth values in [0, 1].
             rules: [B, P] soft rule activations in [0, 1].
+            causal_adjacency: Optional [P, P] or [F, F] adjacency matrix
+                from causal DAG consensus.  When provided, it is resized to
+                [P, P] and blended into the rule matrix so that learned
+                causal structure biases symbolic inference, linking causal
+                discovery to neuro-symbolic reasoning.
 
         Returns:
             conclusions: [B, P] derived soft truth values.
         """
+        # Optionally align causal adjacency to predicate space
+        _causal_bias: Optional[torch.Tensor] = None
+        if causal_adjacency is not None:
+            try:
+                _ca = causal_adjacency.detach().float()
+                P = self.num_predicates
+                if _ca.shape != (P, P):
+                    _ca = F.adaptive_avg_pool2d(
+                        _ca.unsqueeze(0).unsqueeze(0), (P, P),
+                    ).squeeze(0).squeeze(0)
+                _causal_bias = _ca.to(facts.device)
+            except Exception:
+                _causal_bias = None
+
         for _ in range(self.max_depth):
             # Product t-norm: fact AND (fact -> conclusion)
             rule_matrix = torch.sigmoid(self.rule_weights)  # [P, P]
+            if _causal_bias is not None:
+                rule_matrix = rule_matrix * (0.7 + 0.3 * _causal_bias)
             new_facts = facts.unsqueeze(-1) * rule_matrix.unsqueeze(0)  # [B, P, P]
             new_facts = new_facts.max(dim=1).values  # [B, P]
             # Monotonic accumulation with decay to prevent saturation
@@ -13721,7 +13743,8 @@ class HybridReasoningEngine(nn.Module):
         )
         self.knowledge_graph = TemporalKnowledgeGraph()
 
-    def reason(self, neural_state: torch.Tensor, query: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+    def reason(self, neural_state: torch.Tensor, query: Optional[torch.Tensor] = None,
+               causal_adjacency: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         # 1. Grounding
         facts = self.bridge.extract_facts(neural_state)
         rules = self.bridge.extract_rules(neural_state)
@@ -13743,8 +13766,9 @@ class HybridReasoningEngine(nn.Module):
                 kb_facts = aligned
             facts = torch.clamp(facts + kb_facts * 0.3, 0.0, 1.0)
 
-        # 3. Forward chaining
-        derived = self.forward_chainer(facts, rules)
+        # 3. Forward chaining — pass causal adjacency when available so
+        # learned causal structure biases symbolic inference rules.
+        derived = self.forward_chainer(facts, rules, causal_adjacency=causal_adjacency)
 
         # 4. Store new knowledge
         self.knowledge_graph.add_facts(derived, confidence=0.8)
@@ -13759,8 +13783,10 @@ class HybridReasoningEngine(nn.Module):
             "derived": derived,
         }
 
-    def forward(self, neural_state: torch.Tensor) -> Dict[str, Any]:
-        return self.reason(neural_state, query=neural_state)
+    def forward(self, neural_state: torch.Tensor,
+                causal_adjacency: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        return self.reason(neural_state, query=neural_state,
+                           causal_adjacency=causal_adjacency)
 
 
 # ---------------------------------------------------------------------------
@@ -19917,6 +19943,14 @@ class AEONDeltaV3(nn.Module):
         # pass's prediction matched the current reality.
         self._cached_world_model_prediction: Optional[torch.Tensor] = None
 
+        # Hierarchical world model prediction cache — mirrors
+        # _cached_world_model_prediction for the multi-horizon model so
+        # the next pass can cross-verify both physics-grounded AND
+        # hierarchical predictions against observed input, closing the
+        # gap where only one world model participated in cross-step
+        # prediction verification.
+        self._cached_hwm_prediction: Optional[torch.Tensor] = None
+
         # Cached subsystem states for cross-module coherence verification.
         # These are populated during the reasoning pipeline at each module's
         # provenance record_after point using .detach() to prevent gradient
@@ -20055,6 +20089,13 @@ class AEONDeltaV3(nn.Module):
         # so the feedback bus can route targeted pressure to modules with
         # inter-module divergence.
         self._cached_coherence_correction_signals: Dict[str, float] = {}
+
+        # Weakest coherence pair identity — caches the subsystem pair with
+        # the lowest inter-module cosine similarity so the next pass's
+        # feedback bus can target the specific link for repair, enabling
+        # cross-pass targeted coherence recovery.
+        self._cached_weakest_coherence_pair: Optional[str] = None
+        self._cached_weakest_coherence_sim: float = 1.0
 
         # Memory re-retrieval cross-pass state — when MemoryReasoningValidator
         # detects stale/inconsistent memories, this flag persists across
@@ -20671,6 +20712,17 @@ class AEONDeltaV3(nn.Module):
                     extra[f"coherence_correction:{_mod_name}"] = max(
                         0.0, min(1.0, _pressure),
                     )
+        # Weakest coherence pair pressure — when the coherence verifier
+        # identified a specific subsystem pair as most divergent, carry
+        # the pair's deficit into the feedback bus so the next pass's
+        # meta-loop can target deeper reasoning at the exact subsystems
+        # that caused the worst inter-module disagreement.
+        _wcp = getattr(self, '_cached_weakest_coherence_pair', None)
+        _wcs = getattr(self, '_cached_weakest_coherence_sim', 1.0)
+        if _wcp is not None and _wcs < 0.8:
+            extra["weakest_coherence_pair_pressure"] = max(
+                0.0, min(1.0, 1.0 - _wcs),
+            )
         # Convergence arbiter conflict — when the UCC's arbiter detected
         # disagreement between convergence monitors, carry the conflict
         # signal into the feedback bus so the next pass's meta-loop demands
@@ -21192,6 +21244,14 @@ class AEONDeltaV3(nn.Module):
             
             C_fused = self.memory_fusion(torch.cat([C_star, memory_context], dim=-1))
             logger.debug("Memory fusion applied")
+
+            # Retrieve per-system reliability from the previous pass's
+            # inter-memory cross-validation.  A reliability score < 1.0
+            # dampens that system's blend weight, ensuring disagreeing
+            # memory subsystems contribute less to the fused state.
+            _mem_reliability = getattr(
+                self, '_last_memory_cross_validation', {},
+            ).get('per_system_reliability', {})
             
             # Blend NeurogenicMemory patterns into the fused state when
             # available.  Without this, neurogenic memory is queried
@@ -21200,6 +21260,7 @@ class AEONDeltaV3(nn.Module):
             # the neurogenic subsystem disconnected from the fusion
             # pipeline and invisible to downstream reasoning.
             if self.neurogenic_memory is not None:
+                _neuro_reliability = max(0.1, _mem_reliability.get('neurogenic', 1.0))
                 try:
                     for i in range(C_fused.shape[0]):
                         neuro_ret = self.neurogenic_memory.retrieve(
@@ -21211,6 +21272,7 @@ class AEONDeltaV3(nn.Module):
                             )
                             C_fused[i] = C_fused[i] + (
                                 self.config.neurogenic_retrieval_weight
+                                * _neuro_reliability
                                 * neuro_vecs.mean(dim=0).to(device)
                             )
                 except Exception as neuro_err:
@@ -21228,6 +21290,7 @@ class AEONDeltaV3(nn.Module):
             # memory-fused representation rather than being consumed
             # only as a post-hoc residual in reasoning_core step 5c.
             if self.temporal_memory is not None:
+                _temporal_reliability = max(0.1, _mem_reliability.get('temporal', 1.0))
                 try:
                     for i in range(C_fused.shape[0]):
                         temporal_ret = self.temporal_memory.retrieve(
@@ -21239,6 +21302,7 @@ class AEONDeltaV3(nn.Module):
                             )
                             C_fused[i] = C_fused[i] + (
                                 self.config.temporal_memory_retrieval_weight
+                                * _temporal_reliability
                                 * temporal_vecs.mean(dim=0).to(device)
                             )
                 except Exception as temporal_err:
@@ -21256,6 +21320,7 @@ class AEONDeltaV3(nn.Module):
             # knowledge graph) so that semantic-level abstractions
             # influence the final memory-fused representation.
             if self.consolidating_memory is not None:
+                _consolidating_reliability = max(0.1, _mem_reliability.get('consolidating', 1.0))
                 try:
                     for i in range(C_fused.shape[0]):
                         cm_ret = self.consolidating_memory.retrieve(
@@ -21268,6 +21333,7 @@ class AEONDeltaV3(nn.Module):
                             )
                             C_fused[i] = C_fused[i] + (
                                 self.config.consolidating_semantic_weight
+                                * _consolidating_reliability
                                 * sem_vecs.mean(dim=0).to(device)
                             )
                 except Exception as cm_err:
@@ -21942,6 +22008,25 @@ class AEONDeltaV3(nn.Module):
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
             self._last_complexity_gates = _complexity_gates
+            # Cross-pass HVAE abstraction level bias — when the previous
+            # pass's HierarchicalVAE indicated high abstraction complexity
+            # (high KL divergence), boost the initial complexity gates so
+            # subsystems are not prematurely gated off before the current
+            # HVAE runs.  This closes the gap where HVAE level selection
+            # only refined gates within the same pass but couldn't
+            # pre-condition the next pass's initial gating decision.
+            _prev_hvae_kl = getattr(self, '_cached_hvae_kl', 0.0)
+            _HVAE_CROSS_PASS_GATE_THRESHOLD = 1.0
+            if (_complexity_gates is not None
+                    and math.isfinite(_prev_hvae_kl)
+                    and _prev_hvae_kl > _HVAE_CROSS_PASS_GATE_THRESHOLD):
+                _hvae_xpass_boost = min(
+                    1.0, (_prev_hvae_kl - _HVAE_CROSS_PASS_GATE_THRESHOLD) * 0.08,
+                )
+                _complexity_gates = torch.clamp(
+                    _complexity_gates + _hvae_xpass_boost, 0.0, 1.0,
+                )
+                self._last_complexity_gates = _complexity_gates
             self.coherence_registry.register_output("complexity_estimator", validated=_complexity_score_val is not None)
             self.provenance_tracker.record_before("complexity_estimator", z_in)
             self.provenance_tracker.record_after("complexity_estimator", z_in)
@@ -22038,6 +22123,57 @@ class AEONDeltaV3(nn.Module):
                 )
             finally:
                 self._cached_world_model_prediction = None
+
+        # 0b-verify-hwm. Hierarchical world model prediction verification —
+        # same cross-step verification as above but for the multi-horizon
+        # model.  Closing this gap means both world models participate in
+        # prediction verification, enabling divergence between their
+        # verified errors to be detected.
+        _verified_hwm_error: float = 0.0
+        if (self._cached_hwm_prediction is not None
+                and not fast):
+            try:
+                _prev_hwm = self._cached_hwm_prediction.to(device)
+                if _prev_hwm.shape == z_in.shape:
+                    _verified_hwm_error = float(
+                        F.mse_loss(_prev_hwm, z_in.detach()).item()
+                    )
+                    if _verified_hwm_error > 0.5:
+                        _hwm_vpe_boost = min(
+                            1.0 - uncertainty,
+                            _verified_hwm_error * 0.15,
+                        )
+                        if _hwm_vpe_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _hwm_vpe_boost)
+                            uncertainty_sources[
+                                "hwm_verified_error"
+                            ] = _hwm_vpe_boost
+                            high_uncertainty = uncertainty > 0.5
+                    self._cached_surprise = max(
+                        self._cached_surprise,
+                        _verified_hwm_error,
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "hierarchical_world_model",
+                            "prediction_verified",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "verified_error": _verified_hwm_error,
+                            },
+                            severity=(
+                                "warning"
+                                if _verified_hwm_error > 0.5
+                                else "info"
+                            ),
+                        )
+            except Exception as _hwm_vpe_err:
+                logger.debug(
+                    "Hierarchical WM prediction verification failed: %s",
+                    _hwm_vpe_err,
+                )
+            finally:
+                self._cached_hwm_prediction = None
 
         # 0c. Audit-driven feedback — consult historical decision patterns
         # to adaptively adjust reasoning depth for this forward pass.
@@ -23718,6 +23854,13 @@ class AEONDeltaV3(nn.Module):
             if _weakest_pair is not None:
                 coherence_results["_weakest_pair"] = _weakest_pair
                 coherence_results["_weakest_pair_sim"] = _weakest_pair_sim
+                # Cache weakest pair identity across passes so the next
+                # pass's _validate_cached_state_coherence and feedback bus
+                # can target the specific subsystem link for repair,
+                # closing the gap where weakest-pair identity was computed
+                # per-pass but never persisted for cross-pass conditioning.
+                self._cached_weakest_coherence_pair = _weakest_pair
+                self._cached_weakest_coherence_sim = _weakest_pair_sim
             # 5a-iii-b. Coherence-driven corrective action — when coherence
             # deficit is detected, escalate uncertainty to ensure downstream
             # meta-cognitive cycles activate.  This closes the loop between
@@ -24590,6 +24733,14 @@ class AEONDeltaV3(nn.Module):
                         metadata={
                             "num_levels": len(_hwm_hiddens),
                         },
+                    )
+                # Cache hierarchical prediction for cross-step verification
+                # in the next forward pass, mirroring the physics-grounded
+                # world model's prediction caching.
+                if (_hwm_pred is not None
+                        and torch.isfinite(_hwm_pred).all()):
+                    self._cached_hwm_prediction = (
+                        _hwm_pred.detach().clone()
                     )
             except Exception as hwm_err:
                 logger.warning(f"HierarchicalWorldModel error (non-fatal): {hwm_err}")
@@ -26912,7 +27063,10 @@ class AEONDeltaV3(nn.Module):
         if self.hybrid_reasoning is not None and not fast and "causal_model" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("hybrid_reasoning", C_star)
             try:
-                hybrid_reasoning_results = self.hybrid_reasoning(C_star)
+                hybrid_reasoning_results = self.hybrid_reasoning(
+                    C_star,
+                    causal_adjacency=self._cached_reconciled_adjacency,
+                )
                 conclusions = hybrid_reasoning_results.get("conclusions", None)
                 if conclusions is not None and torch.isfinite(conclusions).all():
                     C_star = C_star + self.config.hybrid_reasoning_blend * conclusions
