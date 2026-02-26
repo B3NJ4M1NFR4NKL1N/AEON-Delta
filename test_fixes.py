@@ -57918,6 +57918,144 @@ def test_mutual_verification_covers_feedback_bus():
     print("✅ test_mutual_verification_covers_feedback_bus PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Feedback Bus Signal Registration & Lambda Mapping
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_world_model_prediction_pressure_registered():
+    """world_model_prediction_pressure must be a registered feedback bus
+    signal so the _ERROR_CLASS_TO_FEEDBACK_SIGNAL bridge can route
+    world-model prediction error history into the meta-loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+
+    assert "world_model_prediction_pressure" in fb._extra_signals, (
+        "world_model_prediction_pressure not registered in feedback_bus. "
+        "The _ERROR_CLASS_TO_FEEDBACK_SIGNAL bridge references it but "
+        "cannot route error evolution patterns without registration."
+    )
+    print("✅ test_world_model_prediction_pressure_registered PASSED")
+
+
+def test_weakest_coherence_pair_pressure_registered():
+    """weakest_coherence_pair_pressure must be a registered feedback bus
+    signal so _build_feedback_extra_signals can set it when the coherence
+    verifier identifies a divergent subsystem pair.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+
+    assert "weakest_coherence_pair_pressure" in fb._extra_signals, (
+        "weakest_coherence_pair_pressure not registered in feedback_bus. "
+        "_build_feedback_extra_signals sets it but assignment fails "
+        "silently without registration."
+    )
+    print("✅ test_weakest_coherence_pair_pressure_registered PASSED")
+
+
+def test_deception_detected_in_lambda_mapping():
+    """deception_detected must map to a lambda parameter so that training
+    loss weights adapt to historical deception detection patterns.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "deception_detected" in mapping, (
+        "deception_detected is recorded via record_episode() when the "
+        "DeceptionSuppressor detects internal inconsistency, but it has "
+        "no _ERROR_CLASS_TO_LAMBDA entry, preventing training loss from "
+        "adapting to deception patterns."
+    )
+    assert mapping["deception_detected"] == "lambda_safety", (
+        f"deception_detected should map to lambda_safety (safety concern), "
+        f"got {mapping['deception_detected']}"
+    )
+    print("✅ test_deception_detected_in_lambda_mapping PASSED")
+
+
+def test_all_feedback_signal_targets_registered():
+    """Every signal name referenced in _ERROR_CLASS_TO_FEEDBACK_SIGNAL
+    must be registered in the feedback bus so the error-evolution bridge
+    can route patterns without KeyError.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+
+    # The _ERROR_CLASS_TO_FEEDBACK_SIGNAL mapping is local to
+    # _build_feedback_extra_signals, but we can verify the known targets.
+    expected_targets = {
+        "safety_violation_pressure",
+        "deception_pressure",
+        "ucc_coherence_trend",
+        "diversity_collapse",
+        "world_model_prediction_pressure",
+        "causal_dag_consensus_quality",
+        "memory_re_retrieval_pressure",
+        "memory_cv_disagreement",
+        "lipschitz_pressure",
+        "topology_catastrophe",
+        "ns_bridge_confidence",
+        "integration_gate_confidence",
+        "dag_acyclicity_pressure",
+    }
+    registered = set(fb._extra_signals.keys())
+    missing = sorted(expected_targets - registered)
+    assert not missing, (
+        f"Feedback signal targets referenced by _ERROR_CLASS_TO_FEEDBACK_SIGNAL "
+        f"but not registered in feedback_bus: {missing}"
+    )
+    print("✅ test_all_feedback_signal_targets_registered PASSED")
+
+
+def test_all_recorded_error_classes_have_lambda_mapping():
+    """Every error_class string recorded via record_episode() should have
+    a corresponding entry in _ERROR_CLASS_TO_LAMBDA so training loss
+    weights can adapt to all failure modes.
+
+    The sentinel value ``"none"`` (used to record successful pipeline
+    completions) is excluded because it is intentionally unmapped.
+    """
+    import re
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    with open('aeon_core.py', 'r') as f:
+        content = f.read()
+
+    # Extract all literal error_class arguments
+    recorded = set()
+    for m in re.finditer(
+        r"record_episode\(\s*(?:error_class\s*=\s*)?'([^']+)'", content
+    ):
+        recorded.add(m.group(1))
+    for m in re.finditer(
+        r'record_episode\(\s*(?:error_class\s*=\s*)?"([^"]+)"', content
+    ):
+        recorded.add(m.group(1))
+
+    # Filter out dynamic f-string patterns and the "none" sentinel
+    recorded = {e for e in recorded if '{' not in e and e != 'none'}
+
+    missing = sorted(recorded - set(mapping.keys()))
+    assert not missing, (
+        f"Error classes recorded via record_episode() but missing from "
+        f"_ERROR_CLASS_TO_LAMBDA (training cannot adapt to these failure "
+        f"modes): {missing}"
+    )
+    print("✅ test_all_recorded_error_classes_have_lambda_mapping PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -60489,6 +60627,13 @@ def run_all_tests():
     test_feedback_bus_in_pipeline_dependencies()
     test_verify_cognitive_unity_traceability_before_forward()
     test_mutual_verification_covers_feedback_bus()
+
+    # Architectural Unification — Feedback Bus Signal Registration & Lambda Mapping
+    test_world_model_prediction_pressure_registered()
+    test_weakest_coherence_pair_pressure_registered()
+    test_deception_detected_in_lambda_mapping()
+    test_all_feedback_signal_targets_registered()
+    test_all_recorded_error_classes_have_lambda_mapping()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
