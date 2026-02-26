@@ -1052,9 +1052,17 @@ class SafeTensorProcessor:
         def _sanitize(x):
             if isinstance(x, torch.Tensor):
                 if x.is_floating_point() or torch.is_complex(x):
-                    # Simple NaN/Inf replacement
-                    x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
-                    x = torch.where(torch.isinf(x), torch.sign(x) * 1e6, x)
+                    # Only apply where-replacements when NaN/Inf is actually
+                    # present.  Unconditional torch.where inserts
+                    # WhereBackward0/SignBackward0 into the autograd graph
+                    # even when no values are replaced, which can block
+                    # gradient flow through upstream modules.
+                    has_nan = torch.isnan(x).any().item()
+                    has_inf = torch.isinf(x).any().item()
+                    if has_nan:
+                        x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
+                    if has_inf:
+                        x = torch.where(torch.isinf(x), torch.sign(x) * 1e6, x)
                 return x
             if isinstance(x, dict):
                 return {k: _sanitize(v) for k, v in x.items()}
@@ -31779,11 +31787,15 @@ class AEONDeltaV3(nn.Module):
         # loss scale and metacognitive trigger but was invisible to the
         # decoder input when uncertainty remained below the penalty
         # threshold.  The gate scales linearly from 1.0 (no deficit) to
-        # 0.0 (complete incoherence).
+        # a minimum floor of 0.1 (complete incoherence).  The floor
+        # prevents complete gradient suppression when the coherence
+        # system has not yet established a baseline (e.g., on the first
+        # forward pass), ensuring upstream parameters can still learn.
         if (self.config.enable_coherence_output_gate
                 and self._cached_coherence_deficit > 0.0
                 and not _safety_blocked):
-            _coh_gate = max(0.0, 1.0 - self._cached_coherence_deficit)
+            _COH_GATE_FLOOR = 0.1
+            _coh_gate = max(_COH_GATE_FLOOR, 1.0 - self._cached_coherence_deficit)
             z_out = z_out * _coh_gate
             self.audit_log.record("module_coherence", "output_gate", {
                 "gate_value": _coh_gate,
