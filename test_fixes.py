@@ -33,7 +33,8 @@ _ARCH_NODES = [
     'meta_loop', 'certified_meta_loop', 'convergence_arbiter', 'slot_binding',
     'factor_extraction', 'topology_analysis', 'diversity_analysis',
     'complexity_estimator', 'consistency_gate', 'cross_validation',
-    'self_report', 'safety', 'cognitive_executive', 'deeper_meta_loop',
+    'self_report', 'deception_suppressor', 'safety', 'cognitive_executive',
+    'deeper_meta_loop',
     'world_model', 'hierarchical_world_model', 'causal_world_model',
     'memory', 'temporal_memory', 'neurogenic_memory', 'consolidating_memory',
     'memory_trust', 'memory_validation', 'memory_cross_validation',
@@ -63,6 +64,7 @@ _KEYWORD_NODE_MAP = {
     'consistency_gate': 'consistency_gate',
     'cross_validation': 'cross_validation',
     'self_report': 'self_report', 'honesty': 'self_report',
+    'deception_suppressor': 'deception_suppressor', 'deception': 'deception_suppressor',
     'safety': 'safety', 'quarantine': 'safety', 'tensor_guard': 'safety',
     'nan_policy': 'safety', 'sanitiz': 'safety',
     'cognitive_executive': 'cognitive_executive', 'executive': 'cognitive_executive',
@@ -57672,6 +57674,139 @@ def test_coherence_deficit_not_inflated_when_disabled():
     print("✅ test_coherence_deficit_not_inflated_when_disabled PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE GAP FIXES — TESTS
+#  Validate that architectural gaps, redundancies and inconsistencies that
+#  prevent unified AGI coherence are closed by the corresponding code changes.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_full_coherence_enables_deception_suppressor():
+    """enable_full_coherence must activate enable_deception_suppressor and
+    enable_safety_guardrails so that deception detection participates in
+    the unified coherence pipeline."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    assert config.enable_deception_suppressor is True, (
+        "enable_full_coherence should set enable_deception_suppressor=True"
+    )
+    assert config.enable_safety_guardrails is True, (
+        "enable_full_coherence should set enable_safety_guardrails=True"
+    )
+    print("✅ test_full_coherence_enables_deception_suppressor PASSED")
+
+
+def test_registry_default_expected_includes_new_nodes():
+    """SubsystemCoherenceRegistry._DEFAULT_EXPECTED must include
+    deception_suppressor, complexity_estimator, mcts_planning, and
+    icm_curiosity — these nodes register output in the forward pass
+    and their absence should degrade coverage deficit."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    expected = SubsystemCoherenceRegistry._DEFAULT_EXPECTED
+    for node in ("deception_suppressor", "complexity_estimator",
+                 "mcts_planning", "icm_curiosity"):
+        assert node in expected, (
+            f"SubsystemCoherenceRegistry._DEFAULT_EXPECTED should "
+            f"include '{node}' for coverage tracking"
+        )
+    print("✅ test_registry_default_expected_includes_new_nodes PASSED")
+
+
+def test_config_gated_deception_suppressor():
+    """adjust_expected_for_config must remove deception_suppressor
+    from the expected set when enable_deception_suppressor is False."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    class MockConfig:
+        enable_deception_suppressor = False
+    registry = SubsystemCoherenceRegistry()
+    assert "deception_suppressor" in registry._expected
+    registry.adjust_expected_for_config(MockConfig())
+    assert "deception_suppressor" not in registry._expected, (
+        "Disabled deception_suppressor should be removed from expected"
+    )
+    print("✅ test_config_gated_deception_suppressor PASSED")
+
+
+def test_config_gated_complexity_estimator():
+    """adjust_expected_for_config must remove complexity_estimator
+    from the expected set when enable_complexity_estimator is False."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    class MockConfig:
+        enable_complexity_estimator = False
+    registry = SubsystemCoherenceRegistry()
+    assert "complexity_estimator" in registry._expected
+    registry.adjust_expected_for_config(MockConfig())
+    assert "complexity_estimator" not in registry._expected, (
+        "Disabled complexity_estimator should be removed from expected"
+    )
+    print("✅ test_config_gated_complexity_estimator PASSED")
+
+
+def test_config_gated_mcts_and_icm():
+    """adjust_expected_for_config must remove mcts_planning and
+    icm_curiosity from the expected set when their config flags
+    are disabled."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    class MockMCTSConfig:
+        enable_mcts_planner = False
+    registry = SubsystemCoherenceRegistry()
+    assert "mcts_planning" in registry._expected
+    registry.adjust_expected_for_config(MockMCTSConfig())
+    assert "mcts_planning" not in registry._expected, (
+        "Disabled mcts_planning should be removed from expected"
+    )
+
+    class MockALConfig:
+        enable_active_learning_planner = False
+    registry2 = SubsystemCoherenceRegistry()
+    assert "icm_curiosity" in registry2._expected
+    registry2.adjust_expected_for_config(MockALConfig())
+    assert "icm_curiosity" not in registry2._expected, (
+        "Disabled icm_curiosity should be removed from expected"
+    )
+    print("✅ test_config_gated_mcts_and_icm PASSED")
+
+
+def test_deception_suppressor_in_arch_nodes():
+    """_ARCH_NODES test mapping must include deception_suppressor."""
+    assert "deception_suppressor" in _ARCH_NODES, (
+        "_ARCH_NODES should include deception_suppressor for "
+        "dashboard architecture mapping"
+    )
+    print("✅ test_deception_suppressor_in_arch_nodes PASSED")
+
+
+def test_node_config_flag_includes_deception():
+    """self_diagnostic's _NODE_CONFIG_FLAG must include
+    deception_suppressor and complexity_estimator so that
+    missing pipeline edges are correctly classified as
+    config-disabled rather than true wiring failures."""
+    import re
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Find the _NODE_CONFIG_FLAG dict in self_diagnostic
+    assert "'deception_suppressor': 'enable_deception_suppressor'" in content, (
+        "_NODE_CONFIG_FLAG should map deception_suppressor to "
+        "enable_deception_suppressor"
+    )
+    assert "'complexity_estimator': 'enable_complexity_estimator'" in content, (
+        "_NODE_CONFIG_FLAG should map complexity_estimator to "
+        "enable_complexity_estimator"
+    )
+    print("✅ test_node_config_flag_includes_deception PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -60227,6 +60362,15 @@ def run_all_tests():
     test_uncertainty_auto_critic_in_feedback_bridge()
     test_verify_cognitive_unity_pipeline_provenance_coverage()
     test_coherence_deficit_not_inflated_when_disabled()
+
+    # Architectural coherence gap fix tests
+    test_full_coherence_enables_deception_suppressor()
+    test_registry_default_expected_includes_new_nodes()
+    test_config_gated_deception_suppressor()
+    test_config_gated_complexity_estimator()
+    test_config_gated_mcts_and_icm()
+    test_deception_suppressor_in_arch_nodes()
+    test_node_config_flag_includes_deception()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

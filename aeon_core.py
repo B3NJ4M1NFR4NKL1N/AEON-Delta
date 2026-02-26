@@ -3345,6 +3345,13 @@ class AEONConfig:
                 # Grounded multimodal learning — CLIP-style contrastive
                 # symbol grounding for perceptual anchoring.
                 'enable_grounded_multimodal',
+                # Safety guardrails — ensures safety scoring and
+                # self-reporting participate in the coherence pipeline.
+                'enable_safety_guardrails',
+                # Deception suppressor — independent consistency probe
+                # between self-reported confidence and actual internal
+                # state divergence, closing the trust verification loop.
+                'enable_deception_suppressor',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -16756,6 +16763,11 @@ class SubsystemCoherenceRegistry:
         "causal_context", "rssm", "multimodal", "grounded_multimodal",
         "integration", "auto_critic", "unified_cognitive_cycle",
         "decoder",
+        # Nodes with provenance tracking and register_output() calls
+        # that were previously missing from the expected set, causing
+        # their absence to be invisible to coverage deficit tracking.
+        "deception_suppressor", "complexity_estimator",
+        "mcts_planning", "icm_curiosity",
     })
 
     def __init__(
@@ -16912,7 +16924,7 @@ class SubsystemCoherenceRegistry:
             "enable_hybrid_reasoning": ["hybrid_reasoning", "ns_bridge"],
             "enable_temporal_knowledge_graph": ["temporal_knowledge_graph"],
             "enable_hierarchical_vae": ["hierarchical_vae"],
-            "enable_mcts_planner": ["active_learning"],
+            "enable_mcts_planner": ["active_learning", "mcts_planning"],
             "enable_unified_simulator": ["unified_simulator"],
             "enable_cognitive_executive": ["cognitive_executive"],
             "enable_multimodal": ["multimodal", "grounded_multimodal"],
@@ -16926,6 +16938,11 @@ class SubsystemCoherenceRegistry:
             "enable_world_model": ["world_model"],
             "enable_causal_model": ["causal_model", "causal_dag_consensus"],
             "enable_external_trust": ["memory_trust"],
+            "enable_deception_suppressor": ["deception_suppressor"],
+            "enable_complexity_estimator": ["complexity_estimator"],
+            "enable_active_learning_planner": [
+                "icm_curiosity",
+            ],
         }
         with self._lock:
             for flag, subsystems in _CONFIG_GATED.items():
@@ -35282,6 +35299,8 @@ class AEONDeltaV3(nn.Module):
             'temporal_knowledge_graph': 'enable_temporal_knowledge_graph',
             'memory_cross_validation': 'enable_hierarchical_memory',
             'memory_validation': 'enable_hierarchical_memory',
+            'deception_suppressor': 'enable_deception_suppressor',
+            'complexity_estimator': 'enable_complexity_estimator',
         }
         for _missing in _wiring.get('missing_edges', []):
             _edge = _missing['edge']
