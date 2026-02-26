@@ -56340,6 +56340,131 @@ def test_output_reliability_low_trust_in_causal_trace():
     print("✅ test_output_reliability_low_trust_in_causal_trace PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Bidirectional Bridge, Root-Cause Traceability
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_low_trust_root_cause_in_causal_trace():
+    """Output reliability low-trust causal trace includes root-cause
+    attribution from provenance DAG so conclusions are traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        enable_safety_guardrails=True,
+        enable_causal_trace=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    reliability = outputs.get('output_reliability', 1.0)
+    if reliability < 0.5:
+        recent = model.causal_trace.recent(n=30)
+        low_trust_entries = [
+            e for e in recent
+            if (e.get("subsystem") == "output_reliability"
+                and e.get("decision") == "low_trust")
+        ]
+        assert len(low_trust_entries) > 0, (
+            f"Low output reliability ({reliability:.3f}) should produce "
+            f"a 'low_trust' causal trace entry"
+        )
+        # Verify root_cause metadata is present
+        meta = low_trust_entries[-1].get("metadata", {})
+        rc = meta.get("root_cause", {})
+        assert "weakest_factor" in rc, (
+            "Low-trust causal trace must include 'weakest_factor' in "
+            "root_cause metadata for full traceability"
+        )
+        assert "root_modules" in rc, (
+            "Low-trust causal trace must include 'root_modules' in "
+            "root_cause metadata for root-cause traceability"
+        )
+    print("✅ test_low_trust_root_cause_in_causal_trace PASSED")
+
+
+def test_trainer_bridge_epoch_feedback_method_exists():
+    """AEONTrainer has _bridge_epoch_feedback method for bidirectional
+    training ↔ inference communication at epoch boundaries."""
+    from aeon_core import AEONTrainer
+    assert hasattr(AEONTrainer, '_bridge_epoch_feedback'), (
+        "AEONTrainer must have _bridge_epoch_feedback method to close "
+        "the bidirectional training-inference feedback loop"
+    )
+    print("✅ test_trainer_bridge_epoch_feedback_method_exists PASSED")
+
+
+def test_trainer_bridge_epoch_feedback_returns_counts():
+    """AEONTrainer._bridge_epoch_feedback returns bridged/adapted counts."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+    import torch
+
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+    trainer = AEONTrainer(model, config)
+
+    result = trainer._bridge_epoch_feedback()
+    assert isinstance(result, dict), (
+        "_bridge_epoch_feedback must return a dict"
+    )
+    assert 'bridged_to_inference' in result, (
+        "Result must include 'bridged_to_inference' count"
+    )
+    assert 'adapted_from_inference' in result, (
+        "Result must include 'adapted_from_inference' count"
+    )
+    print("✅ test_trainer_bridge_epoch_feedback_returns_counts PASSED")
+
+
+def test_trainer_train_calls_bridge():
+    """AEONTrainer.train() calls _bridge_epoch_feedback in its source."""
+    import inspect
+    from aeon_core import AEONTrainer
+    src = inspect.getsource(AEONTrainer.train)
+    assert '_bridge_epoch_feedback' in src, (
+        "AEONTrainer.train() must call _bridge_epoch_feedback at epoch "
+        "boundaries to close the bidirectional feedback loop"
+    )
+    print("✅ test_trainer_train_calls_bridge PASSED")
+
+
+def test_trainer_bridge_adapts_on_coherence_deficit():
+    """_bridge_epoch_feedback adapts gradient clipping when inference
+    reports high coherence deficit."""
+    from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
+
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+        gradient_clip_norm=1.0,
+    )
+    model = AEONDeltaV3(config)
+    # Simulate high coherence deficit from inference
+    model._cached_coherence_deficit = 0.5
+    trainer = AEONTrainer(model, config)
+
+    old_clip = trainer._grad_clip_norm
+    result = trainer._bridge_epoch_feedback()
+    new_clip = trainer._grad_clip_norm
+    assert new_clip < old_clip, (
+        f"Gradient clip should tighten when coherence deficit is high: "
+        f"old={old_clip}, new={new_clip}"
+    )
+    assert result['adapted_from_inference'] > 0, (
+        "adapted_from_inference count should be > 0 when adaptation occurs"
+    )
+    print("✅ test_trainer_bridge_adapts_on_coherence_deficit PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -58821,6 +58946,13 @@ def run_all_tests():
     test_ucc_graduated_severity_critical()
     test_ucc_graduated_severity_warning()
     test_output_reliability_low_trust_in_causal_trace()
+
+    # Architectural Unification — Bidirectional Bridge, Root-Cause Traceability
+    test_low_trust_root_cause_in_causal_trace()
+    test_trainer_bridge_epoch_feedback_method_exists()
+    test_trainer_bridge_epoch_feedback_returns_counts()
+    test_trainer_train_calls_bridge()
+    test_trainer_bridge_adapts_on_coherence_deficit()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
