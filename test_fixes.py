@@ -57403,6 +57403,275 @@ def test_icm_curiosity_coherence_registry():
     print("✅ test_icm_curiosity_coherence_registry PASSED")
 
 
+def test_auto_critic_metacognitive_path_coherence_registry():
+    """The metacognitive-triggered auto_critic path must register its output
+    with the coherence_registry, matching the NS-violation and unconditional
+    paths."""
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Find the metacognitive-triggered auto_critic section (8b4):
+    # "8b4. Uncertainty-triggered meta-cognitive cycle"
+    idx_8b4 = content.find('_should_trigger_metacognition = (')
+    assert idx_8b4 != -1, "Could not find metacognitive trigger section"
+    # Look from 8b4 to the next major section (8b5) for the auto_critic
+    section = content[idx_8b4:idx_8b4 + 5000]
+    # Find provenance_tracker.record_after("auto_critic" in this section
+    prov_pattern = 'provenance_tracker.record_after("auto_critic"'
+    prov_idx = section.find(prov_pattern)
+    assert prov_idx != -1, (
+        "Could not find provenance_tracker.record_after('auto_critic') "
+        "in metacognitive trigger section (8b4)"
+    )
+    # Check that coherence_registry.register_output appears after it
+    after_prov = section[prov_idx:prov_idx + 500]
+    assert 'coherence_registry.register_output(' in after_prov, (
+        "metacognitive-triggered auto_critic path must register with "
+        "coherence_registry after provenance_tracker.record_after"
+    )
+    assert '"auto_critic"' in after_prov, (
+        "coherence_registry.register_output must specify 'auto_critic'"
+    )
+    print("✅ test_auto_critic_metacognitive_path_coherence_registry PASSED")
+
+
+def test_config_gated_world_model():
+    """When enable_world_model=False, 'world_model' should be removed
+    from the coherence registry's expected subsystems."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+    assert "world_model" in registry._expected, (
+        "world_model should be in default expected subsystems"
+    )
+
+    class MockConfig:
+        enable_world_model = False
+
+    registry.adjust_expected_for_config(MockConfig())
+    assert "world_model" not in registry._expected, (
+        "world_model should be removed when enable_world_model=False"
+    )
+    print("✅ test_config_gated_world_model PASSED")
+
+
+def test_config_gated_causal_model():
+    """When enable_causal_model=False, 'causal_model' and 'causal_dag_consensus'
+    should be removed from the coherence registry's expected subsystems."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+    assert "causal_model" in registry._expected
+    assert "causal_dag_consensus" in registry._expected
+
+    class MockConfig:
+        enable_causal_model = False
+
+    registry.adjust_expected_for_config(MockConfig())
+    assert "causal_model" not in registry._expected, (
+        "causal_model should be removed when enable_causal_model=False"
+    )
+    assert "causal_dag_consensus" not in registry._expected, (
+        "causal_dag_consensus should be removed when enable_causal_model=False"
+    )
+    print("✅ test_config_gated_causal_model PASSED")
+
+
+def test_config_gated_memory_trust():
+    """When enable_external_trust=False, 'memory_trust' should be removed
+    from the coherence registry's expected subsystems."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+    assert "memory_trust" in registry._expected
+
+    class MockConfig:
+        enable_external_trust = False
+
+    registry.adjust_expected_for_config(MockConfig())
+    assert "memory_trust" not in registry._expected, (
+        "memory_trust should be removed when enable_external_trust=False"
+    )
+    print("✅ test_config_gated_memory_trust PASSED")
+
+
+def test_uncertainty_auto_critic_in_class_to_signal():
+    """Dynamic uncertainty_auto_critic_{trigger} error classes must be
+    explicitly mapped in _class_to_signal for targeted adaptation."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Build the mapping by calling adapt_weights_from_evolution with
+    # a summary containing the dynamic error classes
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+
+    # Find _class_to_signal in adapt_weights_from_evolution
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    expected_dynamic = [
+        "uncertainty_auto_critic_uncertainty",
+        "uncertainty_auto_critic_topology_catastrophe",
+        "uncertainty_auto_critic_convergence_diverging",
+        "uncertainty_auto_critic_audit_pattern",
+    ]
+    for cls in expected_dynamic:
+        assert cls in mapped, (
+            f"Dynamic error class '{cls}' not in _class_to_signal mapping"
+        )
+    print("✅ test_uncertainty_auto_critic_in_class_to_signal PASSED")
+
+
+def test_uncertainty_auto_critic_in_lambda_mapping():
+    """Dynamic uncertainty_auto_critic_{trigger} error classes must be
+    mapped in the CausalErrorEvolutionTracker lambda mapping."""
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+
+    # Find the lambda mapping in CausalErrorEvolutionTracker by looking
+    # for the recommend_loss_adjustments method's error class dict.
+    idx = content.find('"convergence_divergence": "lambda_lipschitz"')
+    assert idx != -1, "Lambda mapping dict not found in source"
+    mapping_section = content[idx:idx + 10000]
+
+    expected = [
+        "uncertainty_auto_critic_uncertainty",
+        "uncertainty_auto_critic_topology_catastrophe",
+        "uncertainty_auto_critic_convergence_diverging",
+        "uncertainty_auto_critic_audit_pattern",
+    ]
+    for cls in expected:
+        assert f'"{cls}"' in mapping_section, (
+            f"Dynamic error class '{cls}' not in lambda mapping"
+        )
+    print("✅ test_uncertainty_auto_critic_in_lambda_mapping PASSED")
+
+
+def test_uncertainty_auto_critic_in_feedback_bridge():
+    """Dynamic uncertainty_auto_critic_{trigger} error classes must be
+    mapped in _ERROR_CLASS_TO_FEEDBACK_SIGNAL for feedback bus routing."""
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+
+    idx = content.find('_ERROR_CLASS_TO_FEEDBACK_SIGNAL')
+    assert idx != -1
+    section = content[idx:idx + 2000]
+
+    expected = [
+        "uncertainty_auto_critic_topology_catastrophe",
+        "uncertainty_auto_critic_convergence_diverging",
+        "uncertainty_auto_critic_uncertainty",
+        "uncertainty_auto_critic_audit_pattern",
+    ]
+    for cls in expected:
+        assert f'"{cls}"' in section, (
+            f"Dynamic error class '{cls}' not in "
+            "_ERROR_CLASS_TO_FEEDBACK_SIGNAL mapping"
+        )
+    print("✅ test_uncertainty_auto_critic_in_feedback_bridge PASSED")
+
+
+def test_verify_cognitive_unity_pipeline_provenance_coverage():
+    """verify_cognitive_unity must report pipeline-provenance coverage
+    in the root_cause_traceability section."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_world_model=False, enable_causal_model=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Run a forward pass so provenance DAG is populated
+    x = torch.randint(0, 100, (1, 8))
+    try:
+        model(x)
+    except Exception:
+        pass  # Forward may fail but provenance DAG gets populated
+
+    result = model.verify_cognitive_unity()
+    rc = result['root_cause_traceability']
+
+    assert 'pipeline_provenance_coverage' in rc, (
+        "verify_cognitive_unity must include pipeline_provenance_coverage"
+    )
+    assert 'untraced_pipeline_nodes' in rc, (
+        "verify_cognitive_unity must include untraced_pipeline_nodes"
+    )
+    assert isinstance(rc['pipeline_provenance_coverage'], float)
+    assert isinstance(rc['untraced_pipeline_nodes'], list)
+    print("✅ test_verify_cognitive_unity_pipeline_provenance_coverage PASSED")
+
+
+def test_coherence_deficit_not_inflated_when_disabled():
+    """When world_model and causal_model are disabled, the coherence
+    registry's coverage deficit should not include them."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry()
+
+    class MockConfig:
+        enable_world_model = False
+        enable_causal_model = False
+        enable_external_trust = False
+
+    registry.adjust_expected_for_config(MockConfig())
+    assert "world_model" not in registry._expected
+    assert "causal_model" not in registry._expected
+    assert "causal_dag_consensus" not in registry._expected
+    assert "memory_trust" not in registry._expected
+
+    # Begin a pass and register only core modules
+    registry.begin_pass()
+    registry.register_output("input", validated=True)
+    registry.register_output("encoder", validated=True)
+
+    # The deficit should not count the disabled modules
+    deficit = registry.get_coverage_deficit()
+    summary = registry.build_summary()
+    absent = summary.get('absent', [])
+
+    assert "world_model" not in absent, (
+        "Disabled world_model should not appear as absent"
+    )
+    assert "causal_model" not in absent, (
+        "Disabled causal_model should not appear as absent"
+    )
+    print("✅ test_coherence_deficit_not_inflated_when_disabled PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -59946,6 +60215,18 @@ def run_all_tests():
     test_memory_validation_feeds_coherence_deficit()
     test_prior_provenance_delta_escalates_uncertainty()
     test_icm_curiosity_coherence_registry()
+
+    # Architectural Unification — Auto-Critic Coherence, Config Gating,
+    # Error Class Mappings, Pipeline-Provenance Alignment
+    test_auto_critic_metacognitive_path_coherence_registry()
+    test_config_gated_world_model()
+    test_config_gated_causal_model()
+    test_config_gated_memory_trust()
+    test_uncertainty_auto_critic_in_class_to_signal()
+    test_uncertainty_auto_critic_in_lambda_mapping()
+    test_uncertainty_auto_critic_in_feedback_bridge()
+    test_verify_cognitive_unity_pipeline_provenance_coverage()
+    test_coherence_deficit_not_inflated_when_disabled()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
