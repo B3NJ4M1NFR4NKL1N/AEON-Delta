@@ -15446,6 +15446,15 @@ class MetaCognitiveRecursionTrigger:
             # significantly attenuated the integrated output, indicating
             # degraded integration reliability.
             "integration_gate_low_confidence": "coherence_deficit",
+            # Critical coverage deficit — extreme subsystem absence
+            # (>50% of expected modules missing), indicating systemic
+            # degradation requiring full meta-cognitive review.
+            "critical_coverage_deficit": "coherence_deficit",
+            # Max recursions capped — meta-cognitive recursion hit the
+            # configured ceiling without resolving the triggering
+            # condition, indicating the system's reasoning depth was
+            # insufficient for the input complexity.
+            "max_recursions_capped": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -19944,6 +19953,10 @@ class AEONDeltaV3(nn.Module):
         # Topology analysis output — cached so verify_coherence can
         # detect loss-landscape instability divergence.
         self._cached_topology_state: Optional[torch.Tensor] = None
+        # Continual learning regularization state — cached so the UCC
+        # coherence verifier can detect drift between the continual
+        # learning module's regularization signal and the core reasoning.
+        self._cached_continual_learning_state: Optional[torch.Tensor] = None
         # Cross-validation reconciled state — cached so verify_coherence
         # can detect inter-module reconciliation drift.
         self._cached_cross_validation_state: Optional[torch.Tensor] = None
@@ -20778,6 +20791,53 @@ class AEONDeltaV3(nn.Module):
             extra["integration_gate_confidence"] = max(
                 0.0, min(1.0, 1.0 - _gate_val),
             )
+        # Error-evolution-to-feedback-bus bridge — route per-class error
+        # evolution patterns to their corresponding feedback bus channels.
+        # The aggregate pressure (error_evolution_pressure above) captures
+        # total severity, but this per-class bridge ensures that specific
+        # failure modes (e.g., safety rollbacks, coherence deficits,
+        # causal quality degradation) each produce targeted feedback
+        # signals, enabling the meta-loop to allocate proportionally
+        # deeper reasoning to the subsystems that historically fail most.
+        # This centralizes the error→signal mapping that was previously
+        # only available to MetaCognitiveRecursionTrigger.
+        _ERROR_CLASS_TO_FEEDBACK_SIGNAL: Dict[str, str] = {
+            "safety_rollback": "safety_violation_pressure",
+            "deception_detected": "deception_pressure",
+            "deception_suppression": "deception_pressure",
+            "coherence_deficit": "ucc_coherence_trend",
+            "post_integration_coherence_deficit": "ucc_coherence_trend",
+            "diversity_collapse": "diversity_collapse",
+            "world_model_prediction_error": "world_model_prediction_pressure",
+            "world_model_cross_divergence": "world_model_prediction_pressure",
+            "low_causal_quality": "causal_dag_consensus_quality",
+            "causal_dag_disagreement": "causal_dag_consensus_quality",
+            "memory_staleness": "memory_re_retrieval_pressure",
+            "memory_aggregate_failure": "memory_re_retrieval_pressure",
+            "inter_memory_disagreement": "memory_cv_disagreement",
+            "convergence_certificate_violation": "lipschitz_pressure",
+            "topology_catastrophe": "topology_catastrophe",
+            "ns_consistency_violation": "ns_bridge_confidence",
+            "integration_gate_low_confidence": "integration_gate_confidence",
+        }
+        if _ee is not None:
+            try:
+                _ee_classes_bridge = _ee_summary.get("error_classes", {}) if '_ee_summary' in dir() else {}
+                if not _ee_classes_bridge:
+                    _ee_summary_bridge = _ee.get_error_summary()
+                    _ee_classes_bridge = _ee_summary_bridge.get("error_classes", {})
+                for _cls_name_b, _cls_stats_b in _ee_classes_bridge.items():
+                    _fb_signal = _ERROR_CLASS_TO_FEEDBACK_SIGNAL.get(_cls_name_b)
+                    if _fb_signal is None:
+                        continue
+                    _sr_b = _cls_stats_b.get("success_rate", 1.0)
+                    _cnt_b = _cls_stats_b.get("count", 0)
+                    if _sr_b < 0.5 and _cnt_b >= 2:
+                        _pressure_val = max(0.0, min(1.0, 1.0 - _sr_b))
+                        if _fb_signal not in extra or extra[_fb_signal] < _pressure_val:
+                            extra[_fb_signal] = _pressure_val
+            except Exception:
+                pass
         return extra
 
     @staticmethod
@@ -21777,6 +21837,7 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_before("continual_learning", z_in)
             self.provenance_tracker.record_after("continual_learning", z_in)
             self.coherence_registry.register_output("continual_learning", validated=torch.isfinite(z_in).all().item())
+            self._cached_continual_learning_state = z_in.detach()
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
         self.coherence_registry.register_output("vq", validated=True)
@@ -29156,6 +29217,42 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_ns_consistency_state is not None
                     and self._cached_ns_consistency_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["ns_consistency"] = self._cached_ns_consistency_state
+            # Include diversity analysis state so the coherence verifier
+            # can cross-validate thought diversity against the integrated
+            # output.  Without this, diversity collapse modifies
+            # uncertainty but is invisible to cross-module coherence
+            # verification, preventing detection of diversity-reasoning
+            # misalignment.
+            if (self._cached_diversity_state is not None
+                    and self._cached_diversity_state.dim() >= 1):
+                _div_expanded = self._cached_diversity_state
+                if _div_expanded.shape[-1] != z_out.shape[-1]:
+                    _div_expanded = _div_expanded.mean(dim=-1, keepdim=True).expand_as(z_out[:1])
+                    if _div_expanded.shape[0] != z_out.shape[0]:
+                        _div_expanded = _div_expanded.expand(z_out.shape[0], *_div_expanded.shape[1:])
+                if _div_expanded.shape[-1] == z_out.shape[-1]:
+                    _ucc_states["diversity_analysis"] = _div_expanded
+            # Include topology analysis state so the coherence verifier
+            # can cross-validate catastrophe detection against other
+            # subsystem outputs.  Without this, topology catastrophes
+            # trigger uncertainty escalation but are invisible to the
+            # coherence verifier's pairwise comparison, preventing
+            # detection of topology-reasoning inconsistency.
+            if (self._cached_topology_state is not None
+                    and self._cached_topology_state.dim() >= 1):
+                _topo_expanded = self._cached_topology_state.float()
+                if _topo_expanded.shape[-1] != z_out.shape[-1]:
+                    _topo_expanded = _topo_expanded.mean(dim=-1, keepdim=True).expand_as(z_out[:1])
+                    if _topo_expanded.shape[0] != z_out.shape[0]:
+                        _topo_expanded = _topo_expanded.expand(z_out.shape[0], *_topo_expanded.shape[1:])
+                if _topo_expanded.shape[-1] == z_out.shape[-1]:
+                    _ucc_states["topology_analysis"] = _topo_expanded
+            # Include continual learning state so the coherence verifier
+            # can detect drift between the continual learning module's
+            # regularization signal and the core reasoning state.
+            if (getattr(self, '_cached_continual_learning_state', None) is not None
+                    and self._cached_continual_learning_state.shape[-1] == z_out.shape[-1]):
+                _ucc_states["continual_learning"] = self._cached_continual_learning_state
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Track which subsystems were absent from coherence
@@ -29175,6 +29272,8 @@ class AEONDeltaV3(nn.Module):
                     # ── Additional subsystems verified for full coverage ──
                     "self_report", "input",
                     "temporal_knowledge_graph", "complexity_estimator",
+                    "diversity_analysis", "topology_analysis",
+                    "continual_learning",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:
@@ -35364,6 +35463,27 @@ class AEONDeltaV3(nn.Module):
 
         total = len(self._PIPELINE_DEPENDENCIES)
         coverage = len(verified_edges) / total if total > 0 else 1.0
+
+        # --- Skipped-edge provenance audit ---
+        # Record missing edges in the audit log so that root-cause
+        # analysis can distinguish "verified coherent" from "edge
+        # absent because module disabled".  Without this, provenance
+        # trace_root_cause() may silently omit attribution paths
+        # that exist in _PIPELINE_DEPENDENCIES but were never
+        # registered because their modules are None.
+        skipped_edge_modules: Set[str] = set()
+        for me in missing_edges:
+            _edge = me['edge']
+            skipped_edge_modules.add(_edge[0])
+            skipped_edge_modules.add(_edge[1])
+        if missing_edges:
+            self.audit_log.record(
+                "verify_pipeline_wiring", "skipped_edges", {
+                    "count": len(missing_edges),
+                    "edges": [(me['edge'][0], me['edge'][1]) for me in missing_edges],
+                    "affected_modules": sorted(skipped_edge_modules),
+                },
+            )
 
         # --- DAG acyclicity validation ---
         # Verify that the provenance tracker's dependency graph is acyclic.

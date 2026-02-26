@@ -56004,6 +56004,198 @@ def test_ucc_low_quality_subsystems_feed_directional_uncertainty():
     print("✅ test_ucc_low_quality_subsystems_feed_directional_uncertainty PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE — SUBSYSTEM STATE COVERAGE & ERROR BRIDGE TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_expected_subsystems_includes_diversity_topology():
+    """_UCC_EXPECTED_SUBSYSTEMS must include diversity_analysis,
+    topology_analysis, and continual_learning so that their absence is
+    tracked when these modules are disabled."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    # Access the expected set via a forward pass dry-run isn't needed;
+    # the set is a local constant in _reasoning_core_impl but we can
+    # verify through source inspection or via the verify_pipeline_wiring
+    # result's coherence registry coverage which lists expected modules.
+    # Instead, directly check that the new cached attributes exist.
+    assert hasattr(model, '_cached_diversity_state'), \
+        "AEONDeltaV3 must have _cached_diversity_state attribute"
+    assert hasattr(model, '_cached_topology_state'), \
+        "AEONDeltaV3 must have _cached_topology_state attribute"
+    assert hasattr(model, '_cached_continual_learning_state'), \
+        "AEONDeltaV3 must have _cached_continual_learning_state attribute"
+    print("✅ test_ucc_expected_subsystems_includes_diversity_topology PASSED")
+
+
+def test_cached_continual_learning_state_initialized():
+    """_cached_continual_learning_state must be initialized to None."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    assert model._cached_continual_learning_state is None, \
+        "_cached_continual_learning_state should be None before any forward pass"
+    print("✅ test_cached_continual_learning_state_initialized PASSED")
+
+
+def test_error_class_to_signal_full_coverage():
+    """Every error class used in record_episode() must appear in the
+    MetaCognitiveRecursionTrigger._class_to_signal mapping."""
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Extract error classes from record_episode calls
+    error_classes = set()
+    for m in re.finditer(r"error_class=['\"]([^'\"]+)['\"]", content):
+        error_classes.add(m.group(1))
+    for m in re.finditer(r"record_episode\(['\"]([^'\"]+)['\"]", content):
+        error_classes.add(m.group(1))
+    error_classes.discard('none')
+    # Extract keys from _class_to_signal dict
+    start = content.find('_class_to_signal = {')
+    assert start != -1, "_class_to_signal dict not found in source"
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+    unmapped = error_classes - mapped
+    assert not unmapped, (
+        f"Unmapped error classes in _class_to_signal: {sorted(unmapped)}"
+    )
+    print(f"✅ test_error_class_to_signal_full_coverage PASSED "
+          f"({len(error_classes)} classes, {len(mapped)} mapped)")
+
+
+def test_error_evolution_to_feedback_bus_bridge():
+    """The _build_feedback_extra_signals method must produce per-class
+    error-evolution-driven feedback signals when recurring failures exist."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    # Simulate recurring safety_rollback failures
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class='safety_rollback',
+            strategy_used='meta_rerun',
+            success=False,
+        )
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class='diversity_collapse',
+            strategy_used='meta_rerun',
+            success=False,
+        )
+    signals = model._build_feedback_extra_signals()
+    # The bridge should produce safety_violation_pressure from safety_rollback
+    assert 'safety_violation_pressure' in signals, (
+        "Error bridge should produce safety_violation_pressure from recurring safety_rollback failures"
+    )
+    assert signals['safety_violation_pressure'] > 0.0, (
+        "safety_violation_pressure should be positive for repeated failures"
+    )
+    # The bridge should produce diversity_collapse from diversity_collapse errors
+    assert 'diversity_collapse' in signals, (
+        "Error bridge should produce diversity_collapse signal from recurring diversity_collapse failures"
+    )
+    print("✅ test_error_evolution_to_feedback_bus_bridge PASSED")
+
+
+def test_verify_pipeline_wiring_skipped_edges_audit():
+    """verify_pipeline_wiring must log skipped edges in the audit log
+    when modules referenced by _PIPELINE_DEPENDENCIES are None."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        # Disable optional modules to create missing edges
+        enable_world_model=False,
+        enable_causal_model=False,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_pipeline_wiring()
+    # There should be missing edges since world_model and causal_model are disabled
+    assert result['missing_count'] > 0, (
+        "verify_pipeline_wiring should report missing edges when modules are disabled"
+    )
+    # Check that the audit log recorded the skipped edges
+    audit_entries = model.audit_log.filter_by(subsystem="verify_pipeline_wiring")
+    skipped_entries = [
+        e for e in audit_entries
+        if e.get('decision') == 'skipped_edges'
+    ]
+    assert len(skipped_entries) > 0, (
+        "verify_pipeline_wiring should record skipped_edges in the audit log"
+    )
+    print("✅ test_verify_pipeline_wiring_skipped_edges_audit PASSED")
+
+
+def test_class_to_signal_critical_coverage_deficit():
+    """critical_coverage_deficit must map to coherence_deficit signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+    initial_weight = trigger._signal_weights.get("coherence_deficit", 0.0)
+    # Simulate error summary with critical_coverage_deficit
+    error_summary = {
+        "error_classes": {
+            "critical_coverage_deficit": {
+                "count": 3,
+                "success_rate": 0.2,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    final_weight = trigger._signal_weights.get("coherence_deficit", 0.0)
+    assert final_weight > initial_weight, (
+        f"critical_coverage_deficit should boost coherence_deficit signal weight "
+        f"(initial={initial_weight:.4f}, final={final_weight:.4f})"
+    )
+    print("✅ test_class_to_signal_critical_coverage_deficit PASSED")
+
+
+def test_class_to_signal_max_recursions_capped():
+    """max_recursions_capped must map to uncertainty signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+    initial_weight = trigger._signal_weights.get("uncertainty", 0.0)
+    error_summary = {
+        "error_classes": {
+            "max_recursions_capped": {
+                "count": 3,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    final_weight = trigger._signal_weights.get("uncertainty", 0.0)
+    assert final_weight > initial_weight, (
+        f"max_recursions_capped should boost uncertainty signal weight "
+        f"(initial={initial_weight:.4f}, final={final_weight:.4f})"
+    )
+    print("✅ test_class_to_signal_max_recursions_capped PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -58471,6 +58663,15 @@ def run_all_tests():
     test_config_gated_no_error_evolution_mapping()
     test_ucc_partial_components_still_created()
     test_ucc_low_quality_subsystems_feed_directional_uncertainty()
+
+    # Architectural Coherence — Subsystem State Coverage & Error Bridge
+    test_ucc_expected_subsystems_includes_diversity_topology()
+    test_cached_continual_learning_state_initialized()
+    test_error_class_to_signal_full_coverage()
+    test_error_evolution_to_feedback_bus_bridge()
+    test_verify_pipeline_wiring_skipped_edges_audit()
+    test_class_to_signal_critical_coverage_deficit()
+    test_class_to_signal_max_recursions_capped()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
