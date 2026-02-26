@@ -6782,11 +6782,21 @@ class CausalProvenanceTracker:
                 "missing entry points",
                 module_name, len(visited),
             )
+        # Include removed cyclic edges that intersect the visited
+        # dependency cone so callers know which causal links were pruned
+        # to maintain the DAG invariant.  Without this, root-cause traces
+        # silently omit contributors whose edges were broken by cycle
+        # detection, preventing full causal auditability.
+        _relevant_removed = {
+            (a, b) for a, b in self._removed_cyclic_edges
+            if a in visited or b in visited
+        }
         return {
             'root_modules': sorted(root_modules),
             'visited': visited,
             'contributions': contributions,
             'trace_incomplete': _trace_incomplete,
+            'removed_cyclic_edges': sorted(_relevant_removed),
         }
 
     def get_provenance_uncertainty_boost(
@@ -16773,7 +16783,6 @@ class SubsystemCoherenceRegistry:
             "enable_cognitive_executive": ["cognitive_executive"],
             "enable_multimodal": ["multimodal", "grounded_multimodal"],
             "enable_causal_trace": ["causal_context"],
-            "enable_error_evolution": ["error_evolution"],
             "enable_safety_guardrails": ["safety"],
             "enable_catastrophe_detection": ["topology_analysis"],
             "enable_diversity_metric": ["diversity_analysis"],
@@ -18106,6 +18115,22 @@ class UnifiedCognitiveCycle:
                     "uncertainty_propagation", min(1.0, propagation_delta),
                     source_label="dag_propagated_uncertainty",
                 )
+            # 7c-iii. Low-quality subsystems → directional uncertainty —
+            # when the coherence registry identifies subsystems with
+            # graded quality below the threshold, record each one in the
+            # directional uncertainty tracker so that targeted re-reasoning
+            # can prioritise specific weak subsystems instead of treating
+            # all coverage deficit as a single aggregate signal.  This
+            # closes the gap where low-quality subsystems were visible in
+            # the registry's summary but invisible to directional
+            # uncertainty, preventing targeted meta-cognitive correction.
+            if self.coherence_registry is not None:
+                _low_quality = self.coherence_registry.get_low_quality_subsystems()
+                for _lq_name, _lq_deficit in _low_quality.items():
+                    self.uncertainty_tracker.record(
+                        _lq_name, _lq_deficit,
+                        source_label="low_quality_subsystem",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -20176,6 +20201,34 @@ class AEONDeltaV3(nn.Module):
                     "Loading UnifiedCognitiveCycle (components: %s)...",
                     ', '.join(_ucc_available),
                 )
+                # Warn about incomplete verification loops when the UCC
+                # is created with a subset of optional components.  Each
+                # missing component disables a specific cross-verification
+                # pathway, degrading the system's ability to satisfy the
+                # requirement that each component verifies and reinforces
+                # the others.
+                _ucc_missing = [
+                    name for name, obj in [
+                        ('module_coherence', self.module_coherence),
+                        ('metacognitive_trigger', self.metacognitive_trigger),
+                        ('error_evolution', self.error_evolution),
+                    ] if obj is None
+                ]
+                if _ucc_missing:
+                    _loop_desc = {
+                        'module_coherence': 'cross-module coherence verification',
+                        'metacognitive_trigger': 'adaptive re-reasoning decisions',
+                        'error_evolution': 'error-recovery learning and weight adaptation',
+                    }
+                    _missing_loops = [
+                        f"  - {n}: {_loop_desc[n]}" for n in _ucc_missing
+                    ]
+                    logger.warning(
+                        "UnifiedCognitiveCycle created with partial components. "
+                        "The following verification loops are INACTIVE:\n%s\n"
+                        "Enable the missing components for full AGI coherence.",
+                        '\n'.join(_missing_loops),
+                    )
                 self.unified_cognitive_cycle = UnifiedCognitiveCycle(
                     convergence_monitor=self.convergence_monitor,
                     coherence_verifier=self.module_coherence,
@@ -30974,7 +31027,42 @@ class AEONDeltaV3(nn.Module):
             self._uncertainty_history = self._uncertainty_history[-_hist_window:]
         
         _provenance = self.provenance_tracker.compute_attribution()
-        
+
+        # 8g-trace. Non-UCC provenance trace-completeness check — when the
+        # UCC is disabled, trace_root_cause() completeness is never verified
+        # by the UCC's evaluate().  Check it here so that conclusions are
+        # not accepted without verifiable provenance regardless of whether
+        # the UCC is active.  When the trace is incomplete (no root nodes
+        # found or cyclic edges were removed), boost uncertainty so the
+        # meta-cognitive feedback bus carries the signal into the next pass.
+        if self.unified_cognitive_cycle is None:
+            _prov_contribs = _provenance.get('contributions', {})
+            if _prov_contribs:
+                _prov_dominant = max(_prov_contribs, key=_prov_contribs.get)
+                _prov_rc = self.provenance_tracker.trace_root_cause(
+                    _prov_dominant,
+                )
+                self._cached_trace_incomplete = _prov_rc.get(
+                    'trace_incomplete', False,
+                )
+                self._cached_provenance_root_modules = list(
+                    _prov_rc.get('root_modules', []),
+                )
+                if self._cached_trace_incomplete:
+                    _trace_unc_boost = min(0.15, 1.0 - uncertainty)
+                    uncertainty = min(1.0, uncertainty + _trace_unc_boost)
+                    uncertainty_sources["trace_incomplete"] = _trace_unc_boost
+                # When cyclic edges were removed from the provenance DAG,
+                # the causal chain is structurally degraded.  Boost
+                # uncertainty proportionally to the number of removed edges.
+                _removed_edges = _prov_rc.get('removed_cyclic_edges', [])
+                if _removed_edges:
+                    _cycle_unc_boost = min(
+                        0.1 * len(_removed_edges), 1.0 - uncertainty,
+                    )
+                    uncertainty = min(1.0, uncertainty + _cycle_unc_boost)
+                    uncertainty_sources["removed_cyclic_edges"] = _cycle_unc_boost
+
         # 8h-0. Provenance-driven dominance dampening — when a single module
         # contributes >threshold of the total state change, dampen the output
         # toward the pre-dominant baseline (z_in) to prevent module
