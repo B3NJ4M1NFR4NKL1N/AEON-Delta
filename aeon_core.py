@@ -19955,6 +19955,14 @@ class AEONDeltaV3(nn.Module):
         # (perfect quality) so the first pass uses neutral feedback.
         self._cached_output_quality: float = 1.0
 
+        # Recovery health tensor — caches the combined recovery/integrity
+        # health tensor from the most recent forward pass so the UCC
+        # re-reasoning feedback bus call can pass a properly typed
+        # Optional[torch.Tensor] instead of a bare float.  Initialised
+        # to None (meaning "healthy") which the feedback bus interprets
+        # as all-ones health.
+        self._cached_recovery_health: Optional[torch.Tensor] = None
+
         # Coherence-based loss scale — caches a scaling factor derived from
         # the inference coherence deficit so the trainer can read it to
         # modulate training loss emphasis.  When coherence is poor (high
@@ -23736,6 +23744,7 @@ class AEONDeltaV3(nn.Module):
             _recovery_health = torch.full(
                 (B, 1), _combined_health_scalar, device=device,
             )
+            self._cached_recovery_health = _recovery_health.detach()
             self._cached_feedback = self.feedback_bus(
                 batch_size=B,
                 device=device,
@@ -29949,9 +29958,7 @@ class AEONDeltaV3(nn.Module):
                         safety_score=safety_score,
                         convergence_quality=convergence_quality_scalar,
                         uncertainty=uncertainty,
-                        subsystem_health=getattr(
-                            self, '_cached_recovery_health', 1.0,
-                        ),
+                        subsystem_health=self._cached_recovery_health,
                         convergence_loss_scale=getattr(
                             self, '_last_convergence_loss_scale', 1.0,
                         ),

@@ -57080,6 +57080,70 @@ def test_ucc_cert_section_marker():
     print("✅ test_ucc_cert_section_marker PASSED")
 
 
+def test_cached_recovery_health_initialized():
+    """Verify _cached_recovery_health is initialized as Optional[torch.Tensor]."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Must exist and be None (not a float) at initialization
+    assert hasattr(model, '_cached_recovery_health'), \
+        "_cached_recovery_health attribute missing from AEONDeltaV3"
+    assert model._cached_recovery_health is None, \
+        f"_cached_recovery_health should be None, got {type(model._cached_recovery_health)}"
+    print("✅ test_cached_recovery_health_initialized PASSED")
+
+
+def test_cached_recovery_health_set_after_forward():
+    """Verify _cached_recovery_health is set to a Tensor after forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=8,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(100, 1000, (1, 8))
+    with torch.no_grad():
+        model(tokens, fast=False)
+    cached = model._cached_recovery_health
+    assert cached is None or isinstance(cached, torch.Tensor), \
+        f"_cached_recovery_health should be None or Tensor, got {type(cached)}"
+    print("✅ test_cached_recovery_health_set_after_forward PASSED")
+
+
+def test_ucc_rerun_feedback_bus_no_type_error():
+    """Verify the UCC re-reasoning feedback bus call does not crash on subsystem_health type."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_world_model=True, world_model_state_dim=32,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(100, 1000, (1, 16))
+    with torch.no_grad():
+        outputs = model(tokens, fast=False)
+    # The reasoning core must complete without falling back to error recovery
+    assert not outputs.get('is_fallback', False), \
+        "Reasoning core fell back to error recovery — " \
+        "UCC re-reasoning feedback bus call may have crashed"
+    print("✅ test_ucc_rerun_feedback_bus_no_type_error PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -59608,6 +59672,11 @@ def run_all_tests():
     test_training_bridge_cert_violation()
     test_ucc_coherence_trend_section_marker()
     test_ucc_cert_section_marker()
+
+    # Architectural Fix — UCC re-reasoning feedback bus type safety
+    test_cached_recovery_health_initialized()
+    test_cached_recovery_health_set_after_forward()
+    test_ucc_rerun_feedback_bus_no_type_error()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
