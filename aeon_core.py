@@ -17838,8 +17838,27 @@ class UnifiedCognitiveCycle:
         trigger_detail['dominant_provenance_module'] = _prov_dominant
 
         # 4. Record the cycle decision in the causal trace.
+        # Graduated severity replaces the binary warning/info scheme so
+        # that root-cause analysis can distinguish formal convergence
+        # failures and safety violations (critical) from heuristic
+        # coherence deficits (warning) and healthy passes (info).
         trace_entry_id = None
         if self.causal_trace is not None:
+            _triggers_active = set(
+                trigger_detail.get('triggers_active', []),
+            )
+            _critical_triggers = {
+                'safety_violation',
+                'convergence_certificate_violation',
+            }
+            if should_rerun and (_triggers_active & _critical_triggers
+                                or coverage_deficit is not None
+                                and coverage_deficit > 0.5):
+                _ucc_severity = 'critical'
+            elif should_rerun:
+                _ucc_severity = 'warning'
+            else:
+                _ucc_severity = 'info'
             trace_entry_id = self.causal_trace.record(
                 subsystem='unified_cognitive_cycle',
                 decision=f"rerun={should_rerun}",
@@ -17852,7 +17871,7 @@ class UnifiedCognitiveCycle:
                         if not isinstance(v, torch.Tensor)
                     },
                 },
-                severity='warning' if should_rerun else 'info',
+                severity=_ucc_severity,
             )
 
         # 5. Provenance snapshot.
@@ -31722,6 +31741,47 @@ class AEONDeltaV3(nn.Module):
 
         # _cached_output_quality was already set at step 8i-oq above
         # with the current pass's fresh value; no need to re-cache here.
+
+        # ── End-of-pipeline causal trace propagation ────────────────────
+        # Critical early-pipeline events (e.g. safety enforcement at step
+        # 5a) are recorded in the causal trace when they occur, but
+        # subsequent stages — metacognitive recursion, UCC evaluation,
+        # post-integration checks — generate hundreds of entries that
+        # push the original records beyond the reach of recent(n) queries.
+        # To satisfy the "all conclusions traceable to root causes"
+        # contract, propagate summary entries at the pipeline's exit so
+        # that critical events are always visible in recent trace queries
+        # regardless of how many downstream entries followed.
+        if self.causal_trace is not None:
+            if safety_enforced:
+                self.causal_trace.record(
+                    "safety_enforcement", "pipeline_summary",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "safety_enforced": True,
+                        "safety_blocked": _safety_blocked,
+                        "min_safety_score": float(
+                            safety_score.min().item(),
+                        ),
+                        "adaptive_threshold": adaptive_safety_threshold,
+                    },
+                )
+            # Output reliability acts as the pipeline's composite trust
+            # signal; recording it at exit links convergence, coherence,
+            # and safety into a single traceable decision point.
+            if _current_output_reliability < 0.5:
+                self.causal_trace.record(
+                    "output_reliability", "low_trust",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "reliability": _current_output_reliability,
+                        "factors": {
+                            k: v for k, v in _reliability_factors.items()
+                            if not isinstance(v, torch.Tensor)
+                        },
+                    },
+                    severity="warning",
+                )
 
         return z_out, outputs
     

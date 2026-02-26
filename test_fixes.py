@@ -56196,6 +56196,150 @@ def test_class_to_signal_max_recursions_capped():
     print("✅ test_class_to_signal_max_recursions_capped PASSED")
 
 
+def test_ucc_graduated_severity_critical():
+    """Architectural fix: UCC causal trace severity is graduated so that
+    safety violations and convergence certificate failures use 'critical'
+    severity, enabling root-cause analysis to distinguish formal failures
+    from heuristic coherence deficits."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, MetaCognitiveRecursionTrigger,
+        TemporalCausalTraceBuffer, AEONConfig,
+    )
+    import torch
+
+    config = AEONConfig()
+    trace = TemporalCausalTraceBuffer(max_entries=200)
+    provenance = CausalProvenanceTracker()
+    conv_mon = ConvergenceMonitor(
+        threshold=config.convergence_threshold,
+    )
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=config.metacognitive_trigger_threshold,
+    )
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=provenance,
+        causal_trace=trace,
+    )
+
+    states = {
+        "meta_loop": torch.randn(2, config.hidden_dim),
+        "safety": torch.randn(2, config.hidden_dim),
+    }
+    # Trigger with safety_violation → should produce 'critical' severity
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.9,
+        safety_violation=True,
+    )
+
+    recent = trace.recent(n=10)
+    ucc_entries = [e for e in recent if e["subsystem"] == "unified_cognitive_cycle"]
+    assert len(ucc_entries) > 0, "UCC should record in causal trace"
+    # At least one entry should have 'critical' severity due to safety_violation
+    critical_entries = [e for e in ucc_entries if e["severity"] == "critical"]
+    assert len(critical_entries) > 0, (
+        f"Safety violation should produce 'critical' severity in UCC trace; "
+        f"got severities: {[e['severity'] for e in ucc_entries]}"
+    )
+    print("✅ test_ucc_graduated_severity_critical PASSED")
+
+
+def test_ucc_graduated_severity_warning():
+    """Architectural fix: UCC causal trace uses 'warning' for non-critical
+    reruns (e.g. coherence deficit) rather than 'critical'."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, MetaCognitiveRecursionTrigger,
+        TemporalCausalTraceBuffer, AEONConfig,
+    )
+    import torch
+
+    config = AEONConfig()
+    trace = TemporalCausalTraceBuffer(max_entries=200)
+    provenance = CausalProvenanceTracker()
+    conv_mon = ConvergenceMonitor(
+        threshold=config.convergence_threshold,
+    )
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=config.metacognitive_trigger_threshold,
+    )
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=conv_mon,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=trigger,
+        provenance_tracker=provenance,
+        causal_trace=trace,
+    )
+
+    states = {
+        "meta_loop": torch.randn(2, config.hidden_dim),
+    }
+    # Trigger with high uncertainty but no safety violation → 'warning'
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.9,
+        safety_violation=False,
+    )
+
+    recent = trace.recent(n=10)
+    ucc_entries = [e for e in recent if e["subsystem"] == "unified_cognitive_cycle"]
+    assert len(ucc_entries) > 0, "UCC should record in causal trace"
+    # Should have 'warning' (not 'critical') since no safety/cert violation
+    warning_entries = [e for e in ucc_entries if e["severity"] == "warning"]
+    critical_entries = [e for e in ucc_entries if e["severity"] == "critical"]
+    assert len(warning_entries) > 0, (
+        f"Non-critical rerun should produce 'warning' severity; "
+        f"got severities: {[e['severity'] for e in ucc_entries]}"
+    )
+    assert len(critical_entries) == 0, (
+        "Non-critical rerun should NOT produce 'critical' severity"
+    )
+    print("✅ test_ucc_graduated_severity_warning PASSED")
+
+
+def test_output_reliability_low_trust_in_causal_trace():
+    """Architectural fix: Low output reliability is propagated to end-of-
+    pipeline causal trace so that trust degradation is always traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        enable_safety_guardrails=True,
+        enable_causal_trace=True,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    z_in = torch.randn(B, config.hidden_dim)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    # Check if output_reliability was low — if so, the trace should contain it
+    reliability = outputs.get('output_reliability', 1.0)
+    if reliability < 0.5:
+        recent = model.causal_trace.recent(n=20)
+        reliability_entries = [
+            e for e in recent
+            if e.get("subsystem") == "output_reliability"
+        ]
+        assert len(reliability_entries) > 0, (
+            f"Low output reliability ({reliability:.3f}) should be recorded "
+            f"in end-of-pipeline causal trace"
+        )
+    # If reliability >= 0.5, the entry correctly should not be present
+    print("✅ test_output_reliability_low_trust_in_causal_trace PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -58672,6 +58816,11 @@ def run_all_tests():
     test_verify_pipeline_wiring_skipped_edges_audit()
     test_class_to_signal_critical_coverage_deficit()
     test_class_to_signal_max_recursions_capped()
+
+    # Causal coherence — end-of-pipeline trace propagation & graduated severity
+    test_ucc_graduated_severity_critical()
+    test_ucc_graduated_severity_warning()
+    test_output_reliability_low_trust_in_causal_trace()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
