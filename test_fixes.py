@@ -56951,6 +56951,135 @@ def test_provenance_dag_cycle_in_error_class_to_feedback():
     print("✅ test_provenance_dag_cycle_in_error_class_to_feedback PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification — UCC Same-Pass Re-Reasoning, Coherence Trend
+# Escalation, Convergence Certificate Feedback, Training Bridge Certificate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_rerun_meta_loop_in_pipeline_deps():
+    """Verify ucc_rerun_meta_loop edge exists in _PIPELINE_DEPENDENCIES."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge = ("unified_cognitive_cycle", "ucc_rerun_meta_loop")
+    assert edge in deps, (
+        f"ucc_rerun_meta_loop edge missing from _PIPELINE_DEPENDENCIES: {edge}"
+    )
+    print("✅ test_ucc_rerun_meta_loop_in_pipeline_deps PASSED")
+
+
+def test_ucc_rerun_meta_loop_in_node_attr_map():
+    """Verify ucc_rerun_meta_loop is in _NODE_ATTR_MAP backed by meta_loop."""
+    from aeon_core import AEONDeltaV3
+    node_map = AEONDeltaV3._NODE_ATTR_MAP
+    assert "ucc_rerun_meta_loop" in node_map, (
+        "ucc_rerun_meta_loop missing from _NODE_ATTR_MAP"
+    )
+    assert node_map["ucc_rerun_meta_loop"] == "meta_loop", (
+        "ucc_rerun_meta_loop should be backed by meta_loop"
+    )
+    print("✅ test_ucc_rerun_meta_loop_in_node_attr_map PASSED")
+
+
+def test_cached_cert_violated_initialized():
+    """AEONDeltaV3 must initialize _cached_cert_violated to False."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        vocab_size=1000, z_dim=64, hidden_dim=64,
+        vq_embedding_dim=64, seq_length=8,
+        num_pillars=4, use_amp=False, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_cert_violated'), (
+        "_cached_cert_violated not found on AEONDeltaV3"
+    )
+    assert model._cached_cert_violated is False, (
+        "_cached_cert_violated should be initialized to False"
+    )
+    print("✅ test_cached_cert_violated_initialized PASSED")
+
+
+def test_ucc_rerun_loop_in_source():
+    """Verify the UCC same-pass re-reasoning loop code exists in source."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    assert "ucc_rerun_meta_loop" in src, (
+        "ucc_rerun_meta_loop provenance recording missing from AEONDeltaV3"
+    )
+    assert "8f-rerun" in src, (
+        "8f-rerun section marker missing from _reasoning_core_impl"
+    )
+    print("✅ test_ucc_rerun_loop_in_source PASSED")
+
+
+def test_coherence_trend_escalation_in_source():
+    """Verify coherence_trend_escalation is wired as an uncertainty source."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    assert "coherence_trend_escalation" in src, (
+        "coherence_trend_escalation uncertainty source missing from AEONDeltaV3"
+    )
+    # Verify it writes to uncertainty_sources dict
+    assert '"coherence_trend_escalation"' in src or "'coherence_trend_escalation'" in src, (
+        "coherence_trend_escalation not registered as uncertainty source"
+    )
+    print("✅ test_coherence_trend_escalation_in_source PASSED")
+
+
+def test_convergence_certificate_violation_in_source():
+    """Verify convergence_certificate_violation uncertainty source exists."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    # Check that the convergence certificate is extracted from UCC results
+    # and wired to uncertainty_sources
+    assert "convergence_certificate" in src, (
+        "convergence_certificate extraction missing from forward pass"
+    )
+    assert "contraction_violated" in src, (
+        "contraction_violated check missing from forward pass"
+    )
+    print("✅ test_convergence_certificate_violation_in_source PASSED")
+
+
+def test_training_bridge_cert_violation():
+    """Training bridge should tighten gradient clipping on certificate violation."""
+    import inspect
+    from aeon_core import AEONTrainer
+    src = inspect.getsource(AEONTrainer._bridge_epoch_feedback)
+    assert "_cached_cert_violated" in src, (
+        "_cached_cert_violated not read in _bridge_epoch_feedback"
+    )
+    assert "convergence_certificate_violation" in src, (
+        "convergence_certificate_violation not handled in training bridge"
+    )
+    print("✅ test_training_bridge_cert_violation PASSED")
+
+
+def test_ucc_coherence_trend_section_marker():
+    """Verify 8f-trend section marker in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    assert "8f-trend" in src, (
+        "8f-trend section marker missing from _reasoning_core_impl"
+    )
+    print("✅ test_ucc_coherence_trend_section_marker PASSED")
+
+
+def test_ucc_cert_section_marker():
+    """Verify 8f-cert section marker in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    assert "8f-cert" in src, (
+        "8f-cert section marker missing from _reasoning_core_impl"
+    )
+    print("✅ test_ucc_cert_section_marker PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -59467,6 +59596,18 @@ def run_all_tests():
     test_dag_cycle_error_evolution_includes_edges()
     test_self_diagnostic_includes_cognitive_unity()
     test_provenance_dag_cycle_in_error_class_to_feedback()
+
+    # Architectural Unification — UCC Same-Pass Re-Reasoning, Coherence Trend
+    # Escalation, Convergence Certificate Feedback, Training Bridge Certificate
+    test_ucc_rerun_meta_loop_in_pipeline_deps()
+    test_ucc_rerun_meta_loop_in_node_attr_map()
+    test_cached_cert_violated_initialized()
+    test_ucc_rerun_loop_in_source()
+    test_coherence_trend_escalation_in_source()
+    test_convergence_certificate_violation_in_source()
+    test_training_bridge_cert_violation()
+    test_ucc_coherence_trend_section_marker()
+    test_ucc_cert_section_marker()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

@@ -18812,6 +18812,13 @@ class AEONDeltaV3(nn.Module):
         # closing the loop between memory validation and active
         # memory correction.
         ("memory_validation", "memory"),
+        # ── UCC same-pass re-reasoning path ────────────────────────
+        # When the UCC's evaluate() recommends re-reasoning, a same-pass
+        # deeper meta-loop is triggered to correct identified coherence
+        # failures or convergence certificate violations.  This edge
+        # ensures trace_root_cause() can attribute the corrective
+        # re-reasoning to the UCC's verdict.
+        ("unified_cognitive_cycle", "ucc_rerun_meta_loop"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -18893,6 +18900,10 @@ class AEONDeltaV3(nn.Module):
         "continual_learning": "continual_learning",
         "feedback_bus": "feedback_bus",
         "deception_suppressor": "deception_suppressor",
+        # ucc_rerun_meta_loop is backed by the main meta_loop module
+        # since it reuses the same ProvablyConvergentMetaLoop for the
+        # UCC-driven same-pass re-reasoning pass.
+        "ucc_rerun_meta_loop": "meta_loop",
     }
     
     def __init__(self, config: AEONConfig):
@@ -19980,6 +19991,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_safety_state: Optional[torch.Tensor] = None
         self._cached_safety_violation: bool = False
         self._cached_trace_incomplete: bool = False
+        self._cached_cert_violated: bool = False
         self._cached_dag_acyclic: bool = True
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
@@ -29903,6 +29915,96 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                # 8f-rerun. Same-pass UCC-driven re-reasoning — when the
+                # UCC recommends re-reasoning (should_rerun=True), trigger
+                # a targeted deeper meta-loop pass within the SAME forward
+                # pass.  Previously the UCC's verdict only set
+                # metacognitive_info["should_trigger"] which had already
+                # been evaluated, so the recommendation was deferred to the
+                # next pass.  This closes the gap where UCC detected
+                # coherence failures or convergence certificate violations
+                # but no corrective re-reasoning occurred until the next
+                # forward pass, violating the principle "any uncertainty
+                # triggers a meta-cognitive cycle".
+                if _ucc_should_rerun and not fast:
+                    _ucc_trigger_score = unified_cycle_results.get(
+                        "trigger_detail", {},
+                    ).get("trigger_score", 0.0)
+                    _ucc_extra = max(1, int(
+                        min(_ucc_trigger_score, 1.0)
+                        * self.config.metacognitive_extra_iterations,
+                    ))
+                    _orig_thresh = self.meta_loop.convergence_threshold
+                    _orig_max = self.meta_loop.max_iterations
+                    self.meta_loop.convergence_threshold = max(
+                        1e-6, _orig_thresh * 0.5,
+                    )
+                    self.meta_loop.max_iterations = min(
+                        _orig_max + _ucc_extra,
+                        _orig_max * 2,
+                    )
+                    _ucc_fb = self.feedback_bus(
+                        batch_size=z_out.shape[0],
+                        device=z_out.device,
+                        safety_score=safety_score,
+                        convergence_quality=convergence_quality_scalar,
+                        uncertainty=uncertainty,
+                        subsystem_health=getattr(
+                            self, '_cached_recovery_health', 1.0,
+                        ),
+                        convergence_loss_scale=getattr(
+                            self, '_last_convergence_loss_scale', 1.0,
+                        ),
+                        world_model_surprise=self._cached_surprise,
+                        coherence_deficit=self._cached_coherence_deficit,
+                        causal_quality=self._cached_causal_quality,
+                        recovery_pressure=self._compute_recovery_pressure(),
+                        self_report_consistency=self._cached_self_report_consistency,
+                        output_quality=self._cached_output_quality,
+                        memory_quality=self._last_memory_retrieval_quality.get(
+                            "retrieval_quality", 1.0),
+                        extra_signals=self._build_feedback_extra_signals(),
+                    ).detach()
+                    self.provenance_tracker.record_before(
+                        "ucc_rerun_meta_loop", C_star,
+                    )
+                    _ucc_C, _ucc_it, _ucc_meta = self.meta_loop(
+                        z_in, use_fixed_point=True, feedback=_ucc_fb,
+                    )
+                    self.provenance_tracker.record_after(
+                        "ucc_rerun_meta_loop", _ucc_C,
+                    )
+                    self.coherence_registry.register_output(
+                        "ucc_rerun_meta_loop",
+                        validated=torch.isfinite(_ucc_C).all().item(),
+                    )
+                    self.meta_loop.convergence_threshold = _orig_thresh
+                    self.meta_loop.max_iterations = _orig_max
+                    if (torch.isfinite(_ucc_C).all()
+                            and _ucc_meta.get(
+                                "convergence_rate", 0.0,
+                            ) >= convergence_quality_scalar):
+                        C_star = _ucc_C
+                        z_out = C_star
+                        self.audit_log.record(
+                            "ucc_rerun_meta_loop", "accepted", {
+                                "ucc_rate": _ucc_meta.get(
+                                    "convergence_rate", 0.0,
+                                ),
+                                "original_rate": convergence_quality_scalar,
+                                "extra_iters": _ucc_extra,
+                            },
+                        )
+                    else:
+                        self.audit_log.record(
+                            "ucc_rerun_meta_loop", "rejected", {
+                                "finite": torch.isfinite(_ucc_C).all().item(),
+                                "ucc_rate": _ucc_meta.get(
+                                    "convergence_rate", 0.0,
+                                ),
+                                "original_rate": convergence_quality_scalar,
+                            },
+                        )
                 # 8f-persist. Persistent uncertainty escalation — when the
                 # DirectionalUncertaintyTracker's rolling history shows
                 # modules that are persistently above threshold across
@@ -30038,6 +30140,62 @@ class AEONDeltaV3(nn.Module):
                                 )
                             ),
                         }
+                # 8f-trend. Cross-pass coherence trend escalation — the
+                # UCC tracks an EMA of coherence deficits across multiple
+                # forward passes.  When the rolling trend exceeds a
+                # threshold, the UCC returns a non-zero escalation value.
+                # Previously this escalation was computed inside
+                # UCC.evaluate() but never propagated back into the
+                # forward pass's uncertainty scalar, leaving persistent
+                # cross-pass coherence degradation invisible to the
+                # metacognitive trigger and feedback bus.
+                _ucc_trend = unified_cycle_results.get(
+                    "coherence_trend", {},
+                )
+                _trend_escalation = _ucc_trend.get("escalation", 0.0)
+                if _trend_escalation > 0:
+                    _trend_boost = min(
+                        1.0 - uncertainty, _trend_escalation,
+                    )
+                    if _trend_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _trend_boost)
+                        uncertainty_sources[
+                            "coherence_trend_escalation"
+                        ] = _trend_boost
+                        high_uncertainty = uncertainty > 0.5
+                # 8f-cert. Convergence certificate feedback — the UCC
+                # verifies the Banach fixed-point contraction condition
+                # and returns a convergence_certificate dict.  When the
+                # certificate indicates a contraction violation, this is
+                # a formal signal that the meta-loop did not converge to
+                # a unique fixed point.  Previously this signal was
+                # trapped in the UCC's return dict and never surfaced as
+                # a distinct uncertainty source, so convergence failures
+                # detected by the certificate were invisible to the
+                # metacognitive trigger and downstream consumers.
+                _ucc_cert = unified_cycle_results.get(
+                    "convergence_certificate", {},
+                )
+                _cert_violated = _ucc_cert.get(
+                    "contraction_violated", False,
+                )
+                if _cert_violated:
+                    _cert_boost = min(
+                        1.0 - uncertainty,
+                        0.15,
+                    )
+                    if _cert_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _cert_boost)
+                        uncertainty_sources[
+                            "convergence_certificate_violation"
+                        ] = _cert_boost
+                        high_uncertainty = uncertainty > 0.5
+                    # Cache the certificate violation so the training
+                    # bridge's next epoch can see it and tighten gradient
+                    # clipping accordingly.
+                    self._cached_cert_violated = True
+                else:
+                    self._cached_cert_violated = False
 
         # 8f-ucc-fast. Lightweight UCC evaluation in fast mode — when
         # fast=True the full corrective pipeline (deeper meta-loop,
@@ -38029,6 +38187,27 @@ class AEONTrainer:
                 "Epoch bridge: tightened gradient clip %.4f → %.4f "
                 "(coherence_deficit=%.3f)",
                 _old_clip, _new_clip, _coherence_deficit,
+            )
+
+        # Tighten gradient clipping further when the UCC's convergence
+        # certificate detected a Banach contraction violation, indicating
+        # the meta-loop failed to converge to a unique fixed point.
+        # Previously the certificate violation was only surfaced as an
+        # uncertainty source in inference; the trainer never saw it, so
+        # gradient dynamics that caused non-convergence persisted across
+        # epochs.  This closes the certificate → training feedback loop.
+        _cert_violated = getattr(
+            self.model, '_cached_cert_violated', False,
+        )
+        if _cert_violated:
+            _old_clip = self._grad_clip_norm
+            _new_clip = max(0.1, _old_clip * 0.90)
+            self._grad_clip_norm = _new_clip
+            result['adapted_from_inference'] += 1
+            logger.debug(
+                "Epoch bridge: tightened gradient clip %.4f → %.4f "
+                "(convergence_certificate_violation)",
+                _old_clip, _new_clip,
             )
 
         # Use directional uncertainty to surface per-module feedback
