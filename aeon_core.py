@@ -15563,6 +15563,15 @@ class MetaCognitiveRecursionTrigger:
             # condition, indicating the system's reasoning depth was
             # insufficient for the input complexity.
             "max_recursions_capped": "uncertainty",
+            # Metacognitive-triggered auto-critic error classes —
+            # dynamically generated as uncertainty_auto_critic_{trigger}.
+            # Explicit mapping ensures these adapt the most relevant
+            # signal weight rather than falling through to generic
+            # "uncertainty".
+            "uncertainty_auto_critic_uncertainty": "uncertainty",
+            "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
+            "uncertainty_auto_critic_convergence_diverging": "diverging",
+            "uncertainty_auto_critic_audit_pattern": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -16343,6 +16352,14 @@ class CausalErrorEvolutionTracker:
         # subsystems are missing, map to lambda_coherence so training
         # strengthens pipeline coverage reliability.
         "critical_coverage_deficit": "lambda_coherence",
+        # ── Metacognitive-triggered auto-critic error classes ──────
+        # Dynamically generated as uncertainty_auto_critic_{trigger}.
+        # Mapping them ensures training loss weights adapt to
+        # trigger-specific auto-critic outcomes.
+        "uncertainty_auto_critic_uncertainty": "lambda_auto_critic",
+        "uncertainty_auto_critic_topology_catastrophe": "lambda_lipschitz",
+        "uncertainty_auto_critic_convergence_diverging": "lambda_lipschitz",
+        "uncertainty_auto_critic_audit_pattern": "lambda_auto_critic",
     }
 
     def recommend_loss_adjustments(
@@ -16906,6 +16923,9 @@ class SubsystemCoherenceRegistry:
             "enable_metacognitive_recursion": ["metacognitive_trigger"],
             "enable_auto_critic": ["auto_critic"],
             "enable_certified_convergence": ["certified_meta_loop"],
+            "enable_world_model": ["world_model"],
+            "enable_causal_model": ["causal_model", "causal_dag_consensus"],
+            "enable_external_trust": ["memory_trust"],
         }
         with self._lock:
             for flag, subsystems in _CONFIG_GATED.items():
@@ -21044,6 +21064,8 @@ class AEONDeltaV3(nn.Module):
             "deception_suppression": "deception_pressure",
             "coherence_deficit": "ucc_coherence_trend",
             "post_integration_coherence_deficit": "ucc_coherence_trend",
+            "post_auto_critic_coherence_deficit": "ucc_coherence_trend",
+            "post_rerun_coherence_deficit": "ucc_coherence_trend",
             "diversity_collapse": "diversity_collapse",
             "world_model_prediction_error": "world_model_prediction_pressure",
             "world_model_cross_divergence": "world_model_prediction_pressure",
@@ -21057,6 +21079,10 @@ class AEONDeltaV3(nn.Module):
             "ns_consistency_violation": "ns_bridge_confidence",
             "integration_gate_low_confidence": "integration_gate_confidence",
             "provenance_dag_cycle": "dag_acyclicity_pressure",
+            "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
+            "uncertainty_auto_critic_convergence_diverging": "lipschitz_pressure",
+            "uncertainty_auto_critic_uncertainty": "ucc_coherence_trend",
+            "uncertainty_auto_critic_audit_pattern": "ucc_coherence_trend",
         }
         if _ee is not None:
             try:
@@ -28680,6 +28706,11 @@ class AEONDeltaV3(nn.Module):
                 z_out = revised
                 _any_auto_critic_revised = True
             self.provenance_tracker.record_after("auto_critic", z_out)
+            self.coherence_registry.register_output(
+                "auto_critic",
+                validated=torch.isfinite(z_out).all().item(),
+                quality=critic_result.get("final_score", 1.0),
+            )
             self._cached_auto_critic_state = z_out.detach()
             _auto_critic_final_score = critic_result.get("final_score", 0.0)
             _auto_critic_all_scores.append(_auto_critic_final_score)
@@ -36961,11 +36992,52 @@ class AEONDeltaV3(nn.Module):
             'dag_acyclic': _dag_acyclic,
         }
 
+        # ── 4. Pipeline-dependency-to-provenance alignment ────────
+        # Cross-validate that every node declared in
+        # _PIPELINE_DEPENDENCIES is also present in the provenance
+        # dependency graph.  Nodes that appear in pipeline edges but
+        # are absent from provenance are invisible to trace_root_cause()
+        # despite participating in the data-flow pipeline.
+        _pipeline_nodes: Set[str] = set()
+        for _up, _down in self._PIPELINE_DEPENDENCIES:
+            # Only consider edges whose modules are active.
+            _up_attr = self._NODE_ATTR_MAP.get(_up)
+            _down_attr = self._NODE_ATTR_MAP.get(_down)
+            _up_active = (
+                _up_attr is not None
+                and getattr(self, _up_attr, None) is not None
+            )
+            _down_active = (
+                _down_attr is not None
+                and getattr(self, _down_attr, None) is not None
+            )
+            if _up_active:
+                _pipeline_nodes.add(_up)
+            if _down_active:
+                _pipeline_nodes.add(_down)
+        _untraced_pipeline = sorted(_pipeline_nodes - _traceable_nodes)
+        if _untraced_pipeline:
+            recommendations.append(
+                f"Pipeline nodes missing from provenance DAG: "
+                f"{', '.join(_untraced_pipeline[:5])}"
+            )
+        _pipeline_provenance_coverage = (
+            1.0 - len(_untraced_pipeline) / max(len(_pipeline_nodes), 1)
+            if _pipeline_nodes else 1.0
+        )
+        root_cause_traceability['pipeline_provenance_coverage'] = (
+            _pipeline_provenance_coverage
+        )
+        root_cause_traceability['untraced_pipeline_nodes'] = (
+            _untraced_pipeline
+        )
+
         # ── Composite verdict ─────────────────────────────────────
         is_unified = (
             _mv_coverage >= 0.9
             and _um_coverage >= 1.0
             and _rc_coverage >= 0.9
+            and _pipeline_provenance_coverage >= 0.9
             and _dag_acyclic
         )
 
