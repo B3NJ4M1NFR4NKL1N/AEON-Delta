@@ -16269,6 +16269,7 @@ class CausalErrorEvolutionTracker:
         # ── Safety & verification error classes ────────────────────────
         "safety_rollback": "lambda_safety",
         "safety_critic_revision": "lambda_safety",
+        "deception_detected": "lambda_safety",
         "state_validation_violation": "lambda_safety",
         "terminal_state_invalid": "lambda_safety",
         "trust_scorer_failure": "lambda_safety",
@@ -19365,6 +19366,26 @@ class AEONDeltaV3(nn.Module):
         # signal dynamics rather than reacting to individual fluctuations.
         self.feedback_bus.register_signal(
             "feedback_oscillation_pressure", default=0.0,
+        )
+        # World model prediction pressure — when historical world-model
+        # prediction errors have low recovery success rates, this signal
+        # conditions the meta-loop to allocate deeper reasoning to
+        # world-model-dependent subsystems.  Referenced by the error-class-
+        # to-feedback-signal bridge in _build_feedback_extra_signals; must
+        # be registered so that the bridge can route error-evolution
+        # patterns into this channel without a silent KeyError.
+        self.feedback_bus.register_signal(
+            "world_model_prediction_pressure", default=0.0,
+        )
+        # Weakest coherence pair pressure — when the coherence verifier
+        # identifies a specific subsystem pair as most divergent, this
+        # signal carries the deficit into the feedback bus so the next
+        # pass's meta-loop can target deeper reasoning at the exact
+        # subsystems that caused the worst inter-module disagreement.
+        # Set by _build_feedback_extra_signals; must be registered so
+        # the assignment does not silently fail.
+        self.feedback_bus.register_signal(
+            "weakest_coherence_pair_pressure", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
