@@ -58585,6 +58585,91 @@ def test_ucc_expected_subsystems_includes_executive_cached():
     print("✅ test_ucc_expected_subsystems_includes_executive_cached PASSED")
 
 
+def test_no_complexity_estimator_world_model_cycle():
+    """The provenance dependency DAG must not contain a cycle between
+    complexity_estimator and world_model.  Previously, both
+    (complexity_estimator, world_model) and (world_model,
+    complexity_estimator) edges existed, creating a DAG cycle that
+    broke trace_root_cause().  Cross-pass feedback between these
+    modules flows through the CognitiveFeedbackBus instead."""
+    import re
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    # The forward edge should exist
+    assert '("complexity_estimator", "world_model")' in src, (
+        "complexity_estimator → world_model edge must exist"
+    )
+    # The reverse edge should NOT exist as an active tuple in the code
+    # (it may appear in comments explaining the removal)
+    lines = src.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if '("world_model", "complexity_estimator")' in stripped:
+            assert False, (
+                "world_model → complexity_estimator reverse edge must be "
+                "removed to prevent provenance DAG cycle"
+            )
+    print("✅ test_no_complexity_estimator_world_model_cycle PASSED")
+
+
+def test_no_memory_validation_memory_cycle():
+    """The provenance dependency DAG must not contain a cycle between
+    memory and memory_validation.  Previously, both (memory,
+    memory_validation) and (memory_validation, memory) edges existed.
+    The re-retrieval feedback flows through the feedback bus's
+    memory_re_retrieval_pressure signal instead."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    # The forward edge should exist
+    assert '("memory", "memory_validation")' in src, (
+        "memory → memory_validation edge must exist"
+    )
+    # The reverse edge should NOT exist as active code
+    lines = src.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if '("memory_validation", "memory")' in stripped:
+            assert False, (
+                "memory_validation → memory reverse edge must be removed "
+                "to prevent provenance DAG cycle"
+            )
+    print("✅ test_no_memory_validation_memory_cycle PASSED")
+
+
+def test_provenance_dag_acyclic_with_many_modules():
+    """When many modules are enabled, the provenance DAG should be
+    acyclic — verify_cognitive_unity() should report unified=True
+    with no cycle-related recommendations."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4, device_str='cpu',
+        enable_world_model=True,
+        enable_causal_model=True,
+        enable_mcts_planner=True,
+        enable_metacognitive_recursion=True,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    assert unity['unified'], (
+        f"verify_cognitive_unity() should return unified=True, "
+        f"got recommendations: {unity['recommendations']}"
+    )
+    # No cycle-related recommendations
+    for rec in unity['recommendations']:
+        assert 'cycle' not in rec.lower(), (
+            f"No cycle-related recommendations expected, got: {rec}"
+        )
+    print("✅ test_provenance_dag_acyclic_with_many_modules PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -61184,6 +61269,11 @@ def run_all_tests():
     test_error_class_feedback_signal_low_memory_trust()
     test_feedback_signal_targets_include_new_mappings()
     test_ucc_expected_subsystems_includes_executive_cached()
+
+    # Provenance DAG Cycle Fixes
+    test_no_complexity_estimator_world_model_cycle()
+    test_no_memory_validation_memory_cycle()
+    test_provenance_dag_acyclic_with_many_modules()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

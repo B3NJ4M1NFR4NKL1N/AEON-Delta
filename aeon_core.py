@@ -18931,10 +18931,16 @@ class AEONDeltaV3(nn.Module):
         # integration and flagged for immediate correction.
         ("memory_trust", "integration"),
         ("memory_trust", "auto_critic"),
-        # Complexity estimator receives feedback from the world model
-        # so that downstream divergence can trigger re-gating, closing
-        # the one-directional complexity gating loop.
-        ("world_model", "complexity_estimator"),
+        # Complexity estimator's influence on the world model is
+        # unidirectional within a single pass: the estimator gates
+        # whether the world model runs, but the world model's
+        # downstream divergence feeds back via the CognitiveFeedbackBus
+        # across passes (not via a same-pass provenance edge).  The
+        # previous ("world_model", "complexity_estimator") edge created
+        # a DAG cycle that was auto-removed at runtime, degrading
+        # root-cause traceability.  Removing this edge restores DAG
+        # acyclicity while the cross-pass feedback loop remains intact
+        # via the feedback bus's "complexity_gate_usage" signal.
         # ── Continual learning pipeline edges ──────────────────────
         # The continual learning core's lateral adapter enriches the
         # encoder output before VQ, enabling trace_root_cause() to
@@ -18979,11 +18985,15 @@ class AEONDeltaV3(nn.Module):
         ("deception_suppressor", "safety"),
         ("deception_suppressor", "metacognitive_trigger"),
         # ── Memory re-retrieval path ───────────────────────────────
-        # When memory staleness triggers consolidation, a re-retrieval
-        # pass feeds fresh memories back into the converged state,
-        # closing the loop between memory validation and active
-        # memory correction.
-        ("memory_validation", "memory"),
+        # When memory staleness triggers consolidation, re-retrieval
+        # feeds fresh memories back into the converged state.  This
+        # feedback is intra-pass but creates a provenance DAG cycle
+        # (memory → memory_validation → memory) that breaks
+        # trace_root_cause().  The re-retrieval influence is already
+        # captured by the feedback bus's "memory_re_retrieval_pressure"
+        # signal for cross-pass conditioning; removing this edge
+        # restores DAG acyclicity while preserving the feedback loop
+        # through the bus.
         # ── UCC same-pass re-reasoning path ────────────────────────
         # When the UCC's evaluate() recommends re-reasoning, a same-pass
         # deeper meta-loop is triggered to correct identified coherence
