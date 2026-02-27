@@ -58443,6 +58443,233 @@ def test_ucc_receives_output_reliability():
     print("✅ test_ucc_receives_output_reliability PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Architectural coherence gap-closure tests — verify that error-evolution
+# learning patterns feed back into the feedback bus for all frequently
+# recorded error classes, and that the UCC expected subsystem set covers
+# all states actually added during evaluation.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_error_class_feedback_signal_numerical():
+    """The 'numerical' error class (14+ record_episode sites) must map to
+    a feedback bus signal so that persistent numerical instability feeds
+    back into meta-loop conditioning via the error-evolution bridge."""
+    import re
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    # Verify the mapping exists in _ERROR_CLASS_TO_FEEDBACK_SIGNAL
+    assert '"numerical": "systematic_uncertainty"' in src, (
+        "'numerical' error class must map to 'systematic_uncertainty' "
+        "in _ERROR_CLASS_TO_FEEDBACK_SIGNAL"
+    )
+    print("✅ test_error_class_feedback_signal_numerical PASSED")
+
+
+def test_error_class_feedback_signal_subsystem():
+    """The 'subsystem' error class (15+ record_episode sites) must map to
+    a feedback bus signal so that generic subsystem failures condition
+    the meta-loop via cross-pass feedback."""
+    import re
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"subsystem": "systematic_uncertainty"' in src, (
+        "'subsystem' error class must map to 'systematic_uncertainty' "
+        "in _ERROR_CLASS_TO_FEEDBACK_SIGNAL"
+    )
+    print("✅ test_error_class_feedback_signal_subsystem PASSED")
+
+
+def test_error_class_feedback_signal_memory_subsystem():
+    """The 'memory_subsystem' error class must map to
+    'memory_re_retrieval_pressure' so memory-specific failures feed
+    into the feedback bus for pre-emptive memory re-retrieval."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"memory_subsystem": "memory_re_retrieval_pressure"' in src, (
+        "'memory_subsystem' must map to 'memory_re_retrieval_pressure'"
+    )
+    print("✅ test_error_class_feedback_signal_memory_subsystem PASSED")
+
+
+def test_error_class_feedback_signal_auto_critic():
+    """Both 'auto_critic_failure' and 'auto_critic_low_quality' must
+    map to 'auto_critic_current_quality' so auto-critic degradation
+    feeds back into meta-loop conditioning."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"auto_critic_failure": "auto_critic_current_quality"' in src, (
+        "'auto_critic_failure' must map to 'auto_critic_current_quality'"
+    )
+    assert '"auto_critic_low_quality": "auto_critic_current_quality"' in src, (
+        "'auto_critic_low_quality' must map to 'auto_critic_current_quality'"
+    )
+    print("✅ test_error_class_feedback_signal_auto_critic PASSED")
+
+
+def test_error_class_feedback_signal_convergence_conflict():
+    """The 'convergence_conflict' error class must map to
+    'convergence_arbiter_conflict' so convergence disagreements feed
+    into the feedback bus for cross-pass conditioning."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"convergence_conflict": "convergence_arbiter_conflict"' in src, (
+        "'convergence_conflict' must map to 'convergence_arbiter_conflict'"
+    )
+    print("✅ test_error_class_feedback_signal_convergence_conflict PASSED")
+
+
+def test_error_class_feedback_signal_cycle_consistency():
+    """The 'cycle_consistency_violation' error class must map to
+    'ucc_coherence_trend' so encoder-decoder divergence feeds into
+    coherence trend tracking via the feedback bus."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"cycle_consistency_violation": "ucc_coherence_trend"' in src, (
+        "'cycle_consistency_violation' must map to 'ucc_coherence_trend'"
+    )
+    print("✅ test_error_class_feedback_signal_cycle_consistency PASSED")
+
+
+def test_error_class_feedback_signal_low_memory_trust():
+    """The 'low_memory_trust' error class must map to
+    'memory_re_retrieval_pressure' so low external memory trust
+    feeds into the feedback bus for proactive re-retrieval."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"low_memory_trust": "memory_re_retrieval_pressure"' in src, (
+        "'low_memory_trust' must map to 'memory_re_retrieval_pressure'"
+    )
+    print("✅ test_error_class_feedback_signal_low_memory_trust PASSED")
+
+
+def test_feedback_signal_targets_include_new_mappings():
+    """All feedback signal names referenced by the newly added
+    _ERROR_CLASS_TO_FEEDBACK_SIGNAL entries must be registered in
+    the feedback bus so the bridge can route patterns without errors."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+
+    # New mapping targets that must be registered
+    new_targets = {
+        "systematic_uncertainty",
+        "memory_re_retrieval_pressure",
+        "auto_critic_current_quality",
+        "convergence_arbiter_conflict",
+        "ucc_coherence_trend",
+    }
+    registered = set(fb._extra_signals.keys())
+    missing = sorted(new_targets - registered)
+    assert not missing, (
+        f"New _ERROR_CLASS_TO_FEEDBACK_SIGNAL targets not registered "
+        f"in feedback bus: {missing}"
+    )
+    print("✅ test_feedback_signal_targets_include_new_mappings PASSED")
+
+
+def test_ucc_expected_subsystems_includes_executive_cached():
+    """The _UCC_EXPECTED_SUBSYSTEMS set must include
+    'cognitive_executive_cached' since it IS added to _ucc_states
+    when the cached executive state is available.  Without this,
+    executive health degradation is invisible to coverage deficit
+    tracking."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    assert '"cognitive_executive_cached"' in src and \
+           'cognitive_executive_cached' in src[src.index('_UCC_EXPECTED_SUBSYSTEMS'):], (
+        "'cognitive_executive_cached' must be in _UCC_EXPECTED_SUBSYSTEMS"
+    )
+    print("✅ test_ucc_expected_subsystems_includes_executive_cached PASSED")
+
+
+def test_no_complexity_estimator_world_model_cycle():
+    """The provenance dependency DAG must not contain a cycle between
+    complexity_estimator and world_model.  Previously, both
+    (complexity_estimator, world_model) and (world_model,
+    complexity_estimator) edges existed, creating a DAG cycle that
+    broke trace_root_cause().  Cross-pass feedback between these
+    modules flows through the CognitiveFeedbackBus instead."""
+    import re
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    # The forward edge should exist
+    assert '("complexity_estimator", "world_model")' in src, (
+        "complexity_estimator → world_model edge must exist"
+    )
+    # The reverse edge should NOT exist as an active tuple in the code
+    # (it may appear in comments explaining the removal)
+    lines = src.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if '("world_model", "complexity_estimator")' in stripped:
+            assert False, (
+                "world_model → complexity_estimator reverse edge must be "
+                "removed to prevent provenance DAG cycle"
+            )
+    print("✅ test_no_complexity_estimator_world_model_cycle PASSED")
+
+
+def test_no_memory_validation_memory_cycle():
+    """The provenance dependency DAG must not contain a cycle between
+    memory and memory_validation.  Previously, both (memory,
+    memory_validation) and (memory_validation, memory) edges existed.
+    The re-retrieval feedback flows through the feedback bus's
+    memory_re_retrieval_pressure signal instead."""
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+    # The forward edge should exist
+    assert '("memory", "memory_validation")' in src, (
+        "memory → memory_validation edge must exist"
+    )
+    # The reverse edge should NOT exist as active code
+    lines = src.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if '("memory_validation", "memory")' in stripped:
+            assert False, (
+                "memory_validation → memory reverse edge must be removed "
+                "to prevent provenance DAG cycle"
+            )
+    print("✅ test_no_memory_validation_memory_cycle PASSED")
+
+
+def test_provenance_dag_acyclic_with_many_modules():
+    """When many modules are enabled, the provenance DAG should be
+    acyclic — verify_cognitive_unity() should report unified=True
+    with no cycle-related recommendations."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=4, device_str='cpu',
+        enable_world_model=True,
+        enable_causal_model=True,
+        enable_mcts_planner=True,
+        enable_metacognitive_recursion=True,
+        enable_certified_meta_loop=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    assert unity['unified'], (
+        f"verify_cognitive_unity() should return unified=True, "
+        f"got recommendations: {unity['recommendations']}"
+    )
+    # No cycle-related recommendations
+    for rec in unity['recommendations']:
+        assert 'cycle' not in rec.lower(), (
+            f"No cycle-related recommendations expected, got: {rec}"
+        )
+    print("✅ test_provenance_dag_acyclic_with_many_modules PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -61031,6 +61258,22 @@ def run_all_tests():
     test_fallback_tensor_guard_get_stats()
     test_get_module_registry()
     test_get_module_registry_alias_detection()
+
+    # Architectural Coherence Gap Closures — Error-Evolution Feedback Bridge
+    test_error_class_feedback_signal_numerical()
+    test_error_class_feedback_signal_subsystem()
+    test_error_class_feedback_signal_memory_subsystem()
+    test_error_class_feedback_signal_auto_critic()
+    test_error_class_feedback_signal_convergence_conflict()
+    test_error_class_feedback_signal_cycle_consistency()
+    test_error_class_feedback_signal_low_memory_trust()
+    test_feedback_signal_targets_include_new_mappings()
+    test_ucc_expected_subsystems_includes_executive_cached()
+
+    # Provenance DAG Cycle Fixes
+    test_no_complexity_estimator_world_model_cycle()
+    test_no_memory_validation_memory_cycle()
+    test_provenance_dag_acyclic_with_many_modules()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
