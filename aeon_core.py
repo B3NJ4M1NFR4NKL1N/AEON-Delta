@@ -21200,6 +21200,23 @@ class AEONDeltaV3(nn.Module):
             "uncertainty_auto_critic_convergence_diverging": "lipschitz_pressure",
             "uncertainty_auto_critic_uncertainty": "ucc_coherence_trend",
             "uncertainty_auto_critic_audit_pattern": "ucc_coherence_trend",
+            # ── Frequently-recorded error classes that were previously
+            # unmapped, preventing their historical recovery patterns
+            # from feeding back into the feedback bus.  Without these
+            # mappings, persistent numerical instabilities, generic
+            # subsystem failures, memory issues, auto-critic degradation,
+            # convergence conflicts, cycle-consistency violations, and
+            # low memory trust could not condition the meta-loop via
+            # cross-pass feedback, breaking the requirement that all
+            # error-recovery learning influences subsequent reasoning.
+            "numerical": "systematic_uncertainty",
+            "subsystem": "systematic_uncertainty",
+            "memory_subsystem": "memory_re_retrieval_pressure",
+            "auto_critic_failure": "auto_critic_current_quality",
+            "auto_critic_low_quality": "auto_critic_current_quality",
+            "convergence_conflict": "convergence_arbiter_conflict",
+            "cycle_consistency_violation": "ucc_coherence_trend",
+            "low_memory_trust": "memory_re_retrieval_pressure",
         }
         if _ee is not None:
             try:
@@ -29866,6 +29883,11 @@ class AEONDeltaV3(nn.Module):
                     "temporal_knowledge_graph", "complexity_estimator",
                     "diversity_analysis", "topology_analysis",
                     "continual_learning",
+                    # cognitive_executive_cached is the cached executive
+                    # winner state added at line 29720; its absence from
+                    # this set meant executive health degradation was
+                    # invisible to the UCC coverage deficit tracker.
+                    "cognitive_executive_cached",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:
