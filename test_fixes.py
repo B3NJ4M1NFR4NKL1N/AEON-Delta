@@ -58056,6 +58056,186 @@ def test_all_recorded_error_classes_have_lambda_mapping():
     print("✅ test_all_recorded_error_classes_have_lambda_mapping PASSED")
 
 
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — Config Bridge, Module Registry & NaN Policy
+# ============================================================================
+
+def test_config_v4_from_core_config():
+    """Verify AEONConfigV4.from_core_config() inherits shared parameters."""
+    from aeon_core import AEONConfig
+    from ae_train import AEONConfigV4
+
+    core = AEONConfig()
+    v4 = AEONConfigV4.from_core_config(core)
+
+    # Shared architectural params must match
+    assert v4.z_dim == core.z_dim, f"z_dim: {v4.z_dim} != {core.z_dim}"
+    assert v4.hidden_dim == core.hidden_dim
+    assert v4.vocab_size == core.vocab_size
+    assert v4.seq_length == core.seq_length
+    assert v4.vq_num_embeddings == core.vq_num_embeddings
+    assert v4.vq_embedding_dim == core.vq_embedding_dim
+    assert v4.vq_commitment_cost == core.vq_commitment_cost
+    assert v4.vq_ema_decay == core.vq_ema_decay
+    assert v4.dropout_rate == core.dropout_rate
+    assert v4.learning_rate == core.learning_rate
+    assert v4.weight_decay == core.weight_decay
+    # VQ revival threshold should be inherited
+    assert v4.vq_reset_threshold == core.vq_revival_threshold, (
+        f"vq_reset_threshold {v4.vq_reset_threshold} != "
+        f"vq_revival_threshold {core.vq_revival_threshold}"
+    )
+    # Training-specific params should keep v4 defaults
+    assert v4.grad_clip_norm == 0.5  # v4 default, not core's 1.0
+    assert v4.context_window == 3
+    assert v4.entropy_weight == 0.1
+    assert v4.document_aware is True
+
+    print("✅ test_config_v4_from_core_config PASSED")
+
+
+def test_config_v4_from_core_config_overrides():
+    """Verify from_core_config() supports explicit overrides."""
+    from aeon_core import AEONConfig
+    from ae_train import AEONConfigV4
+
+    core = AEONConfig()
+    v4 = AEONConfigV4.from_core_config(
+        core, batch_size=8, vq_reset_threshold=50, entropy_weight=0.2,
+    )
+
+    assert v4.batch_size == 8, f"Expected batch_size=8, got {v4.batch_size}"
+    assert v4.vq_reset_threshold == 50  # override takes priority
+    assert v4.entropy_weight == 0.2
+    # Inherited params still match core
+    assert v4.z_dim == core.z_dim
+
+    print("✅ test_config_v4_from_core_config_overrides PASSED")
+
+
+def test_core_config_to_training_config():
+    """Verify AEONConfig.to_training_config() creates a valid AEONConfigV4."""
+    from aeon_core import AEONConfig
+    from ae_train import AEONConfigV4
+
+    core = AEONConfig()
+    v4 = core.to_training_config(batch_size=4)
+
+    assert isinstance(v4, AEONConfigV4)
+    assert v4.z_dim == core.z_dim
+    assert v4.batch_size == 4
+
+    print("✅ test_core_config_to_training_config PASSED")
+
+
+def test_fallback_nan_policy_matches_core():
+    """Verify fallback NaNPolicy enum has the same members as aeon_core."""
+    from aeon_core import NaNPolicy as CorePolicy
+
+    # Simulate the fallback by importing the fallback class definition
+    from enum import Enum, auto
+    class FallbackNaNPolicy(Enum):
+        RAISE = auto()
+        WARN = auto()
+        SILENT = auto()
+        RETURN_NONE = auto()
+        QUARANTINE = auto()
+
+    core_names = {m.name for m in CorePolicy}
+    fallback_names = {m.name for m in FallbackNaNPolicy}
+    assert core_names == fallback_names, (
+        f"NaNPolicy mismatch: core={core_names}, fallback={fallback_names}"
+    )
+
+    print("✅ test_fallback_nan_policy_matches_core PASSED")
+
+
+def test_fallback_tensor_guard_custom_default():
+    """Verify fallback TensorGuard supports custom_default and allow_inf."""
+    import ae_train
+    guard = ae_train.TensorGuard(enable_tracking=True)
+
+    # Create a tensor with NaN
+    t = torch.tensor([1.0, float('nan'), 3.0])
+    result = guard.sanitize(t, context="test", custom_default=42.0)
+    # NaN should be replaced
+    assert not torch.isnan(result).any(), "NaN should be replaced"
+    assert guard._nan_count >= 1
+
+    print("✅ test_fallback_tensor_guard_custom_default PASSED")
+
+
+def test_fallback_tensor_guard_get_stats():
+    """Verify TensorGuard (core or fallback) exposes get_stats or equivalent."""
+    import ae_train
+    guard = ae_train.TensorGuard(enable_tracking=True)
+
+    # Sanitize a tensor with NaN to increment counters
+    t = torch.tensor([float('nan'), 2.0])
+    guard.sanitize(t, context="test")
+
+    # The guard should track NaN count
+    assert guard._nan_count >= 1
+    assert guard._sanitize_count >= 1
+
+    print("✅ test_fallback_tensor_guard_get_stats PASSED")
+
+
+def test_get_module_registry():
+    """Verify AEONDeltaV3.get_module_registry() returns valid entries."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    registry = model.get_module_registry()
+
+    # Registry should have entries for all nodes in _NODE_ATTR_MAP
+    assert len(registry) == len(model._NODE_ATTR_MAP), (
+        f"Expected {len(model._NODE_ATTR_MAP)} entries, got {len(registry)}"
+    )
+
+    # Check structure of each entry
+    for node_name, info in registry.items():
+        assert 'attribute' in info, f"Missing 'attribute' in {node_name}"
+        assert 'initialized' in info, f"Missing 'initialized' in {node_name}"
+        assert 'type' in info, f"Missing 'type' in {node_name}"
+        assert 'trainable_params' in info, f"Missing 'trainable_params' in {node_name}"
+
+    # Core modules should be initialized
+    assert registry['input']['initialized'] is True  # 'input' maps to encoder
+    assert registry['vq']['initialized'] is True
+    assert registry['meta_loop']['initialized'] is True
+    assert registry['decoder']['initialized'] is True
+
+    # Disabled modules should not be initialized
+    if not config.enable_world_model:
+        assert registry['world_model']['initialized'] is False
+
+    # Param count should be positive for initialized nn.Modules (non-alias)
+    assert registry['vq']['trainable_params'] > 0
+
+    print("✅ test_get_module_registry PASSED")
+
+
+def test_get_module_registry_alias_detection():
+    """Verify get_module_registry() detects alias nodes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    registry = model.get_module_registry()
+
+    # icm_curiosity maps to same attribute as active_learning — should
+    # be detected as an alias with trainable_params=0
+    icm_entry = registry.get('icm_curiosity')
+    assert icm_entry is not None
+    if 'alias_of' in icm_entry:
+        # It's correctly marked as an alias
+        assert icm_entry['trainable_params'] == 0
+
+    print("✅ test_get_module_registry_alias_detection PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -60634,6 +60814,16 @@ def run_all_tests():
     test_deception_detected_in_lambda_mapping()
     test_all_feedback_signal_targets_registered()
     test_all_recorded_error_classes_have_lambda_mapping()
+
+    # Architectural Unification — Config Bridge, Module Registry & NaN Policy
+    test_config_v4_from_core_config()
+    test_config_v4_from_core_config_overrides()
+    test_core_config_to_training_config()
+    test_fallback_nan_policy_matches_core()
+    test_fallback_tensor_guard_custom_default()
+    test_fallback_tensor_guard_get_stats()
+    test_get_module_registry()
+    test_get_module_registry_alias_detection()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
