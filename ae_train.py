@@ -85,11 +85,24 @@ except ImportError:
     from collections import defaultdict
 
     class NaNPolicy(Enum):
+        """Strategies for handling NaN/Inf.
+
+        Fallback mirror of ``aeon_core.NaNPolicy``, used when aeon_core
+        is not installed so that training-time code paths share the same
+        enum members and semantics as the inference pipeline.
+        """
+        RAISE = auto()
         WARN = auto()
+        SILENT = auto()
+        RETURN_NONE = auto()
         QUARANTINE = auto()
 
     class TensorGuard:
-        """Minimal tensor safety guard (fallback when aeon_core unavailable)."""
+        """Minimal tensor safety guard (fallback when aeon_core unavailable).
+
+        Mirrors the interface of ``aeon_core.TensorGuard`` so that
+        training-time tensor safety is consistent with inference.
+        """
 
         def __init__(self, policy=None, enable_tracking: bool = False):
             self.policy = policy or NaNPolicy.WARN
@@ -97,19 +110,41 @@ except ImportError:
             self._inf_count = 0
             self._sanitize_count = 0
 
-        def sanitize(self, tensor: torch.Tensor, context: str = "") -> torch.Tensor:
+        def sanitize(self, tensor: torch.Tensor, context: str = "",
+                     custom_default: Optional[float] = None,
+                     allow_inf: bool = False) -> torch.Tensor:
+            """Sanitize NaN/Inf values, mirroring aeon_core.TensorGuard.
+
+            Args:
+                tensor: Input tensor to sanitize.
+                context: Descriptive context string for diagnostics.
+                custom_default: Replacement value for NaN/Inf elements.
+                    Defaults to 0.0 when None.
+                allow_inf: When True, skip infinity checks and only
+                    replace NaN values.
+            """
             has_nan = torch.isnan(tensor).any().item()
-            has_inf = torch.isinf(tensor).any().item()
+            has_inf = torch.isinf(tensor).any().item() if not allow_inf else False
             if has_nan:
                 self._nan_count += 1
             if has_inf:
                 self._inf_count += 1
             if has_nan or has_inf:
                 self._sanitize_count += 1
+                default = custom_default if custom_default is not None else 0.0
                 tensor = torch.where(
-                    torch.isfinite(tensor), tensor, torch.zeros_like(tensor)
+                    torch.isfinite(tensor), tensor,
+                    torch.full_like(tensor, default),
                 )
             return tensor
+
+        def get_stats(self) -> Dict[str, Any]:
+            """Return sanitization statistics (mirrors aeon_core API)."""
+            return {
+                'nan_count': self._nan_count,
+                'inf_count': self._inf_count,
+                'sanitize_count': self._sanitize_count,
+            }
 
     class SemanticErrorClassifier:
         """Keyword-based error classifier (fallback when aeon_core unavailable).
@@ -932,13 +967,18 @@ class AEONConfigV4:
     seq_length: int = 64
     
     # VQ-VAE (оптимизировано)
+    # NOTE: vq_reset_threshold defaults to 30 (more aggressive than
+    # aeon_core's vq_revival_threshold=100) because training benefits
+    # from faster codebook reset to avoid dead codes during early
+    # training.  When using from_core_config(), the core threshold
+    # is inherited unless explicitly overridden.
     vq_num_embeddings: int = 2048
     vq_embedding_dim: int = 256
     vq_commitment_cost: float = 0.25
     vq_loss_weight: float = 0.5
     vq_ema_decay: float = 0.99
     vq_temperature: float = 1.0
-    vq_reset_threshold: int = 30  # Было 50, теперь агрессивнее
+    vq_reset_threshold: int = 30
     
     # ✅ НОВОЕ: Entropy regularization
     entropy_weight: float = 0.1  # Поощряет равномерное использование кодов
@@ -981,6 +1021,62 @@ class AEONConfigV4:
     
     # Noise scale for VQ code reset
     code_reset_noise_scale: float = 0.05
+
+    @classmethod
+    def from_core_config(cls, core_config: Any, **overrides) -> 'AEONConfigV4':
+        """Create a training config from an inference ``AEONConfig``.
+
+        Bridges the inference and training configurations so that shared
+        architectural parameters (z_dim, hidden_dim, vocab_size, seq_length,
+        VQ-VAE settings) are inherited from the core config, eliminating
+        silent divergence between training and inference pipelines.
+
+        Training-specific parameters (grad_clip_norm, context_window,
+        entropy_weight, document_aware) retain their v4 defaults unless
+        explicitly overridden via ``**overrides``.
+
+        Args:
+            core_config: An ``aeon_core.AEONConfig`` instance.
+            **overrides: Keyword arguments that override any field.
+
+        Returns:
+            A new ``AEONConfigV4`` instance with shared parameters
+            inherited from the core config.
+        """
+        # Map core config field names to AEONConfigV4 field names.
+        # Only shared architectural parameters are bridged; training-
+        # specific parameters use their v4 defaults.
+        _SHARED_FIELDS = {
+            'z_dim': 'z_dim',
+            'hidden_dim': 'hidden_dim',
+            'vocab_size': 'vocab_size',
+            'seq_length': 'seq_length',
+            'vq_num_embeddings': 'vq_num_embeddings',
+            'vq_embedding_dim': 'vq_embedding_dim',
+            'vq_commitment_cost': 'vq_commitment_cost',
+            'vq_ema_decay': 'vq_ema_decay',
+            'dropout_rate': 'dropout_rate',
+            'learning_rate': 'learning_rate',
+            'weight_decay': 'weight_decay',
+        }
+        kwargs: Dict[str, Any] = {}
+        for core_field, v4_field in _SHARED_FIELDS.items():
+            val = getattr(core_config, core_field, None)
+            if val is not None:
+                kwargs[v4_field] = val
+        # Map vq_revival_threshold (inference: steps before a dead code
+        # is revived) → vq_reset_threshold (training: steps before a
+        # dead code is reset).  Both control codebook refresh
+        # aggressiveness via the same mechanism; the name difference
+        # reflects the differing contexts (inference revival vs training
+        # reset).  Inheriting the core value ensures consistent
+        # codebook management unless explicitly overridden.
+        _revival = getattr(core_config, 'vq_revival_threshold', None)
+        if _revival is not None and 'vq_reset_threshold' not in overrides:
+            kwargs['vq_reset_threshold'] = _revival
+        # Apply explicit overrides last (highest priority).
+        kwargs.update(overrides)
+        return cls(**kwargs)
 
     def __post_init__(self):
         """Validate configuration parameters."""

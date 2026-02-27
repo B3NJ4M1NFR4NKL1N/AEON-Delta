@@ -3480,6 +3480,33 @@ class AEONConfig:
         if 'device' in config_dict:
             config_dict['device'] = str(config_dict['device'])
         return config_dict
+
+    def to_training_config(self, **overrides):
+        """Create an ``AEONConfigV4`` for training from this inference config.
+
+        Delegates to ``AEONConfigV4.from_core_config()`` so that shared
+        architectural parameters (z_dim, hidden_dim, vocab_size, VQ-VAE
+        settings) are inherited, eliminating silent divergence between
+        training and inference pipelines.
+
+        Training-specific parameters (grad_clip_norm, context_window,
+        entropy_weight, document_aware) retain their v4 defaults unless
+        explicitly overridden via ``**overrides``.
+
+        Requires ``ae_train.AEONConfigV4`` to be importable.
+
+        Args:
+            **overrides: Keyword arguments forwarded to
+                ``AEONConfigV4.from_core_config()``.
+
+        Returns:
+            An ``AEONConfigV4`` instance.
+
+        Raises:
+            ImportError: If ``ae_train`` is not available.
+        """
+        from ae_train import AEONConfigV4  # local import avoids circular dep
+        return AEONConfigV4.from_core_config(self, **overrides)
     
     def save(self, path: Union[str, Path]):
         """Save to JSON."""
@@ -36454,6 +36481,57 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_propagation_unregistered_edges': _upb_unregistered,
             'coherence_registry_coverage': _registry_coverage,
         }
+
+    def get_module_registry(self) -> Dict[str, Dict[str, Any]]:
+        """Return a registry of all initialized cognitive modules.
+
+        Provides a unified introspection point that cross-references
+        ``_NODE_ATTR_MAP`` with actually-initialized model attributes,
+        enabling external tools (dashboard, diagnostics, training bridge)
+        to enumerate active modules without hard-coding attribute names.
+
+        Returns:
+            Dict mapping pipeline node names to dicts with:
+                - ``attribute``: model attribute name.
+                - ``initialized``: whether the attribute exists and is
+                  not None.
+                - ``type``: class name of the module (or ``None``).
+                - ``trainable_params``: number of trainable parameters
+                  (0 for non-``nn.Module`` instances).
+        """
+        registry: Dict[str, Dict[str, Any]] = {}
+        seen_attrs: set = set()
+        for node_name, attr_name in self._NODE_ATTR_MAP.items():
+            if attr_name in seen_attrs:
+                # Skip duplicate mappings (e.g., icm_curiosity →
+                # active_learning_planner) to avoid double-counting.
+                module = getattr(self, attr_name, None)
+                registry[node_name] = {
+                    'attribute': attr_name,
+                    'initialized': module is not None,
+                    'type': type(module).__name__ if module is not None else None,
+                    'trainable_params': 0,
+                    'alias_of': next(
+                        (n for n, a in self._NODE_ATTR_MAP.items()
+                         if a == attr_name and n != node_name),
+                        None,
+                    ),
+                }
+                continue
+            seen_attrs.add(attr_name)
+            module = getattr(self, attr_name, None)
+            param_count = 0
+            if module is not None and isinstance(module, nn.Module):
+                param_count = sum(
+                    p.numel() for p in module.parameters() if p.requires_grad
+                )
+            registry[node_name] = {
+                'attribute': attr_name,
+                'initialized': module is not None,
+                'type': type(module).__name__ if module is not None else None,
+                'trainable_params': param_count,
+            }
+        return registry
 
     @torch.no_grad()
     def verify_coherence(self) -> Dict[str, Any]:
