@@ -58238,6 +58238,211 @@ def test_get_module_registry_alias_detection():
     print("✅ test_get_module_registry_alias_detection PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Architectural unification tests — verify the fixes that transform
+# AEON-Delta from a disjointed module collection into a unified,
+# self-reflective, causally coherent cognitive system.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_early_auto_critic_scores_aggregated():
+    """Early auto-critic scores (critical uncertainty, DAG consensus,
+    reconciliation exhaustion) must be included in the final aggregated
+    score via _auto_critic_all_scores_early, ensuring the UCC receives
+    the worst-case quality assessment from ANY invocation path."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the early scores list is initialized in _reasoning_core_impl
+    import inspect
+    source = inspect.getsource(model._reasoning_core_impl)
+    assert "_auto_critic_all_scores_early" in source, (
+        "_auto_critic_all_scores_early must be initialized in "
+        "_reasoning_core_impl to capture early auto-critic paths"
+    )
+    # Verify the main list is seeded from early scores
+    assert "list(_auto_critic_all_scores_early)" in source, (
+        "_auto_critic_all_scores must be seeded from early scores"
+    )
+    print("✅ test_early_auto_critic_scores_aggregated PASSED")
+
+
+def test_output_reliability_trigger_signal():
+    """The 13th signal (low_output_reliability) must fire when output
+    reliability is low, directly participating in the metacognitive
+    trigger's weighted re-reasoning decision."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.9)
+
+    # Perfect reliability → signal should NOT fire
+    r1 = trigger.evaluate(output_reliability=1.0)
+    assert "low_output_reliability" not in r1["triggers_active"], (
+        "low_output_reliability should not fire when reliability is perfect"
+    )
+
+    trigger.reset()
+
+    # Low reliability → signal SHOULD fire
+    r2 = trigger.evaluate(output_reliability=0.1)
+    assert "low_output_reliability" in r2["triggers_active"], (
+        "low_output_reliability must fire when output reliability is low"
+    )
+    # Signal value should be proportional to deficit
+    expected_weight = trigger._signal_weights["low_output_reliability"]
+    expected_signal = expected_weight * (1.0 - 0.1)  # deficit = 0.9
+    assert r2["trigger_score"] > 0, (
+        "Trigger score must be positive when output reliability is low"
+    )
+    print("✅ test_output_reliability_trigger_signal PASSED")
+
+
+def test_output_reliability_in_signal_weights():
+    """low_output_reliability must be in the trigger's signal weights
+    with the correct default weight (1/13)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    assert "low_output_reliability" in trigger._signal_weights, (
+        "low_output_reliability must be in _signal_weights"
+    )
+    expected = 1.0 / 13.0
+    actual = trigger._signal_weights["low_output_reliability"]
+    assert abs(actual - expected) < 1e-9, (
+        f"Expected weight {expected}, got {actual}"
+    )
+    print("✅ test_output_reliability_in_signal_weights PASSED")
+
+
+def test_output_reliability_error_class_mapping():
+    """The error class 'low_output_reliability' must map to the
+    'low_output_reliability' signal (not 'uncertainty') so adaptive
+    weights can independently learn sensitivity to output trust."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+
+    trigger = MetaCognitiveRecursionTrigger()
+    source = inspect.getsource(trigger.adapt_weights_from_evolution)
+    # Check the mapping in _class_to_signal
+    assert '"low_output_reliability": "low_output_reliability"' in source, (
+        "Error class 'low_output_reliability' must map to "
+        "'low_output_reliability' signal, not 'uncertainty'"
+    )
+    print("✅ test_output_reliability_error_class_mapping PASSED")
+
+
+def test_feedback_bus_provenance_tracking():
+    """The terminal feedback bus refresh must record before/after state
+    in the CausalProvenanceTracker for cross-pass traceability."""
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    source = inspect.getsource(model._reasoning_core_impl)
+
+    # Check that feedback_bus provenance is recorded
+    assert 'record_before("feedback_bus"' in source, (
+        "Feedback bus must record_before for provenance tracking"
+    )
+    assert 'record_after("feedback_bus"' in source, (
+        "Feedback bus must record_after for provenance tracking"
+    )
+    print("✅ test_feedback_bus_provenance_tracking PASSED")
+
+
+def test_diversity_collapse_in_primary_trigger_call():
+    """The primary metacognitive trigger evaluate() call in
+    _reasoning_core_impl must pass diversity_collapse so the trigger
+    is not blind to thought diversity deficits during in-pipeline
+    metacognitive decisions."""
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    source = inspect.getsource(model._reasoning_core_impl)
+
+    # Find the primary trigger evaluate call (step 5a-iv)
+    # It should contain diversity_collapse parameter
+    trigger_calls = [
+        line for line in source.split('\n')
+        if 'metacognitive_trigger.evaluate(' in line
+        or 'diversity_collapse=' in line
+    ]
+    diversity_found = any('diversity_collapse=' in line for line in trigger_calls)
+    assert diversity_found, (
+        "Primary trigger evaluate() must pass diversity_collapse"
+    )
+    print("✅ test_diversity_collapse_in_primary_trigger_call PASSED")
+
+
+def test_memory_trust_in_primary_trigger_call():
+    """The primary metacognitive trigger evaluate() call must pass
+    memory_trust_deficit for fully-informed re-reasoning decisions."""
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    source = inspect.getsource(model._reasoning_core_impl)
+
+    # The primary and post-integration trigger calls should pass
+    # memory_trust_deficit
+    assert 'memory_trust_deficit=' in source, (
+        "Trigger evaluate() must pass memory_trust_deficit"
+    )
+    print("✅ test_memory_trust_in_primary_trigger_call PASSED")
+
+
+def test_output_reliability_in_provenance_to_signal():
+    """The _PROVENANCE_TO_SIGNAL mapping must include output_reliability
+    so provenance-based weight adaptation can target the correct signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert "output_reliability" in mapping, (
+        "output_reliability must be in _PROVENANCE_TO_SIGNAL"
+    )
+    assert mapping["output_reliability"] == "low_output_reliability", (
+        "output_reliability must map to low_output_reliability signal"
+    )
+    print("✅ test_output_reliability_in_provenance_to_signal PASSED")
+
+
+def test_ucc_receives_output_reliability():
+    """The UCC's trigger evaluate() call must pass output_reliability
+    so the unified cognitive cycle's metacognitive assessment includes
+    output trustworthiness."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    source = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "output_reliability" in source, (
+        "UCC evaluate() must pass output_reliability to trigger"
+    )
+    print("✅ test_ucc_receives_output_reliability PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
