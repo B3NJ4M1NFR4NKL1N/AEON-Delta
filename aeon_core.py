@@ -15271,7 +15271,7 @@ class SubsystemHealthGate(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors twelve independent signals:
+    Monitors thirteen independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -15303,6 +15303,12 @@ class MetaCognitiveRecursionTrigger:
         adaptive weight system to learn appropriate sensitivity from
         historical error-recovery outcomes rather than relying on a
         hard override.
+    13. ``low_output_reliability`` — composite output trustworthiness
+        (uncertainty × auto-critic quality × convergence rate ×
+        coherence) is below threshold, indicating the final output
+        cannot be trusted.  This closes the gap where output
+        reliability was tracked in the DirectionalUncertaintyTracker
+        but never directly triggered re-reasoning.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -15323,8 +15329,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (12 signals × 1/12 ≈ 0.083 each)
-    _DEFAULT_WEIGHT = 1.0 / 12.0
+    # Default per-signal weight (13 signals × 1/13 ≈ 0.077 each)
+    _DEFAULT_WEIGHT = 1.0 / 13.0
 
     def __init__(
         self,
@@ -15367,6 +15373,7 @@ class MetaCognitiveRecursionTrigger:
             "diversity_collapse": self._DEFAULT_WEIGHT,
             "memory_trust_deficit": self._DEFAULT_WEIGHT,
             "convergence_conflict": self._DEFAULT_WEIGHT,
+            "low_output_reliability": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
         # Cross-pass trigger score EMA — accumulates near-threshold
@@ -15470,10 +15477,10 @@ class MetaCognitiveRecursionTrigger:
             # corresponding trigger signals.
             "world_model_cross_divergence": "world_model_surprise",
             "topology_catastrophe": "topology_catastrophe",
-            # Output reliability — low-trust outputs feed back into
-            # uncertainty so future meta-cognitive cycles are more
-            # sensitive to similar failure patterns.
-            "low_output_reliability": "uncertainty",
+            # Output reliability — low-trust outputs now feed into the
+            # dedicated low_output_reliability signal so adaptive weights
+            # can independently learn sensitivity to output trust deficits.
+            "low_output_reliability": "low_output_reliability",
             # Cycle consistency — encoder-decoder divergence indicates
             # information fidelity loss in the reasoning pipeline.
             "cycle_consistency_violation": "coherence_deficit",
@@ -15712,6 +15719,7 @@ class MetaCognitiveRecursionTrigger:
         "consolidating_memory": "memory_staleness",
         "auto_critic_safety": "safety_violation",
         "deception_suppressor": "safety_violation",
+        "output_reliability": "low_output_reliability",
     }
 
     def adapt_weights_from_provenance(
@@ -15816,6 +15824,7 @@ class MetaCognitiveRecursionTrigger:
         diversity_collapse: float = 0.0,
         memory_trust_deficit: float = 0.0,
         convergence_conflict: float = 0.0,
+        output_reliability: float = 1.0,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -15859,6 +15868,11 @@ class MetaCognitiveRecursionTrigger:
                 (moderate disagreement), 0.0 otherwise.  Enables
                 graduated metacognitive response and adaptive weighting
                 via error-evolution history.
+            output_reliability: Scalar ∈ [0, 1] representing composite
+                output trustworthiness computed from uncertainty,
+                auto-critic quality, convergence rate, and coherence.
+                Low values (< 0.5) indicate untrustworthy output that
+                should trigger deeper re-reasoning.
 
         Returns:
             Dict with:
@@ -15920,6 +15934,7 @@ class MetaCognitiveRecursionTrigger:
             "diversity_collapse": w.get("diversity_collapse", 0.0) * max(0.0, min(1.0, diversity_collapse)),
             "memory_trust_deficit": w.get("memory_trust_deficit", 0.0) * max(0.0, min(1.0, memory_trust_deficit)),
             "convergence_conflict": w.get("convergence_conflict", 0.0) * max(0.0, min(1.0, convergence_conflict)),
+            "low_output_reliability": w.get("low_output_reliability", 0.0) * max(0.0, min(1.0, 1.0 - output_reliability)),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -17936,6 +17951,8 @@ class UnifiedCognitiveCycle:
                 diversity_collapse=diversity_collapse,
                 memory_trust_deficit=memory_trust_deficit,
                 convergence_conflict=_convergence_conflict_score,
+                output_reliability=max(0.0, min(1.0, output_reliability))
+                if output_reliability is not None else 1.0,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence,
@@ -22282,6 +22299,17 @@ class AEONDeltaV3(nn.Module):
         # corrupts all subsequent stages.  Reset each pass.
         _circuit_breaker_tripped: set = set()
 
+        # 0. Accumulate auto-critic scores across ALL invocation paths
+        # (critical uncertainty gate, DAG consensus, reconciliation
+        # exhaustion, safety, executive, unconditional, uncertainty-
+        # triggered, integration retry) so the final score fed into
+        # the UCC reflects the worst assessment from any path rather
+        # than only paths after step 8.  Previously, early auto-critic
+        # invocations (steps 5b1c, 5d1c-dag2, 5d2-exhaust-ac) ran
+        # before this list was initialized, causing their quality
+        # scores to be silently lost.
+        _auto_critic_all_scores_early: List[float] = []
+
         # 0a. Dynamic complexity estimation for subsystem gating.
         # Gates[0..3] correspond to: world_model, mcts, causal_world, unified_sim.
         # When complexity is low, expensive subsystems are skipped.
@@ -24491,6 +24519,15 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
                 convergence_conflict=_convergence_conflict_signal,
+                diversity_collapse=max(0.0, min(1.0, (
+                    self.config.diversity_collapse_threshold
+                    - float(diversity_results.get(
+                        'diversity', torch.tensor(1.0),
+                    ).mean().item())
+                ) / max(self.config.diversity_collapse_threshold, 1e-6)))
+                if diversity_results else 0.0,
+                memory_trust_deficit=max(0.0, 1.0 - getattr(
+                    self, '_last_trust_score', 1.0)),
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             self.coherence_registry.register_output("metacognitive_trigger", validated=True)
@@ -24757,6 +24794,15 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
                 convergence_conflict=_convergence_conflict_signal,
+                diversity_collapse=max(0.0, min(1.0, (
+                    self.config.diversity_collapse_threshold
+                    - float(diversity_results.get(
+                        'diversity', torch.tensor(1.0),
+                    ).mean().item())
+                ) / max(self.config.diversity_collapse_threshold, 1e-6)))
+                if diversity_results else 0.0,
+                memory_trust_deficit=max(0.0, 1.0 - getattr(
+                    self, '_last_trust_score', 1.0)),
             )
             # Cache trigger score so the feedback bus carries the deferred
             # assessment into the next pass.
@@ -25258,6 +25304,11 @@ class AEONDeltaV3(nn.Module):
             _critical_revised = _critical_critic.get("candidate", None)
             if _critical_revised is not None and torch.isfinite(_critical_revised).all():
                 C_star = _critical_revised
+            # Capture early auto-critic quality so it participates in
+            # the aggregated worst-score computation at step 8.
+            _critical_score = _critical_critic.get("final_score", None)
+            if _critical_score is not None:
+                _auto_critic_all_scores_early.append(float(_critical_score))
             self.audit_log.record("auto_critic", "critical_uncertainty", {
                 "uncertainty": uncertainty,
                 "num_sources": len(uncertainty_sources),
@@ -26615,6 +26666,10 @@ class AEONDeltaV3(nn.Module):
                                 and torch.isfinite(_dag_revised).all()
                                 and _dag_revised.shape == C_star.shape):
                             C_star = _dag_revised
+                        # Capture early auto-critic quality for aggregation.
+                        _dag_critic_score = _dag_critic.get("final_score", None)
+                        if _dag_critic_score is not None:
+                            _auto_critic_all_scores_early.append(float(_dag_critic_score))
                         self.provenance_tracker.record_after(
                             "auto_critic_dag", C_star,
                         )
@@ -26918,6 +26973,10 @@ class AEONDeltaV3(nn.Module):
                                 and torch.isfinite(_cv_revised).all()
                                 and _cv_revised.shape == C_star.shape):
                             C_star = _cv_revised
+                        # Capture early auto-critic quality for aggregation.
+                        _cv_critic_score = _cv_critic.get("final_score", None)
+                        if _cv_critic_score is not None:
+                            _auto_critic_all_scores_early.append(float(_cv_critic_score))
                         self.provenance_tracker.record_after(
                             "auto_critic", C_star,
                         )
@@ -28161,7 +28220,11 @@ class AEONDeltaV3(nn.Module):
         # Accumulate all auto-critic scores across multiple invocations
         # so the final score reflects the worst assessment rather than
         # the last one (which previously overwrote earlier scores).
-        _auto_critic_all_scores: List[float] = []
+        # Seed with scores from early auto-critic paths (critical
+        # uncertainty gate, DAG consensus, reconciliation exhaustion)
+        # that ran before this point, closing the gap where early
+        # quality assessments were silently lost.
+        _auto_critic_all_scores: List[float] = list(_auto_critic_all_scores_early)
         
         # 8b. State consistency validation
         validation_result = self.state_validator.validate(
@@ -31321,6 +31384,21 @@ class AEONDeltaV3(nn.Module):
                 causal_quality=self._cached_causal_quality,
                 safety_violation=safety_enforced,
                 convergence_conflict=_convergence_conflict_signal,
+                diversity_collapse=max(0.0, min(1.0, (
+                    self.config.diversity_collapse_threshold
+                    - float(diversity_results.get(
+                        'diversity', torch.tensor(1.0),
+                    ).mean().item())
+                ) / max(self.config.diversity_collapse_threshold, 1e-6)))
+                if diversity_results else 0.0,
+                memory_trust_deficit=max(0.0, 1.0 - getattr(
+                    self, '_last_trust_score', 1.0)),
+                output_reliability=max(0.0, min(1.0,
+                    (1.0 - uncertainty)
+                    * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
+                    * max(0.0, meta_results.get('convergence_rate', 1.0))
+                    * max(0.0, 1.0 - self._cached_coherence_deficit)
+                )),
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
@@ -32188,6 +32266,11 @@ class AEONDeltaV3(nn.Module):
         # made in the current pass, including late-stage signals that
         # earlier refresh points (steps 5a-ii, 5d1d, 8f) could not see.
         with torch.no_grad():
+            # Record feedback bus state before refresh for provenance
+            # tracking.  This closes the gap where feedback bus state
+            # changes left no provenance trail, making cross-pass
+            # feedback conditioning invisible to trace_root_cause().
+            _fb_before = self._cached_feedback
             self._cached_feedback = self.feedback_bus(
                 batch_size=B,
                 device=device,
@@ -32207,6 +32290,17 @@ class AEONDeltaV3(nn.Module):
             memory_quality=_memory_retrieval_quality,
             extra_signals=self._build_feedback_extra_signals(),
             ).detach()
+            # Provenance record for feedback bus — records the delta
+            # between pre-refresh and post-refresh feedback state so
+            # trace_root_cause() can attribute next-pass conditioning
+            # to the feedback bus update.
+            if _fb_before is not None:
+                self.provenance_tracker.record_before("feedback_bus", _fb_before)
+                self.provenance_tracker.record_after("feedback_bus", self._cached_feedback)
+                self.coherence_registry.register_output(
+                    "feedback_bus",
+                    validated=torch.isfinite(self._cached_feedback).all().item(),
+                )
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
         # so that every conditioning signal feeding into the NEXT pass's
@@ -36929,6 +37023,7 @@ class AEONDeltaV3(nn.Module):
                 memory_trust_deficit=max(0.0, min(1.0,
                     1.0 - getattr(self, '_last_trust_score', 1.0),
                 )),
+                output_reliability=result.get("output_reliability", 1.0),
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
@@ -37152,7 +37247,7 @@ class AEONDeltaV3(nn.Module):
             "recovery_pressure", "world_model_surprise",
             "low_causal_quality", "safety_violation",
             "diversity_collapse", "memory_trust_deficit",
-            "convergence_conflict",
+            "convergence_conflict", "low_output_reliability",
         }
         _trigger = self.metacognitive_trigger
         if _trigger is not None:

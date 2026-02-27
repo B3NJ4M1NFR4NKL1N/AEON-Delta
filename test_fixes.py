@@ -30344,7 +30344,7 @@ def test_graduated_uncertainty_signal():
     assert result["trigger_score"] > 0.0, (
         "Graduated uncertainty should contribute > 0 even below old binary threshold"
     )
-    # Score should be proportional: w * 0.4 = (1/12) * 0.4
+    # Score should be proportional: w * 0.4 = (1/13) * 0.4
     expected = (1.0 / 13.0) * 0.4
     assert abs(result["trigger_score"] - expected) < 1e-9, (
         f"Expected graduated score {expected}, got {result['trigger_score']}"
@@ -52280,7 +52280,7 @@ def test_verify_coherence_passes_all_trigger_signals():
         "safety_violation",
         "diversity_collapse",
         "memory_trust_deficit",
-        "low_output_reliability",
+        "output_reliability",
     ]
     for signal in expected_signals:
         assert signal in source, (
