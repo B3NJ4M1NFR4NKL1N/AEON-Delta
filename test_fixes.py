@@ -36516,6 +36516,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "encoder_reasoning_norm": "encoder_reasoning_norm",
         "deception_suppressor": "deception_suppressor",
         "feedback_bus": "feedback_bus",
+        "cycle_consistency": "cycle_consistency_validator",
+        "output_reliability_gate": "output_reliability_gate",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -45831,16 +45833,23 @@ def test_cycle_consistency_violation_escalates_uncertainty():
     """Verify cycle_consistency_violation escalates uncertainty in the forward pass.
 
     The code should record an uncertainty_sources entry when cycle
-    consistency drops below the configured threshold.
+    consistency drops below the configured threshold.  Since the logic
+    was extracted into CycleConsistencyValidator, we verify both that
+    AEONDeltaV3 references 'cycle_consistency_violation' and that the
+    validator produces the expected uncertainty source key.
     """
     import inspect
-    from aeon_core import AEONDeltaV3
+    from aeon_core import AEONDeltaV3, CycleConsistencyValidator
     source = inspect.getsource(AEONDeltaV3)
     assert 'cycle_consistency_violation' in source, (
         "AEONDeltaV3 should record 'cycle_consistency_violation' in uncertainty_sources"
     )
-    assert 'uncertainty_sources["cycle_consistency_violation"]' in source, (
-        "cycle_consistency_violation should be recorded as an uncertainty source"
+    # Verify the CycleConsistencyValidator escalates uncertainty with
+    # the expected key when a violation occurs.
+    validator_source = inspect.getsource(CycleConsistencyValidator)
+    assert 'cycle_consistency_violation' in validator_source, (
+        "CycleConsistencyValidator should record 'cycle_consistency_violation' "
+        "as an uncertainty source"
     )
     print("✅ test_cycle_consistency_violation_escalates_uncertainty PASSED")
 
@@ -45850,16 +45859,20 @@ def test_reencode_verification_code_exists():
 
     The code should re-encode the decoder output through the encoder and
     compare with C_star to verify decode→encode round-trip fidelity.
+    Since the logic was extracted into CycleConsistencyValidator, we
+    verify both that AEONDeltaV3 references reencode_consistency and
+    that the validator produces the expected uncertainty source key.
     """
     import inspect
-    from aeon_core import AEONDeltaV3
+    from aeon_core import AEONDeltaV3, CycleConsistencyValidator
     source = inspect.getsource(AEONDeltaV3)
     assert 'reencode_consistency' in source, (
         "AEONDeltaV3 should compute reencode_consistency for output→input verification"
     )
-    assert 'reencode_divergence' in source, (
-        "reencode_divergence should be recorded as an uncertainty source "
-        "when the round-trip verification fails"
+    validator_source = inspect.getsource(CycleConsistencyValidator)
+    assert 'reencode_divergence' in validator_source, (
+        "CycleConsistencyValidator should record 'reencode_divergence' as an "
+        "uncertainty source when the round-trip verification fails"
     )
     print("✅ test_reencode_verification_code_exists PASSED")
 

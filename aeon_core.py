@@ -194,6 +194,7 @@ __all__ = [
     "MetaCognitiveRecursionTrigger", "CausalErrorEvolutionTracker",
     "CrossValidationReconciler", "ExternalDataTrustScorer",
     "NeuroSymbolicConsistencyChecker", "ComplexityEstimator",
+    "CycleConsistencyValidator", "OutputReliabilityGate",
     "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
     "CausalDAGConsensus",
     # Unified AGI architecture components
@@ -14735,6 +14736,237 @@ class ComplexityEstimator(nn.Module):
 
 
 # ============================================================================
+# SECTION 15a-ii: CYCLE CONSISTENCY & OUTPUT RELIABILITY GATES
+# ============================================================================
+
+
+class CycleConsistencyValidator(nn.Module):
+    """Validates encoder→reasoning→decoder round-trip fidelity.
+
+    Computes cosine-similarity between the encoder's quantized output and
+    the decoder's reconstructed representation.  When the similarity
+    falls below a configurable threshold, the validator escalates
+    uncertainty, records the violation in the error-evolution tracker,
+    and optionally re-encodes the decoder output for a second-pass
+    verification.
+
+    Extracting this logic into a dedicated ``nn.Module`` replaces the
+    ad-hoc inline checks that were previously scattered across
+    ``_forward_impl``, yielding a single, testable component that
+    participates in the provenance DAG and can be independently
+    unit-tested.
+
+    Args:
+        violation_threshold: Minimum acceptable cosine similarity
+            (mapped to [0, 1]).  Below this, a violation is flagged.
+        uncertainty_scale: Maximum uncertainty boost per violation.
+        reencode_uncertainty_scale: Uncertainty scale for re-encode
+            divergence (second-pass verification).
+    """
+
+    def __init__(
+        self,
+        violation_threshold: float = 0.3,
+        uncertainty_scale: float = 0.25,
+        reencode_uncertainty_scale: float = 0.2,
+    ):
+        super().__init__()
+        self.violation_threshold = max(0.0, min(1.0, violation_threshold))
+        self.uncertainty_scale = max(0.0, uncertainty_scale)
+        self.reencode_uncertainty_scale = max(0.0, reencode_uncertainty_scale)
+
+    def forward(
+        self,
+        z_encoded: torch.Tensor,
+        z_decoded: torch.Tensor,
+        current_uncertainty: float = 0.0,
+        z_reencoded: Optional[torch.Tensor] = None,
+        core_state: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Compute cycle-consistency scores and uncertainty escalation.
+
+        Args:
+            z_encoded: [B, D] encoder output (quantized).
+            z_decoded: [B, D] decoder reconstructed representation.
+            current_uncertainty: Current pipeline uncertainty ∈ [0, 1].
+            z_reencoded: Optional [B, D] re-encoded decoder output for
+                second-pass verification.  When provided alongside
+                ``core_state``, an additional divergence check is run.
+            core_state: Optional [B, D] reasoning core's converged
+                state for re-encode comparison.
+
+        Returns:
+            Dict with:
+                - cycle_consistency: float ∈ [0, 1] cosine similarity.
+                - violation: bool — True when below threshold.
+                - uncertainty_boost: float — additional uncertainty.
+                - updated_uncertainty: float — ``current_uncertainty``
+                  plus any escalation from this check.
+                - reencode_consistency: float ∈ [0, 1] (1.0 if skipped).
+                - reencode_violation: bool.
+                - uncertainty_sources: dict of named boosts.
+        """
+        result: Dict[str, Any] = {
+            'cycle_consistency': 1.0,
+            'violation': False,
+            'uncertainty_boost': 0.0,
+            'updated_uncertainty': current_uncertainty,
+            'reencode_consistency': 1.0,
+            'reencode_violation': False,
+            'uncertainty_sources': {},
+        }
+
+        # --- Primary cycle-consistency check ---
+        try:
+            enc = z_encoded.detach()
+            dec = z_decoded.detach()
+            if enc.shape == dec.shape:
+                cos_sim = F.cosine_similarity(enc, dec, dim=-1).mean().item()
+                cc = max(0.0, min(1.0, (cos_sim + 1.0) / 2.0))
+                result['cycle_consistency'] = cc
+
+                if cc < self.violation_threshold:
+                    deficit = max(0.0, self.violation_threshold - cc)
+                    boost = min(
+                        1.0 - current_uncertainty,
+                        deficit * self.uncertainty_scale,
+                    )
+                    result['violation'] = True
+                    result['uncertainty_boost'] = boost
+                    result['updated_uncertainty'] = min(
+                        1.0, current_uncertainty + boost,
+                    )
+                    result['uncertainty_sources'][
+                        'cycle_consistency_violation'
+                    ] = boost
+        except (RuntimeError, ValueError):
+            pass
+
+        # --- Re-encode verification (second pass) ---
+        if (z_reencoded is not None
+                and core_state is not None):
+            try:
+                re = z_reencoded.detach()
+                cs = core_state.detach()
+                if (re.shape == cs.shape
+                        and torch.isfinite(re).all()):
+                    re_cos = F.cosine_similarity(
+                        re, cs, dim=-1,
+                    ).mean().item()
+                    re_cc = max(0.0, min(1.0, (re_cos + 1.0) / 2.0))
+                    result['reencode_consistency'] = re_cc
+
+                    if re_cc < self.violation_threshold:
+                        re_deficit = max(
+                            0.0, self.violation_threshold - re_cc,
+                        )
+                        re_boost = min(
+                            1.0 - result['updated_uncertainty'],
+                            re_deficit * self.reencode_uncertainty_scale,
+                        )
+                        result['reencode_violation'] = True
+                        result['uncertainty_boost'] += re_boost
+                        result['updated_uncertainty'] = min(
+                            1.0,
+                            result['updated_uncertainty'] + re_boost,
+                        )
+                        result['uncertainty_sources'][
+                            'reencode_divergence'
+                        ] = re_boost
+            except (RuntimeError, ValueError):
+                pass
+
+        return result
+
+
+class OutputReliabilityGate(nn.Module):
+    """Computes a composite output reliability score with factor decomposition.
+
+    Combines six independent quality signals — uncertainty, auto-critic
+    confidence, convergence rate, coherence, provenance quality, and
+    causal DAG quality — into a single scalar ∈ [0, 1] that gates the
+    final output.  When the composite score falls below a configurable
+    threshold, the gate flags the output as unreliable and identifies
+    the weakest contributing factor for targeted corrective action.
+
+    Extracting this computation from the inline ``_reasoning_core_impl``
+    logic yields a testable, reusable component that participates in the
+    provenance DAG and can be independently verified.
+
+    Args:
+        low_reliability_threshold: Below this composite score, the
+            output is flagged as unreliable.
+    """
+
+    def __init__(self, low_reliability_threshold: float = 0.5):
+        super().__init__()
+        self.low_reliability_threshold = max(0.0, min(
+            1.0, low_reliability_threshold,
+        ))
+
+    def forward(
+        self,
+        uncertainty: float = 0.0,
+        auto_critic_quality: float = 1.0,
+        convergence_rate: float = 1.0,
+        coherence_deficit: float = 0.0,
+        provenance_quality: float = 1.0,
+        causal_quality: float = 1.0,
+        verification_coverage: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Compute composite reliability and decompose by factor.
+
+        Args:
+            uncertainty: Pipeline uncertainty ∈ [0, 1].
+            auto_critic_quality: Auto-critic self-assessment ∈ [0, 1].
+            convergence_rate: Meta-loop convergence rate ∈ [0, 1].
+            coherence_deficit: Cross-module coherence deficit ∈ [0, 1].
+            provenance_quality: Provenance attribution quality ∈ [0, 1].
+            causal_quality: Causal DAG quality ∈ [0, 1].
+            verification_coverage: Subsystem verification coverage ∈ [0, 1].
+
+        Returns:
+            Dict with:
+                - composite: float ∈ [0, 1] overall reliability.
+                - is_reliable: bool — True when above threshold.
+                - factors: dict mapping factor names to contributions.
+                - weakest_factor: str — name of the lowest factor.
+        """
+        factors = {
+            'uncertainty_contribution': max(0.0, 1.0 - uncertainty),
+            'auto_critic_contribution': max(0.0, auto_critic_quality),
+            'convergence_contribution': max(0.0, convergence_rate),
+            'coherence_contribution': max(0.0, 1.0 - coherence_deficit),
+            'provenance_quality': max(0.0, provenance_quality),
+            'causal_quality': max(0.0, causal_quality),
+            'verification_coverage': max(0.0, verification_coverage),
+        }
+
+        raw = (
+            factors['uncertainty_contribution']
+            * factors['auto_critic_contribution']
+            * factors['convergence_contribution']
+            * factors['coherence_contribution']
+            * factors['provenance_quality']
+            * factors['causal_quality']
+        )
+        composite = max(0.0, min(1.0,
+            raw * (0.5 + 0.5 * factors['verification_coverage']),
+        ))
+
+        weakest = min(factors, key=factors.get)
+        factors['weakest_factor'] = weakest
+        factors['composite'] = composite
+
+        return {
+            'composite': composite,
+            'is_reliable': composite >= self.low_reliability_threshold,
+            'factors': factors,
+            'weakest_factor': weakest,
+        }
+
+
+# ============================================================================
 # SECTION 15b: AGI COHERENCE — CROSS-MODULE VERIFICATION & SELF-REFLECTION
 # ============================================================================
 
@@ -19003,6 +19235,27 @@ class AEONDeltaV3(nn.Module):
         # a cycle in the provenance DAG.
         ("unified_cognitive_cycle", "feedback_bus"),
         ("error_evolution", "feedback_bus"),
+        # ── Cycle consistency validation path ──────────────────────
+        # The cycle consistency validator sits between encoder/decoder
+        # and the output reliability gate.  Its violation signal feeds
+        # into the metacognitive trigger and error evolution so that
+        # encode-decode fidelity loss triggers re-reasoning and is
+        # root-cause traceable.
+        ("encoder", "cycle_consistency"),
+        ("decoder", "cycle_consistency"),
+        ("cycle_consistency", "output_reliability_gate"),
+        ("cycle_consistency", "metacognitive_trigger"),
+        ("cycle_consistency", "error_evolution"),
+        # ── Output reliability gate path ───────────────────────────
+        # The output reliability gate consolidates multiple quality
+        # signals into a single composite score.  It feeds into the
+        # metacognitive trigger (for re-reasoning on low reliability)
+        # and the unified cognitive cycle (for coherence verification).
+        ("auto_critic", "output_reliability_gate"),
+        ("safety", "output_reliability_gate"),
+        ("meta_loop", "output_reliability_gate"),
+        ("output_reliability_gate", "metacognitive_trigger"),
+        ("output_reliability_gate", "unified_cognitive_cycle"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -19088,6 +19341,12 @@ class AEONDeltaV3(nn.Module):
         # since it reuses the same ProvablyConvergentMetaLoop for the
         # UCC-driven same-pass re-reasoning pass.
         "ucc_rerun_meta_loop": "meta_loop",
+        # Cycle consistency validator — validates encoder/decoder
+        # round-trip fidelity.
+        "cycle_consistency": "cycle_consistency_validator",
+        # Output reliability gate — consolidates multiple quality
+        # signals into a composite reliability score.
+        "output_reliability_gate": "output_reliability_gate",
     }
     
     def __init__(self, config: AEONConfig):
@@ -19899,6 +20158,28 @@ class AEONDeltaV3(nn.Module):
         else:
             self.module_coherence = None
         
+        # ===== CYCLE CONSISTENCY VALIDATOR =====
+        # Validates encoder→reasoning→decoder round-trip fidelity by
+        # comparing quantized encoder output against decoder output.
+        # Replaces the ad-hoc inline checks in _forward_impl with a
+        # dedicated, testable module that participates in the provenance
+        # DAG so cycle-consistency violations are root-cause traceable.
+        logger.info("Loading CycleConsistencyValidator...")
+        self.cycle_consistency_validator = CycleConsistencyValidator(
+            violation_threshold=config.cycle_consistency_violation_threshold,
+        ).to(self.device)
+
+        # ===== OUTPUT RELIABILITY GATE =====
+        # Consolidates uncertainty, auto-critic quality, convergence
+        # rate, coherence, provenance quality, and causal DAG quality
+        # into a single composite reliability score.  When the score
+        # falls below threshold the gate identifies the weakest factor
+        # for targeted corrective action via the metacognitive trigger.
+        logger.info("Loading OutputReliabilityGate...")
+        self.output_reliability_gate = OutputReliabilityGate(
+            low_reliability_threshold=config.output_reliability_recheck_threshold,
+        ).to(self.device)
+
         # ===== META-COGNITIVE RECURSION TRIGGER =====
         if getattr(config, 'enable_metacognitive_recursion', True):
             logger.info("Loading MetaCognitiveRecursionTrigger...")
@@ -32193,46 +32474,44 @@ class AEONDeltaV3(nn.Module):
         # disagree on the underlying structure, the reliability of
         # causal conclusions is reduced proportionally.
         _causal_quality_factor = max(0.0, self._cached_causal_quality)
-        _raw_reliability = (
-            (1.0 - uncertainty)
-            * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
-            * max(0.0, meta_results.get('convergence_rate', 1.0))
-            * max(0.0, 1.0 - self._cached_coherence_deficit)
-            * _provenance_quality
-            * _causal_quality_factor
+
+        # 8i-oq. Compute composite output reliability via the dedicated
+        # OutputReliabilityGate, replacing the previous inline computation.
+        # The gate consolidates six independent quality signals into a
+        # single reliability score with factor decomposition, enabling
+        # targeted corrective action when reliability is low.
+        _or_result = self.output_reliability_gate(
+            uncertainty=uncertainty,
+            auto_critic_quality=max(
+                0.0, _auto_critic_final_score
+                if _auto_critic_final_score else 1.0,
+            ),
+            convergence_rate=max(
+                0.0, meta_results.get('convergence_rate', 1.0),
+            ),
+            coherence_deficit=self._cached_coherence_deficit,
+            provenance_quality=_provenance_quality,
+            causal_quality=_causal_quality_factor,
+            verification_coverage=_verification_coverage,
         )
-        _current_output_reliability = max(0.0, min(1.0,
-            _raw_reliability * (0.5 + 0.5 * _verification_coverage)
-        ))
+        _current_output_reliability = _or_result['composite']
+        _reliability_factors = _or_result['factors']
+        _weakest_factor = _or_result['weakest_factor']
         self._cached_output_quality = _current_output_reliability
 
-        # 8i-oq-attrib. Output reliability causal decomposition — break down
-        # the composite reliability score by contributing factor so that
-        # downstream root-cause analysis can identify WHICH subsystem
-        # degraded overall output trust.  Without this, the scalar
-        # reliability score is opaque: callers know the output is
-        # unreliable but not why.  The decomposition enables targeted
-        # corrective action by the metacognitive trigger and error
-        # evolution tracker.
-        _reliability_factors = {
-            'uncertainty_contribution': max(0.0, 1.0 - uncertainty),
-            'auto_critic_contribution': max(0.0,
-                _auto_critic_final_score if _auto_critic_final_score else 1.0),
-            'convergence_contribution': max(0.0,
-                meta_results.get('convergence_rate', 1.0)),
-            'coherence_contribution': max(0.0,
-                1.0 - self._cached_coherence_deficit),
-            'provenance_quality': _provenance_quality,
-            'causal_quality': _causal_quality_factor,
-            'verification_coverage': _verification_coverage,
-        }
-        # Identify the weakest factor — this is the bottleneck
-        # subsystem that most degrades output reliability.
-        _weakest_factor = min(
-            _reliability_factors, key=_reliability_factors.get,
+        # Provenance tracking for output reliability gate
+        self.provenance_tracker.record_before(
+            "output_reliability_gate",
+            C_star if C_star is not None else z_in,
         )
-        _reliability_factors['weakest_factor'] = _weakest_factor
-        _reliability_factors['composite'] = _current_output_reliability
+        self.provenance_tracker.record_after(
+            "output_reliability_gate",
+            C_star if C_star is not None else z_in,
+        )
+        self.coherence_registry.register_output(
+            "output_reliability_gate",
+            validated=_or_result['is_reliable'],
+        )
 
         # 8i-oq-trace. Record output reliability assessment in the causal
         # trace so that downstream root-cause analysis can trace reliability
@@ -32944,100 +33223,75 @@ class AEONDeltaV3(nn.Module):
         uncertainty = outputs.get('uncertainty', 0.0)
         uncertainty_sources = outputs.get('uncertainty_sources', {})
         _cycle_consistency: float = 1.0
+        _reencode_consistency: float = 1.0
         if z_out is not None and z_encoded is not None:
+            # Optionally re-encode for second-pass verification
+            _z_reencoded: Optional[torch.Tensor] = None
+            _core_state: Optional[torch.Tensor] = None
+            if (hasattr(self, 'encoder')
+                    and self.encoder is not None
+                    and not fast):
+                try:
+                    with torch.no_grad():
+                        _z_reencoded = self.encoder(z_out.detach())
+                        _core_state = outputs.get('core_state', z_out).detach()
+                except Exception:
+                    pass
+
             try:
-                _enc_norm = z_encoded.detach()
-                _out_norm = z_out.detach()
-                if _enc_norm.shape == _out_norm.shape:
-                    _cos_sim = F.cosine_similarity(
-                        _enc_norm, _out_norm, dim=-1,
-                    ).mean().item()
-                    _cycle_consistency = max(0.0, min(1.0, (_cos_sim + 1.0) / 2.0))
-                    _cc_threshold = self.config.cycle_consistency_violation_threshold
-                    if _cycle_consistency < _cc_threshold:
-                        # Escalate uncertainty within the same forward pass
-                        # so that the metacognitive trigger and downstream
-                        # consumers react to encode→reason→decode fidelity
-                        # loss immediately, not only at training time.
-                        _cc_deficit = max(0.0, _cc_threshold - _cycle_consistency)
-                        _CC_UNCERTAINTY_SCALE = 0.25
-                        _cc_unc_boost = min(
-                            1.0 - uncertainty,
-                            _cc_deficit * _CC_UNCERTAINTY_SCALE,
+                _cc_result = self.cycle_consistency_validator(
+                    z_encoded=z_encoded,
+                    z_decoded=z_out,
+                    current_uncertainty=uncertainty,
+                    z_reencoded=_z_reencoded,
+                    core_state=_core_state,
+                )
+                _cycle_consistency = _cc_result['cycle_consistency']
+                _reencode_consistency = _cc_result['reencode_consistency']
+                uncertainty = _cc_result['updated_uncertainty']
+                uncertainty_sources.update(_cc_result['uncertainty_sources'])
+
+                # Record violations in error evolution & causal trace
+                if _cc_result['violation']:
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='cycle_consistency_violation',
+                            strategy_used='uncertainty_escalation',
+                            success=False,
+                            metadata={
+                                'cycle_consistency': _cycle_consistency,
+                                'uncertainty_boost': _cc_result['uncertainty_boost'],
+                            },
                         )
-                        if _cc_unc_boost > 0:
-                            uncertainty = min(1.0, uncertainty + _cc_unc_boost)
-                            uncertainty_sources["cycle_consistency_violation"] = _cc_unc_boost
-                        if self.error_evolution is not None:
-                            self.error_evolution.record_episode(
-                                error_class='cycle_consistency_violation',
-                                strategy_used='uncertainty_escalation',
-                                success=False,
-                                metadata={
-                                    'cycle_consistency': _cycle_consistency,
-                                    'cosine_similarity': float(_cos_sim),
-                                    'uncertainty_boost': _cc_unc_boost,
-                                },
-                            )
-                        if self.causal_trace is not None:
-                            self.causal_trace.record(
-                                "cycle_consistency", "violation_detected",
-                                causal_prerequisites=[input_trace_id],
-                                severity="warning",
-                                metadata={
-                                    'cycle_consistency': _cycle_consistency,
-                                    'cosine_similarity': float(_cos_sim),
-                                    'uncertainty_boost': _cc_unc_boost,
-                                },
-                            )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "cycle_consistency", "violation_detected",
+                            causal_prerequisites=[input_trace_id],
+                            severity="warning",
+                            metadata={
+                                'cycle_consistency': _cycle_consistency,
+                                'uncertainty_boost': _cc_result['uncertainty_boost'],
+                            },
+                        )
+                if _cc_result['reencode_violation']:
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='cycle_consistency_violation',
+                            strategy_used='reencode_verification',
+                            success=False,
+                            metadata={
+                                'reencode_consistency': _reencode_consistency,
+                            },
+                        )
+                # Provenance tracking for cycle consistency
+                self.provenance_tracker.record_before("cycle_consistency", z_encoded)
+                self.provenance_tracker.record_after("cycle_consistency", z_out)
+                self.coherence_registry.register_output(
+                    "cycle_consistency",
+                    validated=not _cc_result['violation'],
+                )
             except (RuntimeError, ValueError) as _cc_err:
                 logger.debug("Cycle-consistency check failed: %s", _cc_err)
-
-        # ===== DECODER RE-ENCODE VERIFICATION =====
-        # Re-encode the decoder output through the encoder and compare
-        # with the reasoning core's converged state (C_star).  This
-        # closes the full output→input verification loop: if the
-        # decoder output, when round-tripped through the encoder,
-        # diverges from the internal state, it means the decode stage
-        # introduced distortion that the encoder would not reproduce.
-        _reencode_consistency: float = 1.0
-        if (z_out is not None
-                and hasattr(self, 'encoder')
-                and self.encoder is not None
-                and not fast):
-            try:
-                with torch.no_grad():
-                    _reencoded = self.encoder(z_out.detach())
-                    _core = outputs.get('core_state', z_out).detach()
-                    if (_reencoded.shape == _core.shape
-                            and torch.isfinite(_reencoded).all()):
-                        _re_cos = F.cosine_similarity(
-                            _reencoded, _core, dim=-1,
-                        ).mean().item()
-                        _reencode_consistency = max(
-                            0.0, min(1.0, (_re_cos + 1.0) / 2.0),
-                        )
-                        _RE_THRESHOLD = self.config.cycle_consistency_violation_threshold
-                        if _reencode_consistency < _RE_THRESHOLD:
-                            _re_deficit = max(0.0, _RE_THRESHOLD - _reencode_consistency)
-                            _re_unc_boost = min(
-                                1.0 - uncertainty,
-                                _re_deficit * 0.2,
-                            )
-                            if _re_unc_boost > 0:
-                                uncertainty = min(1.0, uncertainty + _re_unc_boost)
-                                uncertainty_sources["reencode_divergence"] = _re_unc_boost
-                            if self.error_evolution is not None:
-                                self.error_evolution.record_episode(
-                                    error_class='cycle_consistency_violation',
-                                    strategy_used='reencode_verification',
-                                    success=False,
-                                    metadata={
-                                        'reencode_consistency': _reencode_consistency,
-                                    },
-                                )
-            except Exception as _re_err:
-                logger.debug("Re-encode verification failed (non-fatal): %s", _re_err)
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
