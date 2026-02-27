@@ -35659,6 +35659,52 @@ class AEONDeltaV3(nn.Module):
             '(hybrid_reasoning, ns_bridge, mcts_planner, unified_simulator)'
         )
 
+        # --- Coherence registry coverage analysis ---
+        # Surface persistently-absent subsystems as structural gaps —
+        # these indicate modules that repeatedly fail to produce
+        # validated outputs across multiple forward passes, signalling
+        # a systemic wiring or initialization failure rather than a
+        # transient skip.
+        _persistently_absent = self.coherence_registry.get_persistently_absent()
+        if _persistently_absent:
+            gaps.append({
+                'component': 'coherence_registry',
+                'gap': (
+                    f'Subsystems persistently absent across recent '
+                    f'forward passes: {_persistently_absent[:10]}'
+                ),
+                'remediation': (
+                    'Investigate whether these subsystems are '
+                    'config-disabled (intentional) or failing to '
+                    'initialize/execute (architectural gap)'
+                ),
+            })
+        else:
+            verified.append(
+                'coherence_registry → no persistently absent subsystems'
+            )
+        # Surface low-quality subsystems — these are active but
+        # producing degraded outputs that partially erode coverage.
+        _low_quality_subs = self.coherence_registry.get_low_quality_subsystems()
+        if _low_quality_subs:
+            _lq_names = list(_low_quality_subs.keys())[:10]
+            gaps.append({
+                'component': 'coherence_registry',
+                'gap': (
+                    f'Subsystems producing low-quality outputs '
+                    f'(quality < 0.5): {_lq_names}'
+                ),
+                'remediation': (
+                    'Retrain or recalibrate the degraded subsystems '
+                    'to improve output quality above the threshold'
+                ),
+            })
+        else:
+            verified.append(
+                'coherence_registry → all active subsystems above '
+                'quality threshold'
+            )
+
         # --- Supplementary memory trust scoring ---
         if self.trust_scorer is not None and _active_mem_count > 0:
             verified.append(
@@ -36040,6 +36086,32 @@ class AEONDeltaV3(nn.Module):
             _cognitive_unity = self.verify_cognitive_unity()
         except Exception:
             _cognitive_unity = {'unified': False, 'error': 'evaluation_failed'}
+
+        # --- Cross-validate cognitive unity recommendations as gaps ---
+        # When verify_cognitive_unity() identifies unmet requirements,
+        # surface them as diagnostic gaps so that the self_diagnostic
+        # output is a single authoritative source of architectural
+        # health.  This ensures that the two verification methods
+        # reinforce each other: self_diagnostic checks wiring and
+        # runtime health while verify_cognitive_unity validates the
+        # three AGI coherence axioms.
+        if isinstance(_cognitive_unity, dict):
+            _cu_recs = _cognitive_unity.get('recommendations', [])
+            for _cu_rec in _cu_recs:
+                if _cu_rec == "All cognitive unity checks passed.":
+                    continue
+                gaps.append({
+                    'component': 'cognitive_unity',
+                    'gap': _cu_rec,
+                    'remediation': (
+                        'Address the cognitive unity requirement to '
+                        'achieve full AGI coherence'
+                    ),
+                })
+            if not _cognitive_unity.get('unified', False):
+                # Re-evaluate status with cognitive unity failures
+                if status == 'healthy':
+                    status = 'degraded'
 
         return {
             'status': status,
@@ -37024,12 +37096,80 @@ class AEONDeltaV3(nn.Module):
                 "(enable_metacognitive_recursion=True)"
             )
 
+        # 2b. UCC-level re-reasoning paths — the UnifiedCognitiveCycle
+        # can independently trigger re-reasoning via override paths
+        # that bypass the MetaCognitiveRecursionTrigger's 12 named
+        # signals.  These paths represent additional uncertainty sources
+        # that should be verified for completeness.  Each path maps to
+        # a specific subsystem that must be active for the override
+        # to function.
+        _expected_ucc_overrides = {
+            "convergence_certificate_violation": (
+                getattr(self.config, 'enable_certified_convergence', False)
+            ),
+            "feedback_trend_worsening": self.feedback_bus is not None,
+            "feedback_oscillation": self.feedback_bus is not None,
+            "provenance_trace_incomplete": (
+                getattr(self, 'causal_trace', None) is not None
+            ),
+            "dag_consensus_disagreement": (
+                getattr(self, 'causal_dag_consensus', None) is not None
+            ),
+            "memory_reasoning_inconsistency": (
+                getattr(self, 'memory_validator', None) is not None
+            ),
+        }
+        _ucc_expected = {
+            k for k, enabled in _expected_ucc_overrides.items() if enabled
+        }
+        _ucc = getattr(self, 'unified_cognitive_cycle', None)
+        _ucc_override_coverage: float = 1.0
+        _ucc_uncovered: List[str] = []
+        if _ucc is not None and _ucc_expected:
+            # UCC overrides are structural: they exist in the evaluate()
+            # method as conditional should_rerun assignments.  We verify
+            # that the required components are wired into the UCC.
+            _ucc_covered = set()
+            if getattr(_ucc, 'convergence_monitor', None) is not None:
+                _ucc_covered.add("convergence_certificate_violation")
+            if _ucc_expected & {"feedback_trend_worsening", "feedback_oscillation"}:
+                # Feedback trend overrides require no UCC wiring — they
+                # operate on the feedback_bus_trend parameter passed to
+                # evaluate().  They are covered if the feedback bus exists.
+                _ucc_covered.add("feedback_trend_worsening")
+                _ucc_covered.add("feedback_oscillation")
+            if getattr(_ucc, 'causal_trace', None) is not None:
+                _ucc_covered.add("provenance_trace_incomplete")
+            if getattr(_ucc, 'causal_dag_consensus', None) is not None:
+                _ucc_covered.add("dag_consensus_disagreement")
+            if getattr(_ucc, 'memory_validator', None) is not None:
+                _ucc_covered.add("memory_reasoning_inconsistency")
+            _ucc_uncovered = sorted(_ucc_expected - _ucc_covered)
+            _ucc_override_coverage = (
+                1.0 - len(_ucc_uncovered) / max(len(_ucc_expected), 1)
+            )
+            if _ucc_uncovered:
+                recommendations.append(
+                    f"Wire UCC re-reasoning override components: "
+                    f"{', '.join(_ucc_uncovered)}"
+                )
+        elif _ucc is None and _ucc_expected:
+            _ucc_override_coverage = 0.0
+            _ucc_uncovered = sorted(_ucc_expected)
+            recommendations.append(
+                "Enable unified_cognitive_cycle for UCC-level "
+                "re-reasoning overrides"
+            )
+
         uncertainty_metacognition = {
             'coverage': _um_coverage,
             'expected_signals': len(_expected_signals),
             'covered_signals': len(_expected_signals) - len(_uncovered),
             'uncovered_signals': _uncovered,
             'trigger_active': _trigger is not None,
+            'ucc_override_coverage': _ucc_override_coverage,
+            'ucc_expected_overrides': len(_ucc_expected),
+            'ucc_uncovered_overrides': _ucc_uncovered,
         }
 
         # ── 3. Root-cause traceability ────────────────────────────
@@ -37111,6 +37251,7 @@ class AEONDeltaV3(nn.Module):
         is_unified = (
             _mv_coverage >= 0.9
             and _um_coverage >= 1.0
+            and _ucc_override_coverage >= 0.9
             and _rc_coverage >= 0.9
             and _pipeline_provenance_coverage >= 0.9
             and _dag_acyclic
@@ -37187,13 +37328,16 @@ class AEONDeltaV3(nn.Module):
         # --- Coherence verdict ---
         # A lightweight cross-check: the system is coherent when the
         # metacognitive trigger is available, error evolution is
-        # tracking, and causal traceability is active.
+        # tracking, causal traceability is active, and the subsystem
+        # verification registry has acceptable coverage.
+        _registry_deficit = self.coherence_registry.get_coverage_deficit()
         _coherence_indicators = [
             trigger_state["available"],
             error_evolution_state["available"],
             causal_trace_state["available"],
             self.feedback_bus is not None,
             self.unified_cognitive_cycle is not None,
+            _registry_deficit < 0.5,
         ]
         _coherence_score = sum(_coherence_indicators) / len(_coherence_indicators)
 
@@ -37248,6 +37392,27 @@ class AEONDeltaV3(nn.Module):
             uncertainty_tracker_state = {
                 "available": True,
                 **_ut_summary,
+            }
+
+        # --- Uncertainty propagation state ---
+        # Expose the UncertaintyPropagationBus's per-module propagated
+        # uncertainties so external consumers can see how upstream
+        # uncertainty cascades through the dependency DAG.  Without
+        # this, propagated uncertainty is computed and consumed
+        # internally but invisible to metacognitive state observers.
+        uncertainty_propagation_state: Dict[str, Any] = {"available": False}
+        _prop_bus = getattr(self, 'uncertainty_propagation', None)
+        if _prop_bus is not None:
+            uncertainty_propagation_state = {
+                "available": True,
+                "cached_propagation_delta": getattr(
+                    self, '_cached_propagation_delta', 0.0,
+                ),
+                "decay_factor": _prop_bus._decay,
+                "critical_decay_factor": _prop_bus._critical_decay,
+                "edge_decay_overrides_count": len(
+                    _prop_bus._edge_decay_overrides,
+                ),
             }
 
         # --- Memory reasoning validator state ---
@@ -37314,6 +37479,7 @@ class AEONDeltaV3(nn.Module):
             "safety_critic_bridge": safety_critic_bridge_state,
             "convergence_arbiter": convergence_arbiter_state,
             "uncertainty_tracker": uncertainty_tracker_state,
+            "uncertainty_propagation": uncertainty_propagation_state,
             "memory_validator": memory_validator_state,
             "feedback_bus": feedback_bus_state,
             "meta_recovery": meta_recovery_state,
