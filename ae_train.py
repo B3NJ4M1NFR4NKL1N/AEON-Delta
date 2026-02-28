@@ -1900,6 +1900,42 @@ class AEONDeltaV4(nn.Module):
             "vq_stats": vq_stats
         }
 
+    def to_inference_state_dict(self) -> Dict[str, Any]:
+        """Export weights compatible with AEONDeltaV3 inference model.
+
+        Maps the V4 training module names (``encoder``, ``decoder``,
+        ``vq``, ``rssm``) to V3's naming convention so that a checkpoint
+        saved during training can be loaded directly by the inference
+        engine without manual key remapping.
+
+        Returns:
+            Dict with ``state_dict`` (remapped weights) and ``config``
+            (serialised training config for provenance).
+        """
+        mapping = {
+            "encoder.": "encoder.",
+            "decoder.": "decoder.",
+            "vq.": "vector_quantizer.",
+            "rssm.": "rssm_cell.",
+        }
+        remapped: Dict[str, Any] = {}
+        for key, value in self.state_dict().items():
+            new_key = key
+            for src_prefix, dst_prefix in mapping.items():
+                if key.startswith(src_prefix):
+                    new_key = dst_prefix + key[len(src_prefix):]
+                    break
+            remapped[new_key] = value
+        return {
+            "state_dict": remapped,
+            "config": {
+                "z_dim": self.config.z_dim,
+                "hidden_dim": self.config.hidden_dim,
+                "vocab_size": self.config.vocab_size,
+                "source_model": "AEONDeltaV4",
+            },
+        }
+
 
 # ==============================================================================
 # ДОКУМЕНТ-ОРИЕНТИРОВАННЫЙ DATASET
