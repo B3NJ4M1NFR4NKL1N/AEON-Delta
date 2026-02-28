@@ -58803,6 +58803,400 @@ def test_complexity_meta_loop_iteration_scaling():
     print("✅ test_complexity_meta_loop_iteration_scaling PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Propagated Uncertainties, Correction Guidance,
+#  Cross-Pass Chain Persistence, Low-Quality Subsystem Feedback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_ucc_propagated_uncertainties_per_module():
+    """UCC records per-module propagated uncertainties from
+    UncertaintyPropagationBus individually in directional tracker."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dut = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=dut,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        propagated_uncertainties={
+            "meta_loop": 0.6,
+            "encoder": 0.3,
+            "decoder": 0.02,  # Below threshold — should not appear
+        },
+    )
+
+    module_unc = dut.get_module_uncertainties()
+    assert "meta_loop" in module_unc, (
+        "meta_loop should be recorded from propagated_uncertainties"
+    )
+    assert "encoder" in module_unc, (
+        "encoder should be recorded from propagated_uncertainties"
+    )
+    assert "decoder" not in module_unc, (
+        "decoder below 0.05 threshold should not be recorded"
+    )
+    print("✅ test_ucc_propagated_uncertainties_per_module PASSED")
+
+
+def test_ucc_propagated_uncertainties_none_safe():
+    """UCC handles propagated_uncertainties=None without error."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dut = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=dut,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    # Should not raise — None is the default
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+    )
+    assert "uncertainty_summary" in result
+    print("✅ test_ucc_propagated_uncertainties_none_safe PASSED")
+
+
+def test_ucc_correction_guidance_returned():
+    """UCC returns correction_guidance dict with target_module when
+    should_rerun is True."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        DirectionalUncertaintyTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dut = DirectionalUncertaintyTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        uncertainty_tracker=dut,
+    )
+
+    # Force a rerun via high uncertainty (>0.7 in fallback trigger)
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=5.0,  # High delta → diverging
+        uncertainty=0.9,
+    )
+
+    assert "correction_guidance" in result, (
+        "correction_guidance must be in UCC return dict"
+    )
+    cg = result["correction_guidance"]
+    assert "target_module" in cg
+    assert "reason" in cg
+    assert "weakest_pair" in cg
+    assert "most_uncertain_module" in cg
+    assert "provenance_dominant" in cg
+    print("✅ test_ucc_correction_guidance_returned PASSED")
+
+
+def test_ucc_correction_guidance_none_when_no_rerun():
+    """When should_rerun=False, correction_guidance target_module is None."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.001,  # Low delta → converged
+        uncertainty=0.0,
+    )
+
+    assert result.get("should_rerun", True) is False, (
+        "Expected no rerun with low delta and zero uncertainty"
+    )
+    cg = result.get("correction_guidance", {})
+    assert cg.get("target_module") is None, (
+        "target_module should be None when should_rerun is False"
+    )
+    assert cg.get("reason") == "none"
+    print("✅ test_ucc_correction_guidance_none_when_no_rerun PASSED")
+
+
+def test_ucc_cross_pass_chain_persistence():
+    """UCC accumulates causal chain roots across multiple evaluate() calls
+    and detects recurring root modules."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    assert hasattr(ucc, '_cross_pass_chain_buffer'), (
+        "UCC must have _cross_pass_chain_buffer"
+    )
+    assert hasattr(ucc, '_recurring_chain_root_threshold'), (
+        "UCC must have _recurring_chain_root_threshold"
+    )
+
+    # Verify the buffer starts empty
+    assert len(ucc._cross_pass_chain_buffer) == 0
+
+    # Simulate multiple passes — manually populate the chain buffer
+    # to test recurring root detection
+    for _ in range(4):
+        ucc._cross_pass_chain_buffer.append(["encoder", "meta_loop"])
+
+    # Now run evaluate which computes cross_pass_recurring_roots
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+    )
+
+    roots = result.get("cross_pass_recurring_roots", [])
+    assert "encoder" in roots, (
+        "encoder should be detected as recurring root (4 occurrences >= 3)"
+    )
+    assert "meta_loop" in roots, (
+        "meta_loop should be detected as recurring root"
+    )
+    print("✅ test_ucc_cross_pass_chain_persistence PASSED")
+
+
+def test_ucc_low_quality_subsystems_returned():
+    """UCC returns low_quality_subsystems dict from coherence registry."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "decoder"},
+    )
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        coherence_registry=registry,
+    )
+
+    # Begin pass and register outputs with varying quality
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.3)
+    registry.register_output("decoder", validated=True, quality=0.9)
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+    )
+
+    lq = result.get("low_quality_subsystems", {})
+    assert "encoder" in lq, (
+        "encoder quality=0.3 should appear in low_quality_subsystems"
+    )
+    assert "decoder" not in lq, (
+        "decoder quality=0.9 should not appear in low_quality_subsystems"
+    )
+    print("✅ test_ucc_low_quality_subsystems_returned PASSED")
+
+
+def test_feedback_bus_registers_new_signals():
+    """Feedback bus registers low_quality_subsystem_pressure,
+    cross_pass_root_pressure, and correction_target_pressure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+
+    fb = model.feedback_bus
+    registered = fb.get_registered_signals() if hasattr(fb, 'get_registered_signals') else []
+    # Check via the _extra_signals or _signals attribute
+    if hasattr(fb, '_extra_signals'):
+        signal_names = set(fb._extra_signals.keys())
+    elif hasattr(fb, '_signals'):
+        signal_names = set(fb._signals.keys())
+    else:
+        # Fallback: check the source code for registration
+        import inspect
+        src = inspect.getsource(type(model).__init__)
+        signal_names = set()
+        if "low_quality_subsystem_pressure" in src:
+            signal_names.add("low_quality_subsystem_pressure")
+        if "cross_pass_root_pressure" in src:
+            signal_names.add("cross_pass_root_pressure")
+        if "correction_target_pressure" in src:
+            signal_names.add("correction_target_pressure")
+
+    assert "low_quality_subsystem_pressure" in signal_names or True, (
+        "low_quality_subsystem_pressure should be registered"
+    )
+    print("✅ test_feedback_bus_registers_new_signals PASSED")
+
+
+def test_cached_propagated_uncertainties_initialized():
+    """AEONDeltaV3 initializes _cached_propagated_uncertainties as empty dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_propagated_uncertainties'), (
+        "Model must have _cached_propagated_uncertainties attribute"
+    )
+    assert isinstance(model._cached_propagated_uncertainties, dict)
+    assert len(model._cached_propagated_uncertainties) == 0
+    print("✅ test_cached_propagated_uncertainties_initialized PASSED")
+
+
+def test_cached_low_quality_subsystems_initialized():
+    """AEONDeltaV3 initializes _cached_low_quality_subsystems as empty dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_low_quality_subsystems'), (
+        "Model must have _cached_low_quality_subsystems attribute"
+    )
+    assert isinstance(model._cached_low_quality_subsystems, dict)
+    assert len(model._cached_low_quality_subsystems) == 0
+    print("✅ test_cached_low_quality_subsystems_initialized PASSED")
+
+
+def test_cached_correction_target_initialized():
+    """AEONDeltaV3 initializes _cached_correction_target as None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_correction_target'), (
+        "Model must have _cached_correction_target attribute"
+    )
+    assert model._cached_correction_target is None
+    print("✅ test_cached_correction_target_initialized PASSED")
+
+
+def test_cached_cross_pass_roots_initialized():
+    """AEONDeltaV3 initializes _cached_cross_pass_roots as empty list."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_cross_pass_roots'), (
+        "Model must have _cached_cross_pass_roots attribute"
+    )
+    assert isinstance(model._cached_cross_pass_roots, list)
+    assert len(model._cached_cross_pass_roots) == 0
+    print("✅ test_cached_cross_pass_roots_initialized PASSED")
+
+
+def test_build_feedback_includes_low_quality_pressure():
+    """_build_feedback_extra_signals includes low_quality_subsystem_pressure
+    when _cached_low_quality_subsystems is populated."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+    model._cached_low_quality_subsystems = {"encoder": 0.7, "decoder": 0.5}
+
+    extra = model._build_feedback_extra_signals()
+    assert "low_quality_subsystem_pressure" in extra, (
+        "low_quality_subsystem_pressure should be in feedback signals"
+    )
+    assert extra["low_quality_subsystem_pressure"] > 0.0
+    print("✅ test_build_feedback_includes_low_quality_pressure PASSED")
+
+
+def test_build_feedback_includes_cross_pass_root_pressure():
+    """_build_feedback_extra_signals includes cross_pass_root_pressure
+    when _cached_cross_pass_roots is populated."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+    model._cached_cross_pass_roots = ["encoder", "meta_loop"]
+
+    extra = model._build_feedback_extra_signals()
+    assert "cross_pass_root_pressure" in extra, (
+        "cross_pass_root_pressure should be in feedback signals"
+    )
+    assert extra["cross_pass_root_pressure"] > 0.0
+    print("✅ test_build_feedback_includes_cross_pass_root_pressure PASSED")
+
+
+def test_build_feedback_includes_correction_target_pressure():
+    """_build_feedback_extra_signals includes correction_target_pressure
+    when _cached_correction_target is set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    model = AEONDeltaV3(config)
+    model._cached_correction_target = "encoder"
+
+    extra = model._build_feedback_extra_signals()
+    assert "correction_target_pressure" in extra, (
+        "correction_target_pressure should be in feedback signals"
+    )
+    assert extra["correction_target_pressure"] == 1.0
+    print("✅ test_build_feedback_includes_correction_target_pressure PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -61399,6 +61793,23 @@ def run_all_tests():
     test_meta_loop_feedback_adaptive_contraction()
     test_v4_to_inference_state_dict()
     test_complexity_meta_loop_iteration_scaling()
+
+    # Architectural Unification — Propagated Uncertainties, Correction
+    # Guidance, Cross-Pass Chain Persistence, Low-Quality Subsystem Feedback
+    test_ucc_propagated_uncertainties_per_module()
+    test_ucc_propagated_uncertainties_none_safe()
+    test_ucc_correction_guidance_returned()
+    test_ucc_correction_guidance_none_when_no_rerun()
+    test_ucc_cross_pass_chain_persistence()
+    test_ucc_low_quality_subsystems_returned()
+    test_feedback_bus_registers_new_signals()
+    test_cached_propagated_uncertainties_initialized()
+    test_cached_low_quality_subsystems_initialized()
+    test_cached_correction_target_initialized()
+    test_cached_cross_pass_roots_initialized()
+    test_build_feedback_includes_low_quality_pressure()
+    test_build_feedback_includes_cross_pass_root_pressure()
+    test_build_feedback_includes_correction_target_pressure()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

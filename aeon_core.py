@@ -17658,6 +17658,17 @@ class UnifiedCognitiveCycle:
         self._coherence_trend_alpha: float = 0.3
         self._coherence_trend_count: int = 0
 
+        # Cross-pass causal chain persistence — stores summaries of
+        # recent causal chains so that recurring root-cause modules can
+        # be identified across forward passes.  Without this, each pass
+        # reconstructs its causal chain independently, preventing the
+        # system from detecting that the same upstream module is the
+        # root cause across multiple passes.  This satisfies the
+        # requirement that all conclusions can be traced back to their
+        # root causes, even across temporal boundaries.
+        self._cross_pass_chain_buffer: deque = deque(maxlen=16)
+        self._recurring_chain_root_threshold: int = 3
+
         # Wire convergence monitor → error evolution automatically.
         if self.error_evolution is not None:
             self.convergence_monitor.set_error_evolution(self.error_evolution)
@@ -17714,6 +17725,7 @@ class UnifiedCognitiveCycle:
         coverage_deficit: Optional[float] = None,
         feedback_oscillation_score: float = 0.0,
         propagation_delta: float = 0.0,
+        propagated_uncertainties: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -17770,6 +17782,14 @@ class UnifiedCognitiveCycle:
                 outputs degrade confidence and trigger re-reasoning.
                 When ``None`` and a ``coherence_registry`` was provided
                 at construction, the deficit is read automatically.
+            propagated_uncertainties: Optional per-module propagated
+                uncertainty dict from :class:`UncertaintyPropagationBus`.
+                When provided, each module's propagated uncertainty is
+                recorded individually in the directional tracker (instead
+                of only the aggregate ``propagation_delta`` scalar),
+                enabling targeted re-reasoning toward the specific module
+                whose upstream uncertainty was amplified through the
+                dependency DAG.
 
         Returns:
             Dict with:
@@ -17781,6 +17801,11 @@ class UnifiedCognitiveCycle:
                 - root_cause_trace: root-cause info if causal_trace available.
                 - convergence_certificate: formal convergence verification
                   result when provided.
+                - correction_guidance: actionable recommendation synthesizing
+                  weakest pair, most uncertain module, and provenance root
+                  cause into a single dict for targeted re-reasoning.
+                - cross_pass_recurring_roots: modules that recurrently
+                  appear as root causes across recent forward passes.
         """
         # 0. Incorporate feedback signal into subsystem states when provided
         # so that downstream coherence checks can detect misalignment between
@@ -18607,6 +18632,21 @@ class UnifiedCognitiveCycle:
                     "uncertainty_propagation", min(1.0, propagation_delta),
                     source_label="dag_propagated_uncertainty",
                 )
+            # 7c-ii-b. Per-module propagated uncertainties — when the
+            # UncertaintyPropagationBus provides per-module propagated
+            # values, record each module individually so the directional
+            # tracker can identify WHICH module's upstream uncertainty
+            # was amplified through the dependency DAG.  This closes the
+            # gap where propagated uncertainty was only recorded as an
+            # aggregate scalar, preventing targeted re-reasoning toward
+            # the specific module whose upstream is unreliable.
+            if propagated_uncertainties:
+                for _prop_mod, _prop_unc in propagated_uncertainties.items():
+                    if _prop_unc > 0.05:
+                        self.uncertainty_tracker.record(
+                            _prop_mod, min(1.0, _prop_unc),
+                            source_label=f"{_prop_mod}_dag_propagated",
+                        )
             # 7c-iii. Low-quality subsystems → directional uncertainty —
             # when the coherence registry identifies subsystems with
             # graded quality below the threshold, record each one in the
@@ -18894,6 +18934,92 @@ class UnifiedCognitiveCycle:
                     },
                 )
 
+        # 7h. Correction guidance synthesis — combine weakest pair,
+        # most uncertain module, and provenance root-cause into a single
+        # actionable recommendation for targeted re-reasoning.  This
+        # closes the gap where the UCC returned disparate diagnostic
+        # signals without synthesizing them into a unified correction
+        # target, forcing callers to independently reconcile weakest
+        # pair, directional uncertainty, and provenance attribution.
+        _correction_target_module: Optional[str] = None
+        _correction_reason: str = "none"
+        if should_rerun:
+            # Priority 1: provenance root-cause dominant module
+            if provenance_root_cause:
+                _rc_contribs = provenance_root_cause.get('contributions', {})
+                _rc_total = sum(abs(v) for v in _rc_contribs.values()) or 1.0
+                for _rc_mod, _rc_val in _rc_contribs.items():
+                    if abs(_rc_val) / _rc_total > 0.4:
+                        _correction_target_module = _rc_mod
+                        _correction_reason = "provenance_root_cause_dominance"
+                        break
+            # Priority 2: most uncertain module from directional tracker
+            if _correction_target_module is None and uncertainty_summary:
+                _peak_mod = uncertainty_summary.get(
+                    'most_uncertain_module', None,
+                )
+                if _peak_mod is not None:
+                    _correction_target_module = _peak_mod
+                    _correction_reason = "directional_uncertainty_peak"
+            # Priority 3: weakest coherence pair
+            if _correction_target_module is None and weakest_pair is not None:
+                _wp_mods = weakest_pair.get('modules', [])
+                if _wp_mods:
+                    _correction_target_module = _wp_mods[0]
+                    _correction_reason = "weakest_coherence_pair"
+        correction_guidance: Dict[str, Any] = {
+            'target_module': _correction_target_module,
+            'reason': _correction_reason,
+            'weakest_pair': weakest_pair,
+            'most_uncertain_module': (
+                uncertainty_summary.get('most_uncertain_module')
+                if uncertainty_summary else None
+            ),
+            'provenance_dominant': _prov_dominant,
+        }
+
+        # 7i. Cross-pass causal chain persistence — store the current
+        # pass's causal chain root modules for recurring pattern detection.
+        # A module that appears as a root cause in multiple recent passes
+        # signals a structural architectural weakness rather than a
+        # transient anomaly, enabling targeted long-term correction.
+        _cross_pass_chain_roots: List[str] = []
+        if causal_chain:
+            _chain_subsystems = [
+                entry.get('subsystem', '')
+                for entry in causal_chain
+                if isinstance(entry, dict) and entry.get('subsystem')
+            ]
+            if _chain_subsystems:
+                self._cross_pass_chain_buffer.append(_chain_subsystems)
+        elif provenance_root_cause:
+            _rc_mods = provenance_root_cause.get('root_modules', [])
+            if _rc_mods:
+                self._cross_pass_chain_buffer.append(list(_rc_mods))
+        # Count recurring root modules across recent passes
+        _root_counts: Dict[str, int] = defaultdict(int)
+        for _chain in self._cross_pass_chain_buffer:
+            for _mod in _chain:
+                _root_counts[_mod] += 1
+        _cross_pass_chain_roots = sorted(
+            [mod for mod, cnt in _root_counts.items()
+             if cnt >= self._recurring_chain_root_threshold],
+            key=lambda m: _root_counts[m],
+            reverse=True,
+        )
+
+        # 7j. Low-quality subsystems surface — expose the coherence
+        # registry's per-subsystem quality scores in the return dict so
+        # the reasoning core can cache them for feedback bus conditioning
+        # on the next pass, closing the loop where quality scores were
+        # tracked in the registry but never fed back to influence the
+        # next pass's meta-loop conditioning.
+        _low_quality_subsystems: Dict[str, float] = {}
+        if self.coherence_registry is not None:
+            _low_quality_subsystems = (
+                self.coherence_registry.get_low_quality_subsystems()
+            )
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -18932,6 +19058,9 @@ class UnifiedCognitiveCycle:
                 and self.causal_dag_consensus is not None
             ),
             'propagation_delta': propagation_delta,
+            'correction_guidance': correction_guidance,
+            'cross_pass_recurring_roots': _cross_pass_chain_roots,
+            'low_quality_subsystems': _low_quality_subsystems,
         }
 
     def reset(self) -> None:
@@ -19705,6 +19834,27 @@ class AEONDeltaV3(nn.Module):
         # the assignment does not silently fail.
         self.feedback_bus.register_signal(
             "weakest_coherence_pair_pressure", default=0.0,
+        )
+        # Low-quality subsystem pressure — when the coherence registry
+        # identifies subsystems with graded quality below the threshold,
+        # this signal conditions the next pass's meta-loop to allocate
+        # deeper reasoning for degraded subsystems.
+        self.feedback_bus.register_signal(
+            "low_quality_subsystem_pressure", default=0.0,
+        )
+        # Cross-pass recurring root-cause pressure — when the UCC's
+        # chain buffer detects modules recurrently appearing as root
+        # causes across recent forward passes, this signal conditions
+        # the meta-loop to sustain deeper reasoning for structurally
+        # weak modules.
+        self.feedback_bus.register_signal(
+            "cross_pass_root_pressure", default=0.0,
+        )
+        # Correction target pressure — when the UCC has synthesized a
+        # specific correction target module, this signal conditions the
+        # meta-loop to prioritize that module during re-reasoning.
+        self.feedback_bus.register_signal(
+            "correction_target_pressure", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -20502,6 +20652,12 @@ class AEONDeltaV3(nn.Module):
         self._cached_trace_incomplete: bool = False
         self._cached_cert_violated: bool = False
         self._cached_dag_acyclic: bool = True
+        # UCC-surfaced low-quality subsystems, correction target, and
+        # cross-pass recurring root modules — cached for next-pass
+        # feedback bus conditioning.
+        self._cached_low_quality_subsystems: Dict[str, float] = {}
+        self._cached_correction_target: Optional[str] = None
+        self._cached_cross_pass_roots: List[str] = []
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
         # coherence verification so that neurogenic, temporal, and
@@ -20690,6 +20846,10 @@ class AEONDeltaV3(nn.Module):
         # the feedback bus so the meta-loop can distinguish localised
         # uncertainty from cascading systemic uncertainty.
         self._cached_propagation_delta: float = 0.0
+        # Per-module propagated uncertainties from UncertaintyPropagationBus
+        # so the UCC can record each module individually in its directional
+        # tracker, enabling targeted re-reasoning toward specific modules.
+        self._cached_propagated_uncertainties: Dict[str, float] = {}
 
         # Cached DAG adjacency matrices — built during the causal-model
         # section of the reasoning core and forwarded to the UCC's
@@ -21421,6 +21581,35 @@ class AEONDeltaV3(nn.Module):
         # meta-loop reasons more cautiously.
         if getattr(self, '_cached_safety_violation', False):
             extra["safety_violation_pressure"] = 1.0
+        # Low-quality subsystem pressure — when the UCC's coherence
+        # registry identifies subsystems with graded quality below the
+        # threshold, carry the aggregate quality deficit into the feedback
+        # bus so the next pass's meta-loop conditions on subsystem-level
+        # degradation.  This closes the loop where quality scores were
+        # tracked in the registry and surfaced by the UCC but never fed
+        # back to influence the next pass's meta-loop conditioning.
+        _lq = getattr(self, '_cached_low_quality_subsystems', {})
+        if _lq:
+            _lq_mean = sum(_lq.values()) / max(len(_lq), 1)
+            if _lq_mean > 0.1:
+                extra["low_quality_subsystem_pressure"] = max(
+                    0.0, min(1.0, _lq_mean),
+                )
+        # Cross-pass recurring root-cause pressure — when the UCC's
+        # chain buffer detects modules that recurrently appear as root
+        # causes across recent forward passes, signal the meta-loop to
+        # sustain deeper reasoning for those structurally weak modules.
+        _cpr = getattr(self, '_cached_cross_pass_roots', [])
+        if _cpr:
+            extra["cross_pass_root_pressure"] = min(
+                1.0, len(_cpr) / 3.0,
+            )
+        # Correction target pressure — when the UCC synthesized a
+        # specific correction target module, signal the meta-loop so
+        # the next pass can prioritize that module during reasoning.
+        _ct = getattr(self, '_cached_correction_target', None)
+        if _ct is not None:
+            extra["correction_target_pressure"] = 1.0
         # Inter-memory cross-validation disagreement — when multiple
         # memory subsystems (hierarchical, neurogenic, temporal,
         # consolidating) produce inconsistent retrievals, signal the
@@ -29871,6 +30060,12 @@ class AEONDeltaV3(nn.Module):
                 self._cached_propagation_delta = min(
                     1.0, _propagation_delta_sum,
                 )
+                # Cache the full per-module propagated uncertainty dict
+                # so the UCC can record each module individually in the
+                # directional tracker, enabling targeted re-reasoning
+                # toward specific modules whose upstream uncertainty was
+                # amplified through the dependency DAG.
+                self._cached_propagated_uncertainties = dict(_propagated)
                 # Per-module uncertainty attenuation — attenuate the
                 # integrated output proportionally to the propagated
                 # uncertainty of the integration and factor modules.
@@ -30374,6 +30569,14 @@ class AEONDeltaV3(nn.Module):
                     propagation_delta=getattr(
                         self, '_cached_propagation_delta', 0.0,
                     ),
+                    # Per-module propagated uncertainties from the
+                    # UncertaintyPropagationBus so the UCC's directional
+                    # tracker records WHICH module's upstream uncertainty
+                    # was amplified through the dependency DAG, enabling
+                    # targeted re-reasoning instead of generic escalation.
+                    propagated_uncertainties=getattr(
+                        self, '_cached_propagated_uncertainties', None,
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -30409,6 +30612,20 @@ class AEONDeltaV3(nn.Module):
                 )
                 self._cached_trace_incomplete = _ucc_prov_rc.get(
                     "trace_incomplete", False,
+                )
+                # Cache low-quality subsystems and correction guidance
+                # from the UCC for next-pass feedback bus conditioning.
+                # This closes the loop where quality scores were tracked
+                # in the registry but never fed back to influence the
+                # next pass's meta-loop conditioning.
+                self._cached_low_quality_subsystems = unified_cycle_results.get(
+                    "low_quality_subsystems", {},
+                )
+                self._cached_correction_target = unified_cycle_results.get(
+                    "correction_guidance", {},
+                ).get("target_module")
+                self._cached_cross_pass_roots = unified_cycle_results.get(
+                    "cross_pass_recurring_roots", [],
                 )
                 if _ucc_should_rerun:
                     self.audit_log.record(
