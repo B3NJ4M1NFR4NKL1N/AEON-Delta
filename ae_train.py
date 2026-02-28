@@ -317,6 +317,37 @@ except ImportError:
             """Attach provenance tracker for enriching error metadata."""
             self._provenance_tracker = tracker
 
+        def set_metacognitive_trigger(self, trigger) -> None:
+            """Attach metacognitive trigger for threshold tightening.
+
+            When the trigger has active signals, the convergence
+            threshold is tightened so that high metacognitive pressure
+            demands stricter convergence before certification.
+            """
+            self._metacognitive_trigger = trigger
+
+        def record_secondary_signal(
+            self, name: str, value: float,
+        ) -> None:
+            """Record a secondary convergence signal.
+
+            Secondary signals (world model surprise, safety violations,
+            recovery pressure, etc.) allow the convergence monitor to
+            degrade the verdict from 'converged' to 'converging' when
+            auxiliary subsystems indicate instability, even if the
+            residual norm converged.
+            """
+            if not hasattr(self, '_secondary_signals'):
+                self._secondary_signals: Dict[str, float] = {}
+            self._secondary_signals[name] = value
+
+        def is_diverging(self) -> bool:
+            """Return True when the contraction ratio indicates divergence."""
+            if len(self.history) < 2:
+                return False
+            ratio = self.history[-1] / max(self.history[-2], 1e-12)
+            return ratio >= 1.0
+
         def _bridge_convergence_event(
             self, error_class: str, strategy: str,
             success: bool, metadata: Optional[Dict] = None,
@@ -468,6 +499,68 @@ except ImportError:
                 "root_modules": sorted(root_modules),
                 "visited": visited,
                 "contributions": contributions,
+            }
+
+        def validate_dag_acyclic(self) -> Dict[str, Any]:
+            """Check the dependency DAG for cycles.
+
+            Uses iterative DFS to detect back-edges.  When cycles are
+            found, the offending edges are removed so that
+            ``trace_root_cause()`` remains safe.
+
+            Returns:
+                Dict with ``is_acyclic`` bool and ``cycles_found`` list.
+            """
+            all_nodes: set = set()
+            for target, sources in self._dependencies.items():
+                all_nodes.add(target)
+                all_nodes.update(sources)
+            WHITE, GRAY, BLACK = 0, 1, 2
+            color = {n: WHITE for n in all_nodes}
+            cycles: list = []
+            for start in all_nodes:
+                if color[start] != WHITE:
+                    continue
+                stack = [(start, False)]
+                while stack:
+                    node, processed = stack.pop()
+                    if processed:
+                        color[node] = BLACK
+                        continue
+                    if color[node] == GRAY:
+                        continue
+                    color[node] = GRAY
+                    stack.append((node, True))
+                    for child, parents in self._dependencies.items():
+                        if node in parents and color.get(child, WHITE) == GRAY:
+                            cycles.append((node, child))
+                        elif node in parents and color.get(child, WHITE) == WHITE:
+                            stack.append((child, False))
+            for src, dst in cycles:
+                deps = self._dependencies.get(dst, set())
+                deps.discard(src)
+            return {
+                "is_acyclic": len(cycles) == 0,
+                "cycles_found": cycles,
+            }
+
+        def verify_trace_completeness(self) -> Dict[str, Any]:
+            """Verify that all recorded modules have dependency coverage.
+
+            Returns:
+                Dict with ``complete`` bool and lists of covered and
+                uncovered modules.
+            """
+            all_dag_nodes: set = set()
+            for target, sources in self._dependencies.items():
+                all_dag_nodes.add(target)
+                all_dag_nodes.update(sources)
+            recorded = set(self._order)
+            uncovered = sorted(recorded - all_dag_nodes)
+            return {
+                "complete": len(uncovered) == 0,
+                "covered": sorted(recorded & all_dag_nodes),
+                "uncovered": uncovered,
             }
 
     class ModuleCoherenceVerifier:
@@ -1828,6 +1921,11 @@ class AEONDeltaV4(nn.Module):
             dropout=config.dropout_rate
         )
         
+        # Provenance tracking for training-time root-cause traceability
+        self.provenance_tracker = CausalProvenanceTracker()
+        # Tensor safety for training/inference consistency
+        self.tensor_guard = TensorGuard(policy=NaNPolicy.WARN)
+        
         self._init_weights()
         
     def _init_weights(self):
@@ -1887,17 +1985,40 @@ class AEONDeltaV4(nn.Module):
         return self.decoder(quantized_z, teacher_tokens)
     
     def forward(self, tokens: torch.Tensor) -> Dict[str, Any]:
+        self.provenance_tracker.reset()
+        self.provenance_tracker.record_dependency("encoder", "vq")
+        self.provenance_tracker.record_dependency("vq", "decoder")
+
         z = self.encode(tokens)
+        z = self.tensor_guard.sanitize(z, context="encoder_output")
+        # Record encoder contribution as delta from zero baseline
+        # (token IDs and latent vectors have incompatible shapes).
+        self.provenance_tracker.record_before("encoder", torch.zeros_like(z))
+        self.provenance_tracker.record_after("encoder", z)
+
+        self.provenance_tracker.record_before("vq", z)
         quantized, vq_loss, indices, vq_stats = self.quantize(z)
+        quantized = self.tensor_guard.sanitize(quantized, context="vq_output")
+        self.provenance_tracker.record_after("vq", quantized)
+
+        self.provenance_tracker.record_before("decoder", quantized)
         logits = self.decode(quantized, tokens)
-        
+        # Use quantized-dim projection for provenance delta (decoder
+        # output is [B, L, vocab_size] which is incompatible with
+        # the [B, z_dim] before-state).
+        _decoder_summary = logits.detach().mean(dim=1)[..., :quantized.shape[-1]]
+        self.provenance_tracker.record_after("decoder", _decoder_summary)
+
+        provenance = self.provenance_tracker.compute_attribution()
+
         return {
             "z": z,
             "quantized": quantized,
             "vq_loss": vq_loss,
             "indices": indices,
             "logits": logits,
-            "vq_stats": vq_stats
+            "vq_stats": vq_stats,
+            "provenance": provenance,
         }
 
     def to_inference_state_dict(self) -> Dict[str, Any]:
@@ -1932,6 +2053,88 @@ class AEONDeltaV4(nn.Module):
                 "vocab_size": self.config.vocab_size,
                 "source_model": "AEONDeltaV4",
             },
+        }
+
+    def verify_training_coherence(self) -> Dict[str, Any]:
+        """Validate training model self-consistency.
+
+        Checks that:
+        1. Provenance DAG is acyclic and covers all pipeline stages.
+        2. Tensor guard has not accumulated excessive NaN/Inf events.
+        3. Encoder→VQ→Decoder round-trip preserves finite values.
+
+        Returns:
+            Dict with ``coherent`` bool, ``provenance_dag`` validation,
+            ``tensor_safety`` statistics, and ``recommendations`` list.
+        """
+        recommendations: List[str] = []
+
+        # 1. Provenance DAG validation
+        dag_result = self.provenance_tracker.validate_dag_acyclic()
+        trace_result = self.provenance_tracker.verify_trace_completeness()
+        if not dag_result.get('is_acyclic', True):
+            recommendations.append(
+                "Fix provenance DAG cycles in training pipeline"
+            )
+        if not trace_result.get('complete', True):
+            recommendations.append(
+                f"Register provenance for: "
+                f"{', '.join(trace_result.get('uncovered', []))}"
+            )
+
+        # 2. Tensor safety statistics
+        if hasattr(self.tensor_guard, 'get_stats'):
+            safety_stats = self.tensor_guard.get_stats()
+        else:
+            safety_stats = {
+                'nan_count': getattr(self.tensor_guard, '_nan_count', 0),
+                'inf_count': getattr(self.tensor_guard, '_inf_count', 0),
+                'sanitize_count': getattr(self.tensor_guard, '_sanitize_count', 0),
+            }
+        if safety_stats.get('nan_count', 0) > 0:
+            recommendations.append(
+                f"Training produced {safety_stats['nan_count']} NaN tensors"
+            )
+        if safety_stats.get('inf_count', 0) > 0:
+            recommendations.append(
+                f"Training produced {safety_stats['inf_count']} Inf tensors"
+            )
+
+        # 3. Round-trip sanity check
+        round_trip_ok = True
+        try:
+            with torch.no_grad():
+                test_ids = torch.randint(
+                    1, self.config.vocab_size, (1, 8),
+                    device=next(self.parameters()).device,
+                )
+                result = self.forward(test_ids)
+                if not torch.isfinite(result['logits']).all():
+                    round_trip_ok = False
+                    recommendations.append(
+                        "Encoder→VQ→Decoder round-trip produces non-finite values"
+                    )
+        except Exception as e:
+            round_trip_ok = False
+            recommendations.append(f"Round-trip check failed: {e}")
+
+        coherent = (
+            dag_result.get('is_acyclic', True)
+            and trace_result.get('complete', True)
+            and safety_stats.get('nan_count', 0) == 0
+            and round_trip_ok
+        )
+
+        if not recommendations:
+            recommendations.append("All training coherence checks passed.")
+
+        return {
+            'coherent': coherent,
+            'provenance_dag': dag_result,
+            'trace_completeness': trace_result,
+            'tensor_safety': safety_stats,
+            'round_trip_ok': round_trip_ok,
+            'recommendations': recommendations,
         }
 
 
