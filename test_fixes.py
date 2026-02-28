@@ -36516,6 +36516,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "encoder_reasoning_norm": "encoder_reasoning_norm",
         "deception_suppressor": "deception_suppressor",
         "feedback_bus": "feedback_bus",
+        "cycle_consistency": "cycle_consistency_validator",
+        "output_reliability_gate": "output_reliability_gate",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -45831,16 +45833,23 @@ def test_cycle_consistency_violation_escalates_uncertainty():
     """Verify cycle_consistency_violation escalates uncertainty in the forward pass.
 
     The code should record an uncertainty_sources entry when cycle
-    consistency drops below the configured threshold.
+    consistency drops below the configured threshold.  Since the logic
+    was extracted into CycleConsistencyValidator, we verify both that
+    AEONDeltaV3 references 'cycle_consistency_violation' and that the
+    validator produces the expected uncertainty source key.
     """
     import inspect
-    from aeon_core import AEONDeltaV3
+    from aeon_core import AEONDeltaV3, CycleConsistencyValidator
     source = inspect.getsource(AEONDeltaV3)
     assert 'cycle_consistency_violation' in source, (
         "AEONDeltaV3 should record 'cycle_consistency_violation' in uncertainty_sources"
     )
-    assert 'uncertainty_sources["cycle_consistency_violation"]' in source, (
-        "cycle_consistency_violation should be recorded as an uncertainty source"
+    # Verify the CycleConsistencyValidator escalates uncertainty with
+    # the expected key when a violation occurs.
+    validator_source = inspect.getsource(CycleConsistencyValidator)
+    assert 'cycle_consistency_violation' in validator_source, (
+        "CycleConsistencyValidator should record 'cycle_consistency_violation' "
+        "as an uncertainty source"
     )
     print("✅ test_cycle_consistency_violation_escalates_uncertainty PASSED")
 
@@ -45850,16 +45859,20 @@ def test_reencode_verification_code_exists():
 
     The code should re-encode the decoder output through the encoder and
     compare with C_star to verify decode→encode round-trip fidelity.
+    Since the logic was extracted into CycleConsistencyValidator, we
+    verify both that AEONDeltaV3 references reencode_consistency and
+    that the validator produces the expected uncertainty source key.
     """
     import inspect
-    from aeon_core import AEONDeltaV3
+    from aeon_core import AEONDeltaV3, CycleConsistencyValidator
     source = inspect.getsource(AEONDeltaV3)
     assert 'reencode_consistency' in source, (
         "AEONDeltaV3 should compute reencode_consistency for output→input verification"
     )
-    assert 'reencode_divergence' in source, (
-        "reencode_divergence should be recorded as an uncertainty source "
-        "when the round-trip verification fails"
+    validator_source = inspect.getsource(CycleConsistencyValidator)
+    assert 'reencode_divergence' in validator_source, (
+        "CycleConsistencyValidator should record 'reencode_divergence' as an "
+        "uncertainty source when the round-trip verification fails"
     )
     print("✅ test_reencode_verification_code_exists PASSED")
 
@@ -45869,10 +45882,12 @@ def test_output_reliability_factors_in_output():
 
     The output dict should contain a decomposition of the output reliability
     score by contributing factor so that downstream root-cause analysis can
-    identify WHICH subsystem degraded overall output trust.
+    identify WHICH subsystem degraded overall output trust.  Since the
+    computation was extracted into OutputReliabilityGate, we verify the
+    gate produces the expected factor keys.
     """
     import inspect
-    from aeon_core import AEONDeltaV3
+    from aeon_core import AEONDeltaV3, OutputReliabilityGate
     source = inspect.getsource(AEONDeltaV3)
     assert 'output_reliability_factors' in source, (
         "AEONDeltaV3 output should include output_reliability_factors decomposition"
@@ -45880,14 +45895,15 @@ def test_output_reliability_factors_in_output():
     assert 'weakest_factor' in source, (
         "output_reliability_factors should identify the weakest contributing factor"
     )
-    assert 'uncertainty_contribution' in source, (
-        "output_reliability_factors should include uncertainty_contribution"
+    gate_source = inspect.getsource(OutputReliabilityGate)
+    assert 'uncertainty_contribution' in gate_source, (
+        "OutputReliabilityGate should include uncertainty_contribution"
     )
-    assert 'convergence_contribution' in source, (
-        "output_reliability_factors should include convergence_contribution"
+    assert 'convergence_contribution' in gate_source, (
+        "OutputReliabilityGate should include convergence_contribution"
     )
-    assert 'coherence_contribution' in source, (
-        "output_reliability_factors should include coherence_contribution"
+    assert 'coherence_contribution' in gate_source, (
+        "OutputReliabilityGate should include coherence_contribution"
     )
     print("✅ test_output_reliability_factors_in_output PASSED")
 
@@ -52455,56 +52471,48 @@ def test_build_feedback_includes_safety_violation():
 
 def test_output_reliability_includes_provenance_quality():
     """Output reliability decomposition must include provenance_quality factor
-    so incomplete provenance degrades output trust."""
-    import os
-    src_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    so incomplete provenance degrades output trust.  Since the computation
+    was extracted into OutputReliabilityGate, we verify the gate includes
+    provenance_quality as a factor in its output."""
+    import inspect
+    from aeon_core import OutputReliabilityGate
+    gate_src = inspect.getsource(OutputReliabilityGate)
+    assert "'provenance_quality'" in gate_src, (
+        "OutputReliabilityGate must include 'provenance_quality' as a "
+        "decomposition factor"
     )
-    found_factor = False
-    found_decomp = False
-    with open(src_path, "r") as f:
-        for line in f:
-            if "* _provenance_quality" in line:
-                found_factor = True
-            if "'provenance_quality'" in line and "_provenance_quality" in line:
-                found_decomp = True
-            if found_factor and found_decomp:
-                break
-    assert found_factor, (
-        "Output reliability formula must include _provenance_quality "
-        "as a multiplicative factor"
+    # Also verify it's used in the composite formula
+    assert "provenance_quality" in gate_src, (
+        "OutputReliabilityGate formula must include provenance_quality"
     )
-    assert found_decomp, (
-        "Output reliability decomposition must include 'provenance_quality' "
-        "so root-cause analysis can identify provenance issues"
+    # Functional test: low provenance quality must degrade reliability
+    gate = OutputReliabilityGate()
+    good = gate(provenance_quality=1.0)
+    bad = gate(provenance_quality=0.1)
+    assert bad['composite'] < good['composite'], (
+        "Low provenance_quality should degrade composite reliability"
     )
     print("✅ test_output_reliability_includes_provenance_quality PASSED")
 
 
 def test_output_reliability_includes_causal_quality():
     """Output reliability decomposition must include causal_quality factor
-    so causal DAG disagreement degrades output trust."""
-    import os
-    src_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "aeon_core.py"
+    so causal DAG disagreement degrades output trust.  Since the computation
+    was extracted into OutputReliabilityGate, we verify the gate includes
+    causal_quality as a factor in its output."""
+    import inspect
+    from aeon_core import OutputReliabilityGate
+    gate_src = inspect.getsource(OutputReliabilityGate)
+    assert "'causal_quality'" in gate_src, (
+        "OutputReliabilityGate must include 'causal_quality' as a "
+        "decomposition factor"
     )
-    found_factor = False
-    found_decomp = False
-    with open(src_path, "r") as f:
-        for line in f:
-            if "* _causal_quality_factor" in line:
-                found_factor = True
-            if "'causal_quality'" in line and "_causal_quality_factor" in line:
-                found_decomp = True
-            if found_factor and found_decomp:
-                break
-    assert found_factor, (
-        "Output reliability formula must include _causal_quality_factor "
-        "as a multiplicative factor"
-    )
-    assert found_decomp, (
-        "Output reliability decomposition must include 'causal_quality' "
-        "so root-cause analysis can identify causal disagreement"
+    # Functional test: low causal quality must degrade reliability
+    gate = OutputReliabilityGate()
+    good = gate(causal_quality=1.0)
+    bad = gate(causal_quality=0.1)
+    assert bad['composite'] < good['composite'], (
+        "Low causal_quality should degrade composite reliability"
     )
     print("✅ test_output_reliability_includes_causal_quality PASSED")
 
@@ -58056,6 +58064,217 @@ def test_all_recorded_error_classes_have_lambda_mapping():
         f"modes): {missing}"
     )
     print("✅ test_all_recorded_error_classes_have_lambda_mapping PASSED")
+
+
+# ============================================================================
+# ARCHITECTURAL UNIFICATION — CycleConsistencyValidator & OutputReliabilityGate
+# ============================================================================
+
+
+def test_cycle_consistency_validator_basic():
+    """CycleConsistencyValidator returns correct structure for matching shapes."""
+    import torch
+    from aeon_core import CycleConsistencyValidator
+
+    ccv = CycleConsistencyValidator(violation_threshold=0.3)
+    z_enc = torch.randn(4, 64)
+    z_dec = torch.randn(4, 64)
+    result = ccv(z_enc, z_dec)
+
+    assert 'cycle_consistency' in result
+    assert 'violation' in result
+    assert 'updated_uncertainty' in result
+    assert 'reencode_consistency' in result
+    assert 'uncertainty_sources' in result
+    assert isinstance(result['violation'], bool)
+    assert 0.0 <= result['cycle_consistency'] <= 1.0
+    print("✅ test_cycle_consistency_validator_basic PASSED")
+
+
+def test_cycle_consistency_validator_identical_tensors():
+    """Identical encoder/decoder tensors should yield high consistency."""
+    import torch
+    from aeon_core import CycleConsistencyValidator
+
+    ccv = CycleConsistencyValidator(violation_threshold=0.3)
+    z = torch.randn(4, 64)
+    result = ccv(z, z)
+
+    assert result['cycle_consistency'] >= 0.99
+    assert not result['violation']
+    assert result['uncertainty_boost'] == 0.0
+    print("✅ test_cycle_consistency_validator_identical_tensors PASSED")
+
+
+def test_cycle_consistency_validator_violation_escalates():
+    """When consistency is below threshold, uncertainty should be escalated."""
+    import torch
+    from aeon_core import CycleConsistencyValidator
+
+    ccv = CycleConsistencyValidator(violation_threshold=0.99)
+    z_enc = torch.randn(4, 64)
+    z_dec = torch.randn(4, 64)
+    result = ccv(z_enc, z_dec, current_uncertainty=0.1)
+
+    # Random tensors will have low cosine similarity
+    assert result['violation']
+    assert result['uncertainty_boost'] > 0.0
+    assert result['updated_uncertainty'] > 0.1
+    assert 'cycle_consistency_violation' in result['uncertainty_sources']
+    print("✅ test_cycle_consistency_validator_violation_escalates PASSED")
+
+
+def test_cycle_consistency_validator_reencode():
+    """Re-encode verification should detect divergence from core state."""
+    import torch
+    from aeon_core import CycleConsistencyValidator
+
+    ccv = CycleConsistencyValidator(violation_threshold=0.99)
+    z_enc = torch.randn(4, 64)
+    z_dec = torch.randn(4, 64)
+    z_reenc = torch.randn(4, 64)
+    core = torch.randn(4, 64)
+    result = ccv(z_enc, z_dec, z_reencoded=z_reenc, core_state=core)
+
+    assert 'reencode_consistency' in result
+    assert 'reencode_violation' in result
+    print("✅ test_cycle_consistency_validator_reencode PASSED")
+
+
+def test_cycle_consistency_validator_shape_mismatch():
+    """Shape mismatch should not crash, just return default values."""
+    import torch
+    from aeon_core import CycleConsistencyValidator
+
+    ccv = CycleConsistencyValidator(violation_threshold=0.3)
+    z_enc = torch.randn(4, 64)
+    z_dec = torch.randn(4, 32)  # different dim
+    result = ccv(z_enc, z_dec)
+
+    assert result['cycle_consistency'] == 1.0
+    assert not result['violation']
+    print("✅ test_cycle_consistency_validator_shape_mismatch PASSED")
+
+
+def test_output_reliability_gate_basic():
+    """OutputReliabilityGate returns correct structure."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    result = gate()
+
+    assert 'composite' in result
+    assert 'is_reliable' in result
+    assert 'factors' in result
+    assert 'weakest_factor' in result
+    assert 0.0 <= result['composite'] <= 1.0
+    assert isinstance(result['is_reliable'], bool)
+    print("✅ test_output_reliability_gate_basic PASSED")
+
+
+def test_output_reliability_gate_perfect_inputs():
+    """Perfect inputs should produce high composite reliability."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    result = gate(
+        uncertainty=0.0,
+        auto_critic_quality=1.0,
+        convergence_rate=1.0,
+        coherence_deficit=0.0,
+        provenance_quality=1.0,
+        causal_quality=1.0,
+        verification_coverage=1.0,
+    )
+
+    assert result['composite'] == 1.0
+    assert result['is_reliable']
+    print("✅ test_output_reliability_gate_perfect_inputs PASSED")
+
+
+def test_output_reliability_gate_low_quality():
+    """Low quality inputs should produce unreliable output."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    result = gate(
+        uncertainty=0.9,
+        auto_critic_quality=0.1,
+        convergence_rate=0.1,
+    )
+
+    assert result['composite'] < 0.5
+    assert not result['is_reliable']
+    assert result['weakest_factor'] in result['factors']
+    print("✅ test_output_reliability_gate_low_quality PASSED")
+
+
+def test_output_reliability_gate_weakest_factor_identification():
+    """Gate should correctly identify the weakest contributing factor."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate()
+    result = gate(
+        uncertainty=0.0,
+        auto_critic_quality=1.0,
+        convergence_rate=1.0,
+        coherence_deficit=0.0,
+        provenance_quality=0.01,  # artificially low
+        causal_quality=1.0,
+    )
+
+    assert result['weakest_factor'] == 'provenance_quality'
+    print("✅ test_output_reliability_gate_weakest_factor_identification PASSED")
+
+
+def test_output_reliability_gate_factor_decomposition():
+    """Factor decomposition should contain all expected keys."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate()
+    result = gate()
+    factors = result['factors']
+
+    expected_keys = {
+        'uncertainty_contribution', 'auto_critic_contribution',
+        'convergence_contribution', 'coherence_contribution',
+        'provenance_quality', 'causal_quality', 'verification_coverage',
+        'weakest_factor', 'composite',
+    }
+    assert expected_keys.issubset(set(factors.keys()))
+    print("✅ test_output_reliability_gate_factor_decomposition PASSED")
+
+
+def test_new_modules_in_pipeline_wiring():
+    """Verify new modules are properly wired in the pipeline DAG."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'cycle_consistency_validator')
+    assert hasattr(model, 'output_reliability_gate')
+    assert 'cycle_consistency' in model._NODE_ATTR_MAP
+    assert 'output_reliability_gate' in model._NODE_ATTR_MAP
+
+    # Check pipeline edges exist
+    deps = model._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("encoder", "cycle_consistency") in dep_set
+    assert ("decoder", "cycle_consistency") in dep_set
+    assert ("cycle_consistency", "output_reliability_gate") in dep_set
+    assert ("output_reliability_gate", "metacognitive_trigger") in dep_set
+    assert ("output_reliability_gate", "unified_cognitive_cycle") in dep_set
+    print("✅ test_new_modules_in_pipeline_wiring PASSED")
+
+
+def test_new_modules_exported():
+    """Verify new classes are exported in __all__."""
+    from aeon_core import __all__
+
+    assert 'CycleConsistencyValidator' in __all__
+    assert 'OutputReliabilityGate' in __all__
+    print("✅ test_new_modules_exported PASSED")
 
 
 # ============================================================================
