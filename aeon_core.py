@@ -7463,6 +7463,17 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     torch.cat([C_new, C], dim=-1)
                 ).squeeze(-1)
                 alpha = alpha_base * (0.5 + 0.5 * alpha_scale)
+                # Feedback-adaptive contraction: when the feedback bus
+                # carries high-magnitude signal (downstream uncertainty,
+                # safety pressure), tighten the contraction rate by
+                # reducing alpha.  This wires the feedback bus into the
+                # core Banach fixed-point iteration, ensuring downstream
+                # pressure produces slower, more careful convergence
+                # rather than only gating C_new.
+                if feedback is not None:
+                    _fb_mag = feedback.detach().abs().mean(dim=-1)  # [B]
+                    _fb_dampen = (1.0 - 0.5 * _fb_mag.clamp(0.0, 1.0))
+                    alpha = alpha * _fb_dampen
             else:
                 alpha = torch.full((B,), alpha_base * 0.5, device=device)
             
@@ -14718,7 +14729,9 @@ class ComplexityEstimator(nn.Module):
 
         Returns:
             Dict with complexity_score [B, 1], subsystem_gates [B, N] (bool),
-            and gate_values [B, N] (continuous).
+            and gate_values [B, N] (continuous),
+            meta_loop_iteration_scale (float ∈ [0.5, 2.0]),
+            and planning_depth_scale (float ∈ [0.5, 2.0]).
         """
         out = self.estimator(z_in)                      # [B, 1+N]
         complexity = torch.sigmoid(out[:, :1])            # [B, 1]
@@ -14728,10 +14741,13 @@ class ComplexityEstimator(nn.Module):
         # Gate: activate subsystem only when complexity exceeds 0.5
         gates = (gate_values * complexity > 0.5)          # [B, N] bool
 
+        scale = 0.5 + 1.5 * complexity.mean().item()
         return {
             "complexity_score": complexity,
             "subsystem_gates": gates,
             "gate_values": gate_values,
+            "meta_loop_iteration_scale": scale,
+            "planning_depth_scale": scale,
         }
 
 
@@ -22862,6 +22878,26 @@ class AEONDeltaV3(nn.Module):
                 "new_max_iter": self.meta_loop.max_iterations,
             })
         
+        # 0f. Complexity-driven meta-loop iteration scaling.
+        # When the complexity estimator is active, scale the meta-loop's
+        # max_iterations proportionally to input complexity so that simple
+        # inputs converge faster (fewer iterations) and complex inputs get
+        # deeper reasoning (more iterations).  This extends the complexity
+        # estimator's gating from subsystem on/off decisions to continuous
+        # resource allocation, closing the gap where encoder depth and
+        # planning horizon were not complexity-aware.
+        _complexity_meta_loop_adjusted = False
+        _complexity_orig_max_iter: Optional[int] = None
+        if complexity_info and not fast:
+            _iter_scale = complexity_info.get('meta_loop_iteration_scale', 1.0)
+            if _iter_scale != 1.0:
+                _complexity_orig_max_iter = self.meta_loop.max_iterations
+                self.meta_loop.max_iterations = max(
+                    self.meta_loop.min_iterations,
+                    int(self.meta_loop.max_iterations * _iter_scale),
+                )
+                _complexity_meta_loop_adjusted = True
+        
         self.progress_tracker.begin_phase("meta_loop")
         
         # Initialize uncertainty tracking before meta-loop so that
@@ -23097,6 +23133,10 @@ class AEONDeltaV3(nn.Module):
         if _evolved_meta_loop_adjusted:
             self.meta_loop.convergence_threshold = _evolved_orig_threshold
             self.meta_loop.max_iterations = _evolved_orig_max_iter
+        # Restore complexity-scaled max_iterations so subsequent
+        # metacognitive re-runs use the original value as baseline.
+        if _complexity_meta_loop_adjusted:
+            self.meta_loop.max_iterations = _complexity_orig_max_iter
         logger.debug(f"Meta-loop: avg_iterations={iterations.mean().item():.2f}")
         self.audit_log.record("meta_loop", "completed", {
             "avg_iterations": iterations.mean().item(),
@@ -26221,6 +26261,19 @@ class AEONDeltaV3(nn.Module):
             # pass its adjacency matrix to the planner so that action
             # priors are biased toward causally grounded trajectories.
             _mcts_causal_adj: Optional[torch.Tensor] = None
+            # 5b2-ca-depth. Scale MCTS planning depth based on input
+            # complexity so that simple inputs use shallow search and
+            # complex inputs get deeper lookahead.
+            _mcts_depth_adjusted = False
+            _mcts_orig_depth: Optional[int] = None
+            if complexity_info:
+                _depth_scale = complexity_info.get('planning_depth_scale', 1.0)
+                if _depth_scale != 1.0:
+                    _mcts_orig_depth = self.mcts_planner.max_depth
+                    self.mcts_planner.max_depth = max(
+                        1, int(self.mcts_planner.max_depth * _depth_scale),
+                    )
+                    _mcts_depth_adjusted = True
             if self.causal_model is not None and hasattr(self.causal_model, 'adjacency'):
                 try:
                     _mcts_causal_adj = self.causal_model.adjacency.detach()
@@ -26231,6 +26284,9 @@ class AEONDeltaV3(nn.Module):
                 C_star[0], self.world_model,
                 causal_adjacency=_mcts_causal_adj,
             )
+            # Restore MCTS max_depth if complexity-scaled.
+            if _mcts_depth_adjusted:
+                self.mcts_planner.max_depth = _mcts_orig_depth
             # 5b2-0. Blend MCTS best_state into C_star — the planner's
             # best state represents the most promising trajectory
             # discovered via tree search.  Blending it as a weighted
@@ -27146,6 +27202,21 @@ class AEONDeltaV3(nn.Module):
             # disagreement — record in error evolution so the system
             # learns from cross-module conflicts over time.
             _agreement_val = reconciliation_results["agreement_score"].mean().item()
+            # 5d2-cor. Cross-validation correction signal → downstream
+            # confidence attenuation.  When factor–causal agreement is
+            # below the reconciler's threshold, the correction signal's
+            # attenuation factor (∈ [0, 1]) scales the reconciled state
+            # so that low-agreement outputs carry proportionally less
+            # influence on downstream modules.  This wires the
+            # CrossValidationReconciler's correction signal into active
+            # output control, closing the gap where disagreement was
+            # detected but not used to dampen confidence.
+            _cv_correction = self.cross_validator.get_correction_signal(
+                reconciliation_results["agreement_score"],
+            )
+            if _cv_correction.get("low_agreement", False):
+                _attn = _cv_correction["attenuation"]
+                C_star = C_star * _attn
             # 5d2-causal. Cross-validation → causal model supervision —
             # when factor–causal agreement is low, the reconciled state
             # represents a corrected consensus that the causal world model
