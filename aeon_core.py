@@ -14718,7 +14718,9 @@ class ComplexityEstimator(nn.Module):
 
         Returns:
             Dict with complexity_score [B, 1], subsystem_gates [B, N] (bool),
-            and gate_values [B, N] (continuous).
+            and gate_values [B, N] (continuous),
+            meta_loop_iteration_scale (float ∈ [0.5, 2.0]),
+            and planning_depth_scale (float ∈ [0.5, 2.0]).
         """
         out = self.estimator(z_in)                      # [B, 1+N]
         complexity = torch.sigmoid(out[:, :1])            # [B, 1]
@@ -14728,10 +14730,13 @@ class ComplexityEstimator(nn.Module):
         # Gate: activate subsystem only when complexity exceeds 0.5
         gates = (gate_values * complexity > 0.5)          # [B, N] bool
 
+        scale = 0.5 + 1.5 * complexity.mean().item()
         return {
             "complexity_score": complexity,
             "subsystem_gates": gates,
             "gate_values": gate_values,
+            "meta_loop_iteration_scale": scale,
+            "planning_depth_scale": scale,
         }
 
 
