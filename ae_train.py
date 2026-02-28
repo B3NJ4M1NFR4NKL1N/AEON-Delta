@@ -517,6 +517,12 @@ except ImportError:
                 all_nodes.update(sources)
             WHITE, GRAY, BLACK = 0, 1, 2
             color = {n: WHITE for n in all_nodes}
+            # Build forward adjacency list (upstream → downstream) for
+            # efficient DFS traversal.
+            adjacency: Dict[str, list] = {n: [] for n in all_nodes}
+            for child, parents in self._dependencies.items():
+                for parent in parents:
+                    adjacency.setdefault(parent, []).append(child)
             cycles: list = []
             for start in all_nodes:
                 if color[start] != WHITE:
@@ -531,10 +537,10 @@ except ImportError:
                         continue
                     color[node] = GRAY
                     stack.append((node, True))
-                    for child, parents in self._dependencies.items():
-                        if node in parents and color.get(child, WHITE) == GRAY:
+                    for child in adjacency.get(node, []):
+                        if color.get(child, WHITE) == GRAY:
                             cycles.append((node, child))
-                        elif node in parents and color.get(child, WHITE) == WHITE:
+                        elif color.get(child, WHITE) == WHITE:
                             stack.append((child, False))
             for src, dst in cycles:
                 deps = self._dependencies.get(dst, set())
@@ -2100,12 +2106,13 @@ class AEONDeltaV4(nn.Module):
                 f"Training produced {safety_stats['inf_count']} Inf tensors"
             )
 
-        # 3. Round-trip sanity check
+        # 3. Round-trip sanity check (short sequence to minimise overhead)
+        _ROUNDTRIP_SEQ_LEN = 8
         round_trip_ok = True
         try:
             with torch.no_grad():
                 test_ids = torch.randint(
-                    1, self.config.vocab_size, (1, 8),
+                    1, self.config.vocab_size, (1, _ROUNDTRIP_SEQ_LEN),
                     device=next(self.parameters()).device,
                 )
                 result = self.forward(test_ids)
