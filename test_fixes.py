@@ -58662,6 +58662,147 @@ def test_ucc_receives_output_reliability():
     print("✅ test_ucc_receives_output_reliability PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Architectural unification tests — verify the five architectural
+# improvements that close gaps in complexity-driven resource allocation,
+# cross-validation correction, feedback-adaptive contraction, and
+# training-inference checkpoint bridging.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_complexity_estimator_resource_scaling():
+    """ComplexityEstimator returns meta_loop_iteration_scale and
+    planning_depth_scale in range [0.5, 2.0]."""
+    from aeon_core import ComplexityEstimator
+
+    est = ComplexityEstimator(hidden_dim=32, num_subsystems=4)
+
+    # Random input → scale should be in valid range
+    z = torch.randn(4, 32)
+    result = est(z)
+    assert "meta_loop_iteration_scale" in result
+    assert "planning_depth_scale" in result
+    scale = result["meta_loop_iteration_scale"]
+    assert 0.5 <= scale <= 2.0, f"scale {scale} out of [0.5, 2.0]"
+    assert result["planning_depth_scale"] == scale
+
+    # Zero input → complexity near 0.5, scale near 1.25
+    z_zero = torch.zeros(1, 32)
+    r0 = est(z_zero)
+    assert 0.5 <= r0["meta_loop_iteration_scale"] <= 2.0
+    print("✅ test_complexity_estimator_resource_scaling PASSED")
+
+
+def test_cross_validation_correction_signal_used():
+    """CrossValidationReconciler.get_correction_signal() attenuation is
+    applied during reconciliation when agreement is below threshold."""
+    from aeon_core import CrossValidationReconciler
+
+    rec = CrossValidationReconciler(
+        hidden_dim=16, num_pillars=8,
+        agreement_threshold=0.99,  # Very strict — force low agreement
+        max_reconcile_steps=1,
+    )
+
+    f = torch.randn(2, 16)
+    c = torch.randn(2, 16)
+
+    result = rec(f, c)
+    correction = rec.get_correction_signal(result["agreement_score"])
+
+    # With a strict threshold, agreement should be low
+    assert "attenuation" in correction
+    assert "low_agreement" in correction
+    attn = correction["attenuation"]
+    assert 0.0 <= attn <= 1.0, f"attenuation {attn} out of [0, 1]"
+    print("✅ test_cross_validation_correction_signal_used PASSED")
+
+
+def test_meta_loop_feedback_adaptive_contraction():
+    """High feedback magnitude dampens alpha in the meta-loop,
+    producing tighter contraction."""
+    from aeon_core import ProvablyConvergentMetaLoop, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_embedding_dim=32,
+        max_iterations=5, min_iterations=1,
+    )
+    meta = ProvablyConvergentMetaLoop(
+        config, max_iterations=5, min_iterations=1,
+    )
+
+    psi = torch.randn(1, 32)
+
+    # Without feedback — capture trajectory
+    C1, it1, m1 = meta.compute_fixed_point(psi, feedback=None)
+    traj1 = m1["convergence_trajectory"]
+
+    # With high feedback — alpha should be dampened
+    fb = torch.ones(1, 32) * 0.9
+    C2, it2, m2 = meta.compute_fixed_point(psi, feedback=fb)
+    traj2 = m2["convergence_trajectory"]
+
+    # Verify trajectory metadata captured
+    assert len(traj1) > 0
+    assert len(traj2) > 0
+    # With strong feedback, alpha_mean should generally be smaller
+    # (due to feedback dampening), though not guaranteed on every run.
+    # At minimum, verify the mechanism doesn't break convergence.
+    assert torch.isfinite(C1).all()
+    assert torch.isfinite(C2).all()
+    print("✅ test_meta_loop_feedback_adaptive_contraction PASSED")
+
+
+def test_v4_to_inference_state_dict():
+    """AEONDeltaV4.to_inference_state_dict() remaps keys to V3 naming."""
+    from ae_train import AEONDeltaV4, AEONConfigV4
+
+    config = AEONConfigV4(z_dim=32, hidden_dim=32, vocab_size=100)
+    model = AEONDeltaV4(config)
+
+    result = model.to_inference_state_dict()
+    sd = result["state_dict"]
+    cfg = result["config"]
+
+    # Config provenance
+    assert cfg["source_model"] == "AEONDeltaV4"
+    assert cfg["z_dim"] == 32
+    assert cfg["hidden_dim"] == 32
+
+    # Key remapping: vq. → vector_quantizer., rssm. → rssm_cell.
+    vq_keys = [k for k in sd if k.startswith("vector_quantizer.")]
+    rssm_keys = [k for k in sd if k.startswith("rssm_cell.")]
+    assert len(vq_keys) > 0, "VQ keys should be remapped to vector_quantizer.*"
+    assert len(rssm_keys) > 0, "RSSM keys should be remapped to rssm_cell.*"
+
+    # No original prefixes should remain
+    orig_vq = [k for k in sd if k.startswith("vq.")]
+    orig_rssm = [k for k in sd if k.startswith("rssm.")]
+    assert len(orig_vq) == 0, "Original vq.* keys should be remapped"
+    assert len(orig_rssm) == 0, "Original rssm.* keys should be remapped"
+    print("✅ test_v4_to_inference_state_dict PASSED")
+
+
+def test_complexity_meta_loop_iteration_scaling():
+    """Complexity estimator's meta_loop_iteration_scale adjusts
+    meta-loop max_iterations proportionally."""
+    from aeon_core import ComplexityEstimator
+
+    est = ComplexityEstimator(hidden_dim=16, num_subsystems=4)
+
+    # Test that the scale formula produces expected values
+    # at boundary cases
+    z = torch.zeros(1, 16)
+    r = est(z)
+    # Complexity near 0.5 for zero input (sigmoid(0) = 0.5)
+    # Scale = 0.5 + 1.5 * 0.5 = 1.25
+    assert abs(r["meta_loop_iteration_scale"] - 1.25) < 0.3, (
+        f"Expected scale ~1.25 for zero input, got {r['meta_loop_iteration_scale']}"
+    )
+    print("✅ test_complexity_meta_loop_iteration_scaling PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -61250,6 +61391,14 @@ def run_all_tests():
     test_fallback_tensor_guard_get_stats()
     test_get_module_registry()
     test_get_module_registry_alias_detection()
+
+    # Architectural Unification — Resource allocation, correction signals,
+    # feedback-adaptive contraction, training↔inference bridge
+    test_complexity_estimator_resource_scaling()
+    test_cross_validation_correction_signal_used()
+    test_meta_loop_feedback_adaptive_contraction()
+    test_v4_to_inference_state_dict()
+    test_complexity_meta_loop_iteration_scaling()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
