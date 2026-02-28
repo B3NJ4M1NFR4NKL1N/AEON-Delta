@@ -1913,8 +1913,6 @@ class AEONDeltaV4(nn.Module):
             (serialised training config for provenance).
         """
         mapping = {
-            "encoder.": "encoder.",
-            "decoder.": "decoder.",
             "vq.": "vector_quantizer.",
             "rssm.": "rssm_cell.",
         }
