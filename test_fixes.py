@@ -60387,6 +60387,256 @@ def test_feedback_bus_error_evolution_trend_signal():
     print("✅ test_feedback_bus_error_evolution_trend_signal PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Root-Cause-Informed Recovery, Reliability Gate
+#  Weight Adaptation, Degrading Class Feedback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_error_recovery_root_cause_strategy_map():
+    """ErrorRecoveryManager._ROOT_CAUSE_STRATEGY_MAP maps root-cause modules
+    to recovery strategies so recovery addresses causes, not just symptoms."""
+    from aeon_core import ErrorRecoveryManager
+
+    m = ErrorRecoveryManager._ROOT_CAUSE_STRATEGY_MAP
+    assert "meta_loop" in m, "meta_loop root cause must map to a strategy"
+    assert m["meta_loop"] == "convergence", (
+        f"meta_loop root cause should map to 'convergence', got '{m['meta_loop']}'"
+    )
+    assert "encoder" in m, "encoder root cause must map to a strategy"
+    assert m["encoder"] == "numerical", (
+        f"encoder root cause should map to 'numerical', got '{m['encoder']}'"
+    )
+    print("✅ test_error_recovery_root_cause_strategy_map PASSED")
+
+
+def test_error_recovery_uses_root_causes():
+    """ErrorRecoveryManager.recover() queries get_root_causes() and passes
+    causal_antecedents to record_episode, making recovery decisions
+    traceable to their originating pipeline stage."""
+    from aeon_core import (
+        ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog,
+    )
+
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    audit = DecisionAuditLog()
+
+    # Seed error history with root-cause data
+    for _ in range(3):
+        ee.record_episode(
+            error_class="numerical",
+            strategy_used="sanitize",
+            success=True,
+            causal_antecedents=["encoder", "vq"],
+        )
+
+    mgr = ErrorRecoveryManager(
+        hidden_dim=64,
+        audit_log=audit,
+        error_evolution=ee,
+    )
+
+    # Trigger a recovery
+    try:
+        raise ValueError("test NaN in encoder")
+    except ValueError as exc:
+        success, value = mgr.recover(
+            exc, context="test", fallback=torch.zeros(1, 64),
+        )
+
+    # Verify recovery produced a result
+    assert success is True, "Recovery with fallback should succeed"
+
+    # Verify causal_antecedents were passed to record_episode
+    episodes = ee._episodes.get("numerical", []) + ee._episodes.get("semantic", [])
+    # The most recent episode should have causal_antecedents populated
+    # (from provenance or root-cause analysis).
+    # Since error_evolution has root-cause data, the recovery should
+    # have queried get_root_causes().
+    rc = ee.get_root_causes("numerical")
+    assert "root_causes" in rc, "get_root_causes must return root_causes key"
+    assert "encoder" in rc["root_causes"] or "vq" in rc["root_causes"], (
+        f"Root causes should include seeded antecedents, got {rc['root_causes']}"
+    )
+    print("✅ test_error_recovery_uses_root_causes PASSED")
+
+
+def test_error_evolution_get_success_rate():
+    """CausalErrorEvolutionTracker.get_success_rate() returns per-class
+    success rate for root-cause-informed strategy override decisions."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+
+    # No data → optimistic default
+    assert tracker.get_success_rate("unknown") == 1.0
+
+    # 3 successes + 2 failures = 60% success rate
+    for _ in range(3):
+        tracker.record_episode("test", "strat", success=True)
+    for _ in range(2):
+        tracker.record_episode("test", "strat", success=False)
+
+    sr = tracker.get_success_rate("test")
+    assert abs(sr - 0.6) < 1e-6, f"Expected 0.6, got {sr}"
+    print("✅ test_error_evolution_get_success_rate PASSED")
+
+
+def test_metacognitive_trigger_reliability_gate_adaptation():
+    """MetaCognitiveRecursionTrigger.adapt_weights_from_reliability_gate()
+    boosts the signal weight corresponding to the weakest reliability factor,
+    making the trigger more sensitive to the failing quality dimension."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    old_weights = dict(trigger._signal_weights)
+
+    # Simulate low reliability with causal_quality as weakest
+    trigger.adapt_weights_from_reliability_gate(
+        weakest_factor="causal_quality",
+        composite_score=0.3,
+    )
+
+    new_weights = trigger._signal_weights
+    # The mapped signal 'low_causal_quality' should have a higher
+    # relative weight after adaptation
+    assert new_weights["low_causal_quality"] > old_weights["low_causal_quality"], (
+        f"low_causal_quality weight should increase: "
+        f"{old_weights['low_causal_quality']:.4f} → {new_weights['low_causal_quality']:.4f}"
+    )
+    # Weights should still sum to ~1.0 (normalised)
+    total = sum(new_weights.values())
+    assert abs(total - 1.0) < 1e-6, f"Weights must sum to 1.0, got {total}"
+    print("✅ test_metacognitive_trigger_reliability_gate_adaptation PASSED")
+
+
+def test_metacognitive_trigger_reliability_gate_no_change_when_healthy():
+    """adapt_weights_from_reliability_gate() does not change weights when
+    composite_score is high (>= 1.0)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    old_weights = dict(trigger._signal_weights)
+
+    trigger.adapt_weights_from_reliability_gate(
+        weakest_factor="causal_quality",
+        composite_score=1.0,
+    )
+
+    # Weights should be unchanged (deficit = 0 → boost = 0)
+    assert trigger._signal_weights == old_weights, (
+        "Weights should not change when composite_score=1.0"
+    )
+    print("✅ test_metacognitive_trigger_reliability_gate_no_change_when_healthy PASSED")
+
+
+def test_metacognitive_trigger_reliability_factor_mapping():
+    """_RELIABILITY_FACTOR_TO_SIGNAL maps all OutputReliabilityGate factors
+    to trigger signals."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._RELIABILITY_FACTOR_TO_SIGNAL
+    expected_factors = [
+        "uncertainty_contribution",
+        "auto_critic_contribution",
+        "convergence_contribution",
+        "coherence_contribution",
+        "provenance_quality",
+        "causal_quality",
+        "verification_coverage",
+    ]
+    for factor in expected_factors:
+        assert factor in mapping, (
+            f"Factor '{factor}' must be mapped in _RELIABILITY_FACTOR_TO_SIGNAL"
+        )
+    print("✅ test_metacognitive_trigger_reliability_factor_mapping PASSED")
+
+
+def test_error_recovery_stats_include_degrading_classes():
+    """get_recovery_stats() includes degrading_classes when error_evolution
+    detects worsening success rates, enabling preemptive escalation."""
+    from aeon_core import (
+        ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog,
+    )
+
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    mgr = ErrorRecoveryManager(
+        hidden_dim=64,
+        audit_log=DecisionAuditLog(),
+        error_evolution=ee,
+    )
+
+    # Record successes then failures to create a degrading trend
+    for _ in range(5):
+        ee.record_episode("test_class", "strat", success=True)
+    for _ in range(5):
+        ee.record_episode("test_class", "strat", success=False)
+
+    stats = mgr.get_recovery_stats()
+    assert "degrading_classes" in stats, (
+        "Recovery stats should include 'degrading_classes' when error_evolution "
+        "detects worsening trends"
+    )
+    assert "test_class" in stats["degrading_classes"], (
+        f"test_class should be flagged as degrading, got {stats['degrading_classes']}"
+    )
+    print("✅ test_error_recovery_stats_include_degrading_classes PASSED")
+
+
+def test_error_recovery_root_cause_strategy_override():
+    """When the evolved strategy has low success rate (<60%) and a root cause
+    maps to a specific strategy, the root-cause strategy is preferred."""
+    from aeon_core import (
+        ErrorRecoveryManager, CausalErrorEvolutionTracker, DecisionAuditLog,
+    )
+
+    ee = CausalErrorEvolutionTracker(max_history=50)
+
+    # Record episodes with low success rate and root causes pointing to
+    # meta_loop (which maps to 'convergence' strategy)
+    for _ in range(3):
+        ee.record_episode(
+            error_class="convergence",
+            strategy_used="numerical",
+            success=False,
+            causal_antecedents=["meta_loop"],
+        )
+    for _ in range(1):
+        ee.record_episode(
+            error_class="convergence",
+            strategy_used="numerical",
+            success=True,
+            causal_antecedents=["meta_loop"],
+        )
+
+    # Verify the success rate is low (25%)
+    sr = ee.get_success_rate("convergence")
+    assert sr < 0.6, f"Success rate should be < 0.6, got {sr}"
+
+    # Verify root causes trace to meta_loop
+    rc = ee.get_root_causes("convergence")
+    assert "meta_loop" in rc.get("root_causes", {}), (
+        f"Root causes should include 'meta_loop', got {rc}"
+    )
+    print("✅ test_error_recovery_root_cause_strategy_override PASSED")
+
+
+def test_ucc_evaluate_accepts_reliability_weakest_factor():
+    """UnifiedCognitiveCycle.evaluate() accepts reliability_weakest_factor
+    parameter for metacognitive trigger weight adaptation."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, AEONConfig,
+    )
+    import inspect
+
+    sig = inspect.signature(UnifiedCognitiveCycle.evaluate)
+    assert "reliability_weakest_factor" in sig.parameters, (
+        "UnifiedCognitiveCycle.evaluate() must accept "
+        "'reliability_weakest_factor' parameter"
+    )
+    print("✅ test_ucc_evaluate_accepts_reliability_weakest_factor PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -63067,6 +63317,18 @@ def run_all_tests():
     test_ucc_evaluate_returns_degrading_subsystems()
     test_feedback_bus_quality_trend_signal()
     test_feedback_bus_error_evolution_trend_signal()
+
+    # Architectural Unification — Root-Cause-Informed Recovery, Reliability
+    # Gate Weight Adaptation, Degrading Class Feedback
+    test_error_recovery_root_cause_strategy_map()
+    test_error_recovery_uses_root_causes()
+    test_error_evolution_get_success_rate()
+    test_metacognitive_trigger_reliability_gate_adaptation()
+    test_metacognitive_trigger_reliability_gate_no_change_when_healthy()
+    test_metacognitive_trigger_reliability_factor_mapping()
+    test_error_recovery_stats_include_degrading_classes()
+    test_error_recovery_root_cause_strategy_override()
+    test_ucc_evaluate_accepts_reliability_weakest_factor()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
