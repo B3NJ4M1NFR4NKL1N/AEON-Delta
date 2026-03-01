@@ -36524,6 +36524,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "output_reliability_gate": "output_reliability_gate",
         "memory_routing": "memory_routing_policy",
         "counterfactual_verification": "counterfactual_gate",
+        "cross_validation_correction": "cross_validator",
     }
 
     # Verify every optional node has a known attribute mapping
