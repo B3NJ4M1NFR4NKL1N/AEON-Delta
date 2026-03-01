@@ -16204,6 +16204,16 @@ class MetaCognitiveRecursionTrigger:
             "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
             "uncertainty_auto_critic_convergence_diverging": "diverging",
             "uncertainty_auto_critic_audit_pattern": "coherence_deficit",
+            # High counterfactual verification loss — causal prediction
+            # inaccuracy detected during training, maps to low_causal_quality
+            # so that recurring counterfactual prediction failures boost
+            # the causal quality trigger signal weight.
+            "high_counterfactual_verification_loss": "low_causal_quality",
+            # Recurring root cause — the UCC detected a module that
+            # repeatedly appears in error chains, indicating systemic
+            # weakness.  Maps to uncertainty so deeper reasoning is
+            # triggered for persistent architectural issues.
+            "recurring_root_cause": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17134,6 +17144,10 @@ class CausalErrorEvolutionTracker:
         # counterfactual prediction inaccuracy maps to the dedicated
         # lambda so loss weight adapts to persistent prediction failures.
         "high_counterfactual_verification_loss": "lambda_counterfactual_verification",
+        # Recurring root cause — the UCC detected a module that
+        # repeatedly appears in error chains.  Maps to lambda_ucc
+        # so training adapts to persistent root-cause patterns.
+        "recurring_root_cause": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
