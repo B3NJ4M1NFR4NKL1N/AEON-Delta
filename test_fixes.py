@@ -24154,7 +24154,14 @@ def test_causal_dag_consensus_single_model():
     """CausalDAGConsensus gracefully handles single-model input."""
     from aeon_core import CausalDAGConsensus
     consensus = CausalDAGConsensus()
-    result = consensus.evaluate({"only_model": torch.eye(3)})
+    # Use a valid DAG adjacency (strictly upper-triangular, no self-loops)
+    # so the self-consistency check yields a perfect score.  torch.eye(3)
+    # would trigger an acyclicity violation due to diagonal self-loops.
+    adj = torch.zeros(3, 3)
+    adj[0, 1] = 0.5
+    adj[0, 2] = 0.3
+    adj[1, 2] = 0.4
+    result = consensus.evaluate({"only_model": adj})
     assert result["consensus_score"] == 1.0
     assert result["needs_escalation"] is False
     assert result["num_models"] == 1
@@ -52903,7 +52910,26 @@ def test_expanded_coherence_registry_defaults():
     print("✅ test_expanded_coherence_registry_defaults PASSED")
 
 
-def test_coherence_registry_comprehensive_forward_pass():
+def test_cross_cutting_subsystems_in_default_expected():
+    """Cross-cutting subsystems (feedback_bus, output_reliability_gate,
+    deeper_meta_loop, ucc_rerun_meta_loop, cycle_consistency) that call
+    register_output() must be in _DEFAULT_EXPECTED so their absence is
+    visible to coverage deficit tracking."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    cross_cutting = {
+        "deeper_meta_loop", "feedback_bus",
+        "output_reliability_gate", "ucc_rerun_meta_loop",
+        "cycle_consistency",
+    }
+    defaults = SubsystemCoherenceRegistry._DEFAULT_EXPECTED
+    for name in cross_cutting:
+        assert name in defaults, (
+            f"{name} registers output but is missing from "
+            f"_DEFAULT_EXPECTED — its failures would be invisible "
+            f"to coverage deficit tracking"
+        )
+    print("✅ test_cross_cutting_subsystems_in_default_expected PASSED")
     """A forward pass through AEONDeltaV3 should register significantly more
     subsystems than the old 10-module baseline."""
     gc.collect()
