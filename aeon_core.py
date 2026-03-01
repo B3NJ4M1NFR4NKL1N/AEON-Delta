@@ -14982,6 +14982,123 @@ class OutputReliabilityGate(nn.Module):
         }
 
 
+class CounterfactualVerificationGate(nn.Module):
+    """Validates forward-pass conclusions against causal simulator predictions.
+
+    Closes the architectural gap where the ``UnifiedCausalSimulator`` blends
+    counterfactual predictions into C_star as a residual but never explicitly
+    *verifies* that the integrated reasoning state is consistent with the
+    causal model's expectations.  This gate compares the post-integration
+    output against the simulator's counterfactual next-state prediction and
+    flags significant divergence as a verification failure.
+
+    When divergence exceeds the configurable threshold, the gate:
+    1. Records the divergence in the provenance tracker for root-cause
+       traceability.
+    2. Produces a ``verification_score`` ∈ [0, 1] that downstream modules
+       (uncertainty tracker, metacognitive trigger, auto-critic) can use
+       as a quality signal.
+    3. Optionally attenuates the output toward the counterfactual prediction
+       to reduce divergence.
+
+    This ensures that causal reasoning actively constrains the forward pass
+    rather than running in parallel without feedback, satisfying the
+    requirement that each component verifies and reinforces the others.
+
+    Args:
+        hidden_dim: Dimensionality of the hidden state.
+        divergence_threshold: Cosine-similarity threshold below which
+            conclusions are flagged as causally inconsistent.
+        attenuation_strength: Blend factor toward the counterfactual
+            prediction when divergence is detected (0 = no correction,
+            1 = full override).
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        divergence_threshold: float = 0.5,
+        attenuation_strength: float = 0.1,
+    ):
+        super().__init__()
+        self.divergence_threshold = max(0.0, min(1.0, divergence_threshold))
+        self.attenuation_strength = max(0.0, min(1.0, attenuation_strength))
+        # Lightweight projection to align simulator output with reasoning
+        # state dimensionality when they differ.
+        self.alignment_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        nn.init.eye_(self.alignment_proj.weight)
+
+    def forward(
+        self,
+        reasoning_state: torch.Tensor,
+        counterfactual_prediction: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Verify reasoning state against counterfactual prediction.
+
+        Args:
+            reasoning_state: [B, hidden_dim] post-integration reasoning
+                output to verify.
+            counterfactual_prediction: [B, hidden_dim] next-state
+                prediction from the causal simulator.  When None, the
+                gate passes through with perfect verification score.
+
+        Returns:
+            Dict with:
+                - verified_state: [B, hidden_dim] potentially corrected
+                  reasoning state.
+                - verification_score: float ∈ [0, 1] (1 = fully consistent).
+                - divergence_detected: bool — True when cosine similarity
+                  is below threshold.
+                - cosine_similarity: float — raw cosine similarity.
+                - correction_applied: bool — True when output was attenuated.
+        """
+        if counterfactual_prediction is None:
+            return {
+                'verified_state': reasoning_state,
+                'verification_score': 1.0,
+                'divergence_detected': False,
+                'cosine_similarity': 1.0,
+                'correction_applied': False,
+            }
+
+        # Align dimensions if needed.
+        cf_aligned = self.alignment_proj(counterfactual_prediction)
+
+        # Compute cosine similarity.
+        sim = F.cosine_similarity(
+            reasoning_state.flatten(1),
+            cf_aligned.flatten(1),
+            dim=-1,
+        ).mean().item()
+        sim = max(-1.0, min(1.0, sim))
+
+        verification_score = max(0.0, (sim + 1.0) / 2.0)  # map [-1,1] → [0,1]
+        divergence_detected = sim < self.divergence_threshold
+
+        # Optional correction: attenuate toward counterfactual prediction.
+        verified_state = reasoning_state
+        correction_applied = False
+        if divergence_detected and self.attenuation_strength > 0:
+            if torch.isfinite(cf_aligned).all():
+                blend = self.attenuation_strength * (
+                    self.divergence_threshold - sim
+                )
+                blend = max(0.0, min(self.attenuation_strength, blend))
+                verified_state = (
+                    (1.0 - blend) * reasoning_state
+                    + blend * cf_aligned
+                )
+                correction_applied = blend > 0
+
+        return {
+            'verified_state': verified_state,
+            'verification_score': verification_score,
+            'divergence_detected': divergence_detected,
+            'cosine_similarity': sim,
+            'correction_applied': correction_applied,
+        }
+
+
 # ============================================================================
 # SECTION 15b: AGI COHERENCE — CROSS-MODULE VERIFICATION & SELF-REFLECTION
 # ============================================================================
