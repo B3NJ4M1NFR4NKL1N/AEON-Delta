@@ -11041,11 +11041,6 @@ class Task2VecMetaLearner(nn.Module):
         self.similarity_threshold = similarity_threshold
         self.ewc_lambda = ewc_lambda
 
-    @property
-    def model(self) -> nn.Module:
-        """Access the wrapped model without creating an nn.Module edge."""
-        return self._model_ref
-
         # Compute raw parameter count for Fisher dimension
         self._param_count = sum(
             p.numel() for p in model.parameters() if p.requires_grad
@@ -11060,6 +11055,11 @@ class Task2VecMetaLearner(nn.Module):
 
         # Task memory: maps embedding → (fisher_diag, optimal_params)
         self._task_memory: List[Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, torch.Tensor]]] = []
+
+    @property
+    def model(self) -> nn.Module:
+        """Access the wrapped model without creating an nn.Module edge."""
+        return self._model_ref
 
     def _compute_fisher_diagonal(
         self, data_loader_fn: Callable, num_samples: int = 200
@@ -15604,6 +15604,47 @@ class CausalDAGConsensus:
         names = list(adjacency_matrices.keys())
         n = len(names)
         if n < 2:
+            # Single-model self-consistency: verify structural validity
+            # of the lone adjacency matrix rather than assuming perfection.
+            # Check for symmetry violation (DAGs should be asymmetric) and
+            # trace-based acyclicity (tr(e^A) - dim ≈ 0 for DAGs).
+            if n == 1:
+                adj = adjacency_matrices[names[0]].detach().float()
+                flat_adj = adj.flatten()
+                # Symmetry score: perfectly symmetric ⇒ undirected ≈ non-DAG
+                if adj.dim() == 2 and adj.shape[0] == adj.shape[1]:
+                    dim = adj.shape[0]
+                    sym_diff = (adj - adj.t()).abs().mean().item()
+                    # Acyclicity: NOTEARS-style h(A) = tr(e^A) - d
+                    _exp_trace = torch.matrix_exp(adj * adj).trace().item()
+                    acyclicity_violation = max(0.0, _exp_trace - dim)
+                    # Normalize to [0, 1]
+                    _norm_violation = min(1.0, acyclicity_violation / max(dim, 1))
+                    # Degenerate check: all-zero or all-one adjacency
+                    _sparsity = flat_adj.abs().mean().item()
+                    _degenerate = 1.0 if (_sparsity < 1e-6 or _sparsity > 0.99) else 0.0
+                    # Composite self-consistency score
+                    _self_score = max(0.0, 1.0 - _norm_violation * 0.5 - _degenerate * 0.3)
+                    _needs = _self_score < self.agreement_threshold
+                    _boost = 0.0
+                    if _needs:
+                        _boost = (
+                            (self.agreement_threshold - _self_score)
+                            / max(self.agreement_threshold, 1e-6)
+                        ) * self.uncertainty_scale
+                    return {
+                        "consensus_score": _self_score,
+                        "pairwise_distances": {},
+                        "needs_escalation": _needs,
+                        "uncertainty_boost": _boost,
+                        "num_models": 1,
+                        "self_consistency": {
+                            "symmetry_diff": sym_diff,
+                            "acyclicity_violation": acyclicity_violation,
+                            "sparsity": _sparsity,
+                            "degenerate": bool(_degenerate),
+                        },
+                    }
             return {
                 "consensus_score": 1.0,
                 "pairwise_distances": {},
@@ -18625,8 +18666,11 @@ class UnifiedCognitiveCycle:
         # closing the gap where unverified subsystems were invisible to
         # the UCC's coherence assessment.
         _registry_coverage_deficit = coverage_deficit
+        _absent_subsystems: List[str] = []
         if _registry_coverage_deficit is None and self.coherence_registry is not None:
             _registry_coverage_deficit = self.coherence_registry.get_coverage_deficit()
+        if self.coherence_registry is not None:
+            _absent_subsystems = self.coherence_registry.get_absent_subsystems()
         if _registry_coverage_deficit is not None and _registry_coverage_deficit > 0.0:
             _cov_boost = _registry_coverage_deficit * 0.3
             coherence_deficit = min(1.0, coherence_deficit + _cov_boost)
@@ -18639,6 +18683,7 @@ class UnifiedCognitiveCycle:
                         success=False,
                         metadata={
                             'coverage_deficit': _registry_coverage_deficit,
+                            'absent_subsystems': _absent_subsystems,
                         },
                     )
             # Critical coverage deficit escalation — when more than half
@@ -18663,6 +18708,7 @@ class UnifiedCognitiveCycle:
                             'coverage_deficit': _registry_coverage_deficit,
                             'uncertainty_boost': _critical_cov_boost,
                             'dominant_provenance_module': _cov_dominant,
+                            'absent_subsystems': _absent_subsystems,
                         },
                     )
 
@@ -19731,6 +19777,7 @@ class UnifiedCognitiveCycle:
             },
             'convergence_certificate': convergence_certificate or {},
             'coverage_deficit': _registry_coverage_deficit or 0.0,
+            'absent_subsystems': _absent_subsystems,
             'reconciler_threshold_adapted': (
                 _original_reconciler_threshold is not None
                 and self.cross_validation_reconciler is not None
@@ -26573,6 +26620,24 @@ class AEONDeltaV3(nn.Module):
                             "threshold": _wm_xv_thresh,
                         },
                     )
+                # 5b1a-xv-correct. Within-pass world model reconciliation
+                # — when the two world models diverge, blend C_star toward
+                # the mean of their predictions to correct the reasoning
+                # state.  This ensures divergence triggers a corrective
+                # action within the current pass rather than only
+                # escalating uncertainty.
+                if (torch.isfinite(_wm_predicted).all()
+                        and torch.isfinite(_hwm_predicted).all()
+                        and _wm_predicted.shape == C_star.shape):
+                    _wm_consensus = 0.5 * (_wm_predicted + _hwm_predicted)
+                    _wm_corr_alpha = min(0.1, _wm_xv_boost * 0.5)
+                    C_star = (1.0 - _wm_corr_alpha) * C_star + _wm_corr_alpha * _wm_consensus.detach()
+                    self.audit_log.record(
+                        "world_model_cross_validation", "reconciled", {
+                            "correction_alpha": _wm_corr_alpha,
+                            "divergence": _wm_divergence,
+                        },
+                    )
 
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
@@ -27311,6 +27376,30 @@ class AEONDeltaV3(nn.Module):
                         severity="warning",
                         metadata=self._last_memory_cross_validation,
                     )
+                # 5c5-cv-correct. Within-pass memory reconciliation — when
+                # memory subsystems disagree, dampen C_star toward the most
+                # reliable memory snapshot.  This ensures memory
+                # inconsistency triggers a corrective action within the
+                # current pass rather than only escalating uncertainty for
+                # the next pass.
+                if _per_system_reliability:
+                    _most_reliable = max(
+                        _per_system_reliability,
+                        key=_per_system_reliability.get,
+                    )
+                    _reliable_snap = _mem_snapshots.get(_most_reliable)
+                    if (_reliable_snap is not None
+                            and _reliable_snap.shape == C_star.shape
+                            and torch.isfinite(_reliable_snap).all()):
+                        _reconcile_alpha = min(0.15, _MEM_CV_BOOST)
+                        C_star = (1.0 - _reconcile_alpha) * C_star + _reconcile_alpha * _reliable_snap
+                        self.audit_log.record(
+                            "memory_cross_validation", "reconciled", {
+                                "most_reliable": _most_reliable,
+                                "reconcile_alpha": _reconcile_alpha,
+                                "mean_similarity": _mean_mem_sim,
+                            },
+                        )
             self.coherence_registry.register_output("memory_cross_validation", validated=not _mem_inconsistent)
             self.provenance_tracker.record_before("memory_cross_validation", C_star)
             self.provenance_tracker.record_after("memory_cross_validation", C_star)

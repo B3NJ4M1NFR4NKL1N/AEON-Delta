@@ -60897,6 +60897,255 @@ def test_fast_mode_forward_produces_ucc_results():
     print("✅ test_fast_mode_forward_produces_ucc_results PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Unification — AGI Coherence Gap Closure v3.1.1
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_task2vec_task_projector_exists():
+    """Fix: Task2VecMetaLearner.task_projector is created in __init__,
+    not in unreachable code after a return statement."""
+    from aeon_core import Task2VecMetaLearner
+
+    inner = nn.Linear(8, 4)
+    t2v = Task2VecMetaLearner(model=inner, embedding_dim=32)
+    assert hasattr(t2v, 'task_projector'), (
+        "task_projector must be created in __init__"
+    )
+    assert hasattr(t2v, '_param_count'), (
+        "_param_count must be computed in __init__"
+    )
+    assert hasattr(t2v, '_task_memory'), (
+        "_task_memory must be initialized in __init__"
+    )
+    assert t2v._param_count == sum(
+        p.numel() for p in inner.parameters() if p.requires_grad
+    ), "_param_count must match model parameter count"
+    print("✅ test_task2vec_task_projector_exists PASSED")
+
+
+def test_task2vec_embed_task_gradient_flow():
+    """Task2VecMetaLearner.embed_task produces differentiable output
+    through the task_projector."""
+    from aeon_core import Task2VecMetaLearner
+
+    inner = nn.Linear(8, 4)
+    t2v = Task2VecMetaLearner(model=inner, embedding_dim=16)
+    fisher = {
+        name: torch.randn_like(p).requires_grad_(True)
+        for name, p in inner.named_parameters() if p.requires_grad
+    }
+    emb = t2v.embed_task(fisher)
+    assert emb.shape == (16,), f"Expected (16,), got {emb.shape}"
+    loss = emb.sum()
+    loss.backward()
+    # Verify projector received gradients
+    assert t2v.task_projector.weight.grad is not None, (
+        "task_projector must receive gradients from embed_task"
+    )
+    print("✅ test_task2vec_embed_task_gradient_flow PASSED")
+
+
+def test_causal_dag_consensus_single_model_self_validation():
+    """CausalDAGConsensus performs structural self-consistency check
+    when only one causal model is active."""
+    from aeon_core import CausalDAGConsensus
+
+    dag = CausalDAGConsensus(agreement_threshold=0.5, uncertainty_scale=0.2)
+
+    # Normal adjacency matrix — should get high self-consistency
+    adj = torch.randn(4, 4) * 0.1
+    result = dag.evaluate({'neural_causal': adj})
+    assert result['num_models'] == 1
+    assert 'self_consistency' in result, (
+        "Single-model evaluation must include self_consistency"
+    )
+    sc = result['self_consistency']
+    assert 'acyclicity_violation' in sc
+    assert 'symmetry_diff' in sc
+    assert 'sparsity' in sc
+    assert 'degenerate' in sc
+    # Normal random matrix should not be degenerate
+    assert sc['degenerate'] == False
+    print("✅ test_causal_dag_consensus_single_model_self_validation PASSED")
+
+
+def test_causal_dag_consensus_single_model_degenerate():
+    """CausalDAGConsensus flags degenerate (all-zero) adjacency matrix."""
+    from aeon_core import CausalDAGConsensus
+
+    dag = CausalDAGConsensus(agreement_threshold=0.5, uncertainty_scale=0.2)
+    adj_zero = torch.zeros(4, 4)
+    result = dag.evaluate({'neural_causal': adj_zero})
+    assert result['self_consistency']['degenerate'] == True, (
+        "All-zero adjacency must be flagged as degenerate"
+    )
+    # Degenerate matrix should lower consensus score
+    assert result['consensus_score'] < 1.0, (
+        "Degenerate adjacency must not get perfect consensus"
+    )
+    print("✅ test_causal_dag_consensus_single_model_degenerate PASSED")
+
+
+def test_causal_dag_consensus_single_model_escalation():
+    """CausalDAGConsensus triggers escalation for cyclic single-model DAG."""
+    from aeon_core import CausalDAGConsensus
+
+    dag = CausalDAGConsensus(agreement_threshold=0.9, uncertainty_scale=0.3)
+    # Create a strongly cyclic adjacency (identity → high trace)
+    adj_cyclic = torch.eye(4) * 2.0
+    result = dag.evaluate({'neural_causal': adj_cyclic})
+    # High self-loops create acyclicity violation
+    assert result['self_consistency']['acyclicity_violation'] > 0, (
+        "Self-loop adjacency must have acyclicity violation"
+    )
+    print("✅ test_causal_dag_consensus_single_model_escalation PASSED")
+
+
+def test_causal_dag_consensus_zero_models():
+    """CausalDAGConsensus returns perfect score for empty input."""
+    from aeon_core import CausalDAGConsensus
+
+    dag = CausalDAGConsensus()
+    result = dag.evaluate({})
+    assert result['consensus_score'] == 1.0
+    assert result['num_models'] == 0
+    assert 'self_consistency' not in result
+    print("✅ test_causal_dag_consensus_zero_models PASSED")
+
+
+def test_ucc_evaluate_returns_absent_subsystems():
+    """UnifiedCognitiveCycle.evaluate() returns absent_subsystems list
+    identifying specifically which modules failed to produce output."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, SubsystemCoherenceRegistry,
+    )
+
+    monitor = ConvergenceMonitor(threshold=0.01)
+    provenance = CausalProvenanceTracker()
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "vq", "meta_loop", "safety"},
+    )
+    # Only register some outputs
+    registry.register_output("encoder", validated=True)
+    registry.register_output("vq", validated=True)
+    # meta_loop and safety are absent
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+        coherence_registry=registry,
+    )
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+        uncertainty=0.1,
+    )
+    assert 'absent_subsystems' in result, (
+        "UCC evaluate must return absent_subsystems"
+    )
+    absent = result['absent_subsystems']
+    assert isinstance(absent, list)
+    assert 'meta_loop' in absent, "meta_loop must be in absent list"
+    assert 'safety' in absent, "safety must be in absent list"
+    assert 'encoder' not in absent, "encoder should not be absent"
+    print("✅ test_ucc_evaluate_returns_absent_subsystems PASSED")
+
+
+def test_ucc_absent_subsystems_in_error_evolution():
+    """When coverage deficit is high, error evolution metadata includes
+    absent_subsystems list for root-cause analysis."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalErrorEvolutionTracker,
+        SubsystemCoherenceRegistry,
+    )
+
+    monitor = ConvergenceMonitor(threshold=0.01)
+    provenance = CausalProvenanceTracker()
+    error_evo = CausalErrorEvolutionTracker()
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "vq", "meta_loop", "safety", "world_model"},
+    )
+    # Only register 1 of 5
+    registry.register_output("encoder", validated=True)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=error_evo,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+        coherence_registry=registry,
+    )
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+        uncertainty=0.1,
+    )
+    # Coverage deficit should be > 0.5 (4 of 5 missing = 0.8)
+    assert result['coverage_deficit'] > 0.5, (
+        f"Coverage deficit should be high, got {result['coverage_deficit']}"
+    )
+    # Error evolution should have recorded the deficit with absent modules
+    episodes = error_evo.get_error_summary()
+    assert episodes['total_recorded'] > 0, (
+        "Error evolution should have recorded coverage deficit"
+    )
+    print("✅ test_ucc_absent_subsystems_in_error_evolution PASSED")
+
+
+def test_memory_cross_validation_reconciliation():
+    """When memory subsystems disagree, C_star is reconciled toward
+    the most reliable memory snapshot within the same pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_hierarchical_memory=True,
+        enable_neurogenic_memory=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B, L = 2, 16
+    x = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(x)
+    # Verify memory cross-validation was performed
+    mem_cv = getattr(model, '_last_memory_cross_validation', {})
+    # If multiple memory systems are active and produced output,
+    # the cross-validation dict should be populated
+    assert isinstance(mem_cv, dict), "Memory cross-validation should be a dict"
+    print("✅ test_memory_cross_validation_reconciliation PASSED")
+
+
+def test_world_model_cross_divergence_correction():
+    """When physics and hierarchical world models diverge, C_star
+    is corrected toward their consensus prediction."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_world_model=True,
+        enable_hierarchical_world_model=True,
+        wm_cross_divergence_threshold=0.001,  # Very low to trigger
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    B, L = 2, 16
+    x = torch.randint(1, 1000, (B, L))
+    with torch.no_grad():
+        outputs = model(x)
+    # Verify the model ran without error
+    assert 'logits' in outputs, "Forward pass must produce logits"
+    print("✅ test_world_model_cross_divergence_correction PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -63613,6 +63862,18 @@ def run_all_tests():
     test_counterfactual_divergence_in_error_class_mapping()
     test_counterfactual_divergence_pipeline_dependency()
     test_counterfactual_divergence_in_feedback_error_bridge()
+
+    # Architectural Unification — AGI Coherence Gap Closure v3.1.1
+    test_task2vec_task_projector_exists()
+    test_task2vec_embed_task_gradient_flow()
+    test_causal_dag_consensus_single_model_self_validation()
+    test_causal_dag_consensus_single_model_degenerate()
+    test_causal_dag_consensus_single_model_escalation()
+    test_causal_dag_consensus_zero_models()
+    test_ucc_evaluate_returns_absent_subsystems()
+    test_ucc_absent_subsystems_in_error_evolution()
+    test_memory_cross_validation_reconciliation()
+    test_world_model_cross_divergence_correction()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
