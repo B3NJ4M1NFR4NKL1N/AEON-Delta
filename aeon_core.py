@@ -16456,6 +16456,14 @@ class CausalErrorEvolutionTracker:
         # decision, closing the gap between error evolution learning and
         # causal traceability.
         self._causal_trace: Optional['TemporalCausalTraceBuffer'] = None
+        # Per-class success-rate trend EMA — tracks whether recovery
+        # effectiveness is improving (negative trend) or degrading
+        # (positive trend) over time.  This enables downstream consumers
+        # (feedback bus, metacognitive trigger) to distinguish transient
+        # failures from systematically worsening error classes.
+        self._success_rate_trend: Dict[str, float] = {}
+        self._trend_alpha: float = 0.3
+        self._prev_success_rate: Dict[str, float] = {}
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -16501,6 +16509,18 @@ class CausalErrorEvolutionTracker:
             if len(self._episodes[error_class]) > self._max_history:
                 self._episodes[error_class] = self._episodes[error_class][-self._max_history:]
             self._total_recorded += 1
+            # Update per-class success-rate trend EMA.
+            eps = self._episodes[error_class]
+            current_sr = sum(1 for e in eps if e["success"]) / max(len(eps), 1)
+            prev_sr = self._prev_success_rate.get(error_class, current_sr)
+            # delta = prev - current: positive means success rate dropped
+            delta = prev_sr - current_sr
+            old_trend = self._success_rate_trend.get(error_class, 0.0)
+            self._success_rate_trend[error_class] = (
+                self._trend_alpha * delta
+                + (1.0 - self._trend_alpha) * old_trend
+            )
+            self._prev_success_rate[error_class] = current_sr
         # Propagate to causal trace when connected.  Skip the "none"
         # error class (routine success bookkeeping) to avoid diluting
         # the trace buffer with entries that carry no causal signal —
@@ -16578,8 +16598,40 @@ class CausalErrorEvolutionTracker:
                     cls_stats["mean_loss_magnitude"] = (
                         sum(loss_values) / len(loss_values)
                     )
+                cls_stats["success_rate_trend"] = (
+                    self._success_rate_trend.get(cls, 0.0)
+                )
                 summary["error_classes"][cls] = cls_stats
             return summary
+
+    def get_degrading_error_classes(
+        self, trend_threshold: float = 0.05,
+    ) -> Dict[str, float]:
+        """Return error classes whose recovery success rate is degrading.
+
+        Uses the per-class success-rate trend EMA to identify error
+        classes where recovery effectiveness is systematically worsening.
+        Positive trend values indicate degradation (success rate dropping).
+
+        This enables the feedback bus and metacognitive trigger to
+        distinguish transient failure spikes from persistent degradation,
+        allowing targeted escalation for chronically worsening error
+        classes.
+
+        Args:
+            trend_threshold: Minimum positive trend EMA to consider an
+                error class as degrading.  Default 0.05 filters noise.
+
+        Returns:
+            Dict mapping error class name → trend magnitude (positive
+            values only).
+        """
+        with self._lock:
+            return {
+                cls: trend
+                for cls, trend in self._success_rate_trend.items()
+                if trend > trend_threshold
+            }
 
     def get_root_causes(self, error_class: str) -> Dict[str, Any]:
         """Trace causal antecedent chains to identify root causes.
@@ -17217,12 +17269,33 @@ class SubsystemCoherenceRegistry:
         self._current_pass_quality: Dict[str, float] = {}
         self._history: deque = deque(maxlen=max(1, history_maxlen))
         self._total_passes: int = 0
+        # Per-subsystem quality trend EMA — tracks whether each subsystem's
+        # quality is systematically improving or degrading across passes.
+        # Positive trend = degrading (quality getting worse), negative = improving.
+        self._quality_trend_ema: Dict[str, float] = {}
+        self._quality_trend_alpha: float = 0.3
+        # Previous pass quality snapshot for delta computation.
+        self._prev_pass_quality: Dict[str, float] = {}
 
     def begin_pass(self) -> None:
         """Start a new forward-pass ledger entry."""
         with self._lock:
             if self._current_pass:
                 self._history.append(dict(self._current_pass))
+            # Update quality trend EMA before resetting current pass.
+            # Delta = previous_quality - current_quality: positive means
+            # quality degraded from the prior pass.
+            if self._prev_pass_quality and self._current_pass_quality:
+                alpha = self._quality_trend_alpha
+                for name in self._expected:
+                    prev_q = self._prev_pass_quality.get(name, 0.0)
+                    curr_q = self._current_pass_quality.get(name, 0.0)
+                    delta = prev_q - curr_q  # positive = degrading
+                    old_ema = self._quality_trend_ema.get(name, 0.0)
+                    self._quality_trend_ema[name] = (
+                        alpha * delta + (1.0 - alpha) * old_ema
+                    )
+            self._prev_pass_quality = dict(self._current_pass_quality)
             self._current_pass = {name: False for name in self._expected}
             self._current_pass_quality = {name: 0.0 for name in self._expected}
             self._total_passes += 1
@@ -17304,6 +17377,7 @@ class SubsystemCoherenceRegistry:
             "absent_subsystems": self.get_absent_subsystems(),
             "persistently_absent": self.get_persistently_absent(),
             "low_quality_subsystems": self.get_low_quality_subsystems(),
+            "degrading_subsystems": self.get_degrading_subsystems(),
             "expected_count": len(self._expected),
             "history_length": len(self._history),
         }
@@ -17323,6 +17397,37 @@ class SubsystemCoherenceRegistry:
                 name: 1.0 - quality
                 for name, quality in self._current_pass_quality.items()
                 if quality < quality_threshold
+            }
+
+    def get_degrading_subsystems(
+        self, trend_threshold: float = 0.1,
+    ) -> Dict[str, float]:
+        """Return subsystems whose quality is systematically degrading.
+
+        Uses the cross-pass quality trend EMA to identify subsystems
+        where quality is consistently dropping.  Positive trend values
+        indicate degradation (quality decreasing over successive passes).
+
+        This enables the meta-cognitive cycle to escalate uncertainty
+        for subsystems that are not just currently weak (captured by
+        ``get_low_quality_subsystems``) but *trending downward*, catching
+        slow architectural drift before quality drops below hard
+        thresholds.
+
+        Args:
+            trend_threshold: Minimum positive trend EMA to consider a
+                subsystem as degrading.  Default 0.1 filters out noise.
+
+        Returns:
+            Dict mapping subsystem name → trend magnitude (positive
+            values only), suitable for injection into per-module
+            uncertainty or feedback bus signals.
+        """
+        with self._lock:
+            return {
+                name: trend
+                for name, trend in self._quality_trend_ema.items()
+                if trend > trend_threshold
             }
 
     def adjust_expected_for_config(self, config: 'AEONConfig') -> None:
@@ -18992,6 +19097,17 @@ class UnifiedCognitiveCycle:
                         _lq_name, _lq_deficit,
                         source_label="low_quality_subsystem",
                     )
+                # 7c-iii-b. Degrading subsystems → directional uncertainty —
+                # when quality is systematically declining (positive trend
+                # EMA), record per-subsystem trend pressure so that the
+                # metacognitive trigger can target subsystems experiencing
+                # progressive drift, not just those currently below threshold.
+                _degrading = self.coherence_registry.get_degrading_subsystems()
+                for _dg_name, _dg_trend in _degrading.items():
+                    self.uncertainty_tracker.record(
+                        _dg_name, min(1.0, _dg_trend),
+                        source_label="degrading_quality_trend",
+                    )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -19344,9 +19460,13 @@ class UnifiedCognitiveCycle:
         # tracked in the registry but never fed back to influence the
         # next pass's meta-loop conditioning.
         _low_quality_subsystems: Dict[str, float] = {}
+        _degrading_subsystems: Dict[str, float] = {}
         if self.coherence_registry is not None:
             _low_quality_subsystems = (
                 self.coherence_registry.get_low_quality_subsystems()
+            )
+            _degrading_subsystems = (
+                self.coherence_registry.get_degrading_subsystems()
             )
 
         return {
@@ -19390,6 +19510,7 @@ class UnifiedCognitiveCycle:
             'correction_guidance': correction_guidance,
             'cross_pass_recurring_roots': _cross_pass_chain_roots,
             'low_quality_subsystems': _low_quality_subsystems,
+            'degrading_subsystems': _degrading_subsystems,
         }
 
     def reset(self) -> None:
@@ -19505,6 +19626,13 @@ class AEONDeltaV3(nn.Module):
         # is required.
         ("factor_extraction", "cross_validation"),
         ("causal_model", "cross_validation"),
+        # Cross-validation correction attenuation sits between the
+        # reconciler output and downstream consumers; when agreement
+        # is low, the correction dampens the reconciled state.  This
+        # edge ensures provenance can trace the attenuation step as a
+        # separate causal decision from the initial reconciliation.
+        ("cross_validation", "cross_validation_correction"),
+        ("cross_validation_correction", "unified_simulator"),
         ("causal_model", "notears_causal"),
         ("notears_causal", "causal_programmatic"),
         ("ns_bridge", "temporal_knowledge_graph"),
@@ -19776,6 +19904,10 @@ class AEONDeltaV3(nn.Module):
         "complexity_estimator": "complexity_estimator",
         "consistency_gate": "consistency_gate",
         "cross_validation": "cross_validator",
+        # cross_validation_correction is the attenuation step after
+        # reconciliation — backed by the same cross_validator module
+        # since it applies the correction signal computed by that module.
+        "cross_validation_correction": "cross_validator",
         "self_report": "self_reporter",
         "safety": "safety_system",
         "cognitive_executive": "cognitive_executive",
@@ -21965,6 +22097,22 @@ class AEONDeltaV3(nn.Module):
                     extra["error_evolution_pressure"] = max(
                         0.0, min(1.0, _total_pressure / max(_active_classes, 1)),
                     )
+                # Error evolution trend direction — surface the trend of
+                # recovery effectiveness across error classes.  When
+                # success rates are systematically dropping (positive
+                # trend), signal the meta-loop to deepen reasoning.
+                # This complements aggregate pressure (which captures
+                # current failure severity) with directional information
+                # (whether failures are getting worse or improving).
+                _degrading_classes = _ee.get_degrading_error_classes()
+                if _degrading_classes:
+                    _trend_mean = sum(_degrading_classes.values()) / max(
+                        len(_degrading_classes), 1,
+                    )
+                    if _trend_mean > 0.03:
+                        extra["error_evolution_trend_pressure"] = max(
+                            0.0, min(1.0, _trend_mean),
+                        )
             except Exception:
                 pass
         # Uncertainty propagation cascade pressure — when the
@@ -22027,6 +22175,21 @@ class AEONDeltaV3(nn.Module):
                 extra["low_quality_subsystem_pressure"] = max(
                     0.0, min(1.0, _lq_mean),
                 )
+        # Degrading subsystem trend pressure — when subsystem quality is
+        # systematically declining across passes (positive quality trend
+        # EMA), signal the meta-loop to deepen reasoning proactively.
+        # This catches slow architectural drift that per-pass quality
+        # checks miss: a subsystem whose quality is 0.6 but trending
+        # downward warrants more attention than one at 0.5 but stable.
+        _cov_registry = getattr(self, 'coherence_registry', None)
+        if _cov_registry is not None:
+            _degrading = _cov_registry.get_degrading_subsystems()
+            if _degrading:
+                _deg_mean = sum(_degrading.values()) / max(len(_degrading), 1)
+                if _deg_mean > 0.05:
+                    extra["quality_trend_degradation_pressure"] = max(
+                        0.0, min(1.0, _deg_mean),
+                    )
         # Cross-pass recurring root-cause pressure — when the UCC's
         # chain buffer detects modules that recurrently appear as root
         # causes across recent forward passes, signal the meta-loop to
@@ -27920,7 +28083,20 @@ class AEONDeltaV3(nn.Module):
             )
             if _cv_correction.get("low_agreement", False):
                 _attn = _cv_correction["attenuation"]
+                # Track the correction attenuation in provenance so that
+                # root-cause analysis can trace output changes through
+                # the reconciler's confidence adjustment, not just the
+                # initial reconciliation.  Without this, provenance
+                # records the pre-correction state but misses the
+                # attenuation delta, breaking root-cause traceability
+                # for corrections applied after reconciliation.
+                self.provenance_tracker.record_before(
+                    "cross_validation_correction", C_star,
+                )
                 C_star = C_star * _attn
+                self.provenance_tracker.record_after(
+                    "cross_validation_correction", C_star,
+                )
             # 5d2-causal. Cross-validation → causal model supervision —
             # when factor–causal agreement is low, the reconciled state
             # represents a corrected consensus that the causal world model
@@ -38650,6 +38826,40 @@ class AEONDeltaV3(nn.Module):
             )
         _output_gate_coverage = 1.0 if _output_reliability_active else 0.0
         mutual_verification['output_gate_coverage'] = _output_gate_coverage
+
+        # ── 4c. UncertaintyPropagationBus ↔ provenance DAG alignment ─
+        # Verify that the UPB propagates uncertainty along the same
+        # edges the provenance tracker tracks.  When the UPB uses
+        # pipeline dependency edges that are absent from the provenance
+        # DAG, uncertainty cascades operate on a different graph than
+        # root-cause attribution, creating an inconsistency where
+        # uncertainty targets modules that provenance cannot trace.
+        _upb = getattr(self, 'uncertainty_propagation', None)
+        _upb_provenance_aligned = True
+        _upb_misaligned_edges: List[Tuple[str, str]] = []
+        if _upb is not None and _traceable_nodes:
+            # Collect provenance edges as a set of (source, target)
+            _prov_edge_set: Set[Tuple[str, str]] = set()
+            for _target, _sources in _prov_deps.items():
+                if isinstance(_sources, (set, list)):
+                    for _src in _sources:
+                        _prov_edge_set.add((_src, _target))
+            # Check critical edges are in provenance DAG
+            for _edge in (getattr(_upb, '_critical_edges', set()) or set()):
+                if _edge not in _prov_edge_set:
+                    _upb_misaligned_edges.append(_edge)
+            _upb_provenance_aligned = len(_upb_misaligned_edges) == 0
+            if not _upb_provenance_aligned:
+                recommendations.append(
+                    f"Align UPB critical edges with provenance DAG: "
+                    f"{len(_upb_misaligned_edges)} edge(s) misaligned"
+                )
+        root_cause_traceability['upb_provenance_aligned'] = (
+            _upb_provenance_aligned
+        )
+        root_cause_traceability['upb_misaligned_edges'] = (
+            _upb_misaligned_edges
+        )
 
         # ── Composite verdict ─────────────────────────────────────
         is_unified = (

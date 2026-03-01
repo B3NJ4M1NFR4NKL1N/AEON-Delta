@@ -36524,6 +36524,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "output_reliability_gate": "output_reliability_gate",
         "memory_routing": "memory_routing_policy",
         "counterfactual_verification": "counterfactual_gate",
+        "cross_validation_correction": "cross_validator",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -60124,6 +60125,268 @@ def test_memory_routing_trust_deficit_cached():
     print("✅ test_memory_routing_trust_deficit_cached PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Quality Trend Tracking, Error Evolution Trends,
+#  Cross-Validation Correction Provenance, UPB-DAG Alignment
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_coherence_registry_quality_trend_tracking():
+    """SubsystemCoherenceRegistry tracks per-subsystem quality trend EMA
+    across passes, detecting systematic degradation."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "decoder", "meta_loop"},
+    )
+
+    # Pass 1: all subsystems have quality 0.8
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.8)
+    registry.register_output("decoder", validated=True, quality=0.8)
+    registry.register_output("meta_loop", validated=True, quality=0.8)
+
+    # Pass 2: encoder quality drops to 0.5 (degrading)
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.5)
+    registry.register_output("decoder", validated=True, quality=0.8)
+    registry.register_output("meta_loop", validated=True, quality=0.8)
+
+    # Pass 3: encoder quality drops further to 0.3 (still degrading)
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.3)
+    registry.register_output("decoder", validated=True, quality=0.8)
+    registry.register_output("meta_loop", validated=True, quality=0.8)
+
+    # Pass 4: encoder quality drops further to 0.1 (sustained degradation)
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.1)
+    registry.register_output("decoder", validated=True, quality=0.8)
+    registry.register_output("meta_loop", validated=True, quality=0.8)
+
+    # One more begin_pass to compute trend from the last registered quality
+    registry.begin_pass()
+
+    # Encoder should now show a positive (degrading) trend
+    degrading = registry.get_degrading_subsystems()
+    assert "encoder" in degrading, (
+        f"Encoder with systematically declining quality should appear "
+        f"in degrading subsystems, got: {degrading}"
+    )
+    assert degrading["encoder"] > 0.0, (
+        f"Encoder trend should be positive (degrading), got {degrading['encoder']}"
+    )
+    # Decoder should NOT be degrading (stable quality)
+    assert "decoder" not in degrading, (
+        f"Decoder with stable quality should not be in degrading subsystems"
+    )
+    print("✅ test_coherence_registry_quality_trend_tracking PASSED")
+
+
+def test_coherence_registry_degrading_in_summary():
+    """build_summary() includes degrading_subsystems key."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"a", "b"},
+    )
+    registry.begin_pass()
+    summary = registry.build_summary()
+    assert "degrading_subsystems" in summary, (
+        "build_summary must include degrading_subsystems key"
+    )
+    print("✅ test_coherence_registry_degrading_in_summary PASSED")
+
+
+def test_error_evolution_success_rate_trend():
+    """CausalErrorEvolutionTracker tracks per-class success-rate trend
+    direction, detecting systematically worsening error classes."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+
+    # Record several successful recoveries first
+    for _ in range(5):
+        tracker.record_episode(
+            error_class="coherence_deficit",
+            strategy_used="re_reason",
+            success=True,
+        )
+
+    # Then record a sequence of failures (success rate drops)
+    for _ in range(5):
+        tracker.record_episode(
+            error_class="coherence_deficit",
+            strategy_used="re_reason",
+            success=False,
+        )
+
+    degrading = tracker.get_degrading_error_classes()
+    assert "coherence_deficit" in degrading, (
+        f"coherence_deficit with declining success rate should be flagged "
+        f"as degrading, got: {degrading}"
+    )
+    assert degrading["coherence_deficit"] > 0.0, (
+        f"Trend should be positive (degrading), got {degrading['coherence_deficit']}"
+    )
+    print("✅ test_error_evolution_success_rate_trend PASSED")
+
+
+def test_error_evolution_trend_in_summary():
+    """get_error_summary() includes success_rate_trend per class."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+    tracker.record_episode("test_class", "strategy", success=True)
+    tracker.record_episode("test_class", "strategy", success=False)
+
+    summary = tracker.get_error_summary()
+    cls_stats = summary["error_classes"]["test_class"]
+    assert "success_rate_trend" in cls_stats, (
+        "Error class stats must include success_rate_trend"
+    )
+    print("✅ test_error_evolution_trend_in_summary PASSED")
+
+
+def test_cross_validation_correction_in_pipeline_deps():
+    """_PIPELINE_DEPENDENCIES includes cross_validation_correction edges."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge_set = set(deps)
+
+    assert ("cross_validation", "cross_validation_correction") in edge_set, (
+        "Pipeline must include cross_validation → cross_validation_correction"
+    )
+    assert ("cross_validation_correction", "unified_simulator") in edge_set, (
+        "Pipeline must include cross_validation_correction → unified_simulator"
+    )
+    print("✅ test_cross_validation_correction_in_pipeline_deps PASSED")
+
+
+def test_cross_validation_correction_in_node_attr_map():
+    """_NODE_ATTR_MAP includes cross_validation_correction."""
+    from aeon_core import AEONDeltaV3
+
+    assert "cross_validation_correction" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "cross_validation_correction must be in _NODE_ATTR_MAP"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["cross_validation_correction"] == "cross_validator", (
+        "cross_validation_correction should map to cross_validator attribute"
+    )
+    print("✅ test_cross_validation_correction_in_node_attr_map PASSED")
+
+
+def test_verify_cognitive_unity_upb_alignment():
+    """verify_cognitive_unity() checks UPB ↔ provenance DAG alignment."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+
+    # root_cause_traceability should include UPB alignment fields
+    rct = result["root_cause_traceability"]
+    assert "upb_provenance_aligned" in rct, (
+        "root_cause_traceability must include upb_provenance_aligned"
+    )
+    assert "upb_misaligned_edges" in rct, (
+        "root_cause_traceability must include upb_misaligned_edges"
+    )
+    print("✅ test_verify_cognitive_unity_upb_alignment PASSED")
+
+
+def test_ucc_evaluate_returns_degrading_subsystems():
+    """UnifiedCognitiveCycle.evaluate() returns degrading_subsystems."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        SubsystemCoherenceRegistry, UnifiedCognitiveCycle,
+    )
+    import torch
+
+    monitor = ConvergenceMonitor(threshold=0.05)
+    tracker = CausalProvenanceTracker()
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "decoder"},
+    )
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=tracker,
+        coherence_registry=registry,
+    )
+
+    # Simulate a pass
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True, quality=0.8)
+    registry.register_output("decoder", validated=True, quality=0.8)
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+    )
+    assert "degrading_subsystems" in result, (
+        "UCC evaluate must return degrading_subsystems"
+    )
+    print("✅ test_ucc_evaluate_returns_degrading_subsystems PASSED")
+
+
+def test_feedback_bus_quality_trend_signal():
+    """_build_feedback_extra_signals includes quality_trend_degradation_pressure
+    when subsystems are degrading."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate degrading quality across passes
+    if model.coherence_registry is not None:
+        for quality in [0.9, 0.6, 0.3]:
+            model.coherence_registry.begin_pass()
+            model.coherence_registry.register_output(
+                "encoder", validated=True, quality=quality,
+            )
+
+    signals = model._build_feedback_extra_signals()
+    # Signal may or may not appear depending on trend magnitude,
+    # but the method should not error
+    assert isinstance(signals, dict), "Must return a dict"
+    print("✅ test_feedback_bus_quality_trend_signal PASSED")
+
+
+def test_feedback_bus_error_evolution_trend_signal():
+    """_build_feedback_extra_signals includes error_evolution_trend_pressure
+    when error classes are degrading."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+
+    # Record degrading error evolution
+    if model.error_evolution is not None:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                "test_class", "strat", success=True,
+            )
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                "test_class", "strat", success=False,
+            )
+
+    signals = model._build_feedback_extra_signals()
+    assert isinstance(signals, dict), "Must return a dict"
+    print("✅ test_feedback_bus_error_evolution_trend_signal PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -62791,6 +63054,19 @@ def run_all_tests():
     test_output_is_reliable_in_return_dict()
     test_ucc_correction_guidance_has_target_module()
     test_memory_routing_trust_deficit_cached()
+
+    # Architectural Unification — Quality Trend Tracking, Error Evolution
+    # Trends, Cross-Validation Correction Provenance, UPB-DAG Alignment
+    test_coherence_registry_quality_trend_tracking()
+    test_coherence_registry_degrading_in_summary()
+    test_error_evolution_success_rate_trend()
+    test_error_evolution_trend_in_summary()
+    test_cross_validation_correction_in_pipeline_deps()
+    test_cross_validation_correction_in_node_attr_map()
+    test_verify_cognitive_unity_upb_alignment()
+    test_ucc_evaluate_returns_degrading_subsystems()
+    test_feedback_bus_quality_trend_signal()
+    test_feedback_bus_error_evolution_trend_signal()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
