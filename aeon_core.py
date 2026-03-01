@@ -17558,6 +17558,188 @@ class MemoryReasoningValidator:
         }
 
 
+class MemoryRoutingPolicy:
+    """Routes memory queries to the most appropriate subsystem with trust gating.
+
+    Closes the architectural gap where 7 memory subsystems exist but no
+    unified routing policy decides which to query based on query
+    characteristics.  This policy computes a lightweight relevance score
+    for each available subsystem and routes the query to the top-k most
+    relevant ones, gating results through the trust scorer before fusion.
+
+    The policy uses a simple norm-based heuristic: subsystems that return
+    higher-norm results are considered more relevant, since memory vectors
+    with near-zero norm indicate empty or irrelevant retrieval.  Trust
+    gating then attenuates results from subsystems whose trust scores are
+    below the configurable threshold, ensuring that unreliable memories
+    do not pollute reasoning.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        trust_threshold: Minimum trust score ∈ [0, 1] for a memory
+            subsystem's results to be included without attenuation.
+        top_k_subsystems: Maximum number of subsystems to query per
+            retrieval (reduces latency by skipping low-priority subsystems).
+        fusion_mode: How to combine results from multiple subsystems.
+            'mean' averages results, 'max' takes the highest-norm result.
+    """
+
+    def __init__(
+        self,
+        trust_threshold: float = 0.5,
+        top_k_subsystems: int = 3,
+        fusion_mode: str = 'mean',
+    ):
+        self.trust_threshold = max(0.0, min(1.0, trust_threshold))
+        self.top_k_subsystems = max(1, top_k_subsystems)
+        self.fusion_mode = fusion_mode if fusion_mode in ('mean', 'max') else 'mean'
+        # Per-subsystem retrieval statistics for adaptive routing.
+        self._retrieval_stats: Dict[str, Dict[str, float]] = {}
+
+    def route(
+        self,
+        query: torch.Tensor,
+        subsystems: Dict[str, Any],
+        trust_scores: Optional[Dict[str, float]] = None,
+        k: int = 5,
+    ) -> Dict[str, Any]:
+        """Route a memory query to the most relevant subsystems.
+
+        Args:
+            query: [hidden_dim] or [B, hidden_dim] query tensor.
+            subsystems: Named memory subsystem instances that expose a
+                ``retrieve(query, k=...)`` method.
+            trust_scores: Optional per-subsystem trust scores ∈ [0, 1].
+                When a score is below ``trust_threshold``, that subsystem's
+                results are attenuated proportionally.
+            k: Number of entries to retrieve from each subsystem.
+
+        Returns:
+            Dict with:
+                - fused_result: [hidden_dim] fused memory tensor (or None
+                  if no subsystem returned valid results).
+                - subsystem_results: per-subsystem retrieval metadata.
+                - routed_subsystems: list of subsystems that were queried.
+                - trust_gated: list of subsystems whose results were
+                  attenuated due to low trust.
+        """
+        trust_scores = trust_scores or {}
+        results: Dict[str, Dict[str, Any]] = {}
+        routed: List[str] = []
+        trust_gated: List[str] = []
+
+        # Sort subsystems by historical relevance (higher first).
+        subsystem_priority = sorted(
+            subsystems.keys(),
+            key=lambda name: self._retrieval_stats.get(
+                name, {},
+            ).get('avg_norm', 0.0),
+            reverse=True,
+        )
+
+        # Query top-k subsystems.
+        for name in subsystem_priority[:self.top_k_subsystems]:
+            subsystem = subsystems[name]
+            retrieve_fn = getattr(subsystem, 'retrieve', None)
+            if retrieve_fn is None:
+                continue
+            try:
+                q = query.detach() if query.dim() <= 1 else query[0].detach()
+                raw_result = retrieve_fn(q, k=k)
+                # Extract tensor from retrieval result (various formats).
+                mem_tensor = self._extract_tensor(raw_result, query)
+                if mem_tensor is None:
+                    continue
+                routed.append(name)
+                # Trust gating.
+                trust = trust_scores.get(name, 1.0)
+                if trust < self.trust_threshold:
+                    mem_tensor = mem_tensor * trust
+                    trust_gated.append(name)
+                # Update retrieval statistics.
+                norm_val = float(mem_tensor.detach().norm().item())
+                stats = self._retrieval_stats.setdefault(
+                    name, {'avg_norm': 0.0, 'count': 0},
+                )
+                stats['count'] += 1
+                alpha = 0.1
+                stats['avg_norm'] = (
+                    (1 - alpha) * stats['avg_norm'] + alpha * norm_val
+                )
+                results[name] = {
+                    'tensor': mem_tensor,
+                    'trust': trust,
+                    'norm': norm_val,
+                }
+            except Exception:
+                continue
+
+        # Fuse results.
+        fused = self._fuse_results(results)
+
+        return {
+            'fused_result': fused,
+            'subsystem_results': {
+                name: {k: v for k, v in info.items() if k != 'tensor'}
+                for name, info in results.items()
+            },
+            'routed_subsystems': routed,
+            'trust_gated': trust_gated,
+        }
+
+    def _extract_tensor(
+        self, raw_result: Any, query: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        """Extract a tensor from various retrieval result formats."""
+        if isinstance(raw_result, torch.Tensor):
+            return raw_result
+        if isinstance(raw_result, dict):
+            # HierarchicalMemory returns {'working': [(vec, score), ...]}
+            for key in ('working', 'episodic', 'semantic', 'result'):
+                entries = raw_result.get(key, [])
+                if entries and isinstance(entries, list):
+                    tensors = []
+                    for entry in entries:
+                        if isinstance(entry, torch.Tensor):
+                            tensors.append(entry)
+                        elif isinstance(entry, (tuple, list)) and len(entry) >= 1:
+                            if isinstance(entry[0], torch.Tensor):
+                                tensors.append(entry[0])
+                    if tensors:
+                        return torch.stack(tensors).mean(dim=0)
+            # Try 'tensor' key directly.
+            t = raw_result.get('tensor')
+            if isinstance(t, torch.Tensor):
+                return t
+        if isinstance(raw_result, list) and raw_result:
+            if isinstance(raw_result[0], torch.Tensor):
+                return torch.stack(raw_result).mean(dim=0)
+        return None
+
+    def _fuse_results(
+        self, results: Dict[str, Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        """Fuse tensors from multiple subsystem results."""
+        tensors = [
+            info['tensor'] for info in results.values()
+            if info.get('tensor') is not None
+            and isinstance(info['tensor'], torch.Tensor)
+            and torch.isfinite(info['tensor']).all()
+        ]
+        if not tensors:
+            return None
+        if self.fusion_mode == 'max':
+            norms = [t.norm().item() for t in tensors]
+            return tensors[norms.index(max(norms))]
+        # Default: mean fusion.
+        return torch.stack(tensors).mean(dim=0)
+
+    def get_routing_stats(self) -> Dict[str, Dict[str, float]]:
+        """Return per-subsystem retrieval statistics."""
+        return dict(self._retrieval_stats)
+
+
 class UnifiedCognitiveCycle:
     """Orchestrates meta-cognitive components into a single coherent cycle.
 
