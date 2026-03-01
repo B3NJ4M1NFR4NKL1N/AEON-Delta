@@ -6611,6 +6611,87 @@ class CognitiveFeedbackBus(nn.Module):
 
         return self.projection(signals)
 
+    # --- Signal-channel names for compute_correction() mapping ---
+    _CHANNEL_NAMES: List[str] = [
+        "safety", "convergence", "uncertainty", "health_mean",
+        "loss_scale", "surprise", "coherence", "causal_quality",
+        "recovery_pressure", "self_report_consistency",
+        "output_quality", "memory_quality",
+    ]
+
+    def compute_correction(self) -> Dict[str, float]:
+        """Compute per-channel correction pressures from signal trends.
+
+        Translates the feedback bus's accumulated signal diagnostics
+        (EMA trends and oscillation patterns) into actionable per-channel
+        correction pressures ∈ [0, 1].  A pressure of 0.0 means the
+        channel is stable; 1.0 means the channel urgently needs
+        correction.
+
+        Channels whose trends are worsening (rising uncertainty, falling
+        quality) receive pressure proportional to the trend magnitude.
+        Channels that are oscillating receive a flat pressure boost
+        because instability — even without a consistent trend — degrades
+        reasoning reliability.
+
+        This closes the feedback loop between the bus's signal monitoring
+        and targeted upstream correction: callers can use the returned
+        dict to identify *which specific dimensions* of the cognitive
+        pipeline are degrading and by how much.
+
+        Returns:
+            Dict mapping channel names to correction pressure ∈ [0, 1].
+            Returns an empty dict when insufficient history has been
+            accumulated (fewer than 2 forward passes).
+        """
+        if self._signal_trend is None or self._ema_values is None:
+            return {}
+
+        trend = self._signal_trend
+        num_channels = min(trend.shape[0], len(self._CHANNEL_NAMES))
+        correction: Dict[str, float] = {}
+
+        # Oscillation detection per channel
+        window = self._oscillation_window
+        history = self._trend_sign_history
+        per_channel_oscillating = torch.zeros(num_channels)
+        if len(history) >= window:
+            recent = torch.stack(history[-window:], dim=0)  # [W, C]
+            reversals = (recent[1:] != recent[:-1]).sum(dim=0).float()
+            per_channel_oscillating = (
+                reversals >= (window - 1)
+            ).float()[:num_channels]
+
+        # Map: worsening signals are those where the *unwanted* direction
+        # is positive.  For "uncertainty", "recovery_pressure", "surprise",
+        # "coherence" (coherence_deficit), and "loss_scale", a rising
+        # trend is bad.  For "safety", "convergence", "health_mean",
+        # "causal_quality", "self_report_consistency", "output_quality",
+        # "memory_quality", a falling trend is bad (inverted).
+        _BAD_WHEN_RISING = {
+            "uncertainty", "recovery_pressure", "surprise",
+            "coherence", "loss_scale",
+        }
+        _OSCILLATION_BOOST = 0.3
+
+        for idx in range(num_channels):
+            name = self._CHANNEL_NAMES[idx]
+            t = float(trend[idx].item())
+            # Determine pressure from trend direction
+            if name in _BAD_WHEN_RISING:
+                trend_pressure = max(0.0, t * 5.0)  # scale for sensitivity
+            else:
+                trend_pressure = max(0.0, -t * 5.0)  # falling is bad
+            # Add oscillation boost
+            osc_pressure = (
+                _OSCILLATION_BOOST
+                if per_channel_oscillating[idx].item() > 0.5
+                else 0.0
+            )
+            correction[name] = min(1.0, trend_pressure + osc_pressure)
+
+        return correction
+
 
 class CausalProvenanceTracker:
     """Tracks per-module contribution to the final output state.
@@ -25810,6 +25891,28 @@ class AEONDeltaV3(nn.Module):
             uncertainty_sources["recovery_pressure"] = _feedback_uncertainty_boost
             high_uncertainty = uncertainty > 0.5
         
+        # 5a-ii-c. Feedback bus oscillation → uncertainty escalation.
+        # When a significant fraction of signal channels are oscillating
+        # (alternating trends), the system is unstable even if point-in-
+        # time trends are small.  Escalate uncertainty proportionally so
+        # that downstream high_uncertainty checks and the metacognitive
+        # trigger respond to signal instability, not just monotonic
+        # degradation.  This closes the gap where oscillation was tracked
+        # by the bus and passed to the UCC but never escalated the
+        # pipeline's own uncertainty variable.
+        _OSCILLATION_UNCERTAINTY_SCALE = 0.25
+        if self.feedback_bus is not None and not fast:
+            _fb_oscillation = self.feedback_bus.get_oscillation_score()
+            if _fb_oscillation > 0.1:
+                _osc_boost = min(
+                    1.0 - uncertainty,
+                    _fb_oscillation * _OSCILLATION_UNCERTAINTY_SCALE,
+                )
+                if _osc_boost > 0.0:
+                    uncertainty = min(1.0, uncertainty + _osc_boost)
+                    uncertainty_sources["feedback_oscillation"] = _osc_boost
+                    high_uncertainty = uncertainty > 0.5
+
         # 5a-iii. Module coherence verification — cross-validate key
         # subsystem outputs to detect internal inconsistencies.  Low
         # coherence triggers the meta-cognitive recursion trigger below.
