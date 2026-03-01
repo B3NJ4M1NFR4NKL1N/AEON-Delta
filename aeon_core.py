@@ -16214,6 +16214,12 @@ class MetaCognitiveRecursionTrigger:
             # weakness.  Maps to uncertainty so deeper reasoning is
             # triggered for persistent architectural issues.
             "recurring_root_cause": "uncertainty",
+            # Feedback bus oscillation — the cross-pass feedback signal
+            # is oscillating, indicating unstable cross-pass conditioning.
+            "feedback_oscillation": "coherence_deficit",
+            # UCC re-reasoning — the unified cognitive cycle triggered
+            # same-pass re-reasoning via the deeper meta-loop.
+            "ucc_rerun": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17148,6 +17154,12 @@ class CausalErrorEvolutionTracker:
         # repeatedly appears in error chains.  Maps to lambda_ucc
         # so training adapts to persistent root-cause patterns.
         "recurring_root_cause": "lambda_ucc",
+        # Feedback bus oscillation — cross-pass conditioning instability
+        # maps to lambda_ucc so training can stabilise the feedback loop.
+        "feedback_oscillation": "lambda_ucc",
+        # UCC same-pass re-reasoning — maps to lambda_ucc so training
+        # adapts to frequent coherence-driven re-reasoning.
+        "ucc_rerun": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
