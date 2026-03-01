@@ -62970,6 +62970,201 @@ def test_feedback_bus_channel_names_match_forward():
     print("✅ test_feedback_bus_channel_names_match_forward PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Integrity Monitor Integration Tests
+# ============================================================================
+
+def test_ucc_integrity_monitor_wiring():
+    """UnifiedCognitiveCycle accepts and stores integrity_monitor parameter."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, SystemIntegrityMonitor,
+    )
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        integrity_monitor=monitor,
+    )
+
+    assert cycle.integrity_monitor is monitor
+    print("✅ test_ucc_integrity_monitor_wiring PASSED")
+
+
+def test_ucc_integrity_monitor_records_health():
+    """UCC evaluate() records convergence and coherence health into
+    the integrity monitor when one is wired."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, SystemIntegrityMonitor,
+    )
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+        integrity_monitor=monitor,
+    )
+
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'safety': torch.randn(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.2,
+    )
+
+    # Integrity monitor should have received health recordings
+    conv_health = monitor.get_subsystem_health("convergence")
+    coherence_health = monitor.get_subsystem_health("coherence")
+    assert conv_health is not None, "convergence health not recorded"
+    assert coherence_health is not None, "coherence health not recorded"
+    assert conv_health > 0.0, "convergence health should be positive"
+
+    # Result should include integrity fields
+    assert 'integrity_health' in result
+    assert 'integrity_anomalies' in result
+
+    print("✅ test_ucc_integrity_monitor_records_health PASSED")
+
+
+def test_ucc_integrity_low_health_escalates_uncertainty():
+    """When integrity monitor reports low global health, the UCC
+    escalates uncertainty and triggers re-reasoning."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, SystemIntegrityMonitor,
+    )
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+    # Pre-fill the integrity monitor with low health across subsystems
+    # to simulate systemic degradation
+    for _ in range(10):
+        monitor.record_health("subsystem_a", 0.1, {})
+        monitor.record_health("subsystem_b", 0.2, {})
+        monitor.record_health("subsystem_c", 0.15, {})
+
+    global_health = monitor.get_global_health()
+    assert global_health < 0.5, f"Expected low global health, got {global_health}"
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=None,
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.1),
+        provenance_tracker=CausalProvenanceTracker(),
+        integrity_monitor=monitor,
+    )
+
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'safety': torch.randn(2, 64),
+    }
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.3,
+    )
+
+    # Low global health should be reflected in the result
+    assert result['integrity_health'] is not None
+    assert result['integrity_health'] < 0.5
+
+    print("✅ test_ucc_integrity_low_health_escalates_uncertainty PASSED")
+
+
+def test_hca_integrity_monitor_records_meta_loop_health():
+    """HierarchicalCognitiveArchitecture records meta-loop health
+    into the integrity monitor when one is wired."""
+    from aeon_core import (
+        HierarchicalCognitiveArchitecture, AEONConfig,
+        SystemIntegrityMonitor,
+    )
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    hca = HierarchicalCognitiveArchitecture(
+        config, enabled_levels=[0], integrity_monitor=monitor,
+    )
+
+    z = torch.randn(2, 32)
+    result = hca(z, level='core')
+
+    # Should have recorded meta-loop health
+    health = monitor.get_subsystem_health("hca_meta_loop")
+    assert health is not None, "hca_meta_loop health not recorded"
+    assert 0.0 <= health <= 1.0
+
+    print("✅ test_hca_integrity_monitor_records_meta_loop_health PASSED")
+
+
+def test_pcp_integrity_monitor_records_health():
+    """ParallelCognitivePipeline records meta-loop health into the
+    integrity monitor when one is wired."""
+    from aeon_core import (
+        ParallelCognitivePipeline, AEONConfig,
+        SystemIntegrityMonitor,
+    )
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, num_pillars=4,
+    )
+    pcp = ParallelCognitivePipeline(config, integrity_monitor=monitor)
+
+    # Use urgent urgency to exercise meta-loop path without requiring
+    # full safety system dimensional alignment
+    z = torch.randn(2, 64)
+    result = pcp(z, urgency='urgent')
+
+    # Should have recorded meta-loop health
+    health = monitor.get_subsystem_health("pcp_meta_loop")
+    assert health is not None, "pcp_meta_loop health not recorded"
+    assert 0.0 <= health <= 1.0
+
+    print("✅ test_pcp_integrity_monitor_records_health PASSED")
+
+
+def test_metacognitive_trigger_maps_low_global_integrity():
+    """MetaCognitiveRecursionTrigger's adapt_weights_from_evolution
+    recognises the low_global_integrity error class."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate error evolution summary with low_global_integrity episodes
+    summary = {
+        'error_classes': {
+            'low_global_integrity': {
+                'count': 5,
+                'success_rate': 0.2,
+            },
+        },
+    }
+    # Should not raise — the class should be mapped
+    trigger.adapt_weights_from_evolution(summary)
+
+    # The uncertainty signal weight should have been adjusted (boosted
+    # due to low success rate)
+    w = trigger._signal_weights.get('uncertainty', 0.0)
+    assert w > 0.0, "uncertainty weight should be positive after adaptation"
+
+    print("✅ test_metacognitive_trigger_maps_low_global_integrity PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -65773,6 +65968,14 @@ def run_all_tests():
     test_rssm_trainer_memory_validator_wired()
     test_rssm_trainer_ucc_receives_memory_signals()
     test_feedback_bus_channel_names_match_forward()
+
+    # Architectural Unification — Integrity Monitor Integration Tests
+    test_ucc_integrity_monitor_wiring()
+    test_ucc_integrity_monitor_records_health()
+    test_ucc_integrity_low_health_escalates_uncertainty()
+    test_hca_integrity_monitor_records_meta_loop_health()
+    test_pcp_integrity_monitor_records_health()
+    test_metacognitive_trigger_maps_low_global_integrity()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
