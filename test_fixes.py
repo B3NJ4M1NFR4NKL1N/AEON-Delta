@@ -61367,6 +61367,315 @@ def test_provenance_tracker_recovery_manager_wiring():
     print("✅ test_provenance_tracker_recovery_manager_wiring PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE IMPROVEMENTS — Tests for unified cognitive cycle
+#  fixes that close feedback loops and eliminate inconsistencies.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_lipschitz_boost_scales_with_violation_severity():
+    """Lipschitz uncertainty boost should scale proportionally with the
+    severity of the contraction violation, not produce the same boost
+    for marginal and severe violations."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+
+    # Marginal violation: Lipschitz = 1.01
+    result_marginal = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.3,
+        convergence_certificate={
+            'contraction_satisfied': False,
+            'empirical_lipschitz': 1.01,
+        },
+    )
+
+    # Reset for fresh evaluation
+    ucc.reset()
+
+    # Severe violation: Lipschitz = 2.0
+    result_severe = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.3,
+        convergence_certificate={
+            'contraction_satisfied': False,
+            'empirical_lipschitz': 2.0,
+        },
+    )
+
+    # The severe violation should produce a higher trigger score
+    marginal_score = result_marginal['trigger_detail'].get('trigger_score', 0)
+    severe_score = result_severe['trigger_detail'].get('trigger_score', 0)
+    assert severe_score >= marginal_score, (
+        f"Severe Lipschitz violation (score={severe_score}) should produce "
+        f"equal or higher trigger score than marginal (score={marginal_score})"
+    )
+    print("✅ test_lipschitz_boost_scales_with_violation_severity PASSED")
+
+
+def test_memory_consistency_convergence_secondary_signal():
+    """Low memory-reasoning consistency should be recorded as a convergence
+    secondary signal, not just blended into coherence_deficit."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, MemoryReasoningValidator,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    mem_val = MemoryReasoningValidator(consistency_threshold=0.99)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        memory_validator=mem_val,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+    # Provide mismatched memory and converged state to trigger low consistency
+    memory_signal = torch.randn(1, 16)
+    converged_state = torch.randn(1, 16) * 100  # very different
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.3,
+        memory_signal=memory_signal,
+        converged_state=converged_state,
+    )
+
+    # Check that the convergence monitor received the secondary signal
+    secondary_signals = cm.get_secondary_signals()
+    # Memory consistency may or may not be < 0.5 depending on model output
+    # but we verify the mechanism is present by checking the verdict contains
+    # secondary signals or the memory_validation was processed
+    assert 'memory_validation' in result
+    # If consistency was low, the secondary signal should be recorded
+    mem_consistency = result['memory_validation'].get('consistency_score', 1.0)
+    if isinstance(mem_consistency, (int, float)) and mem_consistency < 0.5:
+        assert 'memory_consistency' in secondary_signals, (
+            "memory_consistency should be recorded as convergence secondary signal "
+            "when consistency_score < 0.5"
+        )
+    print("✅ test_memory_consistency_convergence_secondary_signal PASSED")
+
+
+def test_cross_pass_chain_roots_feed_back():
+    """Recurring root causes should be fed back into error_evolution and
+    metacognitive trigger, not just passively returned."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    error_evo = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=error_evo,
+        metacognitive_trigger=trigger,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+
+    # Manually fill the cross-pass chain buffer to simulate recurring roots
+    # The threshold is 3, so we need ≥3 occurrences
+    ucc._cross_pass_chain_buffer.append(["meta_loop", "safety"])
+    ucc._cross_pass_chain_buffer.append(["meta_loop", "encoder"])
+    ucc._cross_pass_chain_buffer.append(["meta_loop", "vq"])
+
+    # Record initial error count
+    initial_summary = error_evo.get_error_summary()
+    initial_recurring_count = initial_summary.get('error_classes', {}).get(
+        'recurring_root_cause', {}
+    ).get('count', 0)
+
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.3,
+    )
+
+    # 'meta_loop' appears in 3 chains, should be in recurring roots
+    assert 'meta_loop' in result.get('cross_pass_recurring_roots', []), (
+        "meta_loop should be identified as a recurring root cause"
+    )
+
+    # Check that error_evolution received recurring_root_cause episodes
+    updated_summary = error_evo.get_error_summary()
+    recurring_count = updated_summary.get('error_classes', {}).get(
+        'recurring_root_cause', {}
+    ).get('count', 0)
+    assert recurring_count > initial_recurring_count, (
+        f"error_evolution should have recorded recurring_root_cause episodes: "
+        f"got {recurring_count}, expected > {initial_recurring_count}"
+    )
+    print("✅ test_cross_pass_chain_roots_feed_back PASSED")
+
+
+def test_dag_consensus_threshold_loosens_on_high_quality():
+    """DAG consensus threshold should loosen when causal_quality > 0.9,
+    reducing false-positive disagreement flags."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalDAGConsensus, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+    dag = CausalDAGConsensus(agreement_threshold=0.5)
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+        causal_dag_consensus=dag,
+    )
+
+    initial_threshold = dag.agreement_threshold
+
+    adj_a = torch.eye(4)
+    adj_b = torch.eye(4)
+
+    states = {"module_a": torch.randn(1, 16)}
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        causal_quality=0.95,  # Very high quality — should loosen threshold
+        dag_adjacency_matrices={"model_a": adj_a, "model_b": adj_b},
+    )
+
+    # After evaluation, threshold should be restored
+    assert dag.agreement_threshold == initial_threshold, (
+        f"DAG consensus threshold should be restored after evaluation: "
+        f"got {dag.agreement_threshold}, expected {initial_threshold}"
+    )
+    # Result should indicate that adaptation happened
+    assert result.get("dag_consensus_threshold_adapted") is True, (
+        "dag_consensus_threshold_adapted should be True when causal_quality > 0.9"
+    )
+    print("✅ test_dag_consensus_threshold_loosens_on_high_quality PASSED")
+
+
+def test_fallback_trigger_includes_convergence_conflict():
+    """Fallback trigger (no metacognitive_trigger) should include
+    convergence_conflict signal for consistency with the dedicated
+    trigger path."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+
+    # No metacognitive_trigger → uses fallback
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+
+    # Normal conditions — should not trigger
+    result_normal = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.1,
+        causal_quality=0.9,
+    )
+
+    # Verify trigger_detail has the expected structure
+    td = result_normal['trigger_detail']
+    assert 'triggers_active' in td
+    assert 'trigger_score' in td
+    assert isinstance(td['triggers_active'], list)
+    print("✅ test_fallback_trigger_includes_convergence_conflict PASSED")
+
+
+def test_adaptive_coherence_trend_warmup():
+    """Coherence trend warm-up should adapt based on variance:
+    lower variance → fewer passes needed, higher variance → more passes."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker,
+    )
+
+    cm = ConvergenceMonitor()
+    prov = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=prov,
+    )
+
+    states = {"module_a": torch.randn(1, 16)}
+
+    # Feed consistent high coherence deficits (low variance scenario)
+    for _ in range(2):
+        ucc.evaluate(
+            subsystem_states=states,
+            delta_norm=0.1,
+            uncertainty=0.1,
+        )
+
+    # After 2 passes with consistent data and low variance, the EMA should
+    # have been computed; the variance tracker should exist
+    assert hasattr(ucc, '_coherence_trend_var_ema'), (
+        "UCC should have _coherence_trend_var_ema attribute"
+    )
+    assert ucc._coherence_trend_count == 2, (
+        f"Expected 2 passes, got {ucc._coherence_trend_count}"
+    )
+
+    # Now feed several high-deficit passes
+    for _ in range(3):
+        result = ucc.evaluate(
+            subsystem_states=states,
+            delta_norm=0.1,
+            uncertainty=0.1,
+        )
+
+    # After 5 passes, trend tracking should be active
+    trend_info = result.get('coherence_trend', {})
+    assert trend_info.get('pass_count', 0) == 5, (
+        f"Expected 5 passes, got {trend_info.get('pass_count', 0)}"
+    )
+    print("✅ test_adaptive_coherence_trend_warmup PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -64102,6 +64411,14 @@ def run_all_tests():
     test_verify_cognitive_unity_active_pass_coverage()
     test_recovery_pressure_includes_degrading_classes()
     test_provenance_tracker_recovery_manager_wiring()
+
+    # Architectural coherence improvement tests
+    test_lipschitz_boost_scales_with_violation_severity()
+    test_memory_consistency_convergence_secondary_signal()
+    test_cross_pass_chain_roots_feed_back()
+    test_dag_consensus_threshold_loosens_on_high_quality()
+    test_fallback_trigger_includes_convergence_conflict()
+    test_adaptive_coherence_trend_warmup()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

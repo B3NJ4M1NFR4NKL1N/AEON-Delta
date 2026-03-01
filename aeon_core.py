@@ -18369,6 +18369,10 @@ class UnifiedCognitiveCycle:
         self._coherence_trend_ema: float = 0.0
         self._coherence_trend_alpha: float = 0.3
         self._coherence_trend_count: int = 0
+        # Variance tracking for adaptive warm-up: instead of a hardcoded
+        # 3-pass minimum, activate trend detection earlier when deficits
+        # are steep and consistently high, and later when noisy.
+        self._coherence_trend_var_ema: float = 0.0
 
         # Cross-pass causal chain persistence — stores summaries of
         # recent causal chains so that recurring root-cause modules can
@@ -18833,7 +18837,8 @@ class UnifiedCognitiveCycle:
                 )
                 _cert_unc_boost = min(
                     1.0 - uncertainty,
-                    min(0.3, (_cert_lip - 1.0) * 0.2) if _cert_lip > 1.0 else 0.1,
+                    min(0.3, max(0.1, (_cert_lip - 1.0) * 0.3))
+                    if _cert_lip > 1.0 else 0.1,
                 )
                 uncertainty = min(1.0, uncertainty + _cert_unc_boost)
                 if self.error_evolution is not None:
@@ -18988,7 +18993,10 @@ class UnifiedCognitiveCycle:
                 or memory_trust_deficit > 0.5
                 or world_model_surprise > 0.5
                 or causal_quality < 0.5
+                or _convergence_conflict_score > 0.5
             )
+            # Include convergence conflict in trigger score so fallback
+            # and dedicated trigger paths produce consistent decisions.
             trigger_detail = {
                 'should_trigger': _should_trigger_fallback,
                 'trigger_score': max(
@@ -18997,6 +19005,7 @@ class UnifiedCognitiveCycle:
                     min(1.0, world_model_surprise),
                     1.0 - causal_quality,
                     1.0 if is_diverging else 0.0,
+                    _convergence_conflict_score,
                 ),
                 'triggers_active': (
                     [s for s, v in [
@@ -19009,6 +19018,8 @@ class UnifiedCognitiveCycle:
                         ('memory_trust_deficit', memory_trust_deficit > 0.5),
                         ('world_model_surprise', world_model_surprise > 0.5),
                         ('low_causal_quality', causal_quality < 0.5),
+                        ('convergence_conflict',
+                         _convergence_conflict_score > 0.5),
                     ] if v]
                 ),
             }
@@ -19261,6 +19272,21 @@ class UnifiedCognitiveCycle:
                     1.0,
                     self.causal_dag_consensus.agreement_threshold + _tightening,
                 )
+            elif causal_quality > 0.9:
+                # Bidirectional adaptation: when causal quality is very
+                # high, loosen the agreement threshold to reduce false-
+                # positive disagreement flags.  This prevents the system
+                # from flagging minor structural differences as consensus
+                # violations when all causal models are producing reliable
+                # outputs.
+                _original_dag_consensus_threshold = (
+                    self.causal_dag_consensus.agreement_threshold
+                )
+                _loosening = (causal_quality - 0.9) * 0.2
+                self.causal_dag_consensus.agreement_threshold = max(
+                    0.1,
+                    self.causal_dag_consensus.agreement_threshold - _loosening,
+                )
             dag_consensus_result = self.causal_dag_consensus.evaluate(
                 dag_adjacency_matrices,
             )
@@ -19442,6 +19468,15 @@ class UnifiedCognitiveCycle:
             if isinstance(_mem_consistency, (int, float)) and _mem_consistency < 0.5:
                 _mem_coh_boost = (1.0 - max(0.0, min(1.0, _mem_consistency))) * 0.2
                 coherence_deficit = min(1.0, coherence_deficit + _mem_coh_boost)
+                # Record memory consistency as a convergence secondary
+                # signal so that low memory-reasoning consistency tightens
+                # convergence requirements.  Previously, memory consistency
+                # only degraded coherence_deficit but was invisible to the
+                # convergence monitor's certification decision.
+                self.convergence_monitor.record_secondary_signal(
+                    "memory_consistency",
+                    1.0 - max(0.0, min(1.0, _mem_consistency)),
+                )
             if memory_validation.get("needs_re_retrieval", False):
                 _mem_boost = memory_validation.get("uncertainty_boost", 0.0)
                 uncertainty = min(1.0, uncertainty + _mem_boost)
@@ -19663,11 +19698,25 @@ class UnifiedCognitiveCycle:
             self._coherence_trend_alpha * coherence_deficit
             + (1.0 - self._coherence_trend_alpha) * self._coherence_trend_ema
         )
+        # Update variance EMA for adaptive warm-up calculation.
+        _trend_deviation = (coherence_deficit - self._coherence_trend_ema) ** 2
+        self._coherence_trend_var_ema = (
+            self._coherence_trend_alpha * _trend_deviation
+            + (1.0 - self._coherence_trend_alpha) * self._coherence_trend_var_ema
+        )
         coherence_trend_escalation: float = 0.0
-        # Only act after enough passes to establish a reliable trend
-        _COHERENCE_TREND_MIN_PASSES = 3
+        # Adaptive warm-up: reduce minimum passes when variance is low
+        # (stable trend), increase when noisy.  Base minimum is 3;
+        # high variance (> 0.1) raises it to 5; low variance (< 0.01)
+        # lowers it to 2.
+        _COHERENCE_TREND_BASE_PASSES = 3
+        _adaptive_min_passes = _COHERENCE_TREND_BASE_PASSES
+        if self._coherence_trend_var_ema < 0.01:
+            _adaptive_min_passes = max(2, _COHERENCE_TREND_BASE_PASSES - 1)
+        elif self._coherence_trend_var_ema > 0.1:
+            _adaptive_min_passes = min(5, _COHERENCE_TREND_BASE_PASSES + 2)
         _COHERENCE_TREND_THRESHOLD = 0.2
-        if (self._coherence_trend_count >= _COHERENCE_TREND_MIN_PASSES
+        if (self._coherence_trend_count >= _adaptive_min_passes
                 and self._coherence_trend_ema > _COHERENCE_TREND_THRESHOLD):
             coherence_trend_escalation = min(
                 0.15, self._coherence_trend_ema * 0.3,
@@ -19782,6 +19831,36 @@ class UnifiedCognitiveCycle:
             key=lambda m: _root_counts[m],
             reverse=True,
         )
+
+        # 7i-feedback. Feed recurring root causes back into error
+        # evolution and metacognitive trigger so they influence future
+        # reasoning cycles.  Previously, cross-pass chain roots were
+        # only passively returned without updating internal learning
+        # state, meaning structurally weak modules were identified but
+        # the system never adapted its sensitivity accordingly.
+        if _cross_pass_chain_roots:
+            if self.error_evolution is not None:
+                for _rr_mod in _cross_pass_chain_roots:
+                    self.error_evolution.record_episode(
+                        error_class='recurring_root_cause',
+                        strategy_used='cross_pass_chain_detection',
+                        success=False,
+                        metadata={
+                            'module': _rr_mod,
+                            'recurrence_count': _root_counts[_rr_mod],
+                        },
+                    )
+            if self.metacognitive_trigger is not None:
+                try:
+                    _rr_weights = {
+                        mod: min(1.0, _root_counts[mod] * 0.15)
+                        for mod in _cross_pass_chain_roots
+                    }
+                    self.metacognitive_trigger.adapt_weights_from_provenance(
+                        {'contributions': _rr_weights},
+                    )
+                except Exception:
+                    pass
 
         # 7j. Low-quality subsystems surface — expose the coherence
         # registry's per-subsystem quality scores in the return dict so
