@@ -16214,6 +16214,12 @@ class MetaCognitiveRecursionTrigger:
             # weakness.  Maps to uncertainty so deeper reasoning is
             # triggered for persistent architectural issues.
             "recurring_root_cause": "uncertainty",
+            # Feedback bus oscillation — the cross-pass feedback signal
+            # is oscillating, indicating unstable cross-pass conditioning.
+            "feedback_oscillation": "coherence_deficit",
+            # UCC re-reasoning — the unified cognitive cycle triggered
+            # same-pass re-reasoning via the deeper meta-loop.
+            "ucc_rerun": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17148,6 +17154,12 @@ class CausalErrorEvolutionTracker:
         # repeatedly appears in error chains.  Maps to lambda_ucc
         # so training adapts to persistent root-cause patterns.
         "recurring_root_cause": "lambda_ucc",
+        # Feedback bus oscillation — cross-pass conditioning instability
+        # maps to lambda_ucc so training can stabilise the feedback loop.
+        "feedback_oscillation": "lambda_ucc",
+        # UCC same-pass re-reasoning — maps to lambda_ucc so training
+        # adapts to frequent coherence-driven re-reasoning.
+        "ucc_rerun": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -34849,6 +34861,18 @@ class AEONDeltaV3(nn.Module):
                 z_encoded,
                 compute_loss=self.training
             )
+            # Record VQ quality in the audit log so that codebook collapse,
+            # dead codes, and high commitment loss are traceable via
+            # root-cause analysis.  Without this, VQ failures are invisible
+            # to provenance diagnostics and the metacognitive trigger cannot
+            # attribute downstream quality degradation to VQ issues.
+            _vq_loss_val = vq_loss.item() if torch.is_tensor(vq_loss) and vq_loss.numel() > 0 else 0.0
+            self.audit_log.record("vq", "quantization", {
+                "vq_loss": _vq_loss_val,
+                "codebook_indices_unique": int(vq_indices.unique().numel()) if vq_indices is not None else 0,
+                "z_encoded_norm": float(z_encoded.detach().norm().item()),
+                "z_quantized_norm": float(z_quantized.detach().norm().item()),
+            })
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -35065,6 +35089,18 @@ class AEONDeltaV3(nn.Module):
                             "decode_mode": decode_mode,
                         }),
                     )
+                    # Escalate uncertainty so the downstream UCC and
+                    # metacognitive trigger respond to decoder collapse.
+                    # Without this, the error is recorded but never
+                    # triggers re-reasoning, breaking the requirement
+                    # that any uncertainty triggers a meta-cognitive cycle.
+                    _dec_unc = outputs.get('uncertainty', 0.0)
+                    _DECODER_DEGENERATE_UNC_BOOST = 0.2
+                    _dec_unc = min(1.0, _dec_unc + _DECODER_DEGENERATE_UNC_BOOST)
+                    outputs['uncertainty'] = _dec_unc
+                    _sources = outputs.get('uncertainty_sources', {})
+                    _sources['decoder_degenerate'] = _DECODER_DEGENERATE_UNC_BOOST
+                    outputs['uncertainty_sources'] = _sources
             except (RuntimeError, ValueError) as _dec_err:
                 logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
 
@@ -38420,11 +38456,8 @@ class AEONDeltaV3(nn.Module):
         # failures.  The inflation is capped at 0.3 to avoid
         # overwhelming the system with diagnostic-driven uncertainty
         # that might mask genuine runtime signals.
-        if gaps:
-            _gap_inflation = min(0.3, len(gaps) * 0.03)
-            self._cached_coherence_deficit = max(
-                self._cached_coherence_deficit, _gap_inflation,
-            )
+        # NOTE: inflation is deferred until after verify_cognitive_unity()
+        # appends its gaps (below) so the count includes all sources.
 
         # --- AGI coherence validation ---
         # Invoke verify_cognitive_unity() to assess the three
@@ -38465,6 +38498,15 @@ class AEONDeltaV3(nn.Module):
                 # Re-evaluate status with cognitive unity failures
                 if status == 'healthy':
                     status = 'degraded'
+
+        # --- Inflate coherence deficit (deferred) ---
+        # Now that all gap sources (wiring checks + cognitive unity) are
+        # collected, inflate _cached_coherence_deficit proportionally.
+        if gaps:
+            _gap_inflation = min(0.3, len(gaps) * 0.03)
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _gap_inflation,
+            )
 
         return {
             'status': status,
@@ -40492,7 +40534,37 @@ class AEONDeltaV3(nn.Module):
                 with open(save_dir / "cognitive_state.json", 'w') as f:
                     json.dump(cognitive_state, f, indent=2)
                 logger.info("Saved cognitive state (error evolution, convergence, metacognitive weights)")
-            
+
+            # Export training-origin error patterns as
+            # training_error_patterns.json so that a subsequent
+            # load_state() can re-import accumulated training error
+            # patterns into the inference pipeline's error recovery
+            # system.  Only error classes prefixed with "training_" are
+            # exported to avoid duplicating inference-time errors.
+            # Without this, training-discovered error patterns saved
+            # via bridge_training_errors_to_inference() are lost on
+            # restart, breaking cross-session root-cause traceability.
+            if self.error_evolution is not None:
+                _summary = self.error_evolution.get_error_summary()
+                _error_classes = _summary.get('error_classes', {})
+                _training_classes = {
+                    k: v for k, v in _error_classes.items()
+                    if k.startswith("training_")
+                }
+                if _training_classes:
+                    _patterns = {"inference": {
+                        "error_classes": _training_classes,
+                        "total_recorded": sum(
+                            v.get("count", 0) for v in _training_classes.values()
+                        ),
+                    }}
+                    with open(save_dir / "training_error_patterns.json", 'w') as f:
+                        json.dump(_patterns, f, indent=2)
+                    logger.info(
+                        f"Exported {len(_training_classes)} training error "
+                        f"pattern(s) to training_error_patterns.json"
+                    )
+
             logger.info(f"✅ State saved to {save_dir}")
             return True
         
