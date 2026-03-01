@@ -16027,6 +16027,11 @@ class MetaCognitiveRecursionTrigger:
             "training_loss_divergence": "diverging",
             "training_nan_loss": "uncertainty",
             "unified_simulator_divergence": "world_model_surprise",
+            # Counterfactual divergence — the verification gate detected
+            # causal prediction divergence; maps to low_causal_quality
+            # so that recurring counterfactual failures boost the causal
+            # quality trigger signal weight.
+            "counterfactual_divergence": "low_causal_quality",
             # ── Newly mapped error classes for full coverage ───────
             # These error classes were recorded via record_episode()
             # but fell through to the generic "uncertainty" fallback,
@@ -17024,6 +17029,10 @@ class CausalErrorEvolutionTracker:
         "uncertainty_auto_critic_topology_catastrophe": "lambda_lipschitz",
         "uncertainty_auto_critic_convergence_diverging": "lambda_lipschitz",
         "uncertainty_auto_critic_audit_pattern": "lambda_auto_critic",
+        # Counterfactual divergence — causal prediction mismatch maps
+        # to lambda_causal_dag so training strengthens causal model
+        # accuracy when counterfactual verification repeatedly fails.
+        "counterfactual_divergence": "lambda_causal_dag",
     }
 
     def recommend_loss_adjustments(
@@ -20077,6 +20086,11 @@ class AEONDeltaV3(nn.Module):
         ("counterfactual_verification", "integration"),
         ("counterfactual_verification", "metacognitive_trigger"),
         ("counterfactual_verification", "auto_critic"),
+        # Counterfactual divergence feeds into error evolution so that
+        # recurring causal prediction failures are recorded as
+        # error-recovery episodes and influence metacognitive trigger
+        # weight adaptation and training loss adjustments.
+        ("counterfactual_verification", "error_evolution"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -20545,6 +20559,23 @@ class AEONDeltaV3(nn.Module):
         # the previous pass's CycleConsistencyValidator.
         self.feedback_bus.register_signal(
             "cycle_consistency_pressure", default=0.0,
+        )
+        # Counterfactual divergence pressure — when the previous pass's
+        # CounterfactualVerificationGate detected causal prediction
+        # divergence, this signal conditions the next pass's meta-loop
+        # to reason deeper about causal assumptions.  This closes the
+        # gap where counterfactual divergence was detected and
+        # uncertainty escalated within the current pass but never
+        # propagated cross-pass via the feedback bus.
+        self.feedback_bus.register_signal(
+            "counterfactual_divergence_pressure", default=0.0,
+        )
+        # Memory routing trust pressure — when the MemoryRoutingPolicy
+        # attenuated subsystems due to low trust scores, this signal
+        # conditions the next pass's meta-loop to expect unreliable
+        # memory subsystems and allocate deeper internal reasoning.
+        self.feedback_bus.register_signal(
+            "memory_routing_trust_pressure", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -21367,6 +21398,12 @@ class AEONDeltaV3(nn.Module):
         # into the UCC's memory_trust_deficit parameter so that trust-
         # gated memory subsystems influence the meta-cognitive cycle.
         self._cached_memory_routing_trust_deficit: float = 0.0
+        # Counterfactual verification score — cached so the feedback bus
+        # can condition the next pass's meta-loop on prior counterfactual
+        # divergence, closing the gap where divergence was detected and
+        # uncertainty escalated within the current pass but never
+        # propagated cross-pass via the feedback bus.
+        self._cached_counterfactual_divergence_score: float = 1.0
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
         # coherence verification so that neurogenic, temporal, and
@@ -22260,6 +22297,36 @@ class AEONDeltaV3(nn.Module):
             extra["cycle_consistency_pressure"] = max(
                 0.0, min(1.0, 1.0 - _cc_score),
             )
+        # Counterfactual divergence pressure — when the previous pass's
+        # CounterfactualVerificationGate detected that the unified
+        # simulator's causal prediction diverged from the actual
+        # reasoning state, signal the meta-loop to deepen causal
+        # reasoning on the next pass.  This closes the cross-pass
+        # counterfactual → feedback → meta-loop loop: divergence on
+        # pass N conditions pass N+1's meta-loop to strengthen causal
+        # assumptions, complementing the within-pass uncertainty
+        # escalation.
+        _cf_score = getattr(
+            self, '_cached_counterfactual_divergence_score', 1.0,
+        )
+        if _cf_score < 0.8:
+            extra["counterfactual_divergence_pressure"] = max(
+                0.0, min(1.0, 1.0 - _cf_score),
+            )
+        # Memory routing trust pressure — when the MemoryRoutingPolicy
+        # attenuated memory subsystems due to low trust scores, signal
+        # the meta-loop to allocate deeper internal reasoning to
+        # compensate for unreliable external memory.  This closes the
+        # gap where memory routing trust-gating was computed and fed
+        # into the UCC's memory_trust_deficit parameter but never
+        # routed through the feedback bus for cross-pass conditioning.
+        _mrt = getattr(
+            self, '_cached_memory_routing_trust_deficit', 0.0,
+        )
+        if _mrt > 0.1:
+            extra["memory_routing_trust_pressure"] = max(
+                0.0, min(1.0, _mrt),
+            )
         # UCC coherence trend EMA — when the UnifiedCognitiveCycle's
         # cross-pass coherence trend indicates systematic architectural
         # drift (rising EMA of coherence deficit), signal the meta-loop
@@ -22480,6 +22547,7 @@ class AEONDeltaV3(nn.Module):
             "integration_gate_low_confidence": "integration_gate_confidence",
             "provenance_dag_cycle": "dag_acyclicity_pressure",
             "cycle_consistency_violation": "cycle_consistency_pressure",
+            "counterfactual_divergence": "counterfactual_divergence_pressure",
             "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
             "uncertainty_auto_critic_convergence_diverging": "lipschitz_pressure",
             "uncertainty_auto_critic_uncertainty": "ucc_coherence_trend",
@@ -28820,6 +28888,32 @@ class AEONDeltaV3(nn.Module):
                         validated=not _cf_gate_result['divergence_detected'],
                         quality=_cf_gate_result['verification_score'],
                     )
+                    # Cache verification score for cross-pass feedback
+                    # so the next pass's meta-loop can condition on prior
+                    # counterfactual divergence history.
+                    self._cached_counterfactual_divergence_score = float(
+                        _cf_gate_result['verification_score'],
+                    )
+                    # Record divergence in error evolution so that
+                    # recurring causal prediction failures adapt
+                    # metacognitive trigger weights via
+                    # adapt_weights_from_evolution().
+                    if (self.error_evolution is not None
+                            and _cf_gate_result['divergence_detected']):
+                        self.error_evolution.record_episode(
+                            error_class="counterfactual_divergence",
+                            strategy_used=(
+                                "correction_applied"
+                                if _cf_gate_result.get('correction_applied')
+                                else "uncertainty_escalation"
+                            ),
+                            success=not _cf_gate_result['divergence_detected'],
+                            metadata=self._provenance_enriched_metadata({
+                                "verification_score": _cf_gate_result[
+                                    'verification_score'
+                                ],
+                            }),
+                        )
                     if self.causal_trace is not None:
                         self.causal_trace.record(
                             "counterfactual_verification", "verified",
@@ -37751,6 +37845,61 @@ class AEONDeltaV3(nn.Module):
                 '→ module_coherence (self-report divergence detectable '
                 'in out-of-band coherence checks)'
             )
+
+        # --- Counterfactual divergence → feedback bus closure ---
+        # Verify that counterfactual verification divergence score is
+        # cached and routed through the feedback bus so the next pass's
+        # meta-loop conditions on prior causal prediction failures.
+        if (self.feedback_bus is not None
+                and 'counterfactual_divergence_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'counterfactual_gate → _cached_counterfactual_divergence_score '
+                '→ feedback_bus.counterfactual_divergence_pressure '
+                '→ meta_loop (causal divergence conditions reasoning depth)'
+            )
+        elif self.feedback_bus is not None and self.counterfactual_gate is not None:
+            gaps.append({
+                'component': 'counterfactual_divergence_feedback',
+                'gap': (
+                    'CounterfactualVerificationGate computes divergence '
+                    'score but counterfactual_divergence_pressure signal '
+                    'not registered in feedback bus — causal prediction '
+                    'failures invisible to cross-pass meta-loop conditioning'
+                ),
+                'remediation': (
+                    'Register counterfactual_divergence_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
+
+        # --- Memory routing trust → feedback bus closure ---
+        # Verify that memory routing trust-gating deficit is routed
+        # through the feedback bus so the next pass's meta-loop
+        # conditions on unreliable memory subsystems.
+        if (self.feedback_bus is not None
+                and 'memory_routing_trust_pressure' in self.feedback_bus._extra_signals):
+            verified.append(
+                'memory_routing_policy → _cached_memory_routing_trust_deficit '
+                '→ feedback_bus.memory_routing_trust_pressure '
+                '→ meta_loop (memory trust-gating conditions reasoning depth)'
+            )
+        elif self.feedback_bus is not None and self.memory_routing_policy is not None:
+            gaps.append({
+                'component': 'memory_routing_trust_feedback',
+                'gap': (
+                    'MemoryRoutingPolicy computes trust-gating deficit '
+                    'but memory_routing_trust_pressure signal not '
+                    'registered in feedback bus — memory routing '
+                    'reliability invisible to cross-pass meta-loop '
+                    'conditioning'
+                ),
+                'remediation': (
+                    'Register memory_routing_trust_pressure signal in '
+                    'CognitiveFeedbackBus and populate from '
+                    '_build_feedback_extra_signals()'
+                ),
+            })
 
         # --- Extension points (defined but not instantiated in the pipeline) ---
         # These classes are defined in the module for architectural
