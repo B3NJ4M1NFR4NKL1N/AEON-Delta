@@ -6351,6 +6351,7 @@ class CognitiveFeedbackBus(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
         self._extra_signals: Dict[str, float] = {}
+        self._extra_defaults: Dict[str, float] = {}
         self._build_projection(self.NUM_SIGNAL_CHANNELS)
         # --- Temporal EMA tracking ---
         # Maintains an exponential moving average of each signal channel
@@ -6392,6 +6393,7 @@ class CognitiveFeedbackBus(nn.Module):
         if name in self._extra_signals:
             return  # already registered
         self._extra_signals[name] = default
+        self._extra_defaults[name] = default
         self._build_projection(self.NUM_SIGNAL_CHANNELS + len(self._extra_signals))
     
     @property
@@ -6572,6 +6574,11 @@ class CognitiveFeedbackBus(nn.Module):
             for k, v in extra_signals.items():
                 if k in _merged_extra:
                     _merged_extra[k] = v
+        # Persist merged values so external checks (e.g.
+        # verify_cognitive_unity) can compare current signal values
+        # against ``_extra_defaults`` to determine which signals were
+        # actually populated during this forward pass.
+        self._extra_signals.update(_merged_extra)
         for _name in self._extra_signals:
             _val = float(_merged_extra[_name])
             core_signals.append(
@@ -20376,6 +20383,14 @@ class AEONDeltaV3(nn.Module):
         # error-recovery episodes and influence metacognitive trigger
         # weight adaptation and training loss adjustments.
         ("counterfactual_verification", "error_evolution"),
+        # ── Subsystem health gate paths ────────────────────────────
+        # The health gate attenuates integration output based on
+        # coherence health.  Its gate value feeds into the feedback
+        # bus and metacognitive trigger so that degraded integration
+        # reliability triggers deeper re-reasoning.
+        ("integration", "subsystem_health_gate"),
+        ("subsystem_health_gate", "metacognitive_trigger"),
+        ("subsystem_health_gate", "error_evolution"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -20476,6 +20491,10 @@ class AEONDeltaV3(nn.Module):
         # Counterfactual verification gate — validates conclusions
         # against causal simulator predictions.
         "counterfactual_verification": "counterfactual_gate",
+        # Subsystem health gate — attenuates integration output based
+        # on coherence health, ensuring degraded integration produces
+        # dampened outputs.
+        "subsystem_health_gate": "subsystem_health_gate",
     }
     
     def __init__(self, config: AEONConfig):
@@ -30183,15 +30202,18 @@ class AEONDeltaV3(nn.Module):
             torch.cat([z_rssm, embedded_factors], dim=-1)
         )
         z_out = self.integration_norm(z_integrated + z_rssm)
+        self.provenance_tracker.record_after("integration", z_out)
+        self.coherence_registry.register_output("integration", validated=torch.isfinite(z_out).all().item())
         # Apply subsystem health gate — attenuate the integrated output
         # based on current coherence health so that degraded integration
         # produces dampened outputs instead of overconfident bad results.
+        self.provenance_tracker.record_before("subsystem_health_gate", z_out)
         z_out, _integration_gate_val = self.subsystem_health_gate(
             z_out,
             coherence_score=1.0 - self._cached_coherence_deficit,
         )
-        self.provenance_tracker.record_after("integration", z_out)
-        self.coherence_registry.register_output("integration", validated=torch.isfinite(z_out).all().item())
+        self.provenance_tracker.record_after("subsystem_health_gate", z_out)
+        self.coherence_registry.register_output("subsystem_health_gate", validated=torch.isfinite(z_out).all().item())
         self._cached_integration_state = z_out.detach()
         # Cache integration health gate value for cross-pass feedback.
         # Low gate values indicate degraded integration reliability;

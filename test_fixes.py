@@ -46,6 +46,7 @@ _ARCH_NODES = [
     'auto_critic', 'output_reliability', 'metacognitive_trigger',
     'error_evolution', 'unified_cognitive_cycle', 'decoder',
     'memory_routing', 'counterfactual_verification',
+    'subsystem_health_gate',
 ]
 
 # Keyword-to-node mapping for automatic test classification
@@ -138,6 +139,8 @@ _KEYWORD_NODE_MAP = {
     'hash': 'integration',
     'document_aware': 'encoder',
     'tensor_hash': 'safety',
+    'subsystem_health_gate': 'subsystem_health_gate',
+    'health_gate': 'subsystem_health_gate',
 }
 
 
@@ -62684,6 +62687,108 @@ def test_auto_critic_safety_coherence_registry():
     print("✅ test_auto_critic_safety_coherence_registry PASSED")
 
 
+def test_feedback_bus_extra_defaults_exists():
+    """CognitiveFeedbackBus must have _extra_defaults dict tracking
+    registration defaults separately from current signal values."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    assert hasattr(fb, '_extra_defaults'), (
+        "CognitiveFeedbackBus must have _extra_defaults attribute"
+    )
+    assert isinstance(fb._extra_defaults, dict), (
+        "_extra_defaults must be a dict"
+    )
+    # Register a signal and verify default is stored
+    fb.register_signal("test_signal", default=0.5)
+    assert "test_signal" in fb._extra_defaults, (
+        "register_signal must store default in _extra_defaults"
+    )
+    assert fb._extra_defaults["test_signal"] == 0.5, (
+        "Stored default must match registration default"
+    )
+    # Current value should also be at default initially
+    assert fb._extra_signals["test_signal"] == 0.5, (
+        "Initial signal value must equal registration default"
+    )
+    print("✅ test_feedback_bus_extra_defaults_exists PASSED")
+
+
+def test_feedback_bus_forward_persists_signal_values():
+    """CognitiveFeedbackBus.forward() must persist merged signal values
+    in _extra_signals so verify_cognitive_unity can detect population."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    fb.register_signal("my_signal", default=0.0)
+    # Before forward, signal is at default
+    assert fb._extra_signals["my_signal"] == fb._extra_defaults["my_signal"]
+    # Forward with overridden signal
+    fb.forward(
+        batch_size=1,
+        device=torch.device("cpu"),
+        extra_signals={"my_signal": 0.75},
+    )
+    # After forward, _extra_signals should reflect the overridden value
+    assert fb._extra_signals["my_signal"] == 0.75, (
+        f"After forward(), signal must be updated to 0.75, "
+        f"got {fb._extra_signals['my_signal']}"
+    )
+    # Default should remain unchanged
+    assert fb._extra_defaults["my_signal"] == 0.0, (
+        "Registration default must not change after forward()"
+    )
+    print("✅ test_feedback_bus_forward_persists_signal_values PASSED")
+
+
+def test_subsystem_health_gate_in_node_attr_map():
+    """SubsystemHealthGate must be registered in _NODE_ATTR_MAP for
+    provenance tracing and pipeline wiring verification."""
+    from aeon_core import AEONDeltaV3
+    assert "subsystem_health_gate" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "subsystem_health_gate must be in _NODE_ATTR_MAP"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["subsystem_health_gate"] == "subsystem_health_gate", (
+        "subsystem_health_gate must map to 'subsystem_health_gate' attribute"
+    )
+    print("✅ test_subsystem_health_gate_in_node_attr_map PASSED")
+
+
+def test_subsystem_health_gate_pipeline_dependencies():
+    """SubsystemHealthGate must have pipeline dependency edges for
+    provenance tracing."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    # integration -> subsystem_health_gate edge
+    assert ("integration", "subsystem_health_gate") in deps, (
+        "integration -> subsystem_health_gate edge must exist"
+    )
+    # subsystem_health_gate -> metacognitive_trigger edge
+    assert ("subsystem_health_gate", "metacognitive_trigger") in deps, (
+        "subsystem_health_gate -> metacognitive_trigger edge must exist"
+    )
+    print("✅ test_subsystem_health_gate_pipeline_dependencies PASSED")
+
+
+def test_subsystem_health_gate_provenance_registration():
+    """SubsystemHealthGate provenance must be recorded in
+    _reasoning_core_impl via record_before/record_after."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'record_before("subsystem_health_gate"' in src, (
+        "subsystem_health_gate must have provenance record_before"
+    )
+    assert 'record_after("subsystem_health_gate"' in src, (
+        "subsystem_health_gate must have provenance record_after"
+    )
+    # Coherence registry registration
+    assert 'register_output("subsystem_health_gate"' in src, (
+        "subsystem_health_gate must register in coherence registry"
+    )
+    print("✅ test_subsystem_health_gate_provenance_registration PASSED")
+
+
+def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
@@ -65465,6 +65570,13 @@ def test_auto_critic_safety_coherence_registry():
     test_unified_memory_query_tracks_failures()
     test_memory_partial_failure_escalates_uncertainty()
     test_auto_critic_safety_coherence_registry()
+
+    # AGI Coherence — Architectural Unity Tests
+    test_feedback_bus_extra_defaults_exists()
+    test_feedback_bus_forward_persists_signal_values()
+    test_subsystem_health_gate_in_node_attr_map()
+    test_subsystem_health_gate_pipeline_dependencies()
+    test_subsystem_health_gate_provenance_registration()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
