@@ -36252,6 +36252,7 @@ class AEONDeltaV3(nn.Module):
             'encoder_reasoning_norm',
             'icm_curiosity', 'memory_cross_validation',
             'deception_suppressor',
+            'memory_routing', 'counterfactual_verification',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
