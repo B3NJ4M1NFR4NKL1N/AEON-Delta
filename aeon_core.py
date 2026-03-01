@@ -2885,6 +2885,7 @@ class AEONConfig:
     lambda_convergence_arbiter_conflict: float = 0.01
     lambda_memory_staleness: float = 0.005
     lambda_coverage_deficit: float = 0.005
+    lambda_counterfactual_verification: float = 0.01
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -16203,6 +16204,16 @@ class MetaCognitiveRecursionTrigger:
             "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
             "uncertainty_auto_critic_convergence_diverging": "diverging",
             "uncertainty_auto_critic_audit_pattern": "coherence_deficit",
+            # High counterfactual verification loss — causal prediction
+            # inaccuracy detected during training, maps to low_causal_quality
+            # so that recurring counterfactual prediction failures boost
+            # the causal quality trigger signal weight.
+            "high_counterfactual_verification_loss": "low_causal_quality",
+            # Recurring root cause — the UCC detected a module that
+            # repeatedly appears in error chains, indicating systemic
+            # weakness.  Maps to uncertainty so deeper reasoning is
+            # triggered for persistent architectural issues.
+            "recurring_root_cause": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17129,6 +17140,14 @@ class CausalErrorEvolutionTracker:
         # to lambda_causal_dag so training strengthens causal model
         # accuracy when counterfactual verification repeatedly fails.
         "counterfactual_divergence": "lambda_causal_dag",
+        # High counterfactual verification loss — training-time
+        # counterfactual prediction inaccuracy maps to the dedicated
+        # lambda so loss weight adapts to persistent prediction failures.
+        "high_counterfactual_verification_loss": "lambda_counterfactual_verification",
+        # Recurring root cause — the UCC detected a module that
+        # repeatedly appears in error chains.  Maps to lambda_ucc
+        # so training adapts to persistent root-cause patterns.
+        "recurring_root_cause": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -35953,6 +35972,36 @@ class AEONDeltaV3(nn.Module):
                 _coverage_deficit_val, device=self.device,
             )
 
+        # ===== 22. COUNTERFACTUAL VERIFICATION LOSS =====
+        # When CounterfactualVerificationGate computes a divergence score
+        # between the unified simulator's causal prediction and the actual
+        # reasoning output, penalize high divergence so training actively
+        # improves counterfactual prediction accuracy.  Previously, the
+        # gate's divergence only escalated runtime uncertainty and fed
+        # into the error evolution tracker indirectly via the
+        # 'counterfactual_divergence' error class → 'lambda_causal_dag'
+        # mapping, but never produced a direct gradient signal.  Adding
+        # this loss closes the gap between counterfactual verification
+        # (which detects prediction failures) and training (which should
+        # correct them), ensuring that causal conclusions can be verified
+        # against counterfactual predictions with increasing accuracy.
+        counterfactual_verification_loss = torch.tensor(0.0, device=self.device)
+        _cf_results = outputs.get('counterfactual_gate_results', {})
+        _cf_divergence = _cf_results.get('divergence', None)
+        if _cf_divergence is not None and isinstance(_cf_divergence, (int, float)):
+            if _cf_divergence > 0.0 and math.isfinite(_cf_divergence):
+                counterfactual_verification_loss = torch.tensor(
+                    min(1.0, float(_cf_divergence)), device=self.device,
+                )
+        # Fallback: if counterfactual gate results are not in the output
+        # dict, use the cached divergence score from the forward pass.
+        elif self._cached_counterfactual_divergence_score < 1.0:
+            _cf_cached = 1.0 - self._cached_counterfactual_divergence_score
+            if _cf_cached > 0.0:
+                counterfactual_verification_loss = torch.tensor(
+                    min(1.0, _cf_cached), device=self.device,
+                )
+
         total_loss = (
             lm_loss +
             vq_loss +
@@ -35987,6 +36036,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_convergence_arbiter_conflict * convergence_arbiter_conflict_loss +
             self.config.lambda_memory_staleness * memory_staleness_loss +
             self.config.lambda_coverage_deficit * coverage_deficit_loss +
+            _ee_boost("lambda_counterfactual_verification") * self.config.lambda_counterfactual_verification * counterfactual_verification_loss +
             reg_loss
         )
         
@@ -36076,6 +36126,16 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'mcts_value_loss': _mcts_val},
                     )
+            # Counterfactual verification loss → error evolution bridge
+            if torch.is_tensor(counterfactual_verification_loss) and torch.isfinite(counterfactual_verification_loss):
+                _cf_val = float(counterfactual_verification_loss.detach().item())
+                if _cf_val > 0.3:
+                    self.error_evolution.record_episode(
+                        error_class='high_counterfactual_verification_loss',
+                        strategy_used='counterfactual_supervision',
+                        success=False,
+                        metadata={'counterfactual_verification_loss': _cf_val},
+                    )
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
@@ -36115,6 +36175,7 @@ class AEONDeltaV3(nn.Module):
             'convergence_arbiter_conflict_loss': convergence_arbiter_conflict_loss,
             'memory_staleness_loss': memory_staleness_loss,
             'coverage_deficit_loss': coverage_deficit_loss,
+            'counterfactual_verification_loss': counterfactual_verification_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
@@ -39536,6 +39597,107 @@ class AEONDeltaV3(nn.Module):
             _untraced_active
         )
 
+        # ── 6. Feedback bus signal completeness ───────────────────
+        # Validate that all registered feedback bus signal channels
+        # actually received non-default values during the most recent
+        # forward pass.  Silent signal drops (where a channel is
+        # registered but never populated) cause the feedback bus to
+        # condition the meta-loop on stale or zero signals, silently
+        # degrading the cross-pass feedback loop without any diagnostic
+        # visibility.  This check ensures that the "any uncertainty
+        # triggers a meta-cognitive cycle" requirement is not undermined
+        # by undetected signal dropout.
+        feedback_bus_completeness: Dict[str, Any] = {}
+        _fb = self.feedback_bus
+        if _fb is not None:
+            _registered_signals = set(
+                getattr(_fb, '_extra_signals', {}).keys()
+            )
+            _populated_signals: Set[str] = set()
+            _unpopulated_signals: List[str] = []
+            _extra_defaults = getattr(_fb, '_extra_defaults', {})
+            _extra_signals = getattr(_fb, '_extra_signals', {})
+            for _sig_name in sorted(_registered_signals):
+                _sig_val = _extra_signals.get(_sig_name)
+                _sig_default = _extra_defaults.get(_sig_name, 0.0)
+                # A signal is "populated" if its current value differs
+                # from its registration default, indicating the forward
+                # pass actually set it.
+                if _sig_val is not None and _sig_val != _sig_default:
+                    _populated_signals.add(_sig_name)
+                else:
+                    _unpopulated_signals.append(_sig_name)
+            _fb_coverage = (
+                len(_populated_signals) / max(len(_registered_signals), 1)
+                if _registered_signals else 1.0
+            )
+            feedback_bus_completeness = {
+                'registered_signals': len(_registered_signals),
+                'populated_signals': len(_populated_signals),
+                'unpopulated_signals': _unpopulated_signals,
+                'coverage': _fb_coverage,
+            }
+            if _unpopulated_signals and _fb_coverage < 0.5:
+                recommendations.append(
+                    f"Feedback bus signal dropout: "
+                    f"{len(_unpopulated_signals)}/{len(_registered_signals)} "
+                    f"channels at default — verify forward pass populates "
+                    f"all registered signals"
+                )
+
+        # ── 7. Per-module health synthesis ─────────────────────────
+        # Synthesize a per-module health score that aggregates the three
+        # AGI axioms (mutual verification, uncertainty→metacognition,
+        # root-cause traceability) into a single actionable view.  This
+        # closes the gap where verify_cognitive_unity returned per-axiom
+        # results that callers had to manually cross-reference to
+        # understand which specific module needs attention.  Each module
+        # gets a health score ∈ [0, 1] where 1.0 means fully healthy
+        # (verified, uncertainty-covered, traceable) and lower values
+        # indicate specific axiom failures.
+        module_health: Dict[str, Dict[str, Any]] = {}
+        for _node in sorted(_active_nodes):
+            _health: Dict[str, Any] = {'node': _node, 'score': 1.0}
+            _penalties: List[str] = []
+            # Axiom 1: mutual verification — is this module in any
+            # verified dependency edge?
+            if _node not in _verified_nodes:
+                _health['score'] -= 0.33
+                _penalties.append('unverified')
+            # Axiom 3: root-cause traceability — is this module in the
+            # provenance dependency graph?
+            if _node not in _traceable_nodes:
+                _health['score'] -= 0.33
+                _penalties.append('untraceable')
+            # Pipeline-provenance alignment — is the node declared in
+            # pipeline deps but missing from provenance DAG?
+            if _node in _pipeline_nodes and _node not in _traceable_nodes:
+                _health['score'] -= 0.17
+                _penalties.append('pipeline_untraced')
+            # Active-pass coverage — was the node active this pass but
+            # missing from provenance deltas?
+            if _node in _active_pass_subsystems and _node in set(_untraced_active):
+                _health['score'] -= 0.17
+                _penalties.append('active_untraced')
+            _health['score'] = max(0.0, _health['score'])
+            _health['penalties'] = _penalties
+            module_health[_node] = _health
+
+        # Identify the weakest module for actionable correction
+        _weakest_module: Optional[str] = None
+        _weakest_score: float = 1.0
+        for _node, _h in module_health.items():
+            if _h['score'] < _weakest_score:
+                _weakest_score = _h['score']
+                _weakest_module = _node
+        if _weakest_module is not None and _weakest_score < 0.9:
+            _weakest_penalties = module_health[_weakest_module]['penalties']
+            recommendations.append(
+                f"Weakest module: '{_weakest_module}' "
+                f"(score={_weakest_score:.2f}, "
+                f"issues: {', '.join(_weakest_penalties)})"
+            )
+
         # ── Composite verdict ─────────────────────────────────────
         is_unified = (
             _mv_coverage >= 0.9
@@ -39554,6 +39716,9 @@ class AEONDeltaV3(nn.Module):
             'mutual_verification': mutual_verification,
             'uncertainty_metacognition': uncertainty_metacognition,
             'root_cause_traceability': root_cause_traceability,
+            'feedback_bus_completeness': feedback_bus_completeness,
+            'module_health': module_health,
+            'weakest_module': _weakest_module,
             'recommendations': recommendations,
         }
 

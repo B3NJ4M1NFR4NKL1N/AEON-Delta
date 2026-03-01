@@ -61676,6 +61676,267 @@ def test_adaptive_coherence_trend_warmup():
     print("✅ test_adaptive_coherence_trend_warmup PASSED")
 
 
+def test_counterfactual_verification_loss_in_compute_loss():
+    """compute_loss includes counterfactual_verification_loss when the
+    CounterfactualVerificationGate detects causal prediction divergence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    # Construct a minimal outputs dict that compute_loss can process
+    outputs = {
+        'logits': torch.randn(B, config.seq_length, config.vocab_size),
+        'core_state': torch.randn(B, config.hidden_dim),
+        'psi_0': torch.randn(B, config.z_dim),
+        'vq_loss': torch.tensor(0.0),
+        'safety_score': torch.ones(B, 1),
+        'factors': torch.randn(B, config.num_pillars),
+        # Inject a counterfactual divergence
+        'counterfactual_gate_results': {'divergence': 0.7},
+    }
+    targets = torch.randint(0, config.vocab_size, (B, config.seq_length))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    assert 'counterfactual_verification_loss' in loss_dict, (
+        "compute_loss must return counterfactual_verification_loss"
+    )
+    cf_loss = loss_dict['counterfactual_verification_loss']
+    assert cf_loss.item() > 0.0, (
+        "counterfactual_verification_loss should be > 0 when divergence is 0.7"
+    )
+    print("✅ test_counterfactual_verification_loss_in_compute_loss PASSED")
+
+
+def test_counterfactual_verification_loss_zero_when_healthy():
+    """compute_loss returns zero counterfactual_verification_loss when
+    no divergence is detected."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    # Construct outputs with no counterfactual divergence
+    outputs = {
+        'logits': torch.randn(B, config.seq_length, config.vocab_size),
+        'core_state': torch.randn(B, config.hidden_dim),
+        'psi_0': torch.randn(B, config.z_dim),
+        'vq_loss': torch.tensor(0.0),
+        'safety_score': torch.ones(B, 1),
+        'factors': torch.randn(B, config.num_pillars),
+    }
+    model._cached_counterfactual_divergence_score = 1.0  # healthy
+
+    targets = torch.randint(0, config.vocab_size, (B, config.seq_length))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    cf_loss = loss_dict['counterfactual_verification_loss']
+    assert cf_loss.item() == 0.0, (
+        f"counterfactual_verification_loss should be 0.0 when healthy, "
+        f"got {cf_loss.item()}"
+    )
+    print("✅ test_counterfactual_verification_loss_zero_when_healthy PASSED")
+
+
+def test_counterfactual_verification_loss_uses_cached_score():
+    """compute_loss falls back to _cached_counterfactual_divergence_score
+    when counterfactual_gate_results are absent from outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B = 2
+    # Construct outputs without counterfactual_gate_results
+    outputs = {
+        'logits': torch.randn(B, config.seq_length, config.vocab_size),
+        'core_state': torch.randn(B, config.hidden_dim),
+        'psi_0': torch.randn(B, config.z_dim),
+        'vq_loss': torch.tensor(0.0),
+        'safety_score': torch.ones(B, 1),
+        'factors': torch.randn(B, config.num_pillars),
+    }
+    model._cached_counterfactual_divergence_score = 0.4  # divergent
+
+    targets = torch.randint(0, config.vocab_size, (B, config.seq_length))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    cf_loss = loss_dict['counterfactual_verification_loss']
+    # 1.0 - 0.4 = 0.6
+    assert cf_loss.item() > 0.0, (
+        "counterfactual_verification_loss should be > 0 when cached score "
+        "indicates divergence"
+    )
+    print("✅ test_counterfactual_verification_loss_uses_cached_score PASSED")
+
+
+def test_lambda_counterfactual_verification_in_config():
+    """AEONConfig includes the lambda_counterfactual_verification parameter."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, vocab_size=200,
+    )
+    assert hasattr(config, 'lambda_counterfactual_verification'), (
+        "AEONConfig must have lambda_counterfactual_verification"
+    )
+    assert config.lambda_counterfactual_verification == 0.01, (
+        f"Default should be 0.01, got {config.lambda_counterfactual_verification}"
+    )
+    print("✅ test_lambda_counterfactual_verification_in_config PASSED")
+
+
+def test_counterfactual_verification_error_class_mapped():
+    """high_counterfactual_verification_loss error class is mapped
+    to lambda_counterfactual_verification in the error evolution tracker."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+    mapping = tracker._ERROR_CLASS_TO_LAMBDA
+    assert 'high_counterfactual_verification_loss' in mapping, (
+        "high_counterfactual_verification_loss must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping['high_counterfactual_verification_loss'] == 'lambda_counterfactual_verification', (
+        "Should map to lambda_counterfactual_verification"
+    )
+    print("✅ test_counterfactual_verification_error_class_mapped PASSED")
+
+
+def test_verify_cognitive_unity_feedback_bus_completeness():
+    """verify_cognitive_unity returns feedback_bus_completeness data."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    assert 'feedback_bus_completeness' in unity, (
+        "verify_cognitive_unity must include feedback_bus_completeness"
+    )
+    fbc = unity['feedback_bus_completeness']
+    assert 'registered_signals' in fbc, (
+        "feedback_bus_completeness must include registered_signals count"
+    )
+    assert 'coverage' in fbc, (
+        "feedback_bus_completeness must include coverage score"
+    )
+    assert fbc['registered_signals'] > 0, (
+        "Should have registered signals in the feedback bus"
+    )
+    print("✅ test_verify_cognitive_unity_feedback_bus_completeness PASSED")
+
+
+def test_verify_cognitive_unity_module_health():
+    """verify_cognitive_unity returns per-module health scores."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    assert 'module_health' in unity, (
+        "verify_cognitive_unity must include module_health"
+    )
+    mh = unity['module_health']
+    assert len(mh) > 0, "module_health should have entries for active modules"
+
+    # Each module should have a score and penalties list
+    for node_name, health_info in mh.items():
+        assert 'score' in health_info, (
+            f"Module '{node_name}' health must include 'score'"
+        )
+        assert 'penalties' in health_info, (
+            f"Module '{node_name}' health must include 'penalties'"
+        )
+        assert 0.0 <= health_info['score'] <= 1.0, (
+            f"Module '{node_name}' score must be in [0, 1], "
+            f"got {health_info['score']}"
+        )
+    print("✅ test_verify_cognitive_unity_module_health PASSED")
+
+
+def test_verify_cognitive_unity_weakest_module():
+    """verify_cognitive_unity identifies the weakest module."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, vocab_size=256,
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    assert 'weakest_module' in unity, (
+        "verify_cognitive_unity must include weakest_module"
+    )
+    # weakest_module can be None if all modules are healthy
+    wm = unity['weakest_module']
+    if wm is not None:
+        assert wm in unity['module_health'], (
+            f"Weakest module '{wm}' must be in module_health dict"
+        )
+    print("✅ test_verify_cognitive_unity_weakest_module PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -64419,6 +64680,16 @@ def run_all_tests():
     test_dag_consensus_threshold_loosens_on_high_quality()
     test_fallback_trigger_includes_convergence_conflict()
     test_adaptive_coherence_trend_warmup()
+
+    # Architectural coherence gap closure tests
+    test_counterfactual_verification_loss_in_compute_loss()
+    test_counterfactual_verification_loss_zero_when_healthy()
+    test_counterfactual_verification_loss_uses_cached_score()
+    test_lambda_counterfactual_verification_in_config()
+    test_counterfactual_verification_error_class_mapped()
+    test_verify_cognitive_unity_feedback_bus_completeness()
+    test_verify_cognitive_unity_module_health()
+    test_verify_cognitive_unity_weakest_module()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
