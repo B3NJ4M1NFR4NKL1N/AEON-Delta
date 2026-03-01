@@ -1670,6 +1670,26 @@ class ErrorRecoveryManager:
         ok, value = mgr.recover(exc, context="meta_loop", fallback=torch.zeros(1, 256))
     """
 
+    # Maps dominant root-cause module names (from error evolution's
+    # get_root_causes()) to the recovery strategy most likely to
+    # address the underlying cause.  When the evolved (historical-
+    # success-rate) strategy has low effectiveness (< 60 %), the
+    # root-cause-derived strategy is preferred, making recovery
+    # causal rather than purely reactive.
+    _ROOT_CAUSE_STRATEGY_MAP: Dict[str, str] = {
+        "meta_loop": "convergence",
+        "deeper_meta_loop": "convergence",
+        "certified_meta_loop": "convergence",
+        "encoder": "numerical",
+        "vq": "numerical",
+        "safety": "numerical",
+        "world_model": "convergence",
+        "memory": "semantic",
+        "causal_model": "convergence",
+        "integration": "shape",
+        "decoder": "shape",
+    }
+
     def __init__(
         self,
         hidden_dim: int,
@@ -1731,8 +1751,42 @@ class ErrorRecoveryManager:
 
         # Consult error evolution tracker for historically best strategy
         evolved_strategy_name: Optional[str] = None
+        _root_cause_info: Dict[str, Any] = {}
+        _causal_antecedents: List[str] = []
         if self.error_evolution is not None:
             evolved_strategy_name = self.error_evolution.get_best_strategy(error_class)
+            # Query root-cause analysis to identify upstream modules that
+            # originated this error class.  When a dominant root cause maps
+            # to a known strategy type (via _ROOT_CAUSE_STRATEGY_MAP), prefer
+            # that strategy over the purely historical one — this makes
+            # recovery causal (addressing the origin) rather than purely
+            # reactive (addressing symptoms).
+            try:
+                _rc_result = self.error_evolution.get_root_causes(error_class)
+                _root_cause_info = _rc_result
+                _root_causes = _rc_result.get('root_causes', {})
+                if _root_causes:
+                    _causal_antecedents = list(_root_causes.keys())
+                    _dominant_root = max(_root_causes, key=_root_causes.get)
+                    _root_cause_info['dominant_root_cause'] = _dominant_root
+                    # Override strategy when root cause maps to a known
+                    # recovery strategy and the evolved strategy has low
+                    # historical success (< 60%).
+                    _rc_strategy = self._ROOT_CAUSE_STRATEGY_MAP.get(
+                        _dominant_root,
+                    )
+                    if _rc_strategy and _rc_strategy in self._strategies:
+                        _evolved_sr = self.error_evolution.get_success_rate(
+                            error_class,
+                        )
+                        if _evolved_sr < 0.6:
+                            evolved_strategy_name = _rc_strategy
+                            _root_cause_info['strategy_overridden'] = True
+            except Exception as _rc_err:
+                logger.debug(
+                    "Root-cause analysis failed during recovery: %s",
+                    _rc_err,
+                )
 
         # Enrich audit entry with provenance attribution so recovery
         # decisions are traceable to the dominant upstream module that
@@ -1747,6 +1801,12 @@ class ErrorRecoveryManager:
                     _provenance_info["dominant_provenance_module"] = max(
                         _contribs, key=_contribs.get,
                     )
+                    # Include provenance-dominant module in causal
+                    # antecedents so record_episode links recovery
+                    # decisions to their originating pipeline stage.
+                    _dom = _provenance_info["dominant_provenance_module"]
+                    if _dom not in _causal_antecedents:
+                        _causal_antecedents.append(_dom)
             except Exception as _prov_err:
                 logger.debug(
                     "Provenance enrichment failed during error recovery: %s",
@@ -1758,6 +1818,8 @@ class ErrorRecoveryManager:
             "detail": detail,
             "evolved_strategy": evolved_strategy_name,
             **_provenance_info,
+            **{k: v for k, v in _root_cause_info.items()
+               if k != 'root_causes'},
         })
 
         if evolved_strategy_name and evolved_strategy_name in self._strategies:
@@ -1787,6 +1849,7 @@ class ErrorRecoveryManager:
                         error_class=error_class,
                         strategy_used=_strategy_name,
                         success=success,
+                        causal_antecedents=_causal_antecedents or None,
                         metadata={
                             "context": context,
                             "attempts": attempt + 1,
@@ -1816,6 +1879,7 @@ class ErrorRecoveryManager:
                 error_class=error_class,
                 strategy_used=_strategy_name,
                 success=False,
+                causal_antecedents=_causal_antecedents or None,
                 metadata={
                     "context": context,
                     "attempts": self.max_retries,
@@ -1849,17 +1913,32 @@ class ErrorRecoveryManager:
         return sum(1 for e in items if e["success"]) / len(items)
 
     def get_recovery_stats(self) -> Dict[str, Any]:
-        """Return a snapshot of recovery counters."""
+        """Return a snapshot of recovery counters.
+
+        When an :class:`CausalErrorEvolutionTracker` is wired, includes
+        ``degrading_classes`` — error classes whose recovery success rate
+        is trending downward.  This allows upstream callers (e.g. the
+        feedback bus) to factor preemptive escalation into the next
+        forward pass's meta-loop conditioning.
+        """
         with self._lock:
             history = list(self._recovery_history)
             failures = sum(1 for e in history if not e.get("success", True))
             successes = sum(1 for e in history if e.get("success", True))
-            return {
+            stats: Dict[str, Any] = {
                 "total": sum(self._recovery_counts.values()),
                 "by_class": dict(self._recovery_counts),
                 "failures": failures,
                 "successes": successes,
             }
+        if self.error_evolution is not None:
+            try:
+                _degrading = self.error_evolution.get_degrading_error_classes()
+                if _degrading:
+                    stats["degrading_classes"] = _degrading
+            except Exception:
+                pass
+        return stats
 
     def reset_stats(self) -> None:
         """Clear all counters."""
@@ -16199,6 +16278,67 @@ class MetaCognitiveRecursionTrigger:
                 k: v / total for k, v in raw_weights.items()
             }
 
+    # Maps OutputReliabilityGate factor names to the corresponding
+    # trigger signal whose weight should be boosted when that factor
+    # is identified as the weakest contributor to output reliability.
+    _RELIABILITY_FACTOR_TO_SIGNAL: Dict[str, str] = {
+        "uncertainty_contribution": "uncertainty",
+        "auto_critic_contribution": "uncertainty",
+        "convergence_contribution": "diverging",
+        "coherence_contribution": "coherence_deficit",
+        "provenance_quality": "coherence_deficit",
+        "causal_quality": "low_causal_quality",
+        "verification_coverage": "low_output_reliability",
+    }
+
+    def adapt_weights_from_reliability_gate(
+        self,
+        weakest_factor: str,
+        composite_score: float = 1.0,
+        scale: float = 0.25,
+    ) -> None:
+        """Adjust signal weights based on the output reliability gate's
+        weakest quality factor.
+
+        When the :class:`OutputReliabilityGate` identifies a specific
+        quality dimension as the weakest contributor to composite
+        reliability, the corresponding trigger signal weight is boosted
+        so that the metacognitive cycle is more sensitive to signals from
+        the failing dimension.  This closes the gap where the gate's
+        per-factor decomposition was used for causal tracing and feedback
+        bus pressure but never directly influenced metacognitive trigger
+        sensitivity — meaning the trigger couldn't proportionally increase
+        re-reasoning urgency toward the specific quality dimension that
+        degraded reliability.
+
+        The boost is proportional to the reliability deficit
+        (``1 - composite_score``) and controlled by *scale* to avoid
+        oscillation.  Weights are re-normalised after adjustment.
+
+        Args:
+            weakest_factor: Name of the weakest quality factor from
+                :meth:`OutputReliabilityGate.forward`.
+            composite_score: Overall composite reliability ∈ [0, 1].
+            scale: Maximum fractional weight boost when reliability = 0.
+                Default 0.25 provides moderate adaptation.
+        """
+        signal = self._RELIABILITY_FACTOR_TO_SIGNAL.get(weakest_factor)
+        if signal is None or signal not in self._signal_weights:
+            return
+
+        deficit = max(0.0, min(1.0, 1.0 - composite_score))
+        boost = deficit * scale
+        if boost <= 0:
+            return
+
+        raw_weights = dict(self._signal_weights)
+        raw_weights[signal] = raw_weights[signal] + boost
+        total = sum(raw_weights.values())
+        if total > 0:
+            self._signal_weights = {
+                k: v / total for k, v in raw_weights.items()
+            }
+
     def evaluate(
         self,
         uncertainty: float = 0.0,
@@ -16566,6 +16706,17 @@ class CausalErrorEvolutionTracker:
             key=lambda s: sum(strategy_stats[s]) / max(len(strategy_stats[s]), 1),
         )
         return best_strategy
+
+    def get_success_rate(self, error_class: str) -> float:
+        """Return the overall success rate for *error_class*.
+
+        Returns 1.0 when no episodes are recorded (optimistic default).
+        """
+        with self._lock:
+            episodes = self._episodes.get(error_class, [])
+        if not episodes:
+            return 1.0
+        return sum(1 for ep in episodes if ep["success"]) / len(episodes)
 
     def get_error_summary(self) -> Dict[str, Any]:
         """Return aggregate statistics across all error classes.
@@ -18160,6 +18311,7 @@ class UnifiedCognitiveCycle:
         feedback_oscillation_score: float = 0.0,
         propagation_delta: float = 0.0,
         propagated_uncertainties: Optional[Dict[str, float]] = None,
+        reliability_weakest_factor: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -18224,6 +18376,12 @@ class UnifiedCognitiveCycle:
                 enabling targeted re-reasoning toward the specific module
                 whose upstream uncertainty was amplified through the
                 dependency DAG.
+            reliability_weakest_factor: Optional name of the weakest quality
+                factor from :class:`OutputReliabilityGate`.  When provided
+                alongside a low ``output_reliability``, the metacognitive
+                trigger's signal weights are boosted for the corresponding
+                quality dimension so re-reasoning is proportionally more
+                sensitive to the failing factor.
 
         Returns:
             Dict with:
@@ -18597,6 +18755,28 @@ class UnifiedCognitiveCycle:
                     logger.warning(
                         "UCC: adapt_weights_from_directional_uncertainty "
                         "failed (non-fatal): %s", _dir_adapt_err,
+                    )
+
+            # 2c. Reliability-gate-driven weight adaptation — when the
+            # OutputReliabilityGate identifies a specific quality factor as
+            # the weakest contributor to composite reliability, boost the
+            # corresponding trigger signal weight so that re-reasoning is
+            # proportionally more sensitive to the failing quality dimension.
+            # This closes the gap where the gate's per-factor decomposition
+            # informed causal tracing and feedback bus pressure but never
+            # directly influenced metacognitive trigger sensitivity.
+            if output_reliability is not None and output_reliability < 0.8:
+                try:
+                    _rwf = reliability_weakest_factor
+                    if _rwf is not None:
+                        self.metacognitive_trigger.adapt_weights_from_reliability_gate(
+                            weakest_factor=_rwf,
+                            composite_score=output_reliability,
+                        )
+                except Exception as _rel_adapt_err:
+                    logger.warning(
+                        "UCC: adapt_weights_from_reliability_gate "
+                        "failed (non-fatal): %s", _rel_adapt_err,
                     )
 
         # 2g. Early convergence arbitration — compute the convergence
@@ -31343,6 +31523,15 @@ class AEONDeltaV3(nn.Module):
                     propagated_uncertainties=getattr(
                         self, '_cached_propagated_uncertainties', None,
                     ),
+                    # Weakest quality factor from the OutputReliabilityGate
+                    # so the UCC can adapt metacognitive trigger weights
+                    # toward the specific quality dimension that degraded
+                    # reliability, closing the gap where per-factor
+                    # decomposition was used for tracing but never
+                    # influenced trigger sensitivity.
+                    reliability_weakest_factor=getattr(
+                        self, '_cached_reliability_weakest_factor', None,
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -35846,6 +36035,9 @@ class AEONDeltaV3(nn.Module):
                                 self.feedback_bus.get_oscillation_score()
                                 if self.feedback_bus is not None
                                 else 0.0
+                            ),
+                            reliability_weakest_factor=getattr(
+                                self, '_cached_reliability_weakest_factor', None,
                             ),
                         )
                     # Act on UCC verdict: when re-reasoning is recommended
