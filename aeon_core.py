@@ -6652,11 +6652,23 @@ class CausalProvenanceTracker:
         self._removed_cyclic_edges: Set[Tuple[str, str]] = set()
     
     def reset(self):
-        """Clear all recorded snapshots for a new forward pass."""
+        """Clear all recorded snapshots for a new forward pass.
+
+        Also resets the dependency graph and removed-cyclic-edges set so
+        that the DAG is rebuilt from the authoritative
+        ``_PIPELINE_DEPENDENCIES`` list each pass.  Without this reset,
+        edges removed during cycle detection on pass N are permanently
+        blocked on all subsequent passes, preventing feedback-loop edges
+        from being re-registered and breaking root-cause traceability
+        for those paths.
+        """
         self._before_states.clear()
         self._deltas.clear()
         self._timestamps.clear()
         self._order.clear()
+        if hasattr(self, '_dependencies'):
+            self._dependencies.clear()
+        self._removed_cyclic_edges.clear()
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -11019,10 +11031,20 @@ class Task2VecMetaLearner(nn.Module):
         ewc_lambda: float = 1000.0,
     ):
         super().__init__()
-        self.model = model
+        # Store model as a plain Python attribute (not an nn.Module
+        # submodule) to avoid a circular parent↔child reference when
+        # Task2VecMetaLearner is itself a child of the model.  Without
+        # this, model.eval() / model.train() recurse infinitely through
+        # the module tree: AEONDeltaV3 → task2vec_meta_learner → model → …
+        object.__setattr__(self, '_model_ref', model)
         self.embedding_dim = embedding_dim
         self.similarity_threshold = similarity_threshold
         self.ewc_lambda = ewc_lambda
+
+    @property
+    def model(self) -> nn.Module:
+        """Access the wrapped model without creating an nn.Module edge."""
+        return self._model_ref
 
         # Compute raw parameter count for Fisher dimension
         self._param_count = sum(
@@ -22781,6 +22803,10 @@ class AEONDeltaV3(nn.Module):
             ("auto_critic", self.auto_critic),
             ("metacognitive_trigger", self.metacognitive_trigger),
             ("coherence_verifier", self.module_coherence),
+            ("output_reliability_gate", self.output_reliability_gate),
+            ("counterfactual_gate", getattr(self, 'counterfactual_gate', None)),
+            ("cycle_consistency_validator", getattr(
+                self, 'cycle_consistency_validator', None)),
         ]
         total = len(_VERIFICATION_MODULES)
         active = sum(1 for _, mod in _VERIFICATION_MODULES if mod is not None)
