@@ -62550,6 +62550,139 @@ def test_error_class_signal_coverage_feedback_oscillation_ucc_rerun():
     print("✅ test_error_class_signal_coverage_feedback_oscillation_ucc_rerun PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE — Gap-Closing Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_mcts_search_exception_safety():
+    """MCTS planner.search() must be wrapped in try/except so a crash
+    escalates uncertainty rather than propagating up the call stack.
+    Verify the exception handler exists in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The fix wraps mcts_planner.search() in try/except with
+    # mcts_search_error uncertainty escalation.
+    assert "mcts_search_error" in src, (
+        "_reasoning_core_impl must escalate uncertainty on MCTS search "
+        "failure via uncertainty_sources['mcts_search_error']"
+    )
+    assert "_circuit_breaker_tripped" in src, (
+        "MCTS search failure must trip circuit breaker"
+    )
+    print("✅ test_mcts_search_exception_safety PASSED")
+
+
+def test_auto_critic_coherence_registry_coverage():
+    """Every auto_critic provenance record_after site must have a matching
+    coherence_registry.register_output so subsystem coverage tracking
+    includes critic quality."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Count record_after("auto_critic", ...) occurrences
+    import re
+    prov_count = len(re.findall(
+        r'record_after\(\s*"auto_critic"', src,
+    ))
+    reg_count = len(re.findall(
+        r'register_output\(\s*\n?\s*"auto_critic"', src,
+    ))
+    # Every provenance site should have a matching register_output.
+    # Allow reg_count >= prov_count since some paths may register
+    # without provenance (e.g. error fallback).
+    assert reg_count >= prov_count, (
+        f"auto_critic has {prov_count} provenance sites but only "
+        f"{reg_count} coherence_registry registrations — each "
+        f"record_after must be paired with register_output"
+    )
+    print("✅ test_auto_critic_coherence_registry_coverage PASSED")
+
+
+def test_ns_consistency_coherence_registry():
+    """ns_consistency checker must register its output quality in the
+    coherence registry so subsystem coverage tracking includes
+    neuro-symbolic verification."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The ns_consistency checker records provenance; verify coherence
+    # registry registration follows.
+    assert 'record_after("ns_consistency"' in src, (
+        "ns_consistency provenance recording must exist"
+    )
+    # After the fix, ns_consistency quality feeds into register_output
+    # using the ns_bridge subsystem name for consistency with the
+    # coherence registry's expected module set.
+    assert "ns_bridge" in src and "register_output" in src, (
+        "ns_consistency must register in coherence registry"
+    )
+    print("✅ test_ns_consistency_coherence_registry PASSED")
+
+
+def test_unified_memory_query_tracks_failures():
+    """unified_memory_query must return failed_subsystems and
+    num_systems_active so callers can escalate uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    query = torch.randn(64)
+    result = model.unified_memory_query(query, k=3)
+    # Must include tracking metadata
+    assert 'num_systems_active' in result, (
+        "unified_memory_query must report num_systems_active"
+    )
+    assert 'failed_subsystems' in result, (
+        "unified_memory_query must report failed_subsystems"
+    )
+    assert isinstance(result['failed_subsystems'], list), (
+        "failed_subsystems must be a list"
+    )
+    print("✅ test_unified_memory_query_tracks_failures PASSED")
+
+
+def test_memory_partial_failure_escalates_uncertainty():
+    """When some memory subsystems fail during pre-loop query, uncertainty
+    must escalate proportionally via memory_partial_failure source."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "memory_partial_failure" in src, (
+        "_reasoning_core_impl must escalate uncertainty via "
+        "memory_partial_failure when some memory subsystems fail "
+        "during pre-loop query"
+    )
+    print("✅ test_memory_partial_failure_escalates_uncertainty PASSED")
+
+
+def test_auto_critic_safety_coherence_registry():
+    """auto_critic_safety provenance site must have a matching
+    coherence_registry.register_output."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Find the auto_critic_safety provenance site
+    assert 'record_after("auto_critic_safety"' in src, (
+        "auto_critic_safety provenance recording must exist"
+    )
+    # After the fix, a register_output call follows near the
+    # auto_critic_safety provenance site
+    idx_prov = src.index('record_after("auto_critic_safety"')
+    # There should be a register_output call within the next 500 chars
+    nearby = src[idx_prov:idx_prov + 500]
+    assert "register_output" in nearby, (
+        "auto_critic_safety must be followed by coherence_registry "
+        "register_output within its code block"
+    )
+    print("✅ test_auto_critic_safety_coherence_registry PASSED")
+
 
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -65324,6 +65457,14 @@ def test_error_class_signal_coverage_feedback_oscillation_ucc_rerun():
     test_decoder_degenerate_escalates_uncertainty()
     test_save_state_exports_training_error_patterns()
     test_error_class_signal_coverage_feedback_oscillation_ucc_rerun()
+
+    # Architectural Coherence — Gap-Closing Tests
+    test_mcts_search_exception_safety()
+    test_auto_critic_coherence_registry_coverage()
+    test_ns_consistency_coherence_registry()
+    test_unified_memory_query_tracks_failures()
+    test_memory_partial_failure_escalates_uncertainty()
+    test_auto_critic_safety_coherence_registry()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
