@@ -17551,6 +17551,16 @@ class SubsystemCoherenceRegistry:
         "mcts_planning", "icm_curiosity",
         # Memory routing and counterfactual verification gates.
         "memory_routing", "counterfactual_verification",
+        # Subsystems that call register_output() but were missing from
+        # the expected set, making their absence or failure invisible
+        # to coverage deficit tracking.  Adding them closes the gap
+        # where the UCC meta-loop, feedback bus, output reliability
+        # gate, and cycle-consistency checks ran outside the coherence
+        # ledger, preventing the metacognitive trigger from detecting
+        # failures in these critical cross-cutting components.
+        "deeper_meta_loop", "feedback_bus",
+        "output_reliability_gate", "ucc_rerun_meta_loop",
+        "cycle_consistency",
     })
 
     def __init__(
