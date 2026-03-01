@@ -62788,7 +62788,8 @@ def test_subsystem_health_gate_provenance_registration():
     print("✅ test_subsystem_health_gate_provenance_registration PASSED")
 
 
-
+def run_all_tests():
+    """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
     test_quarantine_batch_thread_safety()
     test_tensor_hash_collision_resistance()
