@@ -3311,6 +3311,38 @@ class SafeThoughtAETrainerV4:
                     # architecture and the training optimizer.
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
+                # Apply correction_guidance from UCC — when the unified
+                # cognitive cycle identifies a specific target module and
+                # recommended strategy, use that insight to adapt training
+                # parameters for the identified module.  This closes the
+                # gap where UCC computed detailed correction guidance
+                # (target module, weakest pair, recommended strategy) but
+                # the training loop only applied a generic LR reduction,
+                # discarding the synthesized recommendation.
+                _correction = _cycle_result.get("correction_guidance", {})
+                _corr_target = _correction.get("target_module")
+                if _corr_target is not None:
+                    epoch_metrics["correction_target"] = _corr_target
+                    epoch_metrics["correction_reason"] = _correction.get(
+                        "reason", "unknown",
+                    )
+                    # Tighten grad clip when a specific module is the root
+                    # cause of recurring issues.
+                    if _correction.get("recommended_strategy"):
+                        self._grad_clip_norm = max(
+                            0.1, self._grad_clip_norm * 0.95,
+                        )
+                    # Store the correction target so the next training
+                    # step can prioritise the problematic module.
+                    if hasattr(self, '_inference_module_feedback'):
+                        self._inference_module_feedback[_corr_target] = max(
+                            self._inference_module_feedback.get(
+                                _corr_target, 0.0,
+                            ),
+                            1.0 - epoch_metrics.get(
+                                "cognitive_coherence", 1.0,
+                            ),
+                        )
             except Exception as _cycle_err:
                 logger.warning("Unified cognitive cycle evaluation failed: %s", _cycle_err)
                 # Record the UCC failure in error evolution so that
@@ -3444,6 +3476,15 @@ class ContextualRSSMTrainer:
             if hasattr(self.provenance, '_tracker') else CausalProvenanceTracker(),
             convergence_arbiter=UnifiedConvergenceArbiter() if AEON_CORE_AVAILABLE else None,
             uncertainty_tracker=DirectionalUncertaintyTracker() if AEON_CORE_AVAILABLE else None,
+            # Wire MemoryReasoningValidator so RSSM predicted states are
+            # validated against actual targets for consistency.  RSSM's
+            # recurrent state is functionally a form of memory — validating
+            # predicted-vs-actual consistency closes the gap where RSSM
+            # state quality was only assessed via loss, never via the
+            # meta-cognitive memory-reasoning validation pathway.
+            memory_validator=MemoryReasoningValidator(
+                consistency_threshold=0.3, staleness_penalty=0.1,
+            ) if AEON_CORE_AVAILABLE else None,
         )
         # Cache the most recent VQ and RSSM output tensors so the
         # epoch-end UCC evaluation receives real subsystem states.
@@ -3844,6 +3885,14 @@ class ContextualRSSMTrainer:
                     # can detect when a single training subsystem dominates
                     # the output attribution, matching Phase A's wiring.
                     causal_quality=self._provenance_causal_quality(),
+                    # Pass RSSM predicted state as memory_signal and VQ
+                    # target as converged_state so MemoryReasoningValidator
+                    # can check predicted-vs-actual consistency.  This
+                    # closes the gap where RSSM state quality was only
+                    # assessed via loss, never via the meta-cognitive
+                    # memory-reasoning validation pathway.
+                    memory_signal=self._last_rssm_state,
+                    converged_state=self._last_vq_state,
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
@@ -3857,6 +3906,30 @@ class ContextualRSSMTrainer:
                     )
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
+                # Apply correction_guidance from UCC — when the unified
+                # cognitive cycle identifies a specific target module and
+                # recommended strategy, use that insight to adapt Phase B
+                # training parameters.  This closes the gap where UCC
+                # correction guidance was only consumed in Phase A,
+                # leaving Phase B without targeted correction.
+                _correction = _cycle_result.get("correction_guidance", {})
+                _corr_target = _correction.get("target_module")
+                if _corr_target is not None:
+                    epoch_metrics["correction_target"] = _corr_target
+                    if _correction.get("recommended_strategy"):
+                        self._grad_clip_norm = max(
+                            0.1, self._grad_clip_norm * 0.95,
+                        )
+                    if hasattr(self, '_inference_module_feedback'):
+                        self._inference_module_feedback[_corr_target] = max(
+                            self._inference_module_feedback.get(
+                                _corr_target, 0.0,
+                            ),
+                            1.0 - epoch_metrics.get(
+                                "cognitive_coherence", 1.0,
+                            ),
+                        )
+                if _cycle_result["should_rerun"]:
                     # When the UCC detects coherence issues, tighten gradient
                     # clipping to stabilize the RSSM and prevent further
                     # latent-space drift.  This closes the loop between
