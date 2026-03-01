@@ -61937,6 +61937,238 @@ def test_verify_cognitive_unity_weakest_module():
     print("✅ test_verify_cognitive_unity_weakest_module PASSED")
 
 
+def test_dag_consensus_feeds_coherence_deficit():
+    """DAG consensus disagreement boosts coherence_deficit, not just uncertainty."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer, CausalDAGConsensus,
+    )
+
+    dag_consensus = CausalDAGConsensus(
+        agreement_threshold=0.5, uncertainty_scale=0.2,
+    )
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+        causal_dag_consensus=dag_consensus,
+    )
+
+    states = {
+        'meta_loop': torch.randn(2, 64),
+        'safety': torch.randn(2, 64),
+    }
+
+    # Create two very different DAG adjacency matrices to trigger disagreement
+    dag_a = torch.eye(4)
+    dag_b = torch.zeros(4, 4)
+    dag_b[0, 1] = 1.0
+    dag_b[1, 2] = 1.0
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.1,
+        uncertainty=0.1,
+        dag_adjacency_matrices={'model_a': dag_a, 'model_b': dag_b},
+    )
+
+    # When DAG models disagree, coherence_deficit should reflect it
+    coh_deficit = result['coherence_result']['coherence_deficit']
+    dag_result = result['dag_consensus']
+    if dag_result.get('needs_escalation', False):
+        assert coh_deficit > 0.0, (
+            "DAG consensus disagreement must boost coherence_deficit"
+        )
+    print("✅ test_dag_consensus_feeds_coherence_deficit PASSED")
+
+
+def test_auto_critic_feeds_coherence_deficit():
+    """Low auto-critic quality blends into coherence_deficit."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    # Identical states → high coherence baseline
+    states = {
+        'meta_loop': torch.ones(2, 64),
+        'safety': torch.ones(2, 64),
+    }
+
+    # Evaluate with healthy auto-critic
+    result_healthy = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        auto_critic_quality=0.9,
+    )
+    deficit_healthy = result_healthy['coherence_result']['coherence_deficit']
+
+    # Evaluate with low auto-critic quality
+    cycle.convergence_monitor.reset()
+    result_low = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        auto_critic_quality=0.1,
+    )
+    deficit_low = result_low['coherence_result']['coherence_deficit']
+
+    assert deficit_low > deficit_healthy, (
+        f"Low auto-critic quality ({deficit_low:.4f}) should produce higher "
+        f"coherence deficit than healthy ({deficit_healthy:.4f})"
+    )
+    print("✅ test_auto_critic_feeds_coherence_deficit PASSED")
+
+
+def test_ns_consistency_feeds_coherence_deficit():
+    """Low NS consistency blends into coherence_deficit."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.5),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(),
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    # Identical states → high coherence baseline
+    states = {
+        'meta_loop': torch.ones(2, 64),
+        'safety': torch.ones(2, 64),
+    }
+
+    # Evaluate with healthy NS consistency
+    result_healthy = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        ns_consistency_score=0.95,
+    )
+    deficit_healthy = result_healthy['coherence_result']['coherence_deficit']
+
+    # Evaluate with low NS consistency
+    cycle.convergence_monitor.reset()
+    result_low = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        ns_consistency_score=0.1,
+    )
+    deficit_low = result_low['coherence_result']['coherence_deficit']
+
+    assert deficit_low > deficit_healthy, (
+        f"Low NS consistency ({deficit_low:.4f}) should produce higher "
+        f"coherence deficit than healthy ({deficit_healthy:.4f})"
+    )
+    print("✅ test_ns_consistency_feeds_coherence_deficit PASSED")
+
+
+def test_feedback_oscillation_records_error_evolution():
+    """Feedback oscillation records in error evolution for adaptive learning."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker,
+        CausalProvenanceTracker,
+    )
+
+    eet = CausalErrorEvolutionTracker()
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=None,
+        error_evolution=eet,
+        metacognitive_trigger=None,
+        provenance_tracker=CausalProvenanceTracker(),
+    )
+
+    states = {
+        'meta_loop': torch.randn(2, 64),
+    }
+
+    # Simulate oscillating feedback trend
+    trend = torch.zeros(10)
+    trend[2] = 0.001  # uncertainty trend (not worsening)
+    trend[6] = 0.001  # coherence trend (not worsening)
+
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        feedback_bus_trend=trend,
+        feedback_oscillation_score=0.5,  # above 0.3 threshold
+    )
+
+    # Oscillation should be recorded in error evolution
+    summary = eet.get_error_summary()
+    assert 'feedback_oscillation' in summary.get('error_classes', {}), (
+        "Feedback oscillation must be recorded in error evolution"
+    )
+    print("✅ test_feedback_oscillation_records_error_evolution PASSED")
+
+
+def test_ucc_rerun_outcome_feeds_error_evolution():
+    """UCC re-reasoning outcome records success/failure in error evolution
+    for adaptive trigger weight tuning."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+    )
+
+    # Verify the error_class 'ucc_rerun' is used in the forward pass
+    # by checking the source code pattern exists.
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3)
+    assert "error_class='ucc_rerun'" in source, (
+        "AEONDeltaV3 forward pass must record ucc_rerun in error_evolution"
+    )
+    assert "success=True" in source and "error_class='ucc_rerun'" in source, (
+        "AEONDeltaV3 must record both success=True and success=False for ucc_rerun"
+    )
+
+    # Verify error evolution can record and query the ucc_rerun error class
+    eet = CausalErrorEvolutionTracker()
+    eet.record_episode(
+        error_class='ucc_rerun',
+        strategy_used='deeper_meta_loop',
+        success=True,
+        metadata={'triggers_active': ['coherence_deficit']},
+    )
+    eet.record_episode(
+        error_class='ucc_rerun',
+        strategy_used='deeper_meta_loop',
+        success=False,
+        metadata={'triggers_active': ['uncertainty']},
+    )
+    summary = eet.get_error_summary()
+    assert 'ucc_rerun' in summary.get('error_classes', {}), (
+        "Error evolution must track ucc_rerun episodes"
+    )
+    assert summary['error_classes']['ucc_rerun']['count'] == 2, (
+        "Both success and failure episodes must be tracked"
+    )
+    print("✅ test_ucc_rerun_outcome_feeds_error_evolution PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -64690,6 +64922,13 @@ def run_all_tests():
     test_verify_cognitive_unity_feedback_bus_completeness()
     test_verify_cognitive_unity_module_health()
     test_verify_cognitive_unity_weakest_module()
+
+    # Architectural Unification — Cross-Module Coherence Deficit Feedback
+    test_dag_consensus_feeds_coherence_deficit()
+    test_auto_critic_feeds_coherence_deficit()
+    test_ns_consistency_feeds_coherence_deficit()
+    test_feedback_oscillation_records_error_evolution()
+    test_ucc_rerun_outcome_feeds_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")

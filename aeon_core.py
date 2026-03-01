@@ -19077,6 +19077,24 @@ class UnifiedCognitiveCycle:
                     'oscillation_score': feedback_oscillation_score,
                     'oscillation_detected': _oscillating,
                 }
+                # Record feedback oscillation in error evolution so the
+                # system learns from instability patterns and adapts
+                # trigger weights accordingly.  Without this, oscillation
+                # triggered re-reasoning but was never recorded as a
+                # distinct error class, preventing the metacognitive
+                # trigger from learning that oscillation is a recurring
+                # problem and adjusting its sensitivity.
+                if _oscillating and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='feedback_oscillation',
+                        strategy_used='meta_rerun',
+                        success=False,
+                        metadata={
+                            'oscillation_score': feedback_oscillation_score,
+                            'uncertainty_trend': _unc_trend,
+                            'coherence_trend': _coh_trend,
+                        },
+                    )
             except Exception as _trend_err:
                 logger.debug(
                     "UCC: feedback_bus_trend processing failed (non-fatal): %s",
@@ -19313,6 +19331,16 @@ class UnifiedCognitiveCycle:
             _dag_unc_boost = dag_consensus_result.get("uncertainty_boost", 0.0)
             if _dag_needs_esc:
                 uncertainty = min(1.0, uncertainty + _dag_unc_boost)
+                # Blend DAG structural disagreement into coherence_deficit
+                # so that conflicting causal DAGs degrade the coherence
+                # assessment alongside cross-module misalignment.  Without
+                # this, DAG consensus violations only boosted uncertainty
+                # but were invisible to the coherence score reported to
+                # downstream consumers.
+                _dag_coh_boost = (
+                    1.0 - dag_consensus_result.get("consensus_score", 1.0)
+                ) * 0.25
+                coherence_deficit = min(1.0, coherence_deficit + _dag_coh_boost)
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class='dag_consensus_disagreement',
@@ -19673,6 +19701,15 @@ class UnifiedCognitiveCycle:
         # where auto_critic_quality was a convergence secondary signal
         # but never recorded for evolutionary learning.
         if auto_critic_quality is not None and auto_critic_quality < 0.5:
+            # Blend low auto-critic confidence into coherence_deficit so
+            # that unreliable self-verification degrades the coherence
+            # assessment.  Without this, auto-critic quality degraded
+            # convergence signals and directional uncertainty but was
+            # invisible to the coherence score, allowing the system to
+            # report high coherence while its self-verification was
+            # unreliable.
+            _ac_coh_boost = (1.0 - max(0.0, min(1.0, auto_critic_quality))) * 0.15
+            coherence_deficit = min(1.0, coherence_deficit + _ac_coh_boost)
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='auto_critic_low_quality',
@@ -19688,6 +19725,14 @@ class UnifiedCognitiveCycle:
         # but never recorded as a distinct error class for evolutionary
         # learning and root-cause tracing.
         if ns_consistency_score is not None and ns_consistency_score < 0.5:
+            # Blend low NS consistency into coherence_deficit so that
+            # symbolic rule violations degrade the coherence assessment.
+            # Without this, NS violations degraded uncertainty and were
+            # recorded in error evolution but invisible to the coherence
+            # score, allowing the system to report high coherence while
+            # its symbolic reasoning was inconsistent.
+            _ns_coh_boost = (1.0 - max(0.0, min(1.0, ns_consistency_score))) * 0.15
+            coherence_deficit = min(1.0, coherence_deficit + _ns_coh_boost)
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='ns_consistency_violation',
@@ -32239,6 +32284,28 @@ class AEONDeltaV3(nn.Module):
                                 "extra_iters": _ucc_extra,
                             },
                         )
+                        # Record successful re-reasoning in error
+                        # evolution so the system learns which trigger
+                        # patterns lead to productive re-runs.  Without
+                        # this, re-reasoning outcomes were only in the
+                        # audit log, preventing adaptive trigger weight
+                        # tuning based on historical success rates.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='ucc_rerun',
+                                strategy_used='deeper_meta_loop',
+                                success=True,
+                                metadata={
+                                    'ucc_rate': _ucc_meta.get(
+                                        "convergence_rate", 0.0,
+                                    ),
+                                    'original_rate': convergence_quality_scalar,
+                                    'extra_iters': _ucc_extra,
+                                    'triggers_active': unified_cycle_results.get(
+                                        "trigger_detail", {},
+                                    ).get("triggers_active", []),
+                                },
+                            )
                     else:
                         self.audit_log.record(
                             "ucc_rerun_meta_loop", "rejected", {
@@ -32249,6 +32316,26 @@ class AEONDeltaV3(nn.Module):
                                 "original_rate": convergence_quality_scalar,
                             },
                         )
+                        # Record failed re-reasoning in error evolution
+                        # so the system learns which trigger patterns
+                        # lead to unproductive re-runs and can reduce
+                        # sensitivity to those triggers over time.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='ucc_rerun',
+                                strategy_used='deeper_meta_loop',
+                                success=False,
+                                metadata={
+                                    'ucc_rate': _ucc_meta.get(
+                                        "convergence_rate", 0.0,
+                                    ),
+                                    'original_rate': convergence_quality_scalar,
+                                    'finite': torch.isfinite(_ucc_C).all().item(),
+                                    'triggers_active': unified_cycle_results.get(
+                                        "trigger_detail", {},
+                                    ).get("triggers_active", []),
+                                },
+                            )
                 # 8f-persist. Persistent uncertainty escalation — when the
                 # DirectionalUncertaintyTracker's rolling history shows
                 # modules that are persistently above threshold across
