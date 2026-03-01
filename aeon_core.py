@@ -6650,7 +6650,24 @@ class CausalProvenanceTracker:
         # Tracks edges that were removed due to cycle detection so they
         # are not silently re-added by subsequent record_dependency() calls.
         self._removed_cyclic_edges: Set[Tuple[str, str]] = set()
+        # Optional ErrorRecoveryManager for real-time anomaly notifications.
+        # When attached, anomalous provenance deltas notify the recovery
+        # manager to adopt a defensive strategy for the affected module,
+        # bridging provenance-level anomaly detection into active recovery.
+        self._recovery_manager: Optional['ErrorRecoveryManager'] = None
     
+    def set_recovery_manager(
+        self, manager: Optional['ErrorRecoveryManager'],
+    ) -> None:
+        """Attach an ErrorRecoveryManager for anomaly notifications.
+
+        Once attached, :meth:`record_after` notifies the recovery manager
+        when a module's L2 delta exceeds ``_delta_anomaly_threshold``,
+        enabling preemptive defensive strategy selection based on the
+        module's root-cause strategy mapping.
+        """
+        self._recovery_manager = manager
+
     def reset(self):
         """Clear all recorded snapshots for a new forward pass.
 
@@ -6781,6 +6798,22 @@ class CausalProvenanceTracker:
                         "Provenance delta anomaly recording failed "
                         "(non-fatal): %s", _ee_err,
                     )
+                # Notify the recovery manager so it can adopt a
+                # defensive strategy for the affected module before
+                # the anomaly propagates downstream.  This bridges
+                # provenance-level anomaly detection into active
+                # recovery, making recovery causal rather than
+                # purely reactive.
+                _rm = getattr(self, '_recovery_manager', None)
+                if _rm is not None:
+                    try:
+                        _rm.record_event(
+                            error_class='provenance_delta_anomaly',
+                            context=f"anomaly:{module_name}",
+                            success=False,
+                        )
+                    except Exception:
+                        pass  # Non-critical notification
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -19701,6 +19734,24 @@ class UnifiedCognitiveCycle:
             ),
             'provenance_dominant': _prov_dominant,
         }
+        # Enrich correction guidance with the error evolution tracker's
+        # recommended recovery strategy for the target module so that
+        # downstream re-reasoning can apply the historically most
+        # effective strategy rather than a generic re-run.  This closes
+        # the gap where correction_guidance identified *which* module to
+        # fix but never suggested *how* based on past recovery outcomes.
+        if (_correction_target_module is not None
+                and self.error_evolution is not None):
+            _best_strategy = self.error_evolution.get_best_strategy(
+                _correction_target_module,
+            )
+            _root_causes = self.error_evolution.get_root_causes(
+                _correction_target_module,
+            )
+            correction_guidance['recommended_strategy'] = _best_strategy
+            correction_guidance['historical_root_causes'] = (
+                _root_causes.get('root_causes', [])
+            )
 
         # 7i. Cross-pass causal chain persistence — store the current
         # pass's causal chain root modules for recurring pattern detection.
@@ -21764,6 +21815,11 @@ class AEONDeltaV3(nn.Module):
         # trigger error-evolution episodes.
         if self.error_evolution is not None:
             self.provenance_tracker.set_error_evolution(self.error_evolution)
+        # Wire provenance tracker → recovery manager so anomalous deltas
+        # notify the recovery manager to adopt defensive strategies,
+        # bridging real-time provenance anomaly detection into active
+        # error recovery.
+        self.provenance_tracker.set_recovery_manager(self.error_recovery)
         # Wire convergence monitor ← metacognitive trigger so trigger
         # pressure tightens convergence thresholds.
         if self.metacognitive_trigger is not None:
@@ -22024,7 +22080,15 @@ class AEONDeltaV3(nn.Module):
         """
         stats = self.error_recovery.get_recovery_stats()
         total = stats.get("total", 0)
-        return min(1.0, total * self._RECOVERY_PRESSURE_RATE)
+        base_pressure = min(1.0, total * self._RECOVERY_PRESSURE_RATE)
+        # Boost pressure when error classes are degrading (success rate
+        # trending downward).  Degrading classes indicate that recovery
+        # strategies are becoming less effective over time, warranting
+        # stronger metacognitive intervention.  Each degrading class
+        # adds 0.1 pressure, capped at an additional 0.3.
+        degrading = stats.get("degrading_classes", [])
+        degrading_boost = min(0.3, len(degrading) * 0.1)
+        return min(1.0, base_pressure + degrading_boost)
 
     def _bridge_recovery_to_evolution(
         self,
@@ -39350,6 +39414,47 @@ class AEONDeltaV3(nn.Module):
         )
         root_cause_traceability['upb_misaligned_edges'] = (
             _upb_misaligned_edges
+        )
+
+        # ── 5. Active-pass subsystem traceability ─────────────────
+        # Cross-validate the coherence registry's current-pass ledger
+        # against the provenance tracker's recorded modules.  Subsystems
+        # that registered output in the most recent forward pass but
+        # have no provenance delta are invisible to root-cause analysis
+        # for *this specific pass*, even if they are structurally wired
+        # in the pipeline DAG.  This closes the gap where static wiring
+        # verification succeeded but dynamic per-pass traceability was
+        # never checked.
+        _active_pass_subsystems: Set[str] = set()
+        _untraced_active: List[str] = []
+        if hasattr(self, 'coherence_registry') and self.coherence_registry is not None:
+            with self.coherence_registry._lock:
+                _active_pass_subsystems = {
+                    name for name, active
+                    in self.coherence_registry._current_pass.items()
+                    if active
+                }
+            if _active_pass_subsystems:
+                _traced_modules = set(
+                    self.provenance_tracker._deltas.keys()
+                )
+                _untraced_active = sorted(
+                    _active_pass_subsystems - _traced_modules
+                )
+                if _untraced_active:
+                    recommendations.append(
+                        f"Active subsystems untraced in provenance: "
+                        f"{', '.join(_untraced_active[:5])}"
+                    )
+        _active_pass_coverage = (
+            1.0 - len(_untraced_active) / max(len(_active_pass_subsystems), 1)
+            if _active_pass_subsystems else 1.0
+        )
+        root_cause_traceability['active_pass_coverage'] = (
+            _active_pass_coverage
+        )
+        root_cause_traceability['untraced_active_subsystems'] = (
+            _untraced_active
         )
 
         # ── Composite verdict ─────────────────────────────────────

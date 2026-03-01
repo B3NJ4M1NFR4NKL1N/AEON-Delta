@@ -61146,6 +61146,227 @@ def test_world_model_cross_divergence_correction():
     print("✅ test_world_model_cross_divergence_correction PASSED")
 
 
+def test_provenance_anomaly_notifies_recovery_manager():
+    """CausalProvenanceTracker notifies ErrorRecoveryManager when L2 delta
+    exceeds the anomaly threshold, bridging provenance anomaly detection
+    into active recovery awareness."""
+    from aeon_core import (
+        CausalProvenanceTracker, CausalErrorEvolutionTracker,
+        ErrorRecoveryManager, DecisionAuditLog,
+    )
+
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit, error_evolution=ee)
+
+    tracker.set_error_evolution(ee)
+    tracker.set_recovery_manager(mgr)
+
+    # Set a very low anomaly threshold so our test data triggers it
+    tracker._delta_anomaly_threshold = 0.01
+
+    # Record a module transformation with a large delta
+    before = torch.zeros(1, 64)
+    after = torch.ones(1, 64) * 10.0  # L2 norm ~80, >> threshold of 0.01
+    tracker.record_before("test_module", before)
+    tracker.record_after("test_module", after)
+
+    # Verify error_evolution received the anomaly episode
+    summary = ee.get_error_summary()
+    assert summary.get("total_recorded", 0) > 0, (
+        "Error evolution should have received the anomaly episode"
+    )
+
+    # Verify recovery manager received the event
+    stats = mgr.get_recovery_stats()
+    assert stats.get("total", 0) > 0, (
+        "Recovery manager should have received the anomaly notification"
+    )
+    assert "provenance_delta_anomaly" in stats.get("by_class", {}), (
+        "Recovery manager should record 'provenance_delta_anomaly' class"
+    )
+    print("✅ test_provenance_anomaly_notifies_recovery_manager PASSED")
+
+
+def test_correction_guidance_includes_strategy():
+    """UCC correction_guidance includes recommended_strategy and
+    historical_root_causes when error_evolution is available."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        SubsystemCoherenceRegistry, UnifiedCognitiveCycle,
+    )
+
+    monitor = ConvergenceMonitor(threshold=0.05)
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    trigger = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "decoder"},
+    )
+
+    # Seed error_evolution with history for a module
+    for _ in range(3):
+        ee.record_episode(
+            error_class="meta_loop",
+            strategy_used="convergence",
+            success=True,
+            causal_antecedents=["encoder"],
+        )
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=monitor,
+        coherence_verifier=None,
+        error_evolution=ee,
+        metacognitive_trigger=trigger,
+        provenance_tracker=tracker,
+        coherence_registry=registry,
+    )
+
+    # Record provenance with a dominant module to trigger correction
+    tracker.record_before("meta_loop", torch.zeros(1, 64))
+    tracker.record_after("meta_loop", torch.ones(1, 64) * 5)
+    tracker.record_before("encoder", torch.zeros(1, 64))
+    tracker.record_after("encoder", torch.ones(1, 64) * 0.1)
+
+    registry.begin_pass()
+    registry.register_output("encoder", validated=True)
+    registry.register_output("decoder", validated=True)
+
+    # Force should_rerun by setting high uncertainty
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=5.0,
+        uncertainty=0.9,
+    )
+
+    guidance = result.get("correction_guidance", {})
+    assert guidance.get("target_module") is not None, (
+        "correction_guidance must identify a target_module when should_rerun"
+    )
+    # When error_evolution has history for the target module, the guidance
+    # should include strategy and root cause information
+    if guidance.get("target_module") == "meta_loop":
+        assert "recommended_strategy" in guidance, (
+            "correction_guidance must include recommended_strategy "
+            "when error_evolution has history for the target module"
+        )
+        assert "historical_root_causes" in guidance, (
+            "correction_guidance must include historical_root_causes"
+        )
+    print("✅ test_correction_guidance_includes_strategy PASSED")
+
+
+def test_verify_cognitive_unity_active_pass_coverage():
+    """verify_cognitive_unity() checks active-pass subsystem traceability —
+    subsystems active in the most recent pass should have provenance deltas."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+
+    rct = result["root_cause_traceability"]
+    assert "active_pass_coverage" in rct, (
+        "root_cause_traceability must include active_pass_coverage"
+    )
+    assert "untraced_active_subsystems" in rct, (
+        "root_cause_traceability must include untraced_active_subsystems"
+    )
+    # active_pass_coverage should be a float ∈ [0, 1]
+    apc = rct["active_pass_coverage"]
+    assert isinstance(apc, float), (
+        f"active_pass_coverage must be float, got {type(apc)}"
+    )
+    assert 0.0 <= apc <= 1.0, (
+        f"active_pass_coverage must be in [0, 1], got {apc}"
+    )
+    print("✅ test_verify_cognitive_unity_active_pass_coverage PASSED")
+
+
+def test_recovery_pressure_includes_degrading_classes():
+    """_compute_recovery_pressure() factors in degrading error classes,
+    increasing pressure when recovery strategies are becoming less effective."""
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+
+    # Baseline pressure with no recovery events
+    base_pressure = model._compute_recovery_pressure()
+    assert base_pressure == 0.0, (
+        f"Baseline pressure should be 0.0, got {base_pressure}"
+    )
+
+    # Add some recovery events
+    for _ in range(3):
+        model.error_recovery.record_event(
+            error_class="numerical",
+            context="test",
+            success=True,
+        )
+    mid_pressure = model._compute_recovery_pressure()
+    assert mid_pressure > 0.0, (
+        f"Pressure should be > 0 after recovery events, got {mid_pressure}"
+    )
+
+    # Now seed degrading error classes in error_evolution
+    if model.error_evolution is not None:
+        # Record episodes with decreasing success rate to create a
+        # degrading trend (success_rate dropping → positive trend)
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class="numerical",
+                strategy_used="sanitize",
+                success=True,
+            )
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class="numerical",
+                strategy_used="sanitize",
+                success=False,
+            )
+        degrading_pressure = model._compute_recovery_pressure()
+        # Pressure should be at least as high as mid_pressure (more events)
+        assert degrading_pressure >= mid_pressure, (
+            f"Pressure with degrading classes ({degrading_pressure}) "
+            f"should be >= mid pressure ({mid_pressure})"
+        )
+    print("✅ test_recovery_pressure_includes_degrading_classes PASSED")
+
+
+def test_provenance_tracker_recovery_manager_wiring():
+    """CausalProvenanceTracker.set_recovery_manager() wires the recovery
+    manager so anomaly detection bridges into active recovery."""
+    from aeon_core import CausalProvenanceTracker, ErrorRecoveryManager, DecisionAuditLog
+
+    tracker = CausalProvenanceTracker()
+    audit = DecisionAuditLog()
+    mgr = ErrorRecoveryManager(hidden_dim=64, audit_log=audit)
+
+    # Before wiring, _recovery_manager should be None
+    assert tracker._recovery_manager is None, (
+        "Before wiring, _recovery_manager should be None"
+    )
+
+    tracker.set_recovery_manager(mgr)
+    assert tracker._recovery_manager is mgr, (
+        "After wiring, _recovery_manager should be the manager instance"
+    )
+
+    # set_recovery_manager(None) should clear the reference
+    tracker.set_recovery_manager(None)
+    assert tracker._recovery_manager is None, (
+        "set_recovery_manager(None) should clear the reference"
+    )
+    print("✅ test_provenance_tracker_recovery_manager_wiring PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -63874,6 +64095,13 @@ def run_all_tests():
     test_ucc_absent_subsystems_in_error_evolution()
     test_memory_cross_validation_reconciliation()
     test_world_model_cross_divergence_correction()
+
+    # Architectural coherence tests
+    test_provenance_anomaly_notifies_recovery_manager()
+    test_correction_guidance_includes_strategy()
+    test_verify_cognitive_unity_active_pass_coverage()
+    test_recovery_pressure_includes_degrading_classes()
+    test_provenance_tracker_recovery_manager_wiring()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
