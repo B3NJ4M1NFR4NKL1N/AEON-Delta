@@ -26865,6 +26865,72 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=_memory_retrieval_quality,
                 tier="mid_term",
             )
+
+        # 5c6. Memory routing policy — when enabled, route a secondary
+        # retrieval query through the MemoryRoutingPolicy which selects
+        # the most relevant subsystems and gates results through trust
+        # scoring.  This closes the gap where memory retrieval always
+        # queries the same subsystem (hierarchical_memory) without
+        # considering which subsystem is most relevant for the current
+        # query.  The routed result is blended as a small residual.
+        if (self.memory_routing_policy is not None
+                and not fast
+                and memory_retrieval):
+            try:
+                _routing_subsystems: Dict[str, Any] = {}
+                if self.hierarchical_memory is not None:
+                    _routing_subsystems['hierarchical'] = self.hierarchical_memory
+                if self.neurogenic_memory is not None:
+                    _routing_subsystems['neurogenic'] = self.neurogenic_memory
+                if self.temporal_memory is not None:
+                    _routing_subsystems['temporal'] = self.temporal_memory
+                if self.consolidating_memory is not None:
+                    _routing_subsystems['consolidating'] = self.consolidating_memory
+                if _routing_subsystems:
+                    _trust_scores: Dict[str, float] = {}
+                    _last_trust = getattr(self, '_last_trust_score', 1.0)
+                    for _rs_name in _routing_subsystems:
+                        _trust_scores[_rs_name] = _last_trust
+                    self.provenance_tracker.record_before("memory_routing", C_star)
+                    _routing_result = self.memory_routing_policy.route(
+                        query=C_star.mean(dim=0),
+                        subsystems=_routing_subsystems,
+                        trust_scores=_trust_scores,
+                        k=3,
+                    )
+                    _routed_fused = _routing_result.get('fused_result')
+                    if (_routed_fused is not None
+                            and isinstance(_routed_fused, torch.Tensor)
+                            and torch.isfinite(_routed_fused).all()):
+                        # Blend as a small residual to avoid overriding
+                        # the primary hierarchical memory retrieval.
+                        _routing_blend = 0.05
+                        if _routed_fused.dim() == 1:
+                            _routed_fused = _routed_fused.unsqueeze(0).expand(B, -1)
+                        if _routed_fused.shape[-1] == C_star.shape[-1]:
+                            C_star = C_star + _routing_blend * _routed_fused
+                    self.provenance_tracker.record_after("memory_routing", C_star)
+                    self.coherence_registry.register_output(
+                        "memory_routing",
+                        validated=len(_routing_result.get('routed_subsystems', [])) > 0,
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "memory_routing", "routed",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "routed_subsystems": _routing_result.get(
+                                    'routed_subsystems', [],
+                                ),
+                                "trust_gated": _routing_result.get(
+                                    'trust_gated', [],
+                                ),
+                            },
+                        )
+            except Exception as _routing_err:
+                logger.debug(
+                    "Memory routing failed (non-fatal): %s", _routing_err,
+                )
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
@@ -28313,7 +28379,70 @@ class AEONDeltaV3(nn.Module):
                                 "uncertainty_boost": _usim_boost,
                             },
                         )
-        
+
+        # 5e2-cv. Counterfactual verification gate — when enabled,
+        # validate that C_star is consistent with the causal simulator's
+        # counterfactual prediction.  This closes the gap where the
+        # causal simulator blended its output as a residual but never
+        # explicitly verified that the integrated state is consistent
+        # with causal expectations.  Divergence triggers uncertainty
+        # escalation and optional correction.
+        if (self.counterfactual_gate is not None
+                and not fast
+                and unified_simulator_results):
+            _cf_pred = unified_simulator_results.get("next_state", None)
+            if _cf_pred is not None:
+                try:
+                    self.provenance_tracker.record_before(
+                        "counterfactual_verification", C_star,
+                    )
+                    _cf_gate_result = self.counterfactual_gate(
+                        reasoning_state=C_star,
+                        counterfactual_prediction=_cf_pred,
+                    )
+                    if _cf_gate_result['divergence_detected']:
+                        _cf_unc_boost = min(
+                            1.0 - uncertainty,
+                            (1.0 - _cf_gate_result['verification_score']) * 0.15,
+                        )
+                        if _cf_unc_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _cf_unc_boost)
+                            uncertainty_sources[
+                                "counterfactual_divergence"
+                            ] = _cf_unc_boost
+                            high_uncertainty = uncertainty > 0.5
+                    if _cf_gate_result.get('correction_applied', False):
+                        C_star = _cf_gate_result['verified_state']
+                    self.provenance_tracker.record_after(
+                        "counterfactual_verification", C_star,
+                    )
+                    self.coherence_registry.register_output(
+                        "counterfactual_verification",
+                        validated=not _cf_gate_result['divergence_detected'],
+                        quality=_cf_gate_result['verification_score'],
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "counterfactual_verification", "verified",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "verification_score": _cf_gate_result[
+                                    'verification_score'
+                                ],
+                                "divergence_detected": _cf_gate_result[
+                                    'divergence_detected'
+                                ],
+                                "correction_applied": _cf_gate_result[
+                                    'correction_applied'
+                                ],
+                            },
+                        )
+                except Exception as _cf_err:
+                    logger.debug(
+                        "Counterfactual verification failed (non-fatal): %s",
+                        _cf_err,
+                    )
+
         # 5e2-fc. Complexity-gated fallback for unified simulator —
         # cache the counterfactual next_state when it runs; when skipped,
         # blend the decayed cached state as a weak residual so the

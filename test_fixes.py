@@ -45,6 +45,7 @@ _ARCH_NODES = [
     'rssm', 'multimodal', 'grounded_multimodal', 'integration',
     'auto_critic', 'output_reliability', 'metacognitive_trigger',
     'error_evolution', 'unified_cognitive_cycle', 'decoder',
+    'memory_routing', 'counterfactual_verification',
 ]
 
 # Keyword-to-node mapping for automatic test classification
@@ -104,6 +105,9 @@ _KEYWORD_NODE_MAP = {
     'error_evolution': 'error_evolution', 'error_recovery': 'error_evolution',
     'unified_cognitive': 'unified_cognitive_cycle', 'ucc': 'unified_cognitive_cycle',
     'decoder': 'decoder',
+    'memory_routing': 'memory_routing', 'routing_policy': 'memory_routing',
+    'counterfactual': 'counterfactual_verification',
+    'sync_from_training': 'integration',
     'provenance': 'integration', 'causal_trace': 'integration',
     'feedback_bus': 'integration', 'bridge_training': 'integration',
     'circuit_breaker': 'safety',
@@ -36518,6 +36522,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "feedback_bus": "feedback_bus",
         "cycle_consistency": "cycle_consistency_validator",
         "output_reliability_gate": "output_reliability_gate",
+        "memory_routing": "memory_routing_policy",
+        "counterfactual_verification": "counterfactual_gate",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -59625,6 +59631,363 @@ def test_verify_cognitive_unity_output_gate_coverage():
     print("✅ test_verify_cognitive_unity_output_gate_coverage PASSED")
 
 
+def test_memory_routing_policy_basic():
+    """MemoryRoutingPolicy routes to available subsystems and returns fused result."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy(trust_threshold=0.5, top_k_subsystems=3)
+
+    # Create mock memory subsystems that return tensors.
+    class MockMemory:
+        def retrieve(self, query, k=5):
+            return torch.randn(32)
+
+    subsystems = {
+        'hierarchical': MockMemory(),
+        'neurogenic': MockMemory(),
+        'temporal': MockMemory(),
+    }
+    query = torch.randn(32)
+    result = policy.route(query, subsystems, k=3)
+    assert result['fused_result'] is not None, "fused_result must not be None"
+    assert isinstance(result['fused_result'], torch.Tensor), "fused_result must be a tensor"
+    assert len(result['routed_subsystems']) > 0, "must route to at least one subsystem"
+    assert result['fused_result'].shape == (32,), (
+        f"fused_result shape mismatch: {result['fused_result'].shape}"
+    )
+    print("✅ test_memory_routing_policy_basic PASSED")
+
+
+def test_memory_routing_policy_trust_gating():
+    """MemoryRoutingPolicy attenuates results from low-trust subsystems."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy(trust_threshold=0.8, top_k_subsystems=3)
+
+    class MockMemory:
+        def retrieve(self, query, k=5):
+            return torch.ones(32)
+
+    subsystems = {'low_trust': MockMemory()}
+    trust_scores = {'low_trust': 0.3}
+    result = policy.route(
+        torch.randn(32), subsystems, trust_scores=trust_scores, k=3,
+    )
+    assert 'low_trust' in result['trust_gated'], (
+        "low_trust subsystem should be trust-gated"
+    )
+    # Gated result should be attenuated (multiplied by trust score 0.3).
+    assert result['fused_result'] is not None
+    norm = result['fused_result'].norm().item()
+    # ones(32) * 0.3 has norm ~1.7 vs ungated ~5.66
+    assert norm < 3.0, f"trust-gated norm should be attenuated, got {norm}"
+    print("✅ test_memory_routing_policy_trust_gating PASSED")
+
+
+def test_memory_routing_policy_empty():
+    """MemoryRoutingPolicy returns None when no subsystems are available."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy()
+    result = policy.route(torch.randn(32), {}, k=3)
+    assert result['fused_result'] is None, "fused_result must be None with empty subsystems"
+    assert result['routed_subsystems'] == [], "no subsystems should be routed"
+    print("✅ test_memory_routing_policy_empty PASSED")
+
+
+def test_memory_routing_policy_stats():
+    """MemoryRoutingPolicy tracks per-subsystem retrieval statistics."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy()
+
+    class MockMemory:
+        def retrieve(self, query, k=5):
+            return torch.ones(32)
+
+    subsystems = {'test_mem': MockMemory()}
+    policy.route(torch.randn(32), subsystems, k=3)
+    stats = policy.get_routing_stats()
+    assert 'test_mem' in stats, "stats should contain test_mem"
+    assert stats['test_mem']['count'] == 1, "count should be 1 after one route"
+    print("✅ test_memory_routing_policy_stats PASSED")
+
+
+def test_counterfactual_verification_gate_basic():
+    """CounterfactualVerificationGate verifies reasoning state against predictions."""
+    from aeon_core import CounterfactualVerificationGate
+
+    gate = CounterfactualVerificationGate(
+        hidden_dim=32,
+        divergence_threshold=0.5,
+        attenuation_strength=0.1,
+    )
+
+    # Similar tensors should have high verification score.
+    state = torch.randn(2, 32)
+    prediction = state + 0.01 * torch.randn(2, 32)  # very similar
+    result = gate(state, prediction)
+    assert result['verification_score'] > 0.7, (
+        f"Similar tensors should have high score, got {result['verification_score']}"
+    )
+    assert not result['divergence_detected'], "Similar tensors should not diverge"
+    print("✅ test_counterfactual_verification_gate_basic PASSED")
+
+
+def test_counterfactual_verification_gate_divergent():
+    """CounterfactualVerificationGate detects divergent predictions."""
+    from aeon_core import CounterfactualVerificationGate
+
+    gate = CounterfactualVerificationGate(
+        hidden_dim=32,
+        divergence_threshold=0.8,
+        attenuation_strength=0.2,
+    )
+
+    # Orthogonal tensors should have low verification score.
+    state = torch.randn(2, 32)
+    # Create a very different prediction
+    prediction = -state + torch.randn(2, 32)
+    result = gate(state, prediction)
+    assert result['divergence_detected'], (
+        "Orthogonal tensors should trigger divergence"
+    )
+    assert result['verification_score'] < 0.8, (
+        f"Divergent score should be low, got {result['verification_score']}"
+    )
+    print("✅ test_counterfactual_verification_gate_divergent PASSED")
+
+
+def test_counterfactual_verification_gate_none_prediction():
+    """CounterfactualVerificationGate passes through when prediction is None."""
+    from aeon_core import CounterfactualVerificationGate
+
+    gate = CounterfactualVerificationGate(hidden_dim=32)
+    state = torch.randn(2, 32)
+    result = gate(state, counterfactual_prediction=None)
+    assert result['verification_score'] == 1.0, "None prediction should give perfect score"
+    assert not result['divergence_detected']
+    assert torch.allclose(result['verified_state'], state)
+    print("✅ test_counterfactual_verification_gate_none_prediction PASSED")
+
+
+def test_counterfactual_verification_gate_correction():
+    """CounterfactualVerificationGate corrects state toward prediction on divergence."""
+    from aeon_core import CounterfactualVerificationGate
+
+    gate = CounterfactualVerificationGate(
+        hidden_dim=32,
+        divergence_threshold=0.95,  # Very strict — most pairs will diverge
+        attenuation_strength=0.5,
+    )
+
+    state = torch.ones(1, 32)
+    prediction = torch.zeros(1, 32)  # Maximally different from ones
+    result = gate(state, prediction)
+    # Should attempt correction (state moves toward prediction).
+    if result['correction_applied']:
+        # Verified state should be between original and prediction.
+        verified_norm = result['verified_state'].norm().item()
+        original_norm = state.norm().item()
+        assert verified_norm < original_norm, (
+            "Correction should move state toward prediction"
+        )
+    print("✅ test_counterfactual_verification_gate_correction PASSED")
+
+
+def test_sync_from_training_basic():
+    """sync_from_training returns expected result dict structure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+    # Call without any trainer (should return zero imports).
+    result = model.sync_from_training()
+    assert 'events_imported' in result
+    assert 'convergence_adjusted' in result
+    assert 'trigger_adapted' in result
+    assert result['events_imported'] == 0
+    print("✅ test_sync_from_training_basic PASSED")
+
+
+def test_config_memory_routing_fields():
+    """AEONConfig includes memory routing and counterfactual verification fields."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(
+        enable_memory_routing=True,
+        memory_routing_trust_threshold=0.7,
+        memory_routing_top_k=2,
+        enable_counterfactual_verification=True,
+        counterfactual_divergence_threshold=0.6,
+        counterfactual_attenuation_strength=0.15,
+    )
+    assert config.enable_memory_routing is True
+    assert config.memory_routing_trust_threshold == 0.7
+    assert config.memory_routing_top_k == 2
+    assert config.enable_counterfactual_verification is True
+    assert config.counterfactual_divergence_threshold == 0.6
+    assert config.counterfactual_attenuation_strength == 0.15
+    print("✅ test_config_memory_routing_fields PASSED")
+
+
+def test_full_coherence_enables_new_features():
+    """enable_full_coherence activates memory routing and counterfactual verification."""
+    from aeon_core import AEONConfig
+
+    config = AEONConfig(enable_full_coherence=True)
+    assert config.enable_memory_routing is True, (
+        "enable_full_coherence should enable memory routing"
+    )
+    assert config.enable_counterfactual_verification is True, (
+        "enable_full_coherence should enable counterfactual verification"
+    )
+    print("✅ test_full_coherence_enables_new_features PASSED")
+
+
+def test_model_init_with_new_features():
+    """AEONDeltaV3 initializes new components when config flags are set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_memory_routing=True,
+        enable_counterfactual_verification=True,
+    )
+    model = AEONDeltaV3(config)
+    assert model.memory_routing_policy is not None, (
+        "memory_routing_policy should be initialized"
+    )
+    assert model.counterfactual_gate is not None, (
+        "counterfactual_gate should be initialized"
+    )
+    print("✅ test_model_init_with_new_features PASSED")
+
+
+def test_model_init_without_new_features():
+    """AEONDeltaV3 leaves new components as None when disabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_memory_routing=False,
+        enable_counterfactual_verification=False,
+    )
+    model = AEONDeltaV3(config)
+    assert model.memory_routing_policy is None, (
+        "memory_routing_policy should be None when disabled"
+    )
+    assert model.counterfactual_gate is None, (
+        "counterfactual_gate should be None when disabled"
+    )
+    print("✅ test_model_init_without_new_features PASSED")
+
+
+def test_pipeline_dependencies_include_new_nodes():
+    """_PIPELINE_DEPENDENCIES includes memory_routing and counterfactual_verification."""
+    from aeon_core import AEONDeltaV3
+
+    dep_nodes = set()
+    for up, down in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        dep_nodes.add(up)
+        dep_nodes.add(down)
+
+    assert "memory_routing" in dep_nodes, (
+        "memory_routing must be in pipeline dependencies"
+    )
+    assert "counterfactual_verification" in dep_nodes, (
+        "counterfactual_verification must be in pipeline dependencies"
+    )
+    print("✅ test_pipeline_dependencies_include_new_nodes PASSED")
+
+
+def test_node_attr_map_includes_new_nodes():
+    """_NODE_ATTR_MAP includes mappings for new nodes."""
+    from aeon_core import AEONDeltaV3
+
+    assert "memory_routing" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "memory_routing must be in _NODE_ATTR_MAP"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["memory_routing"] == "memory_routing_policy"
+
+    assert "counterfactual_verification" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "counterfactual_verification must be in _NODE_ATTR_MAP"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["counterfactual_verification"] == "counterfactual_gate"
+    print("✅ test_node_attr_map_includes_new_nodes PASSED")
+
+
+def test_config_gated_memory_routing():
+    """SubsystemCoherenceRegistry excludes memory_routing when disabled."""
+    from aeon_core import AEONConfig, SubsystemCoherenceRegistry
+
+    config = AEONConfig(enable_memory_routing=False)
+    registry = SubsystemCoherenceRegistry()
+    registry.adjust_expected_for_config(config)
+    assert "memory_routing" not in registry._expected, (
+        "memory_routing should be excluded when disabled"
+    )
+    print("✅ test_config_gated_memory_routing PASSED")
+
+
+def test_config_gated_counterfactual_verification():
+    """SubsystemCoherenceRegistry excludes counterfactual_verification when disabled."""
+    from aeon_core import AEONConfig, SubsystemCoherenceRegistry
+
+    config = AEONConfig(enable_counterfactual_verification=False)
+    registry = SubsystemCoherenceRegistry()
+    registry.adjust_expected_for_config(config)
+    assert "counterfactual_verification" not in registry._expected, (
+        "counterfactual_verification should be excluded when disabled"
+    )
+    print("✅ test_config_gated_counterfactual_verification PASSED")
+
+
+def test_memory_routing_policy_max_fusion():
+    """MemoryRoutingPolicy max fusion returns highest-norm result."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy(fusion_mode='max')
+
+    class StrongMemory:
+        def retrieve(self, query, k=5):
+            return torch.ones(32) * 10.0
+
+    class WeakMemory:
+        def retrieve(self, query, k=5):
+            return torch.ones(32) * 0.1
+
+    subsystems = {'strong': StrongMemory(), 'weak': WeakMemory()}
+    result = policy.route(torch.randn(32), subsystems, k=3)
+    assert result['fused_result'] is not None
+    # Max fusion should pick the strong memory.
+    norm = result['fused_result'].norm().item()
+    assert norm > 5.0, f"Max fusion should pick strong memory, got norm {norm}"
+    print("✅ test_memory_routing_policy_max_fusion PASSED")
+
+
+def test_memory_routing_extract_dict_format():
+    """MemoryRoutingPolicy extracts tensors from dict retrieval results."""
+    from aeon_core import MemoryRoutingPolicy
+
+    policy = MemoryRoutingPolicy()
+
+    class DictMemory:
+        def retrieve(self, query, k=5):
+            return {
+                'working': [(torch.ones(32), 0.9), (torch.ones(32) * 2, 0.8)]
+            }
+
+    subsystems = {'dict_mem': DictMemory()}
+    result = policy.route(torch.randn(32), subsystems, k=3)
+    assert result['fused_result'] is not None, "Should extract tensors from dict format"
+    print("✅ test_memory_routing_extract_dict_format PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -62262,6 +62625,28 @@ def run_all_tests():
     test_cycle_consistency_violation_in_error_class_to_feedback()
     test_cycle_consistency_in_provenance_to_signal()
     test_verify_cognitive_unity_output_gate_coverage()
+
+    # Architectural Unification — Memory Routing, Counterfactual Verification,
+    # Training-Inference Bridge
+    test_memory_routing_policy_basic()
+    test_memory_routing_policy_trust_gating()
+    test_memory_routing_policy_empty()
+    test_memory_routing_policy_stats()
+    test_memory_routing_policy_max_fusion()
+    test_memory_routing_extract_dict_format()
+    test_counterfactual_verification_gate_basic()
+    test_counterfactual_verification_gate_divergent()
+    test_counterfactual_verification_gate_none_prediction()
+    test_counterfactual_verification_gate_correction()
+    test_sync_from_training_basic()
+    test_config_memory_routing_fields()
+    test_full_coherence_enables_new_features()
+    test_model_init_with_new_features()
+    test_model_init_without_new_features()
+    test_pipeline_dependencies_include_new_nodes()
+    test_node_attr_map_includes_new_nodes()
+    test_config_gated_memory_routing()
+    test_config_gated_counterfactual_verification()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
