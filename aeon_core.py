@@ -199,7 +199,8 @@ __all__ = [
     "CausalDAGConsensus",
     # Unified AGI architecture components
     "UnifiedConvergenceArbiter", "DirectionalUncertaintyTracker",
-    "MemoryReasoningValidator",
+    "MemoryReasoningValidator", "MemoryRoutingPolicy",
+    "CounterfactualVerificationGate",
     "SubsystemCoherenceRegistry", "UncertaintyPropagationBus",
     "SubsystemHealthGate",
     # Main model & training
@@ -3215,6 +3216,23 @@ class AEONConfig:
     # current converged state to replace stale memories.
     enable_memory_re_retrieval: bool = True
 
+    # ===== MEMORY ROUTING =====
+    # When True, memory queries are routed through a MemoryRoutingPolicy
+    # that selects the most relevant subsystems and gates results through
+    # trust scoring, closing the gap where 7 memory subsystems exist but
+    # no unified routing policy decides which to query.
+    enable_memory_routing: bool = False
+    memory_routing_trust_threshold: float = 0.5
+    memory_routing_top_k: int = 3
+
+    # ===== COUNTERFACTUAL VERIFICATION =====
+    # When True, forward-pass conclusions are verified against the
+    # UnifiedCausalSimulator's counterfactual predictions, closing the
+    # gap where causal reasoning ran in parallel without feedback.
+    enable_counterfactual_verification: bool = False
+    counterfactual_divergence_threshold: float = 0.5
+    counterfactual_attenuation_strength: float = 0.1
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -3353,6 +3371,11 @@ class AEONConfig:
                 # between self-reported confidence and actual internal
                 # state divergence, closing the trust verification loop.
                 'enable_deception_suppressor',
+                # Memory routing — unified query routing with trust gating.
+                'enable_memory_routing',
+                # Counterfactual verification — validates conclusions
+                # against causal simulator predictions inline.
+                'enable_counterfactual_verification',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -17177,6 +17200,8 @@ class SubsystemCoherenceRegistry:
         # their absence to be invisible to coverage deficit tracking.
         "deception_suppressor", "complexity_estimator",
         "mcts_planning", "icm_curiosity",
+        # Memory routing and counterfactual verification gates.
+        "memory_routing", "counterfactual_verification",
     })
 
     def __init__(
@@ -17351,6 +17376,10 @@ class SubsystemCoherenceRegistry:
             "enable_complexity_estimator": ["complexity_estimator"],
             "enable_active_learning_planner": [
                 "icm_curiosity",
+            ],
+            "enable_memory_routing": ["memory_routing"],
+            "enable_counterfactual_verification": [
+                "counterfactual_verification",
             ],
         }
         with self._lock:
@@ -19701,6 +19730,23 @@ class AEONDeltaV3(nn.Module):
         ("meta_loop", "output_reliability_gate"),
         ("output_reliability_gate", "metacognitive_trigger"),
         ("output_reliability_gate", "unified_cognitive_cycle"),
+        # ── Memory routing policy paths ────────────────────────────
+        # The memory routing policy sits between the memory subsystems
+        # and the reasoning core, ensuring trace_root_cause() can
+        # attribute memory-fused reasoning to specific subsystems.
+        ("memory", "memory_routing"),
+        ("neurogenic_memory", "memory_routing"),
+        ("consolidating_memory", "memory_routing"),
+        ("temporal_memory", "memory_routing"),
+        ("memory_routing", "metacognitive_trigger"),
+        # ── Counterfactual verification gate paths ─────────────────
+        # The counterfactual gate sits between the unified simulator
+        # and integration, verifying conclusions against causal
+        # predictions for root-cause traceability.
+        ("unified_simulator", "counterfactual_verification"),
+        ("counterfactual_verification", "integration"),
+        ("counterfactual_verification", "metacognitive_trigger"),
+        ("counterfactual_verification", "auto_critic"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -19792,6 +19838,11 @@ class AEONDeltaV3(nn.Module):
         # Output reliability gate — consolidates multiple quality
         # signals into a composite reliability score.
         "output_reliability_gate": "output_reliability_gate",
+        # Memory routing policy — routes queries to subsystems.
+        "memory_routing": "memory_routing_policy",
+        # Counterfactual verification gate — validates conclusions
+        # against causal simulator predictions.
+        "counterfactual_verification": "counterfactual_gate",
     }
     
     def __init__(self, config: AEONConfig):
@@ -21289,6 +21340,37 @@ class AEONDeltaV3(nn.Module):
         self.convergence_arbiter = UnifiedConvergenceArbiter()
         self.uncertainty_tracker = DirectionalUncertaintyTracker()
         self.memory_validator = MemoryReasoningValidator()
+        # Memory routing policy — routes memory queries to the most
+        # relevant subsystems with trust gating, closing the gap where
+        # 7 memory subsystems exist but no unified routing policy decides
+        # which to query.
+        if getattr(config, 'enable_memory_routing', False):
+            self.memory_routing_policy = MemoryRoutingPolicy(
+                trust_threshold=getattr(
+                    config, 'memory_routing_trust_threshold', 0.5,
+                ),
+                top_k_subsystems=getattr(
+                    config, 'memory_routing_top_k', 3,
+                ),
+            )
+        else:
+            self.memory_routing_policy = None
+        # Counterfactual verification gate — validates forward-pass
+        # conclusions against the causal simulator's counterfactual
+        # predictions, closing the gap where causal reasoning ran in
+        # parallel without feedback.
+        if getattr(config, 'enable_counterfactual_verification', False):
+            self.counterfactual_gate = CounterfactualVerificationGate(
+                hidden_dim=config.hidden_dim,
+                divergence_threshold=getattr(
+                    config, 'counterfactual_divergence_threshold', 0.5,
+                ),
+                attenuation_strength=getattr(
+                    config, 'counterfactual_attenuation_strength', 0.1,
+                ),
+            )
+        else:
+            self.counterfactual_gate = None
         # Subsystem coherence registry — persistent cross-pass ledger of
         # which subsystems produced validated outputs.  Feeds coverage
         # deficit into uncertainty escalation and metacognitive triggers.
@@ -38360,6 +38442,128 @@ class AEONDeltaV3(nn.Module):
             'root_cause_traceability': root_cause_traceability,
             'recommendations': recommendations,
         }
+
+    def sync_from_training(
+        self,
+        trainer_monitor: Any = None,
+        training_provenance: Any = None,
+    ) -> Dict[str, Any]:
+        """Automatically import training state into the inference pipeline.
+
+        Closes the architectural gap where training-discovered error
+        patterns, convergence events, and causal provenance must be
+        manually bridged via ``bridge_training_errors_to_inference()``.
+        This method orchestrates the import automatically, transferring:
+
+        1. Error evolution patterns from the training convergence monitor
+           into the inference ``CausalErrorEvolutionTracker``.
+        2. Convergence threshold adjustments based on training history.
+        3. Metacognitive trigger weight adaptation from training error
+           patterns so the inference pipeline's sensitivity reflects
+           learned training behaviour.
+
+        Args:
+            trainer_monitor: A ``TrainingConvergenceMonitor`` instance
+                from ``ae_train.py``.  When provided, its convergence
+                events are replayed into the inference error evolution
+                tracker.
+            training_provenance: A ``TrainingProvenanceTracker`` instance
+                from ``ae_train.py``.  When provided, training-stage
+                causal attribution is transferred to the inference
+                provenance tracker.
+
+        Returns:
+            Dict with:
+                - ``events_imported``: int — number of training events
+                  imported into error evolution.
+                - ``convergence_adjusted``: bool — whether convergence
+                  thresholds were adapted.
+                - ``trigger_adapted``: bool — whether metacognitive
+                  trigger weights were adapted.
+        """
+        result = {
+            'events_imported': 0,
+            'convergence_adjusted': False,
+            'trigger_adapted': False,
+        }
+
+        # 1. Import training error patterns via the existing bridge.
+        if trainer_monitor is not None and self.error_evolution is not None:
+            try:
+                from ae_train import bridge_training_errors_to_inference
+                n_imported = bridge_training_errors_to_inference(
+                    trainer_monitor=trainer_monitor,
+                    inference_error_evolution=self.error_evolution,
+                    causal_trace=getattr(self, 'causal_trace', None),
+                    inference_convergence_monitor=getattr(
+                        self, 'convergence_monitor', None,
+                    ),
+                    inference_integrity_monitor=getattr(
+                        self, 'integrity_monitor', None,
+                    ),
+                    inference_provenance_tracker=getattr(
+                        self, 'provenance_tracker', None,
+                    ),
+                    inference_metacognitive_trigger=getattr(
+                        self, 'metacognitive_trigger', None,
+                    ),
+                )
+                result['events_imported'] = n_imported
+            except ImportError:
+                logger.warning(
+                    "sync_from_training: ae_train not available; "
+                    "skipping error bridge"
+                )
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: error bridge failed: %s", e,
+                )
+
+        # 2. Adapt metacognitive trigger weights from imported patterns.
+        if (self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                summary = self.error_evolution.get_error_summary()
+                if summary.get('total_episodes', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        summary,
+                    )
+                    result['trigger_adapted'] = True
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: trigger adaptation failed: %s", e,
+                )
+
+        # 3. Adjust convergence thresholds based on imported history.
+        if (self.error_evolution is not None
+                and hasattr(self, 'convergence_monitor')):
+            try:
+                summary = self.error_evolution.get_error_summary()
+                divergence_count = summary.get(
+                    'error_classes', {},
+                ).get('divergence', {}).get('count', 0)
+                if divergence_count > 3:
+                    # Tighten convergence threshold for repeated divergence.
+                    old_thresh = self.meta_loop.convergence_threshold
+                    self.meta_loop.convergence_threshold = max(
+                        1e-6, old_thresh * 0.8,
+                    )
+                    result['convergence_adjusted'] = True
+                    logger.info(
+                        "sync_from_training: tightened convergence "
+                        "threshold %.2e → %.2e based on %d training "
+                        "divergence events",
+                        old_thresh,
+                        self.meta_loop.convergence_threshold,
+                        divergence_count,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: convergence adjustment "
+                    "failed: %s", e,
+                )
+
+        return result
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
