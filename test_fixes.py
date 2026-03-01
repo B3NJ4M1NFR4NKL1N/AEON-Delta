@@ -59796,6 +59796,151 @@ def test_counterfactual_verification_gate_correction():
     print("✅ test_counterfactual_verification_gate_correction PASSED")
 
 
+def test_counterfactual_divergence_feedback_signal_registered():
+    """Verify counterfactual_divergence_pressure is registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    assert 'counterfactual_divergence_pressure' in model.feedback_bus._extra_signals, (
+        "counterfactual_divergence_pressure must be registered in the feedback bus"
+    )
+    print("✅ test_counterfactual_divergence_feedback_signal_registered PASSED")
+
+
+def test_memory_routing_trust_feedback_signal_registered():
+    """Verify memory_routing_trust_pressure is registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    assert 'memory_routing_trust_pressure' in model.feedback_bus._extra_signals, (
+        "memory_routing_trust_pressure must be registered in the feedback bus"
+    )
+    print("✅ test_memory_routing_trust_feedback_signal_registered PASSED")
+
+
+def test_counterfactual_divergence_cached_and_routed():
+    """Verify counterfactual divergence score is cached and routed to feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    # Simulate a low counterfactual verification score (divergence detected)
+    model._cached_counterfactual_divergence_score = 0.3
+    extra = model._build_feedback_extra_signals()
+    assert "counterfactual_divergence_pressure" in extra, (
+        "Low counterfactual score should produce feedback signal"
+    )
+    assert 0.0 < extra["counterfactual_divergence_pressure"] <= 1.0, (
+        f"Pressure should be in (0, 1], got {extra['counterfactual_divergence_pressure']}"
+    )
+    print("✅ test_counterfactual_divergence_cached_and_routed PASSED")
+
+
+def test_counterfactual_divergence_not_routed_when_healthy():
+    """Verify no feedback signal when counterfactual verification is healthy."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    # Default score should be 1.0 (healthy)
+    extra = model._build_feedback_extra_signals()
+    assert "counterfactual_divergence_pressure" not in extra, (
+        "Healthy counterfactual score should NOT produce feedback signal"
+    )
+    print("✅ test_counterfactual_divergence_not_routed_when_healthy PASSED")
+
+
+def test_memory_routing_trust_routed_to_feedback():
+    """Verify memory routing trust deficit is routed to feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    # Simulate high memory routing trust deficit
+    model._cached_memory_routing_trust_deficit = 0.6
+    extra = model._build_feedback_extra_signals()
+    assert "memory_routing_trust_pressure" in extra, (
+        "High memory routing trust deficit should produce feedback signal"
+    )
+    assert 0.0 < extra["memory_routing_trust_pressure"] <= 1.0, (
+        f"Pressure should be in (0, 1], got {extra['memory_routing_trust_pressure']}"
+    )
+    print("✅ test_memory_routing_trust_routed_to_feedback PASSED")
+
+
+def test_memory_routing_trust_not_routed_when_healthy():
+    """Verify no feedback signal when memory routing trust is healthy."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    # Default trust deficit is 0.0 (healthy)
+    extra = model._build_feedback_extra_signals()
+    assert "memory_routing_trust_pressure" not in extra, (
+        "Healthy memory routing should NOT produce feedback signal"
+    )
+    print("✅ test_memory_routing_trust_not_routed_when_healthy PASSED")
+
+
+def test_counterfactual_divergence_in_error_class_mapping():
+    """Verify counterfactual_divergence is mapped in error evolution and trigger."""
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+
+    # Check _ERROR_CLASS_TO_LAMBDA mapping
+    assert "counterfactual_divergence" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "counterfactual_divergence must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    # Check _class_to_signal mapping in adapt_weights_from_evolution
+    trigger = MetaCognitiveRecursionTrigger()
+    # We can verify by calling adapt with a summary containing the error class
+    tracker = CausalErrorEvolutionTracker()
+    tracker.record_episode("counterfactual_divergence", "uncertainty_escalation", False)
+    tracker.record_episode("counterfactual_divergence", "correction_applied", True)
+    summary = tracker.get_error_summary()
+    # Should not raise
+    trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_counterfactual_divergence_in_error_class_mapping PASSED")
+
+
+def test_counterfactual_divergence_pipeline_dependency():
+    """Verify counterfactual_verification → error_evolution edge exists in pipeline deps."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    edge = ("counterfactual_verification", "error_evolution")
+    assert edge in deps, (
+        f"Pipeline dependency {edge} must exist for root-cause traceability"
+    )
+    print("✅ test_counterfactual_divergence_pipeline_dependency PASSED")
+
+
+def test_counterfactual_divergence_in_feedback_error_bridge():
+    """Verify counterfactual_divergence maps to counterfactual_divergence_pressure in _ERROR_CLASS_TO_FEEDBACK_SIGNAL."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Access the _ERROR_CLASS_TO_FEEDBACK_SIGNAL dict inside
+    # _build_feedback_extra_signals — it's a local variable, so we
+    # verify by checking that the error evolution bridge produces the
+    # expected feedback signal when counterfactual_divergence has a
+    # low success rate.
+    config = AEONConfig(device_str="cpu")
+    model = AEONDeltaV3(config)
+    # Record multiple failed counterfactual episodes
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            "counterfactual_divergence", "uncertainty_escalation", False,
+        )
+    extra = model._build_feedback_extra_signals()
+    # The error-evolution bridge should produce the counterfactual pressure
+    assert "counterfactual_divergence_pressure" in extra, (
+        "Error evolution bridge should route counterfactual_divergence "
+        "failures to counterfactual_divergence_pressure signal"
+    )
+    print("✅ test_counterfactual_divergence_in_feedback_error_bridge PASSED")
+
+
 def test_sync_from_training_basic():
     """sync_from_training returns expected result dict structure."""
     from aeon_core import AEONConfig, AEONDeltaV3
@@ -63456,6 +63601,18 @@ def run_all_tests():
     test_counterfactual_not_enabled_without_simulator()
     test_fast_mode_ucc_receives_critical_signals()
     test_fast_mode_forward_produces_ucc_results()
+
+    # Architectural Unification — Counterfactual Divergence Cross-Pass
+    # Feedback, Memory Routing Trust Feedback Bus Integration
+    test_counterfactual_divergence_feedback_signal_registered()
+    test_memory_routing_trust_feedback_signal_registered()
+    test_counterfactual_divergence_cached_and_routed()
+    test_counterfactual_divergence_not_routed_when_healthy()
+    test_memory_routing_trust_routed_to_feedback()
+    test_memory_routing_trust_not_routed_when_healthy()
+    test_counterfactual_divergence_in_error_class_mapping()
+    test_counterfactual_divergence_pipeline_dependency()
+    test_counterfactual_divergence_in_feedback_error_bridge()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
