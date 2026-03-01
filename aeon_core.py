@@ -3455,6 +3455,10 @@ class AEONConfig:
                 # Counterfactual verification — validates conclusions
                 # against causal simulator predictions inline.
                 'enable_counterfactual_verification',
+                # Task2Vec meta-learner — Fisher Information task
+                # embeddings for O(1) adaptation so the reasoning
+                # pipeline can adapt to novel task structures.
+                'enable_task2vec',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -3471,6 +3475,24 @@ class AEONConfig:
             for flag in _ucc_prereqs:
                 if not getattr(self, flag, False):
                     object.__setattr__(self, flag, True)
+
+        # Prerequisite propagation — auto-enable memory_routing when any
+        # memory subsystem is active so the pipeline dependency edge
+        # ('memory_routing', 'metacognitive_trigger') is realized and
+        # memory retrieval quality feeds into the meta-cognitive cycle.
+        if (any(getattr(self, f, False) for f in (
+                'enable_hierarchical_memory', 'enable_neurogenic_memory',
+                'enable_temporal_memory', 'enable_consolidating_memory'))
+                and not getattr(self, 'enable_memory_routing', False)):
+            object.__setattr__(self, 'enable_memory_routing', True)
+
+        # Auto-enable counterfactual_verification when the unified
+        # simulator is active so the pipeline dependency edge
+        # ('counterfactual_verification', 'integration') is realized
+        # and causal predictions are verified against simulator output.
+        if (getattr(self, 'enable_unified_simulator', False)
+                and not getattr(self, 'enable_counterfactual_verification', False)):
+            object.__setattr__(self, 'enable_counterfactual_verification', True)
 
         # Device initialization
         if self.device_str == "auto":
@@ -32082,6 +32104,19 @@ class AEONDeltaV3(nn.Module):
                         causal_quality=self._cached_causal_quality,
                         memory_staleness=self._memory_stale,
                         safety_violation=safety_enforced,
+                        # Pass critical signals even in fast mode so the
+                        # metacognitive trigger can fire on topology
+                        # catastrophes, recovery pressure, and diversity
+                        # collapse without waiting for the next full pass.
+                        # This ensures "any uncertainty triggers a
+                        # meta-cognitive cycle" holds in fast mode too.
+                        topology_catastrophe=_topo_catastrophe,
+                        recovery_pressure=self._compute_recovery_pressure(),
+                        diversity_collapse=max(0.0, min(1.0, (
+                            1.0 - float(diversity_results.get(
+                                'diversity', torch.ones(1),
+                            ).mean().item())
+                        ))) if diversity_results else 0.0,
                     )
                     # Cache deferred trigger pressure so the feedback bus
                     # carries the assessment into the next pass, where the

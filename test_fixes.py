@@ -60637,6 +60637,121 @@ def test_ucc_evaluate_accepts_reliability_weakest_factor():
     print("✅ test_ucc_evaluate_accepts_reliability_weakest_factor PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — Task2Vec Full Coherence, Prerequisite
+#  Propagation, Fast-Mode UCC Signal Enhancement
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_full_coherence_enables_task2vec():
+    """enable_full_coherence activates enable_task2vec so Task2VecMetaLearner
+    participates in the unified pipeline."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(enable_full_coherence=True)
+    assert config.enable_task2vec is True, (
+        "enable_full_coherence must activate enable_task2vec"
+    )
+    print("✅ test_full_coherence_enables_task2vec PASSED")
+
+
+def test_unified_preset_enables_task2vec():
+    """unified_cognitive_preset() factory includes enable_task2vec."""
+    from aeon_core import AEONConfig
+    config = AEONConfig.unified_cognitive_preset()
+    assert config.enable_task2vec is True, (
+        "unified_cognitive_preset must enable task2vec"
+    )
+    print("✅ test_unified_preset_enables_task2vec PASSED")
+
+
+def test_memory_routing_auto_enabled_with_memory():
+    """enable_memory_routing auto-activates when any memory subsystem is on."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(enable_hierarchical_memory=True)
+    assert config.enable_memory_routing is True, (
+        "memory_routing must auto-enable when hierarchical_memory is active"
+    )
+    print("✅ test_memory_routing_auto_enabled_with_memory PASSED")
+
+
+def test_memory_routing_auto_enabled_with_neurogenic():
+    """enable_memory_routing auto-activates for neurogenic memory."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(enable_neurogenic_memory=True)
+    assert config.enable_memory_routing is True, (
+        "memory_routing must auto-enable when neurogenic_memory is active"
+    )
+    print("✅ test_memory_routing_auto_enabled_with_neurogenic PASSED")
+
+
+def test_memory_routing_not_enabled_without_memory():
+    """enable_memory_routing stays False when no memory subsystem is active."""
+    from aeon_core import AEONConfig
+    config = AEONConfig()
+    assert config.enable_memory_routing is False, (
+        "memory_routing must stay disabled when no memory is active"
+    )
+    print("✅ test_memory_routing_not_enabled_without_memory PASSED")
+
+
+def test_counterfactual_auto_enabled_with_simulator():
+    """enable_counterfactual_verification auto-activates when unified_simulator
+    is on."""
+    from aeon_core import AEONConfig
+    config = AEONConfig(enable_unified_simulator=True)
+    assert config.enable_counterfactual_verification is True, (
+        "counterfactual_verification must auto-enable when "
+        "unified_simulator is active"
+    )
+    print("✅ test_counterfactual_auto_enabled_with_simulator PASSED")
+
+
+def test_counterfactual_not_enabled_without_simulator():
+    """enable_counterfactual_verification stays False when unified_simulator
+    is not active."""
+    from aeon_core import AEONConfig
+    config = AEONConfig()
+    assert config.enable_counterfactual_verification is False, (
+        "counterfactual_verification must stay disabled without simulator"
+    )
+    print("✅ test_counterfactual_not_enabled_without_simulator PASSED")
+
+
+def test_fast_mode_ucc_receives_critical_signals():
+    """Fast-mode UCC evaluate() call includes topology_catastrophe,
+    recovery_pressure, and diversity_collapse signals."""
+    import inspect
+    # Verify the source code of _reasoning_core_impl contains the
+    # enhanced fast-mode UCC call with critical signal parameters.
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The fast-mode UCC block should contain these signals
+    assert "topology_catastrophe=_topo_catastrophe" in source, (
+        "Fast-mode UCC must pass topology_catastrophe signal"
+    )
+    assert "recovery_pressure=" in source, (
+        "Fast-mode UCC must pass recovery_pressure signal"
+    )
+    assert "diversity_collapse=" in source, (
+        "Fast-mode UCC must pass diversity_collapse signal"
+    )
+    print("✅ test_fast_mode_ucc_receives_critical_signals PASSED")
+
+
+def test_fast_mode_forward_produces_ucc_results():
+    """A fast-mode forward pass still produces unified_cognitive_cycle_results
+    with coherence and trigger information."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    input_ids = torch.randint(0, config.vocab_size, (1, 8))
+    result = model(input_ids, decode_mode='train', fast=True)
+    ucc = result.get('unified_cognitive_cycle_results', {})
+    assert ucc, "Fast-mode forward must produce UCC results"
+    assert 'should_rerun' in ucc, "Fast UCC must include should_rerun"
+    print("✅ test_fast_mode_forward_produces_ucc_results PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -63329,6 +63444,18 @@ def run_all_tests():
     test_error_recovery_stats_include_degrading_classes()
     test_error_recovery_root_cause_strategy_override()
     test_ucc_evaluate_accepts_reliability_weakest_factor()
+
+    # Architectural Unification — Task2Vec Full Coherence, Prerequisite
+    # Propagation, Fast-Mode UCC Signal Enhancement
+    test_full_coherence_enables_task2vec()
+    test_unified_preset_enables_task2vec()
+    test_memory_routing_auto_enabled_with_memory()
+    test_memory_routing_auto_enabled_with_neurogenic()
+    test_memory_routing_not_enabled_without_memory()
+    test_counterfactual_auto_enabled_with_simulator()
+    test_counterfactual_not_enabled_without_simulator()
+    test_fast_mode_ucc_receives_critical_signals()
+    test_fast_mode_forward_produces_ucc_results()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
