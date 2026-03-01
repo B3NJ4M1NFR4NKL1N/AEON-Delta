@@ -13333,9 +13333,10 @@ class ParallelCognitivePipeline(nn.Module):
     GPU-pipelined workloads overlap.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, integrity_monitor: Optional['SystemIntegrityMonitor'] = None):
         super().__init__()
         self.config = config
+        self.integrity_monitor = integrity_monitor
         self.meta_loop = ProvablyConvergentMetaLoop(config)
         self.diversity_metric = DiversityMetric(config)
         self.topology_analyzer = OptimizedTopologyAnalyzer(config)
@@ -13365,6 +13366,16 @@ class ParallelCognitivePipeline(nn.Module):
         """
         C_star, iterations, meta_info = self.meta_loop.compute_fixed_point(z)
         result: Dict[str, Any] = {'C_star': C_star, 'meta_info': meta_info}
+
+        # Record meta-loop health into integrity monitor so that
+        # convergence quality from the parallel pipeline is tracked
+        # alongside other subsystem health signals.
+        if self.integrity_monitor is not None:
+            _meta_health = 1.0 if meta_info.get('converged', False) else 0.5
+            self.integrity_monitor.record_health(
+                "pcp_meta_loop", _meta_health,
+                {"iterations": iterations},
+            )
 
         if urgency == 'urgent':
             return result
@@ -13402,6 +13413,17 @@ class ParallelCognitivePipeline(nn.Module):
             result['topology'] = f_topo.result()
             result['world_model'] = f_wm.result()
 
+        # Record subsystem health into integrity monitor after parallel
+        # processing so that safety and diversity signals from this
+        # pipeline are visible to downstream integrity checks.
+        if self.integrity_monitor is not None:
+            _safety_val = result.get('safety')
+            if _safety_val is not None and torch.is_tensor(_safety_val):
+                self.integrity_monitor.record_health(
+                    "pcp_safety", float(_safety_val.mean().item()),
+                    {"urgency": urgency},
+                )
+
         return result
 
 
@@ -13421,9 +13443,11 @@ class HierarchicalCognitiveArchitecture(nn.Module):
     for latency-critical applications.
     """
 
-    def __init__(self, config, enabled_levels: Optional[List[int]] = None):
+    def __init__(self, config, enabled_levels: Optional[List[int]] = None,
+                 integrity_monitor: Optional['SystemIntegrityMonitor'] = None):
         super().__init__()
         self.config = config
+        self.integrity_monitor = integrity_monitor
         if enabled_levels is None:
             enabled_levels = [0, 1, 2]
         self.enabled_levels = set(enabled_levels)
@@ -13480,6 +13504,16 @@ class HierarchicalCognitiveArchitecture(nn.Module):
         C_star, iterations, meta_info = self.meta_loop.compute_fixed_point(z)
         result: Dict[str, Any] = {'C_star': C_star, 'meta_info': meta_info}
 
+        # Record meta-loop health into integrity monitor so that
+        # convergence quality is tracked across forward passes and
+        # anomalies in the reasoning core trigger system-wide alerts.
+        if self.integrity_monitor is not None:
+            _meta_health = 1.0 if meta_info.get('converged', False) else 0.5
+            self.integrity_monitor.record_health(
+                "hca_meta_loop", _meta_health,
+                {"iterations": iterations},
+            )
+
         if level in ('core', 0):
             return result
 
@@ -13494,6 +13528,14 @@ class HierarchicalCognitiveArchitecture(nn.Module):
             result['safety'] = self.safety_system(
                 action_emb, C_star, factors, diversity, topo
             )
+            # Record safety health into integrity monitor
+            if self.integrity_monitor is not None:
+                _safety_val = result['safety']
+                _safety_health = float(_safety_val.mean().item()) if torch.is_tensor(_safety_val) else 0.5
+                self.integrity_monitor.record_health(
+                    "hca_safety", _safety_health,
+                    {"level": 1},
+                )
             if level in ('safe', 1):
                 return result
 
@@ -16308,6 +16350,10 @@ class MetaCognitiveRecursionTrigger:
             # UCC re-reasoning — the unified cognitive cycle triggered
             # same-pass re-reasoning via the deeper meta-loop.
             "ucc_rerun": "uncertainty",
+            # Low global integrity — SystemIntegrityMonitor reports
+            # degraded global health, indicating multiple subsystems
+            # are simultaneously underperforming.
+            "low_global_integrity": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -18418,6 +18464,11 @@ class UnifiedCognitiveCycle:
        disagreement into both the uncertainty tracker and metacognitive
        trigger so that conflicting causal structures trigger deeper
        reasoning.
+    8. Records convergence and coherence health into
+       :class:`SystemIntegrityMonitor` when provided, and escalates
+       uncertainty when global system health is low, closing the gap
+       where integrity signals were aggregated but never fed back
+       into the meta-cognitive cycle.
 
     By routing all concerns through one call the cycle guarantees that:
 
@@ -18453,6 +18504,12 @@ class UnifiedCognitiveCycle:
             provided, the coverage deficit is automatically blended into
             the coherence assessment so that missing subsystem outputs
             degrade confidence and trigger re-reasoning.
+        integrity_monitor: Optional :class:`SystemIntegrityMonitor`
+            aggregating per-subsystem health signals.  When provided,
+            the evaluate cycle records convergence and coherence health
+            and escalates uncertainty when global health is low, closing
+            the gap where integrity signals were tracked but never fed
+            into the meta-cognitive cycle.
     """
 
     def __init__(
@@ -18470,6 +18527,7 @@ class UnifiedCognitiveCycle:
         coherence_registry: Optional['SubsystemCoherenceRegistry'] = None,
         cross_validation_reconciler: Optional['CrossValidationReconciler'] = None,
         pipeline_dependencies: Optional[List[Tuple[str, str]]] = None,
+        integrity_monitor: Optional['SystemIntegrityMonitor'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -18483,6 +18541,7 @@ class UnifiedCognitiveCycle:
         self.causal_dag_consensus = causal_dag_consensus
         self.coherence_registry = coherence_registry
         self.cross_validation_reconciler = cross_validation_reconciler
+        self.integrity_monitor = integrity_monitor
         # Authoritative pipeline dependency list — when provided, the
         # evaluate() method cross-validates provenance trace coverage
         # against this declaration so that untraced modules degrade
@@ -18984,6 +19043,49 @@ class UnifiedCognitiveCycle:
                             'residual_norm': convergence_certificate.get(
                                 'residual_norm', float('inf'),
                             ),
+                        },
+                    )
+
+        # 2g. Integrity monitor health check — when a SystemIntegrityMonitor
+        # is wired, query global health and record per-subsystem anomalies.
+        # Low global health escalates uncertainty and feeds into the
+        # metacognitive trigger so that systemic degradation triggers
+        # re-reasoning.  This closes the gap where the integrity monitor
+        # aggregated health signals but never fed them into the meta-
+        # cognitive cycle, preventing the system from self-correcting
+        # when multiple subsystems degrade simultaneously.
+        _integrity_health: Optional[float] = None
+        _integrity_anomalies: List[Dict[str, Any]] = []
+        if self.integrity_monitor is not None:
+            _integrity_health = self.integrity_monitor.get_global_health()
+            _integrity_anomalies = self.integrity_monitor.get_anomalies(n=5)
+            # Record convergence health into integrity monitor
+            _conv_health = 1.0 - min(1.0, delta_norm)
+            self.integrity_monitor.record_health(
+                "convergence", _conv_health,
+                {"delta_norm": delta_norm, "verdict": convergence_verdict},
+            )
+            # Record coherence health into integrity monitor
+            _coherence_health = 1.0 - coherence_deficit
+            self.integrity_monitor.record_health(
+                "coherence", _coherence_health,
+                {"coherence_deficit": coherence_deficit},
+            )
+            # When global health is low, escalate uncertainty
+            if _integrity_health is not None and _integrity_health < 0.5:
+                _integrity_unc_boost = min(
+                    1.0 - uncertainty,
+                    (0.5 - _integrity_health) * 0.4,
+                )
+                uncertainty = min(1.0, uncertainty + _integrity_unc_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='low_global_integrity',
+                        strategy_used='meta_rerun',
+                        success=False,
+                        metadata={
+                            'global_health': _integrity_health,
+                            'anomaly_count': len(_integrity_anomalies),
                         },
                     )
 
@@ -20095,6 +20197,8 @@ class UnifiedCognitiveCycle:
             'cross_pass_recurring_roots': _cross_pass_chain_roots,
             'low_quality_subsystems': _low_quality_subsystems,
             'degrading_subsystems': _degrading_subsystems,
+            'integrity_health': _integrity_health,
+            'integrity_anomalies': _integrity_anomalies,
         }
 
     def reset(self) -> None:
@@ -22221,6 +22325,9 @@ class AEONDeltaV3(nn.Module):
                         self, 'cross_validator', None,
                     ),
                     pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
+                    integrity_monitor=getattr(
+                        self, 'integrity_monitor', None,
+                    ),
                 )
                 # Post-construction wiring verification: ensure UCC internal
                 # references point to the same instances as model-level
@@ -38890,6 +38997,9 @@ class AEONDeltaV3(nn.Module):
                     self, 'cross_validator', None,
                 ),
                 pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
+                integrity_monitor=getattr(
+                    self, 'integrity_monitor', None,
+                ),
             )
             remediated.append('unified_cognitive_cycle')
 
