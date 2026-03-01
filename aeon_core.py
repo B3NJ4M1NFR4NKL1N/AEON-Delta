@@ -11019,10 +11019,20 @@ class Task2VecMetaLearner(nn.Module):
         ewc_lambda: float = 1000.0,
     ):
         super().__init__()
-        self.model = model
+        # Store model as a plain Python attribute (not an nn.Module
+        # submodule) to avoid a circular parent↔child reference when
+        # Task2VecMetaLearner is itself a child of the model.  Without
+        # this, model.eval() / model.train() recurse infinitely through
+        # the module tree: AEONDeltaV3 → task2vec_meta_learner → model → …
+        object.__setattr__(self, '_model_ref', model)
         self.embedding_dim = embedding_dim
         self.similarity_threshold = similarity_threshold
         self.ewc_lambda = ewc_lambda
+
+    @property
+    def model(self) -> nn.Module:
+        """Access the wrapped model without creating an nn.Module edge."""
+        return self._model_ref
 
         # Compute raw parameter count for Fisher dimension
         self._param_count = sum(
