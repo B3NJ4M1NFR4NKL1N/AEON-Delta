@@ -59988,6 +59988,142 @@ def test_memory_routing_extract_dict_format():
     print("✅ test_memory_routing_extract_dict_format PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION — OUTPUT RELIABILITY GATING, CORRECTION GUIDANCE,
+#  MEMORY ROUTING TRUST → UCC INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_output_reliability_gate_attenuates_unreliable():
+    """OutputReliabilityGate attenuates z_out when composite falls below threshold."""
+    from aeon_core import OutputReliabilityGate
+    import torch
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    # Very low reliability: high uncertainty, low auto_critic, low convergence
+    result = gate(
+        uncertainty=0.9,
+        auto_critic_quality=0.2,
+        convergence_rate=0.3,
+        coherence_deficit=0.5,
+    )
+    assert not result['is_reliable'], "Should be unreliable with poor signals"
+    assert result['composite'] < 0.5, (
+        f"Composite should be below threshold, got {result['composite']}"
+    )
+    # Simulate z_out attenuation as done in the forward pass
+    z_out = torch.ones(2, 64)
+    reliability_scale = max(0.1, result['composite'])
+    attenuated = z_out * reliability_scale
+    # Attenuated output should have lower norm than original
+    assert attenuated.norm().item() < z_out.norm().item(), (
+        "Attenuated output should have lower norm"
+    )
+    print("✅ test_output_reliability_gate_attenuates_unreliable PASSED")
+
+
+def test_output_reliability_gate_passes_reliable():
+    """OutputReliabilityGate passes output unchanged when reliable."""
+    from aeon_core import OutputReliabilityGate
+    import torch
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    # Perfect signals → reliable
+    result = gate(
+        uncertainty=0.0,
+        auto_critic_quality=1.0,
+        convergence_rate=1.0,
+        coherence_deficit=0.0,
+    )
+    assert result['is_reliable'], "Should be reliable with perfect signals"
+    assert result['composite'] >= 0.5, (
+        f"Composite should be above threshold, got {result['composite']}"
+    )
+    print("✅ test_output_reliability_gate_passes_reliable PASSED")
+
+
+def test_output_is_reliable_in_return_dict():
+    """AEONDeltaV3 forward output contains 'output_is_reliable' key."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(1, 1000, (1, 4))
+        result = model(x)
+    assert 'output_is_reliable' in result, (
+        "Return dict must contain 'output_is_reliable' key"
+    )
+    assert isinstance(result['output_is_reliable'], bool), (
+        "output_is_reliable must be a bool"
+    )
+    print("✅ test_output_is_reliable_in_return_dict PASSED")
+
+
+def test_ucc_correction_guidance_has_target_module():
+    """UnifiedCognitiveCycle correction_guidance includes target_module when should_rerun."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+    import torch
+
+    cycle = UnifiedCognitiveCycle(
+        convergence_monitor=ConvergenceMonitor(threshold=1e-5),
+        coherence_verifier=ModuleCoherenceVerifier(hidden_dim=64, threshold=0.99),
+        error_evolution=CausalErrorEvolutionTracker(),
+        metacognitive_trigger=MetaCognitiveRecursionTrigger(trigger_threshold=0.1),
+        provenance_tracker=CausalProvenanceTracker(),
+        causal_trace=TemporalCausalTraceBuffer(),
+    )
+
+    # Force high uncertainty and divergent states → should trigger rerun
+    states = {
+        'meta_loop': torch.ones(2, 64),
+        'safety': -torch.ones(2, 64),
+    }
+    result = cycle.evaluate(
+        subsystem_states=states,
+        delta_norm=1.0,
+        uncertainty=0.9,
+        safety_violation=True,
+    )
+    assert 'correction_guidance' in result, (
+        "UCC result must contain 'correction_guidance'"
+    )
+    guidance = result['correction_guidance']
+    assert 'target_module' in guidance, (
+        "correction_guidance must contain 'target_module'"
+    )
+    assert 'reason' in guidance, (
+        "correction_guidance must contain 'reason'"
+    )
+    print("✅ test_ucc_correction_guidance_has_target_module PASSED")
+
+
+def test_memory_routing_trust_deficit_cached():
+    """AEONDeltaV3 initializes _cached_memory_routing_trust_deficit."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_memory_routing_trust_deficit'), (
+        "Model must have _cached_memory_routing_trust_deficit attribute"
+    )
+    assert model._cached_memory_routing_trust_deficit == 0.0, (
+        "Initial trust deficit should be 0.0"
+    )
+    print("✅ test_memory_routing_trust_deficit_cached PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -62647,6 +62783,14 @@ def run_all_tests():
     test_node_attr_map_includes_new_nodes()
     test_config_gated_memory_routing()
     test_config_gated_counterfactual_verification()
+
+    # Architectural Unification — Output Reliability Gating, Correction
+    # Guidance Consumption, Memory Routing Trust → UCC Integration
+    test_output_reliability_gate_attenuates_unreliable()
+    test_output_reliability_gate_passes_reliable()
+    test_output_is_reliable_in_return_dict()
+    test_ucc_correction_guidance_has_target_module()
+    test_memory_routing_trust_deficit_cached()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
