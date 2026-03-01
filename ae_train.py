@@ -3017,7 +3017,23 @@ class SafeThoughtAETrainerV4:
         )
         
         total_loss = recon_loss + self.config.vq_loss_weight * vq_loss
-        
+
+        # Consume inference module feedback to focus training on modules
+        # that inference identified as high-uncertainty.  When inference
+        # reports high uncertainty for "vq", boost VQ loss weight; when
+        # "encoder" or "decoder" are flagged, boost reconstruction loss.
+        # This closes the inference→training feedback loop where per-module
+        # uncertainty was recorded but never acted upon during training.
+        if self._inference_module_feedback:
+            _vq_boost = self._inference_module_feedback.get('vq', 0.0)
+            _enc_boost = self._inference_module_feedback.get('encoder', 0.0)
+            _dec_boost = self._inference_module_feedback.get('decoder', 0.0)
+            _recon_boost = max(_enc_boost, _dec_boost)
+            if _vq_boost > 0.0:
+                total_loss = total_loss + _vq_boost * vq_loss
+            if _recon_boost > 0.0:
+                total_loss = total_loss + _recon_boost * recon_loss
+
         with torch.no_grad():
             perplexity = torch.exp(recon_loss.clamp(max=80)).item()
             pred_tokens = logits[:, :-1].argmax(dim=-1)
@@ -3492,7 +3508,17 @@ class ContextualRSSMTrainer:
         mse_loss = F.mse_loss(pred, z_target)
         smooth_l1 = F.smooth_l1_loss(pred, z_target)
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
-        
+
+        # Consume inference module feedback to boost RSSM loss when
+        # inference reports high uncertainty for the RSSM/memory modules.
+        # This closes the same inference→training feedback loop as Phase A.
+        if self._inference_module_feedback:
+            _rssm_boost = self._inference_module_feedback.get('rssm', 0.0)
+            _mem_boost = self._inference_module_feedback.get('memory', 0.0)
+            _boost = max(_rssm_boost, _mem_boost)
+            if _boost > 0.0:
+                loss = loss + _boost * mse_loss
+
         # Detect NaN/Inf loss OR non-finite RSSM output to prevent
         # corrupted gradient updates.  Classify the error semantically
         # (matching Phase A) so root-cause analysis can trace it to the
