@@ -3898,14 +3898,6 @@ class ContextualRSSMTrainer:
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
                 )
                 epoch_metrics["should_rerun"] = _cycle_result["should_rerun"]
-                if _cycle_result["should_rerun"]:
-                    _active = _cycle_result["trigger_detail"].get("triggers_active", [])
-                    logger.info(
-                        f"   🧠 Phase B meta-cognitive cycle triggered "
-                        f"(signals={_active}), adapting training"
-                    )
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] *= self._metacognitive_lr_factor
                 # Apply correction_guidance from UCC — when the unified
                 # cognitive cycle identifies a specific target module and
                 # recommended strategy, use that insight to adapt Phase B
@@ -3916,10 +3908,6 @@ class ContextualRSSMTrainer:
                 _corr_target = _correction.get("target_module")
                 if _corr_target is not None:
                     epoch_metrics["correction_target"] = _corr_target
-                    if _correction.get("recommended_strategy"):
-                        self._grad_clip_norm = max(
-                            0.1, self._grad_clip_norm * 0.95,
-                        )
                     if hasattr(self, '_inference_module_feedback'):
                         self._inference_module_feedback[_corr_target] = max(
                             self._inference_module_feedback.get(
@@ -3930,6 +3918,23 @@ class ContextualRSSMTrainer:
                             ),
                         )
                 if _cycle_result["should_rerun"]:
+                    _active = _cycle_result["trigger_detail"].get("triggers_active", [])
+                    logger.info(
+                        f"   🧠 Phase B meta-cognitive cycle triggered "
+                        f"(signals={_active}), adapting training"
+                    )
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] *= self._metacognitive_lr_factor
+                    # Tighten grad clip from correction guidance or
+                    # coherence deficit (whichever is more severe), but
+                    # only once to avoid duplicate adjustments.
+                    _clip_tightened = False
+                    if (_corr_target is not None
+                            and _correction.get("recommended_strategy")):
+                        self._grad_clip_norm = max(
+                            0.1, self._grad_clip_norm * 0.95,
+                        )
+                        _clip_tightened = True
                     # When the UCC detects coherence issues, tighten gradient
                     # clipping to stabilize the RSSM and prevent further
                     # latent-space drift.  This closes the loop between
@@ -3939,7 +3944,7 @@ class ContextualRSSMTrainer:
                     _coherence_deficit = _cycle_result["coherence_result"].get(
                         "coherence_deficit", 0.0,
                     )
-                    if _coherence_deficit > 0.3:
+                    if _coherence_deficit > 0.3 and not _clip_tightened:
                         # _COHERENCE_MIN_GRAD_CLIP: absolute floor to prevent
                         # gradient clipping from becoming so tight that
                         # learning effectively stalls.
