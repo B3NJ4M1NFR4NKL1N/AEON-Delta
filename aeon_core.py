@@ -6652,11 +6652,23 @@ class CausalProvenanceTracker:
         self._removed_cyclic_edges: Set[Tuple[str, str]] = set()
     
     def reset(self):
-        """Clear all recorded snapshots for a new forward pass."""
+        """Clear all recorded snapshots for a new forward pass.
+
+        Also resets the dependency graph and removed-cyclic-edges set so
+        that the DAG is rebuilt from the authoritative
+        ``_PIPELINE_DEPENDENCIES`` list each pass.  Without this reset,
+        edges removed during cycle detection on pass N are permanently
+        blocked on all subsequent passes, preventing feedback-loop edges
+        from being re-registered and breaking root-cause traceability
+        for those paths.
+        """
         self._before_states.clear()
         self._deltas.clear()
         self._timestamps.clear()
         self._order.clear()
+        if hasattr(self, '_dependencies'):
+            self._dependencies.clear()
+        self._removed_cyclic_edges.clear()
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -22791,6 +22803,10 @@ class AEONDeltaV3(nn.Module):
             ("auto_critic", self.auto_critic),
             ("metacognitive_trigger", self.metacognitive_trigger),
             ("coherence_verifier", self.module_coherence),
+            ("output_reliability_gate", self.output_reliability_gate),
+            ("counterfactual_gate", getattr(self, 'counterfactual_gate', None)),
+            ("cycle_consistency_validator", getattr(
+                self, 'cycle_consistency_validator', None)),
         ]
         total = len(_VERIFICATION_MODULES)
         active = sum(1 for _, mod in _VERIFICATION_MODULES if mod is not None)
