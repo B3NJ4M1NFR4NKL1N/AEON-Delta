@@ -26932,23 +26932,25 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # 5b1-mrp-trust. Cache memory routing trust-gating
+                    # count so the UCC evaluation receives a graduated
+                    # memory_trust_deficit signal reflecting how many
+                    # subsystems were attenuated due to low trust.  This
+                    # closes the gap where memory routing gated subsystems
+                    # but that information never reached the meta-cognitive
+                    # cycle.
+                    _mr_trust_gated = _routing_result.get('trust_gated', [])
+                    _mr_routed = _routing_result.get('routed_subsystems', [])
+                    if _mr_routed:
+                        self._cached_memory_routing_trust_deficit = (
+                            len(_mr_trust_gated) / max(len(_mr_routed), 1)
+                        )
+                    else:
+                        self._cached_memory_routing_trust_deficit = 0.0
             except Exception as _routing_err:
                 logger.debug(
                     "Memory routing failed (non-fatal): %s", _routing_err,
                 )
-            # 5b1-mrp-trust. Cache memory routing trust-gating count so
-            # the UCC evaluation receives a graduated memory_trust_deficit
-            # signal reflecting how many subsystems were attenuated due to
-            # low trust.  This closes the gap where memory routing gated
-            # subsystems but that information never reached the meta-
-            # cognitive cycle, violating the requirement that each component
-            # verifies and reinforces the others.
-            _mr_trust_gated = _routing_result.get('trust_gated', []) if '_routing_result' in dir() else []
-            _mr_routed = _routing_result.get('routed_subsystems', []) if '_routing_result' in dir() else []
-            if _mr_routed:
-                _mr_trust_deficit = len(_mr_trust_gated) / max(len(_mr_routed), 1)
-                self._cached_memory_routing_trust_deficit = _mr_trust_deficit
-            else:
                 self._cached_memory_routing_trust_deficit = 0.0
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
