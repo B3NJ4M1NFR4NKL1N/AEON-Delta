@@ -199,7 +199,8 @@ __all__ = [
     "CausalDAGConsensus",
     # Unified AGI architecture components
     "UnifiedConvergenceArbiter", "DirectionalUncertaintyTracker",
-    "MemoryReasoningValidator",
+    "MemoryReasoningValidator", "MemoryRoutingPolicy",
+    "CounterfactualVerificationGate",
     "SubsystemCoherenceRegistry", "UncertaintyPropagationBus",
     "SubsystemHealthGate",
     # Main model & training
@@ -3215,6 +3216,23 @@ class AEONConfig:
     # current converged state to replace stale memories.
     enable_memory_re_retrieval: bool = True
 
+    # ===== MEMORY ROUTING =====
+    # When True, memory queries are routed through a MemoryRoutingPolicy
+    # that selects the most relevant subsystems and gates results through
+    # trust scoring, closing the gap where 7 memory subsystems exist but
+    # no unified routing policy decides which to query.
+    enable_memory_routing: bool = False
+    memory_routing_trust_threshold: float = 0.5
+    memory_routing_top_k: int = 3
+
+    # ===== COUNTERFACTUAL VERIFICATION =====
+    # When True, forward-pass conclusions are verified against the
+    # UnifiedCausalSimulator's counterfactual predictions, closing the
+    # gap where causal reasoning ran in parallel without feedback.
+    enable_counterfactual_verification: bool = False
+    counterfactual_divergence_threshold: float = 0.5
+    counterfactual_attenuation_strength: float = 0.1
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -3353,6 +3371,11 @@ class AEONConfig:
                 # between self-reported confidence and actual internal
                 # state divergence, closing the trust verification loop.
                 'enable_deception_suppressor',
+                # Memory routing — unified query routing with trust gating.
+                'enable_memory_routing',
+                # Counterfactual verification — validates conclusions
+                # against causal simulator predictions inline.
+                'enable_counterfactual_verification',
             ]
             for flag in _coherence_flags:
                 if not getattr(self, flag, False):
@@ -14982,6 +15005,123 @@ class OutputReliabilityGate(nn.Module):
         }
 
 
+class CounterfactualVerificationGate(nn.Module):
+    """Validates forward-pass conclusions against causal simulator predictions.
+
+    Closes the architectural gap where the ``UnifiedCausalSimulator`` blends
+    counterfactual predictions into C_star as a residual but never explicitly
+    *verifies* that the integrated reasoning state is consistent with the
+    causal model's expectations.  This gate compares the post-integration
+    output against the simulator's counterfactual next-state prediction and
+    flags significant divergence as a verification failure.
+
+    When divergence exceeds the configurable threshold, the gate:
+    1. Records the divergence in the provenance tracker for root-cause
+       traceability.
+    2. Produces a ``verification_score`` ∈ [0, 1] that downstream modules
+       (uncertainty tracker, metacognitive trigger, auto-critic) can use
+       as a quality signal.
+    3. Optionally attenuates the output toward the counterfactual prediction
+       to reduce divergence.
+
+    This ensures that causal reasoning actively constrains the forward pass
+    rather than running in parallel without feedback, satisfying the
+    requirement that each component verifies and reinforces the others.
+
+    Args:
+        hidden_dim: Dimensionality of the hidden state.
+        divergence_threshold: Cosine-similarity threshold below which
+            conclusions are flagged as causally inconsistent.
+        attenuation_strength: Blend factor toward the counterfactual
+            prediction when divergence is detected (0 = no correction,
+            1 = full override).
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        divergence_threshold: float = 0.5,
+        attenuation_strength: float = 0.1,
+    ):
+        super().__init__()
+        self.divergence_threshold = max(0.0, min(1.0, divergence_threshold))
+        self.attenuation_strength = max(0.0, min(1.0, attenuation_strength))
+        # Lightweight projection to align simulator output with reasoning
+        # state dimensionality when they differ.
+        self.alignment_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        nn.init.eye_(self.alignment_proj.weight)
+
+    def forward(
+        self,
+        reasoning_state: torch.Tensor,
+        counterfactual_prediction: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Verify reasoning state against counterfactual prediction.
+
+        Args:
+            reasoning_state: [B, hidden_dim] post-integration reasoning
+                output to verify.
+            counterfactual_prediction: [B, hidden_dim] next-state
+                prediction from the causal simulator.  When None, the
+                gate passes through with perfect verification score.
+
+        Returns:
+            Dict with:
+                - verified_state: [B, hidden_dim] potentially corrected
+                  reasoning state.
+                - verification_score: float ∈ [0, 1] (1 = fully consistent).
+                - divergence_detected: bool — True when cosine similarity
+                  is below threshold.
+                - cosine_similarity: float — raw cosine similarity.
+                - correction_applied: bool — True when output was attenuated.
+        """
+        if counterfactual_prediction is None:
+            return {
+                'verified_state': reasoning_state,
+                'verification_score': 1.0,
+                'divergence_detected': False,
+                'cosine_similarity': 1.0,
+                'correction_applied': False,
+            }
+
+        # Align dimensions if needed.
+        cf_aligned = self.alignment_proj(counterfactual_prediction)
+
+        # Compute cosine similarity.
+        sim = F.cosine_similarity(
+            reasoning_state.flatten(1),
+            cf_aligned.flatten(1),
+            dim=-1,
+        ).mean().item()
+        sim = max(-1.0, min(1.0, sim))
+
+        verification_score = max(0.0, (sim + 1.0) / 2.0)  # map [-1,1] → [0,1]
+        divergence_detected = sim < self.divergence_threshold
+
+        # Optional correction: attenuate toward counterfactual prediction.
+        verified_state = reasoning_state
+        correction_applied = False
+        if divergence_detected and self.attenuation_strength > 0:
+            if torch.isfinite(cf_aligned).all():
+                blend = self.attenuation_strength * (
+                    self.divergence_threshold - sim
+                )
+                blend = max(0.0, min(self.attenuation_strength, blend))
+                verified_state = (
+                    (1.0 - blend) * reasoning_state
+                    + blend * cf_aligned
+                )
+                correction_applied = blend > 0
+
+        return {
+            'verified_state': verified_state,
+            'verification_score': verification_score,
+            'divergence_detected': divergence_detected,
+            'cosine_similarity': sim,
+            'correction_applied': correction_applied,
+        }
+
+
 # ============================================================================
 # SECTION 15b: AGI COHERENCE — CROSS-MODULE VERIFICATION & SELF-REFLECTION
 # ============================================================================
@@ -17060,6 +17200,8 @@ class SubsystemCoherenceRegistry:
         # their absence to be invisible to coverage deficit tracking.
         "deception_suppressor", "complexity_estimator",
         "mcts_planning", "icm_curiosity",
+        # Memory routing and counterfactual verification gates.
+        "memory_routing", "counterfactual_verification",
     })
 
     def __init__(
@@ -17234,6 +17376,10 @@ class SubsystemCoherenceRegistry:
             "enable_complexity_estimator": ["complexity_estimator"],
             "enable_active_learning_planner": [
                 "icm_curiosity",
+            ],
+            "enable_memory_routing": ["memory_routing"],
+            "enable_counterfactual_verification": [
+                "counterfactual_verification",
             ],
         }
         with self._lock:
@@ -17556,6 +17702,188 @@ class MemoryReasoningValidator:
             "uncertainty_boost": uncertainty_boost,
             "memory_available": True,
         }
+
+
+class MemoryRoutingPolicy:
+    """Routes memory queries to the most appropriate subsystem with trust gating.
+
+    Closes the architectural gap where 7 memory subsystems exist but no
+    unified routing policy decides which to query based on query
+    characteristics.  This policy computes a lightweight relevance score
+    for each available subsystem and routes the query to the top-k most
+    relevant ones, gating results through the trust scorer before fusion.
+
+    The policy uses a simple norm-based heuristic: subsystems that return
+    higher-norm results are considered more relevant, since memory vectors
+    with near-zero norm indicate empty or irrelevant retrieval.  Trust
+    gating then attenuates results from subsystems whose trust scores are
+    below the configurable threshold, ensuring that unreliable memories
+    do not pollute reasoning.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        trust_threshold: Minimum trust score ∈ [0, 1] for a memory
+            subsystem's results to be included without attenuation.
+        top_k_subsystems: Maximum number of subsystems to query per
+            retrieval (reduces latency by skipping low-priority subsystems).
+        fusion_mode: How to combine results from multiple subsystems.
+            'mean' averages results, 'max' takes the highest-norm result.
+    """
+
+    def __init__(
+        self,
+        trust_threshold: float = 0.5,
+        top_k_subsystems: int = 3,
+        fusion_mode: str = 'mean',
+    ):
+        self.trust_threshold = max(0.0, min(1.0, trust_threshold))
+        self.top_k_subsystems = max(1, top_k_subsystems)
+        self.fusion_mode = fusion_mode if fusion_mode in ('mean', 'max') else 'mean'
+        # Per-subsystem retrieval statistics for adaptive routing.
+        self._retrieval_stats: Dict[str, Dict[str, float]] = {}
+
+    def route(
+        self,
+        query: torch.Tensor,
+        subsystems: Dict[str, Any],
+        trust_scores: Optional[Dict[str, float]] = None,
+        k: int = 5,
+    ) -> Dict[str, Any]:
+        """Route a memory query to the most relevant subsystems.
+
+        Args:
+            query: [hidden_dim] or [B, hidden_dim] query tensor.
+            subsystems: Named memory subsystem instances that expose a
+                ``retrieve(query, k=...)`` method.
+            trust_scores: Optional per-subsystem trust scores ∈ [0, 1].
+                When a score is below ``trust_threshold``, that subsystem's
+                results are attenuated proportionally.
+            k: Number of entries to retrieve from each subsystem.
+
+        Returns:
+            Dict with:
+                - fused_result: [hidden_dim] fused memory tensor (or None
+                  if no subsystem returned valid results).
+                - subsystem_results: per-subsystem retrieval metadata.
+                - routed_subsystems: list of subsystems that were queried.
+                - trust_gated: list of subsystems whose results were
+                  attenuated due to low trust.
+        """
+        trust_scores = trust_scores or {}
+        results: Dict[str, Dict[str, Any]] = {}
+        routed: List[str] = []
+        trust_gated: List[str] = []
+
+        # Sort subsystems by historical relevance (higher first).
+        subsystem_priority = sorted(
+            subsystems.keys(),
+            key=lambda name: self._retrieval_stats.get(
+                name, {},
+            ).get('avg_norm', 0.0),
+            reverse=True,
+        )
+
+        # Query top-k subsystems.
+        for name in subsystem_priority[:self.top_k_subsystems]:
+            subsystem = subsystems[name]
+            retrieve_fn = getattr(subsystem, 'retrieve', None)
+            if retrieve_fn is None:
+                continue
+            try:
+                q = query.detach() if query.dim() <= 1 else query[0].detach()
+                raw_result = retrieve_fn(q, k=k)
+                # Extract tensor from retrieval result (various formats).
+                mem_tensor = self._extract_tensor(raw_result, query)
+                if mem_tensor is None:
+                    continue
+                routed.append(name)
+                # Trust gating.
+                trust = trust_scores.get(name, 1.0)
+                if trust < self.trust_threshold:
+                    mem_tensor = mem_tensor * trust
+                    trust_gated.append(name)
+                # Update retrieval statistics.
+                norm_val = float(mem_tensor.detach().norm().item())
+                stats = self._retrieval_stats.setdefault(
+                    name, {'avg_norm': 0.0, 'count': 0},
+                )
+                stats['count'] += 1
+                alpha = 0.1
+                stats['avg_norm'] = (
+                    (1 - alpha) * stats['avg_norm'] + alpha * norm_val
+                )
+                results[name] = {
+                    'tensor': mem_tensor,
+                    'trust': trust,
+                    'norm': norm_val,
+                }
+            except Exception:
+                continue
+
+        # Fuse results.
+        fused = self._fuse_results(results)
+
+        return {
+            'fused_result': fused,
+            'subsystem_results': {
+                name: {k: v for k, v in info.items() if k != 'tensor'}
+                for name, info in results.items()
+            },
+            'routed_subsystems': routed,
+            'trust_gated': trust_gated,
+        }
+
+    def _extract_tensor(
+        self, raw_result: Any, query: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        """Extract a tensor from various retrieval result formats."""
+        if isinstance(raw_result, torch.Tensor):
+            return raw_result
+        if isinstance(raw_result, dict):
+            # HierarchicalMemory returns {'working': [(vec, score), ...]}
+            for key in ('working', 'episodic', 'semantic', 'result'):
+                entries = raw_result.get(key, [])
+                if entries and isinstance(entries, list):
+                    tensors = []
+                    for entry in entries:
+                        if isinstance(entry, torch.Tensor):
+                            tensors.append(entry)
+                        elif isinstance(entry, (tuple, list)) and len(entry) >= 1:
+                            if isinstance(entry[0], torch.Tensor):
+                                tensors.append(entry[0])
+                    if tensors:
+                        return torch.stack(tensors).mean(dim=0)
+            # Try 'tensor' key directly.
+            t = raw_result.get('tensor')
+            if isinstance(t, torch.Tensor):
+                return t
+        if isinstance(raw_result, list) and raw_result:
+            if isinstance(raw_result[0], torch.Tensor):
+                return torch.stack(raw_result).mean(dim=0)
+        return None
+
+    def _fuse_results(
+        self, results: Dict[str, Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        """Fuse tensors from multiple subsystem results."""
+        tensors = [
+            info['tensor'] for info in results.values()
+            if info.get('tensor') is not None
+            and isinstance(info['tensor'], torch.Tensor)
+            and torch.isfinite(info['tensor']).all()
+        ]
+        if not tensors:
+            return None
+        if self.fusion_mode == 'max':
+            norms = [t.norm().item() for t in tensors]
+            return tensors[norms.index(max(norms))]
+        # Default: mean fusion.
+        return torch.stack(tensors).mean(dim=0)
+
+    def get_routing_stats(self) -> Dict[str, Dict[str, float]]:
+        """Return per-subsystem retrieval statistics."""
+        return dict(self._retrieval_stats)
 
 
 class UnifiedCognitiveCycle:
@@ -19402,6 +19730,23 @@ class AEONDeltaV3(nn.Module):
         ("meta_loop", "output_reliability_gate"),
         ("output_reliability_gate", "metacognitive_trigger"),
         ("output_reliability_gate", "unified_cognitive_cycle"),
+        # ── Memory routing policy paths ────────────────────────────
+        # The memory routing policy sits between the memory subsystems
+        # and the reasoning core, ensuring trace_root_cause() can
+        # attribute memory-fused reasoning to specific subsystems.
+        ("memory", "memory_routing"),
+        ("neurogenic_memory", "memory_routing"),
+        ("consolidating_memory", "memory_routing"),
+        ("temporal_memory", "memory_routing"),
+        ("memory_routing", "metacognitive_trigger"),
+        # ── Counterfactual verification gate paths ─────────────────
+        # The counterfactual gate sits between the unified simulator
+        # and integration, verifying conclusions against causal
+        # predictions for root-cause traceability.
+        ("unified_simulator", "counterfactual_verification"),
+        ("counterfactual_verification", "integration"),
+        ("counterfactual_verification", "metacognitive_trigger"),
+        ("counterfactual_verification", "auto_critic"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -19493,6 +19838,11 @@ class AEONDeltaV3(nn.Module):
         # Output reliability gate — consolidates multiple quality
         # signals into a composite reliability score.
         "output_reliability_gate": "output_reliability_gate",
+        # Memory routing policy — routes queries to subsystems.
+        "memory_routing": "memory_routing_policy",
+        # Counterfactual verification gate — validates conclusions
+        # against causal simulator predictions.
+        "counterfactual_verification": "counterfactual_gate",
     }
     
     def __init__(self, config: AEONConfig):
@@ -20990,6 +21340,37 @@ class AEONDeltaV3(nn.Module):
         self.convergence_arbiter = UnifiedConvergenceArbiter()
         self.uncertainty_tracker = DirectionalUncertaintyTracker()
         self.memory_validator = MemoryReasoningValidator()
+        # Memory routing policy — routes memory queries to the most
+        # relevant subsystems with trust gating, closing the gap where
+        # 7 memory subsystems exist but no unified routing policy decides
+        # which to query.
+        if getattr(config, 'enable_memory_routing', False):
+            self.memory_routing_policy = MemoryRoutingPolicy(
+                trust_threshold=getattr(
+                    config, 'memory_routing_trust_threshold', 0.5,
+                ),
+                top_k_subsystems=getattr(
+                    config, 'memory_routing_top_k', 3,
+                ),
+            )
+        else:
+            self.memory_routing_policy = None
+        # Counterfactual verification gate — validates forward-pass
+        # conclusions against the causal simulator's counterfactual
+        # predictions, closing the gap where causal reasoning ran in
+        # parallel without feedback.
+        if getattr(config, 'enable_counterfactual_verification', False):
+            self.counterfactual_gate = CounterfactualVerificationGate(
+                hidden_dim=config.hidden_dim,
+                divergence_threshold=getattr(
+                    config, 'counterfactual_divergence_threshold', 0.5,
+                ),
+                attenuation_strength=getattr(
+                    config, 'counterfactual_attenuation_strength', 0.1,
+                ),
+            )
+        else:
+            self.counterfactual_gate = None
         # Subsystem coherence registry — persistent cross-pass ledger of
         # which subsystems produced validated outputs.  Feeds coverage
         # deficit into uncertainty escalation and metacognitive triggers.
@@ -26484,6 +26865,72 @@ class AEONDeltaV3(nn.Module):
                 causal_weight=_memory_retrieval_quality,
                 tier="mid_term",
             )
+
+        # 5c6. Memory routing policy — when enabled, route a secondary
+        # retrieval query through the MemoryRoutingPolicy which selects
+        # the most relevant subsystems and gates results through trust
+        # scoring.  This closes the gap where memory retrieval always
+        # queries the same subsystem (hierarchical_memory) without
+        # considering which subsystem is most relevant for the current
+        # query.  The routed result is blended as a small residual.
+        if (self.memory_routing_policy is not None
+                and not fast
+                and memory_retrieval):
+            try:
+                _routing_subsystems: Dict[str, Any] = {}
+                if self.hierarchical_memory is not None:
+                    _routing_subsystems['hierarchical'] = self.hierarchical_memory
+                if self.neurogenic_memory is not None:
+                    _routing_subsystems['neurogenic'] = self.neurogenic_memory
+                if self.temporal_memory is not None:
+                    _routing_subsystems['temporal'] = self.temporal_memory
+                if self.consolidating_memory is not None:
+                    _routing_subsystems['consolidating'] = self.consolidating_memory
+                if _routing_subsystems:
+                    _trust_scores: Dict[str, float] = {}
+                    _last_trust = getattr(self, '_last_trust_score', 1.0)
+                    for _rs_name in _routing_subsystems:
+                        _trust_scores[_rs_name] = _last_trust
+                    self.provenance_tracker.record_before("memory_routing", C_star)
+                    _routing_result = self.memory_routing_policy.route(
+                        query=C_star.mean(dim=0),
+                        subsystems=_routing_subsystems,
+                        trust_scores=_trust_scores,
+                        k=3,
+                    )
+                    _routed_fused = _routing_result.get('fused_result')
+                    if (_routed_fused is not None
+                            and isinstance(_routed_fused, torch.Tensor)
+                            and torch.isfinite(_routed_fused).all()):
+                        # Blend as a small residual to avoid overriding
+                        # the primary hierarchical memory retrieval.
+                        _routing_blend = 0.05
+                        if _routed_fused.dim() == 1:
+                            _routed_fused = _routed_fused.unsqueeze(0).expand(B, -1)
+                        if _routed_fused.shape[-1] == C_star.shape[-1]:
+                            C_star = C_star + _routing_blend * _routed_fused
+                    self.provenance_tracker.record_after("memory_routing", C_star)
+                    self.coherence_registry.register_output(
+                        "memory_routing",
+                        validated=len(_routing_result.get('routed_subsystems', [])) > 0,
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "memory_routing", "routed",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "routed_subsystems": _routing_result.get(
+                                    'routed_subsystems', [],
+                                ),
+                                "trust_gated": _routing_result.get(
+                                    'trust_gated', [],
+                                ),
+                            },
+                        )
+            except Exception as _routing_err:
+                logger.debug(
+                    "Memory routing failed (non-fatal): %s", _routing_err,
+                )
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
@@ -27932,7 +28379,70 @@ class AEONDeltaV3(nn.Module):
                                 "uncertainty_boost": _usim_boost,
                             },
                         )
-        
+
+        # 5e2-cv. Counterfactual verification gate — when enabled,
+        # validate that C_star is consistent with the causal simulator's
+        # counterfactual prediction.  This closes the gap where the
+        # causal simulator blended its output as a residual but never
+        # explicitly verified that the integrated state is consistent
+        # with causal expectations.  Divergence triggers uncertainty
+        # escalation and optional correction.
+        if (self.counterfactual_gate is not None
+                and not fast
+                and unified_simulator_results):
+            _cf_pred = unified_simulator_results.get("next_state", None)
+            if _cf_pred is not None:
+                try:
+                    self.provenance_tracker.record_before(
+                        "counterfactual_verification", C_star,
+                    )
+                    _cf_gate_result = self.counterfactual_gate(
+                        reasoning_state=C_star,
+                        counterfactual_prediction=_cf_pred,
+                    )
+                    if _cf_gate_result['divergence_detected']:
+                        _cf_unc_boost = min(
+                            1.0 - uncertainty,
+                            (1.0 - _cf_gate_result['verification_score']) * 0.15,
+                        )
+                        if _cf_unc_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _cf_unc_boost)
+                            uncertainty_sources[
+                                "counterfactual_divergence"
+                            ] = _cf_unc_boost
+                            high_uncertainty = uncertainty > 0.5
+                    if _cf_gate_result.get('correction_applied', False):
+                        C_star = _cf_gate_result['verified_state']
+                    self.provenance_tracker.record_after(
+                        "counterfactual_verification", C_star,
+                    )
+                    self.coherence_registry.register_output(
+                        "counterfactual_verification",
+                        validated=not _cf_gate_result['divergence_detected'],
+                        quality=_cf_gate_result['verification_score'],
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "counterfactual_verification", "verified",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "verification_score": _cf_gate_result[
+                                    'verification_score'
+                                ],
+                                "divergence_detected": _cf_gate_result[
+                                    'divergence_detected'
+                                ],
+                                "correction_applied": _cf_gate_result[
+                                    'correction_applied'
+                                ],
+                            },
+                        )
+                except Exception as _cf_err:
+                    logger.debug(
+                        "Counterfactual verification failed (non-fatal): %s",
+                        _cf_err,
+                    )
+
         # 5e2-fc. Complexity-gated fallback for unified simulator —
         # cache the counterfactual next_state when it runs; when skipped,
         # blend the decayed cached state as a weak residual so the
@@ -35742,6 +36252,7 @@ class AEONDeltaV3(nn.Module):
             'encoder_reasoning_norm',
             'icm_curiosity', 'memory_cross_validation',
             'deception_suppressor',
+            'memory_routing', 'counterfactual_verification',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
@@ -38061,6 +38572,128 @@ class AEONDeltaV3(nn.Module):
             'root_cause_traceability': root_cause_traceability,
             'recommendations': recommendations,
         }
+
+    def sync_from_training(
+        self,
+        trainer_monitor: Any = None,
+        training_provenance: Any = None,
+    ) -> Dict[str, Any]:
+        """Automatically import training state into the inference pipeline.
+
+        Closes the architectural gap where training-discovered error
+        patterns, convergence events, and causal provenance must be
+        manually bridged via ``bridge_training_errors_to_inference()``.
+        This method orchestrates the import automatically, transferring:
+
+        1. Error evolution patterns from the training convergence monitor
+           into the inference ``CausalErrorEvolutionTracker``.
+        2. Convergence threshold adjustments based on training history.
+        3. Metacognitive trigger weight adaptation from training error
+           patterns so the inference pipeline's sensitivity reflects
+           learned training behaviour.
+
+        Args:
+            trainer_monitor: A ``TrainingConvergenceMonitor`` instance
+                from ``ae_train.py``.  When provided, its convergence
+                events are replayed into the inference error evolution
+                tracker.
+            training_provenance: A ``TrainingProvenanceTracker`` instance
+                from ``ae_train.py``.  When provided, training-stage
+                causal attribution is transferred to the inference
+                provenance tracker.
+
+        Returns:
+            Dict with:
+                - ``events_imported``: int — number of training events
+                  imported into error evolution.
+                - ``convergence_adjusted``: bool — whether convergence
+                  thresholds were adapted.
+                - ``trigger_adapted``: bool — whether metacognitive
+                  trigger weights were adapted.
+        """
+        result = {
+            'events_imported': 0,
+            'convergence_adjusted': False,
+            'trigger_adapted': False,
+        }
+
+        # 1. Import training error patterns via the existing bridge.
+        if trainer_monitor is not None and self.error_evolution is not None:
+            try:
+                from ae_train import bridge_training_errors_to_inference
+                n_imported = bridge_training_errors_to_inference(
+                    trainer_monitor=trainer_monitor,
+                    inference_error_evolution=self.error_evolution,
+                    causal_trace=getattr(self, 'causal_trace', None),
+                    inference_convergence_monitor=getattr(
+                        self, 'convergence_monitor', None,
+                    ),
+                    inference_integrity_monitor=getattr(
+                        self, 'integrity_monitor', None,
+                    ),
+                    inference_provenance_tracker=getattr(
+                        self, 'provenance_tracker', None,
+                    ),
+                    inference_metacognitive_trigger=getattr(
+                        self, 'metacognitive_trigger', None,
+                    ),
+                )
+                result['events_imported'] = n_imported
+            except ImportError:
+                logger.warning(
+                    "sync_from_training: ae_train not available; "
+                    "skipping error bridge"
+                )
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: error bridge failed: %s", e,
+                )
+
+        # 2. Adapt metacognitive trigger weights from imported patterns.
+        if (self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                summary = self.error_evolution.get_error_summary()
+                if summary.get('total_episodes', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        summary,
+                    )
+                    result['trigger_adapted'] = True
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: trigger adaptation failed: %s", e,
+                )
+
+        # 3. Adjust convergence thresholds based on imported history.
+        if (self.error_evolution is not None
+                and hasattr(self, 'convergence_monitor')):
+            try:
+                summary = self.error_evolution.get_error_summary()
+                divergence_count = summary.get(
+                    'error_classes', {},
+                ).get('divergence', {}).get('count', 0)
+                if divergence_count > 3:
+                    # Tighten convergence threshold for repeated divergence.
+                    old_thresh = self.meta_loop.convergence_threshold
+                    self.meta_loop.convergence_threshold = max(
+                        1e-6, old_thresh * 0.8,
+                    )
+                    result['convergence_adjusted'] = True
+                    logger.info(
+                        "sync_from_training: tightened convergence "
+                        "threshold %.2e → %.2e based on %d training "
+                        "divergence events",
+                        old_thresh,
+                        self.meta_loop.convergence_threshold,
+                        divergence_count,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "sync_from_training: convergence adjustment "
+                    "failed: %s", e,
+                )
+
+        return result
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
