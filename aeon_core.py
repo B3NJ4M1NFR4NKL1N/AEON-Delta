@@ -23349,6 +23349,15 @@ class AEONDeltaV3(nn.Module):
         results: Dict[str, Any] = {}
         all_vecs: List[torch.Tensor] = []
         all_weights: List[float] = []
+        _failed_subsystems: List[str] = []
+
+        # Count active memory subsystems for downstream coverage tracking.
+        _active_count = sum([
+            self.hierarchical_memory is not None,
+            self.neurogenic_memory is not None,
+            self.consolidating_memory is not None,
+            self.temporal_memory is not None,
+        ])
 
         # 1. Hierarchical memory (NTM-based)
         if self.hierarchical_memory is not None:
@@ -23362,6 +23371,7 @@ class AEONDeltaV3(nn.Module):
                     all_weights.append(1.0)
             except (RuntimeError, KeyError, IndexError) as e:
                 logger.debug("Hierarchical memory query failed: %s", e)
+                _failed_subsystems.append("hierarchical")
 
         # 2. Neurogenic memory
         if self.neurogenic_memory is not None:
@@ -23374,6 +23384,7 @@ class AEONDeltaV3(nn.Module):
                     all_weights.append(0.8)
             except (RuntimeError, KeyError, IndexError) as e:
                 logger.debug("Neurogenic memory query failed: %s", e)
+                _failed_subsystems.append("neurogenic")
 
         # 3. Consolidating memory (semantic prototypes)
         if self.consolidating_memory is not None:
@@ -23387,6 +23398,7 @@ class AEONDeltaV3(nn.Module):
                     all_weights.append(0.9)
             except (RuntimeError, KeyError, IndexError) as e:
                 logger.debug("Consolidating memory query failed: %s", e)
+                _failed_subsystems.append("consolidating")
 
         # 4. Temporal memory
         if self.temporal_memory is not None:
@@ -23399,6 +23411,7 @@ class AEONDeltaV3(nn.Module):
                     all_weights.append(0.7)
             except (RuntimeError, KeyError, IndexError) as e:
                 logger.debug("Temporal memory query failed: %s", e)
+                _failed_subsystems.append("temporal")
 
         # Combine all retrieved vectors with weighted average
         if all_vecs:
@@ -23415,6 +23428,11 @@ class AEONDeltaV3(nn.Module):
             )
             results['num_systems_responded'] = 0
             results['fallback_used'] = True
+
+        # Track failed and active subsystem counts so callers can
+        # escalate uncertainty proportionally to memory degradation.
+        results['num_systems_active'] = _active_count
+        results['failed_subsystems'] = _failed_subsystems
 
         return results
     
@@ -24355,6 +24373,34 @@ class AEONDeltaV3(nn.Module):
                         "num_systems": _umq.get('num_systems_responded', 0),
                         "fallback_used": _umq.get('fallback_used', True),
                     })
+                # Escalate uncertainty proportionally when some memory
+                # subsystems failed during the pre-loop query.  This
+                # closes the gap where individual failures were silently
+                # logged without informing the metacognitive cycle.
+                _umq_failed = _umq.get('failed_subsystems', [])
+                _umq_active = _umq.get('num_systems_active', 0)
+                if _umq_failed and _umq_active > 0:
+                    _partial_ratio = len(_umq_failed) / _umq_active
+                    _partial_boost = min(
+                        1.0 - uncertainty, 0.1 * _partial_ratio,
+                    )
+                    if _partial_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _partial_boost)
+                        uncertainty_sources["memory_partial_failure"] = (
+                            _partial_boost
+                        )
+                        high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="memory_subsystem",
+                            strategy_used="uncertainty_escalation",
+                            success=True,
+                            metadata={
+                                "failed": _umq_failed,
+                                "active": _umq_active,
+                                "context": "pre_loop_query",
+                            },
+                        )
             except Exception as _umq_err:
                 logger.debug("Pre-meta-loop memory conditioning failed: %s", _umq_err)
                 # Mild boost (0.05) — subsystem error signals uncertainty
@@ -25527,6 +25573,11 @@ class AEONDeltaV3(nn.Module):
                                 )
                         self.provenance_tracker.record_after("auto_critic_safety", C_star)
                         _sc_score = _safety_critic.get("final_score", 0.0)
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(C_star).all().item(),
+                            quality=_sc_score,
+                        )
                         self.audit_log.record(
                             "auto_critic", "safety_violation_revision", {
                                 "critic_score": _sc_score,
@@ -25974,6 +26025,11 @@ class AEONDeltaV3(nn.Module):
                                 and _coh_revised.shape == C_star.shape):
                             C_star = _coh_revised
                         self.provenance_tracker.record_after("auto_critic", C_star)
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(C_star).all().item(),
+                            quality=_coh_critic.get("final_score", 1.0),
+                        )
                         self.audit_log.record(
                             "auto_critic", "coherence_deficit_revision", {
                                 "coherence_score": _coh_score_val,
@@ -27789,10 +27845,37 @@ class AEONDeltaV3(nn.Module):
                 except Exception:
                     uncertainty_sources["mcts_causal_adj_failure"] = 0.05
                     uncertainty = min(1.0, uncertainty + 0.05)
-            mcts_results = self.mcts_planner.search(
-                C_star[0], self.world_model,
-                causal_adjacency=_mcts_causal_adj,
-            )
+            try:
+                mcts_results = self.mcts_planner.search(
+                    C_star[0], self.world_model,
+                    causal_adjacency=_mcts_causal_adj,
+                )
+            except Exception as _mcts_err:
+                logger.warning(
+                    "MCTS planner search error (non-fatal): %s", _mcts_err,
+                )
+                mcts_results = {}
+                _circuit_breaker_tripped.add("mcts_planning")
+                self.error_recovery.record_event(
+                    error_class="subsystem",
+                    context="mcts_search",
+                    success=False,
+                )
+                self._bridge_recovery_to_evolution(
+                    "subsystem", "mcts_search", False,
+                )
+                _MCTS_ERR_BOOST = 0.2
+                _mcts_err_boost = min(1.0 - uncertainty, _MCTS_ERR_BOOST)
+                uncertainty = min(1.0, uncertainty + _mcts_err_boost)
+                uncertainty_sources["mcts_search_error"] = _mcts_err_boost
+                high_uncertainty = uncertainty > 0.5
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "mcts_planning", "subsystem_error",
+                        causal_prerequisites=[input_trace_id],
+                        severity="error",
+                        metadata={"error": str(_mcts_err)[:200]},
+                    )
             # Restore MCTS max_depth if complexity-scaled.
             if _mcts_depth_adjusted:
                 self.mcts_planner.max_depth = _mcts_orig_depth
@@ -30264,6 +30347,18 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_before("ns_consistency", z_out)
             ns_consistency_results = self.ns_consistency_checker(z_out, rules_proxy)
             self.provenance_tracker.record_after("ns_consistency", z_out)
+            # Register NS consistency in coherence registry so the
+            # subsystem coverage tracking includes neuro-symbolic
+            # verification as a validated output.
+            _ns_overall = ns_consistency_results.get("overall_consistency")
+            _ns_quality = 1.0
+            if _ns_overall is not None and isinstance(_ns_overall, torch.Tensor):
+                _ns_quality = float(_ns_overall.mean().item())
+            self.coherence_registry.register_output(
+                "ns_bridge",
+                validated=torch.isfinite(z_out).all().item(),
+                quality=max(0.0, min(1.0, _ns_quality)),
+            )
             # Cache NS consistency overall score for coherence verification.
             _ns_oc = ns_consistency_results.get("overall_consistency")
             if _ns_oc is not None and isinstance(_ns_oc, torch.Tensor):
@@ -30610,6 +30705,11 @@ class AEONDeltaV3(nn.Module):
                     z_out = _uc_revised
                     _any_auto_critic_revised = True
                 self.provenance_tracker.record_after("auto_critic", z_out)
+                self.coherence_registry.register_output(
+                    "auto_critic",
+                    validated=torch.isfinite(z_out).all().item(),
+                    quality=_uc_critic.get("final_score", 1.0),
+                )
                 # 8b2c-rev. Unconditional auto-critic revision delta —
                 # mirror the NS-violation path's revision magnitude
                 # tracking so that all self-correction paths produce
@@ -33649,6 +33749,11 @@ class AEONDeltaV3(nn.Module):
                             z_out = _post_revised
                             _any_auto_critic_revised = True
                         self.provenance_tracker.record_after("auto_critic", z_out)
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(z_out).all().item(),
+                            quality=_post_critic.get("final_score", 1.0),
+                        )
                         self.audit_log.record("auto_critic", "revised", {
                             "iterations": _post_critic.get("iterations", 0),
                             "final_score": _post_critic.get("final_score", 0.0),
