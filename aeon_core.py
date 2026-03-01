@@ -21028,6 +21028,11 @@ class AEONDeltaV3(nn.Module):
         self._cached_low_quality_subsystems: Dict[str, float] = {}
         self._cached_correction_target: Optional[str] = None
         self._cached_cross_pass_roots: List[str] = []
+        # Memory routing trust-gating deficit — fraction of routed memory
+        # subsystems that were attenuated due to low trust scores.  Fed
+        # into the UCC's memory_trust_deficit parameter so that trust-
+        # gated memory subsystems influence the meta-cognitive cycle.
+        self._cached_memory_routing_trust_deficit: float = 0.0
         self._cached_memory_state: Optional[torch.Tensor] = None
         # Individual memory subsystem states — cached for fine-grained
         # coherence verification so that neurogenic, temporal, and
@@ -26927,10 +26932,26 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # 5b1-mrp-trust. Cache memory routing trust-gating
+                    # count so the UCC evaluation receives a graduated
+                    # memory_trust_deficit signal reflecting how many
+                    # subsystems were attenuated due to low trust.  This
+                    # closes the gap where memory routing gated subsystems
+                    # but that information never reached the meta-cognitive
+                    # cycle.
+                    _mr_trust_gated = _routing_result.get('trust_gated', [])
+                    _mr_routed = _routing_result.get('routed_subsystems', [])
+                    if _mr_routed:
+                        self._cached_memory_routing_trust_deficit = (
+                            len(_mr_trust_gated) / max(len(_mr_routed), 1)
+                        )
+                    else:
+                        self._cached_memory_routing_trust_deficit = 0.0
             except Exception as _routing_err:
                 logger.debug(
                     "Memory routing failed (non-fatal): %s", _routing_err,
                 )
+                self._cached_memory_routing_trust_deficit = 0.0
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
@@ -31059,9 +31080,21 @@ class AEONDeltaV3(nn.Module):
                         - float(diversity_results.get('diversity', torch.tensor(1.0)).mean().item())
                     ) / max(self.config.diversity_collapse_threshold, 1e-6))),
                     # Memory trust deficit — inverse of the trust scorer's
-                    # mean trust score, signalling unreliable external data.
-                    memory_trust_deficit=max(0.0, 1.0 - getattr(
-                        self, '_last_trust_score', 1.0)),
+                    # mean trust score, blended with memory routing trust-
+                    # gating deficit so that subsystems attenuated during
+                    # routing also influence the meta-cognitive cycle.
+                    # This closes the gap where memory routing gated low-
+                    # trust subsystems but that signal never reached the
+                    # UCC evaluation.
+                    memory_trust_deficit=max(
+                        0.0,
+                        1.0 - getattr(self, '_last_trust_score', 1.0),
+                        getattr(
+                            self,
+                            '_cached_memory_routing_trust_deficit',
+                            0.0,
+                        ),
+                    ),
                     # Formal convergence certificate from verify_convergence()
                     # so the UCC can check Banach fixed-point conditions and
                     # trigger re-reasoning when contraction is not satisfied.
@@ -32047,6 +32080,42 @@ class AEONDeltaV3(nn.Module):
                 "extra_iterations",
                 self.config.metacognitive_extra_iterations,
             )
+            # 8f-ucc-cg. Correction-guidance-driven strategy adaptation —
+            # when the UCC's correction_guidance identifies a specific
+            # target module and reason, feed that insight into the error
+            # evolution's root-cause lookup so the deeper re-reasoning
+            # targets the identified problem area.  This closes the gap
+            # where UCC computed detailed correction guidance (target
+            # module, weakest pair, most uncertain module) but the rerun
+            # path only consumed generic trigger_detail, discarding the
+            # synthesized recommendation.
+            _ucc_correction = unified_cycle_results.get(
+                "correction_guidance", {},
+            )
+            _ucc_correction_target = _ucc_correction.get(
+                "target_module", None,
+            )
+            if _ucc_correction_target is not None:
+                # Update the cached correction target so post-pipeline
+                # feedback bus conditioning can sustain pressure on the
+                # identified problem module across forward passes.
+                self._cached_correction_target = _ucc_correction_target
+                if self.error_evolution is not None:
+                    _targeted_rc = self.error_evolution.get_root_causes(
+                        _ucc_correction_target,
+                    )
+                    if _targeted_rc.get("root_causes"):
+                        _ucc_extra_iters = _ucc_extra_iters + 1
+                self.audit_log.record(
+                    "unified_cognitive_cycle",
+                    "correction_guidance_applied", {
+                        "target_module": _ucc_correction_target,
+                        "reason": _ucc_correction.get("reason", "none"),
+                        "weakest_pair": _ucc_correction.get(
+                            "weakest_pair", None,
+                        ),
+                    },
+                )
             # 8f-ucc-ac-strategy. Auto-critic quality → deeper loop
             # strategy adaptation — when the auto-critic's quality
             # assessment is low (< 0.5), tighten the convergence
@@ -33359,6 +33428,35 @@ class AEONDeltaV3(nn.Module):
             validated=_or_result['is_reliable'],
         )
 
+        # 8i-oq-gate. Attenuate unreliable outputs — when the composite
+        # reliability falls below the gate threshold, scale z_out by the
+        # reliability score so that downstream consumers receive a
+        # proportionally dampened signal.  This closes the architectural
+        # gap where OutputReliabilityGate computed ``is_reliable`` but
+        # never enforced it: outputs passed through unchanged regardless
+        # of reliability, violating the requirement that each component
+        # verifies and reinforces the others.  The attenuation is soft
+        # (multiplicative scaling) rather than hard (zeroing) to preserve
+        # gradient flow during training while still signalling reduced
+        # confidence to downstream modules.
+        if not _or_result['is_reliable'] and z_out is not None:
+            _reliability_scale = max(0.1, _current_output_reliability)
+            z_out = z_out * _reliability_scale
+            self.provenance_tracker.record_before(
+                "output_reliability_attenuation", z_out / _reliability_scale,
+            )
+            self.provenance_tracker.record_after(
+                "output_reliability_attenuation", z_out,
+            )
+            self.audit_log.record(
+                "output_reliability_gate", "output_attenuated", {
+                    "composite_reliability": _current_output_reliability,
+                    "reliability_scale": _reliability_scale,
+                    "weakest_factor": _weakest_factor,
+                    "is_reliable": False,
+                },
+            )
+
         # 8i-oq-trace. Record output reliability assessment in the causal
         # trace so that downstream root-cause analysis can trace reliability
         # decisions back to their contributing factors.  Without this, the
@@ -33605,6 +33703,7 @@ class AEONDeltaV3(nn.Module):
             # appropriate for a safety-first architecture where any
             # individual failure mode should degrade the trust signal.
             'output_reliability': _current_output_reliability,
+            'output_is_reliable': _or_result['is_reliable'],
             'output_reliability_factors': _reliability_factors,
             'verification_coverage': _verification_coverage,
             # Pre-computed loss components (avoids second spectral-norm pass)
