@@ -15968,6 +15968,7 @@ class MetaCognitiveRecursionTrigger:
         "auto_critic_safety": "safety_violation",
         "deception_suppressor": "safety_violation",
         "output_reliability": "low_output_reliability",
+        "cycle_consistency": "coherence_deficit",
     }
 
     def adapt_weights_from_provenance(
@@ -19856,6 +19857,11 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "correction_target_pressure", default=0.0,
         )
+        # Cycle consistency pressure — encode-decode fidelity deficit from
+        # the previous pass's CycleConsistencyValidator.
+        self.feedback_bus.register_signal(
+            "cycle_consistency_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -20606,6 +20612,14 @@ class AEONDeltaV3(nn.Module):
         # (perfect quality) so the first pass uses neutral feedback.
         self._cached_output_quality: float = 1.0
 
+        # OutputReliabilityGate weakest factor — caches which reliability
+        # factor was lowest so the feedback bus can condition the next
+        # pass's meta-loop toward the specific quality dimension that
+        # degraded output trust.  Without this, the feedback bus only
+        # sees the composite reliability score but cannot target
+        # corrective reasoning at the root cause of low reliability.
+        self._cached_reliability_weakest_factor: Optional[str] = None
+
         # Recovery health tensor — caches the combined recovery/integrity
         # health tensor from the most recent forward pass so the UCC
         # re-reasoning feedback bus call can pass a properly typed
@@ -20613,6 +20627,12 @@ class AEONDeltaV3(nn.Module):
         # to None (meaning "healthy") which the feedback bus interprets
         # as all-ones health.
         self._cached_recovery_health: Optional[torch.Tensor] = None
+
+        # Cycle consistency score — caches the encode-decode fidelity
+        # score from the most recent forward pass so the feedback bus
+        # can condition the next pass's meta-loop when cycle consistency
+        # is low, closing the decoder→feedback→meta-loop cross-pass loop.
+        self._cached_cycle_consistency_score: float = 1.0
 
         # Coherence-based loss scale — caches a scaling factor derived from
         # the inference coherence deficit so the trainer can read it to
@@ -21483,6 +21503,21 @@ class AEONDeltaV3(nn.Module):
         _mcts_quality = getattr(self, '_cached_mcts_quality', 1.0)
         if _mcts_quality < 1.0:
             extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_quality))
+        # Output reliability weakest factor pressure — when the
+        # OutputReliabilityGate identified a specific factor as the
+        # weakest contributor to output trust, carry a targeted pressure
+        # signal into the feedback bus so the next pass's meta-loop can
+        # condition deeper reasoning toward the specific quality dimension
+        # that degraded reliability (e.g., 'coherence_contribution' or
+        # 'convergence_contribution').  This closes the gap where the
+        # gate's factor decomposition was used for causal tracing but
+        # never fed back into the meta-loop conditioning cycle.
+        _rwf = getattr(self, '_cached_reliability_weakest_factor', None)
+        _roq = getattr(self, '_cached_output_quality', 1.0)
+        if _rwf is not None and _roq < 0.8:
+            extra[f"reliability_weakest:{_rwf}"] = max(
+                0.0, min(1.0, 1.0 - _roq),
+            )
         # Active learning curiosity pressure — when the planner's
         # intrinsic reward is high, signal the meta-loop that the system
         # is in an epistemically uncertain region requiring deeper
@@ -21493,6 +21528,17 @@ class AEONDeltaV3(nn.Module):
         if _al_curiosity > 0.3:
             extra["active_learning_curiosity"] = max(
                 0.0, min(1.0, _al_curiosity),
+            )
+        # Cycle consistency pressure — when the encode-decode fidelity is
+        # low, signal the meta-loop that the decoder is distorting the
+        # reasoning representation.  This closes the cross-pass decoder→
+        # feedback→meta-loop loop: low cycle consistency on pass N
+        # conditions pass N+1's meta-loop to produce more decoder-robust
+        # states, complementing the within-pass uncertainty escalation.
+        _cc_score = getattr(self, '_cached_cycle_consistency_score', 1.0)
+        if _cc_score < 0.8:
+            extra["cycle_consistency_pressure"] = max(
+                0.0, min(1.0, 1.0 - _cc_score),
             )
         # UCC coherence trend EMA — when the UnifiedCognitiveCycle's
         # cross-pass coherence trend indicates systematic architectural
@@ -21682,6 +21728,7 @@ class AEONDeltaV3(nn.Module):
             "ns_consistency_violation": "ns_bridge_confidence",
             "integration_gate_low_confidence": "integration_gate_confidence",
             "provenance_dag_cycle": "dag_acyclicity_pressure",
+            "cycle_consistency_violation": "cycle_consistency_pressure",
             "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
             "uncertainty_auto_critic_convergence_diverging": "lipschitz_pressure",
             "uncertainty_auto_critic_uncertainty": "ucc_coherence_trend",
@@ -32786,6 +32833,7 @@ class AEONDeltaV3(nn.Module):
         _reliability_factors = _or_result['factors']
         _weakest_factor = _or_result['weakest_factor']
         self._cached_output_quality = _current_output_reliability
+        self._cached_reliability_weakest_factor = _weakest_factor
 
         # Provenance tracking for output reliability gate
         self.provenance_tracker.record_before(
@@ -33583,6 +33631,11 @@ class AEONDeltaV3(nn.Module):
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
+        # Cache cycle consistency score for cross-pass feedback bus
+        # conditioning.  Low cycle consistency indicates the decoder
+        # distorts the encoded representation; the next pass's meta-loop
+        # should reason deeper to produce more decoder-robust states.
+        self._cached_cycle_consistency_score = _cycle_consistency
         # Write back uncertainty and uncertainty_sources that may have
         # been escalated by cycle-consistency or re-encode checks.
         outputs['uncertainty'] = uncertainty
@@ -37961,6 +38014,32 @@ class AEONDeltaV3(nn.Module):
         root_cause_traceability['untraced_pipeline_nodes'] = (
             _untraced_pipeline
         )
+
+        # ── 4b. Output reliability feedback coverage ──────────────
+        # Verify that the SubsystemHealthGate and OutputReliabilityGate
+        # are active so that every integration-stage output is gated
+        # based on health indicators and every forward pass produces an
+        # explicit trust signal.  Without these gates, the system
+        # outputs results without quantifying their reliability, violating
+        # the requirement that "each component verifies and reinforces
+        # the others."
+        _health_gate = getattr(self, 'subsystem_health_gate', None)
+        _reliability_gate = getattr(self, 'output_reliability_gate', None)
+        _output_reliability_active = (
+            _health_gate is not None and _reliability_gate is not None
+        )
+        if not _output_reliability_active:
+            _missing_gates = []
+            if _health_gate is None:
+                _missing_gates.append('subsystem_health_gate')
+            if _reliability_gate is None:
+                _missing_gates.append('output_reliability_gate')
+            recommendations.append(
+                f"Enable output reliability gating: "
+                f"{', '.join(_missing_gates)}"
+            )
+        _output_gate_coverage = 1.0 if _output_reliability_active else 0.0
+        mutual_verification['output_gate_coverage'] = _output_gate_coverage
 
         # ── Composite verdict ─────────────────────────────────────
         is_unified = (

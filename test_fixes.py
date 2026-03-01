@@ -59059,7 +59059,7 @@ def test_feedback_bus_registers_new_signals():
     cross_pass_root_pressure, and correction_target_pressure."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
 
     fb = model.feedback_bus
@@ -59091,7 +59091,7 @@ def test_cached_propagated_uncertainties_initialized():
     """AEONDeltaV3 initializes _cached_propagated_uncertainties as empty dict."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
 
     assert hasattr(model, '_cached_propagated_uncertainties'), (
@@ -59106,7 +59106,7 @@ def test_cached_low_quality_subsystems_initialized():
     """AEONDeltaV3 initializes _cached_low_quality_subsystems as empty dict."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
 
     assert hasattr(model, '_cached_low_quality_subsystems'), (
@@ -59121,7 +59121,7 @@ def test_cached_correction_target_initialized():
     """AEONDeltaV3 initializes _cached_correction_target as None."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
 
     assert hasattr(model, '_cached_correction_target'), (
@@ -59135,7 +59135,7 @@ def test_cached_cross_pass_roots_initialized():
     """AEONDeltaV3 initializes _cached_cross_pass_roots as empty list."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
 
     assert hasattr(model, '_cached_cross_pass_roots'), (
@@ -59151,7 +59151,7 @@ def test_build_feedback_includes_low_quality_pressure():
     when _cached_low_quality_subsystems is populated."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
     model._cached_low_quality_subsystems = {"encoder": 0.7, "decoder": 0.5}
 
@@ -59168,7 +59168,7 @@ def test_build_feedback_includes_cross_pass_root_pressure():
     when _cached_cross_pass_roots is populated."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
     model._cached_cross_pass_roots = ["encoder", "meta_loop"]
 
@@ -59185,7 +59185,7 @@ def test_build_feedback_includes_correction_target_pressure():
     when _cached_correction_target is set."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(hidden_dim=32, vocab_size=100, num_heads=2)
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     model = AEONDeltaV3(config)
     model._cached_correction_target = "encoder"
 
@@ -59438,6 +59438,191 @@ def test_fallback_convergence_monitor_secondary_signals():
     )
 
     print("✅ test_fallback_convergence_monitor_secondary_signals PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Architectural Unification — Cross-Pass Feedback Loops, Reliability Factor
+#  Feedback, Cycle Consistency Pressure, Cognitive Unity Gate Coverage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_cached_reliability_weakest_factor_initialized():
+    """AEONDeltaV3 initializes _cached_reliability_weakest_factor as None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_reliability_weakest_factor'), (
+        "Model must have _cached_reliability_weakest_factor attribute"
+    )
+    assert model._cached_reliability_weakest_factor is None
+    print("✅ test_cached_reliability_weakest_factor_initialized PASSED")
+
+
+def test_cached_cycle_consistency_score_initialized():
+    """AEONDeltaV3 initializes _cached_cycle_consistency_score to 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_cached_cycle_consistency_score'), (
+        "Model must have _cached_cycle_consistency_score attribute"
+    )
+    assert model._cached_cycle_consistency_score == 1.0
+    print("✅ test_cached_cycle_consistency_score_initialized PASSED")
+
+
+def test_build_feedback_includes_reliability_weakest_factor():
+    """_build_feedback_extra_signals includes reliability_weakest:* signal
+    when _cached_reliability_weakest_factor is set and quality is low."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model._cached_reliability_weakest_factor = "convergence_contribution"
+    model._cached_output_quality = 0.3  # low reliability
+
+    extra = model._build_feedback_extra_signals()
+    key = "reliability_weakest:convergence_contribution"
+    assert key in extra, (
+        f"{key} should be in feedback signals when reliability is low"
+    )
+    assert extra[key] > 0.0, "Pressure should be > 0 for low reliability"
+    assert extra[key] <= 1.0, "Pressure should be <= 1.0"
+    print("✅ test_build_feedback_includes_reliability_weakest_factor PASSED")
+
+
+def test_build_feedback_excludes_reliability_weakest_when_healthy():
+    """_build_feedback_extra_signals omits reliability_weakest:* signal
+    when output quality is healthy (>= 0.8)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model._cached_reliability_weakest_factor = "convergence_contribution"
+    model._cached_output_quality = 0.9  # healthy reliability
+
+    extra = model._build_feedback_extra_signals()
+    reliability_keys = [k for k in extra if k.startswith("reliability_weakest:")]
+    assert len(reliability_keys) == 0, (
+        "No reliability_weakest signals should appear when quality is healthy"
+    )
+    print("✅ test_build_feedback_excludes_reliability_weakest_when_healthy PASSED")
+
+
+def test_build_feedback_includes_cycle_consistency_pressure():
+    """_build_feedback_extra_signals includes cycle_consistency_pressure
+    when _cached_cycle_consistency_score is low."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model._cached_cycle_consistency_score = 0.4  # low cycle consistency
+
+    extra = model._build_feedback_extra_signals()
+    assert "cycle_consistency_pressure" in extra, (
+        "cycle_consistency_pressure should be in feedback signals when "
+        "cycle consistency is low"
+    )
+    assert extra["cycle_consistency_pressure"] > 0.0
+    assert extra["cycle_consistency_pressure"] <= 1.0
+    # With score=0.4, pressure should be 1.0 - 0.4 = 0.6
+    assert abs(extra["cycle_consistency_pressure"] - 0.6) < 0.01
+    print("✅ test_build_feedback_includes_cycle_consistency_pressure PASSED")
+
+
+def test_build_feedback_excludes_cycle_consistency_when_healthy():
+    """_build_feedback_extra_signals omits cycle_consistency_pressure
+    when _cached_cycle_consistency_score is healthy (>= 0.8)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model._cached_cycle_consistency_score = 0.95  # healthy
+
+    extra = model._build_feedback_extra_signals()
+    assert "cycle_consistency_pressure" not in extra, (
+        "cycle_consistency_pressure should not appear when consistency is healthy"
+    )
+    print("✅ test_build_feedback_excludes_cycle_consistency_when_healthy PASSED")
+
+
+def test_cycle_consistency_pressure_registered_in_feedback_bus():
+    """CognitiveFeedbackBus has cycle_consistency_pressure signal registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'feedback_bus'), "Model must have feedback_bus"
+    assert "cycle_consistency_pressure" in model.feedback_bus._extra_signals, (
+        "cycle_consistency_pressure must be registered in the feedback bus"
+    )
+    print("✅ test_cycle_consistency_pressure_registered_in_feedback_bus PASSED")
+
+
+def test_cycle_consistency_violation_in_error_class_to_feedback():
+    """cycle_consistency_violation maps to cycle_consistency_pressure in
+    the error-evolution-to-feedback-bus bridge."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Access the _ERROR_CLASS_TO_FEEDBACK_SIGNAL mapping by inspecting
+    # the source of _build_feedback_extra_signals.
+    import inspect
+    source = inspect.getsource(model._build_feedback_extra_signals)
+    assert '"cycle_consistency_violation"' in source, (
+        "cycle_consistency_violation must be in "
+        "_ERROR_CLASS_TO_FEEDBACK_SIGNAL mapping"
+    )
+    assert '"cycle_consistency_pressure"' in source, (
+        "cycle_consistency_violation must map to cycle_consistency_pressure"
+    )
+    print("✅ test_cycle_consistency_violation_in_error_class_to_feedback PASSED")
+
+
+def test_cycle_consistency_in_provenance_to_signal():
+    """cycle_consistency is in MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL
+    assert "cycle_consistency" in mapping, (
+        "cycle_consistency must be in _PROVENANCE_TO_SIGNAL mapping"
+    )
+    assert mapping["cycle_consistency"] == "coherence_deficit", (
+        "cycle_consistency should map to coherence_deficit signal"
+    )
+    print("✅ test_cycle_consistency_in_provenance_to_signal PASSED")
+
+
+def test_verify_cognitive_unity_output_gate_coverage():
+    """verify_cognitive_unity reports output_gate_coverage in
+    mutual_verification results."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, vocab_size=100, num_heads=2,
+        enable_metacognitive_recursion=True,
+        enable_error_evolution=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    mv = unity['mutual_verification']
+    assert 'output_gate_coverage' in mv, (
+        "mutual_verification must include output_gate_coverage"
+    )
+    # Both SubsystemHealthGate and OutputReliabilityGate are always
+    # initialized, so coverage should be 1.0.
+    assert mv['output_gate_coverage'] == 1.0, (
+        "output_gate_coverage should be 1.0 when both gates are active"
+    )
+    print("✅ test_verify_cognitive_unity_output_gate_coverage PASSED")
 
 
 def run_all_tests():
@@ -62064,6 +62249,19 @@ def run_all_tests():
     test_v4_tensor_guard_integration()
     test_fallback_provenance_validate_dag_acyclic()
     test_fallback_convergence_monitor_secondary_signals()
+
+    # Architectural Unification — Cross-Pass Feedback Loops, Reliability
+    # Factor Feedback, Cycle Consistency Pressure, Cognitive Unity Gate
+    test_cached_reliability_weakest_factor_initialized()
+    test_cached_cycle_consistency_score_initialized()
+    test_build_feedback_includes_reliability_weakest_factor()
+    test_build_feedback_excludes_reliability_weakest_when_healthy()
+    test_build_feedback_includes_cycle_consistency_pressure()
+    test_build_feedback_excludes_cycle_consistency_when_healthy()
+    test_cycle_consistency_pressure_registered_in_feedback_bus()
+    test_cycle_consistency_violation_in_error_class_to_feedback()
+    test_cycle_consistency_in_provenance_to_signal()
+    test_verify_cognitive_unity_output_gate_coverage()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
