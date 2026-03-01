@@ -22573,6 +22573,18 @@ class AEONDeltaV3(nn.Module):
             extra["cycle_consistency_pressure"] = max(
                 0.0, min(1.0, 1.0 - _cc_score),
             )
+        # Decoder quality pressure — when the decoder introduced
+        # significant distortion (high provenance L2 delta) on the
+        # previous pass, signal the meta-loop to produce outputs that
+        # are more robust to decoder transformation.  This closes the
+        # cross-pass decoder → feedback → meta-loop loop for provenance-
+        # measured decoder distortion, complementing cycle consistency
+        # which measures encode-decode round-trip fidelity.
+        _dq_score = getattr(self, '_cached_decoder_quality', 1.0)
+        if _dq_score < 0.8:
+            extra["decoder_quality_pressure"] = max(
+                0.0, min(1.0, 1.0 - _dq_score),
+            )
         # Counterfactual divergence pressure — when the previous pass's
         # CounterfactualVerificationGate detected that the unified
         # simulator's causal prediction diverged from the actual
@@ -26570,6 +26582,17 @@ class AEONDeltaV3(nn.Module):
                     "complexity_score": _complexity_score_val,
                 },
             )
+        # Register complexity-gated skip in coherence registry with reduced
+        # quality so the UCC distinguishes intentional skips (low complexity)
+        # from validation failures.  Without this, skipped subsystems
+        # registered as validated=True even though they never ran, making
+        # the coherence assessment blind to subsystem coverage gaps caused
+        # by complexity gating.
+        if _world_model_should_skip:
+            self.coherence_registry.register_output(
+                "world_model", validated=True,
+                quality=max(0.3, _complexity_score_val or 0.5),
+            )
         if self.world_model is not None and not fast and not _world_model_should_skip:
             try:
                 world_model_results = self.world_model(
@@ -27020,6 +27043,11 @@ class AEONDeltaV3(nn.Module):
                     "planning": planning,
                     "complexity_score": _complexity_score_val,
                 },
+            )
+        if _mcts_should_skip:
+            self.coherence_registry.register_output(
+                "mcts_planning", validated=True,
+                quality=max(0.3, _complexity_score_val or 0.5),
             )
         
         # 5c. Hierarchical memory — retrieve then store
@@ -27837,6 +27865,11 @@ class AEONDeltaV3(nn.Module):
                     "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
+            )
+        if _causal_world_should_skip:
+            self.coherence_registry.register_output(
+                "causal_world_model", validated=True,
+                quality=max(0.3, _complexity_score_val or 0.5),
             )
         if self.causal_world_model is not None and not fast and not _causal_world_should_skip:
             self.provenance_tracker.record_before("causal_world_model", C_star)
@@ -29093,6 +29126,11 @@ class AEONDeltaV3(nn.Module):
                     "gate_index": 3,
                     "complexity_score": _complexity_score_val,
                 },
+            )
+        if _unified_sim_should_skip:
+            self.coherence_registry.register_output(
+                "unified_simulator", validated=True,
+                quality=max(0.3, _complexity_score_val or 0.5),
             )
         if self.unified_simulator is not None and not fast and not _unified_sim_should_skip and "causal_model" not in _circuit_breaker_tripped:
             self.provenance_tracker.record_before("unified_simulator", C_star)
@@ -30633,6 +30671,12 @@ class AEONDeltaV3(nn.Module):
                 # evolution so that low-quality outputs feed back into
                 # the evolutionary learning loop, enabling the system
                 # to adapt its recovery strategies over time.
+                # Include iteration count and revision delta so error
+                # evolution can learn which revision strategies require
+                # more iterations and whether revisions actually improve
+                # output quality, closing the gap where revision effort
+                # was logged in the audit trail but never entered the
+                # evolutionary learning loop.
                 if (self.error_evolution is not None
                         and _auto_critic_final_score < 0.5):
                     self.error_evolution.record_episode(
@@ -30642,6 +30686,9 @@ class AEONDeltaV3(nn.Module):
                         metadata=self._provenance_enriched_metadata({
                             "final_score": _auto_critic_final_score,
                             "trigger": "unconditional",
+                            "iterations": _uc_critic.get("iterations", 0),
+                            "revision_delta": _uc_revision_delta,
+                            "revision_improved": _any_auto_critic_revised,
                         }),
                     )
             except Exception as _uc_err:
@@ -35103,6 +35150,18 @@ class AEONDeltaV3(nn.Module):
         # distorts the encoded representation; the next pass's meta-loop
         # should reason deeper to produce more decoder-robust states.
         self._cached_cycle_consistency_score = _cycle_consistency
+        # Cache decoder quality for cross-pass feedback bus conditioning.
+        # When the decoder introduces significant distortion (high L2
+        # delta), the next pass's meta-loop should produce more decoder-
+        # robust states.  This closes the gap where decoder quality was
+        # passed to the UCC within the same pass but never carried across
+        # passes via the feedback bus, preventing the meta-loop from
+        # adapting to persistent decoder distortion patterns.
+        _decoder_contribution = (
+            self.provenance_tracker.compute_attribution()
+            .get('contributions', {}).get('decoder', 0.0)
+        )
+        self._cached_decoder_quality = max(0.0, 1.0 - _decoder_contribution)
         # Write back uncertainty and uncertainty_sources that may have
         # been escalated by cycle-consistency or re-encode checks.
         outputs['uncertainty'] = uncertainty
@@ -39786,6 +39845,46 @@ class AEONDeltaV3(nn.Module):
             )
 
         # ── Composite verdict ─────────────────────────────────────
+        # ── 8. Error evolution effectiveness ───────────────────────
+        # Verify that recorded error-recovery strategies actually reduce
+        # recurrence of the same error class.  This closes the gap where
+        # error_evolution accumulated recovery episodes but never
+        # validated whether learned strategies were effective, meaning
+        # the system could perpetually recommend the same failing
+        # strategy without self-correction.
+        error_evolution_effectiveness: Dict[str, Any] = {}
+        _ee = getattr(self, 'error_evolution', None)
+        if _ee is not None:
+            _ee_summary = _ee.get_error_summary()
+            _ee_total = _ee_summary.get('total_recorded', 0)
+            _ee_successes = 0
+            _ee_class_count = 0
+            for _cls, _cls_stats in _ee_summary.get('error_classes', {}).items():
+                _ee_class_count += 1
+                _ee_successes += int(
+                    _cls_stats.get('success_rate', 0.0)
+                    * _cls_stats.get('count', 0)
+                )
+            _ee_rate = (
+                _ee_successes / max(_ee_total, 1)
+                if _ee_total > 0 else 1.0
+            )
+            error_evolution_effectiveness = {
+                'total_episodes': _ee_total,
+                'total_successes': _ee_successes,
+                'success_rate': _ee_rate,
+                'error_classes': _ee_class_count,
+                'active': True,
+            }
+            if _ee_total >= 10 and _ee_rate < 0.3:
+                recommendations.append(
+                    f"Error evolution success rate low "
+                    f"({_ee_rate:.0%} of {_ee_total} episodes) — "
+                    f"recovery strategies may not be effective"
+                )
+        else:
+            error_evolution_effectiveness = {'active': False}
+
         is_unified = (
             _mv_coverage >= 0.9
             and _um_coverage >= 1.0
@@ -39804,6 +39903,7 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_metacognition': uncertainty_metacognition,
             'root_cause_traceability': root_cause_traceability,
             'feedback_bus_completeness': feedback_bus_completeness,
+            'error_evolution_effectiveness': error_evolution_effectiveness,
             'module_health': module_health,
             'weakest_module': _weakest_module,
             'recommendations': recommendations,

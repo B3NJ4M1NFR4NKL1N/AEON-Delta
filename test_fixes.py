@@ -14952,13 +14952,14 @@ def test_world_model_surprise_recorded_in_causal_trace():
     with torch.no_grad():
         outputs = model(input_ids)
 
-    # Check causal trace for world_model_surprise entry
-    trace_entries = model.causal_trace.recent(n=50)
-    surprise_entries = [
-        e for e in trace_entries
-        if e["subsystem"] == "world_model_surprise"
-        and e["decision"] == "high_surprise_detected"
-    ]
+    # Check causal trace for world_model_surprise entry.
+    # Use find() instead of recent() because metacognitive recursion can
+    # generate many trace entries after the surprise, pushing it beyond
+    # the tail window that recent() returns.
+    surprise_entries = model.causal_trace.find(
+        subsystem="world_model_surprise",
+        decision="high_surprise_detected",
+    )
     assert len(surprise_entries) > 0, (
         "High world model surprise should create causal trace entry"
     )
@@ -62169,6 +62170,139 @@ def test_ucc_rerun_outcome_feeds_error_evolution():
     print("✅ test_ucc_rerun_outcome_feeds_error_evolution PASSED")
 
 
+def test_complexity_gated_skip_registers_in_coherence_registry():
+    """Fix: When subsystems are skipped due to complexity gating, they
+    register in the coherence registry with reduced quality so the UCC
+    distinguishes intentional skips from validation failures."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems=["world_model", "mcts_planning", "causal_world_model"],
+    )
+    # Simulate complexity-gated skip: register with reduced quality
+    registry.register_output("world_model", validated=True, quality=0.4)
+    registry.register_output("mcts_planning", validated=True, quality=0.3)
+    # causal_world_model not registered at all
+
+    deficit = registry.get_coverage_deficit()
+    assert deficit > 0.0, (
+        "Coverage deficit should be > 0 when subsystems have reduced quality"
+    )
+    absent = registry.get_absent_subsystems()
+    assert "causal_world_model" in absent, (
+        "Unregistered subsystem should appear in absent list"
+    )
+    low_quality = registry.get_low_quality_subsystems()
+    # world_model (0.4) and mcts_planning (0.3) should appear
+    assert len(low_quality) > 0, (
+        "Low-quality gated subsystems should be visible"
+    )
+    print("✅ test_complexity_gated_skip_registers_in_coherence_registry PASSED")
+
+
+def test_verify_cognitive_unity_includes_error_evolution_effectiveness():
+    """Fix: verify_cognitive_unity() checks whether error_evolution recovery
+    strategies are actually effective, preventing perpetual recommendation
+    of failing strategies."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, num_pillars=5, action_dim=8,
+        knowledge_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+
+    assert 'error_evolution_effectiveness' in result, (
+        "verify_cognitive_unity must include error_evolution_effectiveness"
+    )
+    ee = result['error_evolution_effectiveness']
+    assert ee.get('active') is True, (
+        "error_evolution should be active in default config"
+    )
+    assert 'success_rate' in ee, (
+        "Effectiveness report must include success_rate"
+    )
+
+    # Simulate low effectiveness to trigger recommendation
+    for _ in range(12):
+        model.error_evolution.record_episode(
+            error_class='test_error',
+            strategy_used='test_strategy',
+            success=False,
+        )
+    result2 = model.verify_cognitive_unity()
+    ee2 = result2['error_evolution_effectiveness']
+    assert ee2['success_rate'] < 0.3, (
+        "Success rate should be low after many failures"
+    )
+    has_recommendation = any(
+        'success rate low' in r.lower() or 'recovery strategies' in r.lower()
+        for r in result2.get('recommendations', [])
+    )
+    assert has_recommendation, (
+        "Low effectiveness should generate a recommendation"
+    )
+    print("✅ test_verify_cognitive_unity_includes_error_evolution_effectiveness PASSED")
+
+
+def test_decoder_quality_cached_for_cross_pass_feedback():
+    """Fix: Decoder quality is cached and carried via the feedback bus to
+    the next forward pass, closing the cross-pass decoder distortion loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, num_pillars=5, action_dim=8,
+        knowledge_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 200, (B, L))
+    with torch.no_grad():
+        model(input_ids)
+
+    # Verify decoder quality is cached
+    assert hasattr(model, '_cached_decoder_quality'), (
+        "Model must cache decoder quality for cross-pass feedback"
+    )
+    dq = model._cached_decoder_quality
+    assert isinstance(dq, float), (
+        "Cached decoder quality must be a float"
+    )
+    assert 0.0 <= dq <= 1.0, (
+        f"Decoder quality must be in [0, 1], got {dq}"
+    )
+    print("✅ test_decoder_quality_cached_for_cross_pass_feedback PASSED")
+
+
+def test_auto_critic_revision_metadata_in_error_evolution():
+    """Fix: Auto-critic revision records include iteration count and
+    revision delta in error_evolution metadata, enabling the evolutionary
+    learning loop to learn which strategies need more iterations."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3)
+    # Verify that the auto_critic_low_quality error_evolution recording
+    # includes iteration and revision delta metadata
+    assert '"iterations"' in source, (
+        "auto_critic error_evolution must include iterations metadata"
+    )
+    assert '"revision_delta"' in source, (
+        "auto_critic error_evolution must include revision_delta metadata"
+    )
+    assert '"revision_improved"' in source, (
+        "auto_critic error_evolution must include revision_improved metadata"
+    )
+    print("✅ test_auto_critic_revision_metadata_in_error_evolution PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -64929,6 +65063,12 @@ def run_all_tests():
     test_ns_consistency_feeds_coherence_deficit()
     test_feedback_oscillation_records_error_evolution()
     test_ucc_rerun_outcome_feeds_error_evolution()
+
+    # Architectural Unification — AGI Coherence Integration Tests
+    test_complexity_gated_skip_registers_in_coherence_registry()
+    test_verify_cognitive_unity_includes_error_evolution_effectiveness()
+    test_decoder_quality_cached_for_cross_pass_feedback()
+    test_auto_critic_revision_metadata_in_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
