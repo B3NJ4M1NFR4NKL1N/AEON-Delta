@@ -62788,6 +62788,187 @@ def test_subsystem_health_gate_provenance_registration():
     print("✅ test_subsystem_health_gate_provenance_registration PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Feedback Loop Closure Tests
+# ============================================================================
+
+def test_feedback_bus_compute_correction_empty():
+    """compute_correction() returns empty dict before any forward pass."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    result = fb.compute_correction()
+    assert result == {}, f"Expected empty dict, got {result}"
+    print("✅ test_feedback_bus_compute_correction_empty PASSED")
+
+
+def test_feedback_bus_compute_correction_worsening():
+    """compute_correction() detects worsening trends for uncertainty."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    # First pass: low uncertainty
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.1)
+    # Second pass: high uncertainty (worsening)
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.8)
+    corrections = fb.compute_correction()
+    assert 'uncertainty' in corrections, "Missing uncertainty channel"
+    assert corrections['uncertainty'] > 0, (
+        f"Expected positive uncertainty correction for worsening trend, "
+        f"got {corrections['uncertainty']}"
+    )
+    print("✅ test_feedback_bus_compute_correction_worsening PASSED")
+
+
+def test_feedback_bus_compute_correction_improving():
+    """compute_correction() returns low pressure for improving trends."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    # First pass: high uncertainty
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.8)
+    # Second pass: low uncertainty (improving)
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.1)
+    corrections = fb.compute_correction()
+    assert 'uncertainty' in corrections, "Missing uncertainty channel"
+    # Improving uncertainty → low or zero pressure
+    assert corrections['uncertainty'] == 0.0, (
+        f"Expected zero uncertainty correction for improving trend, "
+        f"got {corrections['uncertainty']}"
+    )
+    print("✅ test_feedback_bus_compute_correction_improving PASSED")
+
+
+def test_feedback_bus_compute_correction_convergence_falling():
+    """compute_correction() detects falling convergence quality."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    fb(batch_size=2, device=torch.device('cpu'), convergence_quality=0.9)
+    fb(batch_size=2, device=torch.device('cpu'), convergence_quality=0.3)
+    corrections = fb.compute_correction()
+    assert corrections.get('convergence', 0.0) > 0, (
+        "Falling convergence should produce positive correction pressure"
+    )
+    print("✅ test_feedback_bus_compute_correction_convergence_falling PASSED")
+
+
+def test_feedback_bus_compute_correction_all_channels():
+    """compute_correction() returns exactly 12 core channels."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    fb(batch_size=2, device=torch.device('cpu'))
+    fb(batch_size=2, device=torch.device('cpu'))
+    corrections = fb.compute_correction()
+    assert len(corrections) == 12, (
+        f"Expected 12 channels, got {len(corrections)}: {list(corrections.keys())}"
+    )
+    for v in corrections.values():
+        assert 0.0 <= v <= 1.0, f"Correction pressure must be in [0, 1], got {v}"
+    print("✅ test_feedback_bus_compute_correction_all_channels PASSED")
+
+
+def test_feedback_bus_compute_correction_oscillation_boost():
+    """compute_correction() adds oscillation boost for unstable channels."""
+    from aeon_core import CognitiveFeedbackBus
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    # Create oscillation by alternating uncertainty
+    for i in range(6):
+        unc = 0.9 if i % 2 == 0 else 0.1
+        fb(batch_size=2, device=torch.device('cpu'), uncertainty=unc)
+    corrections = fb.compute_correction()
+    # Even though the trend averages out, oscillation adds a boost
+    assert corrections.get('uncertainty', 0.0) > 0, (
+        "Oscillating uncertainty should produce positive correction pressure"
+    )
+    print("✅ test_feedback_bus_compute_correction_oscillation_boost PASSED")
+
+
+def test_oscillation_uncertainty_escalation_in_reasoning_core():
+    """Oscillation score escalates uncertainty in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'feedback_oscillation' in src, (
+        "_reasoning_core_impl must reference feedback_oscillation"
+    )
+    assert 'get_oscillation_score' in src, (
+        "_reasoning_core_impl must call get_oscillation_score"
+    )
+    assert '_OSCILLATION_UNCERTAINTY_SCALE' in src, (
+        "_reasoning_core_impl must define _OSCILLATION_UNCERTAINTY_SCALE"
+    )
+    assert 'uncertainty_sources["feedback_oscillation"]' in src, (
+        "Oscillation boost must be recorded in uncertainty_sources"
+    )
+    print("✅ test_oscillation_uncertainty_escalation_in_reasoning_core PASSED")
+
+
+def test_training_correction_guidance_phase_a():
+    """Phase A trainer applies correction_guidance from UCC results."""
+    import inspect
+    from ae_train import SafeThoughtAETrainerV4
+    src = inspect.getsource(SafeThoughtAETrainerV4)
+    assert 'correction_guidance' in src, (
+        "SafeThoughtAETrainerV4 must reference correction_guidance"
+    )
+    assert 'correction_target' in src, (
+        "SafeThoughtAETrainerV4 must extract correction target"
+    )
+    assert 'recommended_strategy' in src, (
+        "SafeThoughtAETrainerV4 must check recommended_strategy"
+    )
+    print("✅ test_training_correction_guidance_phase_a PASSED")
+
+
+def test_training_correction_guidance_phase_b():
+    """Phase B RSSM trainer applies correction_guidance from UCC results."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+    src = inspect.getsource(ContextualRSSMTrainer)
+    assert 'correction_guidance' in src, (
+        "ContextualRSSMTrainer must reference correction_guidance"
+    )
+    assert 'correction_target' in src, (
+        "ContextualRSSMTrainer must extract correction target"
+    )
+    print("✅ test_training_correction_guidance_phase_b PASSED")
+
+
+def test_rssm_trainer_memory_validator_wired():
+    """ContextualRSSMTrainer wires MemoryReasoningValidator into UCC."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+    src = inspect.getsource(ContextualRSSMTrainer.__init__)
+    assert 'memory_validator' in src, (
+        "ContextualRSSMTrainer must pass memory_validator to UCC"
+    )
+    assert 'MemoryReasoningValidator' in src, (
+        "ContextualRSSMTrainer must instantiate MemoryReasoningValidator"
+    )
+    print("✅ test_rssm_trainer_memory_validator_wired PASSED")
+
+
+def test_rssm_trainer_ucc_receives_memory_signals():
+    """ContextualRSSMTrainer passes memory_signal and converged_state to UCC."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+    src = inspect.getsource(ContextualRSSMTrainer)
+    assert 'memory_signal=self._last_rssm_state' in src, (
+        "RSSM trainer must pass predicted state as memory_signal"
+    )
+    assert 'converged_state=self._last_vq_state' in src, (
+        "RSSM trainer must pass actual target as converged_state"
+    )
+    print("✅ test_rssm_trainer_ucc_receives_memory_signals PASSED")
+
+
+def test_feedback_bus_channel_names_match_forward():
+    """_CHANNEL_NAMES list matches the 12 core signal channels."""
+    from aeon_core import CognitiveFeedbackBus
+    assert len(CognitiveFeedbackBus._CHANNEL_NAMES) == CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS, (
+        f"Expected {CognitiveFeedbackBus.NUM_SIGNAL_CHANNELS} names, "
+        f"got {len(CognitiveFeedbackBus._CHANNEL_NAMES)}"
+    )
+    print("✅ test_feedback_bus_channel_names_match_forward PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -65577,6 +65758,20 @@ def run_all_tests():
     test_subsystem_health_gate_in_node_attr_map()
     test_subsystem_health_gate_pipeline_dependencies()
     test_subsystem_health_gate_provenance_registration()
+
+    # Architectural Unification — Feedback Loop Closure Tests
+    test_feedback_bus_compute_correction_empty()
+    test_feedback_bus_compute_correction_worsening()
+    test_feedback_bus_compute_correction_improving()
+    test_feedback_bus_compute_correction_convergence_falling()
+    test_feedback_bus_compute_correction_all_channels()
+    test_feedback_bus_compute_correction_oscillation_boost()
+    test_oscillation_uncertainty_escalation_in_reasoning_core()
+    test_training_correction_guidance_phase_a()
+    test_training_correction_guidance_phase_b()
+    test_rssm_trainer_memory_validator_wired()
+    test_rssm_trainer_ucc_receives_memory_signals()
+    test_feedback_bus_channel_names_match_forward()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
