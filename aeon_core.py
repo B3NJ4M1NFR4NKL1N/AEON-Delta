@@ -17922,6 +17922,11 @@ class SubsystemCoherenceRegistry:
         "deeper_meta_loop", "feedback_bus",
         "output_reliability_gate", "ucc_rerun_meta_loop",
         "cycle_consistency",
+        # The subsystem health gate attenuates integration output
+        # based on coherence health and has both register_output()
+        # calls and pipeline dependency edges — its absence must be
+        # visible to coverage deficit tracking.
+        "subsystem_health_gate",
     })
 
     def __init__(
@@ -20791,6 +20796,29 @@ class AEONDeltaV3(nn.Module):
         ("integration", "subsystem_health_gate"),
         ("subsystem_health_gate", "metacognitive_trigger"),
         ("subsystem_health_gate", "error_evolution"),
+        # ── Sink-node gap closure ──────────────────────────────────
+        # The following edges close provenance-DAG gaps where three
+        # nodes (temporal_knowledge_graph, ucc_rerun_meta_loop,
+        # feedback_bus) were sinks with no downstream connections,
+        # making their outputs untraceable to the final decoder
+        # output.  Adding these edges ensures trace_root_cause()
+        # can attribute downstream quality changes to these modules.
+        #
+        # temporal_knowledge_graph retrieves and blends knowledge
+        # facts into C_star, which flows into hierarchical_vae and
+        # causal_context.
+        ("temporal_knowledge_graph", "hierarchical_vae"),
+        ("temporal_knowledge_graph", "causal_context"),
+        # ucc_rerun_meta_loop updates z_out when re-reasoning
+        # improves convergence, directly affecting decoder output.
+        ("ucc_rerun_meta_loop", "integration"),
+        ("ucc_rerun_meta_loop", "decoder"),
+        # feedback_bus oscillation score is consumed within the same
+        # pass for uncertainty escalation and feeds into the
+        # metacognitive trigger via uncertainty_sources.  This is an
+        # intra-pass causal edge (unlike the cross-pass feedback_bus
+        # → meta_loop dependency which is intentionally omitted).
+        ("feedback_bus", "metacognitive_trigger"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -32588,6 +32616,19 @@ class AEONDeltaV3(nn.Module):
             if (getattr(self, '_cached_continual_learning_state', None) is not None
                     and self._cached_continual_learning_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["continual_learning"] = self._cached_continual_learning_state
+            # Include feedback bus oscillation as a directional
+            # perturbation so the coherence verifier can detect
+            # signal instability–reasoning divergence.  Without this,
+            # feedback oscillation escalates uncertainty but is
+            # invisible to cross-module coherence verification.
+            _fb_osc_ucc = self.feedback_bus.get_oscillation_score()
+            if _fb_osc_ucc > 0.0:
+                _fb_osc_perturb = min(_fb_osc_ucc, 1.0)
+                _c_rolled_fb = C_star.roll(1, dims=-1)
+                _ucc_states["feedback_bus"] = (
+                    (1.0 - _fb_osc_perturb) * C_star
+                    + _fb_osc_perturb * _c_rolled_fb
+                )
             if len(_ucc_states) >= 2:
                 self.unified_cognitive_cycle.reset()
                 # Track which subsystems were absent from coherence
@@ -32608,7 +32649,7 @@ class AEONDeltaV3(nn.Module):
                     "self_report", "input",
                     "temporal_knowledge_graph", "complexity_estimator",
                     "diversity_analysis", "topology_analysis",
-                    "continual_learning",
+                    "continual_learning", "feedback_bus",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:

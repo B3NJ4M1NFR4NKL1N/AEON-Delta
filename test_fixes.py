@@ -66435,6 +66435,16 @@ def run_all_tests():
     test_training_error_dependency_map_covers_decoder_cv()
     test_post_integration_states_complete_vs_ucc()
 
+    # Provenance DAG sink-node gap closure tests
+    test_pipeline_no_unreachable_decoder_sink_nodes()
+    test_temporal_knowledge_graph_has_downstream_edges()
+    test_ucc_rerun_meta_loop_has_downstream_edges()
+    test_feedback_bus_has_downstream_edge()
+    test_subsystem_health_gate_in_expected_subsystems()
+    test_feedback_bus_in_ucc_expected_subsystems()
+    test_training_error_dependency_map_covers_feedback_oscillation()
+    test_training_error_dependency_map_covers_ucc_rerun()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -67448,6 +67458,164 @@ def test_post_integration_states_complete_vs_ucc():
             f"Post-integration coherence missing: {state_name}"
         )
     print("✅ test_post_integration_states_complete_vs_ucc PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION: Provenance DAG Sink-Node Gap Closure
+# Tests validating that previously-sink nodes (temporal_knowledge_graph,
+# ucc_rerun_meta_loop, feedback_bus) now have downstream edges in the
+# pipeline dependency graph, enabling full root-cause traceability to
+# the decoder output.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_pipeline_no_unreachable_decoder_sink_nodes():
+    """All pipeline dependency nodes that feed into the reasoning core
+    should have a downstream path to 'decoder' in _PIPELINE_DEPENDENCIES,
+    except for nodes that are purely diagnostic sinks (error_evolution)."""
+    import re
+    from collections import defaultdict
+    from aeon_core import AEONDeltaV3
+
+    edges = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    graph_fwd = defaultdict(set)
+    all_nodes = set()
+    for src, dst in edges:
+        all_nodes.add(src)
+        all_nodes.add(dst)
+        graph_fwd[src].add(dst)
+
+    def can_reach(start, target):
+        visited = set()
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            if n == target:
+                return True
+            if n in visited:
+                continue
+            visited.add(n)
+            for neighbor in graph_fwd[n]:
+                if neighbor not in visited:
+                    stack.append(neighbor)
+        return False
+
+    # These three nodes were previously sink nodes (no downstream edges).
+    # They should now have paths to decoder.
+    previously_sink = [
+        "temporal_knowledge_graph",
+        "ucc_rerun_meta_loop",
+        "feedback_bus",
+    ]
+    for node in previously_sink:
+        assert can_reach(node, "decoder"), (
+            f"{node} should have a downstream path to 'decoder' in "
+            f"_PIPELINE_DEPENDENCIES but is still a sink node"
+        )
+    print("✅ test_pipeline_no_unreachable_decoder_sink_nodes PASSED")
+
+
+def test_temporal_knowledge_graph_has_downstream_edges():
+    """temporal_knowledge_graph should feed into hierarchical_vae and
+    causal_context per the data flow in _reasoning_core_impl."""
+    from aeon_core import AEONDeltaV3
+
+    edges = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    tkg_downstream = {dst for src, dst in edges if src == "temporal_knowledge_graph"}
+    assert "hierarchical_vae" in tkg_downstream, (
+        "temporal_knowledge_graph should feed into hierarchical_vae"
+    )
+    assert "causal_context" in tkg_downstream, (
+        "temporal_knowledge_graph should feed into causal_context"
+    )
+    print("✅ test_temporal_knowledge_graph_has_downstream_edges PASSED")
+
+
+def test_ucc_rerun_meta_loop_has_downstream_edges():
+    """ucc_rerun_meta_loop should feed into integration and decoder
+    since re-reasoning updates z_out which flows to the decoder."""
+    from aeon_core import AEONDeltaV3
+
+    edges = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    rerun_downstream = {dst for src, dst in edges if src == "ucc_rerun_meta_loop"}
+    assert "integration" in rerun_downstream, (
+        "ucc_rerun_meta_loop should feed into integration"
+    )
+    assert "decoder" in rerun_downstream, (
+        "ucc_rerun_meta_loop should feed into decoder"
+    )
+    print("✅ test_ucc_rerun_meta_loop_has_downstream_edges PASSED")
+
+
+def test_feedback_bus_has_downstream_edge():
+    """feedback_bus oscillation should feed into metacognitive_trigger
+    since oscillation score triggers uncertainty escalation within
+    the same pass."""
+    from aeon_core import AEONDeltaV3
+
+    edges = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    fb_downstream = {dst for src, dst in edges if src == "feedback_bus"}
+    assert "metacognitive_trigger" in fb_downstream, (
+        "feedback_bus should feed into metacognitive_trigger"
+    )
+    print("✅ test_feedback_bus_has_downstream_edge PASSED")
+
+
+def test_subsystem_health_gate_in_expected_subsystems():
+    """subsystem_health_gate should be in _DEFAULT_EXPECTED since it has
+    register_output() calls and pipeline dependency edges."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    assert "subsystem_health_gate" in SubsystemCoherenceRegistry._DEFAULT_EXPECTED, (
+        "subsystem_health_gate must be in _DEFAULT_EXPECTED"
+    )
+    print("✅ test_subsystem_health_gate_in_expected_subsystems PASSED")
+
+
+def test_feedback_bus_in_ucc_expected_subsystems():
+    """feedback_bus should be included in the UCC expected subsystems
+    set in _reasoning_core_impl to detect oscillation-driven degradation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"feedback_bus"' in src, (
+        "_reasoning_core_impl must reference feedback_bus in UCC states"
+    )
+    assert '_ucc_states["feedback_bus"]' in src, (
+        "feedback_bus must be included in _ucc_states for UCC verification"
+    )
+    print("✅ test_feedback_bus_in_ucc_expected_subsystems PASSED")
+
+
+def test_training_error_dependency_map_covers_feedback_oscillation():
+    """_ERROR_CLASS_TO_DEPENDENCY_MAP should include feedback_oscillation
+    for feedback bus provenance bridging."""
+    from ae_train import _ERROR_CLASS_TO_DEPENDENCY_MAP
+
+    assert "feedback_oscillation" in _ERROR_CLASS_TO_DEPENDENCY_MAP, (
+        "feedback_oscillation must be in _ERROR_CLASS_TO_DEPENDENCY_MAP"
+    )
+    pair = _ERROR_CLASS_TO_DEPENDENCY_MAP["feedback_oscillation"]
+    assert pair == ("feedback_bus", "metacognitive_trigger"), (
+        "feedback_oscillation should map to (feedback_bus, metacognitive_trigger)"
+    )
+    print("✅ test_training_error_dependency_map_covers_feedback_oscillation PASSED")
+
+
+def test_training_error_dependency_map_covers_ucc_rerun():
+    """_ERROR_CLASS_TO_DEPENDENCY_MAP should include ucc_rerun
+    for UCC re-reasoning provenance bridging."""
+    from ae_train import _ERROR_CLASS_TO_DEPENDENCY_MAP
+
+    assert "ucc_rerun" in _ERROR_CLASS_TO_DEPENDENCY_MAP, (
+        "ucc_rerun must be in _ERROR_CLASS_TO_DEPENDENCY_MAP"
+    )
+    pair = _ERROR_CLASS_TO_DEPENDENCY_MAP["ucc_rerun"]
+    assert pair == ("ucc_rerun_meta_loop", "integration"), (
+        "ucc_rerun should map to (ucc_rerun_meta_loop, integration)"
+    )
+    print("✅ test_training_error_dependency_map_covers_ucc_rerun PASSED")
 
 
 if __name__ == "__main__":
