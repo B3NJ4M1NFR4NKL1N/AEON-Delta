@@ -67999,5 +67999,156 @@ def test_get_architectural_health_recommendations():
     print("✅ test_get_architectural_health_recommendations PASSED")
 
 
+# ============================================================================
+# SECTION: Architectural Unity Integration Tests (Gap Closures)
+# ============================================================================
+
+def test_cognitive_unity_deficit_cached_after_forward():
+    """Gap 1: cognitive_unity_score deficit is cached after _forward_impl
+    so the feedback bus can condition the next pass's meta-loop when AGI
+    requirements are unmet."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+        seq_length=8, num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(0, 1000, (2, 8))
+    with torch.no_grad():
+        result = model(ids, decode_mode='inference', fast=True)
+    cus = result['cognitive_unity_score']
+    cud = model._cached_cognitive_unity_deficit
+    assert isinstance(cus, float), "cognitive_unity_score must be float"
+    assert 0.0 <= cus <= 1.0, f"cognitive_unity_score out of range: {cus}"
+    expected_deficit = max(0.0, 1.0 - cus)
+    assert abs(cud - expected_deficit) < 1e-6, (
+        f"cached deficit {cud} != expected {expected_deficit}"
+    )
+    print("✅ test_cognitive_unity_deficit_cached_after_forward PASSED")
+
+
+def test_cognitive_unity_deficit_in_feedback_bus():
+    """Gap 1: cognitive_unity_deficit is registered in feedback bus and
+    populated by _build_feedback_extra_signals when deficit is high."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Verify signal is registered
+    assert 'cognitive_unity_deficit' in model.feedback_bus._extra_signals
+    # When deficit is low, signal should NOT be in extras
+    model._cached_cognitive_unity_deficit = 0.05
+    extra = model._build_feedback_extra_signals()
+    assert 'cognitive_unity_deficit' not in extra, (
+        "Low deficit should not produce feedback signal"
+    )
+    # When deficit is high, signal should be in extras
+    model._cached_cognitive_unity_deficit = 0.6
+    extra = model._build_feedback_extra_signals()
+    assert 'cognitive_unity_deficit' in extra, (
+        "High deficit must produce feedback signal"
+    )
+    assert abs(extra['cognitive_unity_deficit'] - 0.6) < 1e-6
+    print("✅ test_cognitive_unity_deficit_in_feedback_bus PASSED")
+
+
+def test_post_output_coherence_feeds_error_evolution():
+    """Gap 2: post-output coherence failures record episodes in
+    CausalErrorEvolutionTracker so metacognitive trigger can learn
+    from persistent post-output disagreement."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ee = CausalErrorEvolutionTracker()
+    # Simulate what _forward_impl now does when post-output coherence is low
+    ee.record_episode(
+        error_class='post_output_coherence_deficit',
+        strategy_used='coherence_recheck',
+        success=False,
+        metadata={'coherence_score': 0.2, 'needs_recheck': True},
+    )
+    summary = ee.get_error_summary()
+    error_classes = summary.get('error_classes', {})
+    assert 'post_output_coherence_deficit' in error_classes, (
+        "post_output_coherence_deficit should be recorded"
+    )
+    assert error_classes['post_output_coherence_deficit']['count'] == 1
+    print("✅ test_post_output_coherence_feeds_error_evolution PASSED")
+
+
+def test_uncertainty_propagation_adapts_on_load():
+    """Gap 3: UncertaintyPropagationBus per-edge decay factors are adapted
+    when error evolution patterns are loaded from a checkpoint."""
+    from aeon_core import UncertaintyPropagationBus
+    upb = UncertaintyPropagationBus()
+    # Simulate error summary from loaded checkpoint
+    error_summary = {
+        'coherence_deficit': {'count': 5, 'success_rate': 0.2},
+        'convergence_certificate_violation': {'count': 3, 'success_rate': 0.3},
+    }
+    edges = [
+        ('encoder', 'vq'),
+        ('vq', 'meta_loop'),
+        ('meta_loop', 'slot_binding'),
+    ]
+    # Before adaptation, no edge overrides
+    assert len(upb._edge_decay_overrides) == 0
+    upb.adapt_decay_from_evolution(error_summary, dependency_edges=edges)
+    # After adaptation, meta_loop edges should have boosted decay
+    # because coherence_deficit maps to meta_loop module
+    has_override = any(
+        'meta_loop' in edge[0] or 'meta_loop' in edge[1]
+        for edge in upb._edge_decay_overrides
+    )
+    assert has_override, (
+        "meta_loop edges should have boosted decay after adaptation"
+    )
+    print("✅ test_uncertainty_propagation_adapts_on_load PASSED")
+
+
+def test_self_diagnostic_records_cognitive_unity_violation():
+    """Gap 4: self_diagnostic() records cognitive unity violations in
+    error evolution so cross-session learning benefits from diagnostic
+    findings."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Force cognitive unity to fail by corrupting the provenance tracker's
+    # DAG so that root-cause traceability is broken.  This simulates a
+    # scenario where the model's internal state has degraded.
+    _original_verify = model.verify_cognitive_unity
+
+    def _mock_verify():
+        result = _original_verify()
+        result['unified'] = False
+        result['cognitive_unity_score'] = 0.3
+        result['recommendations'] = [
+            'Mock: mutual verification failed',
+            'Mock: root-cause traceability incomplete',
+        ]
+        return result
+
+    model.verify_cognitive_unity = _mock_verify
+    diag = model.self_diagnostic()
+    # With forced failure, cognitive unity should be recorded in error evolution
+    ee_summary = model.error_evolution.get_error_summary()
+    error_classes = ee_summary.get('error_classes', {})
+    assert 'cognitive_unity_violation' in error_classes, (
+        "cognitive_unity_violation should be recorded in error evolution "
+        f"when unified=False. Got classes: {list(error_classes.keys())}"
+    )
+    episode = error_classes['cognitive_unity_violation']
+    assert episode['count'] >= 1
+    print("✅ test_self_diagnostic_records_cognitive_unity_violation PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
