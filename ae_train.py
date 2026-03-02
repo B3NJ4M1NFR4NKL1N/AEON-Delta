@@ -74,6 +74,7 @@ try:
         UnifiedConvergenceArbiter,
         DirectionalUncertaintyTracker,
         MemoryReasoningValidator,
+        SystemIntegrityMonitor,
     )
     AEON_CORE_AVAILABLE = True
 except ImportError:
@@ -2842,6 +2843,16 @@ class SafeThoughtAETrainerV4:
             trigger_threshold=0.5, max_recursions=2,
         )
         self._core_convergence = ConvergenceMonitor(threshold=1e-5)
+        # Wire SystemIntegrityMonitor into Phase A's UCC so that
+        # training-time convergence and coherence health are recorded
+        # and low global health escalates uncertainty, matching the
+        # inference pipeline's integrity-aware UCC wiring.  Without
+        # this, Phase A UCC evaluations cannot detect or react to
+        # system integrity degradation during training.
+        self._integrity_monitor = (
+            SystemIntegrityMonitor(window_size=200)
+            if AEON_CORE_AVAILABLE else None
+        )
         self._unified_cycle = UnifiedCognitiveCycle(
             convergence_monitor=self._core_convergence,
             coherence_verifier=self._coherence_verifier,
@@ -2852,6 +2863,7 @@ class SafeThoughtAETrainerV4:
             convergence_arbiter=UnifiedConvergenceArbiter() if AEON_CORE_AVAILABLE else None,
             uncertainty_tracker=DirectionalUncertaintyTracker() if AEON_CORE_AVAILABLE else None,
             memory_validator=None,  # Training has no memory retrieval
+            integrity_monitor=self._integrity_monitor,
         )
         # Cache the most recent encoder and VQ output tensors so the
         # epoch-end UCC evaluation receives real subsystem states instead
@@ -3381,13 +3393,25 @@ class SafeThoughtAETrainerV4:
                 self.output_dir, 
                 f"checkpoint_epoch_{epoch+1}.pt"
             )
-            torch.save({
+            save_dict = {
                 'epoch': epoch,
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'metrics': metrics,
-                'config': asdict(self.config)
-            }, checkpoint_path)
+                'config': asdict(self.config),
+            }
+            # Include training error patterns accumulated so far so that
+            # checkpoint-based recovery carries the full error history,
+            # enabling bridge_training_errors_to_inference() to seed the
+            # inference pipeline with Phase A failure modes discovered
+            # up to this point.  Without this, only the final save
+            # includes error patterns, losing mid-training diagnostics.
+            _patterns = self.convergence_monitor.export_error_patterns()
+            if _patterns.get('error_classes'):
+                save_dict['training_error_patterns'] = {
+                    'Phase_A': _patterns,
+                }
+            torch.save(save_dict, checkpoint_path)
             logger.info(f"   💾 Checkpoint сохранён: {checkpoint_path}")
         except OSError as e:
             logger.error(f"   ❌ Failed to save checkpoint: {e}")
@@ -3467,6 +3491,14 @@ class ContextualRSSMTrainer:
             trigger_threshold=0.5, max_recursions=2,
         )
         self._core_convergence = ConvergenceMonitor(threshold=1e-5)
+        # Wire SystemIntegrityMonitor into Phase B's UCC so that
+        # RSSM training health is tracked and low global health
+        # escalates uncertainty, matching Phase A and inference
+        # pipeline UCC wiring.
+        self._integrity_monitor = (
+            SystemIntegrityMonitor(window_size=200)
+            if AEON_CORE_AVAILABLE else None
+        )
         self._unified_cycle = UnifiedCognitiveCycle(
             convergence_monitor=self._core_convergence,
             coherence_verifier=self._coherence_verifier,
@@ -3485,6 +3517,7 @@ class ContextualRSSMTrainer:
             memory_validator=MemoryReasoningValidator(
                 consistency_threshold=0.3, staleness_penalty=0.1,
             ) if AEON_CORE_AVAILABLE else None,
+            integrity_monitor=self._integrity_monitor,
         )
         # Cache the most recent VQ and RSSM output tensors so the
         # epoch-end UCC evaluation receives real subsystem states.
