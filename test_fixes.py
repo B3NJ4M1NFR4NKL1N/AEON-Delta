@@ -66396,9 +66396,94 @@ def run_all_tests():
     test_error_evolution_auto_extracts_antecedents()
     test_aeonv3_cross_module_provenance_wiring()
 
+    # Architectural Unification — Training↔Inference Bridge & Integrity Tests
+    test_phase_a_ucc_integrity_monitor_wired()
+    test_phase_b_ucc_integrity_monitor_wired()
+    test_phase_a_checkpoint_includes_error_patterns()
+    test_verify_cognitive_unity_training_bridge()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
+
+
+# ============================================================================
+# Architectural Unification — Training↔Inference Bridge & Integrity Tests
+# ============================================================================
+
+def test_phase_a_ucc_integrity_monitor_wired():
+    """Phase A (SafeThoughtAETrainerV4) wires SystemIntegrityMonitor into UCC."""
+    import inspect
+    from ae_train import SafeThoughtAETrainerV4
+    src = inspect.getsource(SafeThoughtAETrainerV4.__init__)
+    assert 'integrity_monitor' in src, (
+        "SafeThoughtAETrainerV4 must pass integrity_monitor to UCC"
+    )
+    assert 'SystemIntegrityMonitor' in src, (
+        "SafeThoughtAETrainerV4 must instantiate SystemIntegrityMonitor"
+    )
+    print("✅ test_phase_a_ucc_integrity_monitor_wired PASSED")
+
+
+def test_phase_b_ucc_integrity_monitor_wired():
+    """Phase B (ContextualRSSMTrainer) wires SystemIntegrityMonitor into UCC."""
+    import inspect
+    from ae_train import ContextualRSSMTrainer
+    src = inspect.getsource(ContextualRSSMTrainer.__init__)
+    assert 'integrity_monitor' in src, (
+        "ContextualRSSMTrainer must pass integrity_monitor to UCC"
+    )
+    assert 'SystemIntegrityMonitor' in src, (
+        "ContextualRSSMTrainer must instantiate SystemIntegrityMonitor"
+    )
+    print("✅ test_phase_b_ucc_integrity_monitor_wired PASSED")
+
+
+def test_phase_a_checkpoint_includes_error_patterns():
+    """Phase A checkpoints include training_error_patterns for bridge."""
+    import inspect
+    from ae_train import SafeThoughtAETrainerV4
+    src = inspect.getsource(SafeThoughtAETrainerV4._save_checkpoint)
+    assert 'training_error_patterns' in src, (
+        "_save_checkpoint must include training_error_patterns in save_dict"
+    )
+    assert 'export_error_patterns' in src, (
+        "_save_checkpoint must call export_error_patterns on convergence monitor"
+    )
+    print("✅ test_phase_a_checkpoint_includes_error_patterns PASSED")
+
+
+def test_verify_cognitive_unity_training_bridge():
+    """verify_cognitive_unity includes training↔inference bridge readiness check."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    result = model.verify_cognitive_unity()
+
+    # The result must include training_bridge section
+    assert 'training_bridge' in result, (
+        "verify_cognitive_unity must include training_bridge readiness"
+    )
+    bridge = result['training_bridge']
+    assert 'ready' in bridge, "training_bridge must include 'ready' flag"
+    assert 'error_evolution_active' in bridge, (
+        "training_bridge must report error_evolution status"
+    )
+    assert 'sync_method_available' in bridge, (
+        "training_bridge must report sync_from_training availability"
+    )
+    # With error_evolution enabled (default), bridge should be ready
+    assert bridge['ready'] is True, (
+        "training_bridge should be ready when error_evolution is active"
+    )
+    print("✅ test_verify_cognitive_unity_training_bridge PASSED")
 
 
 if __name__ == "__main__":

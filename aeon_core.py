@@ -40555,6 +40555,35 @@ class AEONDeltaV3(nn.Module):
                 f"investigate recurring subsystem failures"
             )
 
+        # ── 9. Training↔inference bridge readiness ──────────────────
+        # Verify that the bidirectional training↔inference bridge
+        # components are wired and functional.  The bridge requires:
+        # (a) an active error_evolution tracker to receive training
+        #     error patterns, and
+        # (b) a sync_from_training method to orchestrate the import.
+        # Without these, training-discovered failure modes cannot
+        # propagate to inference metacognitive triggers, leaving the
+        # inference system blind to recurring training-phase patterns.
+        _bridge_ready = (
+            self.error_evolution is not None
+            and hasattr(self, 'sync_from_training')
+        )
+        if not _bridge_ready:
+            _missing = []
+            if self.error_evolution is None:
+                _missing.append('error_evolution')
+            if not hasattr(self, 'sync_from_training'):
+                _missing.append('sync_from_training')
+            recommendations.append(
+                f"Training↔inference bridge incomplete: "
+                f"missing {', '.join(_missing)}"
+            )
+        training_bridge = {
+            'ready': _bridge_ready,
+            'error_evolution_active': self.error_evolution is not None,
+            'sync_method_available': hasattr(self, 'sync_from_training'),
+        }
+
         is_unified = (
             _mv_coverage >= 0.9
             and _um_coverage >= 1.0
@@ -40564,6 +40593,7 @@ class AEONDeltaV3(nn.Module):
             and _dag_acyclic
             and (_ee_rate >= 0.3 or _ee_total < 10)
             and _cb_healthy
+            and _bridge_ready
         )
 
         if not recommendations:
@@ -40581,6 +40611,7 @@ class AEONDeltaV3(nn.Module):
                 'chronic_subsystems': _cb_chronic_list,
                 'history_length': len(_cb_history),
             },
+            'training_bridge': training_bridge,
             'module_health': module_health,
             'weakest_module': _weakest_module,
             'recommendations': recommendations,
