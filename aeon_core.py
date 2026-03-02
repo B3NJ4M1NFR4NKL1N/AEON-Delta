@@ -6728,6 +6728,11 @@ class CausalProvenanceTracker:
         self._timestamps: Dict[str, float] = {}
         self._order: list = []
         self._causal_trace: Optional['TemporalCausalTraceBuffer'] = None
+        # Per-pass correlation ID linking provenance records to causal
+        # trace entries.  Set on each reset() call so all records within
+        # a forward pass share the same ID, enabling unified cross-
+        # referencing between the provenance DAG and the causal trace.
+        self._pass_id: str = generate_correlation_id()
         # Threshold above which a module's L2 delta is considered
         # significant enough to emit a causal trace entry.  This avoids
         # flooding the trace buffer with trivial identity-like transforms.
@@ -6767,6 +6772,9 @@ class CausalProvenanceTracker:
         blocked on all subsequent passes, preventing feedback-loop edges
         from being re-registered and breaking root-cause traceability
         for those paths.
+
+        Regenerates the per-pass correlation ID so that all subsequent
+        records are linked under a new unique identifier.
         """
         self._before_states.clear()
         self._deltas.clear()
@@ -6775,6 +6783,7 @@ class CausalProvenanceTracker:
         if hasattr(self, '_dependencies'):
             self._dependencies.clear()
         self._removed_cyclic_edges.clear()
+        self._pass_id = generate_correlation_id()
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -6863,6 +6872,7 @@ class CausalProvenanceTracker:
                     metadata={
                         "l2_delta": new_delta,
                         "cumulative_delta": self._deltas[module_name],
+                        "pass_id": self._pass_id,
                     },
                     severity="info" if new_delta < 1.0 else "warning",
                 )
@@ -6926,6 +6936,7 @@ class CausalProvenanceTracker:
             'deltas': deltas,
             'timestamps': dict(self._timestamps),
             'order': list(self._order),
+            'pass_id': self._pass_id,
         }
 
     def get_trace_completeness_ratio(
@@ -27657,6 +27668,7 @@ class AEONDeltaV3(nn.Module):
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
             and not planning  # explicit planning=True overrides complexity gate
+            and not high_uncertainty
         )
         # Validate cached MCTS state coherence — override skip if stale.
         if _mcts_should_skip and not self._validate_cached_state_coherence(
@@ -27670,6 +27682,7 @@ class AEONDeltaV3(nn.Module):
                 metadata={
                     "gate_index": 1,
                     "planning": planning,
+                    "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -28710,6 +28723,24 @@ class AEONDeltaV3(nn.Module):
                 _dag_val = float(causal_model_results['dag_loss'].item())
                 if math.isfinite(_dag_val):
                     self._cached_causal_quality = 1.0 / (1.0 + _dag_val)
+                # Direct DAG-loss → uncertainty escalation.  When DAG loss
+                # exceeds the threshold, the causal structure is severely
+                # acyclic-constraint-violating (near-cyclic or degenerate).
+                # Escalate uncertainty directly so the metacognitive trigger
+                # can activate deeper reasoning, closing the gap where high
+                # DAG loss only penalized convergence quality but never
+                # triggered re-reasoning via the uncertainty channel.
+                _DAG_LOSS_UNC_THRESHOLD = 2.0
+                _DAG_LOSS_UNC_SCALE = 0.2
+                if _dag_val > _DAG_LOSS_UNC_THRESHOLD:
+                    _dag_unc_boost = min(
+                        _DAG_LOSS_UNC_SCALE,
+                        _DAG_LOSS_UNC_SCALE * (_dag_val - _DAG_LOSS_UNC_THRESHOLD)
+                        / max(_DAG_LOSS_UNC_THRESHOLD, 1e-6),
+                    )
+                    uncertainty = min(1.0, uncertainty + _dag_unc_boost)
+                    uncertainty_sources["causal_dag_loss"] = _dag_unc_boost
+                    high_uncertainty = uncertainty > 0.5
                 # Record causal provenance for traceability
                 if self.causal_trace is not None:
                     self.causal_trace.record(
@@ -29328,6 +29359,23 @@ class AEONDeltaV3(nn.Module):
                     self.cross_validator.agreement_threshold
                     * _DAG_CONSENSUS_RECONCILER_TIGHTENING,
                 )
+            # 5d2-0d. Memory-cross-validation-aware reconciliation — when
+            # memory subsystems disagree (detected during step 5c5-cv),
+            # tighten the reconciler's agreement threshold.  Inconsistent
+            # memories imply the reasoning state was conditioned on
+            # conflicting evidence, so factor–causal alignment must be
+            # scrutinized more strictly to avoid propagating the
+            # inconsistency into downstream conclusions.
+            _MEM_CV_RECONCILER_TIGHTENING = 0.9
+            if getattr(self, '_last_memory_cross_validation', None):
+                if self._last_memory_cross_validation.get(
+                    "inconsistent", False
+                ):
+                    self.cross_validator.agreement_threshold = min(
+                        self.cross_validator.agreement_threshold,
+                        self.cross_validator.agreement_threshold
+                        * _MEM_CV_RECONCILER_TIGHTENING,
+                    )
             self.provenance_tracker.record_before("cross_validation", C_star)
             reconciliation_results = self.cross_validator(
                 embedded_factors, _reconcile_second
@@ -29774,6 +29822,7 @@ class AEONDeltaV3(nn.Module):
         _unified_sim_should_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
+            and not high_uncertainty
         )
         # Validate cached unified_sim state coherence — override skip if stale.
         if _unified_sim_should_skip and not self._validate_cached_state_coherence(
@@ -29786,6 +29835,7 @@ class AEONDeltaV3(nn.Module):
                 causal_prerequisites=[input_trace_id],
                 metadata={
                     "gate_index": 3,
+                    "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -35930,8 +35980,37 @@ class AEONDeltaV3(nn.Module):
             .get('contributions', {}).get('decoder', 0.0)
         )
         self._cached_decoder_quality = max(0.0, 1.0 - _decoder_contribution)
+        # Same-pass decoder distortion → uncertainty escalation.  When the
+        # decoder's provenance contribution exceeds the threshold, it has
+        # significantly altered the reasoning representation.  Escalate
+        # uncertainty within the current pass so that downstream consumers
+        # (output reliability gate, UCC coherence verifier) can react to
+        # decoder-stage distortion without waiting for the cross-pass
+        # feedback bus, closing the decode-verify loop within a single
+        # forward pass.
+        _DECODER_DISTORTION_UNC_THRESHOLD = 0.3
+        _DECODER_DISTORTION_UNC_SCALE = 0.15
+        if _decoder_contribution > _DECODER_DISTORTION_UNC_THRESHOLD:
+            _dec_dist_boost = min(
+                _DECODER_DISTORTION_UNC_SCALE,
+                _DECODER_DISTORTION_UNC_SCALE * (
+                    _decoder_contribution - _DECODER_DISTORTION_UNC_THRESHOLD
+                ) / max(1.0 - _DECODER_DISTORTION_UNC_THRESHOLD, 1e-6),
+            )
+            uncertainty = min(1.0, uncertainty + _dec_dist_boost)
+            uncertainty_sources["decoder_distortion"] = _dec_dist_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "decoder", "distortion_uncertainty_escalated",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "decoder_contribution": _decoder_contribution,
+                        "uncertainty_boost": _dec_dist_boost,
+                    },
+                )
         # Write back uncertainty and uncertainty_sources that may have
-        # been escalated by cycle-consistency or re-encode checks.
+        # been escalated by cycle-consistency, re-encode, or decoder
+        # distortion checks.
         outputs['uncertainty'] = uncertainty
         outputs['uncertainty_sources'] = uncertainty_sources
 
