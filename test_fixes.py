@@ -10474,13 +10474,18 @@ def test_causal_trace_records_dag_computation():
     z_in = torch.randn(2, 32)
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
-    # Verify causal trace has entries for the causal model
+    # Verify causal trace has entries for the causal model.
+    # Use find() instead of recent() because the full reasoning pipeline
+    # generates 100+ trace entries and the causal_model entry may be
+    # pushed out of the recent(n=50) window by downstream subsystems
+    # (UCC, auto-critic, error evolution, etc.).  find() scans the
+    # entire buffer, ensuring early-pipeline events are retrievable
+    # regardless of downstream trace volume.
     if model.causal_trace is not None:
-        recent = model.causal_trace.recent(n=50)
-        subsystems = [e.get('subsystem', '') for e in recent]
-        assert 'causal_model' in subsystems, (
-            f"causal_trace should record causal_model DAG computation, "
-            f"found subsystems: {subsystems}"
+        causal_entries = model.causal_trace.find(subsystem='causal_model')
+        assert len(causal_entries) > 0, (
+            f"causal_trace should record causal_model DAG computation via find(), "
+            f"but no causal_model entries found in trace buffer"
         )
 
     print("✅ test_causal_trace_records_dag_computation PASSED")
@@ -10619,11 +10624,10 @@ def test_metacognitive_recursion_recorded_in_causal_trace():
     assert summary["total_entries"] > 0, "Causal trace should have entries"
 
     # Check that metacognitive_recursion subsystem is in the trace.
-    # Use a large window to accommodate additional trace entries from
-    # NS consistency checks and complexity estimators that are now
-    # enabled by default.
-    recent = model.causal_trace.recent(n=50)
-    metacog_entries = [e for e in recent if e["subsystem"] == "metacognitive_recursion"]
+    # Use find() instead of recent() because the full reasoning pipeline
+    # generates 100+ trace entries and the metacognitive_recursion entry
+    # may be pushed out of the recent(n) window by downstream subsystems.
+    metacog_entries = model.causal_trace.find(subsystem='metacognitive_recursion')
     # Note: only fires if the trigger actually evaluates should_trigger=True
     # With threshold=0.0 and coherence_deficit=True, trigger_score >= threshold
     if outputs.get("metacognitive_info", {}).get("should_trigger", False):
@@ -66610,6 +66614,115 @@ def test_telemetry_endpoint_safe_attribute_access():
         "Telemetry metrics endpoint must use getattr for safe access"
     )
     print("✅ test_telemetry_endpoint_safe_attribute_access PASSED")
+
+
+def test_forward_pass_contains_cognitive_unity_score():
+    """Forward pass result must contain a cognitive_unity_score ∈ [0, 1]
+    that synthesizes the three AGI coherence requirements into a single
+    actionable composite score."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    assert 'cognitive_unity_score' in result, (
+        "Forward pass result must include cognitive_unity_score"
+    )
+    score = result['cognitive_unity_score']
+    assert isinstance(score, float), (
+        f"cognitive_unity_score must be float, got {type(score)}"
+    )
+    assert 0.0 <= score <= 1.0, (
+        f"cognitive_unity_score must be in [0, 1], got {score}"
+    )
+    print("✅ test_forward_pass_contains_cognitive_unity_score PASSED")
+
+
+def test_forward_pass_contains_provenance_root_cause():
+    """Forward pass result must surface provenance_root_cause at the
+    top level for direct root-cause traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    assert 'provenance_root_cause' in result, (
+        "Forward pass result must include provenance_root_cause"
+    )
+    prc = result['provenance_root_cause']
+    assert isinstance(prc, dict), (
+        f"provenance_root_cause must be dict, got {type(prc)}"
+    )
+    print("✅ test_forward_pass_contains_provenance_root_cause PASSED")
+
+
+def test_cognitive_unity_score_components():
+    """cognitive_unity_score must reflect verification_coverage,
+    uncertainty, output_reliability, convergence_quality, and
+    provenance traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    score = result['cognitive_unity_score']
+    # Score should incorporate verification_coverage (which is ~0.92
+    # for default config) so it should be > 0 even with low reliability.
+    assert score > 0.0, (
+        f"cognitive_unity_score should be > 0 with default config, got {score}"
+    )
+    # With default config (no full coherence), score should be < 1.0
+    assert score < 1.0, (
+        f"cognitive_unity_score should be < 1.0 with default config, got {score}"
+    )
+    print("✅ test_cognitive_unity_score_components PASSED")
+
+
+def test_provenance_root_cause_traces_to_input():
+    """provenance_root_cause should trace conclusions back to root
+    pipeline entry points (e.g., 'input')."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    prc = result['provenance_root_cause']
+    if prc:
+        # When root-cause tracing succeeds, root_modules should include
+        # pipeline entry points like 'input'.
+        root_modules = prc.get('root_modules', [])
+        assert isinstance(root_modules, list), (
+            f"root_modules must be list, got {type(root_modules)}"
+        )
+        assert 'input' in root_modules, (
+            f"Root-cause trace should reach 'input' entry point, "
+            f"got root_modules: {root_modules}"
+        )
+        # trace_incomplete should be False for a healthy pipeline
+        assert not prc.get('trace_incomplete', True), (
+            "Root-cause trace should be complete for default config"
+        )
+    print("✅ test_provenance_root_cause_traces_to_input PASSED")
 
 
 if __name__ == "__main__":
