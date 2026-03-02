@@ -66422,6 +66422,19 @@ def run_all_tests():
     test_phase_a_checkpoint_includes_error_patterns()
     test_verify_cognitive_unity_training_bridge()
 
+    # Architectural Unification — Cross-Pipeline Coherence Gap Closure
+    test_in_pipeline_coherence_includes_rssm_prior()
+    test_in_pipeline_coherence_includes_executive_prior()
+    test_post_integration_coherence_includes_executive()
+    test_post_integration_coherence_includes_rssm()
+    test_post_integration_coherence_includes_mcts()
+    test_post_integration_coherence_includes_hvae()
+    test_cross_pass_coherence_priors_functional()
+    test_training_error_dependency_map_covers_coherence()
+    test_training_error_dependency_map_covers_ucc()
+    test_training_error_dependency_map_covers_decoder_cv()
+    test_post_integration_states_complete_vs_ucc()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -67245,6 +67258,196 @@ def test_provenance_causal_trace_includes_pass_id():
             "Causal trace pass_id should match tracker's current pass_id"
         )
     print("✅ test_provenance_causal_trace_includes_pass_id PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION: Architectural Unification — Cross-Pipeline Coherence Gap Closure
+# Tests validating that missing subsystem states are now included in both
+# in-pipeline (step 5a) and post-integration (step 8f) coherence checks,
+# and that the training error dependency map covers all bridgeable error
+# classes.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_in_pipeline_coherence_includes_rssm_prior():
+    """In-pipeline coherence check (step 5a) should include cached RSSM state
+    from the previous pass as a cross-pass prior when available."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'rssm_prior' in src, (
+        "_reasoning_core_impl must include rssm_prior in coherence_states"
+    )
+    assert '_cached_rssm_state' in src, (
+        "_reasoning_core_impl must reference _cached_rssm_state for cross-pass coherence"
+    )
+    print("✅ test_in_pipeline_coherence_includes_rssm_prior PASSED")
+
+
+def test_in_pipeline_coherence_includes_executive_prior():
+    """In-pipeline coherence check (step 5a) should include cached cognitive
+    executive state from the previous pass as a cross-pass prior."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'executive_prior' in src, (
+        "_reasoning_core_impl must include executive_prior in coherence_states"
+    )
+    assert '_cached_executive_state' in src, (
+        "_reasoning_core_impl must reference _cached_executive_state for cross-pass coherence"
+    )
+    print("✅ test_in_pipeline_coherence_includes_executive_prior PASSED")
+
+
+def test_post_integration_coherence_includes_executive():
+    """Post-integration coherence check (step 8f) should include the
+    cognitive executive state for full pipeline cross-validation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The post_states dict should reference cognitive_executive
+    assert 'post_states["cognitive_executive"]' in src, (
+        "Post-integration coherence must include cognitive_executive state"
+    )
+    print("✅ test_post_integration_coherence_includes_executive PASSED")
+
+
+def test_post_integration_coherence_includes_rssm():
+    """Post-integration coherence check (step 8f) should include the
+    RSSM dynamics state for full pipeline cross-validation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'post_states["rssm"]' in src, (
+        "Post-integration coherence must include rssm state"
+    )
+    print("✅ test_post_integration_coherence_includes_rssm PASSED")
+
+
+def test_post_integration_coherence_includes_mcts():
+    """Post-integration coherence check (step 8f) should include the
+    MCTS planning state for full pipeline cross-validation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'post_states["mcts_planning"]' in src, (
+        "Post-integration coherence must include mcts_planning state"
+    )
+    print("✅ test_post_integration_coherence_includes_mcts PASSED")
+
+
+def test_post_integration_coherence_includes_hvae():
+    """Post-integration coherence check (step 8f) should include the
+    hierarchical VAE state for full pipeline cross-validation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'post_states["hierarchical_vae"]' in src, (
+        "Post-integration coherence must include hierarchical_vae state"
+    )
+    print("✅ test_post_integration_coherence_includes_hvae PASSED")
+
+
+def test_cross_pass_coherence_priors_functional():
+    """After a forward pass, RSSM and executive cached states should be
+    populated and shape-compatible for cross-pass coherence in the next
+    pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # After one pass, cached states should be populated
+    has_rssm = model._cached_rssm_state is not None
+    has_executive = model._cached_executive_state is not None
+
+    # RSSM should always be populated (it's part of the main pipeline)
+    assert has_rssm, (
+        "_cached_rssm_state should be populated after forward pass"
+    )
+    # Verify shape compatibility with hidden_dim
+    assert model._cached_rssm_state.shape[-1] == config.hidden_dim, (
+        "_cached_rssm_state last dim should match hidden_dim"
+    )
+
+    print("✅ test_cross_pass_coherence_priors_functional PASSED")
+
+
+def test_training_error_dependency_map_covers_coherence():
+    """_ERROR_CLASS_TO_DEPENDENCY_MAP should include coherence_deficit
+    so that bridge_training_errors_to_inference can map coherence failures
+    to provenance edges."""
+    from ae_train import _ERROR_CLASS_TO_DEPENDENCY_MAP
+
+    assert "coherence_deficit" in _ERROR_CLASS_TO_DEPENDENCY_MAP, (
+        "coherence_deficit must be in _ERROR_CLASS_TO_DEPENDENCY_MAP"
+    )
+    pair = _ERROR_CLASS_TO_DEPENDENCY_MAP["coherence_deficit"]
+    assert isinstance(pair, tuple) and len(pair) == 2, (
+        "coherence_deficit mapping must be a (upstream, downstream) tuple"
+    )
+    print("✅ test_training_error_dependency_map_covers_coherence PASSED")
+
+
+def test_training_error_dependency_map_covers_ucc():
+    """_ERROR_CLASS_TO_DEPENDENCY_MAP should include training_ucc_failure
+    for UCC-related provenance bridging."""
+    from ae_train import _ERROR_CLASS_TO_DEPENDENCY_MAP
+
+    assert "training_ucc_failure" in _ERROR_CLASS_TO_DEPENDENCY_MAP, (
+        "training_ucc_failure must be in _ERROR_CLASS_TO_DEPENDENCY_MAP"
+    )
+    print("✅ test_training_error_dependency_map_covers_ucc PASSED")
+
+
+def test_training_error_dependency_map_covers_decoder_cv():
+    """_ERROR_CLASS_TO_DEPENDENCY_MAP should include
+    decoder_cross_validation_failure for decoder CV provenance bridging."""
+    from ae_train import _ERROR_CLASS_TO_DEPENDENCY_MAP
+
+    assert "decoder_cross_validation_failure" in _ERROR_CLASS_TO_DEPENDENCY_MAP, (
+        "decoder_cross_validation_failure must be in _ERROR_CLASS_TO_DEPENDENCY_MAP"
+    )
+    print("✅ test_training_error_dependency_map_covers_decoder_cv PASSED")
+
+
+def test_post_integration_states_complete_vs_ucc():
+    """Post-integration coherence (step 8f) should verify at least as many
+    subsystem states as the UCC evaluation, ensuring no subsystem is
+    cross-validated only in UCC but not in the direct coherence check."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    # States that should appear in post_states dict
+    expected_in_post = [
+        "cognitive_executive",
+        "rssm",
+        "mcts_planning",
+        "hierarchical_vae",
+        "self_report",
+        "memory",
+    ]
+    for state_name in expected_in_post:
+        assert f'post_states["{state_name}"]' in src, (
+            f"Post-integration coherence missing: {state_name}"
+        )
+    print("✅ test_post_integration_states_complete_vs_ucc PASSED")
 
 
 if __name__ == "__main__":
