@@ -6695,6 +6695,60 @@ class CognitiveFeedbackBus(nn.Module):
 
         return correction
 
+    def validate_signal_coverage(self) -> Dict[str, Any]:
+        """Validate that all registered dynamic signals were populated.
+
+        Compares current signal values against their registered defaults.
+        Signals still at their default value are considered unpopulated,
+        indicating that the corresponding module did not update its
+        feedback channel during the forward pass.
+
+        This closes the gap where missing feedback signals silently
+        defaulted to neutral values, allowing the meta-loop to operate
+        on incomplete information without any diagnostic visibility.
+
+        Returns:
+            Dict with:
+                - ``coverage``: float ∈ [0, 1] fraction of signals populated.
+                - ``unpopulated``: list of signal names still at default.
+                - ``populated``: list of signal names that were updated.
+                - ``is_complete``: bool — True when all signals populated.
+        """
+        unpopulated: List[str] = []
+        populated: List[str] = []
+        for name, default in self._extra_defaults.items():
+            current = self._extra_signals.get(name, default)
+            if current == default:
+                unpopulated.append(name)
+            else:
+                populated.append(name)
+        total = len(self._extra_defaults)
+        coverage = len(populated) / max(total, 1)
+        return {
+            'coverage': coverage,
+            'unpopulated': unpopulated,
+            'populated': populated,
+            'is_complete': len(unpopulated) == 0,
+        }
+
+    def reset_ema(self) -> None:
+        """Reset EMA state for train/eval mode transitions.
+
+        The feedback bus maintains exponential moving averages and trend
+        histories across forward passes to detect persistent degradation.
+        When switching between training and evaluation modes, these
+        accumulated statistics become stale and can produce misleading
+        trend signals (e.g. training-mode uncertainty patterns incorrectly
+        triggering re-reasoning during evaluation).
+
+        Calling this method clears all temporal state so the bus starts
+        fresh, ensuring that mode-specific signal patterns do not leak
+        across the train/eval boundary.
+        """
+        self._ema_values = None
+        self._signal_trend = None
+        self._trend_sign_history.clear()
+
 
 class CausalProvenanceTracker:
     """Tracks per-module contribution to the final output state.
@@ -15730,6 +15784,44 @@ class ModuleCoherenceVerifier(nn.Module):
 
         return result
 
+    def tighten_for_diversity_collapse(
+        self, diversity_collapse: float,
+    ) -> float:
+        """Temporarily tighten the coherence threshold for diversity collapse.
+
+        When thought diversity collapses (high ``diversity_collapse``
+        score), internal representations become more uniform, which can
+        inflate pairwise cosine similarities and mask genuine coherence
+        problems.  Tightening the threshold compensates for this
+        artificial similarity boost, ensuring that coherence verification
+        remains sensitive even when diversity is low.
+
+        This closes the gap where diversity collapse and coherence
+        verification were independent signal chains: collapse was
+        detected by the metacognitive trigger but never influenced the
+        coherence verifier's sensitivity, allowing collapsed
+        representations to pass coherence checks unchallenged.
+
+        The caller is responsible for restoring the threshold after the
+        evaluation cycle (the UCC already does this for
+        ``adapt_threshold``).
+
+        Args:
+            diversity_collapse: Scalar ∈ [0, 1] indicating collapse
+                severity.  Values below 0.3 produce no adjustment.
+
+        Returns:
+            The previous threshold value, for caller-side restoration.
+        """
+        previous = self.threshold
+        if diversity_collapse > 0.3:
+            _boost = min(
+                self._ADAPT_CAP - self.threshold,
+                diversity_collapse * 0.1,
+            )
+            self.threshold = min(self._ADAPT_CAP, self.threshold + _boost)
+        return previous
+
     def adapt_threshold(self, error_summary: Dict[str, Any]) -> None:
         """Adapt threshold bidirectionally based on error history.
 
@@ -19152,6 +19244,21 @@ class UnifiedCognitiveCycle:
                 _prov_adapt_err,
             )
 
+        # 1e. Tighten coherence threshold for diversity collapse — when
+        # thought diversity is low, representations become more uniform
+        # which inflates pairwise similarities.  Tightening the threshold
+        # compensates for this artificial boost, ensuring coherence
+        # verification remains sensitive under diversity collapse.  The
+        # original threshold is saved for restoration after evaluation.
+        _diversity_collapse_threshold_saved = False
+        if (self.coherence_verifier is not None and diversity_collapse > 0.3):
+            if _original_threshold is None:
+                _original_threshold = self.coherence_verifier.threshold
+            self.coherence_verifier.tighten_for_diversity_collapse(
+                diversity_collapse,
+            )
+            _diversity_collapse_threshold_saved = True
+
         # 2. Cross-module coherence verification.
         if self.coherence_verifier is not None:
             coherence_result = self.coherence_verifier(subsystem_states)
@@ -19783,6 +19890,7 @@ class UnifiedCognitiveCycle:
         # computed in the main reasoning core but never independently
         # verified by the UCC's coherence orchestration.
         dag_consensus_result: Dict[str, Any] = {}
+        _safety_escalation: float = 0.0
         if (self.causal_dag_consensus is not None
                 and dag_adjacency_matrices is not None
                 and len(dag_adjacency_matrices) >= 2):
@@ -19855,6 +19963,22 @@ class UnifiedCognitiveCycle:
                         set(trigger_detail.get('triggers_active', []))
                         | {'dag_consensus_disagreement'}
                     )
+                # Route DAG structural disagreement to safety system.
+                # When causal models disagree on the underlying causal
+                # structure, the safety assessment should be attenuated
+                # proportionally to the disagreement severity.  This
+                # closes the gap where DAG consensus violations escalated
+                # uncertainty and coherence deficit but were invisible to
+                # the safety system, allowing the model to report high
+                # safety while its causal foundation was structurally
+                # inconsistent.
+                _dag_consensus_score = dag_consensus_result.get(
+                    "consensus_score", 1.0,
+                )
+                _safety_escalation = max(
+                    _safety_escalation,
+                    min(1.0, (1.0 - _dag_consensus_score) * 0.3),
+                )
 
         # 7b-iii. Restore DAG consensus threshold to prevent unbounded drift,
         # mirroring the coherence verifier and reconciler restorations.
@@ -20481,6 +20605,7 @@ class UnifiedCognitiveCycle:
             'degrading_subsystems': _degrading_subsystems,
             'integrity_health': _integrity_health,
             'integrity_anomalies': _integrity_anomalies,
+            'safety_escalation': _safety_escalation,
         }
 
     def reset(self) -> None:
@@ -20498,6 +20623,98 @@ class UnifiedCognitiveCycle:
             self.metacognitive_trigger.reset()
         if self.uncertainty_tracker is not None:
             self.uncertainty_tracker.reset()
+
+    @staticmethod
+    def compute_unified_health(
+        evaluate_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute a single composite health score from an evaluate() result.
+
+        Synthesises the disparate diagnostic signals returned by
+        :meth:`evaluate` into a single scalar ∈ [0, 1] and a per-factor
+        breakdown.  This closes the gap where the UCC returned 20+
+        individual quality signals without a unified metric, forcing
+        callers to independently reconcile convergence status, coherence
+        deficit, uncertainty, and coverage deficit to gauge overall
+        system health.
+
+        The composite score is the weighted harmonic mean of five
+        normalised factors, chosen because the harmonic mean penalises
+        any single low factor more aggressively than the arithmetic
+        mean, ensuring that a single failing subsystem drags the
+        composite score down even when the others are healthy.
+
+        Factors and weights:
+            - convergence_health (0.25): 1 when converged, 0 when diverging.
+            - coherence_health (0.25): 1 − coherence_deficit.
+            - uncertainty_health (0.20): 1 − aggregate uncertainty.
+            - coverage_health (0.15): 1 − coverage deficit.
+            - stability_health (0.15): 1 when no rerun needed, 0 otherwise.
+
+        Args:
+            evaluate_result: Output of :meth:`evaluate`.
+
+        Returns:
+            Dict with:
+                - ``composite_health``: float ∈ [0, 1].
+                - ``factors``: dict mapping factor names to their values.
+                - ``weakest_factor``: name of the lowest factor.
+        """
+        # Extract factor values
+        _conv_verdict = evaluate_result.get('convergence_verdict', {})
+        _conv_status = _conv_verdict.get('status', 'converged')
+        convergence_health = (
+            1.0 if _conv_status == 'converged'
+            else 0.5 if _conv_status == 'converging'
+            else 0.0
+        )
+
+        _coh_result = evaluate_result.get('coherence_result', {})
+        coherence_health = 1.0 - min(
+            1.0, _coh_result.get('coherence_deficit', 0.0),
+        )
+
+        _unc_summary = evaluate_result.get('uncertainty_summary', {})
+        _aggregate_unc = _unc_summary.get('aggregate_uncertainty', 0.0)
+        uncertainty_health = 1.0 - min(1.0, _aggregate_unc)
+
+        coverage_health = 1.0 - min(
+            1.0, evaluate_result.get('coverage_deficit', 0.0),
+        )
+
+        stability_health = 0.0 if evaluate_result.get('should_rerun', False) else 1.0
+
+        factors = {
+            'convergence_health': convergence_health,
+            'coherence_health': coherence_health,
+            'uncertainty_health': uncertainty_health,
+            'coverage_health': coverage_health,
+            'stability_health': stability_health,
+        }
+
+        # Weighted harmonic mean (epsilon prevents division by zero)
+        weights = {
+            'convergence_health': 0.25,
+            'coherence_health': 0.25,
+            'uncertainty_health': 0.20,
+            'coverage_health': 0.15,
+            'stability_health': 0.15,
+        }
+        _eps = 1e-10
+        _weighted_inv_sum = sum(
+            w / max(factors[k], _eps) for k, w in weights.items()
+        )
+        _weight_total = sum(weights.values())
+        composite = _weight_total / max(_weighted_inv_sum, _eps)
+        composite = max(0.0, min(1.0, composite))
+
+        weakest = min(factors, key=factors.get)
+
+        return {
+            'composite_health': composite,
+            'factors': factors,
+            'weakest_factor': weakest,
+        }
 
 
 # ============================================================================
