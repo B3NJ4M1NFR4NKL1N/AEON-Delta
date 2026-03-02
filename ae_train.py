@@ -3316,18 +3316,28 @@ class SafeThoughtAETrainerV4:
                 # inference pipeline's composite metric so training and
                 # inference measure AGI coherence on the same scale.
                 # Components: coherence, convergence quality, provenance
-                # completeness, uncertainty handling.
+                # completeness, metacognitive responsiveness.
                 _cus_coherence = epoch_metrics["cognitive_coherence"]
                 _cus_convergence = max(0.0, min(
                     1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
                 ))
                 _cus_provenance = self._provenance_causal_quality()
-                _cus_uncertainty = max(0.0, 1.0 - _uncertainty)
+                # Metacognitive responsiveness: when uncertainty was high
+                # and UCC triggered re-reasoning, responsiveness is 1.0.
+                # When uncertainty was high but UCC did NOT trigger,
+                # responsiveness degrades — mirroring inference-side logic.
+                if _uncertainty > 0.5:
+                    _cus_metacognitive = (
+                        1.0 if _cycle_result["should_rerun"]
+                        else 1.0 - _uncertainty
+                    )
+                else:
+                    _cus_metacognitive = 1.0
                 epoch_metrics["cognitive_unity_score"] = (
                     _CUS_WEIGHT_COHERENCE * _cus_coherence
                     + _CUS_WEIGHT_CONVERGENCE * _cus_convergence
                     + _CUS_WEIGHT_PROVENANCE * _cus_provenance
-                    + _CUS_WEIGHT_UNCERTAINTY * _cus_uncertainty
+                    + _CUS_WEIGHT_UNCERTAINTY * _cus_metacognitive
                 )
                 if _cycle_result["should_rerun"]:
                     _active = _cycle_result["trigger_detail"].get("triggers_active", [])
@@ -3987,12 +3997,19 @@ class ContextualRSSMTrainer:
                     1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
                 ))
                 _cus_provenance_b = self._provenance_causal_quality()
-                _cus_uncertainty_b = max(0.0, 1.0 - _uncertainty)
+                # Metacognitive responsiveness — mirrors Phase A logic.
+                if _uncertainty > 0.5:
+                    _cus_metacognitive_b = (
+                        1.0 if _cycle_result["should_rerun"]
+                        else 1.0 - _uncertainty
+                    )
+                else:
+                    _cus_metacognitive_b = 1.0
                 epoch_metrics["cognitive_unity_score"] = (
                     _CUS_WEIGHT_COHERENCE * _cus_coherence_b
                     + _CUS_WEIGHT_CONVERGENCE * _cus_convergence_b
                     + _CUS_WEIGHT_PROVENANCE * _cus_provenance_b
-                    + _CUS_WEIGHT_UNCERTAINTY * _cus_uncertainty_b
+                    + _CUS_WEIGHT_UNCERTAINTY * _cus_metacognitive_b
                 )
                 # Apply correction_guidance from UCC — when the unified
                 # cognitive cycle identifies a specific target module and
