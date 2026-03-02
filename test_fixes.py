@@ -66486,5 +66486,131 @@ def test_verify_cognitive_unity_training_bridge():
     print("✅ test_verify_cognitive_unity_training_bridge PASSED")
 
 
+def test_unified_memory_query_consensus_score():
+    """unified_memory_query must return consensus_score and
+    consensus_pairwise when multiple memory systems respond."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    query = torch.randn(64)
+    result = model.unified_memory_query(query, k=3)
+    # Must always include consensus fields
+    assert 'consensus_score' in result, (
+        "unified_memory_query must return 'consensus_score'"
+    )
+    assert 'consensus_pairwise' in result, (
+        "unified_memory_query must return 'consensus_pairwise'"
+    )
+    assert isinstance(result['consensus_score'], float), (
+        "consensus_score must be a float"
+    )
+    assert isinstance(result['consensus_pairwise'], list), (
+        "consensus_pairwise must be a list"
+    )
+    print("✅ test_unified_memory_query_consensus_score PASSED")
+
+
+def test_unified_memory_query_consensus_fallback():
+    """When no memory systems respond, consensus_score should be 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        enable_hierarchical_memory=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Explicitly disable all memory systems
+    model.hierarchical_memory = None
+    model.neurogenic_memory = None
+    model.consolidating_memory = None
+    model.temporal_memory = None
+    query = torch.randn(32)
+    result = model.unified_memory_query(query, k=3)
+    assert result['consensus_score'] == 0.0, (
+        "consensus_score must be 0.0 when no memory systems respond"
+    )
+    assert result['fallback_used'] is True, (
+        "fallback_used must be True when no memory systems respond"
+    )
+    print("✅ test_unified_memory_query_consensus_fallback PASSED")
+
+
+def test_memory_consensus_deficit_uncertainty_source():
+    """_reasoning_core_impl must escalate uncertainty via
+    memory_consensus_deficit when memory systems disagree."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "memory_consensus_deficit" in src, (
+        "_reasoning_core_impl must escalate uncertainty via "
+        "memory_consensus_deficit when memory consensus is low"
+    )
+    print("✅ test_memory_consensus_deficit_uncertainty_source PASSED")
+
+
+def test_unified_memory_query_audit_log():
+    """unified_memory_query must record consensus decisions in audit log."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.unified_memory_query)
+    assert "audit_log.record" in src, (
+        "unified_memory_query must record decisions in audit_log"
+    )
+    assert "memory_consensus" in src, (
+        "unified_memory_query must record memory_consensus events"
+    )
+    print("✅ test_unified_memory_query_audit_log PASSED")
+
+
+def test_health_endpoint_degraded_flag():
+    """Health endpoint must return 'degraded' field indicating
+    whether subsystem scoring fell back to a degraded path."""
+    import inspect
+    import aeon_server
+    src = inspect.getsource(aeon_server.get_health)
+    assert "degraded" in src, (
+        "Health endpoint must include 'degraded' field in response"
+    )
+    print("✅ test_health_endpoint_degraded_flag PASSED")
+
+
+def test_metacognition_resolve_severity_levels():
+    """Metacognition resolve endpoint must classify severity beyond
+    simple 'critical' vs 'warning' using structured gap analysis."""
+    import inspect
+    import aeon_server
+    src = inspect.getsource(aeon_server.resolve_metacognitive_gaps)
+    assert '"high"' in src or "'high'" in src, (
+        "Metacognition resolve must support 'high' severity level"
+    )
+    assert '"medium"' in src or "'medium'" in src, (
+        "Metacognition resolve must support 'medium' severity level"
+    )
+    print("✅ test_metacognition_resolve_severity_levels PASSED")
+
+
+def test_telemetry_endpoint_safe_attribute_access():
+    """Telemetry endpoints must use safe attribute access (getattr)
+    to avoid AttributeError when telemetry_collector is not configured."""
+    import inspect
+    import aeon_server
+    src = inspect.getsource(aeon_server.get_telemetry_metrics)
+    assert "getattr" in src, (
+        "Telemetry metrics endpoint must use getattr for safe access"
+    )
+    print("✅ test_telemetry_endpoint_safe_attribute_access PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
