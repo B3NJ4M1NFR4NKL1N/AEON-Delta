@@ -15321,14 +15321,27 @@ class OutputReliabilityGate(nn.Module):
             'verification_coverage': max(0.0, verification_coverage),
         }
 
-        raw = (
-            factors['uncertainty_contribution']
-            * factors['auto_critic_contribution']
-            * factors['convergence_contribution']
-            * factors['coherence_contribution']
-            * factors['provenance_quality']
-            * factors['causal_quality']
-        )
+        # Use geometric mean with per-factor floors instead of pure
+        # multiplication.  Pure multiplication allows any single 0.0
+        # factor (e.g. convergence warmup, no causal model active) to
+        # zero out the entire composite, breaking the mutual-
+        # reinforcement principle: components should *degrade* the score
+        # when failing, not *veto* it entirely.  The floor of 0.05
+        # ensures each factor contributes proportional degradation.
+        _FACTOR_FLOOR = 0.05
+        _core_factors = [
+            max(_FACTOR_FLOOR, factors['uncertainty_contribution']),
+            max(_FACTOR_FLOOR, factors['auto_critic_contribution']),
+            max(_FACTOR_FLOOR, factors['convergence_contribution']),
+            max(_FACTOR_FLOOR, factors['coherence_contribution']),
+            max(_FACTOR_FLOOR, factors['provenance_quality']),
+            max(_FACTOR_FLOOR, factors['causal_quality']),
+        ]
+        _n = len(_core_factors)
+        _product = 1.0
+        for _f in _core_factors:
+            _product *= _f
+        raw = _product ** (1.0 / _n) if _product > 0 else 0.0
         composite = max(0.0, min(1.0,
             raw * (0.5 + 0.5 * factors['verification_coverage']),
         ))
@@ -16958,6 +16971,9 @@ class MetaCognitiveRecursionTrigger:
             "tightened_threshold": self.tightening_factor,
             "extra_iterations": self.extra_iterations,
             "triggers_active": triggers_active,
+            # Alias for API consistency — some consumers use 'triggers'
+            # while the canonical key is 'triggers_active'.
+            "triggers": triggers_active,
             "recursion_count": self._recursion_count,
             "signal_weights": dict(w),
             "max_recursions_capped": _max_recursions_capped,
@@ -25231,6 +25247,28 @@ class AEONDeltaV3(nn.Module):
         # should invest more compute.
         convergence_quality_scalar = float(convergence_rate) if meta_loop_valid else 0.0
         
+        # 1a-iii-warmup. Apply a warmup floor to convergence quality
+        # during the first few forward passes.  The meta-loop's
+        # convergence_rate is computed from converged.float().mean() —
+        # on the very first passes with random weights, the residual
+        # norm exceeds the convergence threshold for all batch samples,
+        # yielding convergence_rate=0.0.  This is expected warmup
+        # behaviour, not a convergence failure.  Without a floor, this
+        # 0.0 cascades through the OutputReliabilityGate and
+        # cognitive_unity_score, reporting catastrophic unreliability
+        # on a system that simply hasn't warmed up yet.  The floor
+        # decays to zero over the first 5 forward passes so that the
+        # true convergence rate takes over as the system stabilises.
+        _CONVERGENCE_WARMUP_PASSES = 5
+        _fwd_calls = int(self._total_forward_calls.item())
+        if _fwd_calls < _CONVERGENCE_WARMUP_PASSES:
+            _warmup_floor = 0.3 * (
+                1.0 - _fwd_calls / _CONVERGENCE_WARMUP_PASSES
+            )
+            convergence_quality_scalar = max(
+                convergence_quality_scalar, _warmup_floor,
+            )
+        
         # 1a-iii-cr. Blend per-step convergence rate with the
         # ConvergenceMonitor's cross-pass contraction ratio so the
         # feedback bus reflects both intra-pass and inter-pass health.
@@ -33086,17 +33124,24 @@ class AEONDeltaV3(nn.Module):
                         self._cached_coherence_deficit, _ucc_deficit,
                     )
                     # Degrade cached causal quality proportionally to the
-                    # UCC coherence deficit.  The coherence verifier
-                    # cross-validates all subsystem outputs including
-                    # causal models; a significant coherence deficit
-                    # implies that causal conclusions may be unreliable
-                    # even when individual DAG losses are low.  Without
-                    # this feedback, _cached_causal_quality only reflects
-                    # per-model DAG losses and DAG consensus, missing
-                    # cross-subsystem coherence failures.
-                    self._cached_causal_quality = min(
-                        self._cached_causal_quality, 1.0 - _ucc_deficit,
+                    # UCC coherence deficit, but only when at least one
+                    # causal model is active.  When no causal model is
+                    # configured, _cached_causal_quality carries its
+                    # neutral 1.0 default.  Degrading it from coherence
+                    # deficit alone conflates "no causal model active"
+                    # with "causal model produced unreliable results",
+                    # which zeroes out the OutputReliabilityGate's causal
+                    # factor and prevents meaningful reliability scoring
+                    # on architectures that rely on non-causal reasoning.
+                    _has_causal = (
+                        self.causal_model is not None
+                        or getattr(self, 'notears_causal', None) is not None
+                        or getattr(self, 'causal_programmatic', None) is not None
                     )
+                    if _has_causal:
+                        self._cached_causal_quality = min(
+                            self._cached_causal_quality, 1.0 - _ucc_deficit,
+                        )
                     # 8f-iv-blend-nonrerun. Targeted weakest-pair correction
                     # in the non-rerun case — when the UCC detects a
                     # coherence deficit that is above threshold but does NOT
@@ -34076,7 +34121,14 @@ class AEONDeltaV3(nn.Module):
             )
 
         # Package outputs
-        convergence_quality = meta_results.get('convergence_rate', 0.0)
+        convergence_quality = float(meta_results.get('convergence_rate', 0.0))
+        # Apply the same warmup floor used in convergence_quality_scalar
+        # so the output-level convergence_quality is consistent with the
+        # value used internally by the feedback bus and reliability gate.
+        _fwd_count = int(self._total_forward_calls.item())
+        if _fwd_count < 5:
+            _out_warmup_floor = 0.3 * (1.0 - _fwd_count / 5.0)
+            convergence_quality = max(convergence_quality, _out_warmup_floor)
         # convergence_delta = final residual norm from the meta-loop, measuring
         # how far the last iteration was from a true fixed point.
         convergence_delta = meta_results.get('residual_norm', None)
@@ -35956,13 +36008,28 @@ class AEONDeltaV3(nn.Module):
         )
         _cus_reliability = outputs.get('output_reliability', 0.0)
         _cus_convergence = outputs.get('convergence_quality', 0.0)
-        result['cognitive_unity_score'] = (
-            0.25 * _cus_verification
-            + 0.20 * _cus_uncertainty
-            + 0.20 * _cus_traceability
-            + 0.20 * _cus_reliability
-            + 0.15 * _cus_convergence
+        # 4. Cross-module coherence — the UCC coherence score measures
+        #    how well subsystem outputs agree with each other.  Including
+        #    it closes the gap where coherence was verified but never
+        #    factored into the composite cognitive unity assessment.
+        _ucc_coh = result.get('unified_cognitive_cycle_results', {}).get(
+            'coherence_result', {},
         )
+        _coh_score = _ucc_coh.get('coherence_score', 0.0)
+        if isinstance(_coh_score, torch.Tensor):
+            _coh_score = float(_coh_score.mean().item())
+        _cus_coherence = max(0.0, min(1.0, _coh_score))
+        result['cognitive_unity_score'] = (
+            0.20 * _cus_verification
+            + 0.15 * _cus_uncertainty
+            + 0.20 * _cus_traceability
+            + 0.15 * _cus_reliability
+            + 0.15 * _cus_convergence
+            + 0.15 * _cus_coherence
+        )
+        # Surface coherence_deficit at top level so downstream consumers
+        # can access cross-module coherence health directly.
+        result['coherence_deficit'] = self._cached_coherence_deficit
 
         # ===== PROVENANCE ROOT-CAUSE (TOP-LEVEL) =====
         # Surface the UCC's provenance_root_cause at the top level of
