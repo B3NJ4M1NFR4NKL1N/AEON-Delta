@@ -21789,6 +21789,19 @@ class AEONDeltaV3(nn.Module):
         self._neurogenic_memory_error: bool = False
         self._temporal_memory_error: bool = False
         
+        # Cross-pass circuit breaker history — tracks which subsystems
+        # tripped circuit breakers across recent forward passes.  When
+        # the same subsystem trips repeatedly (>= _CB_RECURRING_THRESHOLD
+        # times in the last _CB_HISTORY_MAXLEN passes), the recurring
+        # failure feeds into the metacognitive trigger and feedback bus
+        # as recovery_pressure, ensuring persistent subsystem instability
+        # triggers deeper reasoning.  Without this, each pass's circuit
+        # breaker set is discarded, preventing detection of chronic
+        # subsystem failures.
+        self._circuit_breaker_history: deque = deque(maxlen=16)
+        _CB_RECURRING_THRESHOLD = 3
+        self._cb_recurring_threshold: int = _CB_RECURRING_THRESHOLD
+        
         # World model surprise feedback — stores the mean surprise from
         # the previous forward pass so the feedback bus can incorporate
         # prediction-error pressure into the next meta-loop trajectory.
@@ -28152,11 +28165,17 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                         )
             self.provenance_tracker.record_after("mcts_planning", C_star)
+            _mcts_cb_tripped = "mcts_planning" in _circuit_breaker_tripped
             self.coherence_registry.register_output(
                 "mcts_planning",
-                validated=torch.isfinite(C_star).all().item(),
-                quality=max(0.0, min(1.0, float(_mcts_root_val)))
-                if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val) else 1.0,
+                validated=(
+                    torch.isfinite(C_star).all().item()
+                    and not _mcts_cb_tripped
+                ),
+                quality=0.0 if _mcts_cb_tripped else (
+                    max(0.0, min(1.0, float(_mcts_root_val)))
+                    if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val) else 1.0
+                ),
             )
             self._cached_mcts_state = C_star.detach()
             # Cache MCTS quality for the CognitiveFeedbackBus so that
@@ -28473,7 +28492,7 @@ class AEONDeltaV3(nn.Module):
                         metadata={"error": str(causal_err)[:200]},
                     )
             self.provenance_tracker.record_after("causal_model", C_star)
-            self.coherence_registry.register_output("causal_model", validated=True)
+            self.coherence_registry.register_output("causal_model", validated=_causal_healthy)
             self._cached_causal_state = C_star.detach()
         
         # 5d1c. NOTEARSCausalModel — differentiable DAG structure learning.
@@ -34883,6 +34902,48 @@ class AEONDeltaV3(nn.Module):
         # recent self-critique assessment, not just the cross-pass EMA.
         self._cached_auto_critic_current_score = _auto_critic_final_score
 
+        # ── Cross-pass circuit breaker tracking ──────────────────────
+        # Record this pass's tripped subsystems so recurring failures
+        # can be detected across forward passes.  When the same subsystem
+        # trips >= _cb_recurring_threshold times in the history window,
+        # escalate recovery_pressure in the feedback bus for the next
+        # pass's meta-loop conditioning.
+        if _circuit_breaker_tripped:
+            self._circuit_breaker_history.append(
+                frozenset(_circuit_breaker_tripped),
+            )
+        else:
+            self._circuit_breaker_history.append(frozenset())
+        # Detect recurring circuit breaker trips
+        _cb_recurring: Dict[str, int] = {}
+        for _cb_pass_set in self._circuit_breaker_history:
+            for _cb_name in _cb_pass_set:
+                _cb_recurring[_cb_name] = _cb_recurring.get(_cb_name, 0) + 1
+        _cb_chronic_subsystems = [
+            name for name, count in _cb_recurring.items()
+            if count >= self._cb_recurring_threshold
+        ]
+        if _cb_chronic_subsystems:
+            # Record chronic failures in error recovery so that
+            # _compute_recovery_pressure() reflects this cross-pass
+            # pressure on the next pass.
+            self.error_recovery.record_event(
+                error_class="chronic_circuit_breaker",
+                context=",".join(_cb_chronic_subsystems[:3]),
+                success=False,
+            )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="chronic_circuit_breaker",
+                    strategy_used="cross_pass_escalation",
+                    success=False,
+                    metadata={
+                        "chronic_subsystems": _cb_chronic_subsystems,
+                        "history_length": len(self._circuit_breaker_history),
+                    },
+                )
+
+
         outputs = {
             'is_fallback': False,
             'core_state': C_star,
@@ -34946,6 +35007,7 @@ class AEONDeltaV3(nn.Module):
                 'needs_re_retrieval': self._cached_memory_needs_re_retrieval,
             },
             'circuit_breaker_tripped': _circuit_breaker_tripped,
+            'circuit_breaker_chronic': _cb_chronic_subsystems,
             'safety_blocked': _safety_blocked,
             'unified_cognitive_cycle_results': unified_cycle_results,
             'convergence_arbiter_results': _convergence_arbiter_result,
@@ -40276,6 +40338,28 @@ class AEONDeltaV3(nn.Module):
                 )
         else:
             error_evolution_effectiveness = {'active': False}
+            _ee_rate = 1.0  # no episodes, assume healthy
+
+        # ── Circuit breaker chronic failure check ──────────────────
+        # Expose cross-pass circuit breaker patterns in the unity
+        # verdict so callers can identify chronically failing subsystems.
+        _cb_history = getattr(self, '_circuit_breaker_history', deque())
+        _cb_chronic: Dict[str, int] = {}
+        for _cb_set in _cb_history:
+            for _cb_name in _cb_set:
+                _cb_chronic[_cb_name] = _cb_chronic.get(_cb_name, 0) + 1
+        _cb_threshold = getattr(self, '_cb_recurring_threshold', 3)
+        _cb_chronic_list = sorted(
+            name for name, count in _cb_chronic.items()
+            if count >= _cb_threshold
+        )
+        _cb_healthy = len(_cb_chronic_list) == 0
+        if _cb_chronic_list:
+            recommendations.append(
+                f"Chronic circuit breaker trips: "
+                f"{', '.join(_cb_chronic_list)} — "
+                f"investigate recurring subsystem failures"
+            )
 
         is_unified = (
             _mv_coverage >= 0.9
@@ -40284,6 +40368,8 @@ class AEONDeltaV3(nn.Module):
             and _rc_coverage >= 0.9
             and _pipeline_provenance_coverage >= 0.9
             and _dag_acyclic
+            and (_ee_rate >= 0.3 or _ee_total < 10)
+            and _cb_healthy
         )
 
         if not recommendations:
@@ -40296,6 +40382,11 @@ class AEONDeltaV3(nn.Module):
             'root_cause_traceability': root_cause_traceability,
             'feedback_bus_completeness': feedback_bus_completeness,
             'error_evolution_effectiveness': error_evolution_effectiveness,
+            'circuit_breaker_chronic': {
+                'healthy': _cb_healthy,
+                'chronic_subsystems': _cb_chronic_list,
+                'history_length': len(_cb_history),
+            },
             'module_health': module_health,
             'weakest_module': _weakest_module,
             'recommendations': recommendations,
@@ -40870,6 +40961,13 @@ class AEONDeltaV3(nn.Module):
                 cognitive_state['metacognitive_signal_weights'] = dict(
                     self.metacognitive_trigger._signal_weights
                 )
+            # Persist cross-pass circuit breaker history so chronic
+            # failure patterns survive checkpoint save/load cycles.
+            _cb_hist = getattr(self, '_circuit_breaker_history', None)
+            if _cb_hist:
+                cognitive_state['circuit_breaker_history'] = [
+                    sorted(s) for s in _cb_hist
+                ]
             if cognitive_state:
                 with open(save_dir / "cognitive_state.json", 'w') as f:
                     json.dump(cognitive_state, f, indent=2)
@@ -41078,6 +41176,18 @@ class AEONDeltaV3(nn.Module):
                             if k_w in self.metacognitive_trigger._signal_weights:
                                 self.metacognitive_trigger._signal_weights[k_w] = float(v_w)
                         logger.info("Restored metacognitive signal weights")
+                    # Restore cross-pass circuit breaker history
+                    if 'circuit_breaker_history' in cognitive_state:
+                        _cb_loaded = cognitive_state['circuit_breaker_history']
+                        self._circuit_breaker_history.clear()
+                        for _cb_set in _cb_loaded:
+                            self._circuit_breaker_history.append(
+                                frozenset(_cb_set),
+                            )
+                        logger.info(
+                            "Restored circuit breaker history "
+                            f"({len(_cb_loaded)} passes)"
+                        )
                 except Exception as cog_err:
                     logger.warning(f"Failed to load cognitive state (non-fatal): {cog_err}")
             
@@ -41116,6 +41226,30 @@ class AEONDeltaV3(nn.Module):
                     logger.warning(
                         f"Failed to bridge training error patterns "
                         f"(non-fatal): {bridge_err}"
+                    )
+            
+            # Auto-adapt metacognitive trigger weights from imported
+            # error evolution patterns.  This closes the gap where
+            # training error patterns were imported into error_evolution
+            # but the metacognitive trigger's signal weights were not
+            # automatically adapted to reflect the imported patterns,
+            # requiring a manual call to sync_from_training().
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    _ee_summary = self.error_evolution.get_error_summary()
+                    if _ee_summary.get('total_episodes', 0) > 0:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _ee_summary,
+                        )
+                        logger.info(
+                            "Auto-adapted metacognitive trigger weights "
+                            "from loaded error evolution patterns"
+                        )
+                except Exception as _adapt_err:
+                    logger.warning(
+                        f"Failed to adapt metacognitive trigger weights "
+                        f"(non-fatal): {_adapt_err}"
                     )
             
             logger.info(f"✅ State loaded from {save_dir}")
