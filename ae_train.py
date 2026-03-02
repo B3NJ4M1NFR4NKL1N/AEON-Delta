@@ -4283,6 +4283,15 @@ _ERROR_CLASS_TO_DEPENDENCY_MAP: Dict[str, Tuple[str, str]] = {
     "coherence_deficit": ("meta_loop", "integration"),
     "training_ucc_failure": ("meta_loop", "unified_cognitive_cycle"),
     "decoder_cross_validation_failure": ("decoder", "cross_validation"),
+    # Feedback oscillation indicates the feedback bus detected signal
+    # instability — maps to the feedback_bus → metacognitive_trigger
+    # provenance edge so root-cause analysis can trace oscillation-
+    # driven re-reasoning back to the feedback bus.
+    "feedback_oscillation": ("feedback_bus", "metacognitive_trigger"),
+    # UCC-triggered re-reasoning failure — maps to the
+    # ucc_rerun_meta_loop → integration edge so root-cause analysis
+    # can trace integration quality changes to re-reasoning outcomes.
+    "ucc_rerun": ("ucc_rerun_meta_loop", "integration"),
 }
 
 
