@@ -63341,6 +63341,229 @@ def test_error_evolution_effectiveness_in_unified_verdict():
     print("✅ test_error_evolution_effectiveness_in_unified_verdict PASSED")
 
 
+# ============================================================================
+# SECTION: CROSS-MODULE PROVENANCE INTEGRATION TESTS
+# ============================================================================
+
+
+def test_auto_critic_provenance_records_revision():
+    """AutoCriticLoop records revision reasons and provenance entries."""
+    from aeon_core import (
+        AutoCriticLoop, CausalProvenanceTracker, TemporalCausalTraceBuffer,
+    )
+    tracker = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer()
+    tracker.set_causal_trace(trace)
+
+    gen = torch.nn.Sequential(
+        torch.nn.Linear(64, 64), torch.nn.GELU(), torch.nn.Linear(64, 64),
+    )
+    ac = AutoCriticLoop(base_model=gen, hidden_dim=64, threshold=0.99)
+    ac.set_provenance_tracker(tracker)
+
+    q = torch.randn(2, 64)
+    result = ac(q, return_trajectory=True)
+
+    # Must return revision_reasons list
+    assert "revision_reasons" in result, "missing revision_reasons key"
+    assert len(result["revision_reasons"]) > 0, "should have at least one revision"
+    rr = result["revision_reasons"][0]
+    assert "weakest_dimension" in rr, "missing weakest_dimension"
+    assert "weakest_score" in rr, "missing weakest_score"
+    assert "scores" in rr, "missing scores dict"
+
+    # Causal trace should have auto_critic/revision entries
+    entries = trace.recent(100)
+    revision_entries = [
+        e for e in entries if e.get("subsystem", "").startswith("auto_critic/revision")
+    ]
+    assert len(revision_entries) > 0, "causal trace should contain revision entries"
+    print("✅ test_auto_critic_provenance_records_revision PASSED")
+
+
+def test_coherence_verifier_provenance_logs_incoherence():
+    """ModuleCoherenceVerifier logs incoherent pairs to causal trace."""
+    from aeon_core import (
+        ModuleCoherenceVerifier, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+    tracker = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer()
+    tracker.set_causal_trace(trace)
+
+    mcv = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.99)
+    mcv.set_provenance_tracker(tracker)
+
+    # Use random states to force incoherence
+    states = {"mod_a": torch.randn(2, 64), "mod_b": torch.randn(2, 64)}
+    result = mcv(states)
+    assert result["needs_recheck"], "should detect incoherence with threshold=0.99"
+
+    entries = trace.recent(10)
+    incoherence_entries = [
+        e for e in entries
+        if "module_coherence" in e.get("subsystem", "")
+    ]
+    assert len(incoherence_entries) > 0, (
+        "causal trace should contain module_coherence/incoherence entry"
+    )
+    entry = incoherence_entries[0]
+    assert "weakest_pair" in entry.get("metadata", {}), (
+        "trace entry should include weakest_pair metadata"
+    )
+
+    # When coherent, no trace entry should be emitted
+    trace2 = TemporalCausalTraceBuffer()
+    tracker2 = CausalProvenanceTracker()
+    tracker2.set_causal_trace(trace2)
+    mcv2 = ModuleCoherenceVerifier(hidden_dim=64, threshold=0.0)
+    mcv2.set_provenance_tracker(tracker2)
+    # Use identical states to guarantee coherence
+    v = torch.randn(2, 64)
+    coherent_states = {"mod_a": v.clone(), "mod_b": v.clone()}
+    result2 = mcv2(coherent_states)
+    assert not result2["needs_recheck"], "should be coherent with identical states"
+    entries2 = trace2.recent(10)
+    assert len(entries2) == 0, "no trace entry when coherent"
+    print("✅ test_coherence_verifier_provenance_logs_incoherence PASSED")
+
+
+def test_metacognitive_trigger_provenance_dominant_module():
+    """MetaCognitiveRecursionTrigger includes dominant_module from provenance."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalProvenanceTracker
+
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker = CausalProvenanceTracker()
+
+    t = torch.randn(2, 64)
+    tracker.record_before("encoder", t)
+    tracker.record_after("encoder", t + 5.0)  # large delta → dominant
+    tracker.record_before("meta_loop", t)
+    tracker.record_after("meta_loop", t + 0.01)  # small delta
+    attr = tracker.compute_attribution()
+
+    result = trigger.evaluate(
+        uncertainty=0.8,
+        provenance_attribution=attr,
+    )
+    assert result["dominant_module"] == "encoder", (
+        f"expected encoder as dominant, got {result['dominant_module']}"
+    )
+    assert result["dominant_module_signal"] == "uncertainty", (
+        f"encoder should map to 'uncertainty', got {result['dominant_module_signal']}"
+    )
+
+    # Without provenance_attribution, should be None
+    trigger2 = MetaCognitiveRecursionTrigger()
+    result2 = trigger2.evaluate(uncertainty=0.8)
+    assert result2["dominant_module"] is None, "should be None without provenance"
+    assert result2["dominant_module_signal"] is None, "should be None without provenance"
+    print("✅ test_metacognitive_trigger_provenance_dominant_module PASSED")
+
+
+def test_output_reliability_gate_trigger_signal_mapping():
+    """OutputReliabilityGate returns trigger_signal for the weakest factor."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate()
+
+    # Uncertainty is the weakest factor
+    r1 = gate(uncertainty=0.95, auto_critic_quality=0.9, convergence_rate=0.9)
+    assert "trigger_signal" in r1, "missing trigger_signal key"
+    assert r1["trigger_signal"] is not None, "trigger_signal should not be None"
+
+    # Causal quality is the weakest factor
+    r2 = gate(uncertainty=0.0, causal_quality=0.01)
+    assert r2["weakest_factor"] == "causal_quality", (
+        f"expected causal_quality, got {r2['weakest_factor']}"
+    )
+    assert r2["trigger_signal"] == "low_causal_quality", (
+        f"expected low_causal_quality, got {r2['trigger_signal']}"
+    )
+
+    # Convergence is the weakest factor
+    r3 = gate(convergence_rate=0.01)
+    assert r3["weakest_factor"] == "convergence_contribution", (
+        f"expected convergence_contribution, got {r3['weakest_factor']}"
+    )
+    assert r3["trigger_signal"] == "diverging", (
+        f"expected diverging, got {r3['trigger_signal']}"
+    )
+    print("✅ test_output_reliability_gate_trigger_signal_mapping PASSED")
+
+
+def test_error_evolution_auto_extracts_antecedents():
+    """CausalErrorEvolutionTracker auto-extracts antecedents from provenance."""
+    from aeon_core import CausalErrorEvolutionTracker, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    t = torch.randn(2, 64)
+    tracker.record_before("encoder", t)
+    tracker.record_after("encoder", t + 5.0)  # dominant
+    tracker.record_before("safety", t)
+    tracker.record_after("safety", t + 0.001)  # minimal
+
+    eet = CausalErrorEvolutionTracker()
+    eet.set_provenance_tracker(tracker)
+
+    # Record without explicit antecedents
+    eet.record_episode("test_error", "rollback", False)
+    ep = eet._episodes["test_error"][0]
+    assert "encoder" in ep["causal_antecedents"], (
+        "encoder should be auto-extracted as antecedent (dominant module)"
+    )
+    assert "safety" not in ep["causal_antecedents"], (
+        "safety should NOT be an antecedent (below-mean contribution)"
+    )
+
+    # Explicit antecedents should override auto-extraction
+    eet.record_episode(
+        "test_error2", "retry", True,
+        causal_antecedents=["manual_cause"],
+    )
+    ep2 = eet._episodes["test_error2"][0]
+    assert ep2["causal_antecedents"] == ["manual_cause"], (
+        "explicit antecedents should be used when provided"
+    )
+
+    # Without provenance tracker, antecedents should be empty
+    eet2 = CausalErrorEvolutionTracker()
+    eet2.record_episode("isolated_error", "retry", True)
+    ep3 = eet2._episodes["isolated_error"][0]
+    assert ep3["causal_antecedents"] == [], (
+        "antecedents should be empty without provenance tracker"
+    )
+    print("✅ test_error_evolution_auto_extracts_antecedents PASSED")
+
+
+def test_aeonv3_cross_module_provenance_wiring():
+    """AEONDeltaV3 wires provenance tracker into auto_critic, module_coherence,
+    and error_evolution subsystems during initialization."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # auto_critic provenance wiring
+    assert model.auto_critic is not None, "auto_critic should be enabled"
+    assert model.auto_critic._provenance_tracker is model.provenance_tracker, (
+        "auto_critic provenance not wired to model's provenance_tracker"
+    )
+
+    # module_coherence provenance wiring
+    assert model.module_coherence is not None, "module_coherence should be enabled"
+    assert model.module_coherence._provenance_tracker is model.provenance_tracker, (
+        "module_coherence provenance not wired to model's provenance_tracker"
+    )
+
+    # error_evolution provenance wiring
+    assert model.error_evolution is not None, "error_evolution should be enabled"
+    assert model.error_evolution._provenance_tracker is model.provenance_tracker, (
+        "error_evolution provenance not wired to model's provenance_tracker"
+    )
+    print("✅ test_aeonv3_cross_module_provenance_wiring PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -66164,6 +66387,14 @@ def run_all_tests():
     test_circuit_breaker_history_restored_in_load()
     test_load_state_auto_adapts_trigger_weights()
     test_error_evolution_effectiveness_in_unified_verdict()
+
+    # Architectural Unification — Cross-Module Provenance Integration Tests
+    test_auto_critic_provenance_records_revision()
+    test_coherence_verifier_provenance_logs_incoherence()
+    test_metacognitive_trigger_provenance_dominant_module()
+    test_output_reliability_gate_trigger_signal_mapping()
+    test_error_evolution_auto_extracts_antecedents()
+    test_aeonv3_cross_module_provenance_wiring()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
