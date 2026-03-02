@@ -63165,6 +63165,182 @@ def test_metacognitive_trigger_maps_low_global_integrity():
     print("✅ test_metacognitive_trigger_maps_low_global_integrity PASSED")
 
 
+# ============================================================================
+# Architectural Unification — Circuit Breaker Coherence & Cross-Pass Tracking
+# ============================================================================
+
+def test_causal_model_coherence_uses_healthy_flag():
+    """causal_model coherence registry must use _causal_healthy flag, not
+    always True, so circuit breaker trips degrade coverage."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Should NOT contain validated=True for causal_model
+    assert 'register_output("causal_model", validated=True)' not in src, (
+        "causal_model coherence must use _causal_healthy flag, not True"
+    )
+    assert 'register_output("causal_model", validated=_causal_healthy)' in src, (
+        "causal_model coherence must use _causal_healthy flag"
+    )
+    print("✅ test_causal_model_coherence_uses_healthy_flag PASSED")
+
+
+def test_mcts_coherence_degrades_on_circuit_breaker():
+    """mcts_planning coherence registry must set validated=False when
+    circuit breaker tripped."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Must check circuit breaker in mcts_planning registration
+    assert '_mcts_cb_tripped' in src, (
+        "mcts_planning coherence must check circuit breaker trip"
+    )
+    assert 'not _mcts_cb_tripped' in src, (
+        "mcts_planning validated must be False when circuit breaker tripped"
+    )
+    print("✅ test_mcts_coherence_degrades_on_circuit_breaker PASSED")
+
+
+def test_circuit_breaker_history_initialized():
+    """AEONDeltaV3 must have _circuit_breaker_history deque for cross-pass
+    tracking."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_circuit_breaker_history'), (
+        "_circuit_breaker_history not initialized"
+    )
+    assert hasattr(model, '_cb_recurring_threshold'), (
+        "_cb_recurring_threshold not initialized"
+    )
+    assert model._cb_recurring_threshold == 3, (
+        f"Expected threshold=3, got {model._cb_recurring_threshold}"
+    )
+    print("✅ test_circuit_breaker_history_initialized PASSED")
+
+
+def test_circuit_breaker_chronic_in_reasoning_output():
+    """_reasoning_core_impl must include circuit_breaker_chronic in output."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "'circuit_breaker_chronic'" in src, (
+        "circuit_breaker_chronic must appear in reasoning core output"
+    )
+    assert '_cb_chronic_subsystems' in src, (
+        "_cb_chronic_subsystems must be computed in reasoning core"
+    )
+    print("✅ test_circuit_breaker_chronic_in_reasoning_output PASSED")
+
+
+def test_verify_cognitive_unity_includes_circuit_breaker_chronic():
+    """verify_cognitive_unity must include circuit_breaker_chronic section."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+    assert 'circuit_breaker_chronic' in result, (
+        "verify_cognitive_unity must include circuit_breaker_chronic"
+    )
+    cb_info = result['circuit_breaker_chronic']
+    assert 'healthy' in cb_info, "circuit_breaker_chronic must have 'healthy'"
+    assert 'chronic_subsystems' in cb_info, (
+        "circuit_breaker_chronic must have 'chronic_subsystems'"
+    )
+    assert cb_info['healthy'] is True, (
+        "Fresh model should have healthy circuit breakers"
+    )
+    print("✅ test_verify_cognitive_unity_includes_circuit_breaker_chronic PASSED")
+
+
+def test_verify_cognitive_unity_chronic_cb_degrades_unified():
+    """Chronic circuit breaker trips must degrade is_unified verdict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    # Simulate chronic circuit breaker trips
+    for _ in range(4):
+        model._circuit_breaker_history.append(frozenset({"world_model"}))
+    result = model.verify_cognitive_unity()
+    cb_info = result['circuit_breaker_chronic']
+    assert not cb_info['healthy'], (
+        "Chronic CB trips should make circuit_breaker_chronic unhealthy"
+    )
+    assert 'world_model' in cb_info['chronic_subsystems'], (
+        "world_model should be in chronic_subsystems"
+    )
+    # The unified verdict should be degraded
+    assert not result['unified'], (
+        "Chronic CB trips should degrade is_unified"
+    )
+    # Should have a recommendation about chronic trips
+    recs = result.get('recommendations', [])
+    assert any('chronic' in r.lower() or 'circuit breaker' in r.lower()
+               for r in recs), (
+        "Recommendations should mention chronic circuit breaker trips"
+    )
+    print("✅ test_verify_cognitive_unity_chronic_cb_degrades_unified PASSED")
+
+
+def test_circuit_breaker_history_persisted_in_save():
+    """save_state must persist circuit breaker history in cognitive state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.save_state)
+    assert 'circuit_breaker_history' in src, (
+        "save_state must persist circuit_breaker_history"
+    )
+    print("✅ test_circuit_breaker_history_persisted_in_save PASSED")
+
+
+def test_circuit_breaker_history_restored_in_load():
+    """load_state must restore circuit breaker history from cognitive state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.load_state)
+    assert 'circuit_breaker_history' in src, (
+        "load_state must restore circuit_breaker_history"
+    )
+    print("✅ test_circuit_breaker_history_restored_in_load PASSED")
+
+
+def test_load_state_auto_adapts_trigger_weights():
+    """load_state must auto-adapt metacognitive trigger weights from
+    loaded error evolution patterns."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.load_state)
+    assert 'adapt_weights_from_evolution' in src, (
+        "load_state must call adapt_weights_from_evolution"
+    )
+    assert 'Auto-adapted metacognitive trigger weights' in src, (
+        "load_state must log auto-adaptation of trigger weights"
+    )
+    print("✅ test_load_state_auto_adapts_trigger_weights PASSED")
+
+
+def test_error_evolution_effectiveness_in_unified_verdict():
+    """verify_cognitive_unity must include error evolution effectiveness
+    in the is_unified composite check."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert '_ee_rate' in src, (
+        "verify_cognitive_unity must reference _ee_rate"
+    )
+    assert '_cb_healthy' in src, (
+        "verify_cognitive_unity must reference _cb_healthy"
+    )
+    # Both conditions must appear in is_unified computation
+    assert '_ee_rate >= 0.3' in src or '_ee_rate >' in src, (
+        "is_unified must include error evolution effectiveness check"
+    )
+    assert '_cb_healthy' in src, (
+        "is_unified must include circuit breaker health check"
+    )
+    print("✅ test_error_evolution_effectiveness_in_unified_verdict PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -65976,6 +66152,18 @@ def run_all_tests():
     test_hca_integrity_monitor_records_meta_loop_health()
     test_pcp_integrity_monitor_records_health()
     test_metacognitive_trigger_maps_low_global_integrity()
+
+    # Architectural Unification — Circuit Breaker Coherence & Cross-Pass Tracking
+    test_causal_model_coherence_uses_healthy_flag()
+    test_mcts_coherence_degrades_on_circuit_breaker()
+    test_circuit_breaker_history_initialized()
+    test_circuit_breaker_chronic_in_reasoning_output()
+    test_verify_cognitive_unity_includes_circuit_breaker_chronic()
+    test_verify_cognitive_unity_chronic_cb_degrades_unified()
+    test_circuit_breaker_history_persisted_in_save()
+    test_circuit_breaker_history_restored_in_load()
+    test_load_state_auto_adapts_trigger_weights()
+    test_error_evolution_effectiveness_in_unified_verdict()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
