@@ -16463,6 +16463,10 @@ class MetaCognitiveRecursionTrigger:
             # degraded global health, indicating multiple subsystems
             # are simultaneously underperforming.
             "low_global_integrity": "uncertainty",
+            # Chronic circuit breaker — a subsystem has tripped the
+            # circuit breaker across multiple consecutive forward
+            # passes, indicating persistent subsystem failure.
+            "chronic_circuit_breaker": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17469,6 +17473,15 @@ class CausalErrorEvolutionTracker:
         # UCC same-pass re-reasoning — maps to lambda_ucc so training
         # adapts to frequent coherence-driven re-reasoning.
         "ucc_rerun": "lambda_ucc",
+        # Chronic circuit breaker — a subsystem has tripped the circuit
+        # breaker across multiple consecutive forward passes, indicating
+        # persistent subsystem failure.  Maps to lambda_coherence so
+        # training strengthens cross-module integration reliability.
+        "chronic_circuit_breaker": "lambda_coherence",
+        # Low global integrity — SystemIntegrityMonitor reports degraded
+        # global health.  Maps to lambda_ucc so training adapts to
+        # systemic subsystem degradation.
+        "low_global_integrity": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -35920,7 +35933,48 @@ class AEONDeltaV3(nn.Module):
                         "Post-output coherence verification error "
                         "(non-fatal): %s", _poc_err,
                     )
-        
+
+        # ===== COGNITIVE UNITY SCORE =====
+        # Synthesize a single composite score ∈ [0, 1] that quantifies
+        # how well this forward pass satisfies the three AGI coherence
+        # requirements:
+        #   1. Mutual verification — each component verifies the others
+        #      (proxied by verification_coverage).
+        #   2. Uncertainty → metacognition — any uncertainty triggers a
+        #      meta-cognitive cycle (proxied by inverse uncertainty: low
+        #      residual uncertainty means the cycle handled it).
+        #   3. Root-cause traceability — all conclusions can be traced
+        #      back (proxied by provenance completeness from the tracker).
+        # This gives downstream consumers a single actionable trust
+        # signal for the full cognitive pipeline's coherence, closing
+        # the gap where many individual metrics were returned but never
+        # unified into one score per forward pass.
+        _cus_verification = outputs.get('verification_coverage', 0.0)
+        _cus_uncertainty = 1.0 - min(1.0, outputs.get('uncertainty', 0.0))
+        _cus_traceability = (
+            self.provenance_tracker.get_trace_completeness_ratio()
+        )
+        _cus_reliability = outputs.get('output_reliability', 0.0)
+        _cus_convergence = outputs.get('convergence_quality', 0.0)
+        result['cognitive_unity_score'] = (
+            0.25 * _cus_verification
+            + 0.20 * _cus_uncertainty
+            + 0.20 * _cus_traceability
+            + 0.20 * _cus_reliability
+            + 0.15 * _cus_convergence
+        )
+
+        # ===== PROVENANCE ROOT-CAUSE (TOP-LEVEL) =====
+        # Surface the UCC's provenance_root_cause at the top level of
+        # the result dict so downstream consumers can trace conclusions
+        # back to root causes without navigating into the nested
+        # unified_cognitive_cycle_results dict.  This satisfies the
+        # requirement that all conclusions are directly traceable.
+        _ucc_res = result.get('unified_cognitive_cycle_results', {})
+        result['provenance_root_cause'] = _ucc_res.get(
+            'provenance_root_cause', {},
+        )
+
         return result
     
     def compute_loss(
