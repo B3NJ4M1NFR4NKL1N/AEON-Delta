@@ -21368,6 +21368,17 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "memory_routing_trust_pressure", default=0.0,
         )
+        # Cognitive unity deficit — when the previous pass's composite AGI
+        # health metric (cognitive_unity_score) indicates unmet requirements
+        # (low mutual verification, poor metacognitive responsiveness, or
+        # incomplete root-cause traceability), this signal conditions the
+        # next pass's meta-loop to reason deeper.  This closes the self-
+        # referential verification loop: the system's assessment of its
+        # own cognitive unity feeds back into reasoning depth, satisfying
+        # the requirement that each component verifies the others.
+        self.feedback_bus.register_signal(
+            "cognitive_unity_deficit", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -22171,6 +22182,17 @@ class AEONDeltaV3(nn.Module):
         # can condition the next pass's meta-loop when cycle consistency
         # is low, closing the decoder→feedback→meta-loop cross-pass loop.
         self._cached_cycle_consistency_score: float = 1.0
+
+        # Cognitive unity deficit — caches (1 - cognitive_unity_score) from
+        # the most recent _forward_impl so the feedback bus can condition
+        # the next pass's meta-loop when the composite AGI health metric
+        # (mutual verification + metacognitive responsiveness + root-cause
+        # traceability) is degraded.  This closes the self-referential
+        # verification loop: the system's assessment of its own cognitive
+        # unity feeds back into reasoning depth, ensuring that unmet AGI
+        # requirements trigger deeper meta-cognitive reasoning on the next
+        # pass.  Initialised to 0.0 (healthy).
+        self._cached_cognitive_unity_deficit: float = 0.0
 
         # Coherence-based loss scale — caches a scaling factor derived from
         # the inference coherence deficit so the trainer can read it to
@@ -23177,6 +23199,19 @@ class AEONDeltaV3(nn.Module):
         if _mrt > 0.1:
             extra["memory_routing_trust_pressure"] = max(
                 0.0, min(1.0, _mrt),
+            )
+        # Cognitive unity deficit — carries (1 - cognitive_unity_score)
+        # from the previous pass into the feedback bus.  When the
+        # composite AGI health metric indicates unmet requirements
+        # (low mutual verification, poor metacognitive responsiveness,
+        # or incomplete root-cause traceability), this signal conditions
+        # the next pass's meta-loop to deepen reasoning.  This closes
+        # the self-referential verification loop: the system's own
+        # assessment of cognitive unity feeds back into reasoning depth.
+        _cud = getattr(self, '_cached_cognitive_unity_deficit', 0.0)
+        if _cud > 0.1:
+            extra["cognitive_unity_deficit"] = max(
+                0.0, min(1.0, _cud),
             )
         # UCC coherence trend EMA — when the UnifiedCognitiveCycle's
         # cross-pass coherence trend indicates systematic architectural
@@ -36214,6 +36249,25 @@ class AEONDeltaV3(nn.Module):
                             _final_coh.get('needs_recheck', False)
                         ),
                     }
+                    # Record post-output coherence failures in error
+                    # evolution so persistent post-output disagreement
+                    # influences metacognitive trigger sensitivity and
+                    # training-inference bridging.  Without this, post-
+                    # output coherence results are returned but never
+                    # feed into cross-session learning, leaving the
+                    # metacognitive trigger blind to recurring output-
+                    # stage coherence failures.
+                    _poc_score = result['post_output_coherence']['coherence_score']
+                    if _poc_score < 0.5 and self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_output_coherence_deficit',
+                            strategy_used='coherence_recheck',
+                            success=_poc_score > 0.3,
+                            metadata={
+                                'coherence_score': _poc_score,
+                                'needs_recheck': result['post_output_coherence']['needs_recheck'],
+                            },
+                        )
                 except Exception as _poc_err:
                     logger.debug(
                         "Post-output coherence verification error "
@@ -36274,6 +36328,14 @@ class AEONDeltaV3(nn.Module):
             + 0.15 * _cus_reliability
             + 0.15 * _cus_convergence
             + 0.15 * _cus_coherence
+        )
+        # Cache (1 - score) as the unity deficit so the feedback bus can
+        # condition the next pass's meta-loop when AGI requirements are
+        # unmet.  This closes the self-referential loop: cognitive unity
+        # assessment → feedback bus → meta-loop conditioning → deeper
+        # reasoning → improved cognitive unity.
+        self._cached_cognitive_unity_deficit = max(
+            0.0, 1.0 - result['cognitive_unity_score'],
         )
         # Surface per-component breakdown so downstream consumers can
         # diagnose which AGI requirement is weakest and target corrective
@@ -39536,6 +39598,30 @@ class AEONDeltaV3(nn.Module):
                 # Re-evaluate status with cognitive unity failures
                 if status == 'healthy':
                     status = 'degraded'
+                # Record cognitive unity violations in error evolution so
+                # that persistent AGI requirement failures influence
+                # metacognitive trigger sensitivity, training-inference
+                # bridging, and UncertaintyPropagationBus decay adaptation.
+                # Without this, cognitive unity failures are surfaced in the
+                # diagnostic report but never feed into the cross-session
+                # learning loop, leaving the system unable to learn from
+                # recurring AGI coherence failures.
+                if self.error_evolution is not None:
+                    _cu_score = _cognitive_unity.get(
+                        'cognitive_unity_score', 0.0,
+                    )
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_unity_violation',
+                        strategy_used='diagnostic_detection',
+                        success=_cu_score > 0.5,
+                        metadata={
+                            'cognitive_unity_score': _cu_score,
+                            'unmet_requirements': [
+                                r for r in _cu_recs
+                                if r != "All cognitive unity checks passed."
+                            ],
+                        },
+                    )
 
         # --- Inflate coherence deficit (deferred) ---
         # Now that all gap sources (wiring checks + cognitive unity) are
@@ -42015,6 +42101,35 @@ class AEONDeltaV3(nn.Module):
                     logger.warning(
                         f"Failed to adapt metacognitive trigger weights "
                         f"(non-fatal): {_adapt_err}"
+                    )
+
+            # Auto-adapt UncertaintyPropagationBus per-edge decay factors
+            # from the imported error evolution patterns.  This closes the
+            # gap where training-discovered failure patterns were bridged
+            # into error_evolution and used to adapt metacognitive trigger
+            # weights, but the UncertaintyPropagationBus still used its
+            # default static decay factors, leaving uncertainty propagation
+            # blind to training-discovered structural weaknesses.  After
+            # this adaptation, edges incident to modules with high training-
+            # time failure rates receive boosted decay so upstream
+            # uncertainty propagates further along known-weak paths.
+            _upb = getattr(self, 'uncertainty_propagation', None)
+            if _upb is not None and self.error_evolution is not None:
+                try:
+                    _ee_summary = self.error_evolution.get_error_summary()
+                    if _ee_summary.get('total_episodes', 0) > 0:
+                        _upb.adapt_decay_from_evolution(
+                            _ee_summary.get('error_classes', {}),
+                            dependency_edges=self._PIPELINE_DEPENDENCIES,
+                        )
+                        logger.info(
+                            "Auto-adapted UncertaintyPropagationBus decay "
+                            "factors from loaded error evolution patterns"
+                        )
+                except Exception as _upb_err:
+                    logger.warning(
+                        f"Failed to adapt UncertaintyPropagationBus "
+                        f"(non-fatal): {_upb_err}"
                     )
             
             logger.info(f"✅ State loaded from {save_dir}")
