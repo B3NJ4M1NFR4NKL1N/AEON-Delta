@@ -32835,6 +32835,16 @@ class AEONDeltaV3(nn.Module):
                     reliability_weakest_factor=getattr(
                         self, '_cached_reliability_weakest_factor', None,
                     ),
+                    # Explicit coverage deficit from the coherence
+                    # registry so the UCC does not rely solely on its
+                    # auto-read path.  When the registry is absent or
+                    # has not been populated yet, None is passed and
+                    # the UCC falls through to the auto-read default.
+                    coverage_deficit=(
+                        self.coherence_registry.get_coverage_deficit()
+                        if self.coherence_registry is not None
+                        else None
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -36152,31 +36162,25 @@ class AEONDeltaV3(nn.Module):
                     )
 
         # ===== COGNITIVE UNITY SCORE =====
-        # Synthesize a single composite score ∈ [0, 1] that quantifies
-        # how well this forward pass satisfies the three AGI coherence
-        # requirements:
-        #   1. Mutual verification — each component verifies the others
-        #      (proxied by verification_coverage).
+        # Synthesize a single composite score ∈ [0, 1] that explicitly
+        # validates the three AGI coherence requirements:
+        #   1. Mutual verification — each component verifies the others,
+        #      measured by verification_coverage AND cross-module coherence.
         #   2. Uncertainty → metacognition — any uncertainty triggers a
-        #      meta-cognitive cycle (proxied by inverse uncertainty: low
-        #      residual uncertainty means the cycle handled it).
+        #      meta-cognitive cycle.  Measured by whether the UCC correctly
+        #      triggered re-reasoning when uncertainty was elevated (i.e.
+        #      metacognitive responsiveness), not just inverse uncertainty.
         #   3. Root-cause traceability — all conclusions can be traced
-        #      back (proxied by provenance completeness from the tracker).
-        # This gives downstream consumers a single actionable trust
-        # signal for the full cognitive pipeline's coherence, closing
-        # the gap where many individual metrics were returned but never
-        # unified into one score per forward pass.
+        #      back, measured by provenance completeness from the tracker.
+        # Each requirement maps to a dedicated term so downstream consumers
+        # can diagnose which AGI property is weakest.
         _cus_verification = outputs.get('verification_coverage', 0.0)
-        _cus_uncertainty = 1.0 - min(1.0, outputs.get('uncertainty', 0.0))
         _cus_traceability = (
             self.provenance_tracker.get_trace_completeness_ratio()
         )
         _cus_reliability = outputs.get('output_reliability', 0.0)
         _cus_convergence = outputs.get('convergence_quality', 0.0)
-        # 4. Cross-module coherence — the UCC coherence score measures
-        #    how well subsystem outputs agree with each other.  Including
-        #    it closes the gap where coherence was verified but never
-        #    factored into the composite cognitive unity assessment.
+        # Cross-module coherence from the UCC.
         _ucc_coh = result.get('unified_cognitive_cycle_results', {}).get(
             'coherence_result', {},
         )
@@ -36184,14 +36188,46 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_coh_score, torch.Tensor):
             _coh_score = float(_coh_score.mean().item())
         _cus_coherence = max(0.0, min(1.0, _coh_score))
+        # Metacognitive responsiveness — quantifies whether the UCC
+        # correctly responded to uncertainty.  When uncertainty was high
+        # and the UCC triggered re-reasoning, responsiveness is 1.0.
+        # When uncertainty was high but the UCC did NOT trigger,
+        # responsiveness is degraded.  When uncertainty is low,
+        # responsiveness is 1.0 (no trigger needed).  This directly
+        # validates AGI requirement 2: "any uncertainty triggers a
+        # meta-cognitive cycle."
+        _pass_uncertainty = min(1.0, outputs.get('uncertainty', 0.0))
+        _ucc_triggered = bool(
+            result.get('unified_cognitive_cycle_results', {}).get(
+                'should_rerun', False,
+            )
+        )
+        if _pass_uncertainty > 0.5:
+            _cus_metacognitive_responsiveness = 1.0 if _ucc_triggered else (
+                1.0 - _pass_uncertainty
+            )
+        else:
+            _cus_metacognitive_responsiveness = 1.0
         result['cognitive_unity_score'] = (
             0.20 * _cus_verification
-            + 0.15 * _cus_uncertainty
+            + 0.15 * _cus_metacognitive_responsiveness
             + 0.20 * _cus_traceability
             + 0.15 * _cus_reliability
             + 0.15 * _cus_convergence
             + 0.15 * _cus_coherence
         )
+        # Surface per-component breakdown so downstream consumers can
+        # diagnose which AGI requirement is weakest and target corrective
+        # action.  This closes the gap where cognitive_unity_score was a
+        # single opaque scalar without decomposition.
+        result['cognitive_unity_components'] = {
+            'mutual_verification': _cus_verification,
+            'metacognitive_responsiveness': _cus_metacognitive_responsiveness,
+            'root_cause_traceability': _cus_traceability,
+            'output_reliability': _cus_reliability,
+            'convergence_quality': _cus_convergence,
+            'cross_module_coherence': _cus_coherence,
+        }
         # Surface coherence_deficit at top level so downstream consumers
         # can access cross-module coherence health directly.
         result['coherence_deficit'] = self._cached_coherence_deficit

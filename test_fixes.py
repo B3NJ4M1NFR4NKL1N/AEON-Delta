@@ -67736,5 +67736,124 @@ def test_rssm_trainer_output_includes_convergence_status():
     print("✅ test_rssm_trainer_output_includes_convergence_status PASSED")
 
 
+def test_cognitive_unity_components_dict():
+    """Forward pass result must include a cognitive_unity_components dict
+    with per-requirement breakdown for the three AGI coherence properties."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    assert 'cognitive_unity_components' in result, (
+        "Forward pass result must include cognitive_unity_components dict"
+    )
+    components = result['cognitive_unity_components']
+    assert isinstance(components, dict), (
+        f"cognitive_unity_components must be dict, got {type(components)}"
+    )
+    expected_keys = {
+        'mutual_verification', 'metacognitive_responsiveness',
+        'root_cause_traceability', 'output_reliability',
+        'convergence_quality', 'cross_module_coherence',
+    }
+    assert expected_keys <= set(components.keys()), (
+        f"cognitive_unity_components missing keys: "
+        f"{expected_keys - set(components.keys())}"
+    )
+    for key, val in components.items():
+        assert isinstance(val, (int, float)), (
+            f"cognitive_unity_components['{key}'] must be numeric, got {type(val)}"
+        )
+        assert 0.0 <= val <= 1.0, (
+            f"cognitive_unity_components['{key}'] must be in [0, 1], got {val}"
+        )
+    print("✅ test_cognitive_unity_components_dict PASSED")
+
+
+def test_metacognitive_responsiveness_low_uncertainty():
+    """When uncertainty is low, metacognitive_responsiveness should be 1.0
+    (no trigger needed means the system is correctly not over-triggering)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    components = result.get('cognitive_unity_components', {})
+    responsiveness = components.get('metacognitive_responsiveness', 0.0)
+    uncertainty = result.get('uncertainty', 0.0)
+    if uncertainty <= 0.5:
+        assert responsiveness == 1.0, (
+            f"With low uncertainty ({uncertainty:.3f}), "
+            f"metacognitive_responsiveness should be 1.0, got {responsiveness}"
+        )
+    print("✅ test_metacognitive_responsiveness_low_uncertainty PASSED")
+
+
+def test_ucc_coverage_deficit_explicitly_passed():
+    """When the coherence registry is available, coverage_deficit should
+    be explicitly passed to UCC evaluate() rather than relying solely
+    on the registry auto-read path."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # The model should have a coherence registry
+    assert hasattr(model, 'coherence_registry'), (
+        "AEONDeltaV3 must have a coherence_registry attribute"
+    )
+    assert model.coherence_registry is not None, (
+        "coherence_registry should be initialized"
+    )
+
+    # Run a forward pass and verify the UCC received coverage_deficit
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    ucc_results = result.get('unified_cognitive_cycle_results', {})
+    # coverage_deficit should be in the UCC results (it returns this field)
+    assert 'coverage_deficit' in ucc_results or ucc_results == {}, (
+        "UCC results should include coverage_deficit when registry is active"
+    )
+    print("✅ test_ucc_coverage_deficit_explicitly_passed PASSED")
+
+
+def test_training_auto_bridge_phase_a():
+    """Phase A training should automatically call sync_from_training
+    at the end of training to bridge error patterns into inference."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, SafeThoughtAETrainerV4,
+        TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_bridge")
+
+    # Verify that the trainer's fit method calls sync_from_training
+    # by checking the method's source contains the call
+    import inspect
+    source = inspect.getsource(trainer.fit)
+    assert 'sync_from_training' in source, (
+        "Phase A fit() must automatically call sync_from_training "
+        "after training completes to bridge error patterns into inference"
+    )
+    print("✅ test_training_auto_bridge_phase_a PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

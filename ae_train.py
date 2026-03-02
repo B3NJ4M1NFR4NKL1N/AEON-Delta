@@ -3402,6 +3402,29 @@ class SafeThoughtAETrainerV4:
             self.model.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая модель с loss={self.best_loss:.6f}")
         
+        # Auto-bridge training error patterns into the inference pipeline
+        # so that training-discovered convergence failures, coherence
+        # deficits, and metacognitive triggers are immediately available
+        # for inference-time decision making.  This closes the gap where
+        # sync_from_training was defined but never automatically called,
+        # requiring manual invocation after training.
+        if hasattr(self.model, 'sync_from_training'):
+            try:
+                _sync_result = self.model.sync_from_training(
+                    trainer_monitor=self.convergence_monitor,
+                )
+                logger.info(
+                    "   🔗 Training→inference bridge: %d events imported, "
+                    "trigger_adapted=%s",
+                    _sync_result.get('events_imported', 0),
+                    _sync_result.get('trigger_adapted', False),
+                )
+            except Exception as _sync_err:
+                logger.warning(
+                    "   ⚠️  Training→inference bridge failed (non-fatal): %s",
+                    _sync_err,
+                )
+
         self.monitor.end_training("phase_A")
     
     def _save_checkpoint(self, epoch: int, metrics: dict):
@@ -4061,6 +4084,23 @@ class ContextualRSSMTrainer:
             self.model.rssm.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
+        # Auto-bridge Phase B training insights into the inference
+        # pipeline, mirroring the Phase A auto-bridge.
+        if hasattr(self.model, 'sync_from_training'):
+            try:
+                _sync_result = self.model.sync_from_training(
+                    trainer_monitor=self.monitor,
+                )
+                logger.info(
+                    "   🔗 Phase B training→inference bridge: %d events imported",
+                    _sync_result.get('events_imported', 0),
+                )
+            except Exception as _sync_err:
+                logger.warning(
+                    "   ⚠️  Phase B training→inference bridge failed "
+                    "(non-fatal): %s", _sync_err,
+                )
+
         self.monitor.end_training("phase_B")
 
 
