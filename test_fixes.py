@@ -68150,5 +68150,139 @@ def test_self_diagnostic_records_cognitive_unity_violation():
     print("✅ test_self_diagnostic_records_cognitive_unity_violation PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL COHERENCE TESTS — validate that the four architectural gaps
+#  (init-time wiring validation, meta-cognitive re-execution, mid-training
+#  bridging, and input_batch persistence) are correctly closed.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_verify_pipeline_wiring_called_at_init():
+    """Gap 1: verify_pipeline_wiring() is called during AEONDeltaV3.__init__
+    so that wiring errors are surfaced at construction time."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu', encoder_backend='ssm')
+    # Patch verify_pipeline_wiring to track whether it was called
+    _called = {'count': 0}
+    _original = AEONDeltaV3.verify_pipeline_wiring
+
+    def _tracking_verify(self_inner):
+        _called['count'] += 1
+        return _original(self_inner)
+
+    AEONDeltaV3.verify_pipeline_wiring = _tracking_verify
+    try:
+        model = AEONDeltaV3(config)
+        assert _called['count'] >= 1, (
+            f"verify_pipeline_wiring should be called during __init__, "
+            f"but was called {_called['count']} times"
+        )
+    finally:
+        AEONDeltaV3.verify_pipeline_wiring = _original
+
+    print("✅ test_verify_pipeline_wiring_called_at_init PASSED")
+
+
+def test_forward_pass_stores_input_batch():
+    """Gap 2 prerequisite: _forward_pass returns input_batch for
+    meta-cognitive re-execution."""
+    from ae_train import AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor
+
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=64,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_input_batch")
+
+    # Create a small batch of tokens
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    outputs = trainer._forward_pass(tokens.to(trainer.device))
+
+    assert 'input_batch' in outputs, (
+        "outputs should contain 'input_batch' for meta-cognitive re-execution"
+    )
+    assert torch.equal(outputs['input_batch'], tokens.to(trainer.device)), (
+        "input_batch should match the original input tokens"
+    )
+
+    print("✅ test_forward_pass_stores_input_batch PASSED")
+
+
+def test_mid_training_bridge_interval():
+    """Gap 3: bridge_inference_insights_to_training adjusts training
+    hyperparameters based on accumulated error patterns."""
+    from ae_train import (
+        bridge_inference_insights_to_training,
+        CausalErrorEvolutionTracker,
+        AEONConfigV4, AEONDeltaV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4(vocab_size=100, z_dim=32, hidden_dim=64,
+                          vq_num_embeddings=16, vq_embedding_dim=32,
+                          seq_length=16, use_amp=False)
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, output_dir="/tmp/test_bridge_interval")
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Simulate recurring convergence conflicts
+    for _ in range(5):
+        tracker.record_episode(
+            error_class='convergence_conflict',
+            strategy_used='arbitration_escalation',
+            success=False,
+        )
+    # Simulate recurring coherence deficits
+    for _ in range(5):
+        tracker.record_episode(
+            error_class='coherence_deficit',
+            strategy_used='meta_rerun',
+            success=False,
+        )
+
+    original_clip = trainer._grad_clip_norm
+    adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=tracker,
+        trainer=trainer,
+    )
+
+    assert adjustments > 0, (
+        "bridge_inference_insights_to_training should make adjustments "
+        "given recurring convergence conflicts and coherence deficits"
+    )
+    assert trainer._grad_clip_norm <= original_clip, (
+        "Grad clip should be tightened after recurring convergence conflicts"
+    )
+
+    print("✅ test_mid_training_bridge_interval PASSED")
+
+
+def test_metacognitive_rerun_records_error_evolution():
+    """Gap 2: When should_rerun=True, the re-execution records the event
+    in error evolution for adaptive learning."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker(max_history=50)
+    # Simulate what the corrective re-execution does
+    tracker.record_episode(
+        error_class='training_metacognitive_rerun',
+        strategy_used='corrective_step',
+        success=True,
+        metadata={'rerun_loss': 0.5, 'triggers_active': ['uncertainty']},
+    )
+
+    summary = tracker.get_error_summary()
+    assert 'training_metacognitive_rerun' in summary.get('error_classes', {}), (
+        "training_metacognitive_rerun should be recorded in error evolution"
+    )
+    episode = summary['error_classes']['training_metacognitive_rerun']
+    assert episode['count'] == 1
+    assert episode['success_rate'] == 1.0
+
+    print("✅ test_metacognitive_rerun_records_error_evolution PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

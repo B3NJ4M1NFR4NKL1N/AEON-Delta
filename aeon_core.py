@@ -22768,6 +22768,33 @@ class AEONDeltaV3(nn.Module):
 
         # Print summary
         self.print_architecture_summary()
+
+        # ===== INIT-TIME PIPELINE WIRING VALIDATION =====
+        # Validate that declared _PIPELINE_DEPENDENCIES map to actually-
+        # initialized modules at construction time.  Previously, wiring
+        # errors were only discovered at the first forward pass (inside
+        # _reasoning_core_impl) or when self_diagnostic() was explicitly
+        # called, allowing misconfigured pipelines to silently persist.
+        # Running verify_pipeline_wiring() here ensures that architectural
+        # inconsistencies are surfaced immediately, satisfying the
+        # requirement that each component verifies and reinforces the
+        # others from the moment the system is constructed.
+        try:
+            _init_wiring = self.verify_pipeline_wiring()
+            _missing = _init_wiring.get('missing_edges', [])
+            if _missing:
+                logger.warning(
+                    "⚠️  Pipeline wiring: %d declared edge(s) reference "
+                    "uninitialized modules — run self_diagnostic() for "
+                    "details",
+                    len(_missing),
+                )
+        except Exception as _wiring_err:
+            logger.debug(
+                "Init-time pipeline wiring validation skipped: %s",
+                _wiring_err,
+            )
+
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")
         logger.info("="*70)
