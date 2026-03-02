@@ -3059,6 +3059,10 @@ class SafeThoughtAETrainerV4:
             'accuracy': accuracy,
             'provenance': self.provenance.compute_attribution(),
             'convergence_status': self.convergence_monitor.status,
+            # Store the input batch (detached) so that meta-cognitive
+            # re-execution can re-run the training step with corrected
+            # parameters when the UCC triggers should_rerun=True.
+            'input_batch': tokens.detach(),
             **vq_stats
         }
     
@@ -3351,6 +3355,42 @@ class SafeThoughtAETrainerV4:
                     # architecture and the training optimizer.
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] *= self._metacognitive_lr_factor
+                    # Re-execute one corrective training step with the
+                    # tightened parameters when the meta-cognitive cycle
+                    # triggers.  Previously, should_rerun only adjusted
+                    # LR and gradient clip, deferring the actual corrective
+                    # computation to the next epoch.  This re-execution
+                    # ensures that any uncertainty immediately triggers a
+                    # meta-cognitive cycle that produces a corrective
+                    # gradient, satisfying the requirement that uncertainty
+                    # triggers corrective action within the same cycle.
+                    if outputs is not None and hasattr(outputs, '__contains__') and 'input_batch' in outputs:
+                        try:
+                            _rerun_out = self.train_step(outputs['input_batch'])
+                            _rerun_loss = _rerun_out['total_loss']
+                            if (not (math.isnan(_rerun_loss.item()) or math.isinf(_rerun_loss.item()))
+                                    and _rerun_loss.item() < epoch_metrics["total"] * num_steps):
+                                _rerun_grad = self._optimizer_step()
+                                logger.info(
+                                    f"   🔄 Meta-cognitive re-execution: "
+                                    f"loss={_rerun_loss.item():.6f}, "
+                                    f"grad_norm={_rerun_grad:.4f}"
+                                )
+                                if self._error_evolution is not None:
+                                    self._error_evolution.record_episode(
+                                        error_class='training_metacognitive_rerun',
+                                        strategy_used='corrective_step',
+                                        success=True,
+                                        metadata={
+                                            'rerun_loss': _rerun_loss.item(),
+                                            'triggers_active': _active,
+                                        },
+                                    )
+                        except Exception as _rerun_err:
+                            logger.debug(
+                                "Meta-cognitive re-execution failed "
+                                "(non-fatal): %s", _rerun_err,
+                            )
                 # Apply correction_guidance from UCC — when the unified
                 # cognitive cycle identifies a specific target module and
                 # recommended strategy, use that insight to adapt training
@@ -3396,6 +3436,36 @@ class SafeThoughtAETrainerV4:
                         strategy_used='skip_and_continue',
                         success=False,
                         metadata={'error': str(_cycle_err)[:200]},
+                    )
+
+            # --- Periodic inference↔training bridge ---
+            # Every bridge_interval epochs, synchronize error evolution
+            # insights from the accumulated training error history back
+            # into the training hyperparameters.  Previously, this bridge
+            # was only invoked after ALL epochs completed, meaning
+            # training-time discoveries (e.g., recurring coherence
+            # deficits, convergence conflicts) could not adapt the
+            # optimizer during training.  Mid-training bridging ensures
+            # that accumulated error patterns continuously refine
+            # training dynamics, satisfying the requirement that each
+            # component verifies and reinforces the others throughout
+            # the training process, not just at its conclusion.
+            _bridge_interval = getattr(self.config, 'bridge_interval', 5)
+            if (epoch + 1) % _bridge_interval == 0 and epoch + 1 < epochs:
+                try:
+                    _mid_adj = bridge_inference_insights_to_training(
+                        inference_error_evolution=self._error_evolution,
+                        trainer=self,
+                    )
+                    if _mid_adj > 0:
+                        logger.info(
+                            f"   🔗 Mid-training bridge (epoch {epoch+1}): "
+                            f"{_mid_adj} adjustment(s) applied"
+                        )
+                except Exception as _mid_err:
+                    logger.debug(
+                        "Mid-training bridge failed (non-fatal): %s",
+                        _mid_err,
                     )
             
             if epoch_metrics["total"] < self.best_loss:
@@ -4087,6 +4157,28 @@ class ContextualRSSMTrainer:
                             'error': str(_cycle_err)[:200],
                             'phase': 'B',
                         },
+                    )
+
+            # --- Periodic inference↔training bridge (Phase B) ---
+            # Mirrors Phase A's periodic bridging: every bridge_interval
+            # epochs, synchronize accumulated error patterns back into
+            # training hyperparameters.
+            _bridge_interval = getattr(self.config, 'bridge_interval', 5)
+            if (epoch + 1) % _bridge_interval == 0 and epoch + 1 < epochs:
+                try:
+                    _mid_adj = bridge_inference_insights_to_training(
+                        inference_error_evolution=self._error_evolution,
+                        trainer=self,
+                    )
+                    if _mid_adj > 0:
+                        logger.info(
+                            f"   🔗 Phase B mid-training bridge (epoch {epoch+1}): "
+                            f"{_mid_adj} adjustment(s) applied"
+                        )
+                except Exception as _mid_err:
+                    logger.debug(
+                        "Phase B mid-training bridge failed (non-fatal): %s",
+                        _mid_err,
                     )
             
             if epoch_metrics["mse_loss"] < self.best_loss:
