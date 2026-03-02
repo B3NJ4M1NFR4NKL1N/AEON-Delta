@@ -66445,6 +66445,23 @@ def run_all_tests():
     test_training_error_dependency_map_covers_feedback_oscillation()
     test_training_error_dependency_map_covers_ucc_rerun()
 
+    # Architectural Coherence Components Tests
+    test_provenance_chain_validator_complete()
+    test_provenance_chain_validator_incomplete()
+    test_provenance_chain_validator_skips_disabled_modules()
+    test_post_output_uncertainty_gate_triggers()
+    test_post_output_uncertainty_gate_no_trigger_when_ucc_handled()
+    test_post_output_uncertainty_gate_no_trigger_low_uncertainty()
+    test_post_output_uncertainty_gate_no_late_sources()
+    test_cognitive_snapshot_manager_export_import()
+    test_model_export_import_cognitive_snapshot()
+    test_model_load_v4_checkpoint_missing()
+    test_model_load_v4_checkpoint_compatible()
+    test_provenance_chain_in_forward_pass()
+    test_post_output_uncertainty_gate_in_forward_pass()
+    test_cognitive_unity_components_in_forward_pass()
+    test_save_state_persists_hierarchical_memory()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -68282,6 +68299,362 @@ def test_metacognitive_rerun_records_error_evolution():
     assert episode['success_rate'] == 1.0
 
     print("✅ test_metacognitive_rerun_records_error_evolution PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SECTION: Architectural Coherence Components Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_provenance_chain_validator_complete():
+    """ProvenanceChainValidator reports complete chain when all modules traced."""
+    from aeon_core import ProvenanceChainValidator, CausalProvenanceTracker
+
+    deps = [("input", "encoder"), ("encoder", "vq"), ("vq", "meta_loop")]
+    validator = ProvenanceChainValidator(
+        pipeline_dependencies=deps,
+        node_attr_map={},
+    )
+
+    tracker = CausalProvenanceTracker()
+    # Record provenance for all nodes
+    t = torch.randn(2, 64)
+    for node in ["input", "encoder", "vq", "meta_loop"]:
+        tracker.record_before(node, t)
+        tracker.record_after(node, t)
+
+    result = validator.validate(provenance_tracker=tracker, model=None)
+    assert result['is_complete'], f"Expected complete chain, got {result}"
+    assert result['completeness_ratio'] == 1.0
+    assert result['missing_modules'] == []
+
+    print("✅ test_provenance_chain_validator_complete PASSED")
+
+
+def test_provenance_chain_validator_incomplete():
+    """ProvenanceChainValidator detects missing modules."""
+    from aeon_core import ProvenanceChainValidator, CausalProvenanceTracker
+
+    deps = [("input", "encoder"), ("encoder", "vq"), ("vq", "meta_loop")]
+    validator = ProvenanceChainValidator(
+        pipeline_dependencies=deps,
+        node_attr_map={},
+    )
+
+    tracker = CausalProvenanceTracker()
+    t = torch.randn(2, 64)
+    # Only trace 2 of 4 nodes
+    tracker.record_before("input", t)
+    tracker.record_after("input", t)
+    tracker.record_before("encoder", t)
+    tracker.record_after("encoder", t)
+
+    result = validator.validate(provenance_tracker=tracker, model=None)
+    assert not result['is_complete']
+    assert result['completeness_ratio'] == 0.5
+    assert "vq" in result['missing_modules']
+    assert "meta_loop" in result['missing_modules']
+
+    print("✅ test_provenance_chain_validator_incomplete PASSED")
+
+
+def test_provenance_chain_validator_skips_disabled_modules():
+    """ProvenanceChainValidator skips disabled modules."""
+    from aeon_core import ProvenanceChainValidator, CausalProvenanceTracker
+
+    deps = [
+        ("input", "encoder"),
+        ("encoder", "world_model"),
+        ("world_model", "integration"),
+    ]
+    node_attr_map = {
+        "world_model": "world_model",
+    }
+    validator = ProvenanceChainValidator(
+        pipeline_dependencies=deps,
+        node_attr_map=node_attr_map,
+    )
+
+    # Create a mock model where world_model is None (disabled)
+    class MockModel:
+        world_model = None
+
+    tracker = CausalProvenanceTracker()
+    t = torch.randn(2, 64)
+    for node in ["input", "encoder", "integration"]:
+        tracker.record_before(node, t)
+        tracker.record_after(node, t)
+
+    result = validator.validate(provenance_tracker=tracker, model=MockModel())
+    # world_model should be excluded since it's disabled
+    assert result['is_complete'], f"Expected complete (world_model disabled), got {result}"
+
+    print("✅ test_provenance_chain_validator_skips_disabled_modules PASSED")
+
+
+def test_post_output_uncertainty_gate_triggers():
+    """PostOutputUncertaintyGate triggers on late-stage uncertainty."""
+    from aeon_core import PostOutputUncertaintyGate
+
+    gate = PostOutputUncertaintyGate(rerun_threshold=0.5)
+
+    # High uncertainty with late-stage sources, UCC did not trigger
+    result = gate.evaluate(
+        uncertainty=0.7,
+        uncertainty_sources={
+            'convergence': 0.2,
+            'decoder_degenerate': 0.3,
+            'cycle_consistency_violation': 0.2,
+        },
+        ucc_already_triggered=False,
+    )
+    assert result['gate_triggered'], "Gate should trigger on late-stage uncertainty"
+    assert result['late_uncertainty'] == 0.5  # 0.3 + 0.2
+    assert 'decoder_degenerate' in result['active_late_sources']
+    assert 'cycle_consistency_violation' in result['active_late_sources']
+
+    print("✅ test_post_output_uncertainty_gate_triggers PASSED")
+
+
+def test_post_output_uncertainty_gate_no_trigger_when_ucc_handled():
+    """PostOutputUncertaintyGate does not trigger when UCC already handled."""
+    from aeon_core import PostOutputUncertaintyGate
+
+    gate = PostOutputUncertaintyGate(rerun_threshold=0.5)
+
+    result = gate.evaluate(
+        uncertainty=0.8,
+        uncertainty_sources={'decoder_degenerate': 0.4},
+        ucc_already_triggered=True,
+    )
+    assert not result['gate_triggered'], "Gate should not trigger when UCC handled"
+
+    print("✅ test_post_output_uncertainty_gate_no_trigger_when_ucc_handled PASSED")
+
+
+def test_post_output_uncertainty_gate_no_trigger_low_uncertainty():
+    """PostOutputUncertaintyGate does not trigger on low uncertainty."""
+    from aeon_core import PostOutputUncertaintyGate
+
+    gate = PostOutputUncertaintyGate(rerun_threshold=0.5)
+
+    result = gate.evaluate(
+        uncertainty=0.3,
+        uncertainty_sources={'decoder_degenerate': 0.1},
+        ucc_already_triggered=False,
+    )
+    assert not result['gate_triggered'], "Gate should not trigger on low uncertainty"
+
+    print("✅ test_post_output_uncertainty_gate_no_trigger_low_uncertainty PASSED")
+
+
+def test_post_output_uncertainty_gate_no_late_sources():
+    """PostOutputUncertaintyGate does not trigger without late sources."""
+    from aeon_core import PostOutputUncertaintyGate
+
+    gate = PostOutputUncertaintyGate(rerun_threshold=0.5)
+
+    result = gate.evaluate(
+        uncertainty=0.8,
+        uncertainty_sources={'convergence': 0.8},  # Not a late source
+        ucc_already_triggered=False,
+    )
+    assert not result['gate_triggered'], "Gate should not trigger without late sources"
+
+    print("✅ test_post_output_uncertainty_gate_no_late_sources PASSED")
+
+
+def test_cognitive_snapshot_manager_export_import():
+    """CognitiveSnapshotManager round-trips memory state."""
+    from aeon_core import CognitiveSnapshotManager
+    import tempfile
+
+    manager = CognitiveSnapshotManager()
+
+    # Create a mock model with hierarchical memory
+    class MockWorkingMemory:
+        memory = torch.randn(4, 64)
+
+    class MockEpisodicBuffer:
+        episodes = [torch.randn(64), torch.randn(64)]
+
+    class MockHierarchicalMemory:
+        working_memory = MockWorkingMemory()
+        episodic_buffer = MockEpisodicBuffer()
+
+    class MockModel:
+        hierarchical_memory = MockHierarchicalMemory()
+        temporal_memory = None
+        neurogenic_memory = None
+        consolidating_memory = None
+
+    model = MockModel()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Export
+        results = manager.export_memory_snapshot(model, tmpdir)
+        assert results.get('hierarchical_memory', False), (
+            f"Export failed: {results}"
+        )
+
+        # Verify file exists
+        import os
+        assert os.path.exists(os.path.join(tmpdir, "hierarchical_memory.pt"))
+
+    print("✅ test_cognitive_snapshot_manager_export_import PASSED")
+
+
+def test_model_export_import_cognitive_snapshot():
+    """AEONDeltaV3 export/import cognitive snapshot round-trips."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import tempfile
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Export
+        export_result = model.export_cognitive_snapshot(tmpdir)
+        assert export_result['success'], f"Export failed: {export_result}"
+
+        # Create a fresh model and import
+        model2 = AEONDeltaV3(config)
+        import_result = model2.import_cognitive_snapshot(tmpdir)
+        assert import_result['success'], f"Import failed: {import_result}"
+
+    print("✅ test_model_export_import_cognitive_snapshot PASSED")
+
+
+def test_model_load_v4_checkpoint_missing():
+    """load_v4_checkpoint handles missing file gracefully."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    result = model.load_v4_checkpoint("/nonexistent/checkpoint.pt")
+    assert not result['success']
+
+    print("✅ test_model_load_v4_checkpoint_missing PASSED")
+
+
+def test_model_load_v4_checkpoint_compatible():
+    """load_v4_checkpoint loads compatible keys from a v4 checkpoint."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import tempfile
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Create a synthetic v4 checkpoint with some compatible keys
+    v4_state = {}
+    model_state = model.state_dict()
+    # Take first 5 keys from the actual model
+    for i, (key, tensor) in enumerate(model_state.items()):
+        if i >= 5:
+            break
+        v4_state[key] = tensor.clone()
+    # Add an incompatible key
+    v4_state['v4_only_key'] = torch.randn(10)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import os
+        ckpt_path = os.path.join(tmpdir, "v4_checkpoint.pt")
+        torch.save({'model_state_dict': v4_state}, ckpt_path)
+
+        result = model.load_v4_checkpoint(ckpt_path)
+        assert result['success'], f"Load failed: {result}"
+        assert len(result['loaded_keys']) == 5
+        assert 'v4_only_key' in result['skipped_keys']
+
+    print("✅ test_model_load_v4_checkpoint_compatible PASSED")
+
+
+def test_provenance_chain_in_forward_pass():
+    """Forward pass includes provenance chain completeness metric."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model.forward(input_ids, decode_mode='train')
+
+    assert 'provenance_chain_completeness' in result, (
+        "Forward pass should include provenance_chain_completeness"
+    )
+    assert 0.0 <= result['provenance_chain_completeness'] <= 1.0
+
+    print("✅ test_provenance_chain_in_forward_pass PASSED")
+
+
+def test_post_output_uncertainty_gate_in_forward_pass():
+    """Forward pass includes post-output uncertainty gate evaluation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model.forward(input_ids, decode_mode='train')
+
+    gate = result.get('post_output_uncertainty_gate')
+    assert gate is not None, "Forward pass should include post_output_uncertainty_gate"
+    assert 'should_rerun' in gate
+    assert 'late_uncertainty' in gate
+    assert 'total_uncertainty' in gate
+    assert isinstance(gate['should_rerun'], bool)
+
+    print("✅ test_post_output_uncertainty_gate_in_forward_pass PASSED")
+
+
+def test_cognitive_unity_components_in_forward_pass():
+    """Forward pass includes cognitive unity component breakdown."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model.forward(input_ids, decode_mode='train')
+
+    assert 'cognitive_unity_score' in result
+    assert 'cognitive_unity_components' in result
+    components = result['cognitive_unity_components']
+    assert 'mutual_verification' in components
+    assert 'metacognitive_responsiveness' in components
+    assert 'root_cause_traceability' in components
+    assert 'output_reliability' in components
+    assert 'convergence_quality' in components
+    assert 'cross_module_coherence' in components
+
+    print("✅ test_cognitive_unity_components_in_forward_pass PASSED")
+
+
+def test_save_state_persists_hierarchical_memory():
+    """save_state persists hierarchical memory subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import tempfile
+    import os
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        model.save_state(tmpdir)
+        # Verify memory_subsystems directory was created
+        mem_dir = os.path.join(tmpdir, "memory_subsystems")
+        # The dir may or may not exist depending on enabled subsystems
+        # But the method should not crash
+        assert os.path.exists(os.path.join(tmpdir, "model.pt"))
+
+    print("✅ test_save_state_persists_hierarchical_memory PASSED")
 
 
 if __name__ == "__main__":

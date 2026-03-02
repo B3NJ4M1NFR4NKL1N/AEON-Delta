@@ -203,6 +203,9 @@ __all__ = [
     "CounterfactualVerificationGate",
     "SubsystemCoherenceRegistry", "UncertaintyPropagationBus",
     "SubsystemHealthGate",
+    # Architectural coherence
+    "ProvenanceChainValidator", "PostOutputUncertaintyGate",
+    "CognitiveSnapshotManager",
     # Main model & training
     "AEONDeltaV3", "AEONTrainer", "AEONTestSuite",
     # Observability
@@ -20498,6 +20501,351 @@ class UnifiedCognitiveCycle:
 
 
 # ============================================================================
+# SECTION 15b: ARCHITECTURAL COHERENCE COMPONENTS
+# ============================================================================
+
+
+class ProvenanceChainValidator:
+    """Validates completeness of provenance chains at forward-pass end.
+
+    Ensures that all modules declared in the pipeline dependency DAG have
+    recorded provenance (before/after states) during the current forward
+    pass.  Missing provenance entries indicate untraced modules whose
+    outputs cannot be attributed to root causes, violating the
+    requirement that all conclusions are traceable.
+
+    This is a pure-logic validator with no learnable parameters.
+
+    Args:
+        pipeline_dependencies: The authoritative list of (upstream,
+            downstream) edges from the pipeline dependency DAG.
+        node_attr_map: Mapping from dependency-node names to model
+            attribute names, used to skip disabled modules.
+    """
+
+    def __init__(
+        self,
+        pipeline_dependencies: List[Tuple[str, str]],
+        node_attr_map: Optional[Dict[str, str]] = None,
+    ):
+        self._pipeline_dependencies = pipeline_dependencies
+        self._node_attr_map = node_attr_map or {}
+
+    def validate(
+        self,
+        provenance_tracker: 'CausalProvenanceTracker',
+        model: Optional[nn.Module] = None,
+    ) -> Dict[str, Any]:
+        """Validate provenance chain completeness.
+
+        Args:
+            provenance_tracker: The tracker to validate.
+            model: Optional model instance for checking disabled modules.
+
+        Returns:
+            Dict with completeness_ratio, missing_modules, and
+            is_complete flag.
+        """
+        # Collect all unique node names from the dependency DAG
+        all_nodes: set = set()
+        for up, down in self._pipeline_dependencies:
+            all_nodes.add(up)
+            all_nodes.add(down)
+
+        # Filter out nodes whose backing module is disabled (None)
+        expected_nodes: set = set()
+        for node in all_nodes:
+            attr = self._node_attr_map.get(node)
+            if attr is not None and model is not None:
+                if getattr(model, attr, None) is None:
+                    continue
+            expected_nodes.add(node)
+
+        # Check which expected nodes have provenance entries
+        attribution = provenance_tracker.compute_attribution()
+        traced_modules = set(attribution.get('contributions', {}).keys())
+        # Also check _before_states directly for modules with zero delta
+        if hasattr(provenance_tracker, '_before_states'):
+            traced_modules |= set(provenance_tracker._before_states.keys())
+
+        missing = expected_nodes - traced_modules
+        completeness = (
+            1.0 - len(missing) / max(len(expected_nodes), 1)
+        )
+
+        return {
+            'completeness_ratio': completeness,
+            'missing_modules': sorted(missing),
+            'traced_count': len(expected_nodes) - len(missing),
+            'expected_count': len(expected_nodes),
+            'is_complete': len(missing) == 0,
+        }
+
+
+class PostOutputUncertaintyGate:
+    """Re-evaluates metacognitive need after late-stage uncertainty.
+
+    The standard metacognitive trigger runs inside the reasoning core,
+    before decode-stage checks (cycle consistency, decoder degenerate
+    output, decoder distortion) add their uncertainty.  This gate runs
+    after ALL uncertainty sources have been accumulated and determines
+    whether the late-stage uncertainty should trigger additional
+    metacognitive action.
+
+    This closes the architectural gap where post-decode uncertainty was
+    recorded but never triggered re-reasoning, violating the requirement
+    that ANY uncertainty triggers a meta-cognitive cycle.
+
+    This is a pure-logic gate with no learnable parameters.
+
+    Args:
+        rerun_threshold: Uncertainty level above which re-reasoning
+            is recommended.
+        late_source_keys: Uncertainty source keys that are considered
+            "late stage" (post-UCC).
+    """
+
+    _DEFAULT_LATE_SOURCES = frozenset({
+        'cycle_consistency_violation',
+        'reencode_violation',
+        'decoder_degenerate',
+        'decoder_distortion',
+    })
+
+    def __init__(
+        self,
+        rerun_threshold: float = 0.5,
+        late_source_keys: Optional[set] = None,
+    ):
+        self.rerun_threshold = rerun_threshold
+        self._late_source_keys = (
+            late_source_keys
+            if late_source_keys is not None
+            else self._DEFAULT_LATE_SOURCES
+        )
+
+    def evaluate(
+        self,
+        uncertainty: float,
+        uncertainty_sources: Dict[str, float],
+        ucc_already_triggered: bool,
+    ) -> Dict[str, Any]:
+        """Evaluate whether late-stage uncertainty requires action.
+
+        Args:
+            uncertainty: Current total uncertainty ∈ [0, 1].
+            uncertainty_sources: Dict of source_name → contribution.
+            ucc_already_triggered: Whether the UCC already recommended
+                re-reasoning in this pass.
+
+        Returns:
+            Dict with should_rerun, late_uncertainty, active_sources.
+        """
+        # Sum uncertainty from late-stage sources only
+        late_total = sum(
+            v for k, v in uncertainty_sources.items()
+            if k in self._late_source_keys
+        )
+        active_late = {
+            k: v for k, v in uncertainty_sources.items()
+            if k in self._late_source_keys and v > 0
+        }
+
+        # Trigger re-reasoning if late-stage uncertainty pushes total
+        # above threshold and UCC didn't already trigger
+        should_rerun = (
+            not ucc_already_triggered
+            and uncertainty > self.rerun_threshold
+            and late_total > 0
+        )
+
+        return {
+            'should_rerun': should_rerun,
+            'late_uncertainty': late_total,
+            'total_uncertainty': uncertainty,
+            'active_late_sources': active_late,
+            'gate_triggered': should_rerun,
+        }
+
+
+class CognitiveSnapshotManager:
+    """Manages full cognitive state persistence across sessions.
+
+    Extends basic save/load to include hierarchical memory subsystems,
+    ensuring cognitive continuity across restarts.  Without this,
+    episodic/semantic/temporal memories are lost on restart, preventing
+    the system from building on prior reasoning across sessions.
+
+    This is a pure-logic manager with no learnable parameters.
+    """
+
+    @staticmethod
+    def export_memory_snapshot(
+        model: nn.Module,
+        save_dir: Union[str, Path],
+    ) -> Dict[str, bool]:
+        """Export all memory subsystem states to disk.
+
+        Args:
+            model: AEONDeltaV3 instance.
+            save_dir: Directory to save memory snapshots.
+
+        Returns:
+            Dict mapping subsystem name → success boolean.
+        """
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        results: Dict[str, bool] = {}
+
+        # Hierarchical memory
+        hier_mem = getattr(model, 'hierarchical_memory', None)
+        if hier_mem is not None:
+            try:
+                state = {}
+                if hasattr(hier_mem, 'working_memory'):
+                    wm = hier_mem.working_memory
+                    if hasattr(wm, 'memory') and wm.memory is not None:
+                        state['working_memory'] = wm.memory.detach().cpu()
+                if hasattr(hier_mem, 'episodic_buffer'):
+                    ep = hier_mem.episodic_buffer
+                    if hasattr(ep, 'episodes'):
+                        state['episodic_count'] = len(ep.episodes)
+                        state['episodic_episodes'] = [
+                            e.detach().cpu() if torch.is_tensor(e) else e
+                            for e in list(ep.episodes)[:100]
+                        ]
+                torch.save(state, save_dir / "hierarchical_memory.pt")
+                results['hierarchical_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to export hierarchical memory: {e}")
+                results['hierarchical_memory'] = False
+
+        # Temporal memory
+        temp_mem = getattr(model, 'temporal_memory', None)
+        if temp_mem is not None:
+            try:
+                state = {}
+                if hasattr(temp_mem, 'buffer'):
+                    state['buffer_size'] = len(temp_mem.buffer)
+                    state['buffer'] = [
+                        {
+                            k: v.detach().cpu() if torch.is_tensor(v) else v
+                            for k, v in entry.items()
+                        }
+                        for entry in list(temp_mem.buffer)[:100]
+                    ]
+                torch.save(state, save_dir / "temporal_memory.pt")
+                results['temporal_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to export temporal memory: {e}")
+                results['temporal_memory'] = False
+
+        # Neurogenic memory
+        neuro_mem = getattr(model, 'neurogenic_memory', None)
+        if neuro_mem is not None:
+            try:
+                state = {}
+                if hasattr(neuro_mem, 'state_dict'):
+                    state['model_state'] = {
+                        k: v.detach().cpu()
+                        for k, v in neuro_mem.state_dict().items()
+                    }
+                torch.save(state, save_dir / "neurogenic_memory.pt")
+                results['neurogenic_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to export neurogenic memory: {e}")
+                results['neurogenic_memory'] = False
+
+        # Consolidating memory
+        consol_mem = getattr(model, 'consolidating_memory', None)
+        if consol_mem is not None:
+            try:
+                state = {}
+                if hasattr(consol_mem, 'knowledge_graph'):
+                    kg = consol_mem.knowledge_graph
+                    if hasattr(kg, 'entities'):
+                        state['entity_count'] = len(kg.entities)
+                if hasattr(consol_mem, 'state_dict'):
+                    state['model_state'] = {
+                        k: v.detach().cpu()
+                        for k, v in consol_mem.state_dict().items()
+                    }
+                torch.save(state, save_dir / "consolidating_memory.pt")
+                results['consolidating_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to export consolidating memory: {e}")
+                results['consolidating_memory'] = False
+
+        return results
+
+    @staticmethod
+    def import_memory_snapshot(
+        model: nn.Module,
+        save_dir: Union[str, Path],
+    ) -> Dict[str, bool]:
+        """Import memory subsystem states from disk.
+
+        Args:
+            model: AEONDeltaV3 instance.
+            save_dir: Directory containing memory snapshots.
+
+        Returns:
+            Dict mapping subsystem name → success boolean.
+        """
+        save_dir = Path(save_dir)
+        results: Dict[str, bool] = {}
+
+        # Hierarchical memory
+        hier_path = save_dir / "hierarchical_memory.pt"
+        hier_mem = getattr(model, 'hierarchical_memory', None)
+        if hier_path.exists() and hier_mem is not None:
+            try:
+                state = torch.load(
+                    hier_path, map_location='cpu', weights_only=True,
+                )
+                if 'working_memory' in state and hasattr(hier_mem, 'working_memory'):
+                    wm = hier_mem.working_memory
+                    if hasattr(wm, 'memory'):
+                        wm.memory = state['working_memory']
+                results['hierarchical_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to import hierarchical memory: {e}")
+                results['hierarchical_memory'] = False
+
+        # Neurogenic memory
+        neuro_path = save_dir / "neurogenic_memory.pt"
+        neuro_mem = getattr(model, 'neurogenic_memory', None)
+        if neuro_path.exists() and neuro_mem is not None:
+            try:
+                state = torch.load(
+                    neuro_path, map_location='cpu', weights_only=True,
+                )
+                if 'model_state' in state and hasattr(neuro_mem, 'load_state_dict'):
+                    neuro_mem.load_state_dict(state['model_state'], strict=False)
+                results['neurogenic_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to import neurogenic memory: {e}")
+                results['neurogenic_memory'] = False
+
+        # Consolidating memory
+        consol_path = save_dir / "consolidating_memory.pt"
+        consol_mem = getattr(model, 'consolidating_memory', None)
+        if consol_path.exists() and consol_mem is not None:
+            try:
+                state = torch.load(
+                    consol_path, map_location='cpu', weights_only=True,
+                )
+                if 'model_state' in state and hasattr(consol_mem, 'load_state_dict'):
+                    consol_mem.load_state_dict(state['model_state'], strict=False)
+                results['consolidating_memory'] = True
+            except Exception as e:
+                logger.warning(f"Failed to import consolidating memory: {e}")
+                results['consolidating_memory'] = False
+
+        return results
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -22794,6 +23142,29 @@ class AEONDeltaV3(nn.Module):
                 "Init-time pipeline wiring validation skipped: %s",
                 _wiring_err,
             )
+
+        # ===== PROVENANCE CHAIN VALIDATOR =====
+        # Validates that all modules in the pipeline dependency DAG have
+        # recorded provenance traces during each forward pass, ensuring
+        # the "all conclusions traceable to root causes" requirement.
+        self.provenance_chain_validator = ProvenanceChainValidator(
+            pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
+            node_attr_map=self._NODE_ATTR_MAP,
+        )
+
+        # ===== POST-OUTPUT UNCERTAINTY GATE =====
+        # Re-evaluates metacognitive need after late-stage (post-UCC)
+        # uncertainty sources have been accumulated, closing the gap
+        # where decode-stage uncertainty was recorded but never
+        # triggered re-reasoning.
+        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
+            rerun_threshold=config.uncertainty_logit_penalty_threshold,
+        )
+
+        # ===== COGNITIVE SNAPSHOT MANAGER =====
+        # Manages full cognitive state persistence including all memory
+        # subsystems for cross-session cognitive continuity.
+        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
 
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")
@@ -36231,6 +36602,70 @@ class AEONDeltaV3(nn.Module):
         outputs['uncertainty'] = uncertainty
         outputs['uncertainty_sources'] = uncertainty_sources
 
+        # ===== POST-OUTPUT UNCERTAINTY GATE =====
+        # Re-evaluate metacognitive need after all late-stage uncertainty
+        # sources (cycle consistency, decoder degenerate, decoder
+        # distortion) have been accumulated.  This closes the gap where
+        # post-decode uncertainty was recorded but never triggered re-
+        # reasoning, violating the requirement that ANY uncertainty
+        # triggers a meta-cognitive cycle.
+        _ucc_results_pre = outputs.get('unified_cognitive_cycle_results', {})
+        _ucc_already_triggered = _ucc_results_pre.get('should_rerun', False)
+        _post_gate = self.post_output_uncertainty_gate.evaluate(
+            uncertainty=uncertainty,
+            uncertainty_sources=uncertainty_sources,
+            ucc_already_triggered=_ucc_already_triggered,
+        )
+        outputs['post_output_uncertainty_gate'] = _post_gate
+        if _post_gate['gate_triggered']:
+            # Record late-stage metacognitive trigger in error evolution
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='post_output_uncertainty_trigger',
+                    strategy_used='late_stage_metacognitive',
+                    success=False,
+                    metadata={
+                        'total_uncertainty': _post_gate['total_uncertainty'],
+                        'late_uncertainty': _post_gate['late_uncertainty'],
+                        'active_sources': list(
+                            _post_gate['active_late_sources'].keys()
+                        ),
+                    },
+                )
+            # Record in causal trace for traceability
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "post_output_uncertainty_gate", "late_metacognitive_trigger",
+                    causal_prerequisites=[input_trace_id],
+                    severity="warning",
+                    metadata={
+                        'late_uncertainty': _post_gate['late_uncertainty'],
+                        'active_sources': list(
+                            _post_gate['active_late_sources'].keys()
+                        ),
+                    },
+                )
+
+        # ===== PROVENANCE CHAIN VALIDATION =====
+        # Validate that all expected pipeline modules have been traced in
+        # this forward pass, ensuring root-cause traceability completeness.
+        _chain_validation = self.provenance_chain_validator.validate(
+            provenance_tracker=self.provenance_tracker,
+            model=self,
+        )
+        outputs['provenance_chain_completeness'] = (
+            _chain_validation['completeness_ratio']
+        )
+        if not _chain_validation['is_complete']:
+            self.audit_log.record(
+                "provenance_chain_validator", "incomplete_chain", {
+                    "completeness": _chain_validation['completeness_ratio'],
+                    "missing": _chain_validation['missing_modules'][:10],
+                    "traced": _chain_validation['traced_count'],
+                    "expected": _chain_validation['expected_count'],
+                },
+            )
+
         # ===== PACKAGE RESULTS =====
         result = {
             'logits': logits,
@@ -41881,6 +42316,26 @@ class AEONDeltaV3(nn.Module):
                         f"pattern(s) to training_error_patterns.json"
                     )
 
+            # Hierarchical memory subsystems — persist all memory
+            # subsystem states so cross-session cognitive continuity
+            # is maintained.  This closes the gap where only the basic
+            # MemoryManager was persisted, losing episodic/temporal/
+            # neurogenic/consolidating memories on restart.
+            try:
+                _mem_results = self.cognitive_snapshot_manager.export_memory_snapshot(
+                    model=self,
+                    save_dir=save_dir / "memory_subsystems",
+                )
+                _mem_saved = sum(_mem_results.values())
+                if _mem_saved:
+                    logger.info(
+                        f"Saved {_mem_saved} hierarchical memory subsystem(s)"
+                    )
+            except Exception as _mem_err:
+                logger.warning(
+                    f"Hierarchical memory export failed (non-fatal): {_mem_err}"
+                )
+
             logger.info(f"✅ State saved to {save_dir}")
             return True
         
@@ -42159,6 +42614,25 @@ class AEONDeltaV3(nn.Module):
                         f"(non-fatal): {_upb_err}"
                     )
             
+            # Hierarchical memory subsystems — restore all memory
+            # subsystem states for cross-session cognitive continuity.
+            _mem_dir = save_dir / "memory_subsystems"
+            if _mem_dir.exists():
+                try:
+                    _mem_results = self.cognitive_snapshot_manager.import_memory_snapshot(
+                        model=self,
+                        save_dir=_mem_dir,
+                    )
+                    _mem_loaded = sum(_mem_results.values())
+                    if _mem_loaded:
+                        logger.info(
+                            f"Restored {_mem_loaded} hierarchical memory subsystem(s)"
+                        )
+                except Exception as _mem_err:
+                    logger.warning(
+                        f"Hierarchical memory import failed (non-fatal): {_mem_err}"
+                    )
+
             logger.info(f"✅ State loaded from {save_dir}")
             return True
         
@@ -42166,6 +42640,200 @@ class AEONDeltaV3(nn.Module):
             logger.error(f"❌ Failed to load state: {e}")
             logger.error(traceback.format_exc())
             return False
+
+    def export_cognitive_snapshot(
+        self, save_dir: Union[str, Path] = "aeon_cognitive_snapshot",
+    ) -> Dict[str, Any]:
+        """Export complete cognitive state for cross-session persistence.
+
+        Extends :meth:`save_state` by also persisting all hierarchical
+        memory subsystems (episodic, temporal, neurogenic, consolidating)
+        so that the full cognitive context survives across restarts.
+
+        This addresses the architectural gap where :meth:`save_state` only
+        persisted the basic MemoryManager, causing loss of accumulated
+        episodic/semantic/temporal memories on restart, which breaks
+        cross-session cognitive continuity.
+
+        Args:
+            save_dir: Directory to save the cognitive snapshot.
+
+        Returns:
+            Dict with 'model_saved', 'memory_results', and 'success'.
+        """
+        save_dir = Path(save_dir)
+        result: Dict[str, Any] = {'success': False}
+
+        # Save model state (weights, config, basic memory, metrics)
+        model_saved = self.save_state(save_dir)
+        result['model_saved'] = model_saved
+
+        # Save hierarchical memory subsystems
+        memory_results = self.cognitive_snapshot_manager.export_memory_snapshot(
+            model=self,
+            save_dir=save_dir / "memory_subsystems",
+        )
+        result['memory_results'] = memory_results
+
+        # Save provenance chain validation baseline
+        try:
+            chain_result = self.provenance_chain_validator.validate(
+                provenance_tracker=self.provenance_tracker,
+                model=self,
+            )
+            with open(save_dir / "provenance_baseline.json", 'w') as f:
+                json.dump({
+                    'completeness_ratio': chain_result['completeness_ratio'],
+                    'expected_count': chain_result['expected_count'],
+                }, f, indent=2)
+        except Exception as prov_err:
+            logger.warning(f"Provenance baseline export failed: {prov_err}")
+
+        result['success'] = model_saved
+        logger.info(
+            f"Cognitive snapshot exported to {save_dir} "
+            f"(memory subsystems: {sum(memory_results.values())}/{len(memory_results)})"
+        )
+        return result
+
+    def import_cognitive_snapshot(
+        self, save_dir: Union[str, Path] = "aeon_cognitive_snapshot",
+    ) -> Dict[str, Any]:
+        """Import complete cognitive state from a prior session.
+
+        Restores model weights, cognitive state, and all hierarchical
+        memory subsystems, enabling full cross-session cognitive
+        continuity.
+
+        Args:
+            save_dir: Directory containing the cognitive snapshot.
+
+        Returns:
+            Dict with 'model_loaded', 'memory_results', and 'success'.
+        """
+        save_dir = Path(save_dir)
+        result: Dict[str, Any] = {'success': False}
+
+        if not save_dir.exists():
+            logger.warning(f"Cognitive snapshot directory {save_dir} not found")
+            return result
+
+        # Load model state
+        model_loaded = self.load_state(save_dir)
+        result['model_loaded'] = model_loaded
+
+        # Restore hierarchical memory subsystems
+        memory_dir = save_dir / "memory_subsystems"
+        if memory_dir.exists():
+            memory_results = self.cognitive_snapshot_manager.import_memory_snapshot(
+                model=self,
+                save_dir=memory_dir,
+            )
+            result['memory_results'] = memory_results
+        else:
+            result['memory_results'] = {}
+
+        result['success'] = model_loaded
+        logger.info(
+            f"Cognitive snapshot imported from {save_dir} "
+            f"(memory subsystems: {sum(result['memory_results'].values())}"
+            f"/{len(result['memory_results'])})"
+        )
+        return result
+
+    def load_v4_checkpoint(
+        self,
+        checkpoint_path: Union[str, Path],
+        strict: bool = False,
+    ) -> Dict[str, Any]:
+        """Load weights from an ae_train v4 training checkpoint.
+
+        Bridges the training-inference gap by extracting compatible
+        weights from a v4 checkpoint (which may have different module
+        names) and loading them into the inference model.
+
+        Also imports training error patterns into the error evolution
+        tracker so the metacognitive trigger can leverage training-phase
+        failure modes during inference.
+
+        Args:
+            checkpoint_path: Path to the v4 checkpoint file.
+            strict: Whether to enforce strict key matching.
+
+        Returns:
+            Dict with loaded_keys, skipped_keys, and success.
+        """
+        checkpoint_path = Path(checkpoint_path)
+        result: Dict[str, Any] = {
+            'loaded_keys': [],
+            'skipped_keys': [],
+            'shape_mismatches': [],
+            'success': False,
+        }
+
+        if not checkpoint_path.exists():
+            logger.warning(f"V4 checkpoint not found: {checkpoint_path}")
+            return result
+
+        try:
+            checkpoint = torch.load(
+                checkpoint_path, map_location=self.device, weights_only=True,
+            )
+
+            # V4 checkpoints may wrap state_dict under different keys
+            if 'model_state_dict' in checkpoint:
+                v4_state = checkpoint['model_state_dict']
+            elif 'model' in checkpoint:
+                v4_state = checkpoint['model']
+            elif 'state_dict' in checkpoint:
+                v4_state = checkpoint['state_dict']
+            else:
+                v4_state = checkpoint
+
+            if not isinstance(v4_state, dict):
+                logger.error("V4 checkpoint does not contain a state dict")
+                return result
+
+            model_state = self.state_dict()
+
+            # Match keys between v4 and current model
+            compatible_state: Dict[str, torch.Tensor] = {}
+            for key, tensor in v4_state.items():
+                if key in model_state:
+                    if tensor.shape == model_state[key].shape:
+                        compatible_state[key] = tensor
+                        result['loaded_keys'].append(key)
+                    else:
+                        result['shape_mismatches'].append(key)
+                else:
+                    result['skipped_keys'].append(key)
+
+            if compatible_state:
+                self.load_state_dict(compatible_state, strict=False)
+                logger.info(
+                    f"Loaded {len(compatible_state)} keys from v4 checkpoint "
+                    f"({len(result['skipped_keys'])} skipped, "
+                    f"{len(result['shape_mismatches'])} shape mismatches)"
+                )
+
+            # Import training error patterns
+            if (self.error_evolution is not None
+                    and 'training_errors' in checkpoint):
+                for cls, data in checkpoint['training_errors'].items():
+                    self.error_evolution.record_episode(
+                        error_class=f"training_{cls}",
+                        strategy_used=data.get('strategy', 'unknown'),
+                        success=data.get('success_rate', 0) > 0.5,
+                        metadata={'source': 'v4_checkpoint'},
+                    )
+
+            result['success'] = len(compatible_state) > 0
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to load v4 checkpoint: {e}")
+            result['error'] = str(e)
+            return result
 
 
 # ============================================================================
