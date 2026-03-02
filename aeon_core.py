@@ -7450,6 +7450,132 @@ class CausalProvenanceTracker:
         }
 
 
+# ============================================================================
+# SECTION 7b: UNIFIED CONVERGENCE PROTOCOL
+# ============================================================================
+
+@dataclass
+class ConvergenceVerdict:
+    """Standardised convergence result shared by all meta-loop variants.
+
+    Every meta-loop (ProvablyConvergentMetaLoop, CertifiedMetaLoop,
+    AdaptiveMetaLoop) must produce a ``ConvergenceVerdict`` so that
+    downstream consumers (``UnifiedConvergenceArbiter``,
+    ``MetaCognitiveRecursionTrigger``, ``SubsystemCoherenceRegistry``)
+    operate on a single, self-consistent schema.
+
+    Fields:
+        converged: Whether the loop considers itself converged.
+        convergence_rate: Fraction of batch samples that converged ∈ [0, 1].
+        residual_norm: Mean L2 residual at termination.
+        certified: Whether convergence is formally proven (IBP or Banach).
+        certified_error_bound: Upper bound on ‖C* − C_true‖ when certified.
+        lipschitz_estimate: Estimated or certified Lipschitz constant.
+        method: Human-readable identifier of the convergence method used.
+        iterations_used: Mean number of iterations actually executed.
+        extra: Method-specific metadata that does not fit the common schema.
+    """
+    converged: bool
+    convergence_rate: float
+    residual_norm: float
+    certified: bool = False
+    certified_error_bound: Optional[float] = None
+    lipschitz_estimate: Optional[float] = None
+    method: str = "unknown"
+    iterations_used: float = 0.0
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    # ------------------------------------------------------------------
+    # Convenience helpers
+    # ------------------------------------------------------------------
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise to a plain dict (JSON-safe)."""
+        d = asdict(self)
+        # Strip tensor objects that may leak from *extra*
+        def _safe(v: Any) -> Any:
+            if isinstance(v, torch.Tensor):
+                return v.tolist()
+            if isinstance(v, dict):
+                return {k: _safe(vv) for k, vv in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_safe(vv) for vv in v]
+            return v
+        return _safe(d)
+
+    @property
+    def confidence(self) -> float:
+        """Heuristic confidence ∈ [0, 1] combining convergence + certification."""
+        base = self.convergence_rate
+        if self.certified and self.certified_error_bound is not None:
+            # High-certified loops get a confidence boost
+            base = min(1.0, base + 0.1)
+        return base
+
+
+def unify_convergence_verdicts(
+    verdicts: List[ConvergenceVerdict],
+) -> ConvergenceVerdict:
+    """Reconcile multiple convergence verdicts into a single consensus.
+
+    Rules:
+    1. ``converged`` is True only when **all** verdicts agree.
+    2. ``certified`` is True only when **at least one** is certified and
+       all certified ones agree on convergence.
+    3. Aggregate ``residual_norm`` and ``convergence_rate`` are averaged.
+    4. ``certified_error_bound`` takes the tightest (minimum) certified
+       bound across certified verdicts, if any.
+    """
+    if not verdicts:
+        return ConvergenceVerdict(
+            converged=False,
+            convergence_rate=0.0,
+            residual_norm=float('inf'),
+            method="empty_consensus",
+        )
+
+    all_converged = all(v.converged for v in verdicts)
+    avg_rate = sum(v.convergence_rate for v in verdicts) / len(verdicts)
+    avg_residual = sum(v.residual_norm for v in verdicts) / len(verdicts)
+
+    certified_verdicts = [v for v in verdicts if v.certified]
+    any_certified = len(certified_verdicts) > 0
+    certified_agree = all(v.converged for v in certified_verdicts) if certified_verdicts else False
+
+    bounds = [
+        v.certified_error_bound
+        for v in certified_verdicts
+        if v.certified_error_bound is not None
+    ]
+    tightest_bound = min(bounds) if bounds else None
+
+    lip_estimates = [
+        v.lipschitz_estimate
+        for v in verdicts
+        if v.lipschitz_estimate is not None
+    ]
+    avg_lip = (sum(lip_estimates) / len(lip_estimates)) if lip_estimates else None
+
+    avg_iters = sum(v.iterations_used for v in verdicts) / len(verdicts)
+
+    methods = [v.method for v in verdicts]
+
+    return ConvergenceVerdict(
+        converged=all_converged,
+        convergence_rate=avg_rate,
+        residual_norm=avg_residual,
+        certified=any_certified and certified_agree,
+        certified_error_bound=tightest_bound,
+        lipschitz_estimate=avg_lip,
+        method=f"consensus({', '.join(methods)})",
+        iterations_used=avg_iters,
+        extra={
+            'individual_verdicts': [v.to_dict() for v in verdicts],
+            'certified_count': len(certified_verdicts),
+            'total_count': len(verdicts),
+        },
+    )
+
+
 class ProvablyConvergentMetaLoop(nn.Module):
     """
     Meta-loop with convergence mechanisms inspired by fixed-point theory.
@@ -7822,6 +7948,18 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 )
             }
         
+        # Attach unified verdict to metadata for cross-loop interoperability
+        metadata['convergence_verdict'] = ConvergenceVerdict(
+            converged=metadata['converged'],
+            convergence_rate=metadata['convergence_rate'],
+            residual_norm=metadata['residual_norm'],
+            certified=certified_error is not None and lip_const < 1.0,
+            certified_error_bound=certified_error,
+            lipschitz_estimate=lip_const,
+            method="banach_fixed_point_ema",
+            iterations_used=iterations.float().mean().item(),
+        )
+
         return C, iterations, metadata
     
     def verify_convergence(
@@ -8385,6 +8523,18 @@ class ConvergenceMonitor:
         # Include secondary signals in every verdict for traceability.
         if self._secondary_signals:
             verdict['secondary_signals'] = dict(self._secondary_signals)
+
+        # Attach unified ConvergenceVerdict for cross-loop interoperability
+        verdict['convergence_verdict'] = ConvergenceVerdict(
+            converged=verdict['status'] == 'converged',
+            convergence_rate=1.0 if verdict['status'] == 'converged' else 0.0,
+            residual_norm=delta_norm,
+            certified=verdict.get('certified', False),
+            lipschitz_estimate=verdict.get('contraction_rate'),
+            method="convergence_monitor_ema",
+            extra={'status': verdict['status']},
+        )
+
         return verdict
 
     # ---- internal helper ---------------------------------------------------
@@ -10747,25 +10897,79 @@ class ConsolidatingMemory(nn.Module):
         with torch.no_grad():
             return self.importance_net(item.unsqueeze(0)).item()
 
-    def consolidate(self):
+    def consolidate(self) -> Dict[str, Any]:
         """
         Offline consolidation (called at end of epoch or during 'sleep').
 
         Working → Episodic: items exceeding importance threshold.
         Episodic → Semantic: extract averaged patterns as schemas.
+
+        Returns:
+            Provenance metadata describing which items were promoted,
+            discarded, and why — enabling causal traceability of memory
+            transitions.
         """
+        promoted_to_episodic = 0
+        discarded_working = 0
+        importance_scores: List[float] = []
+
         # Working → Episodic
         for item in self.working:
             imp = self.score_importance(item)
+            importance_scores.append(imp)
             if imp > self.importance_threshold:
                 self.episodic.add(item, importance=imp)
+                promoted_to_episodic += 1
+            else:
+                discarded_working += 1
 
         # Episodic → Semantic: extract prototype pattern
+        promoted_to_semantic = False
         ep_items = self.episodic.items()
         if len(ep_items) >= 2:
             stacked = torch.stack(ep_items)
             prototype = stacked.mean(dim=0)
             self.semantic.add_schema(prototype)
+            promoted_to_semantic = True
+
+        return {
+            'promoted_to_episodic': promoted_to_episodic,
+            'discarded_working': discarded_working,
+            'promoted_to_semantic': promoted_to_semantic,
+            'episodic_size': len(self.episodic.items()),
+            'semantic_size': len(self.semantic.schemas),
+            'mean_importance': (
+                sum(importance_scores) / len(importance_scores)
+                if importance_scores else 0.0
+            ),
+        }
+
+    def retrieve_with_provenance(
+        self, query: torch.Tensor, k: int = 5,
+    ) -> Dict[str, Any]:
+        """Retrieve from all stages with provenance metadata.
+
+        Extends :meth:`retrieve` by returning which memory stage(s)
+        contributed and with what similarity, enabling the
+        :class:`CausalProvenanceTracker` to attribute downstream
+        reasoning changes to specific memory stages.
+        """
+        result = self.retrieve(query, k=k)
+        # Compute per-stage contribution strength
+        stage_strengths: Dict[str, float] = {}
+        for stage in ('working', 'episodic', 'semantic'):
+            items = result[stage]
+            if items:
+                stage_strengths[stage] = max(sim for _, sim in items)
+            else:
+                stage_strengths[stage] = 0.0
+        dominant_stage = max(stage_strengths, key=stage_strengths.get)
+        result['provenance'] = {
+            'stage_strengths': stage_strengths,
+            'dominant_stage': dominant_stage,
+            'total_items_retrieved': sum(len(result[s]) for s in ('working', 'episodic', 'semantic')),
+        }
+        return result
 
     def retrieve(self, query: torch.Tensor, k: int = 5) -> Dict[str, Any]:
         """
@@ -12130,6 +12334,12 @@ class MCTSPlanner(nn.Module):
         
         self.value_net = ValueNetwork(state_dim, hidden_dim)
         self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim)
+
+        # Learned action embedding: maps discrete action index to a
+        # state-sized perturbation that replaces the previous random-noise
+        # encoding.  This connects the planner to the world model via
+        # meaningful action representations rather than random jitter.
+        self.action_embedding = nn.Embedding(action_dim, state_dim)
     
     def _select(self, node: 'MCTSNode') -> 'MCTSNode':
         """Select best child using UCB1."""
@@ -12180,12 +12390,24 @@ class MCTSPlanner(nn.Module):
                 logger.debug("Causal modulation failed in MCTS expand: %s", _cm_err)
         for a in range(n_actions):
             prior = effective_priors[a].item()
-            # Use world model to predict next state
+            # Use learned action embedding + world model for state transition.
+            # The action embedding provides a meaningful, learnable
+            # perturbation instead of random noise, connecting planning
+            # decisions to the world model's dynamics.
             with torch.no_grad():
-                noise = torch.randn_like(state) * 0.1
-                action_state = state + noise  # Simple action encoding
+                action_idx = torch.tensor([a], device=state.device)
+                action_vec = self.action_embedding(action_idx).squeeze(0)
+                action_state = state + action_vec
                 wm_result = world_model(action_state.unsqueeze(0))
-                next_state = wm_result['output'].squeeze(0)
+                # Handle both dict-returning world models (e.g.
+                # PhysicsGroundedWorldModel → {'output': ...}) and tuple-
+                # returning ones (e.g. HierarchicalWorldModel → (pred, info)).
+                if isinstance(wm_result, tuple):
+                    next_state = wm_result[0].squeeze(0)
+                elif isinstance(wm_result, dict):
+                    next_state = wm_result['output'].squeeze(0)
+                else:
+                    next_state = wm_result.squeeze(0)
             
             child = MCTSNode(
                 state=next_state,
@@ -12705,6 +12927,18 @@ class CertifiedMetaLoop(nn.Module):
             'ibp_lipschitz': self._compute_certified_lipschitz(psi_0),
         }
 
+        # Attach unified verdict
+        metadata['convergence_verdict'] = ConvergenceVerdict(
+            converged=metadata['converged'],
+            convergence_rate=metadata['convergence_rate'],
+            residual_norm=metadata['residual_norm'],
+            certified=guaranteed,
+            certified_error_bound=cert_err,
+            lipschitz_estimate=metadata['ibp_lipschitz'],
+            method="ibp_certified",
+            iterations_used=iterations.float().mean().item(),
+        )
+
         return C, iterations, metadata
 
 
@@ -13112,6 +13346,19 @@ class AdaptiveMetaLoop(nn.Module):
             'halted': halted,
             'mean_steps': n_updates.mean().item(),
         }
+
+        # Attach unified verdict — AdaptiveMetaLoop uses learned halting
+        # so the "residual_norm" is approximated from ponder cost and the
+        # convergence_rate from the fraction of samples that halted.
+        metadata['convergence_verdict'] = ConvergenceVerdict(
+            converged=halted.all().item(),
+            convergence_rate=halted.float().mean().item(),
+            residual_norm=ponder_cost.item(),  # proxy: lower = more confident
+            certified=False,
+            method="adaptive_computation_time",
+            iterations_used=n_updates.mean().item(),
+            extra={'ponder_cost': ponder_cost.item()},
+        )
 
         return C, metadata
 
@@ -20623,6 +20870,20 @@ class PostOutputUncertaintyGate:
             if late_source_keys is not None
             else self._DEFAULT_LATE_SOURCES
         )
+        self._metacognitive_trigger: Optional[Any] = None
+
+    def set_metacognitive_trigger(
+        self,
+        trigger: Optional[Any],
+    ) -> None:
+        """Attach a :class:`MetaCognitiveRecursionTrigger`.
+
+        When attached, every gate trigger feeds the late-stage
+        uncertainty back into the trigger's adaptive weights so that
+        subsequent passes calibrate the meta-cognitive decision
+        boundary based on post-decode experience.
+        """
+        self._metacognitive_trigger = trigger
 
     def evaluate(
         self,
@@ -20658,6 +20919,21 @@ class PostOutputUncertaintyGate:
             and uncertainty > self.rerun_threshold
             and late_total > 0
         )
+
+        # Feed late-stage results back into the MetaCognitiveRecursionTrigger
+        # so that its adaptive weights learn from post-decode uncertainty,
+        # closing the feedback loop between output quality and re-reasoning.
+        if should_rerun and self._metacognitive_trigger is not None:
+            _mt = self._metacognitive_trigger
+            if hasattr(_mt, '_signal_weights') and 'low_output_reliability' in _mt._signal_weights:
+                # Boost the output-reliability weight proportionally to
+                # late uncertainty so that subsequent passes are more
+                # sensitive to output-quality signals.
+                _current = _mt._signal_weights.get('low_output_reliability', 0.077)
+                _boost = min(0.05, late_total * 0.1)
+                _mt._signal_weights['low_output_reliability'] = min(
+                    0.3, _current + _boost,
+                )
 
         return {
             'should_rerun': should_rerun,
@@ -23159,6 +23435,11 @@ class AEONDeltaV3(nn.Module):
         # triggered re-reasoning.
         self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
             rerun_threshold=config.uncertainty_logit_penalty_threshold,
+        )
+        # Wire late-stage gate back into the metacognitive trigger so that
+        # post-decode uncertainty calibrates subsequent re-reasoning decisions.
+        self.post_output_uncertainty_gate.set_metacognitive_trigger(
+            self.metacognitive_trigger,
         )
 
         # ===== COGNITIVE SNAPSHOT MANAGER =====
