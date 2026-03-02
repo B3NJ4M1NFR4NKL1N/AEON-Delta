@@ -23836,12 +23836,59 @@ class AEONDeltaV3(nn.Module):
             results['combined'] = combined
             results['num_systems_responded'] = len(all_vecs)
             results['fallback_used'] = False
+
+            # --- Memory consensus scoring ---
+            # When multiple memory systems respond, compute pairwise
+            # cosine similarities to detect disagreement.  Low consensus
+            # indicates that different memory stores hold conflicting
+            # representations, which should escalate uncertainty so the
+            # metacognitive trigger can invoke deeper reasoning.
+            if len(all_vecs) >= 2:
+                _norms = [v.norm() for v in all_vecs]
+                _cos_sims: List[float] = []
+                for i in range(len(all_vecs)):
+                    for j in range(i + 1, len(all_vecs)):
+                        _denom = _norms[i] * _norms[j]
+                        if _denom > 1e-10:
+                            _cos_sims.append(
+                                float(torch.dot(all_vecs[i], all_vecs[j]) / _denom)
+                            )
+                        else:
+                            _cos_sims.append(0.0)
+                consensus_score = sum(_cos_sims) / len(_cos_sims)
+                results['consensus_score'] = consensus_score
+                results['consensus_pairwise'] = _cos_sims
+
+                # Record memory consensus decision in the audit log so
+                # it can be traced back to its root cause.
+                self.audit_log.record(
+                    "unified_memory_query", "memory_consensus", {
+                        "consensus_score": consensus_score,
+                        "num_systems": len(all_vecs),
+                        "failed_subsystems": _failed_subsystems,
+                    },
+                    severity="info" if consensus_score >= 0.5 else "warning",
+                )
+            else:
+                results['consensus_score'] = 1.0
+                results['consensus_pairwise'] = []
         else:
             results['combined'] = torch.zeros(
                 self.config.hidden_dim, device=device,
             )
             results['num_systems_responded'] = 0
             results['fallback_used'] = True
+            results['consensus_score'] = 0.0
+            results['consensus_pairwise'] = []
+
+            # Audit the complete memory failure so it is traceable.
+            self.audit_log.record(
+                "unified_memory_query", "total_memory_failure", {
+                    "active_systems": _active_count,
+                    "failed_subsystems": _failed_subsystems,
+                },
+                severity="error",
+            )
 
         # Track failed and active subsystem counts so callers can
         # escalate uncertainty proportionally to memory degradation.
@@ -24815,6 +24862,23 @@ class AEONDeltaV3(nn.Module):
                                 "context": "pre_loop_query",
                             },
                         )
+                # Memory consensus-based uncertainty escalation —
+                # when multiple memory systems respond but disagree
+                # (low consensus score), escalate uncertainty so the
+                # metacognitive trigger can invoke deeper reasoning
+                # to reconcile the conflicting memory representations.
+                _consensus = _umq.get('consensus_score', 1.0)
+                if _consensus < 0.5 and _umq.get('num_systems_responded', 0) >= 2:
+                    _consensus_boost = min(
+                        1.0 - uncertainty,
+                        0.15 * (1.0 - _consensus),
+                    )
+                    if _consensus_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _consensus_boost)
+                        uncertainty_sources["memory_consensus_deficit"] = (
+                            _consensus_boost
+                        )
+                        high_uncertainty = uncertainty > 0.5
             except Exception as _umq_err:
                 logger.debug("Pre-meta-loop memory conditioning failed: %s", _umq_err)
                 # Mild boost (0.05) — subsystem error signals uncertainty

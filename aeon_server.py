@@ -1448,14 +1448,14 @@ async def introspect():
         recovery_stats = {}
         try:
             recovery_stats = APP.model.error_recovery.get_recovery_stats()
-        except Exception:
-            pass
+        except Exception as rec_err:
+            logging.debug("Recovery stats unavailable: %s", rec_err)
         vq_stats = {}
         try:
             if APP.model.vector_quantizer is not None:
                 vq_stats = APP.model.vector_quantizer.get_codebook_usage_stats()
-        except Exception:
-            pass
+        except Exception as vq_err:
+            logging.debug("VQ codebook stats unavailable: %s", vq_err)
 
         return {
             "ok": True,
@@ -1581,19 +1581,23 @@ async def get_health():
     try:
         integrity = APP.model.integrity_monitor.get_health_score()
         subsystems = {}
+        _degraded = False
         try:
             subsystems = APP.model.integrity_monitor.get_subsystem_scores()
-        except Exception:
-            pass
+        except Exception as sub_err:
+            logging.warning("Subsystem scoring failed: %s", sub_err)
+            _degraded = True
         return {
             "ok": True,
+            "degraded": _degraded,
             "health_score": float(integrity) if integrity is not None else 0.0,
             "subsystems": subsystems,
         }
-    except Exception:
+    except Exception as health_err:
+        logging.warning("Integrity monitor unavailable, falling back to TensorGuard: %s", health_err)
         tg = APP.model.tensor_guard
         health = 1.0 - min(1.0, (tg._nan_count + tg._inf_count) * 0.05)
-        return {"ok": True, "health_score": health, "subsystems": {}}
+        return {"ok": True, "degraded": True, "health_score": health, "subsystems": {}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1646,7 +1650,17 @@ async def resolve_metacognitive_gaps():
         gaps = diagnostic.get("gaps", [])
         resolutions = []
         for gap in gaps:
-            severity = "critical" if " is None" in gap.get("gap", "") else "warning"
+            _gap_text = gap.get("gap", "")
+            if " is None" in _gap_text or "not initialized" in _gap_text:
+                severity = "critical"
+            elif ("disabled" in _gap_text or "not enabled" in _gap_text
+                  or "not wired" in _gap_text or "not linked" in _gap_text):
+                severity = "high"
+            elif ("invisible" in _gap_text or "not registered" in _gap_text
+                  or "not realized" in _gap_text):
+                severity = "medium"
+            else:
+                severity = "warning"
             resolutions.append({
                 "component": gap.get("component", "unknown"),
                 "gap": gap.get("gap", ""),
@@ -1673,7 +1687,9 @@ async def get_telemetry_metrics():
     if APP.config is None:
         raise HTTPException(400, "Model not initialized — no telemetry available")
     try:
-        tc = APP.config.telemetry_collector
+        tc = getattr(APP.config, 'telemetry_collector', None)
+        if tc is None:
+            raise HTTPException(404, "Telemetry collector not configured")
         return {"ok": True, "metrics": tc.get_metrics_snapshot()}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1685,7 +1701,9 @@ async def get_telemetry_metric(metric_name: str, last_n: int = 50):
     if APP.config is None:
         raise HTTPException(400, "Model not initialized — no telemetry available")
     try:
-        tc = APP.config.telemetry_collector
+        tc = getattr(APP.config, 'telemetry_collector', None)
+        if tc is None:
+            raise HTTPException(404, "Telemetry collector not configured")
         return {"ok": True, "metric": metric_name, "entries": tc.get_metric(metric_name, last_n)}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -1839,6 +1857,8 @@ async def get_causal_trace_root_cause(entry_id: str):
                 "reason": "Causal trace not enabled",
             }
         root_cause = trace.trace_root_cause(entry_id)
+        if root_cause is None:
+            raise HTTPException(404, f"No root cause found for entry_id '{entry_id}'")
         return {
             "ok": True,
             "entry_id": entry_id,
