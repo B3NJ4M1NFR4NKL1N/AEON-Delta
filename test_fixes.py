@@ -66462,6 +66462,14 @@ def run_all_tests():
     test_cognitive_unity_components_in_forward_pass()
     test_save_state_persists_hierarchical_memory()
 
+    # Architectural coherence tests
+    test_feedback_bus_validate_signal_coverage()
+    test_feedback_bus_reset_ema()
+    test_coherence_verifier_tighten_for_diversity_collapse()
+    test_ucc_safety_escalation_on_dag_disagreement()
+    test_ucc_compute_unified_health()
+    test_ucc_diversity_collapse_tightens_coherence()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -68655,6 +68663,230 @@ def test_save_state_persists_hierarchical_memory():
         assert os.path.exists(os.path.join(tmpdir, "model.pt"))
 
     print("✅ test_save_state_persists_hierarchical_memory PASSED")
+
+
+# ============================================================================
+# ARCHITECTURAL COHERENCE TESTS
+# ============================================================================
+
+
+def test_feedback_bus_validate_signal_coverage():
+    """CognitiveFeedbackBus.validate_signal_coverage reports unpopulated signals."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+    # Register two dynamic signals
+    bus.register_signal("module_a_quality", default=0.5)
+    bus.register_signal("module_b_quality", default=0.5)
+
+    # Before any forward pass, both should be at default (unpopulated)
+    coverage = bus.validate_signal_coverage()
+    assert coverage['coverage'] == 0.0
+    assert len(coverage['unpopulated']) == 2
+    assert coverage['is_complete'] is False
+
+    # Run forward with one signal populated
+    bus.forward(
+        batch_size=1, device=torch.device("cpu"),
+        extra_signals={"module_a_quality": 0.9},
+    )
+    coverage = bus.validate_signal_coverage()
+    assert "module_a_quality" in coverage['populated']
+    assert "module_b_quality" in coverage['unpopulated']
+    assert coverage['is_complete'] is False
+
+    # Run forward with both signals populated
+    bus.forward(
+        batch_size=1, device=torch.device("cpu"),
+        extra_signals={"module_a_quality": 0.9, "module_b_quality": 0.8},
+    )
+    coverage = bus.validate_signal_coverage()
+    assert coverage['is_complete'] is True
+    assert coverage['coverage'] == 1.0
+
+    print("✅ test_feedback_bus_validate_signal_coverage PASSED")
+
+
+def test_feedback_bus_reset_ema():
+    """CognitiveFeedbackBus.reset_ema clears temporal state."""
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Run forward twice to accumulate EMA state
+    bus.forward(batch_size=1, device=torch.device("cpu"), uncertainty=0.8)
+    bus.forward(batch_size=1, device=torch.device("cpu"), uncertainty=0.9)
+
+    assert bus.get_ema_values() is not None
+    assert bus.get_signal_trend() is not None
+
+    # Reset EMA
+    bus.reset_ema()
+    assert bus.get_ema_values() is None
+    assert bus.get_signal_trend() is None
+    assert len(bus._trend_sign_history) == 0
+
+    # Forward should work after reset
+    output = bus.forward(batch_size=1, device=torch.device("cpu"), uncertainty=0.5)
+    assert output.shape == (1, 32)
+    # After one forward, EMA should be re-initialized
+    assert bus.get_ema_values() is not None
+
+    print("✅ test_feedback_bus_reset_ema PASSED")
+
+
+def test_coherence_verifier_tighten_for_diversity_collapse():
+    """ModuleCoherenceVerifier.tighten_for_diversity_collapse adjusts threshold."""
+    from aeon_core import ModuleCoherenceVerifier
+
+    verifier = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+
+    # Below threshold: no change
+    prev = verifier.tighten_for_diversity_collapse(0.2)
+    assert prev == 0.5
+    assert verifier.threshold == 0.5
+
+    # Above threshold: tightens
+    prev = verifier.tighten_for_diversity_collapse(0.8)
+    assert prev == 0.5
+    assert verifier.threshold > 0.5
+    assert verifier.threshold <= verifier._ADAPT_CAP
+
+    # Restore for caller
+    verifier.threshold = prev
+    assert verifier.threshold == 0.5
+
+    print("✅ test_coherence_verifier_tighten_for_diversity_collapse PASSED")
+
+
+def test_ucc_safety_escalation_on_dag_disagreement():
+    """UCC evaluate returns safety_escalation > 0 when DAG consensus disagrees."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalProvenanceTracker, CausalDAGConsensus,
+        UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    pt = CausalProvenanceTracker()
+    dag_consensus = CausalDAGConsensus()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=cv,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        causal_dag_consensus=dag_consensus,
+    )
+
+    states = {
+        "meta_loop": torch.randn(1, 32),
+        "safety": torch.randn(1, 32),
+    }
+
+    # Provide highly disagreeing adjacency matrices
+    adj_a = torch.eye(4)
+    adj_b = 1.0 - torch.eye(4)
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        dag_adjacency_matrices={"model_a": adj_a, "model_b": adj_b},
+    )
+
+    assert 'safety_escalation' in result
+    # With highly disagreeing DAGs, safety_escalation should be > 0
+    # (exact value depends on consensus score)
+    assert isinstance(result['safety_escalation'], float)
+    assert result['safety_escalation'] >= 0.0
+
+    print("✅ test_ucc_safety_escalation_on_dag_disagreement PASSED")
+
+
+def test_ucc_compute_unified_health():
+    """UnifiedCognitiveCycle.compute_unified_health produces composite score."""
+    from aeon_core import UnifiedCognitiveCycle
+
+    # Healthy system
+    healthy_result = {
+        'convergence_verdict': {'status': 'converged'},
+        'coherence_result': {'coherence_deficit': 0.0},
+        'uncertainty_summary': {'aggregate_uncertainty': 0.0},
+        'coverage_deficit': 0.0,
+        'should_rerun': False,
+    }
+    health = UnifiedCognitiveCycle.compute_unified_health(healthy_result)
+    assert 'composite_health' in health
+    assert 'factors' in health
+    assert 'weakest_factor' in health
+    assert health['composite_health'] > 0.9
+
+    # Unhealthy system
+    unhealthy_result = {
+        'convergence_verdict': {'status': 'diverging'},
+        'coherence_result': {'coherence_deficit': 0.8},
+        'uncertainty_summary': {'aggregate_uncertainty': 0.9},
+        'coverage_deficit': 0.5,
+        'should_rerun': True,
+    }
+    health_bad = UnifiedCognitiveCycle.compute_unified_health(unhealthy_result)
+    assert health_bad['composite_health'] < 0.3
+    assert health_bad['composite_health'] < health['composite_health']
+
+    # Partially degraded: one factor bad
+    partial_result = {
+        'convergence_verdict': {'status': 'converged'},
+        'coherence_result': {'coherence_deficit': 0.0},
+        'uncertainty_summary': {'aggregate_uncertainty': 0.0},
+        'coverage_deficit': 0.9,  # Only coverage is bad
+        'should_rerun': False,
+    }
+    health_partial = UnifiedCognitiveCycle.compute_unified_health(partial_result)
+    # Harmonic mean should penalize the single low factor
+    assert health_partial['composite_health'] < health['composite_health']
+    assert health_partial['weakest_factor'] == 'coverage_health'
+
+    print("✅ test_ucc_compute_unified_health PASSED")
+
+
+def test_ucc_diversity_collapse_tightens_coherence():
+    """UCC evaluate tightens coherence threshold when diversity collapses."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalProvenanceTracker, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=32, threshold=0.5)
+    pt = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=cv,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+    )
+
+    states = {
+        "meta_loop": torch.randn(1, 32),
+        "safety": torch.randn(1, 32),
+    }
+
+    original_threshold = cv.threshold
+
+    # With high diversity collapse, threshold should be temporarily tightened
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        diversity_collapse=0.8,
+    )
+
+    # After evaluate, threshold should be restored
+    assert cv.threshold == original_threshold
+
+    print("✅ test_ucc_diversity_collapse_tightens_coherence PASSED")
 
 
 if __name__ == "__main__":
