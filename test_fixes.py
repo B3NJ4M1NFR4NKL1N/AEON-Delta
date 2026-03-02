@@ -66461,6 +66461,13 @@ def run_all_tests():
     test_post_output_uncertainty_gate_in_forward_pass()
     test_cognitive_unity_components_in_forward_pass()
     test_save_state_persists_hierarchical_memory()
+    test_ns_bridge_provenance_matches_coherence_registry()
+    test_pairwise_coherence_diagnostic_records_success()
+    test_post_integration_coherence_records_success()
+    test_subsystem_degradation_detection_records_success()
+    test_cognitive_unity_achievable()
+    test_error_evolution_success_rate_above_threshold()
+    test_active_pass_traceability_complete()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -68655,6 +68662,233 @@ def test_save_state_persists_hierarchical_memory():
         assert os.path.exists(os.path.join(tmpdir, "model.pt"))
 
     print("✅ test_save_state_persists_hierarchical_memory PASSED")
+
+
+def test_ns_bridge_provenance_matches_coherence_registry():
+    """Verify that ns_bridge has matching provenance delta when ns_consistency runs.
+
+    When the NeuroSymbolicConsistencyChecker runs and registers its output
+    as 'ns_bridge' in the coherence registry, the provenance tracker must
+    also contain a delta for 'ns_bridge' so that active-pass traceability
+    checks in verify_cognitive_unity() don't report it as untraced.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_ns_consistency_check=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    # Check coherence registry has ns_bridge
+    with model.coherence_registry._lock:
+        active = {
+            name for name, v in model.coherence_registry._current_pass.items()
+            if v
+        }
+    # Check provenance tracker has ns_bridge delta
+    traced = set(model.provenance_tracker._deltas.keys())
+
+    if "ns_bridge" in active:
+        assert "ns_bridge" in traced, (
+            f"ns_bridge is in coherence_registry active pass but missing from "
+            f"provenance deltas. Active: {sorted(active)}, Traced: {sorted(traced)}"
+        )
+
+    print("✅ test_ns_bridge_provenance_matches_coherence_registry PASSED")
+
+
+def test_pairwise_coherence_diagnostic_records_success():
+    """Verify that pairwise coherence diagnostics record success=True.
+
+    The pairwise_diagnostic strategy successfully identifies the weak
+    module pair, so the error evolution episode should reflect that the
+    diagnostic completed successfully.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=8,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # impossibly high → always deficit
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    summary = model.error_evolution.get_error_summary()
+    for cls_name, cls_stats in summary["error_classes"].items():
+        if cls_name.startswith("coherence_deficit_") and "_vs_" in cls_name:
+            assert cls_stats["success_rate"] == 1.0, (
+                f"Pairwise diagnostic '{cls_name}' should have success_rate=1.0, "
+                f"got {cls_stats['success_rate']}"
+            )
+
+    print("✅ test_pairwise_coherence_diagnostic_records_success PASSED")
+
+
+def test_post_integration_coherence_records_success():
+    """Verify post-integration coherence verification records success.
+
+    The coherence_verification strategy detects deficits and triggers
+    uncertainty escalation, so the error evolution episode should reflect
+    that the verification + escalation pathway completed successfully.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=8,
+        enable_module_coherence=True,
+        module_coherence_threshold=100.0,  # impossibly high → always deficit
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z_in = torch.randn(2, 32)
+    z_out, outputs = model.reasoning_core(z_in, fast=False)
+
+    summary = model.error_evolution.get_error_summary()
+    if "post_integration_coherence_deficit" in summary["error_classes"]:
+        stats = summary["error_classes"]["post_integration_coherence_deficit"]
+        assert stats["success_rate"] == 1.0, (
+            f"post_integration_coherence_deficit should have success_rate=1.0, "
+            f"got {stats['success_rate']}"
+        )
+
+    print("✅ test_post_integration_coherence_records_success PASSED")
+
+
+def test_subsystem_degradation_detection_records_success():
+    """Verify that integrity monitor degradation detection records success.
+
+    The integrity_monitor strategy detects degraded subsystem health and
+    escalates uncertainty, so the error evolution episode should reflect
+    that the detection + escalation completed successfully.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate a degraded subsystem
+    model.integrity_monitor.record_health("test_subsystem", 0.2, {})
+
+    z = torch.randint(0, config.vocab_size, (2, 16))
+    with torch.no_grad():
+        _ = model(z)
+
+    summary = model.error_evolution.get_error_summary()
+    if "subsystem_degraded_test_subsystem" in summary["error_classes"]:
+        stats = summary["error_classes"]["subsystem_degraded_test_subsystem"]
+        assert stats["success_rate"] == 1.0, (
+            f"subsystem_degraded_test_subsystem should have success_rate=1.0, "
+            f"got {stats['success_rate']}"
+        )
+
+    print("✅ test_subsystem_degradation_detection_records_success PASSED")
+
+
+def test_cognitive_unity_achievable():
+    """Verify that the default model achieves cognitive unity after a forward pass.
+
+    The three AGI coherence requirements must be satisfied:
+    1. Mutual verification — each component has cross-validation partners
+    2. Uncertainty → metacognition — all uncertainty sources feed into
+       the MetaCognitiveRecursionTrigger
+    3. Root-cause traceability — all conclusions can be traced back
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    result = model.verify_cognitive_unity()
+    assert result['unified'], (
+        f"Model should achieve cognitive unity. "
+        f"Score={result.get('cognitive_unity_score')}, "
+        f"Recommendations: {result['recommendations']}"
+    )
+    assert result['mutual_verification']['coverage'] >= 0.9
+    assert result['uncertainty_metacognition']['coverage'] >= 1.0
+    assert result['root_cause_traceability']['coverage'] >= 0.9
+
+    print("✅ test_cognitive_unity_achievable PASSED")
+
+
+def test_error_evolution_success_rate_above_threshold():
+    """Verify that error evolution success rate meets the unity threshold.
+
+    The verify_cognitive_unity() method requires error evolution success
+    rate >= 0.3 for the system to be classified as unified.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    summary = model.error_evolution.get_error_summary()
+    total = summary['total_recorded']
+    if total >= 10:
+        successes = 0
+        for cls_stats in summary['error_classes'].values():
+            successes += int(cls_stats.get('success_rate', 0.0) * cls_stats.get('count', 0))
+        rate = successes / max(total, 1)
+        assert rate >= 0.3, (
+            f"Error evolution success rate {rate:.2%} is below 0.3 threshold. "
+            f"Total={total}, successes={successes}"
+        )
+
+    print("✅ test_error_evolution_success_rate_above_threshold PASSED")
+
+
+def test_active_pass_traceability_complete():
+    """Verify that all active-pass subsystems have provenance deltas.
+
+    Every subsystem that registers output in the coherence registry
+    during a forward pass must also have a matching provenance delta
+    so that verify_cognitive_unity()'s active-pass traceability check
+    reports full coverage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    result = model.verify_cognitive_unity()
+    untraced = result['root_cause_traceability'].get('untraced_active_subsystems', [])
+    assert len(untraced) == 0, (
+        f"Active subsystems untraced in provenance: {untraced}"
+    )
+
+    print("✅ test_active_pass_traceability_complete PASSED")
 
 
 if __name__ == "__main__":
