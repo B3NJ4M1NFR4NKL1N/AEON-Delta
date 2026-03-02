@@ -14271,6 +14271,13 @@ class AutoCriticLoop(nn.Module):
     3. If score < threshold → revise and repeat
     4. Else → commit answer
 
+    When a :class:`CausalProvenanceTracker` is attached via
+    :meth:`set_provenance_tracker`, every revision records the
+    critique signal that triggered it — including the weakest score
+    dimension and the iteration — so that downstream root-cause
+    analysis can answer *why* a revision occurred and which quality
+    dimension drove it.
+
     Args:
         base_model: callable that maps query → candidate.
         hidden_dim: representation size.
@@ -14291,6 +14298,20 @@ class AutoCriticLoop(nn.Module):
         self.reviser = RevisionNetwork(hidden_dim=hidden_dim)
         self.max_iterations = max_iterations
         self.threshold = threshold
+        self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
+
+    def set_provenance_tracker(
+        self, tracker: Optional['CausalProvenanceTracker'],
+    ) -> None:
+        """Attach a CausalProvenanceTracker for revision audit trail.
+
+        Once attached, every revision iteration records the critique
+        scores and weakest quality dimension in the provenance tracker,
+        enabling downstream root-cause analysis to answer *why* the
+        auto-critic revised the output and which quality dimension
+        triggered the revision.
+        """
+        self._provenance_tracker = tracker
 
     def forward(
         self, query: torch.Tensor, return_trajectory: bool = False
@@ -14304,6 +14325,8 @@ class AutoCriticLoop(nn.Module):
         # back-propagate through the critic, enabling end-to-end
         # learning of the self-critique objective.
         best_score_tensor: Optional[torch.Tensor] = None
+        _prov = self._provenance_tracker
+        revision_reasons: List[Dict[str, Any]] = []
 
         for iteration in range(self.max_iterations):
             candidate = self.generator(current_query)
@@ -14316,11 +14339,12 @@ class AutoCriticLoop(nn.Module):
                 best_score_tensor = correctness_tensor
                 best_candidate = candidate
 
+            score_dict = {k: v.mean().item() for k, v in scores.items()}
             trajectory.append(
                 {
                     "iteration": iteration,
                     "correctness": correctness,
-                    "scores": {k: v.mean().item() for k, v in scores.items()},
+                    "scores": score_dict,
                 }
             )
 
@@ -14329,13 +14353,42 @@ class AutoCriticLoop(nn.Module):
 
             # Revise
             critique_signal = self.critic.explain_failure(scores)
+
+            # Identify the weakest quality dimension driving revision
+            weakest_dim = min(score_dict, key=score_dict.get)
+            revision_reason = {
+                "iteration": iteration,
+                "weakest_dimension": weakest_dim,
+                "weakest_score": score_dict[weakest_dim],
+                "correctness": correctness,
+                "scores": score_dict,
+            }
+            revision_reasons.append(revision_reason)
+
+            # Record revision in provenance for root-cause traceability
+            if _prov is not None:
+                _prov.record_before("auto_critic", current_query)
+
             current_query = self.reviser(current_query, candidate, critique_signal)
+
+            if _prov is not None:
+                _prov.record_after("auto_critic", current_query)
+                _trace = getattr(_prov, '_causal_trace', None)
+                if _trace is not None:
+                    _trace.record(
+                        subsystem="auto_critic/revision",
+                        decision=f"revised:weakest={weakest_dim},"
+                                 f"score={score_dict[weakest_dim]:.3f}",
+                        metadata=revision_reason,
+                        severity="info",
+                    )
 
         result: Dict[str, Any] = {
             "candidate": best_candidate,
             "iterations": len(trajectory),
             "final_score": best_score,
             "final_score_tensor": best_score_tensor,
+            "revision_reasons": revision_reasons,
         }
         if return_trajectory:
             result["trajectory"] = trajectory
@@ -15284,11 +15337,26 @@ class OutputReliabilityGate(nn.Module):
         factors['weakest_factor'] = weakest
         factors['composite'] = composite
 
+        # Map the weakest factor to the metacognitive trigger signal it
+        # should boost, so callers can pass this directly to
+        # MetaCognitiveRecursionTrigger.adapt_weights_from_reliability_gate()
+        # without manual bridging.
+        _FACTOR_TO_SIGNAL: Dict[str, str] = {
+            "uncertainty_contribution": "uncertainty",
+            "auto_critic_contribution": "uncertainty",
+            "convergence_contribution": "diverging",
+            "coherence_contribution": "coherence_deficit",
+            "provenance_quality": "coherence_deficit",
+            "causal_quality": "low_causal_quality",
+            "verification_coverage": "low_output_reliability",
+        }
+
         return {
             'composite': composite,
             'is_reliable': composite >= self.low_reliability_threshold,
             'factors': factors,
             'weakest_factor': weakest,
+            'trigger_signal': _FACTOR_TO_SIGNAL.get(weakest),
         }
 
 
@@ -15472,6 +15540,23 @@ class ModuleCoherenceVerifier(nn.Module):
                 for member in members:
                     self._subsystem_to_group[member] = group_name
 
+        self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
+
+    def set_provenance_tracker(
+        self, tracker: Optional['CausalProvenanceTracker'],
+    ) -> None:
+        """Attach a CausalProvenanceTracker for incoherence root-cause logging.
+
+        Once attached, whenever the verifier detects incoherence
+        (``needs_recheck = True``), it records the weakest module pair
+        and per-module correction pressures in the causal trace so that
+        downstream root-cause analysis can answer *which modules
+        diverged* and *by how much*, preserving the audit trail that
+        would otherwise be destroyed after blending repairs the
+        misalignment.
+        """
+        self._provenance_tracker = tracker
+
     def forward(
         self,
         states: Dict[str, torch.Tensor],
@@ -15528,10 +15613,34 @@ class ModuleCoherenceVerifier(nn.Module):
         # correction signals and weakest pair so downstream logic can
         # apply targeted repair without a second pass through the verifier.
         if needs_recheck:
-            result["correction_signals"] = self.compute_correction_signals(
+            correction_signals = self.compute_correction_signals(
                 pairwise, self.threshold,
             )
-            result["weakest_pair"] = self.get_weakest_pair(pairwise)
+            weakest_pair = self.get_weakest_pair(pairwise)
+            result["correction_signals"] = correction_signals
+            result["weakest_pair"] = weakest_pair
+
+            # Log incoherence root cause to provenance tracker so the
+            # audit trail is preserved even after blending repairs it.
+            _prov = self._provenance_tracker
+            if _prov is not None:
+                _trace = getattr(_prov, '_causal_trace', None)
+                if _trace is not None:
+                    _trace.record(
+                        subsystem="module_coherence/incoherence",
+                        decision=(
+                            f"weakest_pair={weakest_pair['pair'] if weakest_pair else 'none'},"
+                            f"sim={weakest_pair['similarity']:.3f}"
+                            if weakest_pair else "no_weakest_pair"
+                        ),
+                        metadata={
+                            "correction_signals": correction_signals,
+                            "weakest_pair": weakest_pair,
+                            "coherence_score": float(coherence.mean().item()),
+                            "threshold": self.threshold,
+                        },
+                        severity="warning",
+                    )
 
         return result
 
@@ -16628,6 +16737,7 @@ class MetaCognitiveRecursionTrigger:
         memory_trust_deficit: float = 0.0,
         convergence_conflict: float = 0.0,
         output_reliability: float = 1.0,
+        provenance_attribution: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
 
@@ -16676,6 +16786,13 @@ class MetaCognitiveRecursionTrigger:
                 auto-critic quality, convergence rate, and coherence.
                 Low values (< 0.5) indicate untrustworthy output that
                 should trigger deeper re-reasoning.
+            provenance_attribution: Optional output of
+                ``CausalProvenanceTracker.compute_attribution()``.  When
+                provided, the result includes ``dominant_module`` — the
+                provenance module with the highest L2 delta contribution
+                — enabling callers to identify which subsystem most
+                influenced the output and correlate it with the active
+                trigger signals.
 
         Returns:
             Dict with:
@@ -16685,6 +16802,11 @@ class MetaCognitiveRecursionTrigger:
                 - extra_iterations: int — additional iterations to grant.
                 - triggers_active: list of signal names that fired.
                 - signal_weights: current adaptive weights per signal.
+                - dominant_module: str or None — provenance module with
+                  highest contribution (only when provenance_attribution
+                  is provided).
+                - dominant_module_signal: str or None — trigger signal
+                  associated with the dominant module.
         """
         # Normalize coherence_deficit to float for graduated response
         _cd = float(coherence_deficit)
@@ -16836,7 +16958,21 @@ class MetaCognitiveRecursionTrigger:
             "signal_weights": dict(w),
             "max_recursions_capped": _max_recursions_capped,
             "capped_trigger_score": effective_trigger_score if _max_recursions_capped else 0.0,
+            "dominant_module": None,
+            "dominant_module_signal": None,
         }
+
+        # Extract provenance-derived dominant module when attribution is
+        # provided, so callers can correlate the trigger decision with
+        # the specific subsystem that most influenced the output.
+        if provenance_attribution is not None:
+            _contribs = provenance_attribution.get("contributions", {})
+            if _contribs:
+                _dom_module = max(_contribs, key=_contribs.get)
+                result["dominant_module"] = _dom_module
+                result["dominant_module_signal"] = (
+                    self._PROVENANCE_TO_SIGNAL.get(_dom_module)
+                )
         self._last_triggers_active = list(triggers_active)
         return result
 
@@ -16878,6 +17014,7 @@ class CausalErrorEvolutionTracker:
         self._success_rate_trend: Dict[str, float] = {}
         self._trend_alpha: float = 0.3
         self._prev_success_rate: Dict[str, float] = {}
+        self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -16891,6 +17028,22 @@ class CausalErrorEvolutionTracker:
         """
         self._causal_trace = trace
 
+    def set_provenance_tracker(
+        self, tracker: Optional['CausalProvenanceTracker'],
+    ) -> None:
+        """Attach a CausalProvenanceTracker for automatic antecedent extraction.
+
+        Once attached, when :meth:`record_episode` is called without
+        explicit ``causal_antecedents``, the tracker automatically
+        extracts the top contributing modules from the provenance
+        attribution as antecedents.  This bridges per-module attribution
+        into the error-evolution causal chain, so that
+        :meth:`get_root_causes` can identify which modules contributed
+        to each error class without requiring callers to manually supply
+        antecedent lists.
+        """
+        self._provenance_tracker = tracker
+
     def record_episode(
         self,
         error_class: str,
@@ -16901,13 +17054,35 @@ class CausalErrorEvolutionTracker:
     ) -> None:
         """Record an error-recovery episode.
 
+        When ``causal_antecedents`` is None and a
+        :class:`CausalProvenanceTracker` is attached, the tracker
+        automatically extracts the top contributing modules as
+        antecedents, bridging per-module attribution into the
+        error-evolution causal chain.
+
         Args:
             error_class: Semantic error category (e.g., "numerical", "convergence").
             strategy_used: Recovery action taken (e.g., "sanitize", "rollback").
             success: Whether the recovery led to a valid output.
             causal_antecedents: IDs of prior causal-trace decisions that led here.
+                When omitted and a provenance tracker is attached, top
+                contributing modules are auto-extracted.
             metadata: Additional context.
         """
+        # Auto-extract antecedents from provenance when not supplied
+        if causal_antecedents is None and self._provenance_tracker is not None:
+            try:
+                _attr = self._provenance_tracker.compute_attribution()
+                _contribs = _attr.get("contributions", {})
+                if _contribs:
+                    _n = max(len(_contribs), 1)
+                    _mean = 1.0 / _n
+                    causal_antecedents = [
+                        mod for mod, c in _contribs.items()
+                        if c > _mean
+                    ]
+            except Exception:
+                pass  # Non-critical: fall through to empty antecedents
         episode = {
             "strategy": strategy_used,
             "success": success,
@@ -21581,8 +21756,27 @@ class AEONDeltaV3(nn.Module):
             # now include error-recovery decisions as first-class nodes.
             if self.causal_trace is not None:
                 self.error_evolution.set_causal_trace(self.causal_trace)
+            # Bridge error evolution ↔ provenance tracker so that
+            # record_episode() auto-extracts causal antecedents from
+            # per-module attribution when callers omit them.
+            self.error_evolution.set_provenance_tracker(
+                self.provenance_tracker,
+            )
         else:
             self.error_evolution = None
+        
+        # ===== CROSS-MODULE PROVENANCE WIRING =====
+        # Wire provenance tracker into subsystems that detect and
+        # correct misalignment so that root-cause information is
+        # preserved in the causal chain even after corrective actions.
+        if self.auto_critic is not None:
+            self.auto_critic.set_provenance_tracker(
+                self.provenance_tracker,
+            )
+        if self.module_coherence is not None:
+            self.module_coherence.set_provenance_tracker(
+                self.provenance_tracker,
+            )
         
         # ===== COGNITIVE EXECUTIVE FUNCTION (Global Workspace Theory) =====
         # Coordinates subsystems via attention-based priority arbitration,
