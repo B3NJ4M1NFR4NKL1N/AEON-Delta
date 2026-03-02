@@ -589,6 +589,56 @@ async def get_system_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE UNITY / ARCHITECTURAL HEALTH
+# ═══════════════════════════════════════════════════════════════════════════════
+def _make_json_safe(obj):
+    """Recursively convert torch.Tensor values to JSON-serializable lists."""
+    if isinstance(obj, torch.Tensor):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_safe(item) for item in obj]
+    return obj
+
+
+@app.get("/api/cognitive_unity")
+async def get_cognitive_unity():
+    """Return AGI coherence diagnostics from verify_cognitive_unity().
+
+    Exposes mutual-verification coverage, uncertainty→metacognition
+    coverage, root-cause traceability, and a composite cognitive-unity
+    score via the REST API so the dashboard and external monitors can
+    query AGI coherence status without programmatic access.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.verify_cognitive_unity()
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"cognitive_unity error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/architectural_health")
+async def get_architectural_health():
+    """Return synthesized architectural health from get_architectural_health().
+
+    Single endpoint combining cognitive unity, pipeline wiring, and
+    convergence health into one actionable diagnostic.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.get_architectural_health()
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"architectural_health error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/init")
