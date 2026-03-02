@@ -3058,6 +3058,7 @@ class SafeThoughtAETrainerV4:
             'perplexity': perplexity,
             'accuracy': accuracy,
             'provenance': self.provenance.compute_attribution(),
+            'convergence_status': self.convergence_monitor.status,
             **vq_stats
         }
     
@@ -3311,6 +3312,23 @@ class SafeThoughtAETrainerV4:
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
                 )
                 epoch_metrics["should_rerun"] = _cycle_result["should_rerun"]
+                # Synthesize a cognitive_unity_score mirroring the
+                # inference pipeline's composite metric so training and
+                # inference measure AGI coherence on the same scale.
+                # Components: coherence, convergence quality, provenance
+                # completeness, uncertainty handling.
+                _cus_coherence = epoch_metrics["cognitive_coherence"]
+                _cus_convergence = max(0.0, min(
+                    1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
+                ))
+                _cus_provenance = self._provenance_causal_quality()
+                _cus_uncertainty = max(0.0, 1.0 - _uncertainty)
+                epoch_metrics["cognitive_unity_score"] = (
+                    0.30 * _cus_coherence
+                    + 0.25 * _cus_convergence
+                    + 0.25 * _cus_provenance
+                    + 0.20 * _cus_uncertainty
+                )
                 if _cycle_result["should_rerun"]:
                     _active = _cycle_result["trigger_detail"].get("triggers_active", [])
                     logger.info(
@@ -3549,6 +3567,13 @@ class ContextualRSSMTrainer:
         self.model.rssm.train()
         self.provenance.reset()
 
+        # Register dependency edges so root-cause tracing can attribute
+        # RSSM errors to upstream components (encoder → vq → rssm).
+        # Phase A registers encoder→vq→decoder but Phase B was missing
+        # the equivalent edges, leaving provenance DAG disconnected.
+        self.provenance.record_dependency("encoder", "vq")
+        self.provenance.record_dependency("vq", "rssm")
+
         # Sanitize z_context input to prevent NaN/Inf from flowing into
         # the RSSM, matching Phase A's encoder-output sanitization.
         # Without this, corrupted VQ outputs from Phase A would propagate
@@ -3714,6 +3739,7 @@ class ContextualRSSMTrainer:
             "provenance": _prov,
             "decoder_cross_loss": _decoder_cross_loss,
             "decoder_valid": _decoder_valid,
+            "convergence_status": self.convergence_monitor.status,
         }
 
     def _provenance_causal_quality(self) -> float:
@@ -3931,6 +3957,20 @@ class ContextualRSSMTrainer:
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
                 )
                 epoch_metrics["should_rerun"] = _cycle_result["should_rerun"]
+                # Synthesize cognitive_unity_score for Phase B, matching
+                # the Phase A and inference pipeline composite metrics.
+                _cus_coherence_b = epoch_metrics["cognitive_coherence"]
+                _cus_convergence_b = max(0.0, min(
+                    1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
+                ))
+                _cus_provenance_b = self._provenance_causal_quality()
+                _cus_uncertainty_b = max(0.0, 1.0 - _uncertainty)
+                epoch_metrics["cognitive_unity_score"] = (
+                    0.30 * _cus_coherence_b
+                    + 0.25 * _cus_convergence_b
+                    + 0.25 * _cus_provenance_b
+                    + 0.20 * _cus_uncertainty_b
+                )
                 # Apply correction_guidance from UCC — when the unified
                 # cognitive cycle identifies a specific target module and
                 # recommended strategy, use that insight to adapt Phase B
@@ -4106,6 +4146,16 @@ class TrainingProvenanceTracker:
             'deltas': dict(self._deltas),
             'order': list(self._order),
         }
+
+    def record_dependency(self, from_module: str, to_module: str) -> None:
+        """Record an inter-module dependency edge for root-cause tracing.
+
+        Delegates to the underlying ``CausalProvenanceTracker`` so that
+        ``trace_root_cause()`` can walk the dependency DAG backward from
+        any module to the original inputs.
+        """
+        if self._tracker is not None:
+            self._tracker.record_dependency(from_module, to_module)
 
 
 class TrainingConvergenceMonitor:
