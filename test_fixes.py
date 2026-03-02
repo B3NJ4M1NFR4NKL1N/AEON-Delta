@@ -67855,5 +67855,34 @@ def test_training_auto_bridge_phase_a():
     print("✅ test_training_auto_bridge_phase_a PASSED")
 
 
+def test_training_auto_bridge_phase_b():
+    """Phase B training should automatically call sync_from_training
+    at the end of training to bridge error patterns into inference,
+    using convergence_monitor (not the general TrainingMonitor)."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, ContextualRSSMTrainer,
+        TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    import inspect
+    source = inspect.getsource(trainer.fit)
+    assert 'sync_from_training' in source, (
+        "Phase B fit() must automatically call sync_from_training "
+        "after training completes to bridge error patterns into inference"
+    )
+    # Must use convergence_monitor, not the general TrainingMonitor
+    assert 'self.convergence_monitor' in source, (
+        "Phase B auto-bridge must use self.convergence_monitor "
+        "(TrainingConvergenceMonitor) not self.monitor (TrainingMonitor)"
+    )
+    print("✅ test_training_auto_bridge_phase_b PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

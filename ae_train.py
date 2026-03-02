@@ -4089,7 +4089,7 @@ class ContextualRSSMTrainer:
         if hasattr(self.model, 'sync_from_training'):
             try:
                 _sync_result = self.model.sync_from_training(
-                    trainer_monitor=self.monitor,
+                    trainer_monitor=self.convergence_monitor,
                 )
                 logger.info(
                     "   🔗 Phase B training→inference bridge: %d events imported",
