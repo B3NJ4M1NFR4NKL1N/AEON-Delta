@@ -3364,12 +3364,15 @@ class SafeThoughtAETrainerV4:
                     # meta-cognitive cycle that produces a corrective
                     # gradient, satisfying the requirement that uncertainty
                     # triggers corrective action within the same cycle.
-                    if outputs is not None and hasattr(outputs, '__contains__') and 'input_batch' in outputs:
+                    if outputs is not None and isinstance(outputs, dict) and 'input_batch' in outputs:
                         try:
                             _rerun_out = self.train_step(outputs['input_batch'])
                             _rerun_loss = _rerun_out['total_loss']
-                            if (not (math.isnan(_rerun_loss.item()) or math.isinf(_rerun_loss.item()))
-                                    and _rerun_loss.item() < epoch_metrics["total"] * num_steps):
+                            # Accept re-execution if it produces a finite
+                            # loss.  The corrective step uses tightened LR
+                            # and gradient clip, so the resulting gradients
+                            # are inherently more conservative.
+                            if not (math.isnan(_rerun_loss.item()) or math.isinf(_rerun_loss.item())):
                                 _rerun_grad = self._optimizer_step()
                                 logger.info(
                                     f"   🔄 Meta-cognitive re-execution: "
@@ -3450,6 +3453,9 @@ class SafeThoughtAETrainerV4:
             # training dynamics, satisfying the requirement that each
             # component verifies and reinforces the others throughout
             # the training process, not just at its conclusion.
+            # NOTE: The final epoch is excluded (epoch + 1 < epochs)
+            # because sync_from_training() is called unconditionally
+            # after the epoch loop completes, avoiding redundant bridging.
             _bridge_interval = getattr(self.config, 'bridge_interval', 5)
             if (epoch + 1) % _bridge_interval == 0 and epoch + 1 < epochs:
                 try:
@@ -4163,6 +4169,7 @@ class ContextualRSSMTrainer:
             # Mirrors Phase A's periodic bridging: every bridge_interval
             # epochs, synchronize accumulated error patterns back into
             # training hyperparameters.
+            # NOTE: Final epoch excluded — sync_from_training() handles it.
             _bridge_interval = getattr(self.config, 'bridge_interval', 5)
             if (epoch + 1) % _bridge_interval == 0 and epoch + 1 < epochs:
                 try:
