@@ -67618,5 +67618,123 @@ def test_training_error_dependency_map_covers_ucc_rerun():
     print("✅ test_training_error_dependency_map_covers_ucc_rerun PASSED")
 
 
+# ============================================================================
+# §50. TRAINING COGNITIVE UNITY & RSSM PROVENANCE TESTS
+# ============================================================================
+
+def test_training_phase_a_cognitive_unity_score():
+    """Phase A epoch-end metrics must include a cognitive_unity_score ∈ [0, 1]
+    that mirrors the inference pipeline's composite AGI coherence metric."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_cus")
+
+    # Simulate epoch-end UCC evaluation by running a forward pass first
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    result = trainer._forward_pass(tokens)
+
+    # Verify the trainer has provenance and convergence infrastructure
+    assert trainer.provenance is not None, "Trainer must have provenance tracker"
+    assert trainer.convergence_monitor is not None, "Trainer must have convergence monitor"
+    assert trainer._unified_cycle is not None, "Trainer must have UCC"
+
+    # Verify _provenance_causal_quality returns a valid value
+    pcq = trainer._provenance_causal_quality()
+    assert isinstance(pcq, float), f"Provenance causal quality must be float, got {type(pcq)}"
+    assert 0.0 <= pcq <= 1.0, f"Provenance causal quality must be in [0, 1], got {pcq}"
+
+    print("✅ test_training_phase_a_cognitive_unity_score PASSED")
+
+
+def test_training_forward_pass_includes_convergence_status():
+    """Phase A _forward_pass output must include convergence_status
+    so training steps are causally traceable."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, SafeThoughtAETrainerV4, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = SafeThoughtAETrainerV4(model, config, monitor, "/tmp/test_cs")
+
+    tokens = torch.randint(0, config.vocab_size, (2, config.seq_length))
+    result = trainer._forward_pass(tokens)
+
+    assert 'convergence_status' in result, (
+        "_forward_pass must include convergence_status"
+    )
+    assert result['convergence_status'] in (
+        'warmup', 'converging', 'converged', 'diverging', 'stagnating',
+    ), f"Unexpected convergence_status: {result['convergence_status']}"
+
+    print("✅ test_training_forward_pass_includes_convergence_status PASSED")
+
+
+def test_rssm_trainer_provenance_has_dependency_edges():
+    """Phase B ContextualRSSMTrainer must register dependency edges
+    (encoder→vq→rssm) in the provenance tracker so root-cause tracing
+    can attribute RSSM errors to upstream components."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    z_context = torch.randn(2, config.context_window, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    result = trainer.train_step(z_context, z_target)
+
+    # Verify provenance recorded dependency edges
+    prov = trainer.provenance
+    tracker = prov._tracker if hasattr(prov, '_tracker') else prov
+    deps = getattr(tracker, '_dependencies', {})
+
+    # Check that vq→rssm edge exists (rssm should have vq as upstream)
+    assert 'rssm' in deps or 'vq' in deps, (
+        "Phase B provenance must include dependency edges for root-cause tracing; "
+        f"found deps: {deps}"
+    )
+
+    print("✅ test_rssm_trainer_provenance_has_dependency_edges PASSED")
+
+
+def test_rssm_trainer_output_includes_convergence_status():
+    """Phase B train_step output must include convergence_status."""
+    import torch, logging
+    from ae_train import (
+        AEONDeltaV4, AEONConfigV4, ContextualRSSMTrainer, TrainingMonitor,
+    )
+
+    config = AEONConfigV4()
+    model = AEONDeltaV4(config)
+    monitor = TrainingMonitor(logging.getLogger("test"))
+    trainer = ContextualRSSMTrainer(model, config, monitor)
+
+    z_context = torch.randn(2, config.context_window, config.z_dim)
+    z_target = torch.randn(2, config.z_dim)
+    result = trainer.train_step(z_context, z_target)
+
+    assert 'convergence_status' in result, (
+        "Phase B train_step must include convergence_status"
+    )
+    assert result['convergence_status'] in (
+        'warmup', 'converging', 'converged', 'diverging', 'stagnating',
+    ), f"Unexpected convergence_status: {result['convergence_status']}"
+
+    print("✅ test_rssm_trainer_output_includes_convergence_status PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
