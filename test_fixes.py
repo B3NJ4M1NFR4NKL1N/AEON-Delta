@@ -66462,6 +66462,19 @@ def run_all_tests():
     test_cognitive_unity_components_in_forward_pass()
     test_save_state_persists_hierarchical_memory()
 
+    # Architectural unification integration tests
+    test_convergence_verdict_dataclass()
+    test_unify_convergence_verdicts()
+    test_provably_convergent_meta_loop_emits_verdict()
+    test_certified_meta_loop_emits_verdict()
+    test_adaptive_meta_loop_emits_verdict()
+    test_convergence_monitor_emits_verdict()
+    test_mcts_planner_action_embedding()
+    test_mcts_planner_handles_tuple_world_model()
+    test_consolidating_memory_consolidate_provenance()
+    test_consolidating_memory_retrieve_with_provenance()
+    test_post_output_uncertainty_gate_feeds_trigger()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -68655,6 +68668,245 @@ def test_save_state_persists_hierarchical_memory():
         assert os.path.exists(os.path.join(tmpdir, "model.pt"))
 
     print("✅ test_save_state_persists_hierarchical_memory PASSED")
+
+
+# ============================================================================
+# Architectural Unification — Integration Tests for Fixes 1-4
+# ============================================================================
+
+def test_convergence_verdict_dataclass():
+    """ConvergenceVerdict dataclass serialisation and confidence computation."""
+    from aeon_core import ConvergenceVerdict
+
+    v = ConvergenceVerdict(
+        converged=True,
+        convergence_rate=0.95,
+        residual_norm=1e-6,
+        certified=True,
+        certified_error_bound=1e-5,
+        lipschitz_estimate=0.8,
+        method="test",
+        iterations_used=10.0,
+    )
+    d = v.to_dict()
+    assert d['converged'] is True
+    assert d['method'] == 'test'
+    assert isinstance(d['residual_norm'], float)
+    assert v.confidence > 0.9, f"Expected high confidence, got {v.confidence}"
+    print("✅ test_convergence_verdict_dataclass PASSED")
+
+
+def test_unify_convergence_verdicts():
+    """unify_convergence_verdicts reconciles multiple verdicts correctly."""
+    from aeon_core import ConvergenceVerdict, unify_convergence_verdicts
+
+    v1 = ConvergenceVerdict(
+        converged=True, convergence_rate=1.0, residual_norm=1e-6,
+        certified=True, certified_error_bound=1e-5,
+        lipschitz_estimate=0.7, method="ibp",
+    )
+    v2 = ConvergenceVerdict(
+        converged=True, convergence_rate=0.9, residual_norm=2e-6,
+        certified=False, method="act",
+    )
+    consensus = unify_convergence_verdicts([v1, v2])
+    assert consensus.converged is True
+    assert abs(consensus.convergence_rate - 0.95) < 1e-6
+    assert consensus.method.startswith("consensus(")
+    # v1 is certified and converged, so consensus.certified is True
+    # (certified_agree checks only certified verdicts, which is just v1)
+    assert consensus.certified is True
+
+    # Test empty list
+    empty = unify_convergence_verdicts([])
+    assert empty.converged is False
+    assert empty.method == "empty_consensus"
+
+    print("✅ test_unify_convergence_verdicts PASSED")
+
+
+def test_provably_convergent_meta_loop_emits_verdict():
+    """ProvablyConvergentMetaLoop metadata includes convergence_verdict."""
+    from aeon_core import AEONConfig, ProvablyConvergentMetaLoop, ConvergenceVerdict
+
+    config = AEONConfig()
+    loop = ProvablyConvergentMetaLoop(config, max_iterations=5)
+    psi_0 = torch.randn(2, config.hidden_dim)
+    C, iters, meta = loop(psi_0)
+    assert 'convergence_verdict' in meta, "Missing convergence_verdict in metadata"
+    verdict = meta['convergence_verdict']
+    assert isinstance(verdict, ConvergenceVerdict)
+    assert verdict.method == "banach_fixed_point_ema"
+    assert isinstance(verdict.converged, bool)
+    assert 0.0 <= verdict.convergence_rate <= 1.0
+    print("✅ test_provably_convergent_meta_loop_emits_verdict PASSED")
+
+
+def test_certified_meta_loop_emits_verdict():
+    """CertifiedMetaLoop metadata includes convergence_verdict."""
+    from aeon_core import AEONConfig, CertifiedMetaLoop, ConvergenceVerdict
+
+    config = AEONConfig()
+    loop = CertifiedMetaLoop(config, max_iterations=5)
+    psi_0 = torch.randn(2, config.hidden_dim)
+    C, iters, meta = loop(psi_0)
+    assert 'convergence_verdict' in meta
+    verdict = meta['convergence_verdict']
+    assert isinstance(verdict, ConvergenceVerdict)
+    assert verdict.method == "ibp_certified"
+    print("✅ test_certified_meta_loop_emits_verdict PASSED")
+
+
+def test_adaptive_meta_loop_emits_verdict():
+    """AdaptiveMetaLoop metadata includes convergence_verdict."""
+    from aeon_core import AEONConfig, AdaptiveMetaLoop, ConvergenceVerdict
+
+    config = AEONConfig()
+    loop = AdaptiveMetaLoop(config, max_steps=5)
+    z_in = torch.randn(2, config.hidden_dim)
+    C, meta = loop(z_in)
+    assert 'convergence_verdict' in meta
+    verdict = meta['convergence_verdict']
+    assert isinstance(verdict, ConvergenceVerdict)
+    assert verdict.method == "adaptive_computation_time"
+    assert 'ponder_cost' in verdict.extra
+    print("✅ test_adaptive_meta_loop_emits_verdict PASSED")
+
+
+def test_convergence_monitor_emits_verdict():
+    """ConvergenceMonitor.check() includes convergence_verdict."""
+    from aeon_core import ConvergenceMonitor, ConvergenceVerdict
+
+    monitor = ConvergenceMonitor()
+    # Feed enough values to exit warmup
+    for val in [1.0, 0.5, 0.25, 0.1]:
+        result = monitor.check(val)
+    assert 'convergence_verdict' in result
+    verdict = result['convergence_verdict']
+    assert isinstance(verdict, ConvergenceVerdict)
+    assert verdict.method == "convergence_monitor_ema"
+    print("✅ test_convergence_monitor_emits_verdict PASSED")
+
+
+def test_mcts_planner_action_embedding():
+    """MCTSPlanner uses learned action embeddings instead of random noise."""
+    from aeon_core import MCTSPlanner
+
+    planner = MCTSPlanner(state_dim=64, action_dim=4, hidden_dim=32)
+    assert hasattr(planner, 'action_embedding'), "MCTSPlanner must have action_embedding"
+    assert planner.action_embedding.num_embeddings == 4
+    assert planner.action_embedding.embedding_dim == 64
+
+    # Verify embeddings produce deterministic perturbations
+    idx = torch.tensor([0])
+    emb1 = planner.action_embedding(idx)
+    emb2 = planner.action_embedding(idx)
+    assert torch.allclose(emb1, emb2), "Same action should produce same embedding"
+    print("✅ test_mcts_planner_action_embedding PASSED")
+
+
+def test_mcts_planner_handles_tuple_world_model():
+    """MCTSPlanner._expand handles tuple-returning world models."""
+    from aeon_core import MCTSPlanner, MCTSNode
+
+    state_dim = 64
+    planner = MCTSPlanner(state_dim=state_dim, action_dim=4, hidden_dim=32)
+    root = MCTSNode(state=torch.randn(state_dim))
+
+    # Mock world model that returns a tuple (like HierarchicalWorldModel)
+    class TupleWorldModel(nn.Module):
+        def forward(self, x):
+            return x * 0.9, {'h0': x}
+
+    wm = TupleWorldModel()
+    policy = planner.policy_net(root.state.unsqueeze(0)).squeeze(0)
+    child = planner._expand(root, wm, policy)
+    assert len(root.children) > 0, "Expansion should create children"
+    assert root.children[0].state.shape == (state_dim,)
+
+    # Mock world model that returns a dict (like PhysicsGroundedWorldModel)
+    class DictWorldModel(nn.Module):
+        def forward(self, x):
+            return {'output': x * 0.9}
+
+    root2 = MCTSNode(state=torch.randn(state_dim))
+    wm2 = DictWorldModel()
+    policy2 = planner.policy_net(root2.state.unsqueeze(0)).squeeze(0)
+    child2 = planner._expand(root2, wm2, policy2)
+    assert len(root2.children) > 0
+    print("✅ test_mcts_planner_handles_tuple_world_model PASSED")
+
+
+def test_consolidating_memory_consolidate_provenance():
+    """ConsolidatingMemory.consolidate() returns provenance metadata."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=32, working_capacity=5, importance_threshold=0.3)
+
+    # Store some items
+    for _ in range(4):
+        mem.store(torch.randn(32))
+
+    result = mem.consolidate()
+    assert isinstance(result, dict), "consolidate() must return a dict"
+    assert 'promoted_to_episodic' in result
+    assert 'discarded_working' in result
+    assert 'promoted_to_semantic' in result
+    assert 'episodic_size' in result
+    assert 'semantic_size' in result
+    assert 'mean_importance' in result
+    assert result['promoted_to_episodic'] + result['discarded_working'] == 4
+    print("✅ test_consolidating_memory_consolidate_provenance PASSED")
+
+
+def test_consolidating_memory_retrieve_with_provenance():
+    """ConsolidatingMemory.retrieve_with_provenance() returns stage attribution."""
+    from aeon_core import ConsolidatingMemory
+
+    mem = ConsolidatingMemory(dim=32, working_capacity=5, importance_threshold=0.3)
+    item = torch.randn(32)
+    mem.store(item)
+
+    result = mem.retrieve_with_provenance(item, k=3)
+    assert 'provenance' in result, "retrieve_with_provenance must include provenance"
+    prov = result['provenance']
+    assert 'stage_strengths' in prov
+    assert 'dominant_stage' in prov
+    assert 'total_items_retrieved' in prov
+    assert prov['dominant_stage'] in ('working', 'episodic', 'semantic')
+    print("✅ test_consolidating_memory_retrieve_with_provenance PASSED")
+
+
+def test_post_output_uncertainty_gate_feeds_trigger():
+    """PostOutputUncertaintyGate feeds late uncertainty back to trigger."""
+    from aeon_core import PostOutputUncertaintyGate
+
+    # Create a mock trigger with _signal_weights
+    class MockTrigger:
+        def __init__(self):
+            self._signal_weights = {
+                'low_output_reliability': 0.077,
+            }
+
+    gate = PostOutputUncertaintyGate(rerun_threshold=0.3)
+    trigger = MockTrigger()
+    gate.set_metacognitive_trigger(trigger)
+
+    # Trigger with high late uncertainty
+    result = gate.evaluate(
+        uncertainty=0.8,
+        uncertainty_sources={
+            'cycle_consistency_violation': 0.3,
+            'decoder_degenerate': 0.2,
+        },
+        ucc_already_triggered=False,
+    )
+    assert result['gate_triggered'] is True
+    # The trigger weight should have been boosted
+    assert trigger._signal_weights['low_output_reliability'] > 0.077, (
+        "Late-stage gate should boost the output reliability weight"
+    )
+    print("✅ test_post_output_uncertainty_gate_feeds_trigger PASSED")
 
 
 if __name__ == "__main__":
