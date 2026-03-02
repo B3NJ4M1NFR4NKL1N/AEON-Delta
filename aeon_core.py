@@ -16463,6 +16463,10 @@ class MetaCognitiveRecursionTrigger:
             # degraded global health, indicating multiple subsystems
             # are simultaneously underperforming.
             "low_global_integrity": "uncertainty",
+            # Chronic circuit breaker — a subsystem has tripped the
+            # circuit breaker across multiple consecutive forward
+            # passes, indicating persistent subsystem failure.
+            "chronic_circuit_breaker": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17469,6 +17473,15 @@ class CausalErrorEvolutionTracker:
         # UCC same-pass re-reasoning — maps to lambda_ucc so training
         # adapts to frequent coherence-driven re-reasoning.
         "ucc_rerun": "lambda_ucc",
+        # Chronic circuit breaker — a subsystem has tripped the circuit
+        # breaker across multiple consecutive forward passes, indicating
+        # persistent subsystem failure.  Maps to lambda_coherence so
+        # training strengthens cross-module integration reliability.
+        "chronic_circuit_breaker": "lambda_coherence",
+        # Low global integrity — SystemIntegrityMonitor reports degraded
+        # global health.  Maps to lambda_ucc so training adapts to
+        # systemic subsystem degradation.
+        "low_global_integrity": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(

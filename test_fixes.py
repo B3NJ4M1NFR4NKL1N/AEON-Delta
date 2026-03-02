@@ -13694,12 +13694,12 @@ def test_causal_trace_records_hybrid_reasoning():
     with torch.no_grad():
         _, outputs = model.reasoning_core(z_in, fast=False)
 
-    # Causal trace should have a hybrid_reasoning entry
+    # Causal trace should have a hybrid_reasoning entry.
+    # Use find() instead of recent() because the full reasoning pipeline
+    # generates 100+ trace entries and the hybrid_reasoning entry may be
+    # pushed out of the recent(n) window by downstream subsystems.
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=50)
-    hr_entries = [
-        e for e in recent if e.get("subsystem") == "hybrid_reasoning"
-    ]
+    hr_entries = model.causal_trace.find(subsystem='hybrid_reasoning')
     assert len(hr_entries) > 0, (
         "Expected hybrid_reasoning entry in causal trace"
     )
@@ -18353,11 +18353,11 @@ def test_notears_causal_trace_recorded():
     with torch.no_grad():
         outputs = model.forward(input_ids, decode_mode='train', fast=False)
 
-    # Check that causal trace has a NOTEARS entry
-    recent = model.causal_trace.recent(n=50)
-    notears_entries = [
-        e for e in recent if e.get("subsystem") == "notears_causal"
-    ]
+    # Check that causal trace has a NOTEARS entry.
+    # Use find() instead of recent() because the full reasoning pipeline
+    # generates 100+ trace entries and the notears_causal entry may be
+    # pushed out of the recent(n) window by downstream subsystems.
+    notears_entries = model.causal_trace.find(subsystem='notears_causal')
     assert len(notears_entries) > 0, (
         "NOTEARS computation was not recorded in causal trace"
     )
@@ -23256,9 +23256,11 @@ def test_hvae_causal_trace_recorded():
     z_in = torch.randn(B, config.hidden_dim)
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
-    # Causal trace should contain a hierarchical_vae entry
-    recent = model.causal_trace.recent(n=50)
-    hvae_entries = [e for e in recent if e.get('subsystem') == 'hierarchical_vae']
+    # Causal trace should contain a hierarchical_vae entry.
+    # Use find() instead of recent() because the full reasoning pipeline
+    # generates 100+ trace entries and the hierarchical_vae entry may be
+    # pushed out of the recent(n) window by downstream subsystems.
+    hvae_entries = model.causal_trace.find(subsystem='hierarchical_vae')
     assert len(hvae_entries) > 0, (
         "Causal trace should contain hierarchical_vae entries for traceability"
     )
