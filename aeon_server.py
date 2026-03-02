@@ -589,6 +589,60 @@ async def get_system_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE UNITY / ARCHITECTURAL HEALTH
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.get("/api/cognitive_unity")
+async def get_cognitive_unity():
+    """Return AGI coherence diagnostics from verify_cognitive_unity().
+
+    Exposes mutual-verification coverage, uncertainty→metacognition
+    coverage, root-cause traceability, and a composite cognitive-unity
+    score via the REST API so the dashboard and external monitors can
+    query AGI coherence status without programmatic access.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.verify_cognitive_unity()
+        # Convert non-serializable values for JSON response
+        _safe = {}
+        for k, v in result.items():
+            if isinstance(v, torch.Tensor):
+                _safe[k] = v.tolist()
+            elif isinstance(v, dict):
+                _inner = {}
+                for ik, iv in v.items():
+                    if isinstance(iv, torch.Tensor):
+                        _inner[ik] = iv.tolist()
+                    else:
+                        _inner[ik] = iv
+                _safe[k] = _inner
+            else:
+                _safe[k] = v
+        return _safe
+    except Exception as e:
+        logging.error(f"cognitive_unity error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/architectural_health")
+async def get_architectural_health():
+    """Return synthesized architectural health from get_architectural_health().
+
+    Single endpoint combining cognitive unity, pipeline wiring, and
+    convergence health into one actionable diagnostic.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.get_architectural_health()
+        return result
+    except Exception as e:
+        logging.error(f"architectural_health error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.post("/api/init")

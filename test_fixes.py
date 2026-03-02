@@ -67884,5 +67884,120 @@ def test_training_auto_bridge_phase_b():
     print("✅ test_training_auto_bridge_phase_b PASSED")
 
 
+# ============================================================================
+# NEW TESTS: Architectural health and convergence summary (Gap closure)
+# ============================================================================
+
+def test_convergence_monitor_get_summary_warmup():
+    """ConvergenceMonitor.get_convergence_summary should return warmup
+    status when no history is available."""
+    from aeon_core import ConvergenceMonitor
+    cm = ConvergenceMonitor(threshold=1e-5)
+    summary = cm.get_convergence_summary()
+    assert summary['status'] == 'warmup'
+    assert summary['certified'] is False
+    assert summary['history_length'] == 0
+    assert summary['latest_delta'] is None
+    assert summary['avg_contraction'] is None
+    assert summary['secondary_degraded'] is False
+    print("✅ test_convergence_monitor_get_summary_warmup PASSED")
+
+
+def test_convergence_monitor_get_summary_converged():
+    """ConvergenceMonitor.get_convergence_summary should report converged
+    status when delta_norm drops below threshold with contraction < 1."""
+    from aeon_core import ConvergenceMonitor
+    cm = ConvergenceMonitor(threshold=0.1)
+    # Feed decreasing deltas
+    for i in range(5):
+        cm.check(1.0 / (10 ** i))
+    summary = cm.get_convergence_summary()
+    assert summary['history_length'] == 5
+    assert summary['avg_contraction'] is not None
+    assert summary['avg_contraction'] < 1.0
+    assert summary['status'] == 'converged'
+    assert summary['certified'] is True
+    print("✅ test_convergence_monitor_get_summary_converged PASSED")
+
+
+def test_convergence_monitor_get_summary_secondary_degraded():
+    """get_convergence_summary should reflect secondary signal degradation."""
+    from aeon_core import ConvergenceMonitor
+    cm = ConvergenceMonitor(threshold=0.1)
+    for i in range(5):
+        cm.check(1.0 / (10 ** i))
+    # Record a high secondary signal to degrade
+    cm.record_secondary_signal("safety_violation", 0.8)
+    summary = cm.get_convergence_summary()
+    assert summary['secondary_degraded'] is True
+    # When secondary signals are degraded, certification is withheld
+    assert summary['certified'] is False
+    assert summary['status'] == 'converging'
+    print("✅ test_convergence_monitor_get_summary_secondary_degraded PASSED")
+
+
+def test_verify_cognitive_unity_includes_score():
+    """verify_cognitive_unity should include cognitive_unity_score and
+    cognitive_unity_components in its return dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    result = model.verify_cognitive_unity()
+    assert 'cognitive_unity_score' in result
+    assert 'cognitive_unity_components' in result
+    score = result['cognitive_unity_score']
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+    components = result['cognitive_unity_components']
+    assert 'mutual_verification' in components
+    assert 'uncertainty_metacognition' in components
+    assert 'root_cause_traceability' in components
+    print("✅ test_verify_cognitive_unity_includes_score PASSED")
+
+
+def test_get_architectural_health():
+    """get_architectural_health should synthesize cognitive unity,
+    pipeline wiring, and convergence into a single report."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    health = model.get_architectural_health()
+    assert 'healthy' in health
+    assert 'overall_health_score' in health
+    assert 'cognitive_unity_score' in health
+    assert 'pipeline_wiring_coverage' in health
+    assert 'convergence_summary' in health
+    assert 'cognitive_unity' in health
+    assert 'weakest_module' in health
+    assert 'recommendations' in health
+    assert isinstance(health['overall_health_score'], float)
+    assert 0.0 <= health['overall_health_score'] <= 1.0
+    # convergence_summary should come from ConvergenceMonitor
+    cs = health['convergence_summary']
+    assert 'status' in cs
+    assert 'certified' in cs
+    print("✅ test_get_architectural_health PASSED")
+
+
+def test_get_architectural_health_recommendations():
+    """get_architectural_health should aggregate recommendations from
+    cognitive unity and pipeline wiring diagnostics."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    health = model.get_architectural_health()
+    # Should have at least one recommendation (wiring coverage is <90%
+    # with default config since many modules are disabled)
+    assert isinstance(health['recommendations'], list)
+    assert len(health['recommendations']) > 0
+    print("✅ test_get_architectural_health_recommendations PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

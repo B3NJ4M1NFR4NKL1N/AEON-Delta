@@ -8430,6 +8430,65 @@ class ConvergenceMonitor:
                     _bridge_err,
                 )
 
+    def get_convergence_summary(self) -> Dict[str, Any]:
+        """Return a cross-pass convergence health summary.
+
+        Synthesizes the sliding-window history, secondary signals, and
+        the most recent verdict into a single dict that downstream
+        consumers (UCC, training bridge, ``get_architectural_health``)
+        can use without re-implementing the convergence analysis.
+
+        Returns:
+            Dict with:
+                - ``status``: latest convergence status string.
+                - ``certified``: whether the most recent check was certified.
+                - ``history_length``: number of recorded delta norms.
+                - ``latest_delta``: most recent residual norm (or None).
+                - ``avg_contraction``: mean contraction ratio over the
+                  sliding window (< 1 means converging, ≥ 1 diverging).
+                - ``secondary_signals``: current auxiliary signal dict.
+                - ``secondary_degraded``: whether any secondary signal
+                  exceeds the instability threshold.
+        """
+        n = len(self.history)
+        if n < 3:
+            return {
+                'status': 'warmup',
+                'certified': False,
+                'history_length': n,
+                'latest_delta': float(self.history[-1]) if n > 0 else None,
+                'avg_contraction': None,
+                'secondary_signals': dict(self._secondary_signals),
+                'secondary_degraded': False,
+            }
+        ratios = [
+            self.history[i] / max(self.history[i - 1], 1e-12)
+            for i in range(1, n)
+        ]
+        avg_contraction = float(np.mean(ratios))
+        latest_delta = float(self.history[-1])
+        _secondary_degraded = any(
+            v > 0.5 for v in self._secondary_signals.values()
+        )
+        if avg_contraction < 1.0 and latest_delta < self.threshold:
+            status = 'converging' if _secondary_degraded else 'converged'
+            certified = not _secondary_degraded
+        elif avg_contraction >= 1.0:
+            status = 'diverging'
+            certified = False
+        else:
+            status = 'converging'
+            certified = False
+        return {
+            'status': status,
+            'certified': certified,
+            'history_length': n,
+            'latest_delta': latest_delta,
+            'avg_contraction': avg_contraction,
+            'secondary_signals': dict(self._secondary_signals),
+            'secondary_degraded': _secondary_degraded,
+        }
+
     def is_diverging(self) -> bool:
         """Return True if the most recent convergence check indicated divergence."""
         if len(self.history) < 3:
@@ -40985,8 +41044,31 @@ class AEONDeltaV3(nn.Module):
         if not recommendations:
             recommendations.append("All cognitive unity checks passed.")
 
+        # ── Composite cognitive-unity score ────────────────────────
+        # Mirrors the weighted combination computed in _forward_impl
+        # so callers can assess overall AGI coherence health from a
+        # single diagnostic call without running a full forward pass.
+        _cus_components = {
+            'mutual_verification': _mv_coverage,
+            'uncertainty_metacognition': _um_coverage,
+            'root_cause_traceability': _rc_coverage,
+            'pipeline_provenance': _pipeline_provenance_coverage,
+            'error_evolution_effectiveness': _ee_rate,
+            'circuit_breaker_health': 1.0 if _cb_healthy else 0.5,
+        }
+        cognitive_unity_score = min(1.0, max(0.0,
+            0.20 * _cus_components['mutual_verification']
+            + 0.20 * _cus_components['uncertainty_metacognition']
+            + 0.20 * _cus_components['root_cause_traceability']
+            + 0.15 * _cus_components['pipeline_provenance']
+            + 0.15 * _cus_components['error_evolution_effectiveness']
+            + 0.10 * _cus_components['circuit_breaker_health']
+        ))
+
         return {
             'unified': is_unified,
+            'cognitive_unity_score': cognitive_unity_score,
+            'cognitive_unity_components': _cus_components,
             'mutual_verification': mutual_verification,
             'uncertainty_metacognition': uncertainty_metacognition,
             'root_cause_traceability': root_cause_traceability,
@@ -41001,6 +41083,78 @@ class AEONDeltaV3(nn.Module):
             'module_health': module_health,
             'weakest_module': _weakest_module,
             'recommendations': recommendations,
+        }
+
+    def get_architectural_health(self) -> Dict[str, Any]:
+        """Single entry-point synthesizing all AGI coherence diagnostics.
+
+        Combines :meth:`verify_cognitive_unity`,
+        :meth:`verify_pipeline_wiring`, and
+        :meth:`ConvergenceMonitor.get_convergence_summary` into one
+        actionable report so that callers (dashboard, server, training
+        bridge) do not need to manually correlate three separate
+        verification methods.
+
+        Returns:
+            Dict with:
+                - ``healthy``: bool — overall health verdict.
+                - ``cognitive_unity_score``: float ∈ [0, 1].
+                - ``pipeline_wiring_coverage``: float ∈ [0, 1].
+                - ``convergence_summary``: dict from ConvergenceMonitor.
+                - ``cognitive_unity``: full verify_cognitive_unity result.
+                - ``weakest_module``: name of the lowest-health module.
+                - ``recommendations``: aggregated actionable suggestions.
+        """
+        unity = self.verify_cognitive_unity()
+        wiring = self.verify_pipeline_wiring()
+        convergence = self.convergence_monitor.get_convergence_summary()
+
+        _cu_score = unity.get('cognitive_unity_score', 0.0)
+        _wiring_cov = wiring.get('wiring_coverage', 1.0)
+        _conv_status = convergence.get('status', 'warmup')
+
+        _conv_health = 1.0
+        if _conv_status == 'diverging':
+            _conv_health = 0.0
+        elif _conv_status == 'converging':
+            _conv_health = 0.6
+        elif _conv_status == 'warmup':
+            _conv_health = 0.8
+
+        # Composite health: weighted average of three verification axes.
+        _overall = (
+            0.50 * _cu_score
+            + 0.30 * _wiring_cov
+            + 0.20 * _conv_health
+        )
+        _healthy = (
+            unity.get('unified', False)
+            and _wiring_cov >= 0.9
+            and _conv_status != 'diverging'
+        )
+
+        _recs = list(unity.get('recommendations', []))
+        if _wiring_cov < 0.9:
+            _missing_ct = len(wiring.get('missing_edges', []))
+            _recs.append(
+                f"Pipeline wiring has {_missing_ct} missing edge(s) "
+                f"(coverage={_wiring_cov:.0%})"
+            )
+        if _conv_status == 'diverging':
+            _recs.append(
+                "Convergence monitor reports divergence — "
+                "check meta-loop contraction rate"
+            )
+
+        return {
+            'healthy': _healthy,
+            'overall_health_score': _overall,
+            'cognitive_unity_score': _cu_score,
+            'pipeline_wiring_coverage': _wiring_cov,
+            'convergence_summary': convergence,
+            'cognitive_unity': unity,
+            'weakest_module': unity.get('weakest_module'),
+            'recommendations': _recs,
         }
 
     def sync_from_training(
