@@ -3316,18 +3316,28 @@ class SafeThoughtAETrainerV4:
                 # inference pipeline's composite metric so training and
                 # inference measure AGI coherence on the same scale.
                 # Components: coherence, convergence quality, provenance
-                # completeness, uncertainty handling.
+                # completeness, metacognitive responsiveness.
                 _cus_coherence = epoch_metrics["cognitive_coherence"]
                 _cus_convergence = max(0.0, min(
                     1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
                 ))
                 _cus_provenance = self._provenance_causal_quality()
-                _cus_uncertainty = max(0.0, 1.0 - _uncertainty)
+                # Metacognitive responsiveness: when uncertainty was high
+                # and UCC triggered re-reasoning, responsiveness is 1.0.
+                # When uncertainty was high but UCC did NOT trigger,
+                # responsiveness degrades — mirroring inference-side logic.
+                if _uncertainty > 0.5:
+                    _cus_metacognitive = (
+                        1.0 if _cycle_result["should_rerun"]
+                        else 1.0 - _uncertainty
+                    )
+                else:
+                    _cus_metacognitive = 1.0
                 epoch_metrics["cognitive_unity_score"] = (
                     _CUS_WEIGHT_COHERENCE * _cus_coherence
                     + _CUS_WEIGHT_CONVERGENCE * _cus_convergence
                     + _CUS_WEIGHT_PROVENANCE * _cus_provenance
-                    + _CUS_WEIGHT_UNCERTAINTY * _cus_uncertainty
+                    + _CUS_WEIGHT_UNCERTAINTY * _cus_metacognitive
                 )
                 if _cycle_result["should_rerun"]:
                     _active = _cycle_result["trigger_detail"].get("triggers_active", [])
@@ -3402,6 +3412,29 @@ class SafeThoughtAETrainerV4:
             self.model.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая модель с loss={self.best_loss:.6f}")
         
+        # Auto-bridge training error patterns into the inference pipeline
+        # so that training-discovered convergence failures, coherence
+        # deficits, and metacognitive triggers are immediately available
+        # for inference-time decision making.  This closes the gap where
+        # sync_from_training was defined but never automatically called,
+        # requiring manual invocation after training.
+        if hasattr(self.model, 'sync_from_training'):
+            try:
+                _sync_result = self.model.sync_from_training(
+                    trainer_monitor=self.convergence_monitor,
+                )
+                logger.info(
+                    "   🔗 Training→inference bridge: %d events imported, "
+                    "trigger_adapted=%s",
+                    _sync_result.get('events_imported', 0),
+                    _sync_result.get('trigger_adapted', False),
+                )
+            except Exception as _sync_err:
+                logger.warning(
+                    "   ⚠️  Training→inference bridge failed (non-fatal): %s",
+                    _sync_err,
+                )
+
         self.monitor.end_training("phase_A")
     
     def _save_checkpoint(self, epoch: int, metrics: dict):
@@ -3964,12 +3997,19 @@ class ContextualRSSMTrainer:
                     1.0, 1.0 - abs(convergence_verdict.get("trend", 0.0)),
                 ))
                 _cus_provenance_b = self._provenance_causal_quality()
-                _cus_uncertainty_b = max(0.0, 1.0 - _uncertainty)
+                # Metacognitive responsiveness — mirrors Phase A logic.
+                if _uncertainty > 0.5:
+                    _cus_metacognitive_b = (
+                        1.0 if _cycle_result["should_rerun"]
+                        else 1.0 - _uncertainty
+                    )
+                else:
+                    _cus_metacognitive_b = 1.0
                 epoch_metrics["cognitive_unity_score"] = (
                     _CUS_WEIGHT_COHERENCE * _cus_coherence_b
                     + _CUS_WEIGHT_CONVERGENCE * _cus_convergence_b
                     + _CUS_WEIGHT_PROVENANCE * _cus_provenance_b
-                    + _CUS_WEIGHT_UNCERTAINTY * _cus_uncertainty_b
+                    + _CUS_WEIGHT_UNCERTAINTY * _cus_metacognitive_b
                 )
                 # Apply correction_guidance from UCC — when the unified
                 # cognitive cycle identifies a specific target module and
@@ -4061,6 +4101,23 @@ class ContextualRSSMTrainer:
             self.model.rssm.load_state_dict(self.best_model_state)
             logger.info(f"   ✅ Восстановлена лучшая RSSM модель с MSE={self.best_loss:.6f}")
         
+        # Auto-bridge Phase B training insights into the inference
+        # pipeline, mirroring the Phase A auto-bridge.
+        if hasattr(self.model, 'sync_from_training'):
+            try:
+                _sync_result = self.model.sync_from_training(
+                    trainer_monitor=self.convergence_monitor,
+                )
+                logger.info(
+                    "   🔗 Phase B training→inference bridge: %d events imported",
+                    _sync_result.get('events_imported', 0),
+                )
+            except Exception as _sync_err:
+                logger.warning(
+                    "   ⚠️  Phase B training→inference bridge failed "
+                    "(non-fatal): %s", _sync_err,
+                )
+
         self.monitor.end_training("phase_B")
 
 
