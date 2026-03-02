@@ -4280,6 +4280,9 @@ _ERROR_CLASS_TO_DEPENDENCY_MAP: Dict[str, Tuple[str, str]] = {
     "training_divergence": ("meta_loop", "error_evolution"),
     "stagnation": ("encoder", "meta_loop"),
     "training_stagnation": ("encoder", "meta_loop"),
+    "coherence_deficit": ("meta_loop", "integration"),
+    "training_ucc_failure": ("meta_loop", "unified_cognitive_cycle"),
+    "decoder_cross_validation_failure": ("decoder", "cross_validation"),
 }
 
 

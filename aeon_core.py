@@ -26396,6 +26396,21 @@ class AEONDeltaV3(nn.Module):
                     and self._cached_auto_critic_state.shape[-1] == C_star.shape[-1]
                     and self._cached_auto_critic_state.shape[0] == C_star.shape[0]):
                 coherence_states["auto_critic_prior"] = self._cached_auto_critic_state
+            # Include cached RSSM state from the previous forward pass so
+            # cross-pass coherence captures drift between the current
+            # reasoning state and the prior recurrent dynamics output.
+            if (self._cached_rssm_state is not None
+                    and self._cached_rssm_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_rssm_state.shape[0] == C_star.shape[0]):
+                coherence_states["rssm_prior"] = self._cached_rssm_state
+            # Include cached cognitive executive state from the previous
+            # forward pass so cross-pass coherence detects when executive
+            # arbitration decisions diverge from the current reasoning,
+            # closing the executive ↔ reasoning cross-pass validation loop.
+            if (self._cached_executive_state is not None
+                    and self._cached_executive_state.shape[-1] == C_star.shape[-1]
+                    and self._cached_executive_state.shape[0] == C_star.shape[0]):
+                coherence_states["executive_prior"] = self._cached_executive_state
             try:
                 coherence_results = self.module_coherence(coherence_states)
             except (RuntimeError, ValueError, TypeError) as _coh_err:
@@ -31954,6 +31969,36 @@ class AEONDeltaV3(nn.Module):
                     and self._cached_self_report_state.shape[-1] == z_out.shape[-1]
                     and self._cached_self_report_state.shape[0] == z_out.shape[0]):
                 post_states["self_report"] = self._cached_self_report_state
+            # Include cognitive executive state — the executive's
+            # arbitrated output should be coherent with the integrated
+            # output; misalignment indicates the winner selection
+            # diverged from downstream processing.
+            if (self._cached_executive_state is not None
+                    and self._cached_executive_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_executive_state.shape[0] == z_out.shape[0]):
+                post_states["cognitive_executive"] = self._cached_executive_state
+            # Include RSSM dynamics state — the recurrent state-space
+            # model's output should be coherent with the integrated
+            # output; divergence indicates the dynamics model is not
+            # properly aligned with downstream integration.
+            if (self._cached_rssm_state is not None
+                    and self._cached_rssm_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_rssm_state.shape[0] == z_out.shape[0]):
+                post_states["rssm"] = self._cached_rssm_state
+            # Include MCTS planning state — planning output should be
+            # coherent with the final integrated output; misalignment
+            # indicates planning decisions are not reflected downstream.
+            if (self._cached_mcts_state is not None
+                    and self._cached_mcts_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_mcts_state.shape[0] == z_out.shape[0]):
+                post_states["mcts_planning"] = self._cached_mcts_state
+            # Include hierarchical VAE state — the multi-level
+            # abstraction output should be coherent with the integrated
+            # output to ensure abstraction levels are properly reflected.
+            if (self._cached_hvae_state is not None
+                    and self._cached_hvae_state.shape[-1] == z_out.shape[-1]
+                    and self._cached_hvae_state.shape[0] == z_out.shape[0]):
+                post_states["hierarchical_vae"] = self._cached_hvae_state
             if len(post_states) >= 2:
                 post_coherence = self.module_coherence(post_states)
                 # Merge into coherence_results: use the lower of pre/post
