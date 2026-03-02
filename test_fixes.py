@@ -66727,5 +66727,222 @@ def test_provenance_root_cause_traces_to_input():
     print("✅ test_provenance_root_cause_traces_to_input PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL GAP FIX TESTS — validate fixes for five identified gaps that
+#  prevented unified cognitive coherence (mutual verification, uncertainty→
+#  metacognition, root-cause traceability)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_reliability_gate_geometric_mean_no_single_zero_veto():
+    """OutputReliabilityGate should not zero-out composite when a single
+    factor is 0.0 — geometric mean with floors ensures proportional
+    degradation instead of multiplicative zeroing."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+
+    # One factor is zero (e.g. convergence warmup), others are healthy
+    result = gate(
+        uncertainty=0.1,
+        auto_critic_quality=0.8,
+        convergence_rate=0.0,  # warmup → 0.0
+        coherence_deficit=0.1,
+        provenance_quality=0.9,
+        causal_quality=1.0,
+        verification_coverage=0.9,
+    )
+
+    # With the old multiplicative gate, composite would be 0.0.
+    # With geometric mean + floor, it should be > 0.
+    assert result['composite'] > 0.0, (
+        f"Composite should be > 0 even with one zero factor, "
+        f"got {result['composite']}"
+    )
+    # But it should still be penalized (not perfect)
+    assert result['composite'] < 1.0, (
+        f"Composite should be < 1.0 with a zero factor, "
+        f"got {result['composite']}"
+    )
+    print("✅ test_reliability_gate_geometric_mean_no_single_zero_veto PASSED")
+
+
+def test_reliability_gate_two_zero_factors_still_nonzero():
+    """Even with two zero factors, geometric mean with floors should produce
+    a non-zero (but very low) composite reliability."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    result = gate(
+        uncertainty=0.1,
+        auto_critic_quality=0.8,
+        convergence_rate=0.0,  # zero
+        coherence_deficit=1.0,  # zero contribution
+        provenance_quality=0.9,
+        causal_quality=0.0,    # zero
+        verification_coverage=0.9,
+    )
+
+    assert result['composite'] > 0.0, (
+        f"Composite should be > 0 even with two zero factors, "
+        f"got {result['composite']}"
+    )
+    # Should be flagged as unreliable
+    assert not result['is_reliable'], (
+        "Output should be unreliable with two zero factors"
+    )
+    print("✅ test_reliability_gate_two_zero_factors_still_nonzero PASSED")
+
+
+def test_causal_quality_preserved_when_no_causal_model():
+    """When no causal model is configured, UCC coherence deficit should
+    not degrade _cached_causal_quality from its neutral 1.0 default."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    # Default config has no causal model
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    assert not config.enable_causal_model, "Default should have no causal model"
+
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    # Without our fix, causal quality would be ~0.0 due to UCC
+    # coherence deficit degrading it.  With the fix, it should
+    # remain at 1.0 (neutral).
+    assert model._cached_causal_quality > 0.5, (
+        f"Causal quality should remain high when no causal model is active, "
+        f"got {model._cached_causal_quality}"
+    )
+    # The output reliability should also be non-zero
+    assert result['output_reliability'] > 0.0, (
+        f"Output reliability should be non-zero, got {result['output_reliability']}"
+    )
+    print("✅ test_causal_quality_preserved_when_no_causal_model PASSED")
+
+
+def test_convergence_warmup_floor():
+    """During the first few forward passes, convergence_quality should
+    have a warmup floor instead of reporting 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    cq = result.get('convergence_quality', 0.0)
+    assert isinstance(cq, float), f"convergence_quality should be float, got {type(cq)}"
+    # During warmup, should have a floor > 0
+    assert cq > 0.0, (
+        f"convergence_quality should have warmup floor > 0 on first pass, "
+        f"got {cq}"
+    )
+    print("✅ test_convergence_warmup_floor PASSED")
+
+
+def test_convergence_warmup_floor_decays():
+    """The convergence warmup floor should decay over successive passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+
+    qualities = []
+    for _ in range(6):
+        result = model.forward(ids, decode_mode='train')
+        qualities.append(result.get('convergence_quality', 0.0))
+
+    # First quality should be higher than later ones (warmup floor)
+    assert qualities[0] >= qualities[2], (
+        f"Warmup floor should decay: pass 1 ({qualities[0]}) >= "
+        f"pass 3 ({qualities[2]})"
+    )
+    print("✅ test_convergence_warmup_floor_decays PASSED")
+
+
+def test_metacognitive_triggers_alias():
+    """metacognitive_info should have both 'triggers' and
+    'triggers_active' keys with identical values."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    mc = result.get('metacognitive_info', {})
+    assert 'triggers' in mc, "metacognitive_info should have 'triggers' key"
+    assert 'triggers_active' in mc, (
+        "metacognitive_info should have 'triggers_active' key"
+    )
+    assert mc['triggers'] == mc['triggers_active'], (
+        f"'triggers' and 'triggers_active' should be identical, "
+        f"got {mc['triggers']} vs {mc['triggers_active']}"
+    )
+    print("✅ test_metacognitive_triggers_alias PASSED")
+
+
+def test_cognitive_unity_score_includes_coherence():
+    """cognitive_unity_score should incorporate cross-module coherence
+    as a factor, not just verification coverage and uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    score = result.get('cognitive_unity_score')
+    assert isinstance(score, float), f"Expected float, got {type(score)}"
+    assert 0.0 < score < 1.0, f"Score should be in (0, 1), got {score}"
+
+    # coherence_deficit should be surfaced at top level
+    assert 'coherence_deficit' in result, (
+        "coherence_deficit should be in top-level result dict"
+    )
+    cd = result['coherence_deficit']
+    assert isinstance(cd, float), f"coherence_deficit should be float, got {type(cd)}"
+    assert 0.0 <= cd <= 1.0, f"coherence_deficit should be in [0, 1], got {cd}"
+    print("✅ test_cognitive_unity_score_includes_coherence PASSED")
+
+
+def test_reliability_nonzero_default_config():
+    """With default config on first forward pass, output_reliability
+    should be non-zero (geometric mean prevents warmup zeroing)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    reliability = result.get('output_reliability', 0.0)
+    assert reliability > 0.0, (
+        f"Output reliability should be > 0 with default config, "
+        f"got {reliability}"
+    )
+    print("✅ test_reliability_nonzero_default_config PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
