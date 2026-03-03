@@ -2889,6 +2889,7 @@ class AEONConfig:
     lambda_memory_staleness: float = 0.005
     lambda_coverage_deficit: float = 0.005
     lambda_counterfactual_verification: float = 0.01
+    lambda_subsystem_health: float = 0.005
     cycle_consistency_violation_threshold: float = 0.3
     output_reliability_recheck_threshold: float = 0.5
     
@@ -16534,6 +16535,10 @@ class MetaCognitiveRecursionTrigger:
             # so that recurring counterfactual prediction failures boost
             # the causal quality trigger signal weight.
             "high_counterfactual_verification_loss": "low_causal_quality",
+            # High subsystem health gate loss — integration unreliability
+            # maps to coherence_deficit so that persistent health gate
+            # attenuation increases the coherence trigger signal weight.
+            "high_subsystem_health_loss": "coherence_deficit",
             # Recurring root cause — the UCC detected a module that
             # repeatedly appears in error chains, indicating systemic
             # weakness.  Maps to uncertainty so deeper reasoning is
@@ -17563,6 +17568,10 @@ class CausalErrorEvolutionTracker:
         # counterfactual prediction inaccuracy maps to the dedicated
         # lambda so loss weight adapts to persistent prediction failures.
         "high_counterfactual_verification_loss": "lambda_counterfactual_verification",
+        # High subsystem health gate loss — training-time integration
+        # unreliability maps to the dedicated lambda so loss weight
+        # adapts to persistent integration health degradation.
+        "high_subsystem_health_loss": "lambda_subsystem_health",
         # Recurring root cause — the UCC detected a module that
         # repeatedly appears in error chains.  Maps to lambda_ucc
         # so training adapts to persistent root-cause patterns.
@@ -36969,6 +36978,7 @@ class AEONDeltaV3(nn.Module):
         17. Self-report loss (honest, consistent self-assessment)
         18. Cycle-consistency loss (encoder-decoder information fidelity)
         18d. Memory retrieval quality loss (memory subsystem supervision)
+        23. Subsystem health gate loss (integration reliability incentive)
         
         Returns:
             Dict with total_loss and per-component losses
@@ -37867,6 +37877,25 @@ class AEONDeltaV3(nn.Module):
                     min(1.0, _cf_cached), device=self.device,
                 )
 
+        # ===== 23. SUBSYSTEM HEALTH GATE LOSS =====
+        # When the SubsystemHealthGate attenuates the integrated output
+        # (gate value < 1.0), it indicates the health indicators detected
+        # unreliable integration.  Penalizing the attenuation magnitude
+        # provides a training gradient that incentivizes subsystems to
+        # produce healthier outputs, closing the gap where the gate's
+        # learned parameters received no direct training signal for
+        # improving health prediction accuracy.  The loss is proportional
+        # to the gate deficit (1.0 - gate_value) so mild attenuation
+        # receives mild penalty and severe attenuation receives strong
+        # penalty.
+        subsystem_health_loss = torch.tensor(0.0, device=self.device)
+        _health_gate_val = getattr(self, '_cached_integration_gate_val', 1.0)
+        if isinstance(_health_gate_val, (int, float)) and _health_gate_val < 1.0:
+            subsystem_health_loss = torch.tensor(
+                max(0.0, min(1.0, 1.0 - _health_gate_val)),
+                device=self.device,
+            )
+
         total_loss = (
             lm_loss +
             vq_loss +
@@ -37902,6 +37931,7 @@ class AEONDeltaV3(nn.Module):
             self.config.lambda_memory_staleness * memory_staleness_loss +
             self.config.lambda_coverage_deficit * coverage_deficit_loss +
             _ee_boost("lambda_counterfactual_verification") * self.config.lambda_counterfactual_verification * counterfactual_verification_loss +
+            self.config.lambda_subsystem_health * subsystem_health_loss +
             reg_loss
         )
         
@@ -38001,6 +38031,16 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'counterfactual_verification_loss': _cf_val},
                     )
+            # Subsystem health gate loss → error evolution bridge
+            if torch.is_tensor(subsystem_health_loss) and torch.isfinite(subsystem_health_loss):
+                _sh_val = float(subsystem_health_loss.detach().item())
+                if _sh_val > 0.3:
+                    self.error_evolution.record_episode(
+                        error_class='high_subsystem_health_loss',
+                        strategy_used='health_gate_supervision',
+                        success=False,
+                        metadata={'subsystem_health_loss': _sh_val},
+                    )
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
@@ -38041,6 +38081,7 @@ class AEONDeltaV3(nn.Module):
             'memory_staleness_loss': memory_staleness_loss,
             'coverage_deficit_loss': coverage_deficit_loss,
             'counterfactual_verification_loss': counterfactual_verification_loss,
+            'subsystem_health_loss': subsystem_health_loss,
             'reg_loss': reg_loss,
             'convergence_loss_scale': _convergence_loss_scale,
             'uncertainty_loss_scale': _uncertainty_loss_scale,
