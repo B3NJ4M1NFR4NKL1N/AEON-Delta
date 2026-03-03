@@ -16553,6 +16553,17 @@ class MetaCognitiveRecursionTrigger:
             # circuit breaker across multiple consecutive forward
             # passes, indicating persistent subsystem failure.
             "chronic_circuit_breaker": "coherence_deficit",
+            # Cognitive unity violation — the system's own assessment
+            # of AGI coherence fell below acceptable thresholds.
+            "cognitive_unity_violation": "coherence_deficit",
+            # Post-output coherence deficit — the final coherence
+            # check after decoding detected inter-module disagreement.
+            "post_output_coherence_deficit": "coherence_deficit",
+            # Post-output uncertainty trigger — late-stage uncertainty
+            # sources (cycle consistency, decoder degenerate, etc.)
+            # accumulated beyond the re-reasoning threshold after the
+            # UCC had already evaluated.
+            "post_output_uncertainty_trigger": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17571,6 +17582,21 @@ class CausalErrorEvolutionTracker:
         # global health.  Maps to lambda_ucc so training adapts to
         # systemic subsystem degradation.
         "low_global_integrity": "lambda_ucc",
+        # Cognitive unity violation — the system's own assessment of
+        # AGI coherence (mutual verification, metacognitive responsiveness,
+        # root-cause traceability) fell below acceptable thresholds.
+        # Maps to lambda_ucc so training strengthens the unified
+        # cognitive cycle's self-assessment capabilities.
+        "cognitive_unity_violation": "lambda_ucc",
+        # Post-output coherence deficit — the final coherence check
+        # after decoding detected inter-module disagreement.  Maps to
+        # lambda_coherence so training improves output-stage consistency.
+        "post_output_coherence_deficit": "lambda_coherence",
+        # Post-output uncertainty trigger — late-stage uncertainty
+        # sources accumulated beyond the re-reasoning threshold after
+        # the UCC had already evaluated.  Maps to lambda_ucc so
+        # training adapts to persistent late-stage uncertainty patterns.
+        "post_output_uncertainty_trigger": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -22542,6 +22568,18 @@ class AEONDeltaV3(nn.Module):
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
 
+        # VQ codebook quality — caches utilization-based quality score from
+        # the most recent forward pass so the feedback bus can condition
+        # the next pass's meta-loop when codebook collapse reduces encoder
+        # expressivity.  Initialised to 1.0 (healthy).
+        self._cached_vq_codebook_quality: float = 1.0
+
+        # Decoder logit variance — caches the output logit variance from
+        # the most recent forward pass so the feedback bus can condition
+        # the next pass's meta-loop when persistent decoder degeneration
+        # (near-zero variance) is detected.  Initialised to 1.0 (healthy).
+        self._cached_decoder_logit_var: float = 1.0
+
         # Coherence-based loss scale — caches a scaling factor derived from
         # the inference coherence deficit so the trainer can read it to
         # modulate training loss emphasis.  When coherence is poor (high
@@ -23567,6 +23605,25 @@ class AEONDeltaV3(nn.Module):
         if _dq_score < 0.8:
             extra["decoder_quality_pressure"] = max(
                 0.0, min(1.0, 1.0 - _dq_score),
+            )
+        # VQ codebook quality pressure — when codebook utilization drops
+        # below the collapse threshold, encoder expressivity is degraded.
+        # Signal the meta-loop to reason deeper to compensate for the
+        # reduced representation capacity.
+        _vq_q = getattr(self, '_cached_vq_codebook_quality', 1.0)
+        if _vq_q < 0.8:
+            extra["vq_codebook_pressure"] = max(
+                0.0, min(1.0, 1.0 - _vq_q),
+            )
+        # Decoder logit variance pressure — when the decoder's output
+        # variance is persistently low (near-degenerate distribution),
+        # signal the meta-loop to produce more discriminative reasoning
+        # states on the next pass.
+        _dlv = getattr(self, '_cached_decoder_logit_var', 1.0)
+        _DECODER_VAR_PRESSURE_THRESHOLD = 0.01
+        if _dlv < _DECODER_VAR_PRESSURE_THRESHOLD:
+            extra["decoder_variance_pressure"] = max(
+                0.0, min(1.0, 1.0 - _dlv / max(_DECODER_VAR_PRESSURE_THRESHOLD, 1e-8)),
             )
         # Counterfactual divergence pressure — when the previous pass's
         # CounterfactualVerificationGate detected that the unified
@@ -36239,12 +36296,25 @@ class AEONDeltaV3(nn.Module):
             # to provenance diagnostics and the metacognitive trigger cannot
             # attribute downstream quality degradation to VQ issues.
             _vq_loss_val = vq_loss.item() if torch.is_tensor(vq_loss) and vq_loss.numel() > 0 else 0.0
+            _vq_unique = int(vq_indices.unique().numel()) if vq_indices is not None else 0
+            _vq_total = self.config.vq_num_embeddings
+            _vq_utilization = _vq_unique / max(_vq_total, 1)
             self.audit_log.record("vq", "quantization", {
                 "vq_loss": _vq_loss_val,
-                "codebook_indices_unique": int(vq_indices.unique().numel()) if vq_indices is not None else 0,
+                "codebook_indices_unique": _vq_unique,
                 "z_encoded_norm": float(z_encoded.detach().norm().item()),
                 "z_quantized_norm": float(z_quantized.detach().norm().item()),
             })
+            # Surface VQ codebook quality in outputs so downstream modules
+            # (UCC, metacognitive trigger, feedback bus) can react to
+            # codebook collapse within the same pass.  Previously VQ
+            # metrics were only recorded in the audit log, making codebook
+            # failures invisible to the meta-cognitive cycle and violating
+            # the requirement that any uncertainty triggers re-reasoning.
+            _vq_codebook_quality = min(1.0, _vq_utilization / max(
+                self.config.vq_collapse_utilization_threshold, 1e-6,
+            ))
+            self._cached_vq_codebook_quality = _vq_codebook_quality
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -36263,6 +36333,7 @@ class AEONDeltaV3(nn.Module):
                 ids = token_chunk[..., 0].long()
                 z = self.encoder(ids)  # [B, hidden_dim]
                 return z.unsqueeze(1), state  # [B, 1, hidden_dim]
+            _z_pre_chunk = z_quantized  # safe fallback
             try:
                 _ids_3d = input_ids.float().unsqueeze(-1)  # [B, L, 1]
                 _z_chunks, _ = self.chunked_processor.process(
@@ -36273,6 +36344,7 @@ class AEONDeltaV3(nn.Module):
                 z_quantized = _z_chunks.mean(dim=1)  # [B, hidden_dim]
             except Exception as chunk_err:
                 logger.warning(f"Chunked encoding failed, using standard encoding: {chunk_err}")
+                z_quantized = _z_pre_chunk
 
         # ===== INFERENCE CACHE =====
         # During inference, cache reasoning-core outputs keyed by the
@@ -36280,6 +36352,7 @@ class AEONDeltaV3(nn.Module):
         # reuse prior reasoning results.  This closes the gap where
         # InferenceCache was initialized but never consulted.
         _cache_hit = False
+        _cache_similarity: Optional[float] = None
         if (self.inference_cache is not None
                 and decode_mode == 'inference'
                 and not self.training):
@@ -36292,6 +36365,7 @@ class AEONDeltaV3(nn.Module):
                         z_quantized.view(1, -1),
                         _prev_z.view(1, -1),
                     ).item()
+                    _cache_similarity = _cosine_sim
                     if _cosine_sim > self.config.inference_cache_similarity_threshold:
                         _cache_hit = True
 
@@ -36346,6 +36420,7 @@ class AEONDeltaV3(nn.Module):
                 self.inference_cache.set_reasoning_result(z_out, outputs)
 
         outputs['cache_hit'] = _cache_hit
+        outputs['cache_similarity'] = _cache_similarity
 
         # Extract causal trace ID produced by _reasoning_core_impl so
         # that downstream causal-trace recordings (cycle-consistency,
@@ -36450,6 +36525,11 @@ class AEONDeltaV3(nn.Module):
         if logits is not None and self.error_evolution is not None:
             try:
                 _logit_var = logits.detach().var(dim=-1).mean().item()
+                # Cache decoder variance for cross-pass feedback so the
+                # meta-loop can proactively respond to persistent decoder
+                # degeneration patterns, complementing the within-pass
+                # uncertainty escalation.
+                self._cached_decoder_logit_var = _logit_var
                 _DECODER_DEGENERATE_VAR_THRESHOLD = 1e-4
                 if _logit_var < _DECODER_DEGENERATE_VAR_THRESHOLD:
                     self.error_evolution.record_episode(
@@ -36679,6 +36759,12 @@ class AEONDeltaV3(nn.Module):
             )
 
         # ===== PACKAGE RESULTS =====
+        # Surface VQ codebook quality in the result dict so it is
+        # accessible for loss computation, dashboard diagnostics, and
+        # cross-pass feedback conditioning.
+        outputs['vq_codebook_quality'] = getattr(
+            self, '_cached_vq_codebook_quality', 1.0,
+        )
         result = {
             'logits': logits,
             'thoughts': z_out,
@@ -36767,6 +36853,19 @@ class AEONDeltaV3(nn.Module):
         )
         _cus_reliability = outputs.get('output_reliability', 0.0)
         _cus_convergence = outputs.get('convergence_quality', 0.0)
+        # Log diagnostic when reasoning_core did not provide expected
+        # CUS component keys, indicating a subsystem was skipped or
+        # errored silently.
+        for _cus_key, _cus_val, _cus_label in [
+            ('verification_coverage', _cus_verification, 'mutual_verification'),
+            ('output_reliability', _cus_reliability, 'output_reliability'),
+            ('convergence_quality', _cus_convergence, 'convergence_quality'),
+        ]:
+            if _cus_key not in outputs:
+                logger.debug(
+                    "CUS component '%s' missing from reasoning_core outputs; "
+                    "defaulting to 0.0", _cus_label,
+                )
         # Cross-module coherence from the UCC.
         _ucc_coh = result.get('unified_cognitive_cycle_results', {}).get(
             'coherence_result', {},
