@@ -69809,5 +69809,237 @@ def test_default_model_fewer_pipeline_gaps():
     print("✅ test_default_model_fewer_pipeline_gaps PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tests for architectural coherence gap closures (AGI unification)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_post_output_gate_in_coherence_registry():
+    """Verify PostOutputUncertaintyGate is registered in coherence registry.
+
+    The gate must appear in SubsystemCoherenceRegistry._DEFAULT_EXPECTED
+    so that its absence triggers coverage deficit tracking, ensuring
+    late-stage uncertainty evaluation is visible to the coherence ledger.
+    """
+    from aeon_core import SubsystemCoherenceRegistry
+
+    assert "post_output_uncertainty_gate" in SubsystemCoherenceRegistry._DEFAULT_EXPECTED, (
+        "post_output_uncertainty_gate must be in _DEFAULT_EXPECTED "
+        "for coverage deficit tracking"
+    )
+
+    print("✅ test_post_output_gate_in_coherence_registry PASSED")
+
+
+def test_post_output_gate_in_pipeline_dependencies():
+    """Verify PostOutputUncertaintyGate has pipeline dependency edges.
+
+    The gate must have upstream and downstream edges in the pipeline
+    dependency DAG so that trace_root_cause() can attribute late-stage
+    uncertainty evaluation to its input sources and downstream effects.
+    """
+    from aeon_core import AEONDeltaV3
+
+    # Collect all node names from pipeline dependencies
+    all_nodes = set()
+    gate_edges = []
+    for up, down in AEONDeltaV3._PIPELINE_DEPENDENCIES:
+        all_nodes.add(up)
+        all_nodes.add(down)
+        if up == "post_output_uncertainty_gate" or down == "post_output_uncertainty_gate":
+            gate_edges.append((up, down))
+
+    assert "post_output_uncertainty_gate" in all_nodes, (
+        "post_output_uncertainty_gate must be in _PIPELINE_DEPENDENCIES"
+    )
+    assert len(gate_edges) >= 2, (
+        f"post_output_uncertainty_gate must have at least 2 pipeline edges "
+        f"(upstream + downstream), found {len(gate_edges)}: {gate_edges}"
+    )
+
+    print("✅ test_post_output_gate_in_pipeline_dependencies PASSED")
+
+
+def test_post_output_gate_in_node_attr_map():
+    """Verify PostOutputUncertaintyGate is in the _NODE_ATTR_MAP.
+
+    The gate must map to a model attribute so that pipeline wiring
+    verification and provenance DAG filtering can correctly identify
+    whether the gate module is active.
+    """
+    from aeon_core import AEONDeltaV3
+
+    assert "post_output_uncertainty_gate" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "post_output_uncertainty_gate must be in _NODE_ATTR_MAP"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["post_output_uncertainty_gate"] == "post_output_uncertainty_gate", (
+        "post_output_uncertainty_gate must map to the correct model attribute"
+    )
+
+    print("✅ test_post_output_gate_in_node_attr_map PASSED")
+
+
+def test_error_evolution_trend_feedback_bus_signal():
+    """Verify error_evolution_trend_pressure is a registered feedback bus signal.
+
+    The feedback bus must have a dedicated named signal for degradation
+    trends so that the meta-loop can directly condition on whether error
+    recovery is worsening, rather than only processing it through extras.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Check that the signal is registered in the feedback bus
+    assert hasattr(model, 'feedback_bus'), "Model must have feedback_bus"
+    extra_signals = getattr(model.feedback_bus, '_extra_signals', {})
+    assert "error_evolution_trend_pressure" in extra_signals, (
+        "error_evolution_trend_pressure must be a registered feedback bus signal"
+    )
+
+    print("✅ test_error_evolution_trend_feedback_bus_signal PASSED")
+
+
+def test_get_architectural_health_recurring_roots():
+    """Verify get_architectural_health() includes recurring_root_causes.
+
+    The method must surface recurring root-cause modules from the UCC's
+    cross-pass chain buffer so that external consumers can identify
+    chronic architectural weaknesses.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    health = model.get_architectural_health()
+    assert 'recurring_root_causes' in health, (
+        "get_architectural_health must include recurring_root_causes"
+    )
+    assert isinstance(health['recurring_root_causes'], list), (
+        "recurring_root_causes must be a list"
+    )
+
+    print("✅ test_get_architectural_health_recurring_roots PASSED")
+
+
+def test_verify_cognitive_unity_trend_health():
+    """Verify verify_cognitive_unity() includes error evolution trend health.
+
+    The method must check whether error classes are systematically
+    degrading (not just the aggregate success rate), catching
+    architectural drift that aggregate metrics miss.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_module_coherence=True,
+        enable_metacognitive_recursion=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    unity = model.verify_cognitive_unity()
+    ee = unity.get('error_evolution_effectiveness', {})
+    # When error_evolution is active, the effectiveness dict must include
+    # degrading_classes and trend_healthy fields.
+    assert 'degrading_classes' in ee, (
+        "error_evolution_effectiveness must include degrading_classes count"
+    )
+    assert 'trend_healthy' in ee, (
+        "error_evolution_effectiveness must include trend_healthy flag"
+    )
+
+    print("✅ test_verify_cognitive_unity_trend_health PASSED")
+
+
+def test_verify_cognitive_unity_degrading_blocks_unified():
+    """Verify that many degrading error classes block unified=True.
+
+    When >= 3 error classes have degrading success rate trends, the
+    system should not report unified=True because architectural drift
+    undermines the coherence guarantees.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_error_evolution=True)
+    model = AEONDeltaV3(config)
+
+    # Simulate many degrading error classes by injecting episodes
+    # with decreasing success rates
+    for cls_name in ['cls_a', 'cls_b', 'cls_c', 'cls_d']:
+        for i in range(5):
+            model.error_evolution.record_episode(
+                error_class=cls_name,
+                strategy_used='test',
+                success=False,  # all failures → trend degrades
+            )
+        # Force the trend EMA to positive (degrading)
+        model.error_evolution._success_rate_trend[cls_name] = 0.2
+
+    unity = model.verify_cognitive_unity()
+    # With 4 degrading classes (>= 3 threshold), trend_healthy should be False
+    ee = unity.get('error_evolution_effectiveness', {})
+    assert ee.get('trend_healthy') is False, (
+        "trend_healthy should be False when >= 3 error classes are degrading"
+    )
+
+    print("✅ test_verify_cognitive_unity_degrading_blocks_unified PASSED")
+
+
+def test_config_coherence_prerequisite_warnings():
+    """Verify AEONConfig warns about coherence prerequisite conflicts.
+
+    Enabling unified_cognitive_cycle without error_evolution should
+    produce a warning, ensuring callers know about reduced coherence.
+    """
+    import warnings
+    from aeon_core import AEONConfig
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        config = AEONConfig(
+            enable_unified_cognitive_cycle=True,
+            enable_error_evolution=False,
+        )
+        coherence_warnings = [
+            x for x in w
+            if "coherence prerequisite" in str(x.message).lower()
+        ]
+        assert len(coherence_warnings) > 0, (
+            "AEONConfig should warn when enable_unified_cognitive_cycle=True "
+            "but enable_error_evolution=False"
+        )
+
+    print("✅ test_config_coherence_prerequisite_warnings PASSED")
+
+
+def test_config_no_warnings_with_full_coherence():
+    """Verify AEONConfig does NOT warn when enable_full_coherence=True.
+
+    Full coherence mode enables all prerequisites automatically, so
+    no warnings should be emitted.
+    """
+    import warnings
+    from aeon_core import AEONConfig
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        config = AEONConfig(enable_full_coherence=True)
+        coherence_warnings = [
+            x for x in w
+            if "coherence prerequisite" in str(x.message).lower()
+        ]
+        assert len(coherence_warnings) == 0, (
+            "AEONConfig should NOT warn when enable_full_coherence=True "
+            f"but got {len(coherence_warnings)} warnings: "
+            + "; ".join(str(x.message) for x in coherence_warnings)
+        )
+
+    print("✅ test_config_no_warnings_with_full_coherence PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
