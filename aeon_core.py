@@ -23327,6 +23327,21 @@ class AEONDeltaV3(nn.Module):
         if getattr(config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
             self.init_task2vec_meta_learner()
 
+        # ===== POST-OUTPUT UNCERTAINTY GATE =====
+        # Moved before provenance DAG pre-population so that edges
+        # referencing post_output_uncertainty_gate are registered at
+        # init time.  Previously this was initialized after the DAG
+        # was built, causing the edge filter to skip its edges and
+        # leaving it untraceable in verify_cognitive_unity().
+        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
+            rerun_threshold=config.uncertainty_logit_penalty_threshold,
+        )
+
+        # ===== COGNITIVE SNAPSHOT MANAGER =====
+        # Manages full cognitive state persistence including all memory
+        # subsystems for cross-session cognitive continuity.
+        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
+
         # ===== PRE-POPULATE PROVENANCE DEPENDENCY DAG =====
         # Register pipeline dependency edges at init time so that
         # verify_cognitive_unity() and verify_pipeline_wiring() can
@@ -23387,20 +23402,6 @@ class AEONDeltaV3(nn.Module):
             pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
             node_attr_map=self._NODE_ATTR_MAP,
         )
-
-        # ===== POST-OUTPUT UNCERTAINTY GATE =====
-        # Re-evaluates metacognitive need after late-stage (post-UCC)
-        # uncertainty sources have been accumulated, closing the gap
-        # where decode-stage uncertainty was recorded but never
-        # triggered re-reasoning.
-        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
-            rerun_threshold=config.uncertainty_logit_penalty_threshold,
-        )
-
-        # ===== COGNITIVE SNAPSHOT MANAGER =====
-        # Manages full cognitive state persistence including all memory
-        # subsystems for cross-session cognitive continuity.
-        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
 
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")
@@ -29823,6 +29824,18 @@ class AEONDeltaV3(nn.Module):
                 _adj_matrices['notears'] = self.notears_causal.W.detach()
             if causal_prog_results and 'adjacency' in causal_prog_results:
                 _adj_matrices['causal_programmatic'] = causal_prog_results['adjacency']
+            # Include CausalWorldModel adjacency in DAG consensus so that
+            # all four causal formalisms participate in structural cross-
+            # validation.  Previously the CausalWorldModel received the
+            # consensus prior (line 29345+) but never contributed its own
+            # adjacency, leaving consensus blind to its structural
+            # predictions and preventing bidirectional reinforcement.
+            if (causal_world_results
+                    and self.causal_world_model is not None
+                    and hasattr(self.causal_world_model, 'causal_model')
+                    and hasattr(self.causal_world_model.causal_model, 'adjacency')):
+                _cw_adj = self.causal_world_model.causal_model.adjacency.detach()
+                _adj_matrices['causal_world_model'] = _cw_adj
             if len(_adj_matrices) >= 2:
                 # Cache adjacency matrices for UCC DAG consensus verification
                 self._cached_dag_adj_matrices = {
@@ -41854,9 +41867,18 @@ class AEONDeltaV3(nn.Module):
                 if isinstance(_sources, (set, list)):
                     for _src in _sources:
                         _prov_edge_set.add((_src, _target))
+            # Edges intentionally removed for DAG cycle breaking are
+            # expected to be absent from the provenance graph — they
+            # represent feedback loops that cannot be represented in an
+            # acyclic provenance DAG.  Exclude them from the alignment
+            # check so that diagnostic reports distinguish true wiring
+            # omissions from intentional cycle removal.
+            _removed_cyclic = getattr(
+                self.provenance_tracker, '_removed_cyclic_edges', set(),
+            )
             # Check critical edges are in provenance DAG
             for _edge in (getattr(_upb, '_critical_edges', set()) or set()):
-                if _edge not in _prov_edge_set:
+                if _edge not in _prov_edge_set and _edge not in _removed_cyclic:
                     _upb_misaligned_edges.append(_edge)
             _upb_provenance_aligned = len(_upb_misaligned_edges) == 0
             if not _upb_provenance_aligned:

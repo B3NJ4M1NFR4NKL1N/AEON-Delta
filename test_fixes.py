@@ -70632,5 +70632,124 @@ def test_check_training_readiness():
     print("✅ test_check_training_readiness PASSED")
 
 
+def test_causal_world_model_in_dag_consensus():
+    """CausalWorldModel adjacency must be included in DAG consensus evaluation.
+
+    Previously CausalWorldModel received the consensus prior but never
+    contributed its own adjacency to the consensus, leaving the consensus
+    blind to its structural predictions.  Verify the forward-pass code
+    includes ``causal_world_model`` in the ``_adj_matrices`` dict when
+    the model has a ``causal_model.adjacency`` attribute.
+    """
+    from aeon_core import AEONDeltaV3
+    import inspect
+
+    # Check source code for the adjacency inclusion logic
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "causal_world_model" in src and "_adj_matrices['causal_world_model']" in src, (
+        "CausalWorldModel adjacency must be included in _adj_matrices "
+        "for DAG consensus evaluation"
+    )
+    print("✅ test_causal_world_model_in_dag_consensus PASSED")
+
+
+def test_post_output_gate_traceable_at_init():
+    """PostOutputUncertaintyGate must be traceable from init time.
+
+    Verify that post_output_uncertainty_gate is initialized before the
+    provenance DAG pre-population so its dependency edges are registered
+    at construction time, not only during forward pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Check that post_output_uncertainty_gate is in the provenance DAG
+    deps = model.provenance_tracker.get_dependency_graph()
+    all_nodes = set(deps.keys())
+    for sources in deps.values():
+        if isinstance(sources, (set, list)):
+            all_nodes.update(sources)
+
+    assert "post_output_uncertainty_gate" in all_nodes, (
+        "post_output_uncertainty_gate must be in the provenance DAG "
+        "at init time — it should be initialized before DAG pre-population"
+    )
+
+    # Verify cognitive unity reports it as traceable
+    report = model.verify_cognitive_unity()
+    untraceable = report['root_cause_traceability']['untraceable_modules']
+    assert "post_output_uncertainty_gate" not in untraceable, (
+        "post_output_uncertainty_gate must not be in untraceable_modules"
+    )
+
+    # Root-cause traceability coverage should be 1.0
+    rc_coverage = report['root_cause_traceability']['coverage']
+    assert rc_coverage == 1.0, (
+        f"Root-cause traceability coverage should be 1.0, got {rc_coverage}"
+    )
+
+    print("✅ test_post_output_gate_traceable_at_init PASSED")
+
+
+def test_upb_cycle_aware_alignment():
+    """UPB alignment check must exclude intentionally cycle-broken edges.
+
+    Edges removed by the provenance tracker for DAG cycle breaking are
+    expected to be absent from the acyclic provenance graph.  The UPB
+    alignment check must not report them as misaligned.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.verify_cognitive_unity()
+    rc = report['root_cause_traceability']
+
+    # Check that UPB-provenance alignment is clean
+    misaligned = rc.get('upb_misaligned_edges', [])
+    removed_cyclic = getattr(
+        model.provenance_tracker, '_removed_cyclic_edges', set(),
+    )
+
+    # No misaligned edge should be a cycle-broken edge
+    for edge in misaligned:
+        assert tuple(edge) not in removed_cyclic, (
+            f"Edge {edge} was removed for cycle breaking but still "
+            f"reported as misaligned in UPB alignment check"
+        )
+
+    print("✅ test_upb_cycle_aware_alignment PASSED")
+
+
+def test_cognitive_unity_score_perfect_default():
+    """Default model should achieve cognitive_unity_score of 1.0.
+
+    With all architectural fixes in place, the default model should
+    achieve perfect cognitive unity score across all three AGI axioms:
+    mutual verification, uncertainty→metacognition, and root-cause
+    traceability.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.verify_cognitive_unity()
+    score = report['cognitive_unity_score']
+    assert score == 1.0, (
+        f"cognitive_unity_score should be 1.0 with default config, "
+        f"got {score}. Recommendations: {report['recommendations']}"
+    )
+    assert report['unified'] is True, (
+        f"Model should be unified, recommendations: "
+        f"{report['recommendations']}"
+    )
+
+    print("✅ test_cognitive_unity_score_perfect_default PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
