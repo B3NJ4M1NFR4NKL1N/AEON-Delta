@@ -1178,6 +1178,56 @@ class AEONConfigV4:
         kwargs.update(overrides)
         return cls(**kwargs)
 
+    def to_core_config(self, **overrides):
+        """Create an ``AEONConfig`` inference config from this training config.
+
+        Reverse bridge of :meth:`from_core_config`.  Shared architectural
+        parameters (z_dim, hidden_dim, vocab_size, seq_length, VQ-VAE
+        settings) are propagated so that a model trained with this
+        config can be served with a matching inference configuration.
+
+        Inference-specific parameters (topo_method, enable_safety, etc.)
+        retain their ``AEONConfig`` defaults unless explicitly overridden
+        via ``**overrides``.
+
+        Requires ``aeon_core.AEONConfig`` to be importable.
+
+        Args:
+            **overrides: Keyword arguments forwarded to ``AEONConfig()``.
+
+        Returns:
+            An ``AEONConfig`` instance.
+
+        Raises:
+            ImportError: If ``aeon_core`` is not available.
+        """
+        from aeon_core import AEONConfig  # local import avoids circular dep
+
+        _SHARED_FIELDS = {
+            'z_dim': 'z_dim',
+            'hidden_dim': 'hidden_dim',
+            'vocab_size': 'vocab_size',
+            'seq_length': 'seq_length',
+            'vq_num_embeddings': 'vq_num_embeddings',
+            'vq_embedding_dim': 'vq_embedding_dim',
+            'vq_commitment_cost': 'vq_commitment_cost',
+            'vq_ema_decay': 'vq_ema_decay',
+            'dropout_rate': 'dropout_rate',
+            'learning_rate': 'learning_rate',
+            'weight_decay': 'weight_decay',
+        }
+        kwargs: Dict[str, Any] = {}
+        for v4_field, core_field in _SHARED_FIELDS.items():
+            val = getattr(self, v4_field, None)
+            if val is not None:
+                kwargs[core_field] = val
+        # Map vq_reset_threshold → vq_revival_threshold (reverse of
+        # from_core_config).
+        if hasattr(self, 'vq_reset_threshold') and 'vq_revival_threshold' not in overrides:
+            kwargs['vq_revival_threshold'] = self.vq_reset_threshold
+        kwargs.update(overrides)
+        return AEONConfig(**kwargs)
+
     def __post_init__(self):
         """Validate configuration parameters."""
         if self.z_dim <= 0:
@@ -2143,6 +2193,154 @@ class AEONDeltaV4(nn.Module):
             'tensor_safety': safety_stats,
             'round_trip_ok': round_trip_ok,
             'recommendations': recommendations,
+        }
+
+    def export_provenance_for_checkpoint(self) -> Dict[str, Any]:
+        """Export training provenance data for inclusion in checkpoints.
+
+        Systematically packages causal attribution, dependency graph,
+        and tensor safety statistics so that
+        ``AEONDeltaV3.load_v4_checkpoint()`` can import training-time
+        root-cause traceability into the inference pipeline.
+
+        Returns:
+            Dict with ``provenance_attribution``, ``dependency_graph``,
+            ``tensor_safety``, and ``dag_validation`` suitable for
+            serialisation alongside model weights.
+        """
+        attribution = self.provenance_tracker.compute_attribution()
+        dep_graph = self.provenance_tracker.get_dependency_graph()
+        dag_validation = self.provenance_tracker.validate_dag_acyclic()
+
+        if hasattr(self.tensor_guard, 'get_stats'):
+            safety_stats = self.tensor_guard.get_stats()
+        else:
+            safety_stats = {
+                'nan_count': getattr(self.tensor_guard, '_nan_count', 0),
+                'inf_count': getattr(self.tensor_guard, '_inf_count', 0),
+            }
+
+        return {
+            'provenance_attribution': attribution,
+            'dependency_graph': {
+                k: list(v) if isinstance(v, set) else v
+                for k, v in dep_graph.items()
+            },
+            'dag_validation': dag_validation,
+            'tensor_safety': safety_stats,
+            'source_model': 'AEONDeltaV4',
+        }
+
+    def check_training_readiness(self) -> Dict[str, Any]:
+        """Validate that the model is ready for training.
+
+        Pre-training gate that verifies:
+        1. Config–architecture alignment (z_dim matches module dims).
+        2. All sub-modules produce finite outputs for a probe input.
+        3. Provenance tracker is operational.
+
+        This implements the "each component verifies the others"
+        principle by performing a lightweight cross-module probe
+        before training begins, catching misconfigurations that
+        would otherwise surface as NaN divergence mid-training.
+
+        Returns:
+            Dict with ``ready`` bool, ``checks`` list of individual
+            check results, and ``errors`` list of failure descriptions.
+        """
+        checks: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        # 1. Config-architecture alignment
+        encoder_out_dim = getattr(self.encoder, 'z_dim', None)
+        if encoder_out_dim is None:
+            # Try to infer from final projection layer
+            for name, mod in self.encoder.named_modules():
+                if isinstance(mod, nn.Linear):
+                    encoder_out_dim = mod.out_features
+        config_ok = encoder_out_dim is None or encoder_out_dim == self.config.z_dim
+        checks.append({
+            'name': 'config_architecture_alignment',
+            'passed': config_ok,
+            'detail': f'encoder_out={encoder_out_dim}, config.z_dim={self.config.z_dim}',
+        })
+        if not config_ok:
+            errors.append(
+                f"z_dim mismatch: encoder outputs {encoder_out_dim} "
+                f"but config expects {self.config.z_dim}"
+            )
+
+        # 2. Sub-module finite-output probe
+        _SEQ_LEN = 4
+        device = next(self.parameters()).device
+        try:
+            with torch.no_grad():
+                probe_ids = torch.randint(
+                    1, self.config.vocab_size, (1, _SEQ_LEN), device=device,
+                )
+                z = self.encode(probe_ids)
+                z_finite = torch.isfinite(z).all().item()
+                checks.append({
+                    'name': 'encoder_finite_output',
+                    'passed': z_finite,
+                })
+                if not z_finite:
+                    errors.append("Encoder produces non-finite output")
+
+                quantized, vq_loss, _, _ = self.quantize(z)
+                vq_finite = (
+                    torch.isfinite(quantized).all().item()
+                    and torch.isfinite(vq_loss).item()
+                )
+                checks.append({
+                    'name': 'vq_finite_output',
+                    'passed': vq_finite,
+                })
+                if not vq_finite:
+                    errors.append("VQ produces non-finite output")
+
+                logits = self.decode(quantized, probe_ids)
+                dec_finite = torch.isfinite(logits).all().item()
+                checks.append({
+                    'name': 'decoder_finite_output',
+                    'passed': dec_finite,
+                })
+                if not dec_finite:
+                    errors.append("Decoder produces non-finite output")
+        except Exception as e:
+            checks.append({
+                'name': 'sub_module_probe',
+                'passed': False,
+                'detail': str(e),
+            })
+            errors.append(f"Sub-module probe failed: {e}")
+
+        # 3. Provenance tracker operational
+        try:
+            self.provenance_tracker.reset()
+            self.provenance_tracker.record_dependency("_probe_a", "_probe_b")
+            dag = self.provenance_tracker.get_dependency_graph()
+            prov_ok = "_probe_b" in dag
+            self.provenance_tracker.reset()
+            checks.append({
+                'name': 'provenance_tracker_operational',
+                'passed': prov_ok,
+            })
+            if not prov_ok:
+                errors.append("Provenance tracker failed to record dependency")
+        except Exception as e:
+            checks.append({
+                'name': 'provenance_tracker_operational',
+                'passed': False,
+                'detail': str(e),
+            })
+            errors.append(f"Provenance tracker error: {e}")
+
+        ready = len(errors) == 0
+        return {
+            'ready': ready,
+            'checks': checks,
+            'errors': errors,
         }
 
 
