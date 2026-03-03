@@ -16604,6 +16604,14 @@ class MetaCognitiveRecursionTrigger:
             # accumulated beyond the re-reasoning threshold after the
             # UCC had already evaluated.
             "post_output_uncertainty_trigger": "uncertainty",
+            # Provenance chain incomplete — the provenance chain
+            # validator detected modules that did not record
+            # provenance, indicating conclusions without full
+            # root-cause traceability.
+            "provenance_chain_incomplete": "coherence_deficit",
+            # Metacognitive gap — a gap in the metacognitive
+            # coverage was detected during self-diagnostic.
+            "metacognitive_gap": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17646,6 +17654,10 @@ class CausalErrorEvolutionTracker:
         # all expected pipeline modules, degrading root-cause attribution.
         # Maps to lambda_ucc so training strengthens pipeline traceability.
         "provenance_chain_incomplete": "lambda_ucc",
+        # Metacognitive gap — a gap in the metacognitive coverage was
+        # detected during self-diagnostic.  Maps to lambda_ucc so
+        # training adapts to persistent metacognitive blindspots.
+        "metacognitive_gap": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -18804,6 +18816,55 @@ class MemoryRoutingPolicy:
         """Return per-subsystem retrieval statistics."""
         return dict(self._retrieval_stats)
 
+    def validate_routing_quality(
+        self,
+        route_result: Dict[str, Any],
+        query: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Validate routing quality by checking fused result relevance.
+
+        Computes cosine similarity between the query and the fused memory
+        result as a proxy for retrieval relevance.  Low relevance indicates
+        the routing policy selected subsystems that returned irrelevant
+        memories, warranting re-routing or uncertainty escalation.
+
+        Args:
+            route_result: Output from :meth:`route`.
+            query: The original query tensor.
+
+        Returns:
+            Dict with:
+                - relevance_score: float ∈ [0, 1] cosine similarity.
+                - is_relevant: bool — True when above trust_threshold.
+                - routed_count: number of subsystems that responded.
+                - trust_gated_count: number of subsystems attenuated.
+        """
+        fused = route_result.get('fused_result')
+        if fused is None or not isinstance(fused, torch.Tensor):
+            return {
+                'relevance_score': 0.0,
+                'is_relevant': False,
+                'routed_count': len(route_result.get('routed_subsystems', [])),
+                'trust_gated_count': len(route_result.get('trust_gated', [])),
+            }
+        q = query.detach().reshape(1, -1)
+        f = fused.detach().reshape(1, -1)
+        if q.shape[-1] != f.shape[-1]:
+            return {
+                'relevance_score': 0.5,
+                'is_relevant': True,
+                'routed_count': len(route_result.get('routed_subsystems', [])),
+                'trust_gated_count': len(route_result.get('trust_gated', [])),
+            }
+        sim = float(F.cosine_similarity(q, f, dim=-1).item())
+        relevance = max(0.0, min(1.0, (sim + 1.0) / 2.0))
+        return {
+            'relevance_score': relevance,
+            'is_relevant': relevance >= self.trust_threshold,
+            'routed_count': len(route_result.get('routed_subsystems', [])),
+            'trust_gated_count': len(route_result.get('trust_gated', [])),
+        }
+
 
 class UnifiedCognitiveCycle:
     """Orchestrates meta-cognitive components into a single coherent cycle.
@@ -18908,6 +18969,14 @@ class UnifiedCognitiveCycle:
         # against this declaration so that untraced modules degrade
         # confidence proportionally to missing coverage.
         self._pipeline_dependencies_ref = pipeline_dependencies
+        # Provenance chain validator — when pipeline_dependencies and
+        # a node-to-attribute map are available, the evaluate() method
+        # validates that all active pipeline modules recorded provenance
+        # during the current pass.  Missing provenance entries trigger
+        # re-reasoning, closing the gap where provenance completeness
+        # was only checked post-hoc via verify_pipeline_wiring() but
+        # never enforced during the meta-cognitive cycle.
+        self._provenance_chain_validator: Optional['ProvenanceChainValidator'] = None
 
         # Cross-pass coherence trend tracking — EMA of coherence deficit
         # across successive evaluate() calls.  When coherence is
@@ -18951,6 +19020,19 @@ class UnifiedCognitiveCycle:
         # Wire error evolution → causal trace automatically.
         if self.error_evolution is not None:
             self.error_evolution.set_causal_trace(self.causal_trace)
+
+    def set_provenance_chain_validator(
+        self,
+        validator: 'ProvenanceChainValidator',
+    ) -> None:
+        """Attach a ProvenanceChainValidator for in-cycle completeness checks.
+
+        Once attached, :meth:`evaluate` validates that all active pipeline
+        modules recorded provenance during the current pass.  Missing
+        provenance entries degrade confidence and trigger re-reasoning,
+        ensuring all conclusions can be traced back to their root causes.
+        """
+        self._provenance_chain_validator = validator
 
     def _provenance_snapshot(self) -> Tuple[Dict[str, float], Optional[str]]:
         """Return (contributions, dominant_module) from the provenance tracker."""
@@ -19317,6 +19399,39 @@ class UnifiedCognitiveCycle:
                 _prov_deficit = 1.0 - _prov_validation['coverage']
                 _prov_cov_boost = _prov_deficit * 0.2
                 coherence_deficit = min(1.0, coherence_deficit + _prov_cov_boost)
+
+        # 2-prov-chain. Provenance chain completeness validation — use the
+        # attached ProvenanceChainValidator to verify that all active
+        # pipeline modules recorded provenance during the current pass.
+        # Missing entries mean those modules' outputs cannot be traced to
+        # root causes, violating the full-traceability requirement.  When
+        # completeness is low, degrade coherence and escalate uncertainty.
+        _chain_validation: Dict[str, Any] = {}
+        if self._provenance_chain_validator is not None:
+            _chain_validation = self._provenance_chain_validator.validate(
+                self.provenance_tracker,
+            )
+            _chain_completeness = _chain_validation.get(
+                'completeness_ratio', 1.0,
+            )
+            if _chain_completeness < 1.0:
+                _chain_deficit = 1.0 - _chain_completeness
+                _chain_boost = _chain_deficit * 0.15
+                coherence_deficit = min(1.0, coherence_deficit + _chain_boost)
+                if _chain_deficit > 0.3:
+                    uncertainty = min(1.0, uncertainty + _chain_deficit * 0.1)
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='provenance_chain_incomplete',
+                            strategy_used='meta_rerun',
+                            success=False,
+                            metadata={
+                                'completeness_ratio': _chain_completeness,
+                                'missing_modules': _chain_validation.get(
+                                    'missing_modules', [],
+                                ),
+                            },
+                        )
 
         # Record coherence deficit in error evolution if significant.
         # Enrich with provenance attribution so downstream root-cause
@@ -20560,6 +20675,7 @@ class UnifiedCognitiveCycle:
             'degrading_subsystems': _degrading_subsystems,
             'integrity_health': _integrity_health,
             'integrity_anomalies': _integrity_anomalies,
+            'provenance_chain_validation': _chain_validation,
         }
 
     def reset(self) -> None:
@@ -23165,6 +23281,14 @@ class AEONDeltaV3(nn.Module):
                     _ucc.causal_trace = self.causal_trace
                     if _ucc.error_evolution is not None:
                         _ucc.error_evolution.set_causal_trace(self.causal_trace)
+                # Wire ProvenanceChainValidator into UCC so that each
+                # evaluate() call verifies provenance chain completeness,
+                # ensuring all conclusions are traceable to root causes.
+                _pcv = ProvenanceChainValidator(
+                    pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
+                    node_attr_map=self._NODE_ATTR_MAP,
+                )
+                _ucc.set_provenance_chain_validator(_pcv)
             else:
                 # Without any optional prerequisites the UCC degenerates
                 # into a bare convergence-monitor wrapper that adds no
@@ -35795,7 +35919,13 @@ class AEONDeltaV3(nn.Module):
             coherence_deficit=self._cached_coherence_deficit,
             provenance_quality=_provenance_quality,
             causal_quality=_causal_quality_factor,
-            verification_coverage=_verification_coverage,
+            # Blend static verification coverage with runtime subsystem
+            # coverage deficit so that outputs are flagged as less reliable
+            # when active subsystems fail to produce validated outputs,
+            # not just when verification modules are structurally absent.
+            verification_coverage=_verification_coverage * (
+                1.0 - self.coherence_registry.get_coverage_deficit()
+            ),
         )
         _current_output_reliability = _or_result['composite']
         _reliability_factors = _or_result['factors']

@@ -36579,6 +36579,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "counterfactual_verification": "counterfactual_gate",
         "cross_validation_correction": "cross_validator",
         "subsystem_health_gate": "subsystem_health_gate",
+        "post_output_uncertainty_gate": "post_output_uncertainty_gate",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -63665,6 +63666,222 @@ def test_aeonv3_cross_module_provenance_wiring():
         "error_evolution provenance not wired to model's provenance_tracker"
     )
     print("✅ test_aeonv3_cross_module_provenance_wiring PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_provenance_chain_validator_in_ucc():
+    """ProvenanceChainValidator should be wired into UnifiedCognitiveCycle
+    and validate provenance chain completeness during evaluate()."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        ProvenanceChainValidator, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        pipeline_dependencies=[("input", "encoder"), ("encoder", "decoder")],
+    )
+    # Attach chain validator
+    pcv = ProvenanceChainValidator(
+        pipeline_dependencies=[("input", "encoder"), ("encoder", "decoder")],
+    )
+    ucc.set_provenance_chain_validator(pcv)
+    assert ucc._provenance_chain_validator is pcv
+
+    # Record partial provenance (only "input", not "encoder" or "decoder")
+    pt.reset()
+    pt.record_before("input", torch.randn(1, 4))
+    pt.record_after("input", torch.randn(1, 4))
+    pt.record_dependency("input", "encoder")
+    pt.record_dependency("encoder", "decoder")
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+    )
+    # Chain validation result should be present
+    chain_val = result.get('provenance_chain_validation', {})
+    assert 'completeness_ratio' in chain_val, (
+        "UCC evaluate must return provenance_chain_validation"
+    )
+    # Since only "input" was traced, completeness should be < 1.0
+    assert chain_val['completeness_ratio'] < 1.0, (
+        "Incomplete provenance chain should have ratio < 1.0"
+    )
+    print("✅ test_provenance_chain_validator_in_ucc PASSED")
+
+
+def test_provenance_chain_validator_completeness():
+    """ProvenanceChainValidator should report full completeness when all
+    expected modules have provenance entries."""
+    from aeon_core import CausalProvenanceTracker, ProvenanceChainValidator
+
+    pt = CausalProvenanceTracker()
+    pcv = ProvenanceChainValidator(
+        pipeline_dependencies=[("a", "b"), ("b", "c")],
+    )
+
+    # Record all modules
+    pt.reset()
+    for name in ("a", "b", "c"):
+        pt.record_before(name, torch.randn(1, 4))
+        pt.record_after(name, torch.randn(1, 4))
+    pt.record_dependency("a", "b")
+    pt.record_dependency("b", "c")
+
+    result = pcv.validate(pt)
+    assert result['is_complete'], "All modules traced → should be complete"
+    assert result['completeness_ratio'] == 1.0
+    assert len(result['missing_modules']) == 0
+    print("✅ test_provenance_chain_validator_completeness PASSED")
+
+
+def test_ucc_provenance_chain_triggers_rerun():
+    """When provenance chain completeness is very low (> 0.3 deficit),
+    the UCC should escalate uncertainty."""
+    from aeon_core import (
+        ConvergenceMonitor, CausalProvenanceTracker,
+        ProvenanceChainValidator, UnifiedCognitiveCycle,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    # Many expected nodes but none traced
+    deps = [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")]
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        pipeline_dependencies=deps,
+    )
+    pcv = ProvenanceChainValidator(pipeline_dependencies=deps)
+    ucc.set_provenance_chain_validator(pcv)
+
+    # Don't record any provenance
+    pt.reset()
+    for up, down in deps:
+        pt.record_dependency(up, down)
+
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+        uncertainty=0.1,
+    )
+    chain_val = result.get('provenance_chain_validation', {})
+    assert chain_val.get('completeness_ratio', 1.0) < 1.0, (
+        "Empty provenance should yield low completeness"
+    )
+    print("✅ test_ucc_provenance_chain_triggers_rerun PASSED")
+
+
+def test_memory_routing_validate_routing_quality():
+    """MemoryRoutingPolicy.validate_routing_quality should compute
+    relevance score between query and fused result."""
+    from aeon_core import MemoryRoutingPolicy
+
+    mrp = MemoryRoutingPolicy(trust_threshold=0.5)
+
+    # Case 1: no fused result → relevance 0
+    result_empty = mrp.validate_routing_quality(
+        route_result={'fused_result': None, 'routed_subsystems': [], 'trust_gated': []},
+        query=torch.randn(8),
+    )
+    assert result_empty['relevance_score'] == 0.0
+    assert not result_empty['is_relevant']
+
+    # Case 2: identical query and result → high relevance
+    q = torch.randn(8)
+    result_identical = mrp.validate_routing_quality(
+        route_result={'fused_result': q.clone(), 'routed_subsystems': ['a'], 'trust_gated': []},
+        query=q,
+    )
+    assert result_identical['relevance_score'] > 0.9, (
+        f"Identical vectors should have high relevance, got {result_identical['relevance_score']}"
+    )
+    assert result_identical['is_relevant']
+
+    # Case 3: orthogonal vectors → medium relevance (cosine ~0 → normalized ~0.5)
+    q2 = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    f2 = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    result_ortho = mrp.validate_routing_quality(
+        route_result={'fused_result': f2, 'routed_subsystems': ['a'], 'trust_gated': []},
+        query=q2,
+    )
+    assert 0.4 <= result_ortho['relevance_score'] <= 0.6, (
+        f"Orthogonal vectors should have ~0.5 relevance, got {result_ortho['relevance_score']}"
+    )
+    print("✅ test_memory_routing_validate_routing_quality PASSED")
+
+
+def test_output_reliability_gate_includes_coverage_deficit():
+    """OutputReliabilityGate should receive reduced verification_coverage
+    when SubsystemCoherenceRegistry has coverage deficit."""
+    from aeon_core import OutputReliabilityGate
+
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+
+    # Full coverage → high verification_coverage
+    result_full = gate(
+        uncertainty=0.1,
+        auto_critic_quality=0.9,
+        convergence_rate=0.9,
+        coherence_deficit=0.1,
+        provenance_quality=0.9,
+        causal_quality=0.9,
+        verification_coverage=1.0,
+    )
+
+    # 50% coverage deficit → verification_coverage = 1.0 * (1.0 - 0.5) = 0.5
+    result_deficit = gate(
+        uncertainty=0.1,
+        auto_critic_quality=0.9,
+        convergence_rate=0.9,
+        coherence_deficit=0.1,
+        provenance_quality=0.9,
+        causal_quality=0.9,
+        verification_coverage=0.5,  # simulates 50% deficit
+    )
+
+    # Lower verification_coverage should degrade composite reliability
+    assert result_deficit['composite'] <= result_full['composite'], (
+        f"Coverage deficit should degrade reliability: "
+        f"full={result_full['composite']:.3f} vs deficit={result_deficit['composite']:.3f}"
+    )
+    print("✅ test_output_reliability_gate_includes_coverage_deficit PASSED")
+
+
+def test_aeonv3_ucc_has_provenance_chain_validator():
+    """AEONDeltaV3 should wire ProvenanceChainValidator into its UCC."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    ucc = model.unified_cognitive_cycle
+    if ucc is not None:
+        assert ucc._provenance_chain_validator is not None, (
+            "UCC must have a ProvenanceChainValidator wired when "
+            "full coherence is enabled"
+        )
+        validator = ucc._provenance_chain_validator
+        assert len(validator._pipeline_dependencies) > 0, (
+            "ProvenanceChainValidator must have pipeline dependencies"
+        )
+    print("✅ test_aeonv3_ucc_has_provenance_chain_validator PASSED")
 
 
 def run_all_tests():

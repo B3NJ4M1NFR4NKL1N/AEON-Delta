@@ -3068,6 +3068,42 @@ def _v4_training_loop(req: V4TrainRequest):
         APP.v4_trained_model = model
         APP.v4_trained_model_path = final_path
 
+        # ── Auto-bridge training errors to inference ──────────────
+        # Bridge training-time convergence failure patterns into the
+        # inference model's error evolution tracker so that the
+        # metacognitive trigger and recovery strategies benefit from
+        # training-discovered instabilities without manual intervention.
+        _bridged = 0
+        if APP.model is not None and AE_TRAIN_LOADED:
+            try:
+                _inf_model = APP.model
+                _inf_ee = getattr(_inf_model, 'error_evolution', None)
+                _inf_cm = getattr(_inf_model, 'convergence_monitor', None)
+                _inf_im = getattr(_inf_model, 'integrity_monitor', None)
+                _inf_pt = getattr(_inf_model, 'provenance_tracker', None)
+                _inf_mt = getattr(_inf_model, 'metacognitive_trigger', None)
+                _train_monitor = getattr(trainer_B, 'convergence_monitor', None)
+                if _train_monitor is None and base_monitor is not None:
+                    _train_monitor = getattr(base_monitor, 'convergence_monitor', None)
+                if _train_monitor is not None and _inf_ee is not None:
+                    _bridged = ae.bridge_training_errors_to_inference(
+                        trainer_monitor=_train_monitor,
+                        inference_error_evolution=_inf_ee,
+                        causal_trace=getattr(_inf_model, 'causal_trace', None),
+                        inference_convergence_monitor=_inf_cm,
+                        inference_integrity_monitor=_inf_im,
+                        inference_provenance_tracker=_inf_pt,
+                        inference_metacognitive_trigger=_inf_mt,
+                    )
+                    logging.info(
+                        f"✅ Auto-bridged {_bridged} training error patterns "
+                        f"to inference pipeline"
+                    )
+            except Exception as _bridge_err:
+                logging.warning(
+                    f"Training→inference bridge failed (non-fatal): {_bridge_err}"
+                )
+
         codebook_pct = model.vq.get_codebook_usage()
         APP.v4_progress.update({
             "active": False, "done": True, "stopped": False,
