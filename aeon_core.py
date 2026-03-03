@@ -3499,6 +3499,38 @@ class AEONConfig:
                 and not getattr(self, 'enable_counterfactual_verification', False)):
             object.__setattr__(self, 'enable_counterfactual_verification', True)
 
+        # ── Coherence prerequisite warnings ────────────────────────
+        # Warn when features are enabled without their prerequisites,
+        # creating silent architectural gaps where cross-component
+        # verification is structurally impossible.  These are warnings
+        # (not assertions) because the system degrades gracefully, but
+        # callers should know that coherence is reduced.
+        _coherence_warnings: List[str] = []
+        if (getattr(self, 'enable_unified_cognitive_cycle', False)
+                and not getattr(self, 'enable_error_evolution', False)):
+            _coherence_warnings.append(
+                "enable_unified_cognitive_cycle requires "
+                "enable_error_evolution for anomaly recording"
+            )
+        if (getattr(self, 'enable_unified_cognitive_cycle', False)
+                and not getattr(self, 'enable_module_coherence', False)):
+            _coherence_warnings.append(
+                "enable_unified_cognitive_cycle requires "
+                "enable_module_coherence for cross-module verification"
+            )
+        if (getattr(self, 'enable_metacognitive_recursion', False)
+                and not getattr(self, 'enable_causal_trace', False)):
+            _coherence_warnings.append(
+                "enable_metacognitive_recursion requires "
+                "enable_causal_trace for root-cause traceability"
+            )
+        for _cw in _coherence_warnings:
+            warnings.warn(
+                f"AEONConfig coherence prerequisite: {_cw}. "
+                f"Use enable_full_coherence=True for complete wiring.",
+                stacklevel=2,
+            )
+
         # Device initialization
         if self.device_str == "auto":
             self.device_manager = DeviceManager.auto_select(
@@ -18028,6 +18060,10 @@ class SubsystemCoherenceRegistry:
         # calls and pipeline dependency edges — its absence must be
         # visible to coverage deficit tracking.
         "subsystem_health_gate",
+        # The post-output uncertainty gate re-evaluates metacognitive
+        # need after late-stage uncertainty — its presence must be
+        # visible to coverage deficit tracking.
+        "post_output_uncertainty_gate",
     })
 
     def __init__(
@@ -21265,6 +21301,14 @@ class AEONDeltaV3(nn.Module):
         # intra-pass causal edge (unlike the cross-pass feedback_bus
         # → meta_loop dependency which is intentionally omitted).
         ("feedback_bus", "metacognitive_trigger"),
+        # ── Post-output uncertainty gate path ──────────────────────
+        # The post-output gate re-evaluates metacognitive need after
+        # all late-stage uncertainty sources have accumulated.  Its
+        # output feeds into error evolution and may trigger a late
+        # meta-loop re-run, so it must be traceable via provenance.
+        ("output_reliability_gate", "post_output_uncertainty_gate"),
+        ("cycle_consistency", "post_output_uncertainty_gate"),
+        ("post_output_uncertainty_gate", "decoder"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -21369,6 +21413,9 @@ class AEONDeltaV3(nn.Module):
         # on coherence health, ensuring degraded integration produces
         # dampened outputs.
         "subsystem_health_gate": "subsystem_health_gate",
+        # Post-output uncertainty gate — re-evaluates metacognitive
+        # need after late-stage uncertainty accumulation.
+        "post_output_uncertainty_gate": "post_output_uncertainty_gate",
     }
     
     def __init__(self, config: AEONConfig):
@@ -21609,6 +21656,16 @@ class AEONDeltaV3(nn.Module):
         # cross-pass reasoning depth adapts to cumulative failure history.
         self.feedback_bus.register_signal(
             "error_evolution_pressure", default=0.0,
+        )
+        # Error evolution trend pressure — carries the directional
+        # degradation signal (whether recovery effectiveness is worsening)
+        # into the meta-loop as a dedicated channel.  This complements
+        # aggregate pressure (current failure severity) with trend
+        # information, enabling the meta-loop to reason deeper when
+        # error recovery is systematically degrading rather than only
+        # reacting to current failure spikes.
+        self.feedback_bus.register_signal(
+            "error_evolution_trend_pressure", default=0.0,
         )
         # Uncertainty propagation cascade pressure — when upstream
         # uncertainty cascades through the pipeline DAG, the total
@@ -36722,6 +36779,22 @@ class AEONDeltaV3(nn.Module):
             ucc_already_triggered=_ucc_already_triggered,
         )
         outputs['post_output_uncertainty_gate'] = _post_gate
+        # Register the post-output gate in provenance and coherence
+        # registry so that late-stage uncertainty evaluation is traceable
+        # and visible to coverage deficit tracking.  Without this, the
+        # gate's output was invisible to the coherence ledger, violating
+        # the requirement that each component verifies the others.
+        self.provenance_tracker.record_before(
+            "post_output_uncertainty_gate", z_out,
+        )
+        self.provenance_tracker.record_after(
+            "post_output_uncertainty_gate", z_out,
+        )
+        self.coherence_registry.register_output(
+            "post_output_uncertainty_gate",
+            validated=True,
+            quality=1.0 - min(1.0, _post_gate.get('late_uncertainty', 0.0)),
+        )
         if _post_gate['gate_triggered']:
             # Record late-stage metacognitive trigger in error evolution
             if self.error_evolution is not None:
@@ -41794,6 +41867,38 @@ class AEONDeltaV3(nn.Module):
             error_evolution_effectiveness = {'active': False}
             _ee_rate = 1.0  # no episodes, assume healthy
 
+        # ── 8b. Error evolution trend health ───────────────────────
+        # Check whether error recovery effectiveness is systematically
+        # degrading via get_degrading_error_classes().  A system with
+        # a reasonable aggregate success rate can still have individual
+        # error classes whose recovery is worsening over time, indicating
+        # architectural drift that aggregate metrics miss.  This closes
+        # the gap where verify_cognitive_unity checked current success
+        # rates but not their temporal trajectory.
+        _ee_degrading: Dict[str, float] = {}
+        _ee_trend_healthy = True
+        if _ee is not None:
+            _ee_degrading = _ee.get_degrading_error_classes()
+            if len(_ee_degrading) >= 3:
+                _ee_trend_healthy = False
+                _top_degrading = sorted(
+                    _ee_degrading.items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:5]
+                recommendations.append(
+                    f"Error recovery degrading for "
+                    f"{len(_ee_degrading)} error class(es): "
+                    + ", ".join(
+                        f"{cls}(trend={t:.2f})"
+                        for cls, t in _top_degrading
+                    )
+                )
+            error_evolution_effectiveness['degrading_classes'] = len(
+                _ee_degrading,
+            )
+            error_evolution_effectiveness['trend_healthy'] = _ee_trend_healthy
+
         # ── Circuit breaker chronic failure check ──────────────────
         # Expose cross-pass circuit breaker patterns in the unity
         # verdict so callers can identify chronically failing subsystems.
@@ -41852,6 +41957,7 @@ class AEONDeltaV3(nn.Module):
             and _pipeline_provenance_coverage >= 0.9
             and _dag_acyclic
             and (_ee_rate >= 0.3 or _ee_total < 10)
+            and _ee_trend_healthy
             and _cb_healthy
             and _bridge_ready
         )
@@ -41961,6 +42067,36 @@ class AEONDeltaV3(nn.Module):
                 "check meta-loop contraction rate"
             )
 
+        # ── Recurring root causes from UCC cross-pass buffer ─────
+        # Surface the UCC's cross-pass chain buffer analysis so callers
+        # can identify modules that are structurally weak across forward
+        # passes.  Without this, recurring root-cause information was
+        # computed inside UCC.evaluate() but never exposed in the
+        # diagnostic report, preventing external consumers from
+        # identifying chronic architectural weaknesses.
+        _ucc = getattr(self, 'unified_cognitive_cycle', None)
+        _recurring_roots: List[str] = []
+        if _ucc is not None:
+            _chain_buf = getattr(_ucc, '_cross_pass_chain_buffer', deque())
+            _root_counts: Dict[str, int] = {}
+            for _chain in _chain_buf:
+                for _mod in _chain:
+                    _root_counts[_mod] = _root_counts.get(_mod, 0) + 1
+            _threshold = getattr(
+                _ucc, '_recurring_chain_root_threshold', 3,
+            )
+            _recurring_roots = sorted(
+                [m for m, c in _root_counts.items() if c >= _threshold],
+                key=lambda m: _root_counts.get(m, 0),
+                reverse=True,
+            )
+            if _recurring_roots:
+                _recs.append(
+                    f"Recurring root-cause modules across passes: "
+                    f"{', '.join(_recurring_roots[:5])} — investigate "
+                    f"these subsystems for chronic architectural weakness"
+                )
+
         return {
             'healthy': _healthy,
             'overall_health_score': _overall,
@@ -41969,6 +42105,7 @@ class AEONDeltaV3(nn.Module):
             'convergence_summary': convergence,
             'cognitive_unity': unity,
             'weakest_module': unity.get('weakest_module'),
+            'recurring_root_causes': _recurring_roots,
             'recommendations': _recs,
         }
 
