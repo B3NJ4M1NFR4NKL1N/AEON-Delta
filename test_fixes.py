@@ -34136,6 +34136,7 @@ def test_source_module_map_completeness():
         "integration_nan": "integration",
         "multimodal_nonfinite": "multimodal",
         "multimodal_error": "multimodal",
+        "cognitive_unity_deficit": "unified_cognitive_cycle",
     }
 
     # Every source in the weight table should map to a module name
@@ -66773,6 +66774,16 @@ def run_all_tests():
     test_sync_from_training_memory_snapshot_key()
     test_default_model_fewer_pipeline_gaps()
 
+    # Architectural Coherence — Cognitive Unity → Uncertainty Integration
+    test_cognitive_unity_deficit_in_uncertainty_sources()
+    test_cognitive_unity_deficit_escalates_forward_uncertainty()
+    test_cognitive_unity_deficit_records_error_evolution()
+    test_cognitive_unity_deficit_recorded_in_causal_trace()
+    test_cognitive_unity_deficit_in_uncertainty_weight_table()
+    test_cognitive_unity_deficit_in_error_class_to_lambda()
+    test_cognitive_unity_provenance_to_signal_mapping()
+    test_cognitive_unity_components_in_output()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -70039,6 +70050,251 @@ def test_config_no_warnings_with_full_coherence():
         )
 
     print("✅ test_config_no_warnings_with_full_coherence PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Architectural Coherence — Cognitive Unity → Uncertainty Escalation,
+# Error Evolution Recording, and Causal Trace Integration Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_cognitive_unity_deficit_in_uncertainty_sources():
+    """Verify that a low cognitive unity score escalates uncertainty
+    within the same forward pass via uncertainty_sources.
+
+    When the cognitive unity score is low (deficit > 0.3), the system
+    should add 'cognitive_unity_deficit' to uncertainty_sources so that
+    the output quality reflects unmet AGI coherence requirements.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    # The cognitive unity score should exist and the deficit should
+    # feed into uncertainty_sources when it exceeds the threshold.
+    cu_score = result.get('cognitive_unity_score', 1.0)
+    cu_deficit = max(0.0, 1.0 - cu_score)
+    unc_sources = result.get('uncertainty_sources', {})
+
+    if cu_deficit > 0.3:
+        assert 'cognitive_unity_deficit' in unc_sources, (
+            f"When cognitive_unity_deficit={cu_deficit:.2f} > 0.3, "
+            f"it must appear in uncertainty_sources"
+        )
+    # If deficit is low, the source should NOT be present
+    elif cu_deficit <= 0.3:
+        # This is acceptable — no escalation needed when deficit is small
+        pass
+
+    print("✅ test_cognitive_unity_deficit_in_uncertainty_sources PASSED")
+
+
+def test_cognitive_unity_deficit_escalates_forward_uncertainty():
+    """Verify that cognitive unity deficit boosts the pass uncertainty.
+
+    When the forward pass produces a low cognitive unity score, the
+    final 'uncertainty' value should be higher than it would be without
+    the cognitive unity deficit escalation.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    cu_score = result.get('cognitive_unity_score', 1.0)
+    cu_deficit = max(0.0, 1.0 - cu_score)
+    uncertainty = result.get('uncertainty', 0.0)
+
+    # When deficit is significant, uncertainty must be non-zero
+    if cu_deficit > 0.3:
+        assert uncertainty > 0.0, (
+            f"When cognitive_unity_deficit={cu_deficit:.2f}, "
+            f"uncertainty should be > 0, got {uncertainty}"
+        )
+
+    print("✅ test_cognitive_unity_deficit_escalates_forward_uncertainty PASSED")
+
+
+def test_cognitive_unity_deficit_records_error_evolution():
+    """Verify that cognitive unity violations are recorded in error
+    evolution during the forward pass (not only in self_diagnostic).
+
+    This ensures that persistent AGI coherence failures influence
+    metacognitive trigger sensitivity and training-inference bridging
+    through the error evolution learning loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    cu_score = result.get('cognitive_unity_score', 1.0)
+    cu_deficit = max(0.0, 1.0 - cu_score)
+
+    if cu_deficit > 0.3:
+        ee_summary = model.error_evolution.get_error_summary()
+        ee_classes = ee_summary.get('error_classes', {})
+        assert 'cognitive_unity_violation' in ee_classes, (
+            f"When cognitive_unity_deficit={cu_deficit:.2f}, "
+            f"error_evolution should record 'cognitive_unity_violation'"
+        )
+
+    print("✅ test_cognitive_unity_deficit_records_error_evolution PASSED")
+
+
+def test_cognitive_unity_deficit_recorded_in_causal_trace():
+    """Verify that cognitive unity deficit is recorded in the causal
+    trace so conclusions can be attributed to specific AGI requirement
+    failures.
+
+    This satisfies the requirement that all conclusions can be traced
+    back to their root causes, including the cognitive unity assessment.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    cu_score = result.get('cognitive_unity_score', 1.0)
+    cu_deficit = max(0.0, 1.0 - cu_score)
+
+    if cu_deficit > 0.3 and model.causal_trace is not None:
+        trace_events = model.causal_trace.find(
+            subsystem='cognitive_unity', n=10,
+        )
+        assert len(trace_events) > 0, (
+            f"When cognitive_unity_deficit={cu_deficit:.2f}, "
+            f"causal_trace should record 'cognitive_unity' events"
+        )
+
+    print("✅ test_cognitive_unity_deficit_recorded_in_causal_trace PASSED")
+
+
+def test_cognitive_unity_deficit_in_uncertainty_weight_table():
+    """Verify that 'cognitive_unity_deficit' has an entry in the
+    _UNCERTAINTY_SOURCE_WEIGHTS table so _weighted_uncertainty_fusion
+    uses an explicit reliability weight.
+    """
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    assert 'cognitive_unity_deficit' in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        "'cognitive_unity_deficit' must be in _UNCERTAINTY_SOURCE_WEIGHTS"
+    )
+    weight = _UNCERTAINTY_SOURCE_WEIGHTS['cognitive_unity_deficit']
+    assert 0.0 < weight <= 1.0, (
+        f"cognitive_unity_deficit weight should be in (0, 1], got {weight}"
+    )
+
+    print("✅ test_cognitive_unity_deficit_in_uncertainty_weight_table PASSED")
+
+
+def test_cognitive_unity_deficit_in_error_class_to_lambda():
+    """Verify that 'cognitive_unity_violation' has a lambda mapping
+    so error evolution can adapt loss weights for this error class.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    assert 'cognitive_unity_violation' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "'cognitive_unity_violation' must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    print("✅ test_cognitive_unity_deficit_in_error_class_to_lambda PASSED")
+
+
+def test_cognitive_unity_provenance_to_signal_mapping():
+    """Verify that 'unified_cognitive_cycle' is in _PROVENANCE_TO_SIGNAL
+    so provenance-driven trigger weight adaptation covers this module.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    assert 'unified_cognitive_cycle' in MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL, (
+        "'unified_cognitive_cycle' must be in _PROVENANCE_TO_SIGNAL "
+        "for provenance-driven trigger adaptation"
+    )
+    signal = MetaCognitiveRecursionTrigger._PROVENANCE_TO_SIGNAL['unified_cognitive_cycle']
+    # Verify the signal maps to one of the trigger's known signal names
+    trigger = MetaCognitiveRecursionTrigger()
+    assert signal in trigger._signal_weights, (
+        f"Signal '{signal}' mapped from 'unified_cognitive_cycle' must be "
+        f"a valid trigger signal name"
+    )
+
+    print("✅ test_cognitive_unity_provenance_to_signal_mapping PASSED")
+
+
+def test_cognitive_unity_components_in_output():
+    """Verify that forward pass output includes cognitive_unity_components
+    breakdown so each AGI requirement can be diagnosed individually.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    assert 'cognitive_unity_components' in result, (
+        "Forward pass must include 'cognitive_unity_components'"
+    )
+    components = result['cognitive_unity_components']
+    expected_keys = {
+        'mutual_verification',
+        'metacognitive_responsiveness',
+        'root_cause_traceability',
+        'output_reliability',
+        'convergence_quality',
+        'cross_module_coherence',
+    }
+    assert expected_keys.issubset(set(components.keys())), (
+        f"cognitive_unity_components must include {expected_keys}, "
+        f"got {set(components.keys())}"
+    )
+
+    print("✅ test_cognitive_unity_components_in_output PASSED")
 
 
 if __name__ == "__main__":

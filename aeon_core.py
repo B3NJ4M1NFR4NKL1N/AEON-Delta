@@ -8062,6 +8062,8 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "mcts_causal_adj_failure": 0.4,
     "active_learning_curiosity": 0.3,
     "active_learning_error": 0.4,
+    # AGI coherence (cognitive unity)
+    "cognitive_unity_deficit": 0.7,
 }
 
 
@@ -8188,6 +8190,7 @@ def _adapt_uncertainty_weights_from_evolution(
         "active_learning_error": "subsystem",
         "tkg_retrieval_error": "subsystem",
         "hierarchical_wm_error": "world_model_prediction_error",
+        "cognitive_unity_deficit": "cognitive_unity_violation",
     }
     mapping = source_to_error_class if source_to_error_class is not None else _default_map
 
@@ -16709,6 +16712,7 @@ class MetaCognitiveRecursionTrigger:
         "deception_suppressor": "safety_violation",
         "output_reliability": "low_output_reliability",
         "cycle_consistency": "coherence_deficit",
+        "unified_cognitive_cycle": "coherence_deficit",
     }
 
     def adapt_weights_from_provenance(
@@ -32861,6 +32865,8 @@ class AEONDeltaV3(nn.Module):
                 "coherence_verifier_error": "coherence_verifier",
                 # Complexity-gated coverage reduction
                 "complexity_gated_coverage": "complexity_estimator",
+                # AGI coherence — cognitive unity
+                "cognitive_unity_deficit": "unified_cognitive_cycle",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
@@ -37052,6 +37058,58 @@ class AEONDeltaV3(nn.Module):
         # Surface coherence_deficit at top level so downstream consumers
         # can access cross-module coherence health directly.
         result['coherence_deficit'] = self._cached_coherence_deficit
+
+        # ===== COGNITIVE UNITY → UNCERTAINTY ESCALATION =====
+        # When the cognitive unity score is low, escalate the current
+        # pass's uncertainty so that the output quality reflects the
+        # unmet AGI coherence requirements.  Previously, the deficit
+        # was only cached for the *next* pass's feedback bus, leaving
+        # the *current* pass's output unaffected despite known coherence
+        # failures.  This closes the loop: each component's coherence
+        # assessment feeds back into the uncertainty signal within the
+        # same pass, ensuring that uncertainty always reflects the
+        # system's self-assessed health.
+        _cu_deficit = self._cached_cognitive_unity_deficit
+        if _cu_deficit > 0.3:
+            _cu_unc_boost = min(0.3, _cu_deficit * 0.4)
+            uncertainty_sources["cognitive_unity_deficit"] = _cu_unc_boost
+            # Identify the weakest AGI component for targeted tracing.
+            _cu_components = result.get('cognitive_unity_components', {})
+            _weakest_component = min(
+                _cu_components, key=_cu_components.get,
+                default=None,
+            ) if _cu_components else None
+            # Record in error evolution so that future passes adapt
+            # their metacognitive trigger sensitivity to cognitive
+            # unity violations, and the training bridge can learn
+            # from persistent AGI coherence failures.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='cognitive_unity_violation',
+                    strategy_used='in_pass_escalation',
+                    success=_cu_deficit < 0.5,
+                    metadata={
+                        'cognitive_unity_score': result['cognitive_unity_score'],
+                        'deficit': _cu_deficit,
+                        'weakest_component': _weakest_component,
+                    },
+                )
+            # Record in causal trace so conclusions can be traced
+            # back to the specific AGI requirement failure.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cognitive_unity", "deficit_detected",
+                    metadata={
+                        'score': result['cognitive_unity_score'],
+                        'deficit': _cu_deficit,
+                        'weakest_component': _weakest_component,
+                    },
+                )
+            # Re-fuse uncertainty with the new source so the final
+            # uncertainty value accounts for the cognitive unity gap.
+            uncertainty = min(1.0, outputs.get('uncertainty', 0.0) + _cu_unc_boost)
+            outputs['uncertainty'] = uncertainty
+            outputs['uncertainty_sources'] = uncertainty_sources
 
         # ===== PROVENANCE ROOT-CAUSE (TOP-LEVEL) =====
         # Surface the UCC's provenance_root_cause at the top level of
