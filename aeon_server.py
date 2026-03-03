@@ -3083,7 +3083,7 @@ def _v4_training_loop(req: V4TrainRequest):
                 _inf_pt = getattr(_inf_model, 'provenance_tracker', None)
                 _inf_mt = getattr(_inf_model, 'metacognitive_trigger', None)
                 _train_monitor = getattr(trainer_B, 'convergence_monitor', None)
-                if _train_monitor is None:
+                if _train_monitor is None and base_monitor is not None:
                     _train_monitor = getattr(base_monitor, 'convergence_monitor', None)
                 if _train_monitor is not None and _inf_ee is not None:
                     _bridged = ae.bridge_training_errors_to_inference(
