@@ -16604,6 +16604,14 @@ class MetaCognitiveRecursionTrigger:
             # accumulated beyond the re-reasoning threshold after the
             # UCC had already evaluated.
             "post_output_uncertainty_trigger": "uncertainty",
+            # Provenance chain incomplete — the provenance chain
+            # validator detected modules that did not record
+            # provenance, indicating conclusions without full
+            # root-cause traceability.
+            "provenance_chain_incomplete": "coherence_deficit",
+            # Metacognitive gap — a gap in the metacognitive
+            # coverage was detected during self-diagnostic.
+            "metacognitive_gap": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17646,6 +17654,10 @@ class CausalErrorEvolutionTracker:
         # all expected pipeline modules, degrading root-cause attribution.
         # Maps to lambda_ucc so training strengthens pipeline traceability.
         "provenance_chain_incomplete": "lambda_ucc",
+        # Metacognitive gap — a gap in the metacognitive coverage was
+        # detected during self-diagnostic.  Maps to lambda_ucc so
+        # training adapts to persistent metacognitive blindspots.
+        "metacognitive_gap": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
