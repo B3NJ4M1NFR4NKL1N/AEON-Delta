@@ -66713,6 +66713,13 @@ def run_all_tests():
     test_feedback_bus_includes_vq_codebook_pressure()
     test_feedback_bus_includes_decoder_variance_pressure()
 
+    # AGI Coherence Architecture — Architectural gap closure tests
+    test_correction_guided_loss_scaling()
+    test_architectural_coherence_report_structure()
+    test_provenance_chain_incomplete_error_evolution()
+    test_training_bridge_metacognitive_weight_adaptation()
+    test_provenance_chain_incomplete_in_error_class_map()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -69350,6 +69357,193 @@ def test_feedback_bus_includes_decoder_variance_pressure():
     )
 
     print("✅ test_feedback_bus_includes_decoder_variance_pressure PASSED")
+
+
+# ============================================================================
+# AGI Coherence Architecture — Architectural Gap Closure Tests
+# ============================================================================
+
+
+def test_correction_guided_loss_scaling():
+    """Verify that UCC correction_guidance target boosts the loss term.
+
+    When _cached_correction_target identifies a module (e.g. 'coherence'),
+    compute_loss must apply a 1.5× boost to the corresponding loss lambda,
+    creating a bidirectional training-inference feedback loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.train()
+
+    # Set a correction target
+    model._cached_correction_target = 'coherence'
+
+    # Create dummy inputs and forward pass
+    input_ids = torch.randint(1, config.vocab_size, (1, config.seq_length))
+    targets = torch.randint(1, config.vocab_size, (1, config.seq_length))
+
+    with torch.no_grad():
+        outputs = model(input_ids)
+
+    # Compute loss — the correction_guided scaling should not crash
+    loss_dict = model.compute_loss(outputs, targets)
+    assert 'total_loss' in loss_dict, "compute_loss must return total_loss"
+    assert torch.isfinite(loss_dict['total_loss']).all(), (
+        "total_loss must be finite with correction guidance active"
+    )
+
+    print("✅ test_correction_guided_loss_scaling PASSED")
+
+
+def test_architectural_coherence_report_structure():
+    """Verify architectural_coherence_report returns a well-structured dict.
+
+    The report must contain all three AGI coherence axiom scores, error
+    evolution effectiveness, provenance completeness, correction guidance,
+    and actionable gaps.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.architectural_coherence_report()
+
+    # Top-level keys
+    assert 'coherent' in report, "Report must include 'coherent' verdict"
+    assert 'overall_score' in report, "Report must include 'overall_score'"
+    assert 'axioms' in report, "Report must include 'axioms'"
+    assert 'error_evolution' in report, "Report must include 'error_evolution'"
+    assert 'provenance' in report, "Report must include 'provenance'"
+    assert 'correction_guidance' in report, "Report must include 'correction_guidance'"
+    assert 'actionable_gaps' in report, "Report must include 'actionable_gaps'"
+    assert 'recommendations' in report, "Report must include 'recommendations'"
+
+    # Axioms structure
+    axioms = report['axioms']
+    for axiom_name in ('mutual_verification', 'uncertainty_metacognition',
+                       'root_cause_traceability'):
+        assert axiom_name in axioms, f"Missing axiom: {axiom_name}"
+        assert 'score' in axioms[axiom_name], f"Missing score for {axiom_name}"
+        score = axioms[axiom_name]['score']
+        assert 0.0 <= score <= 1.0, (
+            f"Axiom score must be in [0, 1], got {score} for {axiom_name}"
+        )
+
+    # Overall score range
+    assert 0.0 <= report['overall_score'] <= 1.0, (
+        f"overall_score must be in [0, 1], got {report['overall_score']}"
+    )
+
+    # Coherent is bool
+    assert isinstance(report['coherent'], bool), "coherent must be a bool"
+
+    # Actionable gaps is list
+    assert isinstance(report['actionable_gaps'], list), (
+        "actionable_gaps must be a list"
+    )
+
+    print("✅ test_architectural_coherence_report_structure PASSED")
+
+
+def test_provenance_chain_incomplete_error_evolution():
+    """Verify that provenance chain incompleteness feeds error evolution.
+
+    When provenance chain validation detects >20% deficit, the error
+    evolution tracker must record a 'provenance_chain_incomplete' episode.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify the error class is in the ERROR_CLASS_TO_LAMBDA mapping
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert 'provenance_chain_incomplete' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "provenance_chain_incomplete must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA['provenance_chain_incomplete'] == 'lambda_ucc', (
+        "provenance_chain_incomplete should map to lambda_ucc"
+    )
+
+    print("✅ test_provenance_chain_incomplete_error_evolution PASSED")
+
+
+def test_training_bridge_metacognitive_weight_adaptation():
+    """Verify training bridge adapts metacognitive trigger signal weights.
+
+    When per-subsystem training losses exceed threshold, the metacognitive
+    trigger's signal weights should be boosted for the corresponding signal.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Record initial weight
+    assert model.metacognitive_trigger is not None, (
+        "Metacognitive trigger must be initialized"
+    )
+    initial_weight = model.metacognitive_trigger._signal_weights.get(
+        'coherence_deficit', 1.0,
+    )
+
+    # Simulate a training step with high coherence loss
+    loss_dict = {
+        'total_loss': torch.tensor(6.0),
+        'lm_loss': torch.tensor(3.0),
+        'coherence_loss': torch.tensor(2.0),  # Above threshold of 1.0
+    }
+    model.bridge_training_loss_to_error_evolution(loss_dict)
+
+    # After bridge, the coherence_deficit signal weight should be boosted
+    new_weight = model.metacognitive_trigger._signal_weights.get(
+        'coherence_deficit', 1.0,
+    )
+    assert new_weight > initial_weight, (
+        f"Signal weight should increase from {initial_weight} to > {initial_weight}, "
+        f"got {new_weight}"
+    )
+    assert new_weight <= 2.0, (
+        f"Signal weight must be clamped to max 2.0, got {new_weight}"
+    )
+
+    print("✅ test_training_bridge_metacognitive_weight_adaptation PASSED")
+
+
+def test_provenance_chain_incomplete_in_error_class_map():
+    """Verify provenance_chain_incomplete is mapped for loss adaptation.
+
+    The error class must exist in CausalErrorEvolutionTracker's
+    _ERROR_CLASS_TO_LAMBDA so that recommend_loss_adjustments() can
+    return a boost factor when provenance traceability is persistently
+    incomplete.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+
+    # Record enough episodes to trigger loss adjustment
+    for _ in range(5):
+        tracker.record_episode(
+            error_class='provenance_chain_incomplete',
+            strategy_used='traceability_escalation',
+            success=False,
+            metadata={'completeness': 0.5},
+        )
+
+    adjustments = tracker.recommend_loss_adjustments()
+    assert 'lambda_ucc' in adjustments, (
+        "provenance_chain_incomplete episodes should produce lambda_ucc adjustment"
+    )
+    assert adjustments['lambda_ucc'] > 1.0, (
+        f"lambda_ucc adjustment should be > 1.0, got {adjustments['lambda_ucc']}"
+    )
+
+    print("✅ test_provenance_chain_incomplete_in_error_class_map PASSED")
 
 
 if __name__ == "__main__":

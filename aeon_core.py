@@ -17606,6 +17606,10 @@ class CausalErrorEvolutionTracker:
         # the UCC had already evaluated.  Maps to lambda_ucc so
         # training adapts to persistent late-stage uncertainty patterns.
         "post_output_uncertainty_trigger": "lambda_ucc",
+        # Provenance chain incomplete — the forward pass failed to trace
+        # all expected pipeline modules, degrading root-cause attribution.
+        # Maps to lambda_ucc so training strengthens pipeline traceability.
+        "provenance_chain_incomplete": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -36766,6 +36770,24 @@ class AEONDeltaV3(nn.Module):
                     "expected": _chain_validation['expected_count'],
                 },
             )
+            # Feed provenance chain incompleteness into the error evolution
+            # tracker so the metacognitive trigger sensitises to traceability
+            # gaps on future passes.  This closes the gap where incomplete
+            # provenance chains were logged but never influenced the meta-
+            # cognitive cycle, allowing unverifiable conclusions to pass
+            # without triggering deeper reasoning.
+            if self.error_evolution is not None:
+                _chain_deficit = 1.0 - _chain_validation['completeness_ratio']
+                if _chain_deficit > 0.2:
+                    self.error_evolution.record_episode(
+                        error_class='provenance_chain_incomplete',
+                        strategy_used='traceability_escalation',
+                        success=False,
+                        metadata={
+                            'completeness': _chain_validation['completeness_ratio'],
+                            'missing_count': len(_chain_validation.get('missing_modules', [])),
+                        },
+                    )
 
         # ===== PACKAGE RESULTS =====
         # Surface VQ codebook quality in the result dict so it is
@@ -37806,6 +37828,47 @@ class AEONDeltaV3(nn.Module):
         def _ee_boost(lambda_name: str) -> float:
             return _ee_adjustments.get(lambda_name, 1.0)
 
+        # ===== 16d. UCC CORRECTION-GUIDANCE LOSS SCALING =====
+        # When the UnifiedCognitiveCycle's correction_guidance identifies a
+        # specific target module as needing correction, boost the
+        # corresponding loss term so training applies targeted corrective
+        # pressure to the identified bottleneck.  This closes the gap
+        # where the UCC computed actionable correction targets (target
+        # module, reason, recommended strategy) but the loss function
+        # applied static weights, preventing training from acting on
+        # meta-cognitive diagnostic insights.
+        _correction_target = getattr(self, '_cached_correction_target', None)
+        if _correction_target is not None:
+            # Map correction target module names to their loss lambda names
+            _CORRECTION_TARGET_TO_LAMBDA: Dict[str, str] = {
+                'causal_model': 'lambda_causal_dag',
+                'causal_world_model': 'lambda_causal_dag',
+                'causal_programmatic': 'lambda_causal_dag',
+                'notears_causal': 'lambda_causal_dag',
+                'safety': 'lambda_safety',
+                'world_model': 'lambda_world_model_surprise',
+                'coherence': 'lambda_coherence',
+                'auto_critic': 'lambda_auto_critic',
+                'self_report': 'lambda_self_report',
+                'cross_validation': 'lambda_cross_validation',
+                'unified_cognitive_cycle': 'lambda_ucc',
+                'ns_consistency': 'lambda_ns_consistency',
+                'hierarchical_world_model': 'lambda_hierarchical_wm',
+                'unified_simulator': 'lambda_unified_sim',
+                'memory': 'lambda_memory_retrieval',
+                'convergence': 'lambda_self_consistency',
+                'topology': 'lambda_safety',
+            }
+            _correction_lambda = _CORRECTION_TARGET_TO_LAMBDA.get(
+                _correction_target,
+            )
+            if _correction_lambda is not None:
+                _CORRECTION_BOOST = 1.5
+                _existing = _ee_adjustments.get(_correction_lambda, 1.0)
+                _ee_adjustments[_correction_lambda] = max(
+                    _existing, _CORRECTION_BOOST,
+                )
+
         # ===== 19. CONVERGENCE ARBITER CONFLICT LOSS =====
         # When multiple convergence monitors disagree (certified vs primary),
         # penalize the conflict so training actively aligns convergence
@@ -38584,6 +38647,35 @@ class AEONDeltaV3(nn.Module):
                             'total_loss': _total_val,
                         },
                     )
+
+        # Per-subsystem loss → metacognitive trigger weight adaptation —
+        # when specific subsystem losses are persistently elevated, adapt
+        # the metacognitive trigger's signal weights so that inference-time
+        # re-reasoning is proportionally more sensitive to the failing
+        # subsystem.  This closes the gap where training-time per-subsystem
+        # losses were recorded in error evolution but never directly
+        # influenced the metacognitive trigger's sensitivity, preventing
+        # the system from proactively deepening reasoning for the
+        # specific subsystem that training struggled with.
+        if self.metacognitive_trigger is not None:
+            _LOSS_TO_SIGNAL: Dict[str, str] = {
+                'coherence_loss': 'coherence_deficit',
+                'causal_dag_loss': 'low_causal_quality',
+                'ns_consistency_loss': 'coherence_deficit',
+            }
+            for _loss_key, _signal_name in _LOSS_TO_SIGNAL.items():
+                _sub_loss = loss_dict.get(_loss_key, None)
+                if _sub_loss is not None and torch.is_tensor(_sub_loss):
+                    _sub_val = (
+                        float(_sub_loss.detach().item())
+                        if torch.isfinite(_sub_loss) else 0.0
+                    )
+                    if _sub_val > _SUBSYSTEM_LOSS_THRESHOLD:
+                        _current_w = self.metacognitive_trigger._signal_weights.get(
+                            _signal_name, 1.0,
+                        )
+                        _boost = min(2.0, _current_w + 0.1)
+                        self.metacognitive_trigger._signal_weights[_signal_name] = _boost
 
     def count_parameters(self) -> int:
         """Total parameters."""
@@ -41855,6 +41947,143 @@ class AEONDeltaV3(nn.Module):
             'cognitive_unity': unity,
             'weakest_module': unity.get('weakest_module'),
             'recommendations': _recs,
+        }
+
+    def architectural_coherence_report(self) -> Dict[str, Any]:
+        """Produce a comprehensive architectural coherence report.
+
+        Synthesizes :meth:`get_architectural_health`,
+        :meth:`verify_pipeline_wiring`, error evolution effectiveness,
+        and provenance traceability into a single structured report that
+        answers whether AEON-Delta operates as a unified, self-reflective,
+        causally coherent cognitive system.
+
+        The report assesses the three AGI coherence axioms:
+
+        1. **Mutual verification** — each component verifies and
+           reinforces the others.
+        2. **Uncertainty → metacognition** — any uncertainty triggers
+           a meta-cognitive cycle.
+        3. **Root-cause traceability** — all conclusions can be traced
+           back to their root causes.
+
+        Returns:
+            Dict with:
+                - ``coherent``: bool — True when all axioms are met.
+                - ``overall_score``: float ∈ [0, 1] — composite health.
+                - ``axioms``: per-axiom assessment with scores and gaps.
+                - ``error_evolution``: effectiveness of learned recovery.
+                - ``provenance``: traceability completeness metrics.
+                - ``correction_guidance``: current UCC correction target.
+                - ``actionable_gaps``: list of gaps with remediation.
+        """
+        health = self.get_architectural_health()
+        _cu = health.get('cognitive_unity', {})
+        _mv = _cu.get('mutual_verification', {})
+        _um = _cu.get('uncertainty_metacognition', {})
+        _rc = _cu.get('root_cause_traceability', {})
+
+        # Error evolution effectiveness
+        _ee_effectiveness: Dict[str, Any] = {}
+        if self.error_evolution is not None:
+            _summary = self.error_evolution.get_error_summary()
+            _error_classes = _summary.get('error_classes', {})
+            _total = _summary.get('total_recorded', 0)
+            _healthy_classes = sum(
+                1 for v in _error_classes.values()
+                if v.get('success_rate', 0) >= 0.5
+            )
+            _ee_effectiveness = {
+                'total_episodes': _total,
+                'error_class_count': len(_error_classes),
+                'healthy_class_count': _healthy_classes,
+                'effectiveness': (
+                    _healthy_classes / max(len(_error_classes), 1)
+                ),
+            }
+
+        # Provenance completeness
+        _prov_completeness = self.provenance_tracker.get_trace_completeness_ratio()
+
+        # Current correction guidance
+        _correction_target = getattr(self, '_cached_correction_target', None)
+
+        # Actionable gaps
+        actionable_gaps: List[Dict[str, str]] = []
+        if _mv.get('coverage', 1.0) < 1.0:
+            _unverified = _mv.get('unverified_modules', [])
+            actionable_gaps.append({
+                'axiom': 'mutual_verification',
+                'gap': f'{len(_unverified)} module(s) lack cross-validation partners',
+                'remediation': (
+                    'Use AEONConfig.unified_cognitive_preset() to enable '
+                    'all subsystems, or enable specific modules: '
+                    + ', '.join(_unverified[:5])
+                ),
+            })
+        if _um.get('coverage', 1.0) < 1.0:
+            _uncov = _um.get('uncovered_signals', [])
+            actionable_gaps.append({
+                'axiom': 'uncertainty_metacognition',
+                'gap': f'{len(_uncov)} uncertainty signal(s) not wired to trigger',
+                'remediation': (
+                    'Add metacognitive trigger signal weights for: '
+                    + ', '.join(_uncov[:5])
+                ),
+            })
+        if _rc.get('coverage', 1.0) < 1.0:
+            _untraceable = _rc.get('untraceable_modules', [])
+            actionable_gaps.append({
+                'axiom': 'root_cause_traceability',
+                'gap': f'{len(_untraceable)} module(s) not in provenance DAG',
+                'remediation': (
+                    'Register provenance dependencies for: '
+                    + ', '.join(_untraceable[:5])
+                ),
+            })
+        if _correction_target is not None:
+            actionable_gaps.append({
+                'axiom': 'correction_guidance',
+                'gap': f'UCC identifies module "{_correction_target}" as needing correction',
+                'remediation': (
+                    'Loss scaling boosted 1.5× for the target module; '
+                    'monitor training convergence on this subsystem'
+                ),
+            })
+
+        _overall = health.get('overall_health_score', 0.0)
+        _coherent = health.get('healthy', False)
+
+        return {
+            'coherent': _coherent,
+            'overall_score': _overall,
+            'axioms': {
+                'mutual_verification': {
+                    'score': _mv.get('coverage', 0.0),
+                    'verified': _mv.get('verified_modules', 0),
+                    'total': _mv.get('active_modules', 0),
+                },
+                'uncertainty_metacognition': {
+                    'score': _um.get('coverage', 0.0),
+                    'covered': _um.get('covered_signals', 0),
+                    'total': _um.get('expected_signals', 0),
+                },
+                'root_cause_traceability': {
+                    'score': _rc.get('coverage', 0.0),
+                    'traceable': _rc.get('traceable_modules', 0),
+                    'total': _rc.get('active_modules', 0),
+                    'dag_acyclic': _rc.get('dag_acyclic', True),
+                },
+            },
+            'error_evolution': _ee_effectiveness,
+            'provenance': {
+                'chain_completeness': _prov_completeness,
+            },
+            'correction_guidance': {
+                'target_module': _correction_target,
+            },
+            'actionable_gaps': actionable_gaps,
+            'recommendations': health.get('recommendations', []),
         }
 
     def sync_from_training(
