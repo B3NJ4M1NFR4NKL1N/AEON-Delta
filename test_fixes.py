@@ -26349,7 +26349,7 @@ def test_temporal_knowledge_graph_config():
     config = AEONConfig(device_str='cpu')
     assert hasattr(config, 'enable_temporal_knowledge_graph')
     assert hasattr(config, 'temporal_knowledge_graph_capacity')
-    assert config.enable_temporal_knowledge_graph is False  # disabled by default
+    assert config.enable_temporal_knowledge_graph is True  # enabled by default for root-cause traceability
     assert config.temporal_knowledge_graph_capacity > 0
 
     print("✅ test_temporal_knowledge_graph_config PASSED")
@@ -26376,7 +26376,12 @@ def test_temporal_knowledge_graph_instantiation():
 
 
 def test_temporal_knowledge_graph_disabled_by_default():
-    """Verify TemporalKnowledgeGraph is None when not enabled."""
+    """Verify TemporalKnowledgeGraph is instantiated by default.
+
+    The TKG is now enabled by default to support persistent symbolic
+    facts and root-cause traceability across sessions.  It can still be
+    explicitly disabled.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -26387,7 +26392,23 @@ def test_temporal_knowledge_graph_disabled_by_default():
         device_str='cpu',
     )
     model = AEONDeltaV3(config)
-    assert model.temporal_knowledge_graph is None
+    assert model.temporal_knowledge_graph is not None, (
+        "TemporalKnowledgeGraph should be instantiated by default"
+    )
+
+    # Verify explicit disable still works
+    config_off = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, seq_length=16,
+        vq_embedding_dim=64, vq_num_embeddings=128,
+        enable_temporal_knowledge_graph=False,
+        enable_quantum_sim=False, enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model_off = AEONDeltaV3(config_off)
+    assert model_off.temporal_knowledge_graph is None, (
+        "TemporalKnowledgeGraph must be None when explicitly disabled"
+    )
 
     print("✅ test_temporal_knowledge_graph_disabled_by_default PASSED")
 
@@ -60919,11 +60940,23 @@ def test_memory_routing_auto_enabled_with_neurogenic():
 
 
 def test_memory_routing_not_enabled_without_memory():
-    """enable_memory_routing stays False when no memory subsystem is active."""
+    """enable_memory_routing defaults to True for unified coherence.
+
+    Memory routing is enabled by default so that the pipeline dependency
+    edge ('memory_routing', 'metacognitive_trigger') is always realized,
+    ensuring memory retrieval quality feeds into the meta-cognitive cycle
+    even before explicit memory subsystems are activated.  It can still
+    be explicitly disabled.
+    """
     from aeon_core import AEONConfig
     config = AEONConfig()
-    assert config.enable_memory_routing is False, (
-        "memory_routing must stay disabled when no memory is active"
+    assert config.enable_memory_routing is True, (
+        "memory_routing must default to True for unified coherence"
+    )
+    # Verify explicit disable still works
+    config_off = AEONConfig(enable_memory_routing=False)
+    assert config_off.enable_memory_routing is False, (
+        "memory_routing must be explicitly disableable"
     )
     print("✅ test_memory_routing_not_enabled_without_memory PASSED")
 
@@ -60941,12 +60974,22 @@ def test_counterfactual_auto_enabled_with_simulator():
 
 
 def test_counterfactual_not_enabled_without_simulator():
-    """enable_counterfactual_verification stays False when unified_simulator
-    is not active."""
+    """enable_counterfactual_verification defaults to True for unified coherence.
+
+    Counterfactual verification is enabled by default so that causal
+    reasoning conclusions are always validated when a causal simulator
+    is available, ensuring each component verifies and reinforces the
+    others.  It can still be explicitly disabled.
+    """
     from aeon_core import AEONConfig
     config = AEONConfig()
-    assert config.enable_counterfactual_verification is False, (
-        "counterfactual_verification must stay disabled without simulator"
+    assert config.enable_counterfactual_verification is True, (
+        "counterfactual_verification must default to True for unified coherence"
+    )
+    # Verify explicit disable still works
+    config_off = AEONConfig(enable_counterfactual_verification=False)
+    assert config_off.enable_counterfactual_verification is False, (
+        "counterfactual_verification must be explicitly disableable"
     )
     print("✅ test_counterfactual_not_enabled_without_simulator PASSED")
 

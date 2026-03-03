@@ -3198,7 +3198,7 @@ class AEONConfig:
     # ===== NEURO-SYMBOLIC BRIDGE (standalone) =====
     enable_standalone_ns_bridge: bool = False
     standalone_ns_bridge_blend: float = 0.1
-    enable_temporal_knowledge_graph: bool = False
+    enable_temporal_knowledge_graph: bool = True
     temporal_knowledge_graph_capacity: int = 500
     tkg_retrieval_blend: float = 0.05
     tkg_retrieval_top_k: int = 5
@@ -3305,7 +3305,7 @@ class AEONConfig:
     # that selects the most relevant subsystems and gates results through
     # trust scoring, closing the gap where 7 memory subsystems exist but
     # no unified routing policy decides which to query.
-    enable_memory_routing: bool = False
+    enable_memory_routing: bool = True
     memory_routing_trust_threshold: float = 0.5
     memory_routing_top_k: int = 3
 
@@ -3313,7 +3313,7 @@ class AEONConfig:
     # When True, forward-pass conclusions are verified against the
     # UnifiedCausalSimulator's counterfactual predictions, closing the
     # gap where causal reasoning ran in parallel without feedback.
-    enable_counterfactual_verification: bool = False
+    enable_counterfactual_verification: bool = True
     counterfactual_divergence_threshold: float = 0.5
     counterfactual_attenuation_strength: float = 0.1
 
@@ -36750,6 +36750,29 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            # Proactive re-reasoning: run an additional meta-loop pass
+            # when the post-output uncertainty gate fires.  This closes
+            # the gap where late-stage uncertainty was recorded but never
+            # triggered actual corrective computation, violating the
+            # requirement that ANY uncertainty triggers a meta-cognitive
+            # cycle.  The deeper meta-loop refines the converged state
+            # and the corrected output replaces the decoder input.
+            if not fast and self.meta_loop is not None:
+                try:
+                    _late_rerun_z = self.meta_loop(
+                        z_out,
+                        feedback=getattr(self, '_cached_feedback', None),
+                    )
+                    if isinstance(_late_rerun_z, tuple):
+                        _late_rerun_z = _late_rerun_z[0]
+                    if torch.isfinite(_late_rerun_z).all():
+                        z_out = _late_rerun_z
+                        outputs['late_metacognitive_rerun'] = True
+                except Exception as _late_err:
+                    logger.debug(
+                        "Post-output meta-loop re-run failed: %s",
+                        _late_err,
+                    )
 
         # ===== PROVENANCE CHAIN VALIDATION =====
         # Validate that all expected pipeline modules have been traced in
@@ -42086,6 +42109,118 @@ class AEONDeltaV3(nn.Module):
             'recommendations': health.get('recommendations', []),
         }
 
+    def verify_and_reinforce(self) -> Dict[str, Any]:
+        """Orchestrate a cross-module verification cycle with feedback.
+
+        Runs :meth:`architectural_coherence_report` and then *feeds the
+        results back* into the system's error-evolution tracker and
+        metacognitive trigger so that identified weaknesses drive
+        concrete corrective action in subsequent forward passes.
+
+        This closes the gap where ``architectural_coherence_report()``
+        is a read-only diagnostic: now, each identified weakness
+        triggers an error-evolution episode and adjusts metacognitive
+        sensitivity, ensuring every component verifies and reinforces
+        the others.
+
+        Returns:
+            Dict with the full coherence report augmented by a
+            ``reinforcement_actions`` list describing what corrective
+            feedback was applied.
+        """
+        report = self.architectural_coherence_report()
+        reinforcement_actions: List[str] = []
+
+        axioms = report.get('axioms', {})
+
+        # --- Feed low mutual-verification into error evolution ---
+        mv_score = axioms.get('mutual_verification', {}).get('score', 1.0)
+        if mv_score < 0.8 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='coherence_deficit',
+                strategy_used='verify_and_reinforce_mutual',
+                success=mv_score >= 0.5,
+                metadata={'mutual_verification_score': mv_score},
+            )
+            reinforcement_actions.append(
+                f'Recorded coherence_deficit episode (mv_score={mv_score:.2f})'
+            )
+
+        # --- Feed low uncertainty→metacognition into error evolution ---
+        um_score = axioms.get('uncertainty_metacognition', {}).get('score', 1.0)
+        if um_score < 0.8 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='metacognitive_gap',
+                strategy_used='verify_and_reinforce_uncertainty',
+                success=um_score >= 0.5,
+                metadata={'uncertainty_metacognition_score': um_score},
+            )
+            reinforcement_actions.append(
+                f'Recorded metacognitive_gap episode (um_score={um_score:.2f})'
+            )
+
+        # --- Feed low traceability into error evolution ---
+        rc_score = axioms.get('root_cause_traceability', {}).get('score', 1.0)
+        if rc_score < 0.8 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='provenance_chain_incomplete',
+                strategy_used='verify_and_reinforce_traceability',
+                success=rc_score >= 0.5,
+                metadata={'root_cause_traceability_score': rc_score},
+            )
+            reinforcement_actions.append(
+                f'Recorded provenance_chain_incomplete episode '
+                f'(rc_score={rc_score:.2f})'
+            )
+
+        # --- Boost metacognitive trigger sensitivity for low-scoring
+        # axioms so subsequent forward passes are more responsive ---
+        if self.metacognitive_trigger is not None:
+            _weights = getattr(
+                self.metacognitive_trigger, '_signal_weights', {},
+            )
+            if mv_score < 0.6:
+                _weights['coherence_deficit'] = min(
+                    _weights.get('coherence_deficit', 1.0) * 1.2, 2.0,
+                )
+                reinforcement_actions.append(
+                    'Boosted metacognitive coherence_deficit weight'
+                )
+            if um_score < 0.6:
+                _weights['uncertainty'] = min(
+                    _weights.get('uncertainty', 1.0) * 1.2, 2.0,
+                )
+                reinforcement_actions.append(
+                    'Boosted metacognitive uncertainty weight'
+                )
+
+        # --- Store overall coherence as the correction target when
+        # the system is incoherent, guiding compute_loss scaling ---
+        if not report.get('coherent', True):
+            # Identify the weakest axiom for targeted correction.
+            weakest_axiom = min(
+                axioms.items(),
+                key=lambda x: x[1].get('score', 1.0),
+                default=('coherence', {}),
+            )
+            weakest_name = weakest_axiom[0]
+            _target_map = {
+                'mutual_verification': 'coherence',
+                'uncertainty_metacognition': 'metacognitive',
+                'root_cause_traceability': 'provenance',
+            }
+            self._cached_correction_target = _target_map.get(
+                weakest_name, 'coherence',
+            )
+            reinforcement_actions.append(
+                f'Set correction target to '
+                f'{self._cached_correction_target} '
+                f'(weakest axiom: {weakest_name})'
+            )
+
+        report['reinforcement_actions'] = reinforcement_actions
+        return report
+
     def sync_from_training(
         self,
         trainer_monitor: Any = None,
@@ -42205,6 +42340,35 @@ class AEONDeltaV3(nn.Module):
                     "sync_from_training: convergence adjustment "
                     "failed: %s", e,
                 )
+
+        # 4. Import cognitive memory snapshots for cross-session
+        #    continuity.  When a memory snapshot directory is available,
+        #    the CognitiveSnapshotManager restores hierarchical, temporal,
+        #    neurogenic, and consolidating memory states so the inference
+        #    pipeline retains learned reasoning patterns from prior
+        #    training sessions.
+        if self.cognitive_snapshot_manager is not None:
+            _default_snap_dir = Path("aeon_state") / "memory_snapshots"
+            if _default_snap_dir.exists():
+                try:
+                    _mem_results = (
+                        self.cognitive_snapshot_manager.import_memory_snapshot(
+                            self, _default_snap_dir,
+                        )
+                    )
+                    _imported = sum(1 for v in _mem_results.values() if v)
+                    result['memory_snapshots_imported'] = _imported
+                    if _imported > 0:
+                        logger.info(
+                            "sync_from_training: imported %d memory "
+                            "snapshot(s) from %s",
+                            _imported, _default_snap_dir,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "sync_from_training: memory snapshot import "
+                        "failed: %s", e,
+                    )
 
         return result
 
