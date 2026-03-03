@@ -33,6 +33,7 @@ _ARCH_NODES = [
     'meta_loop', 'certified_meta_loop', 'convergence_arbiter', 'slot_binding',
     'factor_extraction', 'topology_analysis', 'diversity_analysis',
     'complexity_estimator', 'consistency_gate', 'cross_validation',
+    'cross_validation_correction',
     'self_report', 'deception_suppressor', 'safety', 'cognitive_executive',
     'deeper_meta_loop',
     'world_model', 'hierarchical_world_model', 'causal_world_model',
@@ -47,6 +48,8 @@ _ARCH_NODES = [
     'error_evolution', 'unified_cognitive_cycle', 'decoder',
     'memory_routing', 'counterfactual_verification',
     'subsystem_health_gate',
+    'feedback_bus', 'cycle_consistency', 'output_reliability_gate',
+    'ucc_rerun_meta_loop', 'post_output_uncertainty_gate',
 ]
 
 # Keyword-to-node mapping for automatic test classification
@@ -141,6 +144,16 @@ _KEYWORD_NODE_MAP = {
     'tensor_hash': 'safety',
     'subsystem_health_gate': 'subsystem_health_gate',
     'health_gate': 'subsystem_health_gate',
+    'feedback_bus': 'feedback_bus',
+    'cycle_consistency': 'cycle_consistency',
+    'output_reliability_gate': 'output_reliability_gate',
+    'ucc_rerun': 'ucc_rerun_meta_loop',
+    'post_output_uncertainty': 'post_output_uncertainty_gate',
+    'cross_validation_correction': 'cross_validation_correction',
+    'config_round_trip': 'integration',
+    'to_core_config': 'integration',
+    'training_readiness': 'integration',
+    'export_provenance': 'integration',
 }
 
 
@@ -67001,6 +67014,12 @@ def run_all_tests():
     test_cognitive_unity_provenance_to_signal_mapping()
     test_cognitive_unity_components_in_output()
 
+    # Config Round-Trip & Training Readiness
+    test_config_round_trip_to_core_config()
+    test_config_round_trip_bidirectional()
+    test_export_provenance_for_checkpoint()
+    test_check_training_readiness()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -70512,6 +70531,105 @@ def test_cognitive_unity_components_in_output():
     )
 
     print("✅ test_cognitive_unity_components_in_output PASSED")
+
+
+# ============================================================================
+# Config Round-Trip & Training Readiness Tests
+# ============================================================================
+
+def test_config_round_trip_to_core_config():
+    """AEONConfigV4.to_core_config() produces an AEONConfig with matching params."""
+    from ae_train import AEONConfigV4
+    from aeon_core import AEONConfig
+
+    v4 = AEONConfigV4(
+        z_dim=128, hidden_dim=128, vocab_size=5000, seq_length=32,
+        vq_embedding_dim=128,
+    )
+    core = v4.to_core_config(device_str='cpu')
+    assert isinstance(core, AEONConfig), "to_core_config must return AEONConfig"
+    assert core.z_dim == 128, f"z_dim mismatch: {core.z_dim}"
+    assert core.hidden_dim == 128, f"hidden_dim mismatch: {core.hidden_dim}"
+    assert core.vocab_size == 5000, f"vocab_size mismatch: {core.vocab_size}"
+    assert core.seq_length == 32, f"seq_length mismatch: {core.seq_length}"
+    print("✅ test_config_round_trip_to_core_config PASSED")
+
+
+def test_config_round_trip_bidirectional():
+    """AEONConfig → AEONConfigV4 → AEONConfig preserves shared parameters."""
+    from aeon_core import AEONConfig
+    from ae_train import AEONConfigV4
+
+    original = AEONConfig(
+        z_dim=192, hidden_dim=192, vocab_size=8000,
+        vq_embedding_dim=192, device_str='cpu',
+    )
+    v4 = AEONConfigV4.from_core_config(original)
+    restored = v4.to_core_config(device_str='cpu')
+
+    assert restored.z_dim == original.z_dim, (
+        f"z_dim not preserved: {original.z_dim} → {restored.z_dim}"
+    )
+    assert restored.hidden_dim == original.hidden_dim, (
+        f"hidden_dim not preserved: {original.hidden_dim} → {restored.hidden_dim}"
+    )
+    assert restored.vocab_size == original.vocab_size, (
+        f"vocab_size not preserved: {original.vocab_size} → {restored.vocab_size}"
+    )
+    print("✅ test_config_round_trip_bidirectional PASSED")
+
+
+def test_export_provenance_for_checkpoint():
+    """AEONDeltaV4.export_provenance_for_checkpoint() returns serialisable data."""
+    from ae_train import AEONConfigV4, AEONDeltaV4
+
+    config = AEONConfigV4(
+        z_dim=64, hidden_dim=64, vocab_size=1000, seq_length=8,
+        vq_embedding_dim=64,
+    )
+    model = AEONDeltaV4(config)
+    model.eval()
+
+    # Run a forward pass to populate provenance
+    with torch.no_grad():
+        ids = torch.randint(1, 1000, (1, 8))
+        model(ids)
+
+    result = model.export_provenance_for_checkpoint()
+    assert 'provenance_attribution' in result, "Missing provenance_attribution"
+    assert 'dependency_graph' in result, "Missing dependency_graph"
+    assert 'dag_validation' in result, "Missing dag_validation"
+    assert 'tensor_safety' in result, "Missing tensor_safety"
+    assert result['source_model'] == 'AEONDeltaV4', "Wrong source_model"
+
+    # Verify it's JSON-serialisable (no sets, tensors, etc.)
+    import json
+    json.dumps(result)  # Should not raise
+
+    print("✅ test_export_provenance_for_checkpoint PASSED")
+
+
+def test_check_training_readiness():
+    """AEONDeltaV4.check_training_readiness() validates model coherence."""
+    from ae_train import AEONConfigV4, AEONDeltaV4
+
+    config = AEONConfigV4(
+        z_dim=64, hidden_dim=64, vocab_size=1000, seq_length=8,
+        vq_embedding_dim=64,
+    )
+    model = AEONDeltaV4(config)
+
+    result = model.check_training_readiness()
+    assert 'ready' in result, "Missing 'ready' key"
+    assert 'checks' in result, "Missing 'checks' key"
+    assert 'errors' in result, "Missing 'errors' key"
+    assert result['ready'] is True, (
+        f"Model should be ready but errors: {result['errors']}"
+    )
+    assert len(result['checks']) >= 3, (
+        f"Expected at least 3 checks, got {len(result['checks'])}"
+    )
+    print("✅ test_check_training_readiness PASSED")
 
 
 if __name__ == "__main__":
