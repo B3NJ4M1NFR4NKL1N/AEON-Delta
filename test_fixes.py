@@ -43587,6 +43587,45 @@ def test_compute_loss_includes_convergence_residual_loss():
     print("✅ test_compute_loss_includes_convergence_residual_loss PASSED")
 
 
+def test_compute_loss_includes_subsystem_health_loss():
+    """Verify that compute_loss includes subsystem_health_loss reflecting
+    the SubsystemHealthGate's attenuation magnitude.  This closes the gap
+    where the health gate attenuated unreliable outputs at runtime but
+    generated no training gradient.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, L = 2, 16
+    input_ids = torch.randint(1, 1000, (B, L))
+    outputs = model(input_ids)
+    loss_dict = model.compute_loss(outputs, input_ids)
+
+    assert "subsystem_health_loss" in loss_dict, (
+        f"compute_loss should return 'subsystem_health_loss' but keys are: "
+        f"{list(loss_dict.keys())}"
+    )
+    sh_loss = loss_dict["subsystem_health_loss"]
+    assert torch.is_tensor(sh_loss) and torch.isfinite(sh_loss), (
+        f"subsystem_health_loss should be a finite tensor, got {sh_loss}"
+    )
+
+    # Verify lambda_subsystem_health config parameter exists
+    assert hasattr(config, 'lambda_subsystem_health'), (
+        "AEONConfig must have lambda_subsystem_health attribute"
+    )
+    assert config.lambda_subsystem_health > 0.0, (
+        "lambda_subsystem_health must be positive"
+    )
+
+    print("✅ test_compute_loss_includes_subsystem_health_loss PASSED")
+
+
 def test_decoder_provenance_tracking():
     """Verify that the decoder transform is registered with the provenance
     tracker, enabling root-cause tracing through the decode stage.
@@ -66571,6 +66610,7 @@ def run_all_tests():
     test_cv_disagreement_init_defaults()
     test_compute_loss_includes_world_model_surprise_loss()
     test_compute_loss_includes_convergence_residual_loss()
+    test_compute_loss_includes_subsystem_health_loss()
     test_decoder_provenance_tracking()
     test_decoder_in_pipeline_dependencies_dag()
     test_convergence_arbiter_coherence_cross_reference()
