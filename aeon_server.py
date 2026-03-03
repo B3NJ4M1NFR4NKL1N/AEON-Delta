@@ -638,6 +638,25 @@ async def get_architectural_health():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/coherence_report")
+async def get_coherence_report():
+    """Return a comprehensive architectural coherence report.
+
+    Synthesizes cognitive unity, pipeline wiring, error evolution
+    effectiveness, provenance traceability, and UCC correction guidance
+    into a single structured report that assesses whether AEON-Delta
+    operates as a unified, self-reflective, causally coherent system.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.architectural_coherence_report()
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"coherence_report error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
