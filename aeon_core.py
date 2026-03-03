@@ -37806,6 +37806,47 @@ class AEONDeltaV3(nn.Module):
         def _ee_boost(lambda_name: str) -> float:
             return _ee_adjustments.get(lambda_name, 1.0)
 
+        # ===== 16d. UCC CORRECTION-GUIDANCE LOSS SCALING =====
+        # When the UnifiedCognitiveCycle's correction_guidance identifies a
+        # specific target module as needing correction, boost the
+        # corresponding loss term so training applies targeted corrective
+        # pressure to the identified bottleneck.  This closes the gap
+        # where the UCC computed actionable correction targets (target
+        # module, reason, recommended strategy) but the loss function
+        # applied static weights, preventing training from acting on
+        # meta-cognitive diagnostic insights.
+        _correction_target = getattr(self, '_cached_correction_target', None)
+        if _correction_target is not None:
+            # Map correction target module names to their loss lambda names
+            _CORRECTION_TARGET_TO_LAMBDA: Dict[str, str] = {
+                'causal_model': 'lambda_causal_dag',
+                'causal_world_model': 'lambda_causal_dag',
+                'causal_programmatic': 'lambda_causal_dag',
+                'notears_causal': 'lambda_causal_dag',
+                'safety': 'lambda_safety',
+                'world_model': 'lambda_world_model_surprise',
+                'coherence': 'lambda_coherence',
+                'auto_critic': 'lambda_auto_critic',
+                'self_report': 'lambda_self_report',
+                'cross_validation': 'lambda_cross_validation',
+                'unified_cognitive_cycle': 'lambda_ucc',
+                'ns_consistency': 'lambda_ns_consistency',
+                'hierarchical_world_model': 'lambda_hierarchical_wm',
+                'unified_simulator': 'lambda_unified_sim',
+                'memory': 'lambda_memory_retrieval',
+                'convergence': 'lambda_self_consistency',
+                'topology': 'lambda_safety',
+            }
+            _correction_lambda = _CORRECTION_TARGET_TO_LAMBDA.get(
+                _correction_target,
+            )
+            if _correction_lambda is not None:
+                _CORRECTION_BOOST = 1.5
+                _existing = _ee_adjustments.get(_correction_lambda, 1.0)
+                _ee_adjustments[_correction_lambda] = max(
+                    _existing, _CORRECTION_BOOST,
+                )
+
         # ===== 19. CONVERGENCE ARBITER CONFLICT LOSS =====
         # When multiple convergence monitors disagree (certified vs primary),
         # penalize the conflict so training actively aligns convergence
