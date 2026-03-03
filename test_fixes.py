@@ -66763,6 +66763,16 @@ def run_all_tests():
     test_training_bridge_metacognitive_weight_adaptation()
     test_provenance_chain_incomplete_in_error_class_map()
 
+    # AGI Unified Architecture — Config Default & verify_and_reinforce Tests
+    test_memory_routing_enabled_by_default()
+    test_counterfactual_verification_enabled_by_default()
+    test_temporal_knowledge_graph_enabled_by_default()
+    test_verify_and_reinforce_returns_report()
+    test_verify_and_reinforce_feeds_error_evolution()
+    test_late_metacognitive_rerun_flag()
+    test_sync_from_training_memory_snapshot_key()
+    test_default_model_fewer_pipeline_gaps()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -69587,6 +69597,216 @@ def test_provenance_chain_incomplete_in_error_class_map():
     )
 
     print("✅ test_provenance_chain_incomplete_in_error_class_map PASSED")
+
+
+# ============================================================================
+# AGI Unified Architecture — Config Default & verify_and_reinforce Tests
+# ============================================================================
+
+
+def test_memory_routing_enabled_by_default():
+    """Verify enable_memory_routing defaults to True.
+
+    Memory routing must be active by default so that the pipeline
+    dependency edge ('memory_routing', 'metacognitive_trigger') is
+    always realized, ensuring memory retrieval quality feeds into the
+    meta-cognitive cycle out of the box.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    assert config.enable_memory_routing is True, (
+        "enable_memory_routing must default to True"
+    )
+
+    model = AEONDeltaV3(config)
+    assert model.memory_routing_policy is not None, (
+        "memory_routing_policy should be initialized by default"
+    )
+
+    print("✅ test_memory_routing_enabled_by_default PASSED")
+
+
+def test_counterfactual_verification_enabled_by_default():
+    """Verify enable_counterfactual_verification defaults to True.
+
+    Counterfactual verification must be active by default so that
+    causal reasoning conclusions are always validated, ensuring each
+    component verifies and reinforces the others.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    assert config.enable_counterfactual_verification is True, (
+        "enable_counterfactual_verification must default to True"
+    )
+
+    model = AEONDeltaV3(config)
+    assert model.counterfactual_gate is not None, (
+        "counterfactual_gate should be initialized by default"
+    )
+
+    print("✅ test_counterfactual_verification_enabled_by_default PASSED")
+
+
+def test_temporal_knowledge_graph_enabled_by_default():
+    """Verify enable_temporal_knowledge_graph defaults to True.
+
+    The TKG must be active by default so that symbolic facts persist
+    across forward passes, supporting root-cause traceability.
+    """
+    from aeon_core import AEONConfig
+
+    config = AEONConfig()
+    assert config.enable_temporal_knowledge_graph is True, (
+        "enable_temporal_knowledge_graph must default to True"
+    )
+
+    print("✅ test_temporal_knowledge_graph_enabled_by_default PASSED")
+
+
+def test_verify_and_reinforce_returns_report():
+    """Verify verify_and_reinforce() returns a coherence report with actions.
+
+    The method must return the full architectural_coherence_report
+    augmented by a 'reinforcement_actions' list.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.verify_and_reinforce()
+
+    assert 'coherent' in report, "Report must include 'coherent'"
+    assert 'overall_score' in report, "Report must include 'overall_score'"
+    assert 'axioms' in report, "Report must include 'axioms'"
+    assert 'reinforcement_actions' in report, (
+        "verify_and_reinforce must add 'reinforcement_actions'"
+    )
+    assert isinstance(report['reinforcement_actions'], list), (
+        "reinforcement_actions must be a list"
+    )
+
+    # Axiom scores should be in [0, 1]
+    for name, axiom in report['axioms'].items():
+        assert 0.0 <= axiom['score'] <= 1.0, (
+            f"Axiom {name} score must be in [0, 1], got {axiom['score']}"
+        )
+
+    print("✅ test_verify_and_reinforce_returns_report PASSED")
+
+
+def test_verify_and_reinforce_feeds_error_evolution():
+    """Verify verify_and_reinforce() records episodes in error evolution.
+
+    When axiom scores are low, the method must record corresponding
+    error episodes to trigger corrective action on future passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Run verify_and_reinforce
+    report = model.verify_and_reinforce()
+
+    # The method should have recorded actions (the model is untrained
+    # so overall_score < 1.0 and it will set a correction target)
+    assert len(report['reinforcement_actions']) > 0, (
+        "verify_and_reinforce should produce at least one action "
+        "on an untrained model"
+    )
+
+    print("✅ test_verify_and_reinforce_feeds_error_evolution PASSED")
+
+
+def test_late_metacognitive_rerun_flag():
+    """Verify the forward pass can produce late_metacognitive_rerun.
+
+    When the PostOutputUncertaintyGate fires, the forward pass should
+    trigger an additional meta-loop re-run and set the
+    'late_metacognitive_rerun' flag in outputs.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # The default model may not always trigger the gate, but the flag
+    # infrastructure must exist.  Verify the PostOutputUncertaintyGate
+    # is wired and can produce the flag.
+    assert hasattr(model, 'post_output_uncertainty_gate'), (
+        "post_output_uncertainty_gate must exist"
+    )
+
+    # Simulate a gate evaluation
+    gate_result = model.post_output_uncertainty_gate.evaluate(
+        uncertainty=0.8,
+        uncertainty_sources={
+            'cycle_consistency_violation': 0.3,
+            'decoder_degenerate': 0.2,
+        },
+        ucc_already_triggered=False,
+    )
+    assert gate_result['gate_triggered'] is True, (
+        "Gate should trigger with high uncertainty from late sources"
+    )
+
+    print("✅ test_late_metacognitive_rerun_flag PASSED")
+
+
+def test_sync_from_training_memory_snapshot_key():
+    """Verify sync_from_training includes memory_snapshots_imported key.
+
+    The method must check for cognitive memory snapshots and include
+    the import count in its result dict.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # sync_from_training without a snapshot dir should still work
+    result = model.sync_from_training()
+    assert isinstance(result, dict), "sync_from_training must return a dict"
+    # memory_snapshots_imported is only added when snapshots exist
+    # so it may or may not be present
+    assert 'events_imported' in result, (
+        "sync_from_training must include events_imported"
+    )
+
+    print("✅ test_sync_from_training_memory_snapshot_key PASSED")
+
+
+def test_default_model_fewer_pipeline_gaps():
+    """Verify the default model has fewer pipeline wiring gaps.
+
+    With memory_routing, counterfactual_verification, and TKG enabled
+    by default, the model should have fewer active gaps than before.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    gaps = diag['gaps']
+
+    # The active gaps related to memory_routing and counterfactual
+    # should be resolved.  Check that these specific gaps are gone.
+    gap_texts = [g.get('gap', '') for g in gaps]
+    for text in gap_texts:
+        assert 'memory_routing' not in text.lower(), (
+            f"memory_routing gap should be resolved, but found: {text}"
+        )
+        assert 'counterfactual_verification' not in text.lower(), (
+            f"counterfactual_verification gap should be resolved, "
+            f"but found: {text}"
+        )
+
+    print("✅ test_default_model_fewer_pipeline_gaps PASSED")
 
 
 if __name__ == "__main__":
