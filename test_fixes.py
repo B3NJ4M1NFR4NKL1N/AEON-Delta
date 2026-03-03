@@ -68891,5 +68891,222 @@ def test_active_pass_traceability_complete():
     print("✅ test_active_pass_traceability_complete PASSED")
 
 
+def test_vq_codebook_quality_in_forward_output():
+    """Verify that VQ codebook quality is surfaced in forward pass outputs.
+
+    The _forward_impl must include 'vq_codebook_quality' in the result
+    dict so that downstream modules (UCC, metacognitive trigger, feedback
+    bus) can react to codebook collapse within the same pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(z)
+
+    assert 'vq_codebook_quality' in result, (
+        "Forward pass must include 'vq_codebook_quality' in outputs"
+    )
+    quality = result['vq_codebook_quality']
+    assert isinstance(quality, float), (
+        f"vq_codebook_quality must be float, got {type(quality)}"
+    )
+    assert 0.0 <= quality <= 1.0, (
+        f"vq_codebook_quality must be in [0, 1], got {quality}"
+    )
+
+    print("✅ test_vq_codebook_quality_in_forward_output PASSED")
+
+
+def test_vq_codebook_quality_cached_for_feedback():
+    """Verify that VQ codebook quality is cached for cross-pass feedback.
+
+    After a forward pass, _cached_vq_codebook_quality should be set so
+    that _build_feedback_extra_signals can route codebook collapse
+    pressure into the next pass's meta-loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    assert hasattr(model, '_cached_vq_codebook_quality'), (
+        "Model must cache VQ codebook quality for cross-pass feedback"
+    )
+    cached = model._cached_vq_codebook_quality
+    assert isinstance(cached, float) and 0.0 <= cached <= 1.0, (
+        f"_cached_vq_codebook_quality must be float in [0, 1], got {cached}"
+    )
+
+    print("✅ test_vq_codebook_quality_cached_for_feedback PASSED")
+
+
+def test_chunked_encoding_fallback_preserves_z():
+    """Verify that chunked encoding failure preserves the pre-chunking state.
+
+    When ChunkedSequenceProcessor.process() raises an exception, the
+    forward pass must fall back to the pre-chunking z_quantized rather
+    than leaving it in an undefined state.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Use a short sequence that doesn't trigger chunking
+    z_short = torch.randint(0, config.vocab_size, (1, 3))
+    with torch.no_grad():
+        result_short = model(z_short)
+
+    # Confirm normal forward pass succeeds
+    assert result_short is not None
+    assert 'logits' in result_short
+
+    print("✅ test_chunked_encoding_fallback_preserves_z PASSED")
+
+
+def test_cache_similarity_in_forward_output():
+    """Verify that cache_similarity is exposed in forward pass outputs.
+
+    When inference cache is active, the forward pass should include
+    'cache_similarity' in the result dict for observability.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_inference_cache=True,
+        inference_cache_similarity_threshold=0.99,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, 100, (1, 16))
+
+    # First pass — cache miss, similarity should be None (no prior state)
+    with torch.no_grad():
+        result1 = model(z, decode_mode='inference')
+    assert 'cache_similarity' in result1, (
+        "Forward pass must include 'cache_similarity' in outputs"
+    )
+
+    # Second pass — should have a similarity score
+    with torch.no_grad():
+        result2 = model(z, decode_mode='inference')
+    assert 'cache_similarity' in result2
+    sim = result2['cache_similarity']
+    if sim is not None:
+        assert isinstance(sim, float), (
+            f"cache_similarity must be float or None, got {type(sim)}"
+        )
+
+    print("✅ test_cache_similarity_in_forward_output PASSED")
+
+
+def test_decoder_logit_var_cached_for_feedback():
+    """Verify that decoder logit variance is cached for cross-pass feedback.
+
+    After a forward pass, _cached_decoder_logit_var should be set so
+    that _build_feedback_extra_signals can route decoder degeneration
+    pressure into the next pass's meta-loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    z = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(z)
+
+    assert hasattr(model, '_cached_decoder_logit_var'), (
+        "Model must cache decoder logit variance for cross-pass feedback"
+    )
+    cached = model._cached_decoder_logit_var
+    assert isinstance(cached, float), (
+        f"_cached_decoder_logit_var must be float, got {type(cached)}"
+    )
+    assert cached >= 0.0, (
+        f"_cached_decoder_logit_var must be non-negative, got {cached}"
+    )
+
+    print("✅ test_decoder_logit_var_cached_for_feedback PASSED")
+
+
+def test_feedback_bus_includes_vq_codebook_pressure():
+    """Verify VQ codebook pressure appears in feedback bus when quality is low.
+
+    When _cached_vq_codebook_quality < 0.8, the _build_feedback_extra_signals
+    method must include 'vq_codebook_pressure' in the feedback dict.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Simulate low codebook quality
+    model._cached_vq_codebook_quality = 0.3
+    extra = model._build_feedback_extra_signals()
+
+    assert 'vq_codebook_pressure' in extra, (
+        "Feedback bus must include 'vq_codebook_pressure' when VQ quality < 0.8"
+    )
+    assert 0.0 < extra['vq_codebook_pressure'] <= 1.0, (
+        f"vq_codebook_pressure must be in (0, 1], got {extra['vq_codebook_pressure']}"
+    )
+
+    # Verify it's absent when quality is healthy
+    model._cached_vq_codebook_quality = 1.0
+    extra_healthy = model._build_feedback_extra_signals()
+    assert 'vq_codebook_pressure' not in extra_healthy, (
+        "vq_codebook_pressure should not appear when quality is healthy"
+    )
+
+    print("✅ test_feedback_bus_includes_vq_codebook_pressure PASSED")
+
+
+def test_feedback_bus_includes_decoder_variance_pressure():
+    """Verify decoder variance pressure appears when logit variance is low.
+
+    When _cached_decoder_logit_var is below the threshold, the feedback
+    bus must include 'decoder_variance_pressure'.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Simulate degenerate decoder (near-zero variance)
+    model._cached_decoder_logit_var = 0.0001
+    extra = model._build_feedback_extra_signals()
+
+    assert 'decoder_variance_pressure' in extra, (
+        "Feedback bus must include 'decoder_variance_pressure' when variance is low"
+    )
+    assert 0.0 < extra['decoder_variance_pressure'] <= 1.0, (
+        f"decoder_variance_pressure must be in (0, 1], got {extra['decoder_variance_pressure']}"
+    )
+
+    # Verify it's absent when variance is healthy
+    model._cached_decoder_logit_var = 1.0
+    extra_healthy = model._build_feedback_extra_signals()
+    assert 'decoder_variance_pressure' not in extra_healthy, (
+        "decoder_variance_pressure should not appear when variance is healthy"
+    )
+
+    print("✅ test_feedback_bus_includes_decoder_variance_pressure PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

@@ -16553,6 +16553,17 @@ class MetaCognitiveRecursionTrigger:
             # circuit breaker across multiple consecutive forward
             # passes, indicating persistent subsystem failure.
             "chronic_circuit_breaker": "coherence_deficit",
+            # Cognitive unity violation — the system's own assessment
+            # of AGI coherence fell below acceptable thresholds.
+            "cognitive_unity_violation": "coherence_deficit",
+            # Post-output coherence deficit — the final coherence
+            # check after decoding detected inter-module disagreement.
+            "post_output_coherence_deficit": "coherence_deficit",
+            # Post-output uncertainty trigger — late-stage uncertainty
+            # sources (cycle consistency, decoder degenerate, etc.)
+            # accumulated beyond the re-reasoning threshold after the
+            # UCC had already evaluated.
+            "post_output_uncertainty_trigger": "uncertainty",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17571,6 +17582,21 @@ class CausalErrorEvolutionTracker:
         # global health.  Maps to lambda_ucc so training adapts to
         # systemic subsystem degradation.
         "low_global_integrity": "lambda_ucc",
+        # Cognitive unity violation — the system's own assessment of
+        # AGI coherence (mutual verification, metacognitive responsiveness,
+        # root-cause traceability) fell below acceptable thresholds.
+        # Maps to lambda_ucc so training strengthens the unified
+        # cognitive cycle's self-assessment capabilities.
+        "cognitive_unity_violation": "lambda_ucc",
+        # Post-output coherence deficit — the final coherence check
+        # after decoding detected inter-module disagreement.  Maps to
+        # lambda_coherence so training improves output-stage consistency.
+        "post_output_coherence_deficit": "lambda_coherence",
+        # Post-output uncertainty trigger — late-stage uncertainty
+        # sources accumulated beyond the re-reasoning threshold after
+        # the UCC had already evaluated.  Maps to lambda_ucc so
+        # training adapts to persistent late-stage uncertainty patterns.
+        "post_output_uncertainty_trigger": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
