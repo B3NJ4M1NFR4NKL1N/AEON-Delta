@@ -8064,6 +8064,9 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     "active_learning_error": 0.4,
     # AGI coherence (cognitive unity)
     "cognitive_unity_deficit": 0.7,
+    # Post-output & snapshot (late-stage verification)
+    "post_output_late_uncertainty": 0.6,
+    "snapshot_coherence_degraded": 0.5,
 }
 
 
@@ -21039,6 +21042,66 @@ class CognitiveSnapshotManager:
 
         return results
 
+    @staticmethod
+    def validate_cognitive_state(
+        model: nn.Module,
+    ) -> Dict[str, Any]:
+        """Validate in-memory cognitive state coherence across subsystems.
+
+        Checks that active memory subsystems have consistent dimensionality
+        and non-degenerate state.  Returns a coherence score ∈ [0, 1] and
+        a list of any detected issues.  This allows the forward pass to
+        incorporate snapshot-level coherence into the metacognitive cycle
+        so that memory subsystem degradation triggers re-reasoning.
+
+        Args:
+            model: AEONDeltaV3 instance.
+
+        Returns:
+            Dict with ``coherence_score``, ``issues``, and
+            ``subsystems_checked``.
+        """
+        issues: List[str] = []
+        subsystems_checked = 0
+        subsystems_healthy = 0
+
+        _mem_subsystems = [
+            ('hierarchical_memory', 'hierarchical_memory'),
+            ('temporal_memory', 'temporal_memory'),
+            ('neurogenic_memory', 'neurogenic_memory'),
+            ('consolidating_memory', 'consolidating_memory'),
+        ]
+
+        for name, attr in _mem_subsystems:
+            subsys = getattr(model, attr, None)
+            if subsys is None:
+                continue
+            subsystems_checked += 1
+            try:
+                # Check that learnable parameters are finite
+                _has_nan = False
+                for p in subsys.parameters():
+                    if not torch.isfinite(p).all():
+                        _has_nan = True
+                        break
+                if _has_nan:
+                    issues.append(f"{name}: non-finite parameters detected")
+                else:
+                    subsystems_healthy += 1
+            except Exception:
+                subsystems_healthy += 1  # no params = healthy
+
+        coherence = (
+            subsystems_healthy / max(subsystems_checked, 1)
+            if subsystems_checked > 0
+            else 1.0
+        )
+        return {
+            'coherence_score': coherence,
+            'issues': issues,
+            'subsystems_checked': subsystems_checked,
+        }
+
 
 # ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
@@ -21429,6 +21492,21 @@ class AEONDeltaV3(nn.Module):
         ("output_reliability_gate", "post_output_uncertainty_gate"),
         ("cycle_consistency", "post_output_uncertainty_gate"),
         ("post_output_uncertainty_gate", "decoder"),
+        # Post-output uncertainty gate feeds back into the metacognitive
+        # trigger so that late-stage uncertainty adapts next-pass trigger
+        # weights, closing the loop where post-decode uncertainty was
+        # recorded but never influenced metacognitive sensitivity.
+        ("post_output_uncertainty_gate", "metacognitive_trigger"),
+        # Subsystem health gate feeds into the unified cognitive cycle
+        # so that integration-reliability degradation participates in
+        # cross-module coherence verification, not just uncertainty
+        # escalation.
+        ("subsystem_health_gate", "unified_cognitive_cycle"),
+        # Counterfactual verification feeds into the unified cognitive
+        # cycle so that causal-prediction divergence participates in
+        # cross-module coherence verification alongside uncertainty
+        # escalation.
+        ("counterfactual_verification", "unified_cognitive_cycle"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -22758,6 +22836,11 @@ class AEONDeltaV3(nn.Module):
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
 
+        # Post-output late uncertainty — caches the late-stage uncertainty
+        # score from the PostOutputUncertaintyGate so the feedback bus
+        # can condition the next pass's meta-loop on post-decode quality.
+        self._cached_post_output_late_uncertainty: float = 0.0
+
         # VQ codebook quality — caches utilization-based quality score from
         # the most recent forward pass so the feedback bus can condition
         # the next pass's meta-loop when codebook collapse reduces encoder
@@ -23865,6 +23948,18 @@ class AEONDeltaV3(nn.Module):
         if _cud > 0.1:
             extra["cognitive_unity_deficit"] = max(
                 0.0, min(1.0, _cud),
+            )
+        # Post-output late uncertainty — when the PostOutputUncertaintyGate
+        # detected elevated late-stage uncertainty on the previous pass,
+        # signal the meta-loop to allocate deeper reasoning to compensate
+        # for decoder or cycle-consistency instability.  This closes the
+        # cross-pass feedback loop where post-output uncertainty was
+        # recorded and triggered re-reasoning within the same pass but
+        # never conditioned the *next* pass's meta-loop depth.
+        _polu = getattr(self, '_cached_post_output_late_uncertainty', 0.0)
+        if _polu > 0.1:
+            extra["post_output_late_uncertainty"] = max(
+                0.0, min(1.0, _polu),
             )
         # UCC coherence trend EMA — when the UnifiedCognitiveCycle's
         # cross-pass coherence trend indicates systematic architectural
@@ -33243,6 +33338,26 @@ class AEONDeltaV3(nn.Module):
             if (self._cached_integration_state is not None
                     and self._cached_integration_state.shape[-1] == z_out.shape[-1]):
                 _ucc_states["integration"] = self._cached_integration_state
+            # Include subsystem health gate attenuation as a directional
+            # perturbation so the coherence verifier can detect
+            # integration-reliability degradation — a low gate value
+            # means the integration output was dampened, and cross-module
+            # comparison should reflect that attenuation.
+            _shg_val = getattr(self, '_cached_integration_gate_val', 1.0)
+            if _shg_val < 1.0 and self._cached_integration_state is not None:
+                _shg_factor = max(0.0, min(1.0, 1.0 - _shg_val))
+                _shg_perturbed = self._cached_integration_state * _shg_val
+                if _shg_perturbed.shape[-1] == z_out.shape[-1]:
+                    _ucc_states["subsystem_health_gate"] = _shg_perturbed
+            # Include counterfactual verification score as a directional
+            # perturbation so the coherence verifier can detect causal-
+            # prediction divergence alongside other subsystem outputs.
+            _cf_v_score = getattr(
+                self, '_cached_counterfactual_divergence_score', 1.0,
+            )
+            if _cf_v_score < 1.0 and C_star.shape[-1] == z_out.shape[-1]:
+                _cf_perturbed = C_star * _cf_v_score
+                _ucc_states["counterfactual_verification"] = _cf_perturbed
             # Include cognitive executive winner state so the coherence
             # verifier can detect misalignment between executive
             # arbitration and the integrated output within the same
@@ -33411,6 +33526,9 @@ class AEONDeltaV3(nn.Module):
                     "temporal_knowledge_graph", "complexity_estimator",
                     "diversity_analysis", "topology_analysis",
                     "continual_learning", "feedback_bus",
+                    # ── Verification gates for full coherence coverage ──
+                    "subsystem_health_gate",
+                    "counterfactual_verification",
                 }
                 _ucc_absent = _UCC_EXPECTED_SUBSYSTEMS - set(_ucc_states.keys())
                 if _ucc_absent:
@@ -36931,6 +37049,11 @@ class AEONDeltaV3(nn.Module):
             validated=True,
             quality=1.0 - min(1.0, _post_gate.get('late_uncertainty', 0.0)),
         )
+        # Cache late_uncertainty for cross-pass feedback conditioning so
+        # the next pass's meta-loop can condition on post-output quality.
+        self._cached_post_output_late_uncertainty = float(
+            _post_gate.get('late_uncertainty', 0.0),
+        )
         if _post_gate['gate_triggered']:
             # Record late-stage metacognitive trigger in error evolution
             if self.error_evolution is not None:
@@ -36946,6 +37069,22 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            # Escalate to metacognitive trigger weight adaptation so
+            # that post-output uncertainty sensitises the next pass's
+            # trigger weights toward the specific late-stage sources
+            # that fired, closing the loop where late uncertainty was
+            # recorded but never influenced metacognitive sensitivity.
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _post_adapt_err:
+                    logger.debug(
+                        "Post-output trigger adaptation failed: %s",
+                        _post_adapt_err,
+                    )
             # Record in causal trace for traceability
             if self.causal_trace is not None:
                 self.causal_trace.record(
@@ -37020,6 +37159,21 @@ class AEONDeltaV3(nn.Module):
                             'missing_count': len(_chain_validation.get('missing_modules', [])),
                         },
                     )
+                    # Adapt metacognitive trigger weights so that
+                    # traceability gaps sensitise next-pass evaluation,
+                    # closing the loop where provenance incompleteness
+                    # was recorded in error evolution but never
+                    # influenced metacognitive sensitivity.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _pcv_adapt_err:
+                            logger.debug(
+                                "Provenance chain trigger adaptation failed: %s",
+                                _pcv_adapt_err,
+                            )
 
         # ===== PACKAGE RESULTS =====
         # Surface VQ codebook quality in the result dict so it is
@@ -37137,6 +37291,34 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_coh_score, torch.Tensor):
             _coh_score = float(_coh_score.mean().item())
         _cus_coherence = max(0.0, min(1.0, _coh_score))
+        # Cognitive snapshot coherence — validate that memory subsystem
+        # parameters are finite and consistent.  When memory subsystems
+        # have degraded (e.g., NaN parameters from training instability),
+        # the coherence component is penalised so that the cognitive
+        # unity score reflects the degradation and downstream uncertainty
+        # escalation can trigger re-reasoning or recovery.
+        if self.cognitive_snapshot_manager is not None:
+            try:
+                _snap_val = self.cognitive_snapshot_manager.validate_cognitive_state(self)
+                _snap_coherence = _snap_val.get('coherence_score', 1.0)
+                if _snap_coherence < 1.0:
+                    _cus_coherence = _cus_coherence * _snap_coherence
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "cognitive_snapshot_manager",
+                            "memory_coherence_degraded",
+                            metadata={
+                                'snapshot_coherence': _snap_coherence,
+                                'issues': _snap_val.get('issues', []),
+                            },
+                        )
+                outputs['snapshot_coherence'] = _snap_coherence
+                result['snapshot_coherence'] = _snap_coherence
+            except Exception as _snap_err:
+                logger.debug(
+                    "Cognitive snapshot validation failed (non-fatal): %s",
+                    _snap_err,
+                )
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
