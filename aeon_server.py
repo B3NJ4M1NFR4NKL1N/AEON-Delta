@@ -3304,6 +3304,402 @@ async def get_gradient_stats(limit: int = 200):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  ENGINE MONITORING — Full component telemetry integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/engine/progress")
+async def engine_progress():
+    """Pipeline progress from ProgressTracker: phase timings, run history."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        pt = getattr(APP.model, 'progress_tracker', None)
+        if pt is None:
+            return {"ok": True, "available": False, "reason": "ProgressTracker not initialized"}
+        return {
+            "ok": True,
+            "available": True,
+            "progress": pt.get_progress(),
+            "run_history": pt.get_run_history(20),
+        }
+    except Exception as e:
+        logging.error(f"engine/progress error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/convergence")
+async def engine_convergence():
+    """Convergence summary from the meta-loop ConvergenceMonitor."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+        cm = getattr(ucc, 'convergence_monitor', None) if ucc else None
+        if cm is None:
+            return {"ok": True, "available": False, "reason": "ConvergenceMonitor not available"}
+        return {
+            "ok": True,
+            "available": True,
+            "convergence": cm.get_convergence_summary(),
+        }
+    except Exception as e:
+        logging.error(f"engine/convergence error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/memory")
+async def engine_memory():
+    """Memory system statistics from MemoryManager."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        mm = getattr(APP.model, 'memory_manager', None)
+        if mm is None:
+            return {"ok": True, "available": False, "reason": "MemoryManager not initialized"}
+        stats = {
+            "size": mm.size,
+            "max_capacity": getattr(mm, '_max_capacity', None),
+            "utilization": mm.size / max(getattr(mm, '_max_capacity', 1), 1),
+        }
+        # Causal context window stats
+        ccw = getattr(APP.model, 'causal_context', None)
+        if ccw is not None:
+            try:
+                stats["causal_context"] = ccw.stats()
+            except Exception:
+                pass
+        return {"ok": True, "available": True, "memory": stats}
+    except Exception as e:
+        logging.error(f"engine/memory error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/recovery")
+async def engine_recovery():
+    """Full error recovery data: stats, history, success rate."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        er = getattr(APP.model, 'error_recovery', None)
+        if er is None:
+            return {"ok": True, "available": False, "reason": "ErrorRecoveryManager not initialized"}
+        return {
+            "ok": True,
+            "available": True,
+            "stats": er.get_recovery_stats(),
+            "success_rate": er.get_success_rate(),
+            "history": er.get_recovery_history(30),
+        }
+    except Exception as e:
+        logging.error(f"engine/recovery error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/integrity")
+async def engine_integrity():
+    """Full SystemIntegrityMonitor report including anomalies."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        im = getattr(APP.model, 'integrity_monitor', None)
+        if im is None:
+            return {"ok": True, "available": False, "reason": "IntegrityMonitor not initialized"}
+        report = im.get_integrity_report()
+        anomalies = im.get_anomalies(30)
+        return {
+            "ok": True,
+            "available": True,
+            "report": _make_json_safe(report),
+            "anomalies": anomalies,
+        }
+    except Exception as e:
+        logging.error(f"engine/integrity error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/deterministic_guard")
+async def engine_deterministic_guard():
+    """Validation summary from DeterministicExecutionGuard."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        eg = getattr(APP.model, 'execution_guard', None)
+        if eg is None:
+            return {"ok": True, "available": False, "reason": "ExecutionGuard not initialized"}
+        summary = eg.get_validation_summary()
+        return {"ok": True, "available": True, "summary": summary}
+    except Exception as e:
+        logging.error(f"engine/deterministic_guard error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/context_window")
+async def engine_context_window():
+    """Context window statistics from CausalContextWindowManager."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        ccw = getattr(APP.model, 'causal_context', None)
+        if ccw is None:
+            return {"ok": True, "available": False, "reason": "CausalContextWindowManager not enabled"}
+        return {"ok": True, "available": True, "stats": ccw.stats()}
+    except Exception as e:
+        logging.error(f"engine/context_window error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/module_coherence")
+async def engine_module_coherence():
+    """Routing statistics from ModuleCoherenceVerifier."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        mc = getattr(APP.model, 'module_coherence', None)
+        if mc is None:
+            return {"ok": True, "available": False, "reason": "ModuleCoherenceVerifier not enabled"}
+        routing = mc.get_routing_stats()
+        threshold = getattr(mc, 'threshold', None)
+        return {
+            "ok": True,
+            "available": True,
+            "routing_stats": _make_json_safe(routing),
+            "threshold": threshold,
+        }
+    except Exception as e:
+        logging.error(f"engine/module_coherence error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/error_evolution")
+async def engine_error_evolution():
+    """Error evolution summary from CausalErrorEvolutionTracker."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+        ee = getattr(ucc, 'error_evolution', None) if ucc else None
+        if ee is None:
+            ee = getattr(APP.model, 'error_evolution', None)
+        if ee is None:
+            return {"ok": True, "available": False, "reason": "ErrorEvolutionTracker not enabled"}
+        summary = ee.get_error_summary()
+        degrading = {}
+        try:
+            degrading = ee.get_degrading_error_classes()
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "available": True,
+            "summary": summary,
+            "degrading_classes": degrading,
+        }
+    except Exception as e:
+        logging.error(f"engine/error_evolution error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/auto_critic")
+async def engine_auto_critic():
+    """AutoCriticLoop configuration and status."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        ac = getattr(APP.model, 'auto_critic', None)
+        if ac is None:
+            return {"ok": True, "available": False, "reason": "AutoCriticLoop not enabled"}
+        return {
+            "ok": True,
+            "available": True,
+            "max_iterations": getattr(ac, 'max_iterations', None),
+            "threshold": getattr(ac, 'threshold', None),
+        }
+    except Exception as e:
+        logging.error(f"engine/auto_critic error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/deception_suppressor")
+async def engine_deception_suppressor():
+    """Deception suppressor status."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        ds = getattr(APP.model, 'deception_suppressor', None)
+        if ds is None:
+            return {"ok": True, "available": False, "reason": "DeceptionSuppressor not enabled"}
+        return {
+            "ok": True,
+            "available": True,
+            "enabled": True,
+        }
+    except Exception as e:
+        logging.error(f"engine/deception_suppressor error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/all")
+async def engine_all_monitoring():
+    """Aggregated endpoint: returns all engine monitoring data in one call.
+
+    Collects data from every available monitoring component and returns
+    a single JSON payload so the dashboard can refresh all panels with
+    one network round-trip.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    result: Dict[str, Any] = {"ok": True}
+
+    # ── ProgressTracker ──
+    try:
+        pt = getattr(APP.model, 'progress_tracker', None)
+        if pt is not None:
+            result["progress"] = {
+                "available": True,
+                "data": pt.get_progress(),
+                "run_history": pt.get_run_history(10),
+            }
+    except Exception:
+        pass
+
+    # ── ConvergenceMonitor ──
+    try:
+        ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+        cm = getattr(ucc, 'convergence_monitor', None) if ucc else None
+        if cm is not None:
+            result["convergence"] = {
+                "available": True,
+                "data": cm.get_convergence_summary(),
+            }
+    except Exception:
+        pass
+
+    # ── MemoryManager ──
+    try:
+        mm = getattr(APP.model, 'memory_manager', None)
+        if mm is not None:
+            mem_info: Dict[str, Any] = {
+                "available": True,
+                "size": mm.size,
+                "max_capacity": getattr(mm, '_max_capacity', None),
+                "utilization": mm.size / max(getattr(mm, '_max_capacity', 1), 1),
+            }
+            ccw = getattr(APP.model, 'causal_context', None)
+            if ccw is not None:
+                try:
+                    mem_info["causal_context"] = ccw.stats()
+                except Exception:
+                    pass
+            result["memory"] = mem_info
+    except Exception:
+        pass
+
+    # ── ErrorRecoveryManager ──
+    try:
+        er = getattr(APP.model, 'error_recovery', None)
+        if er is not None:
+            result["recovery"] = {
+                "available": True,
+                "stats": er.get_recovery_stats(),
+                "success_rate": er.get_success_rate(),
+                "history": er.get_recovery_history(10),
+            }
+    except Exception:
+        pass
+
+    # ── SystemIntegrityMonitor full report ──
+    try:
+        im = getattr(APP.model, 'integrity_monitor', None)
+        if im is not None:
+            result["integrity"] = {
+                "available": True,
+                "report": _make_json_safe(im.get_integrity_report()),
+                "anomalies": im.get_anomalies(10),
+            }
+    except Exception:
+        pass
+
+    # ── DeterministicExecutionGuard ──
+    try:
+        eg = getattr(APP.model, 'execution_guard', None)
+        if eg is not None:
+            result["deterministic_guard"] = {
+                "available": True,
+                "summary": eg.get_validation_summary(),
+            }
+    except Exception:
+        pass
+
+    # ── CausalContextWindowManager ──
+    try:
+        ccw = getattr(APP.model, 'causal_context', None)
+        if ccw is not None:
+            result["context_window"] = {
+                "available": True,
+                "stats": ccw.stats(),
+            }
+    except Exception:
+        pass
+
+    # ── ModuleCoherenceVerifier ──
+    try:
+        mc = getattr(APP.model, 'module_coherence', None)
+        if mc is not None:
+            result["module_coherence"] = {
+                "available": True,
+                "routing_stats": _make_json_safe(mc.get_routing_stats()),
+                "threshold": getattr(mc, 'threshold', None),
+            }
+    except Exception:
+        pass
+
+    # ── CausalErrorEvolutionTracker ──
+    try:
+        ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+        ee = getattr(ucc, 'error_evolution', None) if ucc else None
+        if ee is None:
+            ee = getattr(APP.model, 'error_evolution', None)
+        if ee is not None:
+            _ee_data: Dict[str, Any] = {
+                "available": True,
+                "summary": ee.get_error_summary(),
+            }
+            try:
+                _ee_data["degrading_classes"] = ee.get_degrading_error_classes()
+            except Exception:
+                pass
+            result["error_evolution"] = _ee_data
+    except Exception:
+        pass
+
+    # ── AutoCriticLoop ──
+    try:
+        ac = getattr(APP.model, 'auto_critic', None)
+        if ac is not None:
+            result["auto_critic"] = {
+                "available": True,
+                "max_iterations": getattr(ac, 'max_iterations', None),
+                "threshold": getattr(ac, 'threshold', None),
+            }
+    except Exception:
+        pass
+
+    # ── DeceptionSuppressor ──
+    try:
+        ds = getattr(APP.model, 'deception_suppressor', None)
+        if ds is not None:
+            result["deception_suppressor"] = {
+                "available": True,
+                "enabled": True,
+            }
+    except Exception:
+        pass
+
+    return _make_json_safe(result)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  LOGS
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/logs")
@@ -3641,6 +4037,46 @@ async def _heartbeat():
                 }
             except Exception:
                 pass
+        # Include engine monitoring snapshot in heartbeat
+        if APP.model is not None:
+            engine: dict = {}
+            try:
+                pt = getattr(APP.model, 'progress_tracker', None)
+                if pt is not None:
+                    engine["progress"] = pt.get_progress()
+            except Exception:
+                pass
+            try:
+                er = getattr(APP.model, 'error_recovery', None)
+                if er is not None:
+                    engine["recovery_success_rate"] = er.get_success_rate()
+            except Exception:
+                pass
+            try:
+                mm = getattr(APP.model, 'memory_manager', None)
+                if mm is not None:
+                    engine["memory_size"] = mm.size
+                    engine["memory_utilization"] = mm.size / max(getattr(mm, '_max_capacity', 1), 1)
+            except Exception:
+                pass
+            try:
+                eg = getattr(APP.model, 'execution_guard', None)
+                if eg is not None:
+                    vs = eg.get_validation_summary()
+                    engine["guard_success_rate"] = vs.get("success_rate", 1.0)
+            except Exception:
+                pass
+            try:
+                ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+                cm = getattr(ucc, 'convergence_monitor', None) if ucc else None
+                if cm is not None:
+                    cs = cm.get_convergence_summary()
+                    engine["convergence_status"] = cs.get("status", "unknown")
+                    engine["convergence_certified"] = cs.get("certified", False)
+            except Exception:
+                pass
+            if engine:
+                payload["engine"] = engine
         await broadcast(payload)
 
 
