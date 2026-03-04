@@ -439,6 +439,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="nav-item" onclick="go('audit')"><span class="nav-icon">◐</span> Audit & Observability</div>
     <div class="nav-item" onclick="go('monitor')"><span class="nav-icon">◌</span> System Monitor</div>
     <div class="nav-item" onclick="go('tg')"><span class="nav-icon">🛡</span> TensorGuard</div>
+    <div class="nav-item" onclick="go('enginemon')"><span class="nav-icon">⚙</span> Engine Monitor</div>
   </div>
   <div class="nav-group">
     <div class="nav-label">Tools</div>
@@ -1886,6 +1887,101 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="alert alert-blue" style="margin-top:14px"><span>◎</span><div><strong>Observability & Telemetry data is now displayed in the unified Audit Trail & Observability panel.</strong> All monitoring data — audit trail, structured logging, telemetry metrics, traces, and counters — is consolidated in one view for comprehensive system monitoring.</div></div>
 </div>
 
+<!-- ══ ENGINE MONITOR ══ -->
+<div class="panel" id="panel-enginemon">
+  <div class="ph">
+    <div><div class="ph-title">Engine Monitor</div><div class="ph-sub">Full component telemetry · /api/engine/all · convergence · memory · recovery · guard · coherence</div></div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="loadEngineMonitor()">↻ Refresh All</button>
+    </div>
+  </div>
+
+  <!-- KPI Summary Row -->
+  <div class="g5" style="margin-bottom:14px">
+    <div class="card cg"><div class="ct">Convergence</div><div class="cv cg" id="em-conv-status">—</div><div class="cm-t" id="em-conv-certified">—</div></div>
+    <div class="card ca"><div class="ct">Recovery Rate</div><div class="cv ca" id="em-recovery-rate">—</div><div class="cm-t" id="em-recovery-m">error recovery</div></div>
+    <div class="card cp"><div class="ct">Memory</div><div class="cv cp" id="em-mem-size">—</div><div class="cm-t" id="em-mem-util">utilization</div></div>
+    <div class="card cw"><div class="ct">Guard Success</div><div class="cv cw" id="em-guard-rate">—</div><div class="cm-t">execution guard</div></div>
+    <div class="card ca"><div class="ct">Pipeline Phase</div><div class="cv ca" id="em-phase">—</div><div class="cm-t" id="em-phase-m">progress tracker</div></div>
+  </div>
+
+  <!-- Detail Cards Row 1: Convergence + Recovery -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">◈ Convergence Monitor</div>
+      <div id="em-convergence-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">Initialize model & run inference for convergence data</div>
+    </div>
+    <div class="card">
+      <div class="ct">🔄 Error Recovery</div>
+      <div id="em-recovery-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
+  <!-- Detail Cards Row 2: Memory + Guard -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🧠 Memory System</div>
+      <div id="em-memory-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">🛡 Deterministic Guard</div>
+      <div id="em-guard-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
+  <!-- Detail Cards Row 3: Integrity + Module Coherence -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🏥 Integrity Report</div>
+      <div id="em-integrity-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">◧ Module Coherence</div>
+      <div id="em-coherence-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
+  <!-- Detail Cards Row 4: Error Evolution + Context Window -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">📈 Error Evolution</div>
+      <div id="em-error-evo-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">📋 Context Window</div>
+      <div id="em-ctx-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
+  <!-- Detail Cards Row 5: AutoCritic + Deception Suppressor + Progress -->
+  <div class="g3" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🔍 Auto-Critic Loop</div>
+      <div id="em-critic-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">🚫 Deception Suppressor</div>
+      <div id="em-deception-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">◉ Pipeline Progress</div>
+      <div id="em-progress-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
+  <!-- Anomalies -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct">⚠ Recent Anomalies</div>
+    <div id="em-anomalies" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:200px;overflow-y:auto">No anomalies</div>
+  </div>
+
+  <!-- Raw JSON -->
+  <div class="card">
+    <div class="ct">Raw Engine Data</div>
+    <div class="cb" style="margin-top:8px;max-height:300px;overflow-y:auto;font-size:10px;padding:10px"><pre id="em-raw" style="margin:0;color:var(--text2)">Initialize model first</pre></div>
+  </div>
+</div>
+
 <!-- ══ METACOGNITION ══ -->
 <div class="panel" id="panel-metacognition">
   <div class="ph">
@@ -2090,6 +2186,7 @@ function go(panel) {
   if(panel === 'architecture') { if(S.modelReady) loadArch(); else resetArchPipeline(); }
   if(panel === 'monitor') loadHealth();
   if(panel === 'tg' && S.modelReady) loadTG();
+  if(panel === 'enginemon' && S.modelReady) loadEngineMonitor();
   if(panel === 'audit' && S.modelReady) { loadAudit(); loadObservability(); }
   if(panel === 'modules' && S.modelReady) loadModules();
   if(panel === 'vq' && S.modelReady) loadVQ();
@@ -2136,6 +2233,7 @@ function connectWS() {
       else if(msg.type === 'heartbeat' || msg.type === 'pong') {
         if(msg.model_ready !== undefined) { S.modelReady = msg.model_ready; updateModelState(msg.model_ready); }
         if(msg.training && msg.training_progress) onTrainProgress(msg.training_progress);
+        if(msg.engine) applyEngineHeartbeat(msg.engine);
       }
       else if(msg.type === 'status') {
         S.modelReady = msg.model_ready;
@@ -2171,6 +2269,7 @@ function pingPoll() {
     S.ws.send(JSON.stringify({type: 'ping'}));
   }
   if(S.activePanel === 'monitor' && S.modelReady) loadHealth();
+  if(S.activePanel === 'enginemon' && S.modelReady) loadEngineMonitor();
 }
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────
@@ -5283,8 +5382,29 @@ async function loadHealth() {
     document.getElementById('m-nan').textContent = r.nan_count || 0;
     document.getElementById('m-inf').textContent = r.inf_count || 0;
     document.getElementById('m-san').textContent = r.sanitize_count || 0;
-    document.getElementById('m-recovery').innerHTML = '— (run inference for recovery stats)';
   } catch(e) {}
+
+  // Recovery stats from engine endpoint
+  try {
+    const rec = await api('GET', '/api/engine/recovery');
+    if(rec.available) {
+      const rs = rec.stats || {};
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:10px">`;
+      html += `<div>Success rate: <span style="color:var(--green)">${((rec.success_rate||1)*100).toFixed(0)}%</span></div>`;
+      html += `<div>Total: <span style="color:var(--accent)">${rs.total||0}</span></div>`;
+      html += `<div>Successes: <span style="color:var(--green)">${rs.successes||0}</span></div>`;
+      html += `<div>Failures: <span style="color:var(--danger)">${rs.failures||0}</span></div>`;
+      html += `</div>`;
+      if(rs.by_class && Object.keys(rs.by_class).length) {
+        html += `<div style="margin-top:6px;font-size:10px"><strong>By class:</strong> ${Object.entries(rs.by_class).map(([k,v])=>`${k}:${v}`).join(', ')}</div>`;
+      }
+      document.getElementById('m-recovery').innerHTML = html;
+    } else {
+      document.getElementById('m-recovery').textContent = rec.reason || '—';
+    }
+  } catch(e) {
+    document.getElementById('m-recovery').innerHTML = '— (run inference for recovery stats)';
+  }
 }
 
 // ─── TENSORGUARD ─────────────────────────────────────────────────────────────
@@ -5789,6 +5909,18 @@ python aeon_server.py --reload
 # GET  /api/session/export   — export session JSON
 # GET  /api/logs             — log history
 # GET  /api/logs/stream      — SSE log stream
+# GET  /api/engine/all       — all engine monitoring data
+# GET  /api/engine/progress  — pipeline progress
+# GET  /api/engine/convergence — convergence monitor
+# GET  /api/engine/memory    — memory system stats
+# GET  /api/engine/recovery  — error recovery data
+# GET  /api/engine/integrity — integrity report + anomalies
+# GET  /api/engine/deterministic_guard — guard summary
+# GET  /api/engine/context_window — context window stats
+# GET  /api/engine/module_coherence — coherence routing
+# GET  /api/engine/error_evolution — error evolution
+# GET  /api/engine/auto_critic — auto-critic status
+# GET  /api/engine/deception_suppressor — deception status
 # WS   /ws                   — WebSocket live feed`;
 }
 
@@ -5818,6 +5950,248 @@ function cTab(name) {
   const panel = document.getElementById('ctab-' + name);
   if(panel) panel.classList.add('active');
   if(name === 'json-ed') syncJsonEditor();
+}
+
+// ─── ENGINE MONITOR ───────────────────────────────────────────────────────────
+function applyEngineHeartbeat(eng) {
+  if(!eng) return;
+  const setT = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+  if(eng.convergence_status) setT('em-conv-status', eng.convergence_status);
+  if(eng.convergence_certified !== undefined) setT('em-conv-certified', eng.convergence_certified ? '✓ certified' : '⏳ not certified');
+  if(eng.recovery_success_rate !== undefined) setT('em-recovery-rate', (eng.recovery_success_rate * 100).toFixed(0) + '%');
+  if(eng.memory_size !== undefined) { setT('em-mem-size', eng.memory_size.toLocaleString()); setT('em-mem-util', (eng.memory_utilization * 100).toFixed(0) + '% util'); }
+  if(eng.guard_success_rate !== undefined) setT('em-guard-rate', (eng.guard_success_rate * 100).toFixed(0) + '%');
+  if(eng.progress) { setT('em-phase', eng.progress.current_phase || 'idle'); setT('em-phase-m', (eng.progress.completed_phases||[]).length + ' completed'); }
+}
+
+async function loadEngineMonitor() {
+  if(!S.modelReady) return;
+  try {
+    const d = await api('GET', '/api/engine/all');
+    document.getElementById('em-raw').textContent = JSON.stringify(d, null, 2).slice(0, 5000);
+
+    // Convergence
+    if(d.convergence?.available) {
+      const c = d.convergence.data;
+      document.getElementById('em-conv-status').textContent = c.status || '—';
+      document.getElementById('em-conv-status').style.color = c.status === 'converged' ? 'var(--green)' : c.status === 'diverging' ? 'var(--danger)' : 'var(--accent)';
+      document.getElementById('em-conv-certified').textContent = c.certified ? '✓ certified' : '⏳ not certified';
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Status: <span style="color:var(--accent)">${c.status}</span></div>`;
+      html += `<div>Certified: <span style="color:${c.certified?'var(--green)':'var(--warn)'}">${c.certified}</span></div>`;
+      html += `<div>History: <span style="color:var(--text)">${c.history_length} samples</span></div>`;
+      if(c.latest_delta !== null) html += `<div>Δ: <span style="color:var(--accent)">${c.latest_delta?.toExponential(3)}</span></div>`;
+      if(c.avg_contraction !== null) html += `<div>Avg contraction: <span style="color:${c.avg_contraction<1?'var(--green)':'var(--danger)'}">${c.avg_contraction?.toFixed(4)}</span></div>`;
+      html += `</div>`;
+      if(c.secondary_signals && Object.keys(c.secondary_signals).length) {
+        html += `<div style="margin-top:8px"><strong>Secondary signals:</strong></div>`;
+        html += Object.entries(c.secondary_signals).map(([k,v]) =>
+          `<div style="margin-left:8px">${k}: <span style="color:${v>0.5?'var(--danger)':'var(--green)'}">${typeof v==='number'?v.toFixed(4):v}</span></div>`
+        ).join('');
+      }
+      document.getElementById('em-convergence-detail').innerHTML = html;
+    } else {
+      document.getElementById('em-convergence-detail').textContent = d.convergence?.reason || 'Not available';
+    }
+
+    // Recovery
+    if(d.recovery?.available) {
+      const r = d.recovery;
+      document.getElementById('em-recovery-rate').textContent = (r.success_rate * 100).toFixed(0) + '%';
+      document.getElementById('em-recovery-m').textContent = `${r.stats.total || 0} total recoveries`;
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Success rate: <span style="color:var(--green)">${(r.success_rate*100).toFixed(1)}%</span></div>`;
+      html += `<div>Successes: <span style="color:var(--green)">${r.stats.successes||0}</span></div>`;
+      html += `<div>Failures: <span style="color:var(--danger)">${r.stats.failures||0}</span></div>`;
+      html += `<div>Total: <span style="color:var(--text)">${r.stats.total||0}</span></div>`;
+      html += `</div>`;
+      if(r.stats.by_class && Object.keys(r.stats.by_class).length) {
+        html += `<div style="margin-top:8px"><strong>By error class:</strong></div>`;
+        html += Object.entries(r.stats.by_class).map(([k,v]) =>
+          `<div style="margin-left:8px">${k}: <span style="color:var(--accent)">${v}</span></div>`
+        ).join('');
+      }
+      if(r.stats.degrading_classes && Object.keys(r.stats.degrading_classes).length) {
+        html += `<div style="margin-top:6px;color:var(--danger)"><strong>⚠ Degrading classes:</strong></div>`;
+        html += Object.entries(r.stats.degrading_classes).map(([k,v]) =>
+          `<div style="margin-left:8px;color:var(--danger)">${k}: trend ${typeof v==='number'?v.toFixed(3):v}</div>`
+        ).join('');
+      }
+      if(r.history?.length) {
+        html += `<div style="margin-top:8px"><strong>Recent history (${r.history.length}):</strong></div>`;
+        html += r.history.slice(-5).reverse().map(h =>
+          `<div style="margin-left:8px;font-size:10px">${h.success?'✓':'✗'} ${h.error_class||'unknown'} — ${h.context||''}</div>`
+        ).join('');
+      }
+      document.getElementById('em-recovery-detail').innerHTML = html;
+    }
+
+    // Memory
+    if(d.memory?.available) {
+      const m = d.memory;
+      document.getElementById('em-mem-size').textContent = m.size?.toLocaleString() || '0';
+      document.getElementById('em-mem-util').textContent = ((m.utilization||0)*100).toFixed(0) + '% util';
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Size: <span style="color:var(--accent)">${m.size?.toLocaleString()}</span></div>`;
+      html += `<div>Capacity: <span style="color:var(--text)">${m.max_capacity?.toLocaleString()}</span></div>`;
+      html += `<div>Utilization: <span style="color:var(--accent)">${((m.utilization||0)*100).toFixed(1)}%</span></div>`;
+      html += `</div>`;
+      if(m.causal_context) {
+        const cc = m.causal_context;
+        html += `<div style="margin-top:8px"><strong>Causal context tiers:</strong></div>`;
+        html += `<div style="margin-left:8px">Short-term: <span style="color:var(--accent)">${cc.short_term_size||0}</span></div>`;
+        html += `<div style="margin-left:8px">Mid-term: <span style="color:var(--purple)">${cc.mid_term_size||0}</span></div>`;
+        html += `<div style="margin-left:8px">Long-term: <span style="color:var(--green)">${cc.long_term_size||0}</span></div>`;
+        html += `<div style="margin-left:8px">Total added: ${cc.total_added||0} · Evicted: ${cc.total_evicted||0}</div>`;
+      }
+      document.getElementById('em-memory-detail').innerHTML = html;
+    }
+
+    // Deterministic Guard
+    if(d.deterministic_guard?.available) {
+      const g = d.deterministic_guard.summary;
+      document.getElementById('em-guard-rate').textContent = ((g.success_rate||1)*100).toFixed(0) + '%';
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Total validations: <span style="color:var(--text)">${g.total||0}</span></div>`;
+      html += `<div>Valid: <span style="color:var(--green)">${g.valid_count||0}</span></div>`;
+      html += `<div>Invalid: <span style="color:var(--danger)">${g.invalid_count||0}</span></div>`;
+      html += `<div>Success rate: <span style="color:${(g.success_rate||1)>=0.95?'var(--green)':'var(--warn)'}">${((g.success_rate||1)*100).toFixed(1)}%</span></div>`;
+      html += `</div>`;
+      if(g.fingerprints && Object.keys(g.fingerprints).length) {
+        html += `<div style="margin-top:8px"><strong>Fingerprints (${Object.keys(g.fingerprints).length}):</strong></div>`;
+        Object.entries(g.fingerprints).slice(0,8).forEach(([k,v]) => {
+          html += `<div style="margin-left:8px;font-size:10px">${k}: <span style="color:var(--text3)">${String(v).slice(0,16)}…</span></div>`;
+        });
+      }
+      document.getElementById('em-guard-detail').innerHTML = html;
+    }
+
+    // Integrity
+    if(d.integrity?.available) {
+      const rp = d.integrity.report;
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Global health: <span style="color:${(rp.global_health||0)>=0.8?'var(--green)':'var(--warn)'}">${((rp.global_health||0)*100).toFixed(0)}%</span></div>`;
+      html += `<div>Anomalies: <span style="color:var(--warn)">${rp.total_anomalies||0}</span></div>`;
+      html += `</div>`;
+      if(rp.subsystem_health && Object.keys(rp.subsystem_health).length) {
+        html += `<div style="margin-top:8px"><strong>Subsystem health:</strong></div>`;
+        Object.entries(rp.subsystem_health).forEach(([k,v]) => {
+          const pct = typeof v==='number' ? (v*100).toFixed(0)+'%' : v;
+          const clr = v>=0.8?'var(--green)':v>=0.5?'var(--warn)':'var(--danger)';
+          html += `<div style="margin-left:8px">${k}: <span style="color:${clr}">${pct}</span></div>`;
+        });
+      }
+      document.getElementById('em-integrity-detail').innerHTML = html;
+
+      // Anomalies list
+      const anomalies = d.integrity.anomalies || [];
+      if(anomalies.length) {
+        document.getElementById('em-anomalies').innerHTML = anomalies.map(a =>
+          `<div style="margin-bottom:4px;padding:4px 8px;background:var(--surface2);border-radius:4px;border-left:2px solid var(--warn)">` +
+          `<span style="color:var(--warn)">${a.subsystem||'?'}</span> · ` +
+          `<span style="color:var(--text2)">${a.type||a.anomaly_type||'anomaly'}</span> · ` +
+          `<span style="color:var(--text3)">${a.score!==undefined?'score:'+a.score.toFixed(3):''}</span>` +
+          `</div>`
+        ).join('');
+      } else {
+        document.getElementById('em-anomalies').textContent = 'No anomalies detected';
+      }
+    }
+
+    // Module Coherence
+    if(d.module_coherence?.available) {
+      const mc = d.module_coherence;
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Threshold: <span style="color:var(--accent)">${mc.threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Initial threshold: <span style="color:var(--text3)">${mc.initial_threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
+      html += `</div>`;
+      document.getElementById('em-coherence-detail').innerHTML = html;
+    }
+
+    // Error Evolution
+    if(d.error_evolution?.available) {
+      const ee = d.error_evolution;
+      let html = `<div>Total recorded: <span style="color:var(--accent)">${ee.summary.total_recorded||0}</span></div>`;
+      const ecs = ee.summary.error_classes || {};
+      if(Object.keys(ecs).length) {
+        html += `<div style="margin-top:8px"><strong>Error classes:</strong></div>`;
+        Object.entries(ecs).forEach(([k,v]) => {
+          html += `<div style="margin-left:8px">${k}: count=${v.count}, success_rate=<span style="color:${(v.success_rate||0)>=0.7?'var(--green)':'var(--danger)'}">` +
+            `${((v.success_rate||0)*100).toFixed(0)}%</span>`;
+          if(v.strategies_used?.length) html += `, strategies=[${v.strategies_used.join(',')}]`;
+          html += `</div>`;
+        });
+      }
+      if(ee.degrading_classes && Object.keys(ee.degrading_classes).length) {
+        html += `<div style="margin-top:6px;color:var(--danger)"><strong>⚠ Degrading:</strong> ${Object.keys(ee.degrading_classes).join(', ')}</div>`;
+      }
+      document.getElementById('em-error-evo-detail').innerHTML = html;
+    }
+
+    // Context Window
+    if(d.context_window?.available) {
+      const cw = d.context_window.stats;
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Short-term: <span style="color:var(--accent)">${cw.short_term_size||0}</span></div>`;
+      html += `<div>Mid-term: <span style="color:var(--purple)">${cw.mid_term_size||0}</span></div>`;
+      html += `<div>Long-term: <span style="color:var(--green)">${cw.long_term_size||0}</span></div>`;
+      html += `<div>Added: <span style="color:var(--text)">${cw.total_added||0}</span></div>`;
+      html += `<div>Evicted: <span style="color:var(--warn)">${cw.total_evicted||0}</span></div>`;
+      html += `</div>`;
+      document.getElementById('em-ctx-detail').innerHTML = html;
+    }
+
+    // Auto-Critic
+    if(d.auto_critic?.available) {
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Max iterations: <span style="color:var(--accent)">${d.auto_critic.max_iterations||'—'}</span></div>`;
+      html += `<div>Threshold: <span style="color:var(--accent)">${d.auto_critic.threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
+      html += `</div>`;
+      document.getElementById('em-critic-detail').innerHTML = html;
+    } else {
+      document.getElementById('em-critic-detail').textContent = 'Not enabled';
+    }
+
+    // Deception Suppressor
+    if(d.deception_suppressor?.available) {
+      document.getElementById('em-deception-detail').innerHTML = '<span style="color:var(--green)">✓ Active</span> — output deception suppression enabled';
+    } else {
+      document.getElementById('em-deception-detail').textContent = 'Not enabled';
+    }
+
+    // Progress
+    if(d.progress?.available) {
+      const p = d.progress.data;
+      document.getElementById('em-phase').textContent = p.current_phase || 'idle';
+      document.getElementById('em-phase-m').textContent = (p.completed_phases||[]).length + ' completed';
+      let html = `<div>Run ID: <span style="color:var(--accent)">${p.run_id||0}</span></div>`;
+      html += `<div>Current phase: <span style="color:var(--accent)">${p.current_phase||'none'}</span></div>`;
+      if(p.completed_phases?.length) html += `<div>Completed: <span style="color:var(--green)">${p.completed_phases.join(', ')}</span></div>`;
+      if(p.failed_phases?.length) html += `<div>Failed: <span style="color:var(--danger)">${p.failed_phases.join(', ')}</span></div>`;
+      if(p.phases && Object.keys(p.phases).length) {
+        html += `<div style="margin-top:6px"><strong>Phase details:</strong></div>`;
+        Object.entries(p.phases).forEach(([k,v]) => {
+          const dur = v.duration ? `${v.duration.toFixed(1)}ms` : '—';
+          const icon = v.status==='success'?'✓':v.status==='failed'?'✗':'⏳';
+          const clr = v.status==='success'?'var(--green)':v.status==='failed'?'var(--danger)':'var(--text3)';
+          html += `<div style="margin-left:8px"><span style="color:${clr}">${icon}</span> ${k}: ${v.status||'pending'} (${dur})</div>`;
+        });
+      }
+      const hist = d.progress.run_history || [];
+      if(hist.length) {
+        html += `<div style="margin-top:6px"><strong>Run history (${hist.length}):</strong></div>`;
+        hist.slice(-5).reverse().forEach(h => {
+          html += `<div style="margin-left:8px;font-size:10px">Run #${h.run_id||'?'}: completed=${(h.completed||[]).length}, failed=${(h.failed||[]).length}</div>`;
+        });
+      }
+      document.getElementById('em-progress-detail').innerHTML = html;
+    }
+
+  } catch(e) {
+    document.getElementById('em-raw').textContent = 'Error: ' + e.message;
+  }
 }
 
 // ─── RESIZE ───────────────────────────────────────────────────────────────────
