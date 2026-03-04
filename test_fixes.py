@@ -8155,12 +8155,12 @@ def test_agi_coherence_config_defaults():
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     assert config.enable_causal_context is True
     assert config.enable_cross_validation is True
-    assert config.enable_external_trust is False
+    assert config.enable_external_trust is True
     # NS consistency and complexity estimator are auto-enabled by UCC
     assert config.enable_ns_consistency_check is True
     assert config.enable_complexity_estimator is True
     assert config.enable_causal_trace is True
-    assert config.enable_meta_recovery_integration is False
+    assert config.enable_meta_recovery_integration is True
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
     # When UCC is disabled, NS consistency and complexity estimator
@@ -8377,12 +8377,12 @@ def test_new_config_defaults():
     from aeon_core import AEONConfig
 
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
-    assert config.enable_auto_critic is False
+    assert config.enable_auto_critic is True
     assert config.auto_critic_threshold == 0.85
     assert config.auto_critic_max_iterations == 3
-    assert config.enable_hybrid_reasoning is False
+    assert config.enable_hybrid_reasoning is True
     assert config.hybrid_reasoning_num_predicates == 32
-    assert config.enable_unified_simulator is False
+    assert config.enable_unified_simulator is True
     assert config.unified_simulator_num_vars == 16
     assert config.unified_simulator_blend == 0.1
     assert config.hybrid_reasoning_blend == 0.1
@@ -8402,10 +8402,10 @@ def test_new_components_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    # auto_critic is now enabled by default for unified self-verification
+    # All components are now enabled by default for production
     assert model.auto_critic is not None
-    assert model.hybrid_reasoning is None
-    assert model.unified_simulator is None
+    assert model.hybrid_reasoning is not None
+    assert model.unified_simulator is not None
     print("✅ test_new_components_disabled_by_default PASSED")
 
 
@@ -11993,7 +11993,7 @@ def test_temporal_memory_config():
 
     config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     assert hasattr(config, 'enable_temporal_memory')
-    assert config.enable_temporal_memory is False
+    assert config.enable_temporal_memory is True
     assert config.temporal_memory_capacity == 500
     assert config.temporal_memory_decay_rate == 0.01
     assert config.temporal_memory_retrieval_weight == 0.1
@@ -16843,8 +16843,8 @@ def test_config_observability_defaults():
 
     config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
                         num_pillars=4, seq_length=8)
-    assert config.enable_structured_logging is False
-    assert config.enable_academic_mode is False
+    assert config.enable_structured_logging is True
+    assert config.enable_academic_mode is True
     assert config.enable_telemetry is True
     assert config.telemetry_max_entries == 1000
     print("✅ test_config_observability_defaults PASSED")
@@ -18776,10 +18776,10 @@ def test_new_config_defaults():
     config = AEONConfig(device_str='cpu')
 
     # All new modules disabled by default
-    assert config.enable_cognitive_executive is False
-    assert config.enable_causal_programmatic is False
-    assert config.enable_standalone_ns_bridge is False
-    assert config.enable_hierarchical_world_model is False
+    assert config.enable_cognitive_executive is True
+    assert config.enable_causal_programmatic is True
+    assert config.enable_standalone_ns_bridge is True
+    assert config.enable_hierarchical_world_model is True
 
     # Default blend weights
     assert config.cognitive_executive_blend == 0.1
@@ -20047,8 +20047,8 @@ def test_training_uncertainty_penalty_config():
     assert hasattr(config, 'enable_training_uncertainty_penalty'), (
         "Config should have enable_training_uncertainty_penalty"
     )
-    assert config.enable_training_uncertainty_penalty is False, (
-        "enable_training_uncertainty_penalty should default to False"
+    assert config.enable_training_uncertainty_penalty is True, (
+        "enable_training_uncertainty_penalty should default to True"
     )
     assert hasattr(config, 'training_uncertainty_penalty_scale'), (
         "Config should have training_uncertainty_penalty_scale"
@@ -22917,8 +22917,8 @@ def test_adaptive_meta_loop_config():
     assert hasattr(config, 'enable_adaptive_meta_loop'), (
         "Config should have enable_adaptive_meta_loop"
     )
-    assert config.enable_adaptive_meta_loop is False, (
-        "AdaptiveMetaLoop should be disabled by default"
+    assert config.enable_adaptive_meta_loop is True, (
+        "AdaptiveMetaLoop should be enabled by default"
     )
     assert hasattr(config, 'adaptive_meta_loop_ponder_weight'), (
         "Config should have adaptive_meta_loop_ponder_weight"
@@ -38913,7 +38913,7 @@ def test_task2vec_meta_learner_config():
 
     config = AEONConfig()
     assert hasattr(config, 'enable_task2vec'), "AEONConfig must have enable_task2vec"
-    assert config.enable_task2vec is False, "enable_task2vec should default to False"
+    assert config.enable_task2vec is True, "enable_task2vec should default to True"
     assert hasattr(config, 'task2vec_embedding_dim'), "AEONConfig must have task2vec_embedding_dim"
     assert config.task2vec_embedding_dim == 128
     assert hasattr(config, 'task2vec_similarity_threshold')
