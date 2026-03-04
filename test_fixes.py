@@ -67115,6 +67115,20 @@ def run_all_tests():
     test_architecture_node_coverage()
     test_error_class_to_signal_mapping_complete()
     test_pipeline_dependencies_form_dag()
+
+    # Section 52: Cognitive Activation & Integration Bridge Tests
+    test_get_integration_map_returns_expected_keys()
+    test_get_integration_map_full_coverage()
+    test_get_integration_map_critical_paths()
+    test_get_integration_map_feedback_loops()
+    test_get_activation_sequence_returns_phases()
+    test_get_activation_sequence_ordering()
+    test_get_activation_sequence_all_ready()
+    test_always_on_feedback_signals_populated()
+    test_always_on_signal_sentinel_defaults()
+    test_integration_map_in_architectural_health()
+    test_activation_sequence_metacognitive_last()
+
     test_total_test_count_exceeds_2500()
 
     print("\n" + "=" * 60)
@@ -71816,6 +71830,246 @@ def test_pipeline_dependencies_form_dag():
                 f"Cycle detected starting from node '{node}'"
             )
     print("✅ test_pipeline_dependencies_form_dag PASSED")
+
+
+# ============================================================================
+# Cognitive Activation & Integration Bridge Tests
+# ============================================================================
+
+
+def test_get_integration_map_returns_expected_keys():
+    """Verify get_integration_map() returns all expected keys."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    imap = model.get_integration_map()
+    expected_keys = {
+        'connected', 'partially_connected', 'isolated',
+        'critical_paths', 'feedback_loops', 'coverage',
+        'active_modules', 'connected_count',
+    }
+    assert expected_keys.issubset(set(imap.keys())), (
+        f"Missing keys: {expected_keys - set(imap.keys())}"
+    )
+    assert isinstance(imap['connected'], list)
+    assert isinstance(imap['coverage'], float)
+    assert 0.0 <= imap['coverage'] <= 1.0
+    print("✅ test_get_integration_map_returns_expected_keys PASSED")
+
+
+def test_get_integration_map_full_coverage():
+    """Verify full config produces full integration coverage."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    imap = model.get_integration_map()
+    assert imap['coverage'] >= 0.9, (
+        f"Full config should have >= 90% coverage, got {imap['coverage']:.2%}"
+    )
+    assert len(imap['isolated']) == 0, (
+        f"Full config should have no isolated modules, got {imap['isolated']}"
+    )
+    print("✅ test_get_integration_map_full_coverage PASSED")
+
+
+def test_get_integration_map_critical_paths():
+    """Verify critical paths are identified and checked."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    imap = model.get_integration_map()
+    paths = imap['critical_paths']
+    assert len(paths) >= 3, (
+        f"Should have at least 3 critical paths, got {len(paths)}"
+    )
+    for cp in paths:
+        assert 'name' in cp and 'path' in cp
+        assert 'active' in cp and 'connected' in cp
+    # The main encoder→reasoning→output path should be active
+    main_path = next(
+        (p for p in paths if 'encoder' in p['name']), None,
+    )
+    assert main_path is not None, (
+        "Must have an encoder→reasoning→output critical path"
+    )
+    assert main_path['active'], "Main encoding path must be active"
+    print("✅ test_get_integration_map_critical_paths PASSED")
+
+
+def test_get_integration_map_feedback_loops():
+    """Verify feedback loops are identified and verified."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    imap = model.get_integration_map()
+    loops = imap['feedback_loops']
+    assert len(loops) >= 2, (
+        f"Should have at least 2 feedback loops, got {len(loops)}"
+    )
+    # The metacognitive re-reasoning loop should be verified
+    meta_loop = next(
+        (l for l in loops if 'meta-cognitive' in l['name']), None,
+    )
+    assert meta_loop is not None, (
+        "Must have a meta-cognitive re-reasoning feedback loop"
+    )
+    assert meta_loop['verified'], (
+        "Meta-cognitive feedback loop must be verified"
+    )
+    print("✅ test_get_integration_map_feedback_loops PASSED")
+
+
+def test_get_activation_sequence_returns_phases():
+    """Verify get_activation_sequence() returns ordered phases."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    seq = model.get_activation_sequence()
+    assert isinstance(seq, list)
+    assert len(seq) >= 5, (
+        f"Should have at least 5 activation phases, got {len(seq)}"
+    )
+    for i, step in enumerate(seq):
+        assert step['step'] == i + 1, (
+            f"Step {i} should have step={i+1}, got {step['step']}"
+        )
+        assert 'phase' in step
+        assert 'modules' in step
+        assert 'description' in step
+        assert 'ready' in step
+        assert isinstance(step['modules'], list)
+    print("✅ test_get_activation_sequence_returns_phases PASSED")
+
+
+def test_get_activation_sequence_ordering():
+    """Verify activation phases follow correct dependency order."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    seq = model.get_activation_sequence()
+    phase_names = [s['phase'] for s in seq]
+    # Foundation must come before reasoning_core
+    assert phase_names.index('foundation') < phase_names.index('reasoning_core'), (
+        "Foundation must precede reasoning_core"
+    )
+    # Reasoning core must come before metacognitive_activation
+    assert phase_names.index('reasoning_core') < phase_names.index('metacognitive_activation'), (
+        "Reasoning core must precede metacognitive activation"
+    )
+    # Safety must come before world models
+    assert phase_names.index('safety_and_reporting') < phase_names.index('world_models_and_memory'), (
+        "Safety must precede world models and memory"
+    )
+    print("✅ test_get_activation_sequence_ordering PASSED")
+
+
+def test_get_activation_sequence_all_ready():
+    """Verify all phases are ready with default config."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    seq = model.get_activation_sequence()
+    for step in seq:
+        assert step['ready'], (
+            f"Phase '{step['phase']}' should be ready with default config"
+        )
+    print("✅ test_get_activation_sequence_all_ready PASSED")
+
+
+def test_always_on_feedback_signals_populated():
+    """Verify always-on feedback signals are populated after forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, config.vocab_size, (1, 10))
+        model(x)
+
+    fb = model.feedback_bus
+    always_on = [
+        'auto_critic_current_quality',
+        'cognitive_unity_deficit',
+        'cycle_consistency_pressure',
+        'decoder_provenance_pressure',
+    ]
+    for sig_name in always_on:
+        val = fb._extra_signals.get(sig_name)
+        dfl = fb._extra_defaults.get(sig_name)
+        assert val is not None, (
+            f"Always-on signal '{sig_name}' must be present"
+        )
+        assert val != dfl, (
+            f"Always-on signal '{sig_name}' must differ from default "
+            f"(val={val}, default={dfl})"
+        )
+    print("✅ test_always_on_feedback_signals_populated PASSED")
+
+
+def test_always_on_signal_sentinel_defaults():
+    """Verify always-on signals use sentinel defaults (-1.0)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    sentinel_signals = [
+        'auto_critic_current_quality',
+        'cognitive_unity_deficit',
+        'cycle_consistency_pressure',
+        'decoder_provenance_pressure',
+    ]
+    for sig_name in sentinel_signals:
+        dfl = fb._extra_defaults.get(sig_name)
+        assert dfl == -1.0, (
+            f"Signal '{sig_name}' should have sentinel default -1.0, "
+            f"got {dfl}"
+        )
+    print("✅ test_always_on_signal_sentinel_defaults PASSED")
+
+
+def test_integration_map_in_architectural_health():
+    """Verify get_integration_map is callable alongside other diagnostics."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    # Both methods should work on the same model
+    imap = model.get_integration_map()
+    health = model.get_architectural_health()
+    # Coverage from integration map should be consistent with health
+    assert imap['coverage'] >= 0.9
+    assert health['healthy']
+    print("✅ test_integration_map_in_architectural_health PASSED")
+
+
+def test_activation_sequence_metacognitive_last():
+    """Verify metacognitive activation is the final phase."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    seq = model.get_activation_sequence()
+    last_phase = seq[-1]
+    assert last_phase['phase'] == 'metacognitive_activation', (
+        f"Last phase should be metacognitive_activation, got {last_phase['phase']}"
+    )
+    assert 'metacognitive_trigger' in last_phase['modules'], (
+        "metacognitive_trigger must be in the final activation phase"
+    )
+    assert 'feedback_bus' in last_phase['modules'], (
+        "feedback_bus must be in the final activation phase"
+    )
+    print("✅ test_activation_sequence_metacognitive_last PASSED")
 
 
 def test_total_test_count_exceeds_2500():

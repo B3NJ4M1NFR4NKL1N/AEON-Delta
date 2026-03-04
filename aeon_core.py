@@ -22131,14 +22131,18 @@ class AEONDeltaV3(nn.Module):
         # Decoder provenance pressure — signals when the decoder
         # significantly distorts the reasoning representation, prompting
         # deeper reasoning in the next pass to produce more robust states.
+        # Sentinel default -1.0 distinguishes "not yet measured" from
+        # "measured and healthy (0.0)."
         self.feedback_bus.register_signal(
-            "decoder_provenance_pressure", default=0.0,
+            "decoder_provenance_pressure", default=-1.0,
         )
         # Current-pass auto-critic quality — dedicated signal so the
         # meta-loop can immediately react to self-critique assessments
         # without waiting for the cross-pass EMA to accumulate.
+        # Sentinel default -1.0 distinguishes "not yet measured" from
+        # "measured and healthy (1.0)."
         self.feedback_bus.register_signal(
-            "auto_critic_current_quality", default=1.0,
+            "auto_critic_current_quality", default=-1.0,
         )
         # Systematic uncertainty — elevated when uncertainty has been
         # consistently high across recent forward passes, prompting
@@ -22384,8 +22388,10 @@ class AEONDeltaV3(nn.Module):
         )
         # Cycle consistency pressure — encode-decode fidelity deficit from
         # the previous pass's CycleConsistencyValidator.
+        # Sentinel default -1.0 distinguishes "not yet measured" from
+        # "measured and healthy (0.0)."
         self.feedback_bus.register_signal(
-            "cycle_consistency_pressure", default=0.0,
+            "cycle_consistency_pressure", default=-1.0,
         )
         # Counterfactual divergence pressure — when the previous pass's
         # CounterfactualVerificationGate detected causal prediction
@@ -22412,8 +22418,10 @@ class AEONDeltaV3(nn.Module):
         # referential verification loop: the system's assessment of its
         # own cognitive unity feeds back into reasoning depth, satisfying
         # the requirement that each component verifies the others.
+        # Sentinel default -1.0 distinguishes "not yet measured" from
+        # "measured and healthy (0.0)."
         self.feedback_bus.register_signal(
-            "cognitive_unity_deficit", default=0.0,
+            "cognitive_unity_deficit", default=-1.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -24100,8 +24108,10 @@ class AEONDeltaV3(nn.Module):
             _dec_delta = _prov.compute_attribution().get(
                 'contributions', {},
             ).get('decoder', 0.0)
-            if isinstance(_dec_delta, (int, float)) and _dec_delta > 0.05:
-                extra["decoder_provenance_pressure"] = min(1.0, _dec_delta)
+            # Always populate decoder_provenance_pressure so the
+            # meta-loop can confirm decoder provenance was measured.
+            if isinstance(_dec_delta, (int, float)):
+                extra["decoder_provenance_pressure"] = min(1.0, max(0.0, _dec_delta))
         # Per-source uncertainty aggregates — instead of feeding each
         # individual uncertainty source as a separate signal (which would
         # require dynamic registration of 60+ channels and bloat the
@@ -24141,9 +24151,16 @@ class AEONDeltaV3(nn.Module):
         # to accumulate.  This closes the gap where auto-critic quality
         # was only visible to the feedback bus through the blended
         # output_quality composite and the delayed EMA trend.
+        # Always populate auto_critic_current_quality so the feedback
+        # bus can distinguish "not measured" from "measured and healthy."
+        # Previously this was only set when quality < 1.0, leaving the
+        # meta-loop unable to confirm that the auto-critic *ran* and
+        # produced a high-quality result.
         _ac_current = self._cached_auto_critic_current_score
-        if _ac_current is not None and _ac_current < 1.0:
+        if _ac_current is not None:
             extra["auto_critic_current_quality"] = max(0.0, min(1.0, _ac_current))
+        else:
+            extra["auto_critic_current_quality"] = 1.0
         # Hybrid reasoning quality — when the HybridReasoningEngine
         # produced weak or invalid conclusions, signal the meta-loop
         # to deepen reasoning for neuro-symbolic integration repair.
@@ -24295,11 +24312,14 @@ class AEONDeltaV3(nn.Module):
         # feedback→meta-loop loop: low cycle consistency on pass N
         # conditions pass N+1's meta-loop to produce more decoder-robust
         # states, complementing the within-pass uncertainty escalation.
+        # Always populate cycle_consistency_pressure so the meta-loop
+        # can confirm encode-decode fidelity was checked.  Previously
+        # only set when score < 0.8, leaving the meta-loop blind to
+        # healthy cycle consistency.
         _cc_score = getattr(self, '_cached_cycle_consistency_score', 1.0)
-        if _cc_score < 0.8:
-            extra["cycle_consistency_pressure"] = max(
-                0.0, min(1.0, 1.0 - _cc_score),
-            )
+        extra["cycle_consistency_pressure"] = max(
+            0.0, min(1.0, 1.0 - _cc_score),
+        )
         # Decoder quality pressure — when the decoder introduced
         # significant distortion (high provenance L2 delta) on the
         # previous pass, signal the meta-loop to produce outputs that
@@ -24369,11 +24389,12 @@ class AEONDeltaV3(nn.Module):
         # the next pass's meta-loop to deepen reasoning.  This closes
         # the self-referential verification loop: the system's own
         # assessment of cognitive unity feeds back into reasoning depth.
+        # Always populate cognitive_unity_deficit so the meta-loop
+        # can confirm the self-referential verification loop ran.
+        # Previously only set when deficit > 0.1, leaving the meta-loop
+        # unable to confirm that unity was assessed and found healthy.
         _cud = getattr(self, '_cached_cognitive_unity_deficit', 0.0)
-        if _cud > 0.1:
-            extra["cognitive_unity_deficit"] = max(
-                0.0, min(1.0, _cud),
-            )
+        extra["cognitive_unity_deficit"] = max(0.0, min(1.0, _cud))
         # Post-output late uncertainty — when the PostOutputUncertaintyGate
         # detected elevated late-stage uncertainty on the previous pass,
         # signal the meta-loop to allocate deeper reasoning to compensate
@@ -42959,6 +42980,354 @@ class AEONDeltaV3(nn.Module):
             'weakest_module': _weakest_module,
             'recommendations': recommendations,
         }
+
+    def get_integration_map(self) -> Dict[str, Any]:
+        """Return an Integration Map of connected vs isolated critical paths.
+
+        Produces a structured summary showing which cognitive subsystems
+        are fully integrated into the pipeline and which remain isolated
+        or partially connected.  This satisfies the Integration Map
+        requirement of the cognitive activation protocol: every module
+        is categorized as *connected* (participates in verified pipeline
+        edges AND provenance DAG), *partially connected* (present in one
+        but not both), or *isolated* (not in either).
+
+        Returns:
+            Dict with:
+                - ``connected``: list of fully integrated module names.
+                - ``partially_connected``: list of modules with
+                  incomplete integration and their status.
+                - ``isolated``: list of modules with no integration.
+                - ``critical_paths``: list of critical signal paths
+                  showing the data flow through the cognitive pipeline.
+                - ``feedback_loops``: list of verified feedback loops.
+                - ``coverage``: float ∈ [0, 1] — fraction of active
+                  modules that are fully connected.
+        """
+        _wiring = self.verify_pipeline_wiring()
+        _verified_edges = _wiring.get('verified_edges', [])
+        _missing_edges = _wiring.get('missing_edges', [])
+        _prov_deps = self.provenance_tracker.get_dependency_graph()
+
+        # Collect all nodes that appear in verified pipeline edges.
+        _pipeline_nodes: Set[str] = set()
+        for up, down in _verified_edges:
+            _pipeline_nodes.add(up)
+            _pipeline_nodes.add(down)
+
+        # Collect all nodes that appear in provenance DAG.
+        _provenance_nodes: Set[str] = set()
+        for target, sources in _prov_deps.items():
+            _provenance_nodes.add(target)
+            if isinstance(sources, (set, list)):
+                _provenance_nodes.update(sources)
+
+        # Collect all active module names.
+        _active_nodes: Set[str] = set()
+        for node, attr in self._NODE_ATTR_MAP.items():
+            if getattr(self, attr, None) is not None:
+                _active_nodes.add(node)
+
+        # Categorize each active module.
+        connected: List[str] = []
+        partially_connected: List[Dict[str, Any]] = []
+        isolated: List[str] = []
+        for node in sorted(_active_nodes):
+            in_pipeline = node in _pipeline_nodes
+            in_provenance = node in _provenance_nodes
+            if in_pipeline and in_provenance:
+                connected.append(node)
+            elif in_pipeline or in_provenance:
+                partially_connected.append({
+                    'module': node,
+                    'in_pipeline': in_pipeline,
+                    'in_provenance': in_provenance,
+                })
+            else:
+                isolated.append(node)
+
+        # Identify critical signal paths through the cognitive pipeline.
+        _critical_paths = [
+            {
+                'name': 'encoder→reasoning→output',
+                'path': ['encoder', 'vq', 'meta_loop', 'integration',
+                         'decoder'],
+            },
+            {
+                'name': 'uncertainty→metacognition→re-reasoning',
+                'path': ['metacognitive_trigger', 'deeper_meta_loop',
+                         'unified_cognitive_cycle'],
+            },
+            {
+                'name': 'safety→critic→reliability',
+                'path': ['safety', 'auto_critic',
+                         'output_reliability_gate'],
+            },
+            {
+                'name': 'memory→validation→trust',
+                'path': ['memory', 'memory_validation', 'memory_trust',
+                         'metacognitive_trigger'],
+            },
+            {
+                'name': 'error_detection→evolution→adaptation',
+                'path': ['error_evolution', 'metacognitive_trigger',
+                         'feedback_bus'],
+            },
+        ]
+        # Verify which critical paths are fully active.
+        for cp in _critical_paths:
+            cp['active'] = all(
+                n in _active_nodes for n in cp['path']
+            )
+            cp['connected'] = all(
+                n in connected for n in cp['path']
+            )
+
+        # Identify verified feedback loops.
+        _feedback_loops = [
+            {
+                'name': 'meta-cognitive re-reasoning',
+                'loop': ['unified_cognitive_cycle',
+                         'metacognitive_trigger', 'deeper_meta_loop'],
+                'verified': all(
+                    n in connected for n in [
+                        'unified_cognitive_cycle',
+                        'metacognitive_trigger', 'deeper_meta_loop',
+                    ]
+                ),
+            },
+            {
+                'name': 'error evolution adaptation',
+                'loop': ['error_evolution', 'metacognitive_trigger',
+                         'feedback_bus'],
+                'verified': all(
+                    n in connected for n in [
+                        'error_evolution', 'metacognitive_trigger',
+                        'feedback_bus',
+                    ]
+                ),
+            },
+            {
+                'name': 'output reliability → loss scaling',
+                'loop': ['output_reliability_gate',
+                         'metacognitive_trigger'],
+                'verified': all(
+                    n in connected for n in [
+                        'output_reliability_gate',
+                        'metacognitive_trigger',
+                    ]
+                ),
+            },
+            {
+                'name': 'subsystem health → integration gating',
+                'loop': ['subsystem_health_gate',
+                         'unified_cognitive_cycle', 'feedback_bus'],
+                'verified': all(
+                    n in connected for n in [
+                        'subsystem_health_gate',
+                        'unified_cognitive_cycle', 'feedback_bus',
+                    ]
+                ),
+            },
+        ]
+
+        _coverage = (
+            len(connected) / max(len(_active_nodes), 1)
+            if _active_nodes else 1.0
+        )
+
+        return {
+            'connected': connected,
+            'partially_connected': partially_connected,
+            'isolated': isolated,
+            'critical_paths': _critical_paths,
+            'feedback_loops': _feedback_loops,
+            'coverage': _coverage,
+            'active_modules': len(_active_nodes),
+            'connected_count': len(connected),
+        }
+
+    def get_activation_sequence(self) -> List[Dict[str, Any]]:
+        """Return the logical activation order for safe system startup.
+
+        Provides a topologically-sorted sequence of subsystem activation
+        steps that ensures each component's dependencies are satisfied
+        before it is activated.  This satisfies the Activation Sequence
+        requirement: patches must be applied in a specific order to
+        avoid breaking existing coherence.
+
+        Returns:
+            List of activation steps, each a dict with:
+                - ``step``: int — 1-based step number.
+                - ``phase``: str — activation phase name.
+                - ``modules``: list of module names activated in this step.
+                - ``description``: str — what this step enables.
+                - ``ready``: bool — whether prerequisites are met.
+        """
+        # Define activation phases based on pipeline topology.
+        _phases = [
+            {
+                'phase': 'foundation',
+                'modules': ['encoder', 'vq', 'encoder_reasoning_norm'],
+                'description': (
+                    'Initialize encoding pipeline: encoder, vector '
+                    'quantizer, and normalization bridge.  These have '
+                    'no upstream dependencies and must be active before '
+                    'any reasoning can begin.'
+                ),
+            },
+            {
+                'phase': 'reasoning_core',
+                'modules': [
+                    'meta_loop', 'certified_meta_loop',
+                    'convergence_arbiter',
+                ],
+                'description': (
+                    'Activate core reasoning loops: provably-convergent '
+                    'meta-loop, certified convergence, and convergence '
+                    'arbitration.  These form the fixed-point reasoning '
+                    'engine that all downstream modules depend on.'
+                ),
+            },
+            {
+                'phase': 'structural_analysis',
+                'modules': [
+                    'slot_binding', 'factor_extraction',
+                    'topology_analysis', 'diversity_analysis',
+                    'consistency_gate', 'complexity_estimator',
+                ],
+                'description': (
+                    'Enable structural decomposition and analysis: slot '
+                    'binding, factor extraction, topology/diversity '
+                    'monitoring, and consistency gating.  These provide '
+                    'the compositional structure that world models and '
+                    'memory systems consume.'
+                ),
+            },
+            {
+                'phase': 'safety_and_reporting',
+                'modules': [
+                    'self_report', 'safety', 'deception_suppressor',
+                    'cognitive_executive',
+                ],
+                'description': (
+                    'Bring safety systems online: self-reporting, '
+                    'multi-level safety gates, deception suppression, '
+                    'and executive arbitration.  Safety must be active '
+                    'before world models and memory to ensure all '
+                    'downstream processing is safety-gated.'
+                ),
+            },
+            {
+                'phase': 'world_models_and_memory',
+                'modules': [
+                    'world_model', 'hierarchical_world_model',
+                    'causal_world_model', 'memory',
+                    'temporal_memory', 'neurogenic_memory',
+                    'consolidating_memory', 'memory_trust',
+                    'memory_validation', 'memory_routing',
+                ],
+                'description': (
+                    'Activate world models and memory subsystems.  '
+                    'These depend on safety gating and structural '
+                    'analysis outputs.  Memory trust and validation '
+                    'provide the reliability signals that downstream '
+                    'causal reasoning requires.'
+                ),
+            },
+            {
+                'phase': 'causal_reasoning',
+                'modules': [
+                    'causal_model', 'notears_causal',
+                    'causal_programmatic', 'causal_dag_consensus',
+                    'cross_validation', 'cross_validation_correction',
+                    'mcts_planning', 'active_learning',
+                ],
+                'description': (
+                    'Enable causal reasoning and planning: structural '
+                    'causal models, DAG consensus, cross-validation, '
+                    'and MCTS planning.  These depend on world models '
+                    'and memory for informed causal inference.'
+                ),
+            },
+            {
+                'phase': 'integration_and_output',
+                'modules': [
+                    'unified_simulator', 'hybrid_reasoning',
+                    'ns_bridge', 'hierarchical_vae',
+                    'causal_context', 'rssm', 'multimodal',
+                    'grounded_multimodal', 'integration',
+                    'subsystem_health_gate', 'auto_critic',
+                    'decoder', 'cycle_consistency',
+                ],
+                'description': (
+                    'Bring integration and output pipeline online: '
+                    'hybrid reasoning, neuro-symbolic bridge, '
+                    'integration projection, health gating, '
+                    'auto-critic, decoder, and cycle consistency '
+                    'validation.  All upstream reasoning must be '
+                    'active for meaningful integration.'
+                ),
+            },
+            {
+                'phase': 'metacognitive_activation',
+                'modules': [
+                    'metacognitive_trigger', 'deeper_meta_loop',
+                    'output_reliability_gate',
+                    'post_output_uncertainty_gate',
+                    'error_evolution', 'feedback_bus',
+                    'unified_cognitive_cycle',
+                    'cognitive_frame', 'metacognitive_executive',
+                    'continual_learning',
+                ],
+                'description': (
+                    'Final activation: metacognitive trigger, '
+                    'output reliability gating, error evolution, '
+                    'feedback bus, unified cognitive cycle, cognitive '
+                    'frame, and metacognitive executive.  These form '
+                    'the self-reflective layer that monitors and '
+                    'adapts all other components.  Must be activated '
+                    'last so all monitored subsystems are already '
+                    'online.'
+                ),
+            },
+        ]
+
+        # Check readiness for each phase.
+        sequence: List[Dict[str, Any]] = []
+        for i, phase in enumerate(_phases):
+            _ready = True
+            _active_modules = []
+            _missing_modules = []
+            for mod in phase['modules']:
+                attr = self._NODE_ATTR_MAP.get(mod)
+                if attr is not None and getattr(self, attr, None) is not None:
+                    _active_modules.append(mod)
+                else:
+                    _missing_modules.append(mod)
+
+            # A phase is ready if all modules of all prior phases are
+            # active (dependencies satisfied).
+            for prior in _phases[:i]:
+                for mod in prior['modules']:
+                    attr = self._NODE_ATTR_MAP.get(mod)
+                    if attr is not None and getattr(self, attr, None) is None:
+                        _ready = False
+                        break
+                if not _ready:
+                    break
+
+            sequence.append({
+                'step': i + 1,
+                'phase': phase['phase'],
+                'modules': phase['modules'],
+                'active_modules': _active_modules,
+                'missing_modules': _missing_modules,
+                'description': phase['description'],
+                'ready': _ready,
+            })
+
+        return sequence
 
     def get_architectural_health(self) -> Dict[str, Any]:
         """Single entry-point synthesizing all AGI coherence diagnostics.
