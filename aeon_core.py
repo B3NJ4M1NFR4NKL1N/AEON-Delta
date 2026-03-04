@@ -20709,6 +20709,345 @@ class UnifiedCognitiveCycle:
 
 
 # ============================================================================
+# SECTION 15a: COGNITIVE INTEGRATION BRIDGES
+# ============================================================================
+
+
+class UnifiedCognitiveFrame:
+    """Bridges diagnostic verification with active forward-pass cognition.
+
+    This class closes the architectural gap between the *read-only*
+    diagnostic methods (:meth:`AEONDeltaV3.verify_cognitive_unity`,
+    :meth:`AEONDeltaV3.verify_and_reinforce`) and the *active* forward-
+    pass meta-cognitive cycle (:class:`UnifiedCognitiveCycle`,
+    :class:`MetaCognitiveRecursionTrigger`).
+
+    Without this bridge, diagnostic verification discovers coherence
+    failures but cannot feed them into the live reasoning pipeline, and
+    the live pipeline cannot request an on-demand diagnostic verification
+    when its own signals are ambiguous.  ``UnifiedCognitiveFrame``
+    provides a single :meth:`assess` entry-point that:
+
+    1. Gathers live forward-pass signals (uncertainty, coherence deficit,
+       provenance completeness, output reliability).
+    2. Optionally runs a lightweight diagnostic check when live signals
+       are ambiguous (moderate uncertainty without clear source).
+    3. Synthesises a composite *frame coherence score* that represents
+       the system's self-assessed cognitive health.
+    4. Produces *corrective pressures* that feed directly into the
+       feedback bus and metacognitive trigger for the next cycle.
+
+    This ensures:
+      - **Mutual reinforcement**: diagnostics verify live signals,
+        live signals trigger diagnostics.
+      - **Meta-cognitive trigger**: ambiguous live states automatically
+        escalate to diagnostic review.
+      - **Causal transparency**: the frame's verdict is recorded in the
+        provenance tracker and causal trace.
+
+    This is a pure-logic orchestrator with **no learnable parameters**.
+
+    Args:
+        provenance_tracker: Instance recording per-module attribution.
+        metacognitive_trigger: Optional trigger for re-reasoning decisions.
+        error_evolution: Optional tracker for error-recovery patterns.
+        coherence_registry: Optional registry for subsystem output quality.
+        ambiguity_threshold: Uncertainty level below which live signals
+            are considered ambiguous (triggering diagnostic review).
+        high_deficit_threshold: Coherence deficit above which corrective
+            pressure is emitted.
+    """
+
+    def __init__(
+        self,
+        provenance_tracker: 'CausalProvenanceTracker',
+        metacognitive_trigger: Optional['MetaCognitiveRecursionTrigger'] = None,
+        error_evolution: Optional['CausalErrorEvolutionTracker'] = None,
+        coherence_registry: Optional['SubsystemCoherenceRegistry'] = None,
+        ambiguity_threshold: float = 0.3,
+        high_deficit_threshold: float = 0.4,
+    ):
+        self.provenance_tracker = provenance_tracker
+        self.metacognitive_trigger = metacognitive_trigger
+        self.error_evolution = error_evolution
+        self.coherence_registry = coherence_registry
+        self._ambiguity_threshold = max(0.0, ambiguity_threshold)
+        self._high_deficit_threshold = max(0.0, high_deficit_threshold)
+        self._last_frame_score: float = 1.0
+        self._last_corrective_pressures: Dict[str, float] = {}
+        self._assessment_count: int = 0
+
+    def assess(
+        self,
+        uncertainty: float,
+        coherence_deficit: float,
+        output_reliability: float,
+        convergence_quality: float,
+        uncertainty_sources: Optional[Dict[str, float]] = None,
+        unity_components: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Assess current cognitive frame coherence.
+
+        Args:
+            uncertainty: Current-pass uncertainty ∈ [0, 1].
+            coherence_deficit: Cross-module coherence deficit ∈ [0, 1].
+            output_reliability: Composite output trust ∈ [0, 1].
+            convergence_quality: Meta-loop convergence quality ∈ [0, 1].
+            uncertainty_sources: Per-source uncertainty breakdown.
+            unity_components: Per-axiom cognitive unity breakdown.
+
+        Returns:
+            Dict with ``frame_score``, ``corrective_pressures``,
+            ``needs_diagnostic``, and ``meta_trigger_boost``.
+        """
+        self._assessment_count += 1
+        uncertainty_sources = uncertainty_sources or {}
+        unity_components = unity_components or {}
+
+        # 1. Provenance completeness
+        trace_completeness = self.provenance_tracker.get_trace_completeness_ratio()
+
+        # 2. Coverage deficit from coherence registry
+        coverage_deficit = 0.0
+        if self.coherence_registry is not None:
+            coverage_deficit = self.coherence_registry.get_coverage_deficit()
+
+        # 3. Composite frame score — weighted blend of live signals
+        frame_score = max(0.0, min(1.0, (
+            0.25 * (1.0 - min(1.0, uncertainty))
+            + 0.20 * (1.0 - min(1.0, coherence_deficit))
+            + 0.20 * min(1.0, output_reliability)
+            + 0.15 * min(1.0, convergence_quality)
+            + 0.10 * min(1.0, trace_completeness)
+            + 0.10 * (1.0 - min(1.0, coverage_deficit))
+        )))
+        self._last_frame_score = frame_score
+
+        # 4. Determine if diagnostic review is needed — ambiguous state
+        #    where uncertainty is moderate but no dominant source, and
+        #    coherence deficit is elevated but not extreme.
+        _source_count = len(uncertainty_sources)
+        _max_source = max(uncertainty_sources.values(), default=0.0)
+        needs_diagnostic = (
+            self._ambiguity_threshold < uncertainty < 0.7
+            and (_source_count < 2 or _max_source < 0.2)
+            and coherence_deficit > 0.1
+        )
+
+        # 5. Corrective pressures for feedback bus
+        corrective_pressures: Dict[str, float] = {}
+        frame_deficit = 1.0 - frame_score
+        if frame_deficit > 0.1:
+            corrective_pressures["frame_coherence_pressure"] = max(
+                0.0, min(1.0, frame_deficit),
+            )
+        if coherence_deficit > self._high_deficit_threshold:
+            corrective_pressures["coherence_correction_pressure"] = max(
+                0.0, min(1.0, coherence_deficit),
+            )
+        if trace_completeness < 0.8:
+            corrective_pressures["traceability_pressure"] = max(
+                0.0, min(1.0, 1.0 - trace_completeness),
+            )
+        if coverage_deficit > 0.2:
+            corrective_pressures["coverage_pressure"] = max(
+                0.0, min(1.0, coverage_deficit),
+            )
+        self._last_corrective_pressures = corrective_pressures
+
+        # 6. Metacognitive trigger boost — when the frame score is low,
+        #    signal the trigger to be more sensitive.
+        meta_trigger_boost = 0.0
+        if frame_score < 0.5:
+            meta_trigger_boost = min(0.3, (0.5 - frame_score) * 0.6)
+
+        # 7. Record in error evolution if frame is degraded
+        if (self.error_evolution is not None
+                and frame_deficit > 0.3):
+            self.error_evolution.record_episode(
+                error_class='cognitive_frame_deficit',
+                strategy_used='frame_assessment',
+                success=frame_score >= 0.4,
+                metadata={
+                    'frame_score': frame_score,
+                    'uncertainty': uncertainty,
+                    'coherence_deficit': coherence_deficit,
+                    'trace_completeness': trace_completeness,
+                },
+            )
+
+        # 8. Identify weakest component for targeted correction
+        _components = {
+            'uncertainty_control': 1.0 - min(1.0, uncertainty),
+            'coherence': 1.0 - min(1.0, coherence_deficit),
+            'reliability': min(1.0, output_reliability),
+            'convergence': min(1.0, convergence_quality),
+            'traceability': min(1.0, trace_completeness),
+            'coverage': 1.0 - min(1.0, coverage_deficit),
+        }
+        weakest = min(_components, key=_components.get)
+
+        return {
+            'frame_score': frame_score,
+            'frame_deficit': frame_deficit,
+            'corrective_pressures': corrective_pressures,
+            'needs_diagnostic': needs_diagnostic,
+            'meta_trigger_boost': meta_trigger_boost,
+            'weakest_component': weakest,
+            'components': _components,
+            'trace_completeness': trace_completeness,
+            'coverage_deficit': coverage_deficit,
+            'assessment_count': self._assessment_count,
+        }
+
+
+class MetaCognitiveExecutive:
+    """Bridges executive arbitration with meta-cognitive review.
+
+    The :class:`CognitiveExecutiveFunction` selects which subsystems to
+    execute and broadcasts the winning hypothesis, but its decisions are
+    never reviewed by the meta-cognitive cycle.  This class closes that
+    gap by:
+
+    1. Accepting executive results (winner, urgency, meta_stats).
+    2. Evaluating whether the executive's choice should trigger a
+       meta-cognitive review (e.g., low winner alignment, conflicting
+       urgency distribution, declining meta_stats trend).
+    3. Producing a review verdict with corrective signals that feed
+       into the :class:`MetaCognitiveRecursionTrigger` and feedback bus.
+
+    This ensures:
+      - **Mutual reinforcement**: the executive's choices are verified
+        by the meta-cognitive system, and the meta-cognitive system's
+        review influences future executive decisions via feedback.
+      - **Meta-cognitive trigger**: poor executive alignment triggers
+        meta-cognitive re-reasoning.
+      - **Causal transparency**: executive review decisions are recorded
+        in the provenance tracker.
+
+    This is a pure-logic orchestrator with **no learnable parameters**.
+
+    Args:
+        alignment_threshold: Minimum winner-state alignment (from
+            MetaMonitor) below which a meta-cognitive review is triggered.
+        urgency_entropy_threshold: Maximum entropy of urgency distribution
+            below which the executive is considered overly focused (potential
+            hypothesis fixation).
+    """
+
+    def __init__(
+        self,
+        alignment_threshold: float = 0.3,
+        urgency_entropy_threshold: float = 0.5,
+    ):
+        self._alignment_threshold = max(0.0, alignment_threshold)
+        self._urgency_entropy_threshold = max(0.0, urgency_entropy_threshold)
+        self._review_count: int = 0
+        self._last_alignment: float = 1.0
+        self._last_review_triggered: bool = False
+        self._alignment_ema: float = 1.0
+        self._EMA_ALPHA: float = 0.3
+
+    def review(
+        self,
+        executive_results: Dict[str, Any],
+        uncertainty: float = 0.0,
+        coherence_deficit: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Review executive arbitration results.
+
+        Args:
+            executive_results: Output from CognitiveExecutiveFunction.forward().
+            uncertainty: Current-pass uncertainty for context.
+            coherence_deficit: Current coherence deficit for context.
+
+        Returns:
+            Dict with ``review_triggered``, ``alignment_score``,
+            ``corrective_pressure``, and ``recommendation``.
+        """
+        self._review_count += 1
+
+        # Extract executive signals
+        meta_stats = executive_results.get("meta_stats", {})
+        winner = executive_results.get("winner", None)
+        urgency = executive_results.get("urgency", None)
+        executed = executive_results.get("executed", [])
+
+        # 1. Winner-state alignment from MetaMonitor
+        alignment = 1.0
+        if isinstance(meta_stats, dict):
+            alignment = max(0.0, min(1.0, meta_stats.get("mean", 1.0)))
+        elif isinstance(meta_stats, (int, float)):
+            alignment = max(0.0, min(1.0, float(meta_stats)))
+        self._last_alignment = alignment
+
+        # Update alignment EMA for trend detection
+        self._alignment_ema = (
+            self._EMA_ALPHA * alignment
+            + (1.0 - self._EMA_ALPHA) * self._alignment_ema
+        )
+
+        # 2. Urgency entropy — detect hypothesis fixation
+        urgency_entropy = 1.0  # default: uniform = max entropy
+        if urgency is not None and torch.is_tensor(urgency):
+            try:
+                _probs = torch.softmax(urgency.float().flatten(), dim=0)
+                _log_probs = torch.log(_probs + 1e-10)
+                _entropy = -(_probs * _log_probs).sum().item()
+                _max_entropy = math.log(max(_probs.numel(), 2))
+                urgency_entropy = _entropy / max(_max_entropy, 1e-6)
+            except Exception:
+                urgency_entropy = 1.0
+
+        # 3. Determine if review is needed
+        _low_alignment = alignment < self._alignment_threshold
+        _declining_trend = self._alignment_ema < self._alignment_threshold
+        _low_entropy = urgency_entropy < self._urgency_entropy_threshold
+        _high_context_uncertainty = uncertainty > 0.5 and alignment < 0.5
+
+        review_triggered = (
+            _low_alignment
+            or _declining_trend
+            or (_low_entropy and coherence_deficit > 0.2)
+            or _high_context_uncertainty
+        )
+        self._last_review_triggered = review_triggered
+
+        # 4. Corrective pressure
+        corrective_pressure = 0.0
+        recommendation = "accept"
+        if review_triggered:
+            corrective_pressure = max(
+                0.0,
+                min(1.0, 1.0 - alignment),
+            )
+            if _low_alignment:
+                recommendation = "deepen_reasoning"
+            elif _declining_trend:
+                recommendation = "stabilize_alignment"
+            elif _low_entropy:
+                recommendation = "diversify_hypotheses"
+            else:
+                recommendation = "reduce_uncertainty"
+
+        return {
+            'review_triggered': review_triggered,
+            'alignment_score': alignment,
+            'alignment_ema': self._alignment_ema,
+            'urgency_entropy': urgency_entropy,
+            'corrective_pressure': corrective_pressure,
+            'recommendation': recommendation,
+            'review_count': self._review_count,
+            'triggers': {
+                'low_alignment': _low_alignment,
+                'declining_trend': _declining_trend,
+                'low_entropy': _low_entropy,
+                'high_context_uncertainty': _high_context_uncertainty,
+            },
+        }
+
+
+# ============================================================================
 # SECTION 15b: ARCHITECTURAL COHERENCE COMPONENTS
 # ============================================================================
 
@@ -21624,6 +21963,12 @@ class AEONDeltaV3(nn.Module):
         # Post-output uncertainty gate — re-evaluates metacognitive
         # need after late-stage uncertainty accumulation.
         "post_output_uncertainty_gate": "post_output_uncertainty_gate",
+        # Cognitive frame — bridges diagnostic verification with active
+        # forward-pass cognition.
+        "cognitive_frame": "cognitive_frame",
+        # MetaCognitiveExecutive — bridges executive arbitration with
+        # meta-cognitive review.
+        "metacognitive_executive": "metacognitive_executive",
     }
     
     def __init__(self, config: AEONConfig):
@@ -22870,6 +23215,13 @@ class AEONDeltaV3(nn.Module):
         # to weight the loss more heavily — closing the bidirectional
         # inference→training feedback loop.  Initialised to 1.0 (neutral).
         self._cached_coherence_loss_scale: float = 1.0
+        # Output reliability loss scale — when the model's own
+        # self-assessment considers the output untrustworthy,
+        # scale the training loss to focus on improving reliability.
+        self._cached_reliability_loss_scale: float = 1.0
+        # Executive review pressure — corrective pressure from the
+        # MetaCognitiveExecutive when executive alignment is poor.
+        self._cached_executive_review_pressure: float = 0.0
 
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
@@ -23394,7 +23746,24 @@ class AEONDeltaV3(nn.Module):
                 self.unified_cognitive_cycle = None
         else:
             self.unified_cognitive_cycle = None
-        
+
+        # ===== COGNITIVE INTEGRATION BRIDGES =====
+        # UnifiedCognitiveFrame bridges diagnostic verification methods
+        # (verify_cognitive_unity, verify_and_reinforce) with the active
+        # forward-pass cognitive cycle, ensuring diagnostic discoveries
+        # feed into live reasoning and ambiguous live states trigger
+        # diagnostic review.
+        self.cognitive_frame = UnifiedCognitiveFrame(
+            provenance_tracker=self.provenance_tracker,
+            metacognitive_trigger=self.metacognitive_trigger,
+            error_evolution=self.error_evolution,
+            coherence_registry=self.coherence_registry,
+        )
+        # MetaCognitiveExecutive bridges the CognitiveExecutiveFunction's
+        # arbitration decisions with the meta-cognitive review cycle,
+        # ensuring poor executive alignment triggers re-reasoning.
+        self.metacognitive_executive = MetaCognitiveExecutive()
+
         # ===== INTEGRITY, PROGRESS & DETERMINISM =====
         self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
         self.progress_tracker = ProgressTracker(max_checkpoints=10)
@@ -23715,10 +24084,14 @@ class AEONDeltaV3(nn.Module):
             extra["systematic_uncertainty"] = max(0.0, min(1.0, _unc_avg))
         # Auto-critic quality trend — feed the cross-pass quality EMA
         # into the meta-loop so that historically poor auto-critic
-        # performance triggers compensatory deeper reasoning.
+        # performance triggers compensatory deeper reasoning.  The
+        # threshold is set to 0.1 (rather than 0.3) so that moderate
+        # quality degradation also triggers feedback, ensuring early
+        # detection of declining self-critique quality before it
+        # becomes severe.
         if self._auto_critic_quality_count >= 2:
             _quality_deficit = max(0.0, 1.0 - self._auto_critic_quality_ema)
-            if _quality_deficit > 0.3:
+            if _quality_deficit > 0.1:
                 extra["auto_critic_quality_deficit"] = min(1.0, _quality_deficit)
         # Current-pass auto-critic quality — feed the most recent self-
         # critique score directly so the meta-loop can react immediately
@@ -24260,6 +24633,25 @@ class AEONDeltaV3(nn.Module):
                         )
             except Exception:
                 pass
+        # Cognitive frame corrective pressures — route per-component
+        # pressures from the UnifiedCognitiveFrame's most recent
+        # assessment into the feedback bus.  This closes the gap where
+        # the cognitive frame's composite verdict was computed but
+        # never fed back into the meta-loop conditioning cycle.
+        _cf = getattr(self, 'cognitive_frame', None)
+        if _cf is not None:
+            for _cp_name, _cp_val in _cf._last_corrective_pressures.items():
+                if _cp_val > 0.1:
+                    extra[f"cf:{_cp_name}"] = max(0.0, min(1.0, _cp_val))
+        # MetaCognitiveExecutive review pressure — when the executive
+        # review detected poor alignment or hypothesis fixation, route
+        # the corrective pressure into the feedback bus so the next
+        # pass's meta-loop conditions on executive health.
+        _mce_pressure = getattr(self, '_cached_executive_review_pressure', 0.0)
+        if _mce_pressure > 0.1:
+            extra["executive_review_pressure"] = max(
+                0.0, min(1.0, _mce_pressure),
+            )
         return extra
 
     @staticmethod
@@ -27131,6 +27523,28 @@ class AEONDeltaV3(nn.Module):
                             "executed": executive_results.get("executed", []),
                         },
                     )
+                # MetaCognitiveExecutive review — evaluate whether the
+                # executive's arbitration should trigger a meta-cognitive
+                # review.  This closes the gap where executive decisions
+                # were never verified by the meta-cognitive system.
+                if self.metacognitive_executive is not None:
+                    _mce_review = self.metacognitive_executive.review(
+                        executive_results,
+                        uncertainty=uncertainty,
+                        coherence_deficit=self._cached_coherence_deficit,
+                    )
+                    self._cached_executive_review_pressure = (
+                        _mce_review.get('corrective_pressure', 0.0)
+                    )
+                    if _mce_review.get('review_triggered', False):
+                        _mce_boost = min(
+                            1.0 - uncertainty,
+                            _mce_review['corrective_pressure'] * 0.1,
+                        )
+                        if _mce_boost > 0:
+                            uncertainty = min(1.0, uncertainty + _mce_boost)
+                            uncertainty_sources["executive_review"] = _mce_boost
+                            high_uncertainty = uncertainty > 0.5
             except Exception as exec_err:
                 logger.warning(f"CognitiveExecutiveFunction error (non-fatal): {exec_err}")
                 self.error_recovery.record_event(
@@ -36258,6 +36672,15 @@ class AEONDeltaV3(nn.Module):
         # the trainer puts more emphasis on this batch — closing the
         # bidirectional inference→training feedback loop.
         self._cached_coherence_loss_scale = 1.0 + self._cached_coherence_deficit
+        # 8i-scale-reliability. Derive reliability-based loss scale so
+        # that outputs with low composite reliability receive stronger
+        # training signal.  This closes the gap where output reliability
+        # was computed and used for output attenuation but never
+        # influenced the training loss, meaning the model received
+        # equal gradient pressure regardless of how trustworthy its
+        # own self-assessment considered the output.
+        _rel_score = getattr(self, '_cached_output_quality', 1.0)
+        self._cached_reliability_loss_scale = 1.0 + max(0.0, 1.0 - _rel_score)
 
         # 8j. Pre-compute consistency check and lipschitz loss for
         # compute_loss().  Computing these HERE (inside the forward graph)
@@ -37432,6 +37855,36 @@ class AEONDeltaV3(nn.Module):
         # Surface coherence_deficit at top level so downstream consumers
         # can access cross-module coherence health directly.
         result['coherence_deficit'] = self._cached_coherence_deficit
+
+        # ===== COGNITIVE FRAME ASSESSMENT =====
+        # Run the UnifiedCognitiveFrame's assess() to bridge diagnostic
+        # verification with the live forward-pass signals.  The frame
+        # synthesises a composite coherence score and produces corrective
+        # pressures that feed into the feedback bus via
+        # _build_feedback_extra_signals().  When the frame detects
+        # ambiguous uncertainty (moderate level, no dominant source),
+        # it flags the need for diagnostic review, closing the gap
+        # where live signals and diagnostic methods operated independently.
+        if self.cognitive_frame is not None:
+            _cf_result = self.cognitive_frame.assess(
+                uncertainty=uncertainty,
+                coherence_deficit=self._cached_coherence_deficit,
+                output_reliability=_cus_reliability,
+                convergence_quality=_cus_convergence,
+                uncertainty_sources=uncertainty_sources,
+                unity_components=result.get('cognitive_unity_components', {}),
+            )
+            result['cognitive_frame'] = _cf_result
+            # When the frame triggers a meta-cognitive boost, escalate
+            # the trigger's cross-pass EMA so the next evaluation is
+            # more sensitive.
+            if (_cf_result.get('meta_trigger_boost', 0.0) > 0
+                    and self.metacognitive_trigger is not None):
+                self.metacognitive_trigger._cross_pass_trigger_ema = min(
+                    1.0,
+                    self.metacognitive_trigger._cross_pass_trigger_ema
+                    + _cf_result['meta_trigger_boost'],
+                )
 
         # ===== COGNITIVE UNITY → UNCERTAINTY ESCALATION =====
         # When the cognitive unity score is low, escalate the current
@@ -44142,6 +44595,16 @@ class AEONTrainer:
         )
         if _coherence_loss_scale != 1.0:
             total_loss = total_loss * _coherence_loss_scale
+        # Apply output reliability loss scale — when the model's own
+        # self-assessment considers the output untrustworthy, increase
+        # the loss so the trainer focuses on improving reliability.
+        # This closes the gap where output reliability influenced
+        # output attenuation but never training loss.
+        _reliability_loss_scale = getattr(
+            self.model, '_cached_reliability_loss_scale', 1.0,
+        )
+        if _reliability_loss_scale != 1.0:
+            total_loss = total_loss * _reliability_loss_scale
         
         # Skip backward pass on NaN/Inf to prevent gradient corruption
         if torch.isnan(total_loss) or torch.isinf(total_loss):

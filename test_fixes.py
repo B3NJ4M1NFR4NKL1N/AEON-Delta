@@ -70985,5 +70985,315 @@ def test_memory_routing_validate_routing_quality_called_in_pipeline():
     print("✅ test_memory_routing_validate_routing_quality_called_in_pipeline PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SECTION 50: COGNITIVE INTEGRATION BRIDGES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_unified_cognitive_frame_instantiation():
+    """Verify UnifiedCognitiveFrame is instantiated in AEONDeltaV3."""
+    from aeon_core import AEONConfig, AEONDeltaV3, UnifiedCognitiveFrame
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert model.cognitive_frame is not None
+    assert isinstance(model.cognitive_frame, UnifiedCognitiveFrame)
+    print("✅ test_unified_cognitive_frame_instantiation PASSED")
+
+
+def test_unified_cognitive_frame_assess_basic():
+    """Verify UnifiedCognitiveFrame.assess() returns expected keys."""
+    from aeon_core import UnifiedCognitiveFrame, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    frame = UnifiedCognitiveFrame(provenance_tracker=tracker)
+    result = frame.assess(
+        uncertainty=0.3,
+        coherence_deficit=0.1,
+        output_reliability=0.8,
+        convergence_quality=0.9,
+    )
+    expected_keys = {
+        'frame_score', 'frame_deficit', 'corrective_pressures',
+        'needs_diagnostic', 'meta_trigger_boost', 'weakest_component',
+        'components', 'trace_completeness', 'coverage_deficit',
+        'assessment_count',
+    }
+    assert expected_keys.issubset(set(result.keys())), (
+        f"Missing keys: {expected_keys - set(result.keys())}"
+    )
+    assert 0.0 <= result['frame_score'] <= 1.0
+    assert result['assessment_count'] == 1
+    print("✅ test_unified_cognitive_frame_assess_basic PASSED")
+
+
+def test_unified_cognitive_frame_high_uncertainty_triggers_pressure():
+    """Verify high uncertainty produces corrective pressure."""
+    from aeon_core import UnifiedCognitiveFrame, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    frame = UnifiedCognitiveFrame(provenance_tracker=tracker)
+    result = frame.assess(
+        uncertainty=0.9,
+        coherence_deficit=0.6,
+        output_reliability=0.2,
+        convergence_quality=0.3,
+    )
+    assert result['frame_score'] < 0.5, (
+        f"Frame score should be low with high uncertainty: {result['frame_score']}"
+    )
+    assert len(result['corrective_pressures']) > 0, (
+        "Should produce corrective pressures with high uncertainty"
+    )
+    assert result['meta_trigger_boost'] > 0, (
+        "Should produce meta trigger boost with low frame score"
+    )
+    print("✅ test_unified_cognitive_frame_high_uncertainty_triggers_pressure PASSED")
+
+
+def test_unified_cognitive_frame_healthy_state():
+    """Verify healthy inputs produce high frame score and no pressures."""
+    from aeon_core import UnifiedCognitiveFrame, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    frame = UnifiedCognitiveFrame(provenance_tracker=tracker)
+    result = frame.assess(
+        uncertainty=0.05,
+        coherence_deficit=0.0,
+        output_reliability=0.95,
+        convergence_quality=0.98,
+    )
+    assert result['frame_score'] > 0.7, (
+        f"Healthy state should produce high frame score: {result['frame_score']}"
+    )
+    assert result['meta_trigger_boost'] == 0.0
+    print("✅ test_unified_cognitive_frame_healthy_state PASSED")
+
+
+def test_metacognitive_executive_instantiation():
+    """Verify MetaCognitiveExecutive is instantiated in AEONDeltaV3."""
+    from aeon_core import AEONConfig, AEONDeltaV3, MetaCognitiveExecutive
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert model.metacognitive_executive is not None
+    assert isinstance(model.metacognitive_executive, MetaCognitiveExecutive)
+    print("✅ test_metacognitive_executive_instantiation PASSED")
+
+
+def test_metacognitive_executive_review_basic():
+    """Verify MetaCognitiveExecutive.review() returns expected keys."""
+    from aeon_core import MetaCognitiveExecutive
+
+    mce = MetaCognitiveExecutive()
+    result = mce.review(
+        executive_results={
+            'winner': None,
+            'urgency': None,
+            'executed': [],
+            'meta_stats': {'mean': 0.8},
+        },
+    )
+    expected_keys = {
+        'review_triggered', 'alignment_score', 'alignment_ema',
+        'urgency_entropy', 'corrective_pressure', 'recommendation',
+        'review_count', 'triggers',
+    }
+    assert expected_keys.issubset(set(result.keys())), (
+        f"Missing keys: {expected_keys - set(result.keys())}"
+    )
+    assert result['review_count'] == 1
+    print("✅ test_metacognitive_executive_review_basic PASSED")
+
+
+def test_metacognitive_executive_low_alignment_triggers_review():
+    """Verify low alignment triggers meta-cognitive review."""
+    from aeon_core import MetaCognitiveExecutive
+
+    mce = MetaCognitiveExecutive(alignment_threshold=0.5)
+    result = mce.review(
+        executive_results={
+            'winner': None,
+            'urgency': None,
+            'executed': [],
+            'meta_stats': {'mean': 0.1},
+        },
+    )
+    assert result['review_triggered'], (
+        "Low alignment should trigger review"
+    )
+    assert result['corrective_pressure'] > 0, (
+        "Should produce corrective pressure"
+    )
+    assert result['recommendation'] == 'deepen_reasoning'
+    print("✅ test_metacognitive_executive_low_alignment_triggers_review PASSED")
+
+
+def test_metacognitive_executive_high_alignment_no_review():
+    """Verify high alignment does not trigger review."""
+    from aeon_core import MetaCognitiveExecutive
+
+    mce = MetaCognitiveExecutive(alignment_threshold=0.3)
+    result = mce.review(
+        executive_results={
+            'winner': None,
+            'urgency': None,
+            'executed': ['sub1', 'sub2'],
+            'meta_stats': {'mean': 0.9},
+        },
+    )
+    assert not result['review_triggered'], (
+        "High alignment should not trigger review"
+    )
+    assert result['corrective_pressure'] == 0.0
+    assert result['recommendation'] == 'accept'
+    print("✅ test_metacognitive_executive_high_alignment_no_review PASSED")
+
+
+def test_reliability_loss_scale_cached():
+    """Verify _cached_reliability_loss_scale is initialized."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_reliability_loss_scale')
+    assert model._cached_reliability_loss_scale == 1.0
+    print("✅ test_reliability_loss_scale_cached PASSED")
+
+
+def test_executive_review_pressure_cached():
+    """Verify _cached_executive_review_pressure is initialized."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_executive_review_pressure')
+    assert model._cached_executive_review_pressure == 0.0
+    print("✅ test_executive_review_pressure_cached PASSED")
+
+
+def test_auto_critic_quality_deficit_threshold_lowered():
+    """Verify auto-critic deficit threshold is 0.1 not 0.3."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_quality_deficit > 0.1' in src, (
+        "Auto-critic quality deficit threshold should be 0.1"
+    )
+    print("✅ test_auto_critic_quality_deficit_threshold_lowered PASSED")
+
+
+def test_cognitive_frame_in_node_attr_map():
+    """Verify cognitive_frame and metacognitive_executive are in _NODE_ATTR_MAP."""
+    from aeon_core import AEONDeltaV3
+
+    assert "cognitive_frame" in AEONDeltaV3._NODE_ATTR_MAP
+    assert AEONDeltaV3._NODE_ATTR_MAP["cognitive_frame"] == "cognitive_frame"
+    assert "metacognitive_executive" in AEONDeltaV3._NODE_ATTR_MAP
+    assert AEONDeltaV3._NODE_ATTR_MAP["metacognitive_executive"] == "metacognitive_executive"
+    print("✅ test_cognitive_frame_in_node_attr_map PASSED")
+
+
+def test_reliability_loss_scale_in_trainer():
+    """Verify _cached_reliability_loss_scale is consumed by AEONTrainer."""
+    import inspect
+    from aeon_core import AEONTrainer
+
+    src = inspect.getsource(AEONTrainer.train_step)
+    assert '_cached_reliability_loss_scale' in src, (
+        "AEONTrainer.train_step must consume _cached_reliability_loss_scale"
+    )
+    print("✅ test_reliability_loss_scale_in_trainer PASSED")
+
+
+def test_cognitive_frame_assess_in_forward():
+    """Verify cognitive_frame.assess() is called in _forward_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'cognitive_frame' in src, (
+        "cognitive_frame.assess() must be called in _forward_impl"
+    )
+    print("✅ test_cognitive_frame_assess_in_forward PASSED")
+
+
+def test_metacognitive_executive_review_in_reasoning_core():
+    """Verify metacognitive_executive.review() is called in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'metacognitive_executive' in src, (
+        "metacognitive_executive.review() must be called in _reasoning_core_impl"
+    )
+    print("✅ test_metacognitive_executive_review_in_reasoning_core PASSED")
+
+
+def test_executive_review_pressure_in_feedback_bus():
+    """Verify executive_review_pressure is routed through feedback bus."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'executive_review_pressure' in src, (
+        "executive_review_pressure must be in _build_feedback_extra_signals"
+    )
+    print("✅ test_executive_review_pressure_in_feedback_bus PASSED")
+
+
+def test_cognitive_frame_pressures_in_feedback_bus():
+    """Verify cognitive frame corrective pressures are routed through feedback bus."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'cf:' in src, (
+        "Cognitive frame pressures (cf:*) must be in _build_feedback_extra_signals"
+    )
+    print("✅ test_cognitive_frame_pressures_in_feedback_bus PASSED")
+
+
+def test_unified_cognitive_frame_ambiguous_triggers_diagnostic():
+    """Verify ambiguous uncertainty triggers diagnostic review."""
+    from aeon_core import UnifiedCognitiveFrame, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    frame = UnifiedCognitiveFrame(
+        provenance_tracker=tracker,
+        ambiguity_threshold=0.2,
+    )
+    result = frame.assess(
+        uncertainty=0.4,
+        coherence_deficit=0.2,
+        output_reliability=0.7,
+        convergence_quality=0.8,
+        uncertainty_sources={'single_weak': 0.1},
+    )
+    assert result['needs_diagnostic'], (
+        "Ambiguous uncertainty (moderate level, single weak source) "
+        "should trigger diagnostic"
+    )
+    print("✅ test_unified_cognitive_frame_ambiguous_triggers_diagnostic PASSED")
+
+
+def test_metacognitive_executive_alignment_ema_tracks():
+    """Verify alignment EMA tracks across multiple reviews."""
+    from aeon_core import MetaCognitiveExecutive
+
+    mce = MetaCognitiveExecutive()
+    # Several high-alignment reviews
+    for _ in range(5):
+        mce.review({'meta_stats': {'mean': 0.9}})
+    assert mce._alignment_ema > 0.7, "EMA should be high after high-alignment reviews"
+
+    # Now one low-alignment review
+    result = mce.review({'meta_stats': {'mean': 0.1}})
+    assert mce._alignment_ema < 0.9, "EMA should drop after low-alignment review"
+    assert result['review_count'] == 6
+    print("✅ test_metacognitive_executive_alignment_ema_tracks PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
