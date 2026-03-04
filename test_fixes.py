@@ -27310,7 +27310,7 @@ def test_silent_failure_escalates_uncertainty_ns_bridge():
 
     def _raise(*a, **kw):
         raise RuntimeError("test sabotage")
-    with patch.object(model.standalone_ns_bridge, 'forward', side_effect=_raise):
+    with patch.object(model.standalone_ns_bridge, 'extract_facts', side_effect=_raise):
         tokens = torch.randint(0, 100, (1, 8))
         with torch.no_grad():
             result = model(tokens, fast=False)

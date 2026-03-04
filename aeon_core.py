@@ -31665,8 +31665,10 @@ class AEONDeltaV3(nn.Module):
                 _ns_err_boost = min(1.0 - uncertainty, 0.05)
                 if _ns_err_boost > 0:
                     uncertainty = min(1.0, uncertainty + _ns_err_boost)
-                    uncertainty_sources["ns_bridge_error"] = _ns_err_boost
                     high_uncertainty = uncertainty > 0.5
+                # Always record the error source for causal transparency,
+                # even when uncertainty is already saturated (boost == 0).
+                uncertainty_sources["ns_bridge_error"] = max(_ns_err_boost, 0.0)
         # Cache NS bridge confidence for the feedback bus.  Confidence is
         # derived from the mean fact and rule activation: high activation
         # indicates strong symbolic grounding; errors yield 0.0.
