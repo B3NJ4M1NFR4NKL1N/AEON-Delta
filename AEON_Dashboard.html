@@ -56,14 +56,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13
 
 /* MAIN */
 .main{overflow-y:auto;height:calc(100vh - 50px);}
-.panel{display:none;padding:22px;animation:fadeIn 0.18s ease;}
+.panel{display:none;padding:26px;animation:fadeIn 0.18s ease;}
 .panel.active{display:block;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
 
 /* COMPONENTS */
-.ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;}
+.ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:22px;flex-wrap:wrap;gap:12px;}
 .ph-title{font-family:var(--display);font-size:20px;font-weight:700;}
-.ph-sub{font-size:11px;color:var(--text3);margin-top:2px;}
+.ph-sub{font-size:11px;color:var(--text3);margin-top:3px;}
 .btns{display:flex;gap:8px;flex-wrap:wrap;}
 
 .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:var(--r);font-family:var(--mono);font-size:12px;cursor:pointer;border:1px solid transparent;transition:all 0.12s;white-space:nowrap;}
@@ -80,24 +80,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid rgba(0,0,0,0.2);border-top-color:currentColor;border-radius:50%;animation:spin 0.7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
-.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
-.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
-.g5{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+.g5{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;}
 @media(max-width:1200px){.g5,.g4{grid-template-columns:1fr 1fr} .g3{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){.g2,.g3,.g4,.g5{grid-template-columns:1fr}.shell{grid-template-columns:1fr}.sidebar{display:none}}
 
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:16px;transition:border-color 0.2s;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:18px;transition:border-color 0.2s;}
 .card:hover{border-color:var(--border2);}
 .card.ca{border-left:3px solid var(--accent);}
 .card.cg{border-left:3px solid var(--green);}
 .card.cp{border-left:3px solid var(--purple);}
 .card.cw{border-left:3px solid var(--warn);}
 .card.cd{border-left:3px solid var(--danger);}
-.ct{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px;}
+.ct{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;}
 .cv{font-family:var(--display);font-size:26px;font-weight:700;line-height:1;}
 .cv.ca{color:var(--accent);} .cv.cg{color:var(--green);} .cv.cp{color:var(--purple);} .cv.cw{color:var(--warn);}
-.cm-t{font-size:10px;color:var(--text3);margin-top:3px;}
+.cm-t{font-size:10px;color:var(--text3);margin-top:4px;}
 .mbar{height:3px;background:var(--surface3);border-radius:2px;margin-top:8px;overflow:hidden;}
 .mfill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--purple));transition:width 0.8s cubic-bezier(0.4,0,0.2,1);}
 .mfill.g{background:var(--green);}.mfill.w{background:var(--warn);}.mfill.d{background:var(--danger);}
@@ -133,8 +133,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .rv{font-size:11px;color:var(--accent);width:46px;text-align:right;flex-shrink:0;}
 
 /* TABS */
-.tbar{display:flex;gap:3px;border-bottom:1px solid var(--border);margin-bottom:18px;overflow-x:auto;}
-.tbtn{padding:7px 14px;border-radius:var(--r) var(--r) 0 0;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--text3);border:1px solid transparent;border-bottom:none;transition:all 0.12s;white-space:nowrap;background:transparent;}
+.tbar{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px;overflow-x:auto;padding-bottom:0;}
+.tbtn{padding:8px 16px;border-radius:var(--r) var(--r) 0 0;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--text3);border:1px solid transparent;border-bottom:none;transition:all 0.12s;white-space:nowrap;background:transparent;}
 .tbtn:hover{color:var(--text);background:var(--surface3);}
 .tbtn.active{background:var(--surface);color:var(--accent);border-color:var(--border);border-bottom-color:var(--surface);margin-bottom:-1px;}
 .tpanel{display:none;}.tpanel.active{display:block;}
@@ -202,7 +202,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 
 /* TABLE */
 .tbl{width:100%;border-collapse:collapse;}
-.tbl th,.tbl td{padding:7px 11px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:11px;text-align:left;}
+.tbl th,.tbl td{padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:11px;text-align:left;}
 .tbl th{color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:1px;background:var(--surface3);}
 .tbl tr:hover td{background:rgba(255,255,255,0.015);}
 
@@ -241,11 +241,11 @@ canvas{display:block;width:100%;}
 .p-node.tier-memory .p-node-bg{stroke:var(--green);fill:rgba(16,185,129,0.04);}
 .p-node.tier-causal .p-node-bg{stroke:#f472b6;fill:rgba(244,114,182,0.04);}
 .p-tier-label{fill:var(--text3);font-size:8px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;opacity:0.5;}
-.p-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:9px;color:var(--text3);}
-.p-legend-item{display:flex;align-items:center;gap:5px;}
+.p-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:9px;color:var(--text3);}
+.p-legend-item{display:flex;align-items:center;gap:6px;}
 .p-legend-dot{width:8px;height:8px;border-radius:50%;}
-.pipeline-controls{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
-.pipeline-controls .pc-filter{padding:3px 9px;border-radius:10px;border:1px solid var(--border);font-size:10px;cursor:pointer;color:var(--text3);transition:all 0.12s;user-select:none;font-family:var(--mono);background:transparent;}
+.pipeline-controls{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:6px 0;}
+.pipeline-controls .pc-filter{padding:4px 10px;border-radius:10px;border:1px solid var(--border);font-size:10px;cursor:pointer;color:var(--text3);transition:all 0.12s;user-select:none;font-family:var(--mono);background:transparent;}
 .pipeline-controls .pc-filter.active{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
 .pipeline-controls .pc-filter:hover{border-color:var(--accent);color:var(--text);}
 .pipeline-zoom{display:flex;align-items:center;gap:4px;}
@@ -333,7 +333,7 @@ canvas{display:block;width:100%;}
 .arch-mod-card .amc-stats span{color:var(--text2);}
 .arch-mod-detail{display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);}
 .arch-mod-detail.open{display:block;}
-.arch-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.arch-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;}
 @media(max-width:1000px){.arch-summary-grid{grid-template-columns:repeat(2,1fr);}}
 
 hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
@@ -641,7 +641,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Module Detail Popup -->
-  <div class="card" id="arch-detail-card" style="display:none;margin-bottom:14px;border-left:3px solid var(--accent)">
+  <div class="card" id="arch-detail-card" style="display:none;margin-bottom:18px;border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div class="ct" id="arch-detail-title">Module Detail</div>
       <button class="btn btn-ghost" onclick="document.getElementById('arch-detail-card').style.display='none';pipelineDeselectAll()" style="padding:2px 8px;font-size:10px">✕ Close</button>
@@ -650,24 +650,24 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Module breakdown & summary -->
-  <div class="g2" style="margin-bottom:16px">
+  <div class="g2" style="margin-bottom:20px">
     <div class="card">
       <div class="ct">Module Breakdown — Per-Component Diagnostics</div>
-      <div style="overflow-x:auto;margin-top:8px"><table class="tbl" id="arch-mod-tbl">
+      <div style="overflow-x:auto;margin-top:10px"><table class="tbl" id="arch-mod-tbl">
         <thead><tr><th>Module</th><th>Type</th><th>Params</th><th>Memory</th><th>Grad ‖·‖</th><th>Device</th><th>Health</th><th>Share %</th></tr></thead>
         <tbody><tr><td colspan="8" style="color:var(--text3)">Initialize model to see modules</td></tr></tbody>
       </table></div>
     </div>
     <div class="card">
       <div class="ct">Architecture Summary (raw)</div>
-      <div class="cb" style="margin-top:8px;max-height:280px;overflow-y:auto;font-size:10px;padding:10px"><pre id="arch-summary" style="margin:0;color:var(--text2)">Initialize model first</pre></div>
+      <div class="cb" style="margin-top:10px;max-height:280px;overflow-y:auto;font-size:10px;padding:12px"><pre id="arch-summary" style="margin:0;color:var(--text2)">Initialize model first</pre></div>
     </div>
   </div>
 
   <!-- Pipeline Stage Health Overview -->
   <div class="card">
     <div class="ct">Pipeline Stage Health Overview — All Modules</div>
-    <div id="arch-stage-health" style="margin-top:10px;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;font-size:11px">
+    <div id="arch-stage-health" style="margin-top:12px;display:grid;grid-template-columns:repeat(6,1fr);gap:10px;font-size:11px">
       <div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>
     </div>
   </div>
@@ -1772,14 +1772,14 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Combined KPI row — Audit + Observability -->
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g4" style="margin-bottom:18px">
     <div class="card ca"><div class="ct">Audit Total</div><div class="cv ca" id="au-total">0</div></div>
     <div class="card cg"><div class="ct">Info</div><div class="cv cg" id="au-info">0</div></div>
     <div class="card cw"><div class="ct">Warnings</div><div class="cv cw" id="au-warn">0</div></div>
     <div class="card cd"><div class="ct">Critical</div><div class="cv" style="color:var(--danger)" id="au-crit">0</div></div>
   </div>
 
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g4" style="margin-bottom:18px">
     <div class="card ca"><div class="ct">Structured Logging</div><div class="cv ca" id="obs-sl" style="font-size:16px">OFF</div><div class="cm-t">JSON-formatted logs with correlation IDs</div></div>
     <div class="card cp"><div class="ct">Academic Mode</div><div class="cv cp" id="obs-am" style="font-size:16px">OFF</div><div class="cm-t">Exhaustive debug-level logging</div></div>
     <div class="card cg"><div class="ct">Telemetry</div><div class="cv cg" id="obs-tel" style="font-size:16px">OFF</div><div class="cm-t">Metrics collection active</div></div>
@@ -1787,7 +1787,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Audit Trail table -->
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);overflow:hidden;max-height:380px;overflow-y:auto;margin-bottom:14px">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);overflow:hidden;max-height:380px;overflow-y:auto;margin-bottom:18px">
     <table class="tbl" id="au-tbl">
       <thead><tr><th>Time</th><th>Subsystem</th><th>Severity</th><th>Decision</th><th>Meta</th></tr></thead>
       <tbody id="au-tbody"><tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">Initialize model and run inference to generate audit entries</td></tr></tbody>
@@ -1795,10 +1795,10 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Telemetry + Traces + Insights -->
-  <div class="g2" style="margin-bottom:14px">
+  <div class="g2" style="margin-bottom:18px">
     <div class="card">
       <div class="ct">Telemetry Metrics Snapshot</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+      <div style="overflow-x:auto;margin-top:10px;max-height:320px;overflow-y:auto">
         <table class="tbl" id="obs-metrics-tbl">
           <thead><tr><th>Metric</th><th>Count</th><th>Mean</th><th>Min</th><th>Max</th><th>Latest</th></tr></thead>
           <tbody id="obs-metrics-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No metrics recorded yet</td></tr></tbody>
@@ -1807,7 +1807,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     </div>
     <div class="card">
       <div class="ct">Recent Trace Events</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:320px;overflow-y:auto">
+      <div style="overflow-x:auto;margin-top:10px;max-height:320px;overflow-y:auto">
         <table class="tbl" id="obs-traces-tbl">
           <thead><tr><th>Time</th><th>Subsystem</th><th>Decision</th><th>Severity</th></tr></thead>
           <tbody id="obs-traces-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No traces yet — initialize model and run inference</td></tr></tbody>
@@ -1816,9 +1816,9 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     </div>
   </div>
 
-  <div class="g2">
-    <div class="card"><div class="ct">Pattern Insights (model.audit_log.get_pattern_insights())</div><div id="au-insights" style="margin-top:8px;font-size:12px;color:var(--text3)">Insufficient data</div></div>
-    <div class="card"><div class="ct">Telemetry Counters</div><div id="obs-counters" style="margin-top:8px;font-size:12px;color:var(--text3)">No counters recorded</div></div>
+  <div class="g2" style="margin-bottom:18px">
+    <div class="card"><div class="ct">Pattern Insights (model.audit_log.get_pattern_insights())</div><div id="au-insights" style="margin-top:10px;font-size:12px;color:var(--text3)">Insufficient data</div></div>
+    <div class="card"><div class="ct">Telemetry Counters</div><div id="obs-counters" style="margin-top:10px;font-size:12px;color:var(--text3)">No counters recorded</div></div>
   </div>
 </div>
 
@@ -5464,9 +5464,32 @@ async function loadAudit() {
     }).join('') || '<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">No audit entries</td></tr>';
 
     const insights = d.insights || {};
-    document.getElementById('au-insights').textContent = Object.keys(insights).length
-      ? JSON.stringify(insights, null, 2).slice(0, 400)
-      : 'Insufficient data for pattern analysis';
+    const insEl = document.getElementById('au-insights');
+    const iKeys = Object.keys(insights);
+    if (iKeys.length) {
+      const labels = {
+        rollback_rate: {name: 'Rollback Rate', icon: '↩', color: '--warn'},
+        nan_fallback_rate: {name: 'NaN Fallback Rate', icon: '⚠', color: '--danger'},
+        error_rate: {name: 'Error Rate', icon: '✕', color: '--danger'},
+        recovery_rate: {name: 'Recovery Rate', icon: '🔄', color: '--accent'},
+        dominant_failure: {name: 'Dominant Failure', icon: '◉', color: '--purple'},
+        recommend_deeper_reasoning: {name: 'Deeper Reasoning', icon: '◈', color: '--green'},
+      };
+      insEl.innerHTML = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
+        iKeys.map(k => {
+          const cfg = labels[k] || {name: k, icon: '•', color: '--text2'};
+          let val = insights[k];
+          if (typeof val === 'number') val = val.toFixed(4);
+          if (val === null || val === undefined) val = '—';
+          if (typeof val === 'boolean') val = val ? '✓ Yes' : '✕ No';
+          return `<div style="background:var(--surface3);border-radius:8px;padding:8px 10px">
+            <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:3px">${cfg.icon} ${cfg.name}</div>
+            <div style="font-size:14px;font-weight:600;color:var(${cfg.color})">${val}</div>
+          </div>`;
+        }).join('') + '</div>';
+    } else {
+      insEl.textContent = 'Insufficient data for pattern analysis';
+    }
   } catch(e) {}
 }
 
@@ -5491,23 +5514,34 @@ async function loadObservability() {
     // Fetch metrics
     try {
       const metR = await fetch(API + '/api/telemetry/metrics');
-      const met = await metR.json();
-      if (met.ok) {
-        const keys = Object.keys(met.metrics).filter(k => k !== 'counters');
-        document.getElementById('obs-mc').textContent = keys.length;
-        const tbody = document.getElementById('obs-metrics-tbody');
-        if (keys.length) {
-          tbody.innerHTML = keys.map(k => {
-            const m = met.metrics[k];
-            return `<tr><td>${k}</td><td>${m.count}</td><td>${typeof m.mean==='number'?m.mean.toFixed(4):'-'}</td><td>${typeof m.min==='number'?m.min.toFixed(4):'-'}</td><td>${typeof m.max==='number'?m.max.toFixed(4):'-'}</td><td>${typeof m.latest==='number'?m.latest.toFixed(4):'-'}</td></tr>`;
-          }).join('');
-        }
-        // Counters
-        const counters = met.metrics.counters || {};
-        const cKeys = Object.keys(counters);
+      if (metR.ok) {
+        const met = await metR.json();
+        if (met.ok && met.metrics) {
+          const keys = Object.keys(met.metrics).filter(k => k !== 'counters');
+          document.getElementById('obs-mc').textContent = keys.length;
+          const tbody = document.getElementById('obs-metrics-tbody');
+          if (keys.length) {
+            tbody.innerHTML = keys.map(k => {
+              const m = met.metrics[k];
+              return `<tr>
+                <td style="color:var(--accent);font-weight:500">${k}</td>
+                <td>${m.count}</td>
+                <td>${typeof m.mean==='number'?m.mean.toFixed(4):'-'}</td>
+                <td>${typeof m.min==='number'?m.min.toFixed(4):'-'}</td>
+                <td>${typeof m.max==='number'?m.max.toFixed(4):'-'}</td>
+                <td style="color:var(--green)">${typeof m.latest==='number'?m.latest.toFixed(4):'-'}</td>
+              </tr>`;
+            }).join('');
+          } else {
+            tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">Run inference to generate telemetry metrics</td></tr>';
+          }
+          // Counters
+          const counters = met.metrics.counters || {};
+          const cKeys = Object.keys(counters);
         document.getElementById('obs-counters').innerHTML = cKeys.length
-          ? cKeys.map(k => `<span style="display:inline-block;margin:2px 6px;padding:2px 8px;background:var(--surface3);border-radius:4px">${k}: <b>${counters[k]}</b></span>`).join('')
+          ? cKeys.map(k => `<span style="display:inline-block;margin:3px 6px;padding:4px 10px;background:var(--surface3);border-radius:6px;font-size:11px">${k}: <b style="color:var(--accent)">${counters[k]}</b></span>`).join('')
           : 'No counters recorded';
+        }
       }
     } catch(e) { /* telemetry not available */ }
 
