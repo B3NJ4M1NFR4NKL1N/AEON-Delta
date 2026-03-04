@@ -197,6 +197,7 @@ __all__ = [
     "CycleConsistencyValidator", "OutputReliabilityGate",
     "ModuleCoherenceVerifier", "UnifiedCognitiveCycle",
     "CausalDAGConsensus",
+    "WorldModelConsensus",
     # Unified AGI architecture components
     "UnifiedConvergenceArbiter", "DirectionalUncertaintyTracker",
     "MemoryReasoningValidator", "MemoryRoutingPolicy",
@@ -16134,6 +16135,180 @@ class CausalDAGConsensus:
         }
 
 
+class WorldModelConsensus:
+    """Cross-validates predictions from multiple world models.
+
+    When both :class:`PhysicsGroundedWorldModel` and
+    :class:`HierarchicalWorldModel` are active, they each produce
+    independent state predictions.  Without consensus verification,
+    these predictions can diverge silently, leading to contradictory
+    planning and causal reasoning downstream.
+
+    This utility compares world model predictions via cosine similarity
+    and L2 distance, producing a consensus score ∈ [0, 1] where
+    1 = perfect agreement.  When consensus falls below a configurable
+    threshold, it signals uncertainty escalation and produces a
+    reconciled prediction weighted by per-model reliability.
+
+    This closes the architectural gap where PhysicsGroundedWorldModel
+    and HierarchicalWorldModel ran independently with no
+    cross-validation, allowing contradictory world-state predictions
+    to propagate unchecked through the planning and causal subsystems.
+
+    This is a pure-logic utility with no learnable parameters.
+
+    Args:
+        agreement_threshold: Minimum consensus below which disagreement
+            is flagged (default 0.4).
+        uncertainty_scale: Maximum uncertainty boost when consensus is
+            zero (default 0.15).
+    """
+
+    def __init__(
+        self,
+        agreement_threshold: float = 0.4,
+        uncertainty_scale: float = 0.15,
+    ):
+        self.agreement_threshold = max(0.0, min(1.0, agreement_threshold))
+        self.uncertainty_scale = max(0.0, uncertainty_scale)
+        self._model_reliability: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=32),
+        )
+
+    def evaluate(
+        self,
+        predictions: Dict[str, torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Compute consensus across world model predictions.
+
+        Args:
+            predictions: Mapping from model name to its prediction
+                tensor.  At least two entries are required for
+                meaningful comparison.
+
+        Returns:
+            Dict with:
+                - consensus_score: float ∈ [0, 1] (1 = all agree).
+                - pairwise_similarities: dict of (model_i, model_j) →
+                  cosine similarity.
+                - needs_escalation: bool — True when consensus < threshold.
+                - uncertainty_boost: float — suggested uncertainty increase.
+                - reconciled_prediction: Tensor — reliability-weighted
+                  average of predictions.  Only present when
+                  num_models ≥ 2.
+                - num_models: int.
+        """
+        names = list(predictions.keys())
+        n = len(names)
+        if n < 2:
+            _single = predictions[names[0]] if n == 1 else None
+            return {
+                "consensus_score": 1.0,
+                "pairwise_similarities": {},
+                "needs_escalation": False,
+                "uncertainty_boost": 0.0,
+                "num_models": n,
+                "reconciled_prediction": _single,
+            }
+
+        # Flatten to vectors for comparison
+        flat: Dict[str, torch.Tensor] = {}
+        for name, pred in predictions.items():
+            flat[name] = pred.detach().float().flatten()
+
+        # Pad to same length if needed
+        max_len = max(v.numel() for v in flat.values())
+        for name in flat:
+            if flat[name].numel() < max_len:
+                flat[name] = F.pad(flat[name], (0, max_len - flat[name].numel()))
+
+        pairwise_similarities: Dict[Tuple[str, str], float] = {}
+        total_sim = 0.0
+        count = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = flat[names[i]]
+                b = flat[names[j]]
+                norm_prod = a.norm() * b.norm()
+                if norm_prod > 1e-8:
+                    sim = float((a * b).sum().item() / norm_prod.item())
+                else:
+                    sim = 1.0  # both near-zero → trivially agree
+                pairwise_similarities[(names[i], names[j])] = sim
+                total_sim += sim
+                count += 1
+
+        avg_sim = total_sim / max(count, 1)
+        consensus_score = max(0.0, min(1.0, avg_sim))
+
+        needs_escalation = consensus_score < self.agreement_threshold
+        uncertainty_boost = 0.0
+        if needs_escalation:
+            uncertainty_boost = (
+                (self.agreement_threshold - consensus_score)
+                / max(self.agreement_threshold, 1e-6)
+            ) * self.uncertainty_scale
+
+        # Reconciled prediction — weight each model by its mean
+        # similarity to others (models that agree with the majority
+        # contribute more).
+        _stacked = torch.stack([flat[n_] for n_ in names], dim=0)
+        _weights = torch.ones(n, device=_stacked.device)
+        if count > 0:
+            for i in range(n):
+                _model_sim_sum = 0.0
+                _model_sim_cnt = 0
+                for j in range(n):
+                    if i == j:
+                        continue
+                    key = (names[min(i, j)], names[max(i, j)])
+                    _model_sim_sum += pairwise_similarities.get(key, 0.0)
+                    _model_sim_cnt += 1
+                if _model_sim_cnt > 0:
+                    # Higher similarity → higher weight
+                    _weights[i] = max(0.1, _model_sim_sum / _model_sim_cnt)
+            _weights = _weights / (_weights.sum() + 1e-8)
+        else:
+            _weights = _weights / n
+
+        reconciled = (_weights.unsqueeze(1) * _stacked).sum(dim=0)
+
+        return {
+            "consensus_score": consensus_score,
+            "pairwise_similarities": pairwise_similarities,
+            "needs_escalation": needs_escalation,
+            "uncertainty_boost": uncertainty_boost,
+            "num_models": n,
+            "reconciled_prediction": reconciled,
+        }
+
+    def record_model_accuracy(
+        self,
+        model_name: str,
+        accuracy: float,
+    ) -> None:
+        """Record a model's prediction accuracy for reliability tracking.
+
+        Args:
+            model_name: Name of the world model.
+            accuracy: Prediction accuracy ∈ [0, 1].
+        """
+        self._model_reliability[model_name].append(
+            max(0.0, min(1.0, accuracy)),
+        )
+
+    def get_model_reliability(self) -> Dict[str, float]:
+        """Return per-model reliability scores ∈ [0, 1].
+
+        Returns:
+            Dict mapping model name to reliability (mean accuracy).
+        """
+        return {
+            name: sum(hist) / len(hist) if hist else 0.5
+            for name, hist in self._model_reliability.items()
+        }
+
+
 class SubsystemHealthGate(nn.Module):
     """Learned gating module that dampens unreliable subsystem outputs before
     they reach the integration stage.
@@ -16502,6 +16677,7 @@ class MetaCognitiveRecursionTrigger:
             "coherence_trend_degradation": "coherence_deficit",
             "convergence_certificate_violation": "diverging",
             "dag_consensus_disagreement": "low_causal_quality",
+            "world_model_consensus_disagreement": "world_model_surprise",
             "high_coherence_loss": "coherence_deficit",
             "high_hierarchical_wm_loss": "world_model_surprise",
             "high_unified_sim_loss": "low_causal_quality",
@@ -17555,6 +17731,7 @@ class CausalErrorEvolutionTracker:
         "convergence_certificate_violation": "lambda_lipschitz",
         "cycle_consistency_violation": "lambda_cycle_consistency",
         "dag_consensus_disagreement": "lambda_causal_dag",
+        "world_model_consensus_disagreement": "lambda_world_model_surprise",
         "feedback_bus_failure": "lambda_ucc",
         "high_total_training_loss": "lambda_self_consistency",
         "high_ucc_training_loss": "lambda_ucc",
@@ -17752,6 +17929,122 @@ class UnifiedConvergenceArbiter:
 
     def __init__(self, conflict_uncertainty_boost: float = 0.15):
         self.conflict_uncertainty_boost = max(0.0, conflict_uncertainty_boost)
+        # --- Monitor reliability tracking (Gap: reconciliation) ----------
+        # Tracks per-monitor accuracy history so that when monitors
+        # disagree the arbiter can recommend a *preferred* verdict based
+        # on historical reliability, turning the arbiter from a pure-
+        # escalation mechanism into a reconciliation mechanism that
+        # identifies *which monitor to trust* for targeted correction.
+        self._monitor_accuracy: Dict[str, deque] = defaultdict(
+            lambda: deque(maxlen=64),
+        )
+        self._last_arbitration_verdicts: Dict[str, str] = {}
+
+    def record_resolution_outcome(
+        self,
+        actual_outcome: str,
+    ) -> Dict[str, float]:
+        """Record the actual pass outcome to update monitor reliability.
+
+        After a forward pass completes, the caller should invoke this
+        method with the observed outcome ('converged', 'diverging', etc.)
+        so the arbiter can score each monitor's previous verdict against
+        reality.  Over time, monitors that consistently predict the
+        correct outcome accumulate higher reliability, enabling the
+        arbiter to recommend their verdict during future conflicts.
+
+        Args:
+            actual_outcome: The observed outcome after the pass completed.
+                One of 'converged', 'converging', 'diverging'.
+
+        Returns:
+            Dict mapping monitor name to updated reliability score ∈ [0, 1].
+        """
+        reliability_scores: Dict[str, float] = {}
+        for monitor, verdict in self._last_arbitration_verdicts.items():
+            correct = 1.0 if verdict == actual_outcome else 0.0
+            self._monitor_accuracy[monitor].append(correct)
+            if self._monitor_accuracy[monitor]:
+                reliability_scores[monitor] = (
+                    sum(self._monitor_accuracy[monitor])
+                    / len(self._monitor_accuracy[monitor])
+                )
+            else:
+                reliability_scores[monitor] = 0.5
+        return reliability_scores
+
+    def get_monitor_reliability(self) -> Dict[str, float]:
+        """Return current per-monitor reliability scores ∈ [0, 1].
+
+        Reliability is the fraction of past verdicts that matched the
+        actual observed outcome.  Monitors with no history default to 0.5.
+
+        Returns:
+            Dict mapping monitor name to reliability score.
+        """
+        result: Dict[str, float] = {}
+        for monitor, history in self._monitor_accuracy.items():
+            if history:
+                result[monitor] = sum(history) / len(history)
+            else:
+                result[monitor] = 0.5
+        return result
+
+    def get_preferred_verdict(self) -> Dict[str, Any]:
+        """Return the preferred verdict based on monitor reliability.
+
+        When monitors disagree, this method recommends the verdict from
+        the most historically reliable monitor, enabling downstream
+        logic to trust a specific monitor rather than treating all
+        conflicts as equally uncertain.
+
+        Returns:
+            Dict with:
+                - preferred_verdict: str — the recommended verdict.
+                - preferred_monitor: str — the monitor whose verdict is
+                  recommended.
+                - reliability_scores: Dict[str, float] — per-monitor
+                  reliability.
+                - confidence: float — reliability of the preferred
+                  monitor ∈ [0, 1].
+        """
+        reliability = self.get_monitor_reliability()
+        if not self._last_arbitration_verdicts:
+            return {
+                'preferred_verdict': 'unknown',
+                'preferred_monitor': None,
+                'reliability_scores': reliability,
+                'confidence': 0.0,
+            }
+        if not reliability:
+            # No history yet — prefer the most conservative verdict
+            _verdicts = list(self._last_arbitration_verdicts.values())
+            _preferred = 'diverging' if 'diverging' in _verdicts else _verdicts[0]
+            _monitor = next(
+                (m for m, v in self._last_arbitration_verdicts.items()
+                 if v == _preferred), None,
+            )
+            return {
+                'preferred_verdict': _preferred,
+                'preferred_monitor': _monitor,
+                'reliability_scores': {},
+                'confidence': 0.5,
+            }
+        # Pick the monitor with highest reliability among those that
+        # participated in the last arbitration.
+        _best_monitor = max(
+            (m for m in self._last_arbitration_verdicts if m in reliability),
+            key=lambda m: reliability.get(m, 0.5),
+            default=None,
+        )
+        if _best_monitor is None:
+            _best_monitor = next(iter(self._last_arbitration_verdicts))
+        return {
+            'preferred_verdict': self._last_arbitration_verdicts[_best_monitor],
+            'preferred_monitor': _best_monitor,
+            'reliability_scores': reliability,
+            'confidence': reliability.get(_best_monitor, 0.5),
+        }
 
     def arbitrate(
         self,
@@ -17874,6 +18167,15 @@ class UnifiedConvergenceArbiter:
         else:
             uncertainty_boost = 0.0
 
+        # Cache verdicts for monitor reliability tracking.
+        self._last_arbitration_verdicts = dict(verdicts)
+
+        # Preferred verdict — when monitors disagree, recommend the
+        # verdict from the most historically reliable monitor so
+        # downstream logic can use a reconciled verdict rather than
+        # treating the conflict as opaque uncertainty.
+        _preferred = self.get_preferred_verdict() if has_conflict else {}
+
         return {
             "unified_status": unified_status,
             "unified_certified": all_certified,
@@ -17882,6 +18184,8 @@ class UnifiedConvergenceArbiter:
             "uncertainty_boost": uncertainty_boost,
             "conflict_severity": _severity_multiplier if has_conflict else 0.0,
             "individual_verdicts": verdicts,
+            "preferred_verdict": _preferred,
+            "monitor_reliability": self.get_monitor_reliability(),
         }
 
 
@@ -18963,6 +19267,14 @@ class UnifiedCognitiveCycle:
             and escalates uncertainty when global health is low, closing
             the gap where integrity signals were tracked but never fed
             into the meta-cognitive cycle.
+        world_model_consensus: Optional :class:`WorldModelConsensus`
+            cross-validating predictions from multiple world models.
+            When provided along with ``world_model_predictions`` in
+            :meth:`evaluate`, prediction disagreement feeds into the
+            uncertainty tracker and metacognitive trigger, closing the
+            gap where PhysicsGroundedWorldModel and
+            HierarchicalWorldModel ran independently with no consensus
+            mechanism.
     """
 
     def __init__(
@@ -18981,6 +19293,7 @@ class UnifiedCognitiveCycle:
         cross_validation_reconciler: Optional['CrossValidationReconciler'] = None,
         pipeline_dependencies: Optional[List[Tuple[str, str]]] = None,
         integrity_monitor: Optional['SystemIntegrityMonitor'] = None,
+        world_model_consensus: Optional['WorldModelConsensus'] = None,
     ):
         self.convergence_monitor = convergence_monitor
         self.coherence_verifier = coherence_verifier
@@ -18995,6 +19308,7 @@ class UnifiedCognitiveCycle:
         self.coherence_registry = coherence_registry
         self.cross_validation_reconciler = cross_validation_reconciler
         self.integrity_monitor = integrity_monitor
+        self.world_model_consensus = world_model_consensus
         # Authoritative pipeline dependency list — when provided, the
         # evaluate() method cross-validates provenance trace coverage
         # against this declaration so that untraced modules degrade
@@ -19105,6 +19419,7 @@ class UnifiedCognitiveCycle:
         propagation_delta: float = 0.0,
         propagated_uncertainties: Optional[Dict[str, float]] = None,
         reliability_weakest_factor: Optional[str] = None,
+        world_model_predictions: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -20089,6 +20404,58 @@ class UnifiedCognitiveCycle:
                 _original_dag_consensus_threshold
             )
 
+        # 7b-iv. World model consensus verification — when the UCC owns
+        # a WorldModelConsensus instance and the caller provides
+        # predictions from multiple world models, evaluate prediction
+        # agreement.  Disagreement escalates uncertainty and feeds into
+        # the metacognitive trigger, closing the gap where
+        # PhysicsGroundedWorldModel and HierarchicalWorldModel ran
+        # independently with no cross-validation of predictions.
+        world_model_consensus_result: Dict[str, Any] = {}
+        if (self.world_model_consensus is not None
+                and world_model_predictions is not None
+                and len(world_model_predictions) >= 2):
+            world_model_consensus_result = self.world_model_consensus.evaluate(
+                world_model_predictions,
+            )
+            _wmc_needs_esc = world_model_consensus_result.get(
+                "needs_escalation", False,
+            )
+            _wmc_unc_boost = world_model_consensus_result.get(
+                "uncertainty_boost", 0.0,
+            )
+            if _wmc_needs_esc:
+                uncertainty = min(1.0, uncertainty + _wmc_unc_boost)
+                # Blend world model disagreement into coherence_deficit
+                # so that conflicting predictions degrade the coherence
+                # assessment alongside cross-module misalignment.
+                _wmc_coh_boost = (
+                    1.0 - world_model_consensus_result.get(
+                        "consensus_score", 1.0,
+                    )
+                ) * 0.2
+                coherence_deficit = min(1.0, coherence_deficit + _wmc_coh_boost)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='world_model_consensus_disagreement',
+                        strategy_used='consensus_escalation',
+                        success=False,
+                        metadata={
+                            'consensus_score': world_model_consensus_result.get(
+                                "consensus_score", 0.0,
+                            ),
+                            'num_models': world_model_consensus_result.get(
+                                "num_models", 0,
+                            ),
+                        },
+                    )
+                if not should_rerun:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'world_model_consensus_disagreement'}
+                    )
+
         # 7c. Directional uncertainty tracking — record per-module
         # uncertainty so downstream consumers know WHICH module is most
         # uncertain, enabling targeted re-reasoning.
@@ -20118,6 +20485,15 @@ class UnifiedCognitiveCycle:
                 self.uncertainty_tracker.record(
                     "dag_consensus", min(1.0, 1.0 - _dag_c_score),
                     source_label="causal_dag_structural_disagreement",
+                )
+            if world_model_consensus_result.get("needs_escalation", False):
+                _wmc_c_score = world_model_consensus_result.get(
+                    "consensus_score", 1.0,
+                )
+                self.uncertainty_tracker.record(
+                    "world_model_consensus",
+                    min(1.0, 1.0 - _wmc_c_score),
+                    source_label="world_model_prediction_disagreement",
                 )
             if auto_critic_quality is not None:
                 _ac_q = max(0.0, min(1.0, auto_critic_quality))
@@ -20679,6 +21055,7 @@ class UnifiedCognitiveCycle:
             'causal_chain': causal_chain,
             'convergence_arbiter': convergence_arbiter_result,
             'dag_consensus': dag_consensus_result,
+            'world_model_consensus': world_model_consensus_result,
             'uncertainty_summary': uncertainty_summary,
             'memory_validation': memory_validation,
             'memory_cross_validation': memory_cross_validation,
@@ -23525,6 +23902,28 @@ class AEONDeltaV3(nn.Module):
             logger.info("CausalDAGConsensus enabled (%d models)", _num_causal_models)
         else:
             self.causal_dag_consensus = None
+
+        # ===== WORLD MODEL CONSENSUS =====
+        # When multiple world models (PhysicsGroundedWorldModel and
+        # HierarchicalWorldModel) are active, cross-validate their
+        # predictions to detect contradictory world-state estimates.
+        # Without consensus, conflicting world models silently produce
+        # divergent predictions that corrupt downstream planning and
+        # causal reasoning.
+        _num_world_models = sum([
+            self.world_model is not None,
+            self.hierarchical_world_model is not None,
+        ])
+        if _num_world_models >= 2:
+            self.world_model_consensus = WorldModelConsensus(
+                agreement_threshold=0.4,
+                uncertainty_scale=0.15,
+            )
+            logger.info(
+                "WorldModelConsensus enabled (%d models)", _num_world_models,
+            )
+        else:
+            self.world_model_consensus = None
         
         # ===== COMPLEXITY-GATED FALLBACK CACHE =====
         # Stores last-known-good outputs from complexity-gated subsystems
@@ -23743,6 +24142,9 @@ class AEONDeltaV3(nn.Module):
                     pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
                     integrity_monitor=getattr(
                         self, 'integrity_monitor', None,
+                    ),
+                    world_model_consensus=getattr(
+                        self, 'world_model_consensus', None,
                     ),
                 )
                 # Post-construction wiring verification: ensure UCC internal
@@ -28888,6 +29290,19 @@ class AEONDeltaV3(nn.Module):
                             "divergence": _wm_divergence,
                         },
                     )
+
+        # 5b1a-xv-cache. Cache world model predictions for UCC-level
+        # consensus verification so the WorldModelConsensus instance can
+        # cross-validate predictions within the unified cognitive cycle.
+        self._cached_world_model_predictions: Dict[str, torch.Tensor] = {}
+        if _wm_predicted is not None and torch.isfinite(_wm_predicted).all():
+            self._cached_world_model_predictions["physics_grounded"] = (
+                _wm_predicted.detach()
+            )
+        if _hwm_predicted is not None and torch.isfinite(_hwm_predicted).all():
+            self._cached_world_model_predictions["hierarchical"] = (
+                _hwm_predicted.detach()
+            )
 
         # 5b1b. World model surprise escalates uncertainty — high
         # prediction error from the world model indicates the system's
@@ -34258,6 +34673,17 @@ class AEONDeltaV3(nn.Module):
                         if self.coherence_registry is not None
                         else None
                     ),
+                    # World model predictions for UCC-level consensus
+                    # verification so prediction disagreement between
+                    # PhysicsGroundedWorldModel and HierarchicalWorldModel
+                    # is detected within the unified cognitive cycle,
+                    # closing the gap where world models ran independently
+                    # with no cross-validation of predictions.
+                    world_model_predictions=(
+                        self._cached_world_model_predictions
+                        if getattr(self, '_cached_world_model_predictions', None)
+                        else None
+                    ),
                 )
                 _ucc_should_rerun = unified_cycle_results.get(
                     "should_rerun", False,
@@ -37017,6 +37443,39 @@ class AEONDeltaV3(nn.Module):
                         },
                     },
                     severity="warning",
+                )
+
+        # 8j. Convergence arbiter resolution feedback — now that the full
+        # pass has completed, record the observed convergence outcome so
+        # the arbiter can learn which monitor was most accurate.  This
+        # closes the loop where the arbiter detected conflicts but never
+        # learned from their resolution, preventing monitor reliability
+        # scoring from improving over time.
+        if (self.convergence_arbiter is not None
+                and _convergence_arbiter_result.get("has_conflict", False)):
+            # Determine actual outcome from final convergence state
+            _final_conv_rate = meta_results.get("convergence_rate", 0.0)
+            _final_residual = meta_results.get("residual_norm", 1.0)
+            if _final_conv_rate > 0.9 and _final_residual < 0.01:
+                _actual_outcome = "converged"
+            elif _final_conv_rate < 0.3:
+                _actual_outcome = "diverging"
+            else:
+                _actual_outcome = "converging"
+            _reliability_update = self.convergence_arbiter.record_resolution_outcome(
+                _actual_outcome,
+            )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "convergence_arbiter", "resolution_outcome_recorded",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "actual_outcome": _actual_outcome,
+                        "monitor_reliability": _reliability_update,
+                        "preferred_verdict": _convergence_arbiter_result.get(
+                            "preferred_verdict", {},
+                        ),
+                    },
                 )
 
         return z_out, outputs
@@ -41542,6 +42001,9 @@ class AEONDeltaV3(nn.Module):
                 pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
                 integrity_monitor=getattr(
                     self, 'integrity_monitor', None,
+                ),
+                world_model_consensus=getattr(
+                    self, 'world_model_consensus', None,
                 ),
             )
             remediated.append('unified_cognitive_cycle')
