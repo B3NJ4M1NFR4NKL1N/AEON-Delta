@@ -2910,7 +2910,7 @@ class AEONConfig:
     # When True, the uncertainty logit penalty is also applied during
     # training (with a softer scale) so that the loss landscape reflects
     # epistemic uncertainty rather than only penalizing at inference.
-    enable_training_uncertainty_penalty: bool = False
+    enable_training_uncertainty_penalty: bool = True
     training_uncertainty_penalty_scale: float = 0.1
     # Late-pass feedback bus refresh: re-compute feedback after all subsystems
     # have produced current-pass signals, eliminating cross-pass staleness.
@@ -2962,7 +2962,7 @@ class AEONConfig:
     
     # ===== MONITORING =====
     enable_tensorboard: bool = True
-    enable_wandb: bool = False
+    enable_wandb: bool = True
     wandb_project: str = "aeon-delta"
     log_interval: int = 10
     eval_interval: int = 100
@@ -2989,58 +2989,58 @@ class AEONConfig:
     backbone_adapter_dim: int = 64       # Adapter bottleneck dimension
     
     # ===== WORLD MODEL =====
-    enable_world_model: bool = False
+    enable_world_model: bool = True
     world_model_state_dim: int = 128
     world_model_tree_depth: int = 3
     world_model_tree_branch: int = 3
     surprise_threshold: float = 0.5
     
     # ===== HIERARCHICAL MEMORY =====
-    enable_hierarchical_memory: bool = False
+    enable_hierarchical_memory: bool = True
     hierarchical_working_capacity: int = 7
     hierarchical_episodic_capacity: int = 1000
     hierarchical_semantic_capacity: int = 500
     
     # ===== META-LEARNING =====
-    enable_meta_learning: bool = False
+    enable_meta_learning: bool = True
     meta_inner_lr: float = 0.01
     meta_num_inner_steps: int = 5
     meta_ewc_lambda: float = 1000.0
     meta_task_buffer_size: int = 100
-    enable_task2vec: bool = False
+    enable_task2vec: bool = True
     task2vec_embedding_dim: int = 128
     task2vec_similarity_threshold: float = 0.8
     task2vec_ewc_lambda: float = 1000.0
     
     # ===== CAUSAL & PLANNING =====
-    enable_causal_model: bool = False
-    enable_mcts_planner: bool = False
+    enable_causal_model: bool = True
+    enable_mcts_planner: bool = True
     
     # ===== RECURSIVE META-COGNITION =====
-    enable_recursive_meta_loop: bool = False
+    enable_recursive_meta_loop: bool = True
     recursive_meta_depth: int = 3
     recursive_meta_error_threshold: float = 0.1
     
     # ===== NEUROGENIC MEMORY =====
-    enable_neurogenic_memory: bool = False
+    enable_neurogenic_memory: bool = True
     neurogenic_max_capacity: int = 1000
     neurogenic_importance_threshold: float = 0.7
     neurogenic_retrieval_weight: float = 0.1
     neurogenic_retrieval_k: int = 3
     
     # ===== TEMPORAL MEMORY =====
-    enable_temporal_memory: bool = False
+    enable_temporal_memory: bool = True
     temporal_memory_capacity: int = 500
     temporal_memory_decay_rate: float = 0.01
     temporal_memory_retrieval_weight: float = 0.1
     temporal_memory_retrieval_k: int = 3
     
     # ===== CAUSAL WORLD MODEL =====
-    enable_causal_world_model: bool = False
+    enable_causal_world_model: bool = True
     causal_world_num_vars: int = 8
     
     # ===== ACTIVE LEARNING PLANNER =====
-    enable_active_learning_planner: bool = False
+    enable_active_learning_planner: bool = True
     active_learning_curiosity_weight: float = 1.0
     active_learning_blend_weight: float = 0.05
     
@@ -3062,11 +3062,11 @@ class AEONConfig:
     memory_causal_cross_threshold: float = 0.3
     
     # ===== EXPERIMENTAL =====
-    enable_multimodal: bool = False
-    enable_hierarchical_vae: bool = False
+    enable_multimodal: bool = True
+    enable_hierarchical_vae: bool = True
     # NOTE: Social cognition module is planned but not yet implemented.
     # Setting this to True has no effect until the module is available.
-    enable_social_cognition: bool = False
+    enable_social_cognition: bool = True
     enable_deception_suppressor: bool = True
     # Deception suppressor blend weight — controls how strongly the
     # suppressor gates the output when internal inconsistency is detected.
@@ -3074,21 +3074,21 @@ class AEONConfig:
     deception_suppressor_blend: float = 0.2
     # NOTE: Code execution sandbox is planned but not yet implemented.
     # Setting this to True has no effect until the sandbox is available.
-    enable_code_execution: bool = False
+    enable_code_execution: bool = True
 
     # ===== CONTINUAL LEARNING =====
     # Integrates ContinualLearningCore (progressive columns + EWC) into
     # the reasoning pipeline so that task-specific knowledge is preserved
     # across sequential learning episodes, preventing catastrophic
     # forgetting and enabling forward transfer.
-    enable_continual_learning: bool = False
+    enable_continual_learning: bool = True
     continual_learning_ewc_lambda: float = 1000.0
 
     # ===== GROUNDED MULTIMODAL LEARNING =====
     # CLIP-style contrastive grounding that maps vision and language into
     # a shared latent space, solving the symbol-grounding problem so that
     # linguistic concepts are anchored to perceptual exemplars.
-    enable_grounded_multimodal: bool = False
+    enable_grounded_multimodal: bool = True
     grounded_multimodal_vision_dim: int = 768
     grounded_multimodal_latent_dim: int = 512
 
@@ -3099,14 +3099,14 @@ class AEONConfig:
     enable_encoder_reasoning_norm: bool = True
     
     # ===== CONSOLIDATING MEMORY =====
-    enable_consolidating_memory: bool = False
+    enable_consolidating_memory: bool = True
     consolidating_working_capacity: int = 7
     consolidating_episodic_capacity: int = 1000
     consolidating_importance_threshold: float = 0.7
     consolidating_semantic_weight: float = 0.1
     
     # ===== NOTEARS CAUSAL MODEL =====
-    enable_notears_causal: bool = False
+    enable_notears_causal: bool = True
     notears_num_vars: int = 8
     notears_hidden_dim: int = 64
     
@@ -3118,19 +3118,19 @@ class AEONConfig:
     enable_cross_validation: bool = True
     cross_validation_agreement: float = 0.7
     cross_validation_max_steps: int = 3
-    enable_external_trust: bool = False
+    enable_external_trust: bool = True
     enable_ns_consistency_check: bool = True
     ns_violation_threshold: float = 0.5
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
     enable_provenance_trace_bridge: bool = True
-    enable_meta_recovery_integration: bool = False
+    enable_meta_recovery_integration: bool = True
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
     auto_critic_max_iterations: int = 3
-    enable_hybrid_reasoning: bool = False
+    enable_hybrid_reasoning: bool = True
     hybrid_reasoning_num_predicates: int = 32
-    enable_unified_simulator: bool = False
+    enable_unified_simulator: bool = True
     unified_simulator_num_vars: int = 16
     unified_simulator_blend: float = 0.1
     hybrid_reasoning_blend: float = 0.1
@@ -3171,12 +3171,12 @@ class AEONConfig:
     enable_unified_cognitive_cycle: bool = True
 
     # ===== COGNITIVE EXECUTIVE FUNCTION =====
-    enable_cognitive_executive: bool = False
+    enable_cognitive_executive: bool = True
     cognitive_executive_top_k: int = 3
     cognitive_executive_blend: float = 0.1
 
     # ===== CAUSAL PROGRAMMATIC MODEL =====
-    enable_causal_programmatic: bool = False
+    enable_causal_programmatic: bool = True
     causal_programmatic_num_vars: int = 8
     causal_programmatic_blend: float = 0.05
 
@@ -3196,7 +3196,7 @@ class AEONConfig:
     gated_fallback_decay: float = 0.8
 
     # ===== NEURO-SYMBOLIC BRIDGE (standalone) =====
-    enable_standalone_ns_bridge: bool = False
+    enable_standalone_ns_bridge: bool = True
     standalone_ns_bridge_blend: float = 0.1
     enable_temporal_knowledge_graph: bool = True
     temporal_knowledge_graph_capacity: int = 500
@@ -3204,7 +3204,7 @@ class AEONConfig:
     tkg_retrieval_top_k: int = 5
 
     # ===== HIERARCHICAL WORLD MODEL =====
-    enable_hierarchical_world_model: bool = False
+    enable_hierarchical_world_model: bool = True
     hierarchical_world_model_blend: float = 0.1
     wm_cross_divergence_threshold: float = 0.1
 
@@ -3212,14 +3212,14 @@ class AEONConfig:
     # Multi-scale meta-loop that routes inputs through fast/medium/deep
     # cycles based on learned complexity scoring, yielding latency
     # reduction on simple inputs while preserving quality on hard tasks.
-    enable_hierarchical_meta_loop: bool = False
+    enable_hierarchical_meta_loop: bool = True
 
     # ===== CERTIFIED META-LOOP =====
     # Interval Bound Propagation-based certified convergence verification.
     # Provides formal Banach fixed-point guarantees via IBP Lipschitz bounds.
     # When the certification fails, uncertainty is escalated so that
     # downstream meta-cognitive cycles activate.
-    enable_certified_meta_loop: bool = False
+    enable_certified_meta_loop: bool = True
     certified_meta_loop_uncertainty_boost: float = 0.2
 
     # ===== ADAPTIVE META-LOOP =====
@@ -3229,12 +3229,12 @@ class AEONConfig:
     # reduction on easy inputs while preserving quality on hard tasks.
     # Mutually exclusive with hierarchical_meta_loop at inference time;
     # if both are enabled, adaptive_meta_loop takes priority.
-    enable_adaptive_meta_loop: bool = False
+    enable_adaptive_meta_loop: bool = True
     adaptive_meta_loop_ponder_weight: float = 0.01
 
     # ===== OBSERVABILITY & TELEMETRY =====
-    enable_structured_logging: bool = False
-    enable_academic_mode: bool = False
+    enable_structured_logging: bool = True
+    enable_academic_mode: bool = True
     enable_telemetry: bool = True
     telemetry_max_entries: int = 1000
 

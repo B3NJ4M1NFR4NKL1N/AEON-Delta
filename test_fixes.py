@@ -8155,12 +8155,12 @@ def test_agi_coherence_config_defaults():
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
     assert config.enable_causal_context is True
     assert config.enable_cross_validation is True
-    assert config.enable_external_trust is False
+    assert config.enable_external_trust is True
     # NS consistency and complexity estimator are auto-enabled by UCC
     assert config.enable_ns_consistency_check is True
     assert config.enable_complexity_estimator is True
     assert config.enable_causal_trace is True
-    assert config.enable_meta_recovery_integration is False
+    assert config.enable_meta_recovery_integration is True
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
     # When UCC is disabled, NS consistency and complexity estimator
@@ -8224,13 +8224,13 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
 
     assert model.causal_context is not None
     assert model.cross_validator is not None
-    assert model.trust_scorer is None
+    assert model.trust_scorer is not None
     # NS consistency and complexity estimator are auto-enabled by UCC
     assert model.ns_consistency_checker is not None
     assert model.complexity_estimator is not None
     # causal_trace is now enabled by default (core traceability)
     assert model.causal_trace is not None
-    assert model.meta_recovery is None
+    assert model.meta_recovery is not None
     print("✅ test_aeon_v3_coherence_layer_disabled_by_default PASSED")
 
 
@@ -8377,12 +8377,12 @@ def test_new_config_defaults():
     from aeon_core import AEONConfig
 
     config = AEONConfig(hidden_dim=16, z_dim=16, vq_embedding_dim=16)
-    assert config.enable_auto_critic is False
+    assert config.enable_auto_critic is True
     assert config.auto_critic_threshold == 0.85
     assert config.auto_critic_max_iterations == 3
-    assert config.enable_hybrid_reasoning is False
+    assert config.enable_hybrid_reasoning is True
     assert config.hybrid_reasoning_num_predicates == 32
-    assert config.enable_unified_simulator is False
+    assert config.enable_unified_simulator is True
     assert config.unified_simulator_num_vars == 16
     assert config.unified_simulator_blend == 0.1
     assert config.hybrid_reasoning_blend == 0.1
@@ -8402,10 +8402,10 @@ def test_new_components_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    # auto_critic is now enabled by default for unified self-verification
+    # All components are now enabled by default for production
     assert model.auto_critic is not None
-    assert model.hybrid_reasoning is None
-    assert model.unified_simulator is None
+    assert model.hybrid_reasoning is not None
+    assert model.unified_simulator is not None
     print("✅ test_new_components_disabled_by_default PASSED")
 
 
@@ -11993,7 +11993,7 @@ def test_temporal_memory_config():
 
     config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
     assert hasattr(config, 'enable_temporal_memory')
-    assert config.enable_temporal_memory is False
+    assert config.enable_temporal_memory is True
     assert config.temporal_memory_capacity == 500
     assert config.temporal_memory_decay_rate == 0.01
     assert config.temporal_memory_retrieval_weight == 0.1
@@ -12088,11 +12088,11 @@ def test_ewc_loss_in_compute_loss():
     model = AEONDeltaV3(config)
 
     # Create a mock meta_learner that returns a known EWC loss value
-    class MockMetaLearner:
+    class MockMetaLearner(torch.nn.Module):
         def ewc_loss(self):
             return torch.tensor(0.42)
 
-    # Inject the mock (not an nn.Module, so no recursion)
+    # Inject the mock (as an nn.Module subclass)
     model.meta_learner = MockMetaLearner()
     model.training = True  # Simulate training mode without .train()
 
@@ -16843,8 +16843,8 @@ def test_config_observability_defaults():
 
     config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
                         num_pillars=4, seq_length=8)
-    assert config.enable_structured_logging is False
-    assert config.enable_academic_mode is False
+    assert config.enable_structured_logging is True
+    assert config.enable_academic_mode is True
     assert config.enable_telemetry is True
     assert config.telemetry_max_entries == 1000
     print("✅ test_config_observability_defaults PASSED")
@@ -18587,14 +18587,14 @@ def test_cognitive_executive_function_integration():
 
 
 def test_cognitive_executive_disabled_by_default():
-    """CognitiveExecutiveFunction is None when config flag is False."""
+    """CognitiveExecutiveFunction is initialized when config flag is True (default)."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(device_str='cpu')
     model = AEONDeltaV3(config)
 
-    assert model.cognitive_executive is None, \
-        "CognitiveExecutiveFunction should be None when disabled"
+    assert model.cognitive_executive is not None, \
+        "CognitiveExecutiveFunction should be initialized when enabled"
 
     print("✅ test_cognitive_executive_disabled_by_default PASSED")
 
@@ -18776,10 +18776,10 @@ def test_new_config_defaults():
     config = AEONConfig(device_str='cpu')
 
     # All new modules disabled by default
-    assert config.enable_cognitive_executive is False
-    assert config.enable_causal_programmatic is False
-    assert config.enable_standalone_ns_bridge is False
-    assert config.enable_hierarchical_world_model is False
+    assert config.enable_cognitive_executive is True
+    assert config.enable_causal_programmatic is True
+    assert config.enable_standalone_ns_bridge is True
+    assert config.enable_hierarchical_world_model is True
 
     # Default blend weights
     assert config.cognitive_executive_blend == 0.1
@@ -20047,8 +20047,8 @@ def test_training_uncertainty_penalty_config():
     assert hasattr(config, 'enable_training_uncertainty_penalty'), (
         "Config should have enable_training_uncertainty_penalty"
     )
-    assert config.enable_training_uncertainty_penalty is False, (
-        "enable_training_uncertainty_penalty should default to False"
+    assert config.enable_training_uncertainty_penalty is True, (
+        "enable_training_uncertainty_penalty should default to True"
     )
     assert hasattr(config, 'training_uncertainty_penalty_scale'), (
         "Config should have training_uncertainty_penalty_scale"
@@ -22025,7 +22025,7 @@ def test_hierarchical_meta_loop_instantiation():
 
 
 def test_hierarchical_meta_loop_disabled_by_default():
-    """HierarchicalMetaLoop is None when not explicitly enabled."""
+    """HierarchicalMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -22037,8 +22037,8 @@ def test_hierarchical_meta_loop_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.hierarchical_meta_loop is None, (
-        "HierarchicalMetaLoop should be disabled by default"
+    assert model.hierarchical_meta_loop is not None, (
+        "HierarchicalMetaLoop should be initialized when enabled"
     )
     print("✅ test_hierarchical_meta_loop_disabled_by_default PASSED")
 
@@ -22096,7 +22096,7 @@ def test_certified_meta_loop_instantiation():
 
 
 def test_certified_meta_loop_disabled_by_default():
-    """CertifiedMetaLoop is None when not explicitly enabled."""
+    """CertifiedMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -22108,8 +22108,8 @@ def test_certified_meta_loop_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.certified_meta_loop is None, (
-        "CertifiedMetaLoop should be disabled by default"
+    assert model.certified_meta_loop is not None, (
+        "CertifiedMetaLoop should be initialized when enabled"
     )
     print("✅ test_certified_meta_loop_disabled_by_default PASSED")
 
@@ -22917,8 +22917,8 @@ def test_adaptive_meta_loop_config():
     assert hasattr(config, 'enable_adaptive_meta_loop'), (
         "Config should have enable_adaptive_meta_loop"
     )
-    assert config.enable_adaptive_meta_loop is False, (
-        "AdaptiveMetaLoop should be disabled by default"
+    assert config.enable_adaptive_meta_loop is True, (
+        "AdaptiveMetaLoop should be enabled by default"
     )
     assert hasattr(config, 'adaptive_meta_loop_ponder_weight'), (
         "Config should have adaptive_meta_loop_ponder_weight"
@@ -22944,13 +22944,13 @@ def test_adaptive_meta_loop_instantiation():
 
 
 def test_adaptive_meta_loop_disabled_by_default():
-    """AdaptiveMetaLoop is None when config flag is unset."""
+    """AdaptiveMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig()
     model = AEONDeltaV3(config)
-    assert model.adaptive_meta_loop is None, (
-        "AdaptiveMetaLoop should be None by default"
+    assert model.adaptive_meta_loop is not None, (
+        "AdaptiveMetaLoop should be initialized when enabled"
     )
 
     print("✅ test_adaptive_meta_loop_disabled_by_default PASSED")
@@ -23179,7 +23179,8 @@ def test_adaptive_meta_loop_ponder_cost_loss_integration():
     """Ponder cost from AdaptiveMetaLoop flows into compute_loss."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(enable_adaptive_meta_loop=True)
+    config = AEONConfig(enable_adaptive_meta_loop=True,
+                        enable_recursive_meta_loop=False)
     model = AEONDeltaV3(config)
 
     B, L = 1, 16
@@ -38913,7 +38914,7 @@ def test_task2vec_meta_learner_config():
 
     config = AEONConfig()
     assert hasattr(config, 'enable_task2vec'), "AEONConfig must have enable_task2vec"
-    assert config.enable_task2vec is False, "enable_task2vec should default to False"
+    assert config.enable_task2vec is True, "enable_task2vec should default to True"
     assert hasattr(config, 'task2vec_embedding_dim'), "AEONConfig must have task2vec_embedding_dim"
     assert config.task2vec_embedding_dim == 128
     assert hasattr(config, 'task2vec_similarity_threshold')
