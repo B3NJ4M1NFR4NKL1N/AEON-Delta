@@ -34150,6 +34150,9 @@ def test_source_module_map_completeness():
         "multimodal_nonfinite": "multimodal",
         "multimodal_error": "multimodal",
         "cognitive_unity_deficit": "unified_cognitive_cycle",
+        "post_output_late_uncertainty": "post_output_uncertainty_gate",
+        "snapshot_coherence_degraded": "cognitive_snapshot",
+        "memory_routing_irrelevance": "memory",
     }
 
     # Every source in the weight table should map to a module name

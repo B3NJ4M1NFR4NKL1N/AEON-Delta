@@ -16621,6 +16621,11 @@ class MetaCognitiveRecursionTrigger:
             # memory subsystems that returned results with low relevance
             # to the query, indicating routing miscalibration.
             "memory_routing_irrelevance": "memory_staleness",
+            # Cognitive frame deficit — the UnifiedCognitiveFrame
+            # detected that the composite coherence score fell below
+            # acceptable thresholds, indicating that the live forward-
+            # pass signals and diagnostic methods diverged.
+            "cognitive_frame_deficit": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17671,6 +17676,11 @@ class CausalErrorEvolutionTracker:
         # relevance, maps to lambda_coherence so training adapts to
         # persistent memory routing miscalibration.
         "memory_routing_irrelevance": "lambda_coherence",
+        # Cognitive frame deficit — the UnifiedCognitiveFrame detected
+        # that the composite coherence score fell below acceptable
+        # thresholds.  Maps to lambda_coherence so training strengthens
+        # cross-module frame consistency.
+        "cognitive_frame_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -33562,6 +33572,11 @@ class AEONDeltaV3(nn.Module):
                 "complexity_gated_coverage": "complexity_estimator",
                 # AGI coherence — cognitive unity
                 "cognitive_unity_deficit": "unified_cognitive_cycle",
+                # Post-output & snapshot (late-stage verification)
+                "post_output_late_uncertainty": "post_output_uncertainty_gate",
+                "snapshot_coherence_degraded": "cognitive_snapshot",
+                # Memory routing irrelevance (low relevance retrieval)
+                "memory_routing_irrelevance": "memory",
             }
             for src_name, src_val in uncertainty_sources.items():
                 module = _source_module_map.get(src_name, src_name)
