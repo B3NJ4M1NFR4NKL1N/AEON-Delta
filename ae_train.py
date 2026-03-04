@@ -1044,10 +1044,11 @@ except ImportError:
                 * self._coherence_trend_ema
             )
             self._coherence_trend_count += 1
+            _COHERENCE_TREND_THRESHOLD = 0.2
             if (self._coherence_trend_count >= 3
-                    and self._coherence_trend_ema > 0.2):
+                    and self._coherence_trend_ema > _COHERENCE_TREND_THRESHOLD):
                 coherence_trend_escalation = min(
-                    0.3, self._coherence_trend_ema - 0.2,
+                    0.3, self._coherence_trend_ema - _COHERENCE_TREND_THRESHOLD,
                 )
                 if not should_rerun and coherence_trend_escalation > 0.05:
                     should_rerun = True
