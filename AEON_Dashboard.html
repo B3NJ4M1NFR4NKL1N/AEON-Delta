@@ -486,6 +486,16 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
         </div>
         <div class="ss-list" style="flex:1" id="d-subsys"><div style="font-size:11px;color:var(--text3)">Initialize model first</div></div>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Active Modules</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-si-active">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Output Reliability</div><div style="font-family:var(--display);font-size:16px;color:var(--green)" id="d-si-reliability">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Cognitive Unity</div><div style="font-family:var(--display);font-size:16px;color:var(--purple)" id="d-si-unity">—</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Verified Links</div><div style="font-family:var(--display);font-size:16px;color:var(--green)" id="d-si-verified">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Arch Gaps</div><div style="font-family:var(--display);font-size:16px;color:var(--warn)" id="d-si-gaps">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Trace Coverage</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-si-trace">—</div></div>
+      </div>
     </div>
     <div class="card">
       <div class="ct">◐ Recent Decisions</div>
@@ -728,6 +738,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <button class="tbtn" onclick="cTab('plan')">Planning</button>
     <button class="tbtn" onclick="cTab('train')">Training</button>
     <button class="tbtn" onclick="cTab('obs')">Observability</button>
+    <button class="tbtn" onclick="cTab('adv')">Advanced</button>
     <button class="tbtn" onclick="cTab('json-ed')">JSON Editor</button>
   </div>
 
@@ -866,6 +877,76 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_structured_logging</div><div class="tog-desc">JSON-formatted logs with ISO 8601 timestamps, correlation IDs, and module identifiers</div></div><label class="tog"><input type="checkbox" id="c-obs-sl"><div class="tog-track"></div></label></div>
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_academic_mode</div><div class="tog-desc">Exhaustive DEBUG-level logging for research-grade reproducibility (slower)</div><div class="tog-def" style="color:var(--warn)">Performance impact — use for analysis only</div></div><label class="tog"><input type="checkbox" id="c-obs-am"><div class="tog-track"></div></label></div>
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_telemetry</div><div class="tog-desc">Collect KPIs: inference latency, memory footprint, decision confidence scores</div></div><label class="tog"><input type="checkbox" id="c-obs-tel" checked><div class="tog-track"></div></label></div>
+  </div>
+
+  <div class="tpanel" id="ctab-adv">
+    <div class="alert alert-blue"><span>⚠</span><div><strong>Advanced Parameters</strong> — Topology, SSM, VQ-VAE internals, Loss Weights, Safety, LoRA, and additional meta-loop controls.</div></div>
+    <div class="stitle">Topology Analysis</div>
+    <div class="fr3">
+      <div class="fg"><div class="fl">topo_method</div><select id="c-topo-method"><option value="finite_differences" selected>finite_differences</option><option value="forward_ad">forward_ad</option><option value="hutchinson">hutchinson</option></select></div>
+      <div class="fg"><div class="fl">topo_epsilon</div><input type="number" id="c-topo-eps" value="0.0001" min="0" max="0.01" step="0.0001"></div>
+      <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_catastrophe_detection</div><div class="tog-desc">Loss landscape catastrophe detection</div></div><label class="tog"><input type="checkbox" id="c-cat-det" checked><div class="tog-track"></div></label></div>
+    </div>
+    <div class="stitle">SSM / Sequence Backend</div>
+    <div class="fr4">
+      <div class="fg"><div class="fl">ssm_state_dim</div><input type="number" id="c-ssm-sd" value="64" min="16" max="256" step="16"></div>
+      <div class="fg"><div class="fl">ssm_num_layers</div><input type="number" id="c-ssm-nl" value="2" min="1" max="8"></div>
+      <div class="fg"><div class="fl">ssm_expand_factor</div><input type="number" id="c-ssm-ef" value="2" min="1" max="8"></div>
+      <div class="fg"><div class="fl">ssm_dt_rank</div><input type="number" id="c-ssm-dtr" value="0" min="0" max="32"><div class="fh">0 = auto</div></div>
+    </div>
+    <div class="fr3">
+      <div class="fg"><div class="fl">linear_attn_num_heads</div><input type="number" id="c-la-nh" value="4" min="1" max="32"></div>
+      <div class="fg"><div class="fl">linear_attn_feature_dim</div><input type="number" id="c-la-fd" value="64" min="16" max="512" step="16"></div>
+      <div class="fg"><div class="fl">chunk_size</div><input type="number" id="c-chunk" value="512" min="64" max="4096" step="64"></div>
+    </div>
+    <div class="stitle">VQ-VAE Internals</div>
+    <div class="fr4">
+      <div class="fg"><div class="fl">vq_commitment_cost</div><div class="rr"><input type="range" id="c-vq-cc" min="0.01" max="1" step="0.01" value="0.25" oninput="rv('c-vq-cc-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vq-cc-v">0.25</span></div></div>
+      <div class="fg"><div class="fl">vq_ema_decay</div><div class="rr"><input type="range" id="c-vq-ema" min="0.9" max="0.999" step="0.001" value="0.99" oninput="rv('c-vq-ema-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-vq-ema-v">0.990</span></div></div>
+      <div class="fg"><div class="fl">vq_revival_threshold</div><input type="number" id="c-vq-rev" value="100" min="10" max="1000" step="10"></div>
+      <div class="fg"><div class="fl">vq_split_threshold</div><div class="rr"><input type="range" id="c-vq-split" min="0.01" max="0.5" step="0.01" value="0.1" oninput="rv('c-vq-split-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vq-split-v">0.10</span></div></div>
+    </div>
+    <div class="stitle">Safety Thresholds</div>
+    <div class="fr3">
+      <div class="fg"><div class="fl">safety_threshold</div><div class="rr"><input type="range" id="c-sf-th" min="0.1" max="1" step="0.05" value="0.5" oninput="rv('c-sf-th-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-sf-th-v">0.50</span></div></div>
+      <div class="fg"><div class="fl">critical_safety_threshold</div><div class="rr"><input type="range" id="c-sf-cth" min="0.01" max="0.5" step="0.01" value="0.1" oninput="rv('c-sf-cth-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-sf-cth-v">0.10</span></div></div>
+      <div class="fg"><div class="fl">safety_alert_threshold</div><input type="number" id="c-sf-alert" value="10" min="1" max="100"></div>
+    </div>
+    <div class="stitle">LoRA (Low-Rank Adaptation)</div>
+    <div class="fr4">
+      <div class="fg"><div class="fl">lora_rank</div><input type="number" id="c-lora-r" value="8" min="1" max="64"></div>
+      <div class="fg"><div class="fl">lora_alpha</div><input type="number" id="c-lora-a" value="16" min="1" max="128"></div>
+      <div class="fg"><div class="fl">lora_dropout</div><div class="rr"><input type="range" id="c-lora-d" min="0" max="0.5" step="0.01" value="0.05" oninput="rv('c-lora-d-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-lora-d-v">0.05</span></div></div>
+      <div class="fg"><div class="fl">lora_target</div><input type="text" id="c-lora-t" value="q_proj, k_proj, v_proj, o_proj"></div>
+    </div>
+    <div class="stitle">Loss Weights</div>
+    <div class="fr4">
+      <div class="fg"><div class="fl">λ self_consistency</div><div class="rr"><input type="range" id="c-lw-sc" min="0" max="0.5" step="0.01" value="0.1" oninput="rv('c-lw-sc-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-lw-sc-v">0.10</span></div></div>
+      <div class="fg"><div class="fl">λ regularization</div><div class="rr"><input type="range" id="c-lw-reg" min="0" max="0.1" step="0.001" value="0.01" oninput="rv('c-lw-reg-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-reg-v">0.010</span></div></div>
+      <div class="fg"><div class="fl">λ safety</div><div class="rr"><input type="range" id="c-lw-sf" min="0" max="0.5" step="0.01" value="0.1" oninput="rv('c-lw-sf-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-lw-sf-v">0.10</span></div></div>
+      <div class="fg"><div class="fl">λ lipschitz</div><div class="rr"><input type="range" id="c-lw-lip" min="0" max="0.2" step="0.005" value="0.05" oninput="rv('c-lw-lip-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-lip-v">0.050</span></div></div>
+    </div>
+    <div class="fr4">
+      <div class="fg"><div class="fl">λ coherence</div><div class="rr"><input type="range" id="c-lw-coh" min="0" max="0.2" step="0.005" value="0.05" oninput="rv('c-lw-coh-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-coh-v">0.050</span></div></div>
+      <div class="fg"><div class="fl">λ provenance</div><div class="rr"><input type="range" id="c-lw-prov" min="0" max="0.1" step="0.001" value="0.01" oninput="rv('c-lw-prov-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-prov-v">0.010</span></div></div>
+      <div class="fg"><div class="fl">λ cross_validation</div><div class="rr"><input type="range" id="c-lw-cv" min="0" max="0.2" step="0.005" value="0.05" oninput="rv('c-lw-cv-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-cv-v">0.050</span></div></div>
+      <div class="fg"><div class="fl">λ auto_critic</div><div class="rr"><input type="range" id="c-lw-ac" min="0" max="0.1" step="0.005" value="0.02" oninput="rv('c-lw-ac-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-lw-ac-v">0.020</span></div></div>
+    </div>
+    <div class="stitle">Training Advanced</div>
+    <div class="fr3">
+      <div class="fg"><div class="fl">weight_decay</div><div class="rr"><input type="range" id="c-wd" min="0" max="0.1" step="0.001" value="0.01" oninput="rv('c-wd-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-wd-v">0.010</span></div></div>
+      <div class="fg"><div class="fl">dropout_rate</div><div class="rr"><input type="range" id="c-dr" min="0" max="0.5" step="0.01" value="0.1" oninput="rv('c-dr-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-dr-v">0.10</span></div></div>
+      <div class="fg"><div class="fl">cosine_decay_steps</div><input type="number" id="c-cds" value="10000" min="100" max="100000" step="100"></div>
+    </div>
+    <div class="stitle">Meta-Loop Variants</div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_hierarchical_meta_loop</div><div class="tog-desc">Multi-scale meta-loop routing: fast/medium/deep cycles</div></div><label class="tog"><input type="checkbox" id="c-hml" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_certified_meta_loop</div><div class="tog-desc">IBP-based certified convergence verification</div></div><label class="tog"><input type="checkbox" id="c-cml" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_adaptive_meta_loop</div><div class="tog-desc">Adaptive Computation Time — learned per-sample halting</div></div><label class="tog"><input type="checkbox" id="c-aml" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_cognitive_executive</div><div class="tog-desc">Cognitive executive attention routing top-K blend</div></div><label class="tog"><input type="checkbox" id="c-cexec" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_unified_cognitive_cycle</div><div class="tog-desc">Unified cognitive orchestration cycle (UCC)</div></div><label class="tog"><input type="checkbox" id="c-ucc" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_deception_suppressor</div><div class="tog-desc">Gate output on internal inconsistency detection</div></div><label class="tog"><input type="checkbox" id="c-ds" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_continual_learning</div><div class="tog-desc">Progressive columns + EWC for catastrophic forgetting prevention</div></div><label class="tog"><input type="checkbox" id="c-cl" checked><div class="tog-track"></div></label></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_grounded_multimodal</div><div class="tog-desc">CLIP-style contrastive grounding for symbol-grounding</div></div><label class="tog"><input type="checkbox" id="c-gmm" checked><div class="tog-track"></div></label></div>
   </div>
 
   <div class="tpanel" id="ctab-json-ed">
@@ -1510,6 +1591,14 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div id="ts-arch-detail" style="display:none;margin-top:10px;padding:10px;background:var(--surface2);border-radius:6px;font-size:11px"></div>
   </div>
 
+  <!-- Section Summary -->
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--accent)">
+    <div class="ct">📊 Section Summary — Per-Section Pass Rates</div>
+    <div id="ts-section-summary" style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;font-size:10px">
+      <div style="color:var(--text3);text-align:center;padding:12px;grid-column:1/-1">Run tests to see section breakdown</div>
+    </div>
+  </div>
+
   <!-- Unified flat layout: Catalogue + Results + Failures + Log in sections -->
   <div class="g2" style="margin-bottom:14px">
     <!-- Left: Test Catalogue & Results -->
@@ -2003,11 +2092,12 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-ghost" onclick="resolveMetaGaps()">🔧 Resolve Gaps</button>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g5" style="margin-bottom:14px">
     <div class="card ca"><div class="ct">Status</div><div class="cv ca" id="mc-status" style="font-size:16px">—</div><div class="cm-t">self-diagnostic verdict</div></div>
     <div class="card cg"><div class="ct">Verified</div><div class="cv cg" id="mc-verified">—</div><div class="cm-t">verified subsystems</div></div>
     <div class="card cw"><div class="ct">Gaps</div><div class="cv cw" id="mc-gaps">—</div><div class="cm-t">detected gaps</div></div>
-    <div class="card cp"><div class="ct">Trace Coverage</div><div class="cv cp" id="mc-trace-cov">—</div><div class="cm-t">causal trace coverage</div></div>
+    <div class="card cp"><div class="ct">Coherence</div><div class="cv cp" id="mc-coherence-score">—</div><div class="cm-t" id="mc-coherence-verdict">coherence verdict</div></div>
+    <div class="card ca"><div class="ct">Trace Coverage</div><div class="cv ca" id="mc-trace-cov">—</div><div class="cm-t">causal trace coverage</div></div>
   </div>
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
@@ -2030,6 +2120,47 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
         <thead><tr><th>Severity</th><th>Component</th><th>Gap</th><th>Remediation</th></tr></thead>
         <tbody id="mc-resolve-tbody"></tbody>
       </table>
+    </div>
+  </div>
+  <div class="stitle">Metacognitive Subsystems</div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">⚡ Trigger State</div>
+      <div id="mc-trigger-state" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">📈 Error Evolution</div>
+      <div id="mc-error-evo" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🔄 Convergence Monitor</div>
+      <div id="mc-convergence" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">🔗 Unified Cognitive Cycle</div>
+      <div id="mc-ucc" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">📊 Uncertainty Tracker</div>
+      <div id="mc-uncertainty" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">🔀 DAG Consensus & Provenance</div>
+      <div id="mc-dag-prov" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+  </div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🔧 Meta Recovery & Feedback Bus</div>
+      <div id="mc-recovery-fb" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">🎯 Auto-Critic Quality</div>
+      <div id="mc-auto-critic" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
     </div>
   </div>
 </div>
@@ -2202,7 +2333,7 @@ function go(panel) {
   if(panel === 'audit' && S.modelReady) { loadAudit(); loadObservability(); }
   if(panel === 'modules' && S.modelReady) loadModules();
   if(panel === 'vq' && S.modelReady) loadVQ();
-  if(panel === 'testsuite') { refreshTests(); tsRenderArchMap(); }
+  if(panel === 'testsuite') { refreshTests(); tsRenderArchMap(); tsRenderSectionSummary(); }
   if(panel === 'benchmark') refreshBenchmark();
   if(panel === 'codegen') genCode();
   if(panel === 'observability') { go('audit'); return; }
@@ -2448,6 +2579,46 @@ function buildInitPayload() {
     enable_structured_logging: gb('c-obs-sl'),
     enable_academic_mode: gb('c-obs-am'),
     enable_telemetry: gb('c-obs-tel'),
+    // Advanced
+    topo_method: gs('c-topo-method'),
+    topo_epsilon: gn('c-topo-eps'),
+    enable_catastrophe_detection: gb('c-cat-det'),
+    ssm_state_dim: gi('c-ssm-sd'),
+    ssm_num_layers: gi('c-ssm-nl'),
+    ssm_expand_factor: gi('c-ssm-ef'),
+    ssm_dt_rank: gi('c-ssm-dtr'),
+    linear_attn_num_heads: gi('c-la-nh'),
+    linear_attn_feature_dim: gi('c-la-fd'),
+    chunk_size: gi('c-chunk'),
+    vq_commitment_cost: gn('c-vq-cc'),
+    vq_ema_decay: gn('c-vq-ema'),
+    vq_revival_threshold: gi('c-vq-rev'),
+    vq_split_threshold: gn('c-vq-split'),
+    safety_threshold: gn('c-sf-th'),
+    critical_safety_threshold: gn('c-sf-cth'),
+    safety_alert_threshold: gi('c-sf-alert'),
+    lora_rank: gi('c-lora-r'),
+    lora_alpha: gi('c-lora-a'),
+    lora_dropout: gn('c-lora-d'),
+    lambda_self_consistency: gn('c-lw-sc'),
+    lambda_reg: gn('c-lw-reg'),
+    lambda_safety: gn('c-lw-sf'),
+    lambda_lipschitz: gn('c-lw-lip'),
+    lambda_coherence: gn('c-lw-coh'),
+    lambda_provenance: gn('c-lw-prov'),
+    lambda_cross_validation: gn('c-lw-cv'),
+    lambda_auto_critic: gn('c-lw-ac'),
+    weight_decay: gn('c-wd'),
+    dropout_rate: gn('c-dr'),
+    cosine_decay_steps: gi('c-cds'),
+    enable_hierarchical_meta_loop: gb('c-hml'),
+    enable_certified_meta_loop: gb('c-cml'),
+    enable_adaptive_meta_loop: gb('c-aml'),
+    enable_cognitive_executive: gb('c-cexec'),
+    enable_unified_cognitive_cycle: gb('c-ucc'),
+    enable_deception_suppressor: gb('c-ds'),
+    enable_continual_learning: gb('c-cl'),
+    enable_grounded_multimodal: gb('c-gmm'),
   };
 }
 
@@ -2984,6 +3155,26 @@ async function refreshDash() {
       document.getElementById('d-mc-status').textContent = diag.status || '—';
       document.getElementById('d-mc-status').style.color = diag.status === 'coherent' ? 'var(--green)' : diag.status === 'degraded' ? 'var(--warn)' : 'var(--danger)';
       document.getElementById('d-mc-gaps').textContent = diag.gap_count ?? '—';
+    }
+  } catch(e) {}
+
+  // System integrity details
+  try {
+    const diag = await api('GET', '/api/metacognition');
+    if (diag.ok) {
+      const sd = diag.self_diagnostic || {};
+      document.getElementById('d-si-active').textContent = sd.active_module_count ?? '—';
+      const rel = sd.output_reliability;
+      document.getElementById('d-si-reliability').textContent = rel != null ? (rel * 100).toFixed(0) + '%' : '—';
+      document.getElementById('d-si-reliability').style.color = rel >= 0.8 ? 'var(--green)' : rel >= 0.5 ? 'var(--warn)' : 'var(--danger)';
+      const cu = sd.cognitive_unity || {};
+      document.getElementById('d-si-unity').textContent = cu.verdict || '—';
+      document.getElementById('d-si-unity').style.color = cu.verdict === 'UNIFIED' ? 'var(--green)' : cu.verdict === 'PARTIAL' ? 'var(--warn)' : 'var(--danger)';
+      document.getElementById('d-si-verified').textContent = sd.verified_count ?? '—';
+      document.getElementById('d-si-gaps').textContent = sd.gap_count ?? '—';
+      document.getElementById('d-si-gaps').style.color = (sd.gap_count || 0) === 0 ? 'var(--green)' : 'var(--warn)';
+      const tc = sd.causal_trace_coverage;
+      document.getElementById('d-si-trace').textContent = tc != null ? (tc * 100).toFixed(0) + '%' : '—';
     }
   } catch(e) {}
 
@@ -4765,6 +4956,38 @@ function tsRenderArchMap() {
   }).join('') || '<div style="color:var(--text3);grid-column:1/-1;text-align:center;padding:12px">No test results yet</div>';
 }
 
+function tsRenderSectionSummary() {
+  const div = document.getElementById('ts-section-summary');
+  if (!div || !TS.results.length) return;
+  const secStats = {};
+  TS.results.forEach(r => {
+    const sec = r.section || 'Unknown';
+    if (!secStats[sec]) secStats[sec] = {total:0,passed:0,failed:0,errors:0,time:0};
+    secStats[sec].total++;
+    if (r.status === 'passed') secStats[sec].passed++;
+    else if (r.status === 'failed') secStats[sec].failed++;
+    else secStats[sec].errors++;
+    secStats[sec].time += r.elapsed_ms || 0;
+  });
+  const entries = Object.entries(secStats).sort((a,b) => {
+    const aRate = a[1].passed / a[1].total;
+    const bRate = b[1].passed / b[1].total;
+    return aRate - bRate;
+  });
+  div.innerHTML = entries.map(([sec, s]) => {
+    const rate = s.total > 0 ? Math.round(s.passed / s.total * 100) : 0;
+    const color = rate === 100 ? 'var(--green)' : s.failed > 0 ? 'var(--danger)' : 'var(--warn)';
+    const bgColor = rate === 100 ? 'rgba(16,185,129,.06)' : s.failed > 0 ? 'rgba(239,68,68,.06)' : 'rgba(245,158,11,.06)';
+    return `<div style="background:${bgColor};border:1px solid ${color}25;border-radius:6px;padding:6px 8px">
+      <div style="font-size:9px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escHtml(sec)}">${escHtml(sec.slice(0,35))}</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:2px">
+        <span style="font-size:14px;font-weight:700;color:${color}">${rate}%</span>
+        <span style="font-size:9px;color:var(--text3)">${s.passed}/${s.total} · ${s.time.toFixed(0)}ms</span>
+      </div>
+    </div>`;
+  }).join('') || '<div style="color:var(--text3);grid-column:1/-1;text-align:center;padding:12px">No results yet</div>';
+}
+
 function _mapTestToNode(name) {
   const lower = name.toLowerCase().replace('test_','');
   const MAP = {
@@ -4958,6 +5181,7 @@ async function tsRunOne(name) {
       tsRenderLog();
       tsRenderFailures();
       tsRenderArchMap();
+      tsRenderSectionSummary();
     }
   } catch(e) { log('ERROR','tests', e.message); }
 }
@@ -5026,6 +5250,7 @@ function tsStartPolling(total) {
       tsFilterResults();
       tsRenderFailures();
       tsRenderArchMap();
+      tsRenderSectionSummary();
 
       if (!p.active && p.done) {
         clearInterval(TS.pollTimer);
@@ -5040,6 +5265,7 @@ function tsStartPolling(total) {
         tsRenderLog();
         tsRenderFailures();
         tsRenderArchMap();
+        tsRenderSectionSummary();
         log('INFO','tests', `✅ Run complete · ${TS.summary.passed||0} passed · ${TS.summary.failed||0} failed`);
       }
     } catch(e) {}
@@ -5645,7 +5871,14 @@ async function loadMetacognition() {
     const cov = diag.causal_trace_coverage;
     document.getElementById('mc-trace-cov').textContent = cov != null ? (typeof cov === 'number' ? (cov * 100).toFixed(0) + '%' : cov) : '—';
 
-    // Metacognitive state
+    // Coherence score
+    const cs = state.coherence_score;
+    document.getElementById('mc-coherence-score').textContent = cs != null ? (cs * 100).toFixed(0) + '%' : '—';
+    document.getElementById('mc-coherence-verdict').textContent = state.coherence_verdict || 'coherence verdict';
+    const csEl = document.getElementById('mc-coherence-score');
+    if (cs != null) csEl.style.color = cs >= 0.75 ? 'var(--green)' : cs >= 0.5 ? 'var(--warn)' : 'var(--danger)';
+
+    // Metacognitive state key-value display
     const stDiv = document.getElementById('mc-state');
     const stKeys = Object.keys(state);
     if (stKeys.length) {
@@ -5670,7 +5903,117 @@ async function loadMetacognition() {
     } else {
       gapDiv.innerHTML = '<div style="color:var(--green)">✓ No gaps detected — all subsystems verified</div>';
     }
+
+    // Trigger state
+    const trigDiv = document.getElementById('mc-trigger-state');
+    const trig = state.trigger || {};
+    if (trig.available) {
+      trigDiv.innerHTML = _mcSubPanel({
+        'Threshold': trig.threshold,
+        'Recursion Count': trig.recursion_count,
+        'Max Recursions': trig.max_recursions,
+        'Signal Weights': trig.signal_weights,
+      });
+    } else {
+      trigDiv.innerHTML = '<div style="color:var(--text3)">Metacognitive trigger not available</div>';
+    }
+
+    // Error evolution
+    const eeDiv = document.getElementById('mc-error-evo');
+    const ee = state.error_evolution || {};
+    if (ee.available) {
+      const parts = {'Total Errors': ee.total_errors, 'Error Classes': ee.error_classes ? Object.keys(ee.error_classes).length : 0};
+      if (ee.best_strategies) {
+        Object.entries(ee.best_strategies).forEach(([cls, strat]) => { parts[`Strategy: ${cls}`] = strat || 'none'; });
+      }
+      eeDiv.innerHTML = _mcSubPanel(parts);
+    } else {
+      eeDiv.innerHTML = '<div style="color:var(--text3)">Error evolution tracker not available</div>';
+    }
+
+    // Convergence
+    const convDiv = document.getElementById('mc-convergence');
+    const conv = state.convergence || {};
+    convDiv.innerHTML = _mcSubPanel({
+      'History Length': conv.history_length,
+      'Is Diverging': conv.is_diverging != null ? (conv.is_diverging ? '⚠ YES' : '✓ No') : '—',
+      'Recent Norms': conv.recent_norms ? conv.recent_norms.map(n => typeof n === 'number' ? n.toFixed(6) : n).join(', ') : '—',
+    });
+
+    // UCC
+    const uccDiv = document.getElementById('mc-ucc');
+    const ucc = state.unified_cognitive_cycle || {};
+    if (ucc.available) {
+      uccDiv.innerHTML = _mcSubPanel({
+        'Coherence Deficit': typeof ucc.cached_coherence_deficit === 'number' ? ucc.cached_coherence_deficit.toFixed(4) : '—',
+        'Causal Quality': typeof ucc.cached_causal_quality === 'number' ? ucc.cached_causal_quality.toFixed(4) : '—',
+        'Surprise': typeof ucc.cached_surprise === 'number' ? ucc.cached_surprise.toFixed(4) : '—',
+        'Memory Stale': ucc.memory_stale != null ? (ucc.memory_stale ? '⚠ Stale' : '✓ Fresh') : '—',
+      });
+    } else {
+      uccDiv.innerHTML = '<div style="color:var(--text3)">Unified Cognitive Cycle not available</div>';
+    }
+
+    // Uncertainty tracker
+    const uncDiv = document.getElementById('mc-uncertainty');
+    const unc = state.uncertainty_tracker || {};
+    if (unc.available) {
+      const parts = {};
+      Object.entries(unc).forEach(([k,v]) => { if (k !== 'available') parts[k] = typeof v === 'number' ? v.toFixed(4) : typeof v === 'object' ? JSON.stringify(v) : String(v); });
+      uncDiv.innerHTML = _mcSubPanel(parts);
+    } else {
+      uncDiv.innerHTML = '<div style="color:var(--text3)">Uncertainty tracker not available</div>';
+    }
+
+    // DAG consensus + provenance
+    const dagDiv = document.getElementById('mc-dag-prov');
+    const dag = state.dag_consensus || {};
+    const prov = state.provenance || {};
+    const dagParts = {};
+    if (dag.available) {
+      dagParts['DAG Agreement Threshold'] = dag.agreement_threshold;
+      dagParts['Causal Quality'] = typeof dag.cached_causal_quality === 'number' ? dag.cached_causal_quality.toFixed(4) : '—';
+    } else { dagParts['DAG Consensus'] = 'Not available'; }
+    if (prov.dominant_module) dagParts['Dominant Module'] = prov.dominant_module;
+    if (prov.contributions) dagParts['Provenance Modules'] = Object.keys(prov.contributions).length;
+    dagDiv.innerHTML = _mcSubPanel(dagParts);
+
+    // Meta recovery + feedback bus
+    const recDiv = document.getElementById('mc-recovery-fb');
+    const rec = state.meta_recovery || {};
+    const fb = state.feedback_bus || {};
+    const recParts = {};
+    if (rec.available) {
+      recParts['Buffer Size'] = rec.buffer_size;
+      recParts['Strategies'] = rec.strategies ? rec.strategies.join(', ') : '—';
+    } else { recParts['Meta Recovery'] = 'Not available'; }
+    if (fb.available) {
+      recParts['Feedback Bus'] = fb.has_cached_signal ? '✓ Active' : '○ No signal';
+      if (fb.cached_signal_norm != null) recParts['Signal Norm'] = fb.cached_signal_norm.toFixed(4);
+    } else { recParts['Feedback Bus'] = 'Not available'; }
+    recParts['Recovery Pressure'] = typeof state.recovery_pressure === 'number' ? state.recovery_pressure.toFixed(4) : '—';
+    recDiv.innerHTML = _mcSubPanel(recParts);
+
+    // Auto-critic quality
+    const acDiv = document.getElementById('mc-auto-critic');
+    const ac = state.auto_critic_quality || {};
+    const cpu = state.cross_pass_uncertainty || {};
+    acDiv.innerHTML = _mcSubPanel({
+      'Quality EMA': typeof ac.ema === 'number' ? ac.ema.toFixed(4) : '—',
+      'Pass Count': ac.pass_count ?? '—',
+      'Cross-Pass Uncertainty Mean': typeof cpu.mean === 'number' ? cpu.mean.toFixed(4) : '—',
+      'Systematic Uncertainty': cpu.is_systematic != null ? (cpu.is_systematic ? '⚠ Yes' : '✓ No') : '—',
+      'Uncertainty History': cpu.history_length ?? '—',
+    });
+
   } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+function _mcSubPanel(data) {
+  return Object.entries(data).map(([k, v]) => {
+    const vStr = typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+    return `<div style="display:flex;justify-content:space-between;padding:3px 8px;background:var(--surface3);border-radius:4px;margin-bottom:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span><span style="color:var(--text2);font-size:10px;text-align:right;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(vStr)}">${escHtml(vStr.slice(0,80))}</span></div>`;
+  }).join('');
 }
 
 async function resolveMetaGaps() {
