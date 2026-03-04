@@ -24638,8 +24638,9 @@ class AEONDeltaV3(nn.Module):
         # assessment into the feedback bus.  This closes the gap where
         # the cognitive frame's composite verdict was computed but
         # never fed back into the meta-loop conditioning cycle.
-        if self.cognitive_frame is not None:
-            for _cp_name, _cp_val in self.cognitive_frame._last_corrective_pressures.items():
+        _cf = getattr(self, 'cognitive_frame', None)
+        if _cf is not None:
+            for _cp_name, _cp_val in _cf._last_corrective_pressures.items():
                 if _cp_val > 0.1:
                     extra[f"cf:{_cp_name}"] = max(0.0, min(1.0, _cp_val))
         # MetaCognitiveExecutive review pressure — when the executive
