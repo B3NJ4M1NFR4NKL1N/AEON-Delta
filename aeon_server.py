@@ -823,13 +823,13 @@ async def run_inference(req: InferRequest):
                 unc = result["uncertainty"]
                 unc_val = float(unc) if isinstance(unc, (int, float)) else float(unc.get("total", 0)) if isinstance(unc, dict) else 0.0
                 tc.record("uncertainty", unc_val)
-            safety_score = None
+            sanitize_count = None
             try:
-                safety_score = APP.model.tensor_guard._sanitize_count
+                sanitize_count = APP.model.tensor_guard._sanitize_count
             except Exception:
                 pass
-            if safety_score is not None:
-                tc.record("sanitize_events", float(safety_score))
+            if sanitize_count is not None:
+                tc.record("sanitize_events", float(sanitize_count))
             tc.increment("total_inferences")
     except Exception:
         pass

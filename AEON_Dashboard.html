@@ -3575,7 +3575,7 @@ async function loadArch() {
           let v = cu[k];
           if (typeof v === 'number') v = v.toFixed(4);
           if (typeof v === 'boolean') v = v ? '✓' : '✕';
-          if (typeof v === 'object' && v !== null) v = JSON.stringify(v).slice(0, 60);
+          if (typeof v === 'object' && v !== null) { const s = JSON.stringify(v); v = s.length > 60 ? s.slice(0, 57) + '…' : s; }
           html += `<div style="padding:4px 6px;background:var(--surface3);border-radius:4px"><span style="color:var(--text3)">${k}:</span> <span style="color:var(--accent)">${v ?? '—'}</span></div>`;
         });
         html += '</div>';
@@ -3595,7 +3595,7 @@ async function loadArch() {
           let v = ah[k];
           if (typeof v === 'number') v = v.toFixed(4);
           if (typeof v === 'boolean') v = v ? '✓ Yes' : '✕ No';
-          if (typeof v === 'object' && v !== null) v = JSON.stringify(v).slice(0, 60);
+          if (typeof v === 'object' && v !== null) { const s = JSON.stringify(v); v = s.length > 60 ? s.slice(0, 57) + '…' : s; }
           const clr = k.includes('health') || k.includes('score') ? 'var(--green)' : 'var(--accent)';
           html += `<div style="padding:4px 6px;background:var(--surface3);border-radius:4px"><span style="color:var(--text3)">${k}:</span> <span style="color:${clr}">${v ?? '—'}</span></div>`;
         });
