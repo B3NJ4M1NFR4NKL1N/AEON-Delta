@@ -813,6 +813,27 @@ async def run_inference(req: InferRequest):
     tps = round(tokens / max(elapsed_ms / 1000, 0.001), 1)
     logging.info(f"✅ {tokens} tokens · {elapsed_ms}ms · {tps} tok/s · status={result.get('status')}")
 
+    # Record telemetry metrics for the Telemetry Metrics Snapshot dashboard
+    try:
+        tc = getattr(APP.config, 'telemetry_collector', None)
+        if tc is not None:
+            tc.record("inference_latency_ms", float(elapsed_ms), {"prompt": req.prompt[:30]})
+            tc.record("tokens_per_sec", float(tps), {"tokens": tokens})
+            if result.get("uncertainty") is not None:
+                unc = result["uncertainty"]
+                unc_val = float(unc) if isinstance(unc, (int, float)) else float(unc.get("total", 0)) if isinstance(unc, dict) else 0.0
+                tc.record("uncertainty", unc_val)
+            sanitize_count = None
+            try:
+                sanitize_count = APP.model.tensor_guard._sanitize_count
+            except Exception:
+                pass
+            if sanitize_count is not None:
+                tc.record("sanitize_events", float(sanitize_count))
+            tc.increment("total_inferences")
+    except Exception:
+        pass
+
     # Attach metacognitive state so consumers can assess reasoning
     # confidence, coherence verdict, and provenance attribution for
     # every inference call — closing the gap between inference output
@@ -889,6 +910,22 @@ async def run_forward(req: ForwardRequest):
             result["top5_tokens"] = top5.indices.tolist()
             result["top5_probs"] = [round(p, 4) for p in top5.values.tolist()]
         logging.info(f"Forward pass · {elapsed_ms}ms · safety={result.get('safety_score','?'):.4f}" if result.get('safety_score') is not None else f"Forward pass · {elapsed_ms}ms")
+
+        # Record telemetry metrics for the Telemetry Metrics Snapshot dashboard
+        try:
+            tc = getattr(APP.config, 'telemetry_collector', None)
+            if tc is not None:
+                tc.record("forward_latency_ms", float(elapsed_ms))
+                if result.get("safety_score") is not None:
+                    tc.record("safety_score", float(result["safety_score"]))
+                if result.get("convergence_delta") is not None:
+                    tc.record("convergence_delta", float(result["convergence_delta"]))
+                if result.get("meta_iterations") is not None:
+                    tc.record("meta_iterations", float(result["meta_iterations"]))
+                tc.increment("total_forward_passes")
+        except Exception:
+            pass
+
         return result
     except Exception as e:
         logging.error(f"Forward error: {e}\n{traceback.format_exc()}")
