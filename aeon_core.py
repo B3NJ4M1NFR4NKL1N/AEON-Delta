@@ -8067,6 +8067,8 @@ _UNCERTAINTY_SOURCE_WEIGHTS: Dict[str, float] = {
     # Post-output & snapshot (late-stage verification)
     "post_output_late_uncertainty": 0.6,
     "snapshot_coherence_degraded": 0.5,
+    # Memory routing irrelevance (low relevance retrieval)
+    "memory_routing_irrelevance": 0.4,
 }
 
 
@@ -16615,6 +16617,10 @@ class MetaCognitiveRecursionTrigger:
             # Metacognitive gap — a gap in the metacognitive
             # coverage was detected during self-diagnostic.
             "metacognitive_gap": "uncertainty",
+            # Memory routing irrelevance — the routing policy selected
+            # memory subsystems that returned results with low relevance
+            # to the query, indicating routing miscalibration.
+            "memory_routing_irrelevance": "memory_staleness",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17661,6 +17667,10 @@ class CausalErrorEvolutionTracker:
         # detected during self-diagnostic.  Maps to lambda_ucc so
         # training adapts to persistent metacognitive blindspots.
         "metacognitive_gap": "lambda_ucc",
+        # Memory routing irrelevance — routing returned results with low
+        # relevance, maps to lambda_coherence so training adapts to
+        # persistent memory routing miscalibration.
+        "memory_routing_irrelevance": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -24232,6 +24242,24 @@ class AEONDeltaV3(nn.Module):
                 extra["feedback_oscillation_pressure"] = max(
                     0.0, min(1.0, _osc),
                 )
+            # Per-channel correction pressures — compute_correction()
+            # translates EMA trends and oscillation patterns into
+            # actionable per-channel pressures ∈ [0, 1].  Routing
+            # these into the feedback bus enables the meta-loop to
+            # allocate deeper reasoning to the *specific* signal
+            # dimensions that are degrading, rather than treating all
+            # signal degradation uniformly.  This closes the gap
+            # where compute_correction() was defined but never
+            # consumed in the reasoning pipeline.
+            try:
+                _corrections = _fb.compute_correction()
+                for _ch_name, _ch_pressure in _corrections.items():
+                    if _ch_pressure > 0.1:
+                        extra[f"fb_correction:{_ch_name}"] = max(
+                            0.0, min(1.0, _ch_pressure),
+                        )
+            except Exception:
+                pass
         return extra
 
     @staticmethod
@@ -29242,6 +29270,40 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # 5b1-mrp-validate. Validate routing quality by
+                    # checking fused result relevance against the query.
+                    # Low relevance indicates the routing policy selected
+                    # subsystems that returned irrelevant memories,
+                    # warranting uncertainty escalation.  This closes
+                    # the gap where validate_routing_quality() was defined
+                    # but never called in the reasoning pipeline.
+                    try:
+                        _routing_quality = (
+                            self.memory_routing_policy.validate_routing_quality(
+                                _routing_result, C_star.mean(dim=0),
+                            )
+                        )
+                        if not _routing_quality.get('is_relevant', True):
+                            _relevance = _routing_quality.get(
+                                'relevance_score', 1.0,
+                            )
+                            _unc_boost = min(0.15, (1.0 - _relevance) * 0.2)
+                            uncertainty = min(1.0, uncertainty + _unc_boost)
+                            uncertainty_sources["memory_routing_irrelevance"] = (
+                                _unc_boost
+                            )
+                            high_uncertainty = uncertainty > 0.5
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='memory_routing_irrelevance',
+                                    strategy_used='uncertainty_escalation',
+                                    success=False,
+                                    metadata={
+                                        'relevance_score': _relevance,
+                                    },
+                                )
+                    except Exception:
+                        pass
                     # 5b1-mrp-trust. Cache memory routing trust-gating
                     # count so the UCC evaluation receives a graduated
                     # memory_trust_deficit signal reflecting how many

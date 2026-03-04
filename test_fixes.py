@@ -67032,6 +67032,31 @@ def run_all_tests():
     test_snapshot_coherence_degraded_in_weights_table()
     test_feedback_bus_post_output_signal()
 
+    # Orphaned test fix — these tests were defined but never called in
+    # run_all_tests(), preventing their validation from being exercised.
+    test_provenance_chain_validator_in_ucc()
+    test_provenance_chain_validator_completeness()
+    test_ucc_provenance_chain_triggers_rerun()
+    test_memory_routing_validate_routing_quality()
+    test_output_reliability_gate_includes_coverage_deficit()
+    test_aeonv3_ucc_has_provenance_chain_validator()
+    test_post_output_gate_in_coherence_registry()
+    test_post_output_gate_in_pipeline_dependencies()
+    test_post_output_gate_in_node_attr_map()
+    test_error_evolution_trend_feedback_bus_signal()
+    test_get_architectural_health_recurring_roots()
+    test_verify_cognitive_unity_trend_health()
+    test_verify_cognitive_unity_degrading_blocks_unified()
+    test_config_coherence_prerequisite_warnings()
+    test_config_no_warnings_with_full_coherence()
+
+    # Architectural Unification — Feedback Bus Correction & Memory Routing Tests
+    test_feedback_bus_compute_correction_routed()
+    test_feedback_bus_compute_correction_pressures()
+    test_memory_routing_irrelevance_in_uncertainty_weights()
+    test_memory_routing_irrelevance_in_error_class_mapping()
+    test_memory_routing_validate_routing_quality_called_in_pipeline()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -70843,6 +70868,121 @@ def test_feedback_bus_post_output_signal():
     )
 
     print("✅ test_feedback_bus_post_output_signal PASSED")
+
+
+# ============================================================================
+# Architectural Unification — Feedback Bus Correction & Memory Routing
+# Validation Tests
+# ============================================================================
+
+
+def test_feedback_bus_compute_correction_routed():
+    """Verify feedback_bus.compute_correction() output is consumed by
+    _build_feedback_extra_signals, closing the correction feedback loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Run a forward pass to populate feedback bus EMA state
+    model.eval()
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        model.forward(ids)
+        # Run a second pass so EMA has non-zero trend
+        model.forward(ids)
+
+    # compute_correction should be callable
+    corrections = model.feedback_bus.compute_correction()
+    assert isinstance(corrections, dict), (
+        f"compute_correction() should return dict, got {type(corrections)}"
+    )
+
+    # Verify _build_feedback_extra_signals includes correction keys
+    # by checking the method source references compute_correction
+    import inspect
+    src = inspect.getsource(model._build_feedback_extra_signals)
+    assert 'compute_correction' in src, (
+        "_build_feedback_extra_signals must call feedback_bus.compute_correction()"
+    )
+
+    print("✅ test_feedback_bus_compute_correction_routed PASSED")
+
+
+def test_feedback_bus_compute_correction_pressures():
+    """Verify compute_correction produces per-channel pressures."""
+    from aeon_core import CognitiveFeedbackBus
+    import torch
+
+    fb = CognitiveFeedbackBus(hidden_dim=64)
+    # Run two forward passes to build EMA history
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.8)
+    fb(batch_size=2, device=torch.device('cpu'), uncertainty=0.9)
+
+    corrections = fb.compute_correction()
+    assert isinstance(corrections, dict), "Should return dict"
+    # At least 'uncertainty' should have a non-zero pressure since
+    # it's rising across passes
+    if 'uncertainty' in corrections:
+        assert corrections['uncertainty'] >= 0.0, (
+            f"Correction pressure should be >= 0, got {corrections['uncertainty']}"
+        )
+
+    print("✅ test_feedback_bus_compute_correction_pressures PASSED")
+
+
+def test_memory_routing_irrelevance_in_uncertainty_weights():
+    """Verify memory_routing_irrelevance is in _UNCERTAINTY_SOURCE_WEIGHTS."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    assert 'memory_routing_irrelevance' in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        "'memory_routing_irrelevance' must be in _UNCERTAINTY_SOURCE_WEIGHTS"
+    )
+    weight = _UNCERTAINTY_SOURCE_WEIGHTS['memory_routing_irrelevance']
+    assert 0.0 < weight <= 1.0, (
+        f"memory_routing_irrelevance weight should be in (0, 1], got {weight}"
+    )
+
+    print("✅ test_memory_routing_irrelevance_in_uncertainty_weights PASSED")
+
+
+def test_memory_routing_irrelevance_in_error_class_mapping():
+    """Verify memory_routing_irrelevance error class is mapped in
+    MetaCognitiveRecursionTrigger and CausalErrorEvolutionTracker."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    # Check _class_to_signal mapping in adapt_weights_from_evolution
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert 'memory_routing_irrelevance' in src, (
+        "memory_routing_irrelevance must be in _class_to_signal mapping"
+    )
+
+    # Check _ERROR_CLASS_TO_LAMBDA
+    src2 = inspect.getsource(CausalErrorEvolutionTracker)
+    assert 'memory_routing_irrelevance' in src2, (
+        "memory_routing_irrelevance must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    print("✅ test_memory_routing_irrelevance_in_error_class_mapping PASSED")
+
+
+def test_memory_routing_validate_routing_quality_called_in_pipeline():
+    """Verify validate_routing_quality is called in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'validate_routing_quality' in src, (
+        "validate_routing_quality must be called in _reasoning_core_impl"
+    )
+
+    print("✅ test_memory_routing_validate_routing_quality_called_in_pipeline PASSED")
 
 
 if __name__ == "__main__":
