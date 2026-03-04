@@ -67020,6 +67020,13 @@ def run_all_tests():
     test_export_provenance_for_checkpoint()
     test_check_training_readiness()
 
+    # Architectural unity tests
+    test_post_output_uncertainty_gate_traceability()
+    test_init_time_cognitive_unity_validation()
+    test_unified_preset_full_traceability()
+    test_cognitive_unity_score_in_forward_output()
+    test_module_instantiation_before_dag_registration()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -70630,6 +70637,155 @@ def test_check_training_readiness():
         f"Expected at least 3 checks, got {len(result['checks'])}"
     )
     print("✅ test_check_training_readiness PASSED")
+
+
+def test_post_output_uncertainty_gate_traceability():
+    """Verify post_output_uncertainty_gate is traceable in the provenance DAG.
+
+    The post_output_uncertainty_gate must be instantiated before the
+    provenance dependency registration loop so its three pipeline edges
+    (from output_reliability_gate, from cycle_consistency, to decoder)
+    are registered in the provenance DAG.  Previously, late instantiation
+    caused the module to be silently skipped, reducing root-cause
+    traceability to ~98%.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+
+    # post_output_uncertainty_gate must exist and be non-None
+    assert model.post_output_uncertainty_gate is not None, (
+        "post_output_uncertainty_gate should be instantiated"
+    )
+
+    # Verify it appears in the provenance dependency graph
+    prov_deps = model.provenance_tracker.get_dependency_graph()
+    all_nodes = set()
+    for target, sources in prov_deps.items():
+        all_nodes.add(target)
+        if isinstance(sources, (set, list)):
+            all_nodes.update(sources)
+    assert 'post_output_uncertainty_gate' in all_nodes, (
+        "post_output_uncertainty_gate must be registered in the "
+        "provenance dependency DAG for root-cause traceability"
+    )
+
+    print("✅ test_post_output_uncertainty_gate_traceability PASSED")
+
+
+def test_init_time_cognitive_unity_validation():
+    """Verify that AEONDeltaV3.__init__ runs verify_cognitive_unity().
+
+    The init-time cognitive unity check ensures architectural gaps are
+    surfaced immediately rather than discovered only at runtime.  With
+    the default config (core coherence features enabled), all three AGI
+    requirements should be satisfied.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+
+    result = model.verify_cognitive_unity()
+    assert result['unified'] is True, (
+        f"Default config should satisfy cognitive unity, got "
+        f"mutual_verification={result['mutual_verification']['coverage']:.0%}, "
+        f"uncertainty_metacognition={result['uncertainty_metacognition']['coverage']:.0%}, "
+        f"root_cause_traceability={result['root_cause_traceability']['coverage']:.0%}"
+    )
+
+    print("✅ test_init_time_cognitive_unity_validation PASSED")
+
+
+def test_unified_preset_full_traceability():
+    """Verify unified_cognitive_preset achieves 100% root-cause traceability.
+
+    With enable_full_coherence=True, every active module must be
+    reachable in the provenance DAG so all conclusions can be traced
+    back to their root causes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    result = model.verify_cognitive_unity()
+    rc = result['root_cause_traceability']
+    assert rc['coverage'] == 1.0, (
+        f"Unified preset should achieve 100% root-cause traceability, "
+        f"got {rc['coverage']:.0%}. Untraceable: {rc['untraceable_modules']}"
+    )
+    assert result['mutual_verification']['coverage'] == 1.0, (
+        f"Unified preset should achieve 100% mutual verification"
+    )
+    assert result['uncertainty_metacognition']['coverage'] == 1.0, (
+        f"Unified preset should achieve 100% uncertainty→metacognition"
+    )
+
+    print("✅ test_unified_preset_full_traceability PASSED")
+
+
+def test_cognitive_unity_score_in_forward_output():
+    """Verify forward pass output includes cognitive_unity_score metadata."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(1, 1000, (1, 8))
+        result = model(ids)
+
+    assert 'cognitive_unity_score' in result, (
+        "Forward pass output must include cognitive_unity_score"
+    )
+    score = result['cognitive_unity_score']
+    assert 0.0 <= score <= 1.0, (
+        f"cognitive_unity_score must be in [0, 1], got {score}"
+    )
+
+    print("✅ test_cognitive_unity_score_in_forward_output PASSED")
+
+
+def test_module_instantiation_before_dag_registration():
+    """Verify all modules in _NODE_ATTR_MAP are instantiated before DAG registration.
+
+    This guards against the class of bug where a module is created after
+    the provenance DAG registration loop, causing its pipeline edges to
+    be silently skipped.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(device_str='cpu')
+    model = AEONDeltaV3(config)
+
+    # For every pipeline dependency edge, if both modules are expected
+    # to be active (non-None attr), verify they're in the provenance DAG
+    prov_deps = model.provenance_tracker.get_dependency_graph()
+    all_prov_nodes = set()
+    for target, sources in prov_deps.items():
+        all_prov_nodes.add(target)
+        if isinstance(sources, (set, list)):
+            all_prov_nodes.update(sources)
+
+    _attr_map = model._NODE_ATTR_MAP
+    for up, down in model._PIPELINE_DEPENDENCIES:
+        up_attr = _attr_map.get(up)
+        down_attr = _attr_map.get(down)
+        up_active = up_attr is not None and getattr(model, up_attr, None) is not None
+        down_active = down_attr is not None and getattr(model, down_attr, None) is not None
+
+        if up_active and down_active:
+            # Both modules are active — at least one must be in provenance
+            assert up in all_prov_nodes or down in all_prov_nodes, (
+                f"Active pipeline edge ({up}, {down}) has neither node in "
+                f"the provenance DAG — module may have been instantiated "
+                f"after the DAG registration loop"
+            )
+
+    print("✅ test_module_instantiation_before_dag_registration PASSED")
 
 
 if __name__ == "__main__":

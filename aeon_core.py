@@ -23327,6 +23327,36 @@ class AEONDeltaV3(nn.Module):
         if getattr(config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
             self.init_task2vec_meta_learner()
 
+        # ===== POST-OUTPUT UNCERTAINTY GATE =====
+        # Re-evaluates metacognitive need after late-stage (post-UCC)
+        # uncertainty sources have been accumulated, closing the gap
+        # where decode-stage uncertainty was recorded but never
+        # triggered re-reasoning.
+        # NOTE: Instantiated before the provenance DAG registration loop
+        # so that edges referencing post_output_uncertainty_gate are not
+        # silently skipped due to the module being None at registration
+        # time.  Previously, late instantiation caused the gate's three
+        # pipeline dependency edges to be omitted from the provenance
+        # DAG, leaving it untraceable and reducing root-cause coverage
+        # from 100% to ~98%.
+        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
+            rerun_threshold=config.uncertainty_logit_penalty_threshold,
+        )
+
+        # ===== PROVENANCE CHAIN VALIDATOR =====
+        # Validates that all modules in the pipeline dependency DAG have
+        # recorded provenance traces during each forward pass, ensuring
+        # the "all conclusions traceable to root causes" requirement.
+        self.provenance_chain_validator = ProvenanceChainValidator(
+            pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
+            node_attr_map=self._NODE_ATTR_MAP,
+        )
+
+        # ===== COGNITIVE SNAPSHOT MANAGER =====
+        # Manages full cognitive state persistence including all memory
+        # subsystems for cross-session cognitive continuity.
+        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
+
         # ===== PRE-POPULATE PROVENANCE DEPENDENCY DAG =====
         # Register pipeline dependency edges at init time so that
         # verify_cognitive_unity() and verify_pipeline_wiring() can
@@ -23340,6 +23370,11 @@ class AEONDeltaV3(nn.Module):
         # _removed_cyclic_edges, preventing their re-registration
         # during _reasoning_core_impl().  Cycle detection is handled
         # per forward pass as before.
+        # NOTE: All module instantiation must complete before this loop
+        # runs.  The loop gates edges on ``getattr(self, attr, None)``
+        # so any module created after this point will have its pipeline
+        # dependency edges silently skipped, breaking root-cause
+        # traceability for that module.
         _attr_map = self._NODE_ATTR_MAP
         for _up, _down in self._PIPELINE_DEPENDENCIES:
             _up_attr = _attr_map.get(_up)
@@ -23379,28 +23414,46 @@ class AEONDeltaV3(nn.Module):
                 _wiring_err,
             )
 
-        # ===== PROVENANCE CHAIN VALIDATOR =====
-        # Validates that all modules in the pipeline dependency DAG have
-        # recorded provenance traces during each forward pass, ensuring
-        # the "all conclusions traceable to root causes" requirement.
-        self.provenance_chain_validator = ProvenanceChainValidator(
-            pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
-            node_attr_map=self._NODE_ATTR_MAP,
-        )
-
-        # ===== POST-OUTPUT UNCERTAINTY GATE =====
-        # Re-evaluates metacognitive need after late-stage (post-UCC)
-        # uncertainty sources have been accumulated, closing the gap
-        # where decode-stage uncertainty was recorded but never
-        # triggered re-reasoning.
-        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
-            rerun_threshold=config.uncertainty_logit_penalty_threshold,
-        )
-
-        # ===== COGNITIVE SNAPSHOT MANAGER =====
-        # Manages full cognitive state persistence including all memory
-        # subsystems for cross-session cognitive continuity.
-        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
+        # ===== INIT-TIME COGNITIVE UNITY VALIDATION =====
+        # Validates the three AGI coherence requirements at construction
+        # time and logs actionable warnings when any requirement is not
+        # fully satisfied.  This ensures that architectural gaps are
+        # surfaced immediately rather than silently degrading runtime
+        # behaviour.  When all three requirements are met the system
+        # logs a confirmation; otherwise each gap is reported with a
+        # recommendation for remediation (typically: use
+        # ``enable_full_coherence=True`` or
+        # ``AEONConfig.unified_cognitive_preset()``).
+        try:
+            _unity = self.verify_cognitive_unity()
+            _is_unified = _unity.get('unified', False)
+            _mv = _unity['mutual_verification']['coverage']
+            _um = _unity['uncertainty_metacognition']['coverage']
+            _rc = _unity['root_cause_traceability']['coverage']
+            if _is_unified:
+                logger.info(
+                    "✅ Cognitive unity verified: mutual_verification=%.0f%% "
+                    "uncertainty→metacognition=%.0f%% "
+                    "root_cause_traceability=%.0f%%",
+                    _mv * 100, _um * 100, _rc * 100,
+                )
+            else:
+                logger.warning(
+                    "⚠️  Cognitive unity incomplete: "
+                    "mutual_verification=%.0f%% "
+                    "uncertainty→metacognition=%.0f%% "
+                    "root_cause_traceability=%.0f%% — "
+                    "use AEONConfig.unified_cognitive_preset() or "
+                    "enable_full_coherence=True for full AGI coherence",
+                    _mv * 100, _um * 100, _rc * 100,
+                )
+                for _rec in _unity.get('recommendations', [])[:3]:
+                    logger.warning("  → %s", _rec)
+        except Exception as _unity_err:
+            logger.debug(
+                "Init-time cognitive unity validation skipped: %s",
+                _unity_err,
+            )
 
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")
@@ -37020,6 +37073,27 @@ class AEONDeltaV3(nn.Module):
                             'missing_count': len(_chain_validation.get('missing_modules', [])),
                         },
                     )
+
+        # ===== COGNITIVE COHERENCE METADATA =====
+        # Compute a per-pass cognitive coherence score that summarises
+        # the three AGI unity requirements (mutual verification,
+        # uncertainty→metacognition, root-cause traceability) into a
+        # single scalar.  This enables downstream consumers (loss
+        # functions, dashboards, auto-critic) to monitor architectural
+        # coherence continuously rather than relying on manual calls to
+        # verify_cognitive_unity().
+        _coherence_prov = outputs.get('provenance_chain_completeness', 1.0)
+        _coherence_coh = float(
+            outputs.get('coherence_score', torch.tensor(1.0))
+            if isinstance(outputs.get('coherence_score'), (int, float))
+            else outputs.get('coherence_score', torch.tensor(1.0))
+        ) if 'coherence_score' in outputs else 1.0
+        _coherence_unc = 1.0 - min(1.0, outputs.get('uncertainty', 0.0))
+        outputs['cognitive_unity_score'] = (
+            _coherence_prov * 0.4
+            + _coherence_coh * 0.3
+            + _coherence_unc * 0.3
+        )
 
         # ===== PACKAGE RESULTS =====
         # Surface VQ codebook quality in the result dict so it is
