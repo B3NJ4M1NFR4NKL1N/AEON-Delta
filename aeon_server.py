@@ -3450,20 +3450,20 @@ async def engine_context_window():
 
 @app.get("/api/engine/module_coherence")
 async def engine_module_coherence():
-    """Routing statistics from ModuleCoherenceVerifier."""
+    """Coherence verifier status and threshold from ModuleCoherenceVerifier."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
         mc = getattr(APP.model, 'module_coherence', None)
         if mc is None:
             return {"ok": True, "available": False, "reason": "ModuleCoherenceVerifier not enabled"}
-        routing = mc.get_routing_stats()
         threshold = getattr(mc, 'threshold', None)
+        initial_threshold = getattr(mc, '_initial_threshold', threshold)
         return {
             "ok": True,
             "available": True,
-            "routing_stats": _make_json_safe(routing),
             "threshold": threshold,
+            "initial_threshold": initial_threshold,
         }
     except Exception as e:
         logging.error(f"engine/module_coherence error: {e}")
@@ -3648,8 +3648,8 @@ async def engine_all_monitoring():
         if mc is not None:
             result["module_coherence"] = {
                 "available": True,
-                "routing_stats": _make_json_safe(mc.get_routing_stats()),
                 "threshold": getattr(mc, 'threshold', None),
+                "initial_threshold": getattr(mc, '_initial_threshold', None),
             }
     except Exception:
         pass

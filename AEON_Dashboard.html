@@ -6101,18 +6101,11 @@ async function loadEngineMonitor() {
     // Module Coherence
     if(d.module_coherence?.available) {
       const mc = d.module_coherence;
-      let html = `<div>Threshold: <span style="color:var(--accent)">${mc.threshold?.toFixed(3)||'—'}</span></div>`;
-      const rs = mc.routing_stats || {};
-      if(Object.keys(rs).length) {
-        html += `<div style="margin-top:8px"><strong>Routing stats (${Object.keys(rs).length} subsystems):</strong></div>`;
-        Object.entries(rs).forEach(([k,v]) => {
-          if(typeof v === 'object' && v !== null) {
-            html += `<div style="margin-left:8px">${k}: ${Object.entries(v).map(([sk,sv]) => `${sk}=${typeof sv==='number'?sv.toFixed(3):sv}`).join(', ')}</div>`;
-          } else {
-            html += `<div style="margin-left:8px">${k}: <span style="color:var(--accent)">${v}</span></div>`;
-          }
-        });
-      }
+      let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
+      html += `<div>Threshold: <span style="color:var(--accent)">${mc.threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Initial threshold: <span style="color:var(--text3)">${mc.initial_threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
+      html += `</div>`;
       document.getElementById('em-coherence-detail').innerHTML = html;
     }
 
