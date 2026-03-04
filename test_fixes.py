@@ -18769,7 +18769,7 @@ def test_full_coherence_includes_new_modules():
     print("✅ test_full_coherence_includes_new_modules PASSED")
 
 
-def test_new_config_defaults():
+def test_new_config_defaults_v2():
     """New config fields have sensible default values."""
     from aeon_core import AEONConfig
 
@@ -18787,7 +18787,7 @@ def test_new_config_defaults():
     assert config.standalone_ns_bridge_blend == 0.1
     assert config.hierarchical_world_model_blend == 0.1
 
-    print("✅ test_new_config_defaults PASSED")
+    print("✅ test_new_config_defaults_v2 PASSED")
 
 
 def test_causal_programmatic_model_standalone():
@@ -22956,7 +22956,7 @@ def test_adaptive_meta_loop_disabled_by_default():
     print("✅ test_adaptive_meta_loop_disabled_by_default PASSED")
 
 
-def test_adaptive_meta_loop_forward():
+def test_adaptive_meta_loop_forward_v2():
     """AdaptiveMetaLoop produces finite output and halting metadata."""
     from aeon_core import AEONConfig, AdaptiveMetaLoop
 
@@ -22973,7 +22973,7 @@ def test_adaptive_meta_loop_forward():
     assert 'steps' in meta, "Should contain steps"
     assert 'halted' in meta, "Should contain halted"
 
-    print("✅ test_adaptive_meta_loop_forward PASSED")
+    print("✅ test_adaptive_meta_loop_forward_v2 PASSED")
 
 
 def test_adaptive_meta_loop_in_inference_pipeline():
@@ -23751,7 +23751,7 @@ def test_convergence_monitor_no_bridge_without_tracker():
     print("✅ test_convergence_monitor_no_bridge_without_tracker PASSED")
 
 
-def test_convergence_monitor_stagnation_bridge():
+def test_convergence_monitor_stagnation_bridge_v2():
     """ConvergenceMonitor detects stagnation and bridges to error evolution."""
     from aeon_core import ConvergenceMonitor, CausalErrorEvolutionTracker
 
@@ -23771,7 +23771,7 @@ def test_convergence_monitor_stagnation_bridge():
         f"Expected stagnation event, got {summary}"
     )
 
-    print("✅ test_convergence_monitor_stagnation_bridge PASSED")
+    print("✅ test_convergence_monitor_stagnation_bridge_v2 PASSED")
 
 
 def test_error_evolution_get_root_causes():
@@ -25778,7 +25778,7 @@ def test_pipeline_dependencies_include_cross_validation():
     print("✅ test_pipeline_dependencies_include_cross_validation PASSED")
 
 
-def test_uncertainty_source_weights_complete():
+def test_uncertainty_source_weights_complete_v2():
     """Verify all uncertainty sources used in the pipeline have
     explicit reliability weights."""
     from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
@@ -25797,7 +25797,7 @@ def test_uncertainty_source_weights_complete():
         assert 0.0 < _UNCERTAINTY_SOURCE_WEIGHTS[name] <= 1.0, (
             f"Weight for '{name}' must be in (0, 1]"
         )
-    print("✅ test_uncertainty_source_weights_complete PASSED")
+    print("✅ test_uncertainty_source_weights_complete_v2 PASSED")
 
 
 def test_unconditional_auto_critic_quality_assessment():
@@ -34725,7 +34725,7 @@ def test_lambda_cycle_consistency_config():
     print("✅ test_lambda_cycle_consistency_config PASSED")
 
 
-def test_self_diagnostic_reports_training_bridge():
+def test_self_diagnostic_reports_training_bridge_v2():
     """Gap 4: self_diagnostic() should report training-bridge status."""
     import torch
     from aeon_core import AEONConfig, AEONDeltaV3
@@ -34747,7 +34747,7 @@ def test_self_diagnostic_reports_training_bridge():
     assert 'bridge_training_errors_to_inference' in bridge_gaps[0]['remediation'], (
         "Remediation should mention bridge_training_errors_to_inference"
     )
-    print("✅ test_self_diagnostic_reports_training_bridge PASSED")
+    print("✅ test_self_diagnostic_reports_training_bridge_v2 PASSED")
 
 
 def test_verify_coherence_includes_output_reliability():
@@ -39141,7 +39141,7 @@ def test_verify_coherence_includes_auto_critic():
     print("✅ test_verify_coherence_includes_auto_critic PASSED")
 
 
-def test_server_infer_response_includes_provenance():
+def test_server_infer_response_includes_provenance_v2():
     """Server /api/infer response schema includes provenance and recovery_stats."""
     # Verify the server code constructs the expected response keys
     import ast
@@ -39160,7 +39160,7 @@ def test_server_infer_response_includes_provenance():
         "Server infer response should include recovery_stats key"
     )
 
-    print("✅ test_server_infer_response_includes_provenance PASSED")
+    print("✅ test_server_infer_response_includes_provenance_v2 PASSED")
 
 
 # ============================================================================
@@ -64781,7 +64781,7 @@ def run_all_tests():
     test_standalone_ns_bridge_integration()
     test_hierarchical_world_model_integration()
     test_full_coherence_includes_new_modules()
-    test_new_config_defaults()
+    test_new_config_defaults_v2()
     test_causal_programmatic_model_standalone()
     test_cognitive_executive_function_standalone()
     test_ns_bridge_round_trip_consistency()
@@ -64935,7 +64935,7 @@ def run_all_tests():
     test_adaptive_meta_loop_config()
     test_adaptive_meta_loop_instantiation()
     test_adaptive_meta_loop_disabled_by_default()
-    test_adaptive_meta_loop_forward()
+    test_adaptive_meta_loop_forward_v2()
     test_adaptive_meta_loop_in_inference_pipeline()
     test_full_coherence_enables_adaptive_meta_loop()
     test_ponder_loss_in_compute_loss()
@@ -64972,7 +64972,7 @@ def run_all_tests():
     test_provenance_tracker_empty_dependency_graph()
     test_convergence_monitor_auto_bridges_divergence()
     test_convergence_monitor_no_bridge_without_tracker()
-    test_convergence_monitor_stagnation_bridge()
+    test_convergence_monitor_stagnation_bridge_v2()
     test_error_evolution_get_root_causes()
     test_error_evolution_get_root_causes_empty()
     test_unified_cognitive_cycle_basic()
@@ -65043,7 +65043,7 @@ def run_all_tests():
     test_convergence_monitor_wired_without_ucc()
     test_cross_validation_provenance_tracked()
     test_pipeline_dependencies_include_cross_validation()
-    test_uncertainty_source_weights_complete()
+    test_uncertainty_source_weights_complete_v2()
     test_unconditional_auto_critic_quality_assessment()
     
     # Architectural Coherence — Convergence-Feedback Loop & Provenance Completeness
@@ -65353,6 +65353,7 @@ def run_all_tests():
     test_convergence_monitor_wired_to_provenance()
     test_convergence_monitor_set_provenance_tracker()
     test_self_diagnostic_reports_training_bridge()
+    test_self_diagnostic_reports_training_bridge_v2()
     
     # Architectural Unification — Decoder-Feedback Loop & Coherence Gap Closure
     test_feedback_bus_output_quality_channel()
@@ -65546,7 +65547,7 @@ def run_all_tests():
     test_error_recovery_exhausted_retries_records_to_evolution()
     test_cached_auto_critic_state_initialized()
     test_verify_coherence_includes_auto_critic()
-    test_server_infer_response_includes_provenance()
+    test_server_infer_response_includes_provenance_v2()
 
     # Architectural Unification — Unconditional Safety, Coherence & Feedback Tests
     test_unconditional_safety_reeval_in_source()
@@ -67073,6 +67074,27 @@ def run_all_tests():
     test_post_output_gate_init_before_deps()
     test_full_cognitive_unity_score()
     test_coherence_registry_includes_cognitive_frame_and_executive()
+
+    # Section 50: Cognitive Integration Bridges — previously orphaned tests
+    test_unified_cognitive_frame_instantiation()
+    test_unified_cognitive_frame_assess_basic()
+    test_unified_cognitive_frame_high_uncertainty_triggers_pressure()
+    test_unified_cognitive_frame_healthy_state()
+    test_metacognitive_executive_instantiation()
+    test_metacognitive_executive_review_basic()
+    test_metacognitive_executive_low_alignment_triggers_review()
+    test_metacognitive_executive_high_alignment_no_review()
+    test_reliability_loss_scale_cached()
+    test_executive_review_pressure_cached()
+    test_auto_critic_quality_deficit_threshold_lowered()
+    test_cognitive_frame_in_node_attr_map()
+    test_reliability_loss_scale_in_trainer()
+    test_cognitive_frame_assess_in_forward()
+    test_metacognitive_executive_review_in_reasoning_core()
+    test_executive_review_pressure_in_feedback_bus()
+    test_cognitive_frame_pressures_in_feedback_bus()
+    test_unified_cognitive_frame_ambiguous_triggers_diagnostic()
+    test_metacognitive_executive_alignment_ema_tracks()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
