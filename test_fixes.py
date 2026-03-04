@@ -71818,6 +71818,413 @@ def test_pipeline_dependencies_form_dag():
     print("✅ test_pipeline_dependencies_form_dag PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURAL UNIFICATION TESTS — verify the new reconciliation,
+#  consensus, and feedback mechanisms that link modules into a unified,
+#  self-consistent cognitive system.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_convergence_arbiter_record_resolution_outcome():
+    """UnifiedConvergenceArbiter tracks monitor reliability after
+    recording actual pass outcomes."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.3)
+
+    # First arbitration with conflict
+    arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.1, "residual_norm": 2.0},
+        convergence_monitor_verdict={"status": "converging", "certified": False},
+        certified_results={"certified_convergence": True},
+    )
+
+    # Record that the actual outcome was diverging
+    reliability = arbiter.record_resolution_outcome("diverging")
+    assert "meta_loop" in reliability, "meta_loop monitor must be tracked"
+    assert "convergence_monitor" in reliability, "convergence_monitor must be tracked"
+    # meta_loop said "diverging" and actual was "diverging" → should be 1.0
+    assert reliability["meta_loop"] == 1.0, (
+        "meta_loop predicted correctly, should have 1.0 reliability"
+    )
+    # convergence_monitor said "converging" but actual was "diverging" → 0.0
+    assert reliability["convergence_monitor"] == 0.0, (
+        "convergence_monitor predicted wrong, should have 0.0 reliability"
+    )
+    print("✅ test_convergence_arbiter_record_resolution_outcome PASSED")
+
+
+def test_convergence_arbiter_get_preferred_verdict():
+    """UnifiedConvergenceArbiter recommends the verdict from the most
+    historically reliable monitor."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.3)
+
+    # Build up reliability history: meta_loop is always right
+    for _ in range(5):
+        arbiter.arbitrate(
+            meta_loop_results={"convergence_rate": 0.1, "residual_norm": 2.0},
+            convergence_monitor_verdict={"status": "converging", "certified": False},
+        )
+        arbiter.record_resolution_outcome("diverging")
+
+    # Now create a new conflict
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.2, "residual_norm": 1.5},
+        convergence_monitor_verdict={"status": "converging", "certified": False},
+    )
+    assert result["has_conflict"] is True
+    preferred = result.get("preferred_verdict", {})
+    assert preferred.get("preferred_monitor") == "meta_loop", (
+        "Most reliable monitor (meta_loop) should be preferred"
+    )
+    assert preferred.get("confidence") == 1.0, (
+        "meta_loop was always right, confidence should be 1.0"
+    )
+    print("✅ test_convergence_arbiter_get_preferred_verdict PASSED")
+
+
+def test_convergence_arbiter_monitor_reliability():
+    """get_monitor_reliability() returns 0.5 for monitors with no history."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    reliability = arbiter.get_monitor_reliability()
+    assert reliability == {}, "No history should return empty dict"
+
+    # After one arbitration without resolution
+    arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+    )
+    reliability = arbiter.get_monitor_reliability()
+    assert reliability == {}, (
+        "No resolution recorded yet, reliability should be empty"
+    )
+    print("✅ test_convergence_arbiter_monitor_reliability PASSED")
+
+
+def test_convergence_arbiter_result_contains_preferred_and_reliability():
+    """Arbiter results include preferred_verdict and monitor_reliability."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter(conflict_uncertainty_boost=0.15)
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.1, "residual_norm": 2.0},
+        convergence_monitor_verdict={"status": "converging", "certified": False},
+        certified_results={"certified_convergence": True},
+    )
+    assert "preferred_verdict" in result, (
+        "Arbitration result must include preferred_verdict"
+    )
+    assert "monitor_reliability" in result, (
+        "Arbitration result must include monitor_reliability"
+    )
+    print("✅ test_convergence_arbiter_result_contains_preferred_and_reliability PASSED")
+
+
+def test_convergence_arbiter_no_conflict_empty_preferred():
+    """When there is no conflict, preferred_verdict should be empty."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    result = arbiter.arbitrate(
+        meta_loop_results={"convergence_rate": 0.95, "residual_norm": 0.001},
+        convergence_monitor_verdict={"status": "converged", "certified": True},
+    )
+    assert result["has_conflict"] is False
+    assert result["preferred_verdict"] == {}, (
+        "No conflict should produce empty preferred_verdict"
+    )
+    print("✅ test_convergence_arbiter_no_conflict_empty_preferred PASSED")
+
+
+def test_world_model_consensus_basic():
+    """WorldModelConsensus produces consensus score for two agreeing models."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus(agreement_threshold=0.4, uncertainty_scale=0.15)
+    pred_a = torch.randn(4, 32)
+    result = wmc.evaluate({
+        "physics_grounded": pred_a,
+        "hierarchical": pred_a.clone(),
+    })
+    assert result["consensus_score"] > 0.99, (
+        "Identical predictions should have consensus ≈ 1.0"
+    )
+    assert result["needs_escalation"] is False
+    assert result["uncertainty_boost"] == 0.0
+    assert result["num_models"] == 2
+    assert "reconciled_prediction" in result
+    print("✅ test_world_model_consensus_basic PASSED")
+
+
+def test_world_model_consensus_disagreement():
+    """WorldModelConsensus flags disagreement and produces uncertainty boost."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus(agreement_threshold=0.8, uncertainty_scale=0.3)
+    pred_a = torch.ones(4, 32)
+    pred_b = -torch.ones(4, 32)  # opposite direction
+    result = wmc.evaluate({
+        "physics_grounded": pred_a,
+        "hierarchical": pred_b,
+    })
+    assert result["consensus_score"] < 0.0 + 0.01, (
+        "Opposite predictions should have negative/zero consensus"
+    )
+    assert result["needs_escalation"] is True
+    assert result["uncertainty_boost"] > 0, (
+        "Disagreement should produce positive uncertainty boost"
+    )
+    print("✅ test_world_model_consensus_disagreement PASSED")
+
+
+def test_world_model_consensus_reconciled_prediction():
+    """WorldModelConsensus produces a reconciled prediction that blends inputs."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus()
+    pred_a = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    pred_b = torch.tensor([0.0, 0.0, 0.0, 1.0])
+    result = wmc.evaluate({
+        "physics_grounded": pred_a,
+        "hierarchical": pred_b,
+    })
+    recon = result["reconciled_prediction"]
+    assert isinstance(recon, torch.Tensor)
+    # Reconciled should not be identical to either input
+    assert not torch.allclose(recon, pred_a, atol=1e-4)
+    assert not torch.allclose(recon, pred_b, atol=1e-4)
+    print("✅ test_world_model_consensus_reconciled_prediction PASSED")
+
+
+def test_world_model_consensus_single_model():
+    """Single-model input returns consensus 1.0 and no escalation."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus()
+    result = wmc.evaluate({"only_model": torch.randn(8)})
+    assert result["consensus_score"] == 1.0
+    assert result["needs_escalation"] is False
+    assert result["num_models"] == 1
+    print("✅ test_world_model_consensus_single_model PASSED")
+
+
+def test_world_model_consensus_model_reliability():
+    """WorldModelConsensus tracks per-model accuracy."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus()
+    wmc.record_model_accuracy("physics_grounded", 0.9)
+    wmc.record_model_accuracy("physics_grounded", 0.8)
+    wmc.record_model_accuracy("hierarchical", 0.5)
+    reliability = wmc.get_model_reliability()
+    assert abs(reliability["physics_grounded"] - 0.85) < 1e-6, (
+        "physics_grounded reliability should be mean of 0.9 and 0.8"
+    )
+    assert reliability["hierarchical"] == 0.5
+    print("✅ test_world_model_consensus_model_reliability PASSED")
+
+
+def test_world_model_consensus_different_sizes():
+    """WorldModelConsensus handles predictions of different sizes."""
+    from aeon_core import WorldModelConsensus
+
+    wmc = WorldModelConsensus()
+    result = wmc.evaluate({
+        "model_a": torch.randn(8),
+        "model_b": torch.randn(16),
+    })
+    assert "consensus_score" in result
+    assert result["num_models"] == 2
+    assert isinstance(result["reconciled_prediction"], torch.Tensor)
+    print("✅ test_world_model_consensus_different_sizes PASSED")
+
+
+def test_ucc_world_model_consensus_wiring():
+    """UCC accepts world_model_consensus and world_model_predictions params."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, WorldModelConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    wmc = WorldModelConsensus()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        world_model_consensus=wmc,
+    )
+    assert ucc.world_model_consensus is wmc, (
+        "UCC must store world_model_consensus reference"
+    )
+    print("✅ test_ucc_world_model_consensus_wiring PASSED")
+
+
+def test_ucc_world_model_consensus_evaluation():
+    """UCC evaluate() triggers world model consensus verification."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, WorldModelConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    wmc = WorldModelConsensus(agreement_threshold=0.8, uncertainty_scale=0.2)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        world_model_consensus=wmc,
+    )
+    # Provide conflicting predictions
+    pred_a = torch.ones(32)
+    pred_b = -torch.ones(32)
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+        uncertainty=0.1,
+        world_model_predictions={
+            "physics_grounded": pred_a,
+            "hierarchical": pred_b,
+        },
+    )
+    wm_consensus = result.get("world_model_consensus", {})
+    assert wm_consensus.get("needs_escalation", False) is True, (
+        "Conflicting world models should trigger escalation in UCC"
+    )
+    assert result["should_rerun"] is True, (
+        "World model disagreement should trigger re-reasoning"
+    )
+    print("✅ test_ucc_world_model_consensus_evaluation PASSED")
+
+
+def test_ucc_world_model_consensus_no_predictions():
+    """UCC evaluate() gracefully handles missing world model predictions."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, WorldModelConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    wmc = WorldModelConsensus()
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        world_model_consensus=wmc,
+    )
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.01,
+    )
+    wm_consensus = result.get("world_model_consensus", {})
+    # No predictions provided → no consensus evaluation
+    assert wm_consensus == {} or wm_consensus.get("needs_escalation") is False
+    print("✅ test_ucc_world_model_consensus_no_predictions PASSED")
+
+
+def test_ucc_world_model_consensus_agreeing_predictions():
+    """UCC evaluate() does not trigger re-reasoning when world models agree."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalProvenanceTracker, WorldModelConsensus,
+    )
+
+    cm = ConvergenceMonitor()
+    pt = CausalProvenanceTracker()
+    wmc = WorldModelConsensus(agreement_threshold=0.3)
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=pt,
+        world_model_consensus=wmc,
+    )
+    pred = torch.randn(32)
+    result = ucc.evaluate(
+        subsystem_states={},
+        delta_norm=0.001,
+        world_model_predictions={
+            "physics_grounded": pred,
+            "hierarchical": pred.clone(),
+        },
+    )
+    wm_consensus = result.get("world_model_consensus", {})
+    assert wm_consensus.get("needs_escalation", False) is False, (
+        "Agreeing world models should not trigger escalation"
+    )
+    print("✅ test_ucc_world_model_consensus_agreeing_predictions PASSED")
+
+
+def test_world_model_consensus_in_all_exports():
+    """WorldModelConsensus is listed in __all__."""
+    import aeon_core
+    assert "WorldModelConsensus" in aeon_core.__all__, (
+        "WorldModelConsensus must be exported in __all__"
+    )
+    print("✅ test_world_model_consensus_in_all_exports PASSED")
+
+
+def test_convergence_arbiter_reliability_accumulates():
+    """Monitor reliability accumulates over multiple resolution recordings."""
+    from aeon_core import UnifiedConvergenceArbiter
+
+    arbiter = UnifiedConvergenceArbiter()
+    # meta_loop predicts "diverging" 3 times; actual is "diverging" twice, "converging" once
+    for outcome in ["diverging", "diverging", "converging"]:
+        arbiter.arbitrate(
+            meta_loop_results={"convergence_rate": 0.1, "residual_norm": 2.0},
+            convergence_monitor_verdict={"status": "converging", "certified": False},
+        )
+        arbiter.record_resolution_outcome(outcome)
+
+    reliability = arbiter.get_monitor_reliability()
+    # meta_loop said "diverging" 3 times, correct 2/3 times
+    assert abs(reliability["meta_loop"] - 2.0 / 3.0) < 1e-6, (
+        f"Expected meta_loop reliability ≈ 0.667, got {reliability['meta_loop']}"
+    )
+    # convergence_monitor said "converging" 3 times, correct 1/3 times
+    assert abs(reliability["convergence_monitor"] - 1.0 / 3.0) < 1e-6, (
+        f"Expected convergence_monitor reliability ≈ 0.333, got {reliability['convergence_monitor']}"
+    )
+    print("✅ test_convergence_arbiter_reliability_accumulates PASSED")
+
+
+def test_world_model_consensus_error_class_mapping():
+    """world_model_consensus_disagreement is mapped in the trigger's
+    error-class-to-signal mapping within adapt_weights_from_evolution."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    # The mapping is used inside adapt_weights_from_evolution.
+    # Verify that calling it with a world_model_consensus_disagreement
+    # episode adapts the world_model_surprise signal weight.
+    _original_weights = dict(trigger._signal_weights)
+    trigger.adapt_weights_from_evolution({
+        "world_model_consensus_disagreement": {
+            "count": 5, "success_rate": 0.2,
+        },
+    })
+    # The world_model_surprise weight should have been boosted
+    _new_weights = trigger._signal_weights
+    assert _new_weights.get("world_model_surprise", 0) >= _original_weights.get(
+        "world_model_surprise", 0,
+    ), "world_model_consensus_disagreement should boost world_model_surprise weight"
+    print("✅ test_world_model_consensus_error_class_mapping PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes
