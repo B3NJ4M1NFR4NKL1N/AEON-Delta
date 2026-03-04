@@ -18103,6 +18103,14 @@ class SubsystemCoherenceRegistry:
         # need after late-stage uncertainty — its presence must be
         # visible to coverage deficit tracking.
         "post_output_uncertainty_gate",
+        # The cognitive frame bridges diagnostic verification with
+        # forward-pass cognition — its assessment must be visible
+        # to coverage deficit tracking.
+        "cognitive_frame",
+        # The metacognitive executive reviews CognitiveExecutiveFunction
+        # decisions — its review must be visible to coverage deficit
+        # tracking.
+        "metacognitive_executive",
     })
 
     def __init__(
@@ -21866,6 +21874,27 @@ class AEONDeltaV3(nn.Module):
         # cross-module coherence verification alongside uncertainty
         # escalation.
         ("counterfactual_verification", "unified_cognitive_cycle"),
+        # ── Cognitive frame integration paths ──────────────────────
+        # The UnifiedCognitiveFrame bridges diagnostic verification with
+        # the live forward-pass signals.  It consumes the UCC's
+        # coherence assessment and the output reliability gate's trust
+        # signal, and produces corrective pressures that feed into the
+        # feedback bus and metacognitive trigger.  These edges ensure
+        # trace_root_cause() can attribute frame-level corrective
+        # pressures to the originating subsystem signals.
+        ("unified_cognitive_cycle", "cognitive_frame"),
+        ("output_reliability", "cognitive_frame"),
+        ("cognitive_frame", "metacognitive_trigger"),
+        ("cognitive_frame", "feedback_bus"),
+        # ── MetaCognitiveExecutive integration paths ───────────────
+        # The MetaCognitiveExecutive reviews CognitiveExecutiveFunction
+        # decisions and produces corrective pressure that feeds into the
+        # feedback bus and metacognitive trigger.  These edges ensure
+        # trace_root_cause() can attribute executive review escalations
+        # to the originating executive arbitration decisions.
+        ("cognitive_executive", "metacognitive_executive"),
+        ("metacognitive_executive", "metacognitive_trigger"),
+        ("metacognitive_executive", "feedback_bus"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -23799,6 +23828,23 @@ class AEONDeltaV3(nn.Module):
         if getattr(config, 'enable_task2vec', False) and self.task2vec_meta_learner is None:
             self.init_task2vec_meta_learner()
 
+        # ===== POST-OUTPUT UNCERTAINTY GATE =====
+        # Re-evaluates metacognitive need after late-stage (post-UCC)
+        # uncertainty sources have been accumulated, closing the gap
+        # where decode-stage uncertainty was recorded but never
+        # triggered re-reasoning.
+        # NOTE: Initialized before the provenance dependency registration
+        # loop so that edges referencing this gate are not skipped due
+        # to the attribute being None at registration time.
+        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
+            rerun_threshold=config.uncertainty_logit_penalty_threshold,
+        )
+
+        # ===== COGNITIVE SNAPSHOT MANAGER =====
+        # Manages full cognitive state persistence including all memory
+        # subsystems for cross-session cognitive continuity.
+        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
+
         # ===== PRE-POPULATE PROVENANCE DEPENDENCY DAG =====
         # Register pipeline dependency edges at init time so that
         # verify_cognitive_unity() and verify_pipeline_wiring() can
@@ -23859,20 +23905,6 @@ class AEONDeltaV3(nn.Module):
             pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
             node_attr_map=self._NODE_ATTR_MAP,
         )
-
-        # ===== POST-OUTPUT UNCERTAINTY GATE =====
-        # Re-evaluates metacognitive need after late-stage (post-UCC)
-        # uncertainty sources have been accumulated, closing the gap
-        # where decode-stage uncertainty was recorded but never
-        # triggered re-reasoning.
-        self.post_output_uncertainty_gate = PostOutputUncertaintyGate(
-            rerun_threshold=config.uncertainty_logit_penalty_threshold,
-        )
-
-        # ===== COGNITIVE SNAPSHOT MANAGER =====
-        # Manages full cognitive state persistence including all memory
-        # subsystems for cross-session cognitive continuity.
-        self.cognitive_snapshot_manager = CognitiveSnapshotManager()
 
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")
@@ -27538,10 +27570,21 @@ class AEONDeltaV3(nn.Module):
                 # review.  This closes the gap where executive decisions
                 # were never verified by the meta-cognitive system.
                 if self.metacognitive_executive is not None:
+                    self.provenance_tracker.record_before(
+                        "metacognitive_executive", z,
+                    )
                     _mce_review = self.metacognitive_executive.review(
                         executive_results,
                         uncertainty=uncertainty,
                         coherence_deficit=self._cached_coherence_deficit,
+                    )
+                    self.provenance_tracker.record_after(
+                        "metacognitive_executive", z,
+                    )
+                    self.coherence_registry.register_output(
+                        "metacognitive_executive",
+                        validated=True,
+                        quality=_mce_review.get('alignment_score', 1.0),
                     )
                     self._cached_executive_review_pressure = (
                         _mce_review.get('corrective_pressure', 0.0)
@@ -37881,6 +37924,9 @@ class AEONDeltaV3(nn.Module):
         # it flags the need for diagnostic review, closing the gap
         # where live signals and diagnostic methods operated independently.
         if self.cognitive_frame is not None:
+            self.provenance_tracker.record_before(
+                "cognitive_frame", z_out,
+            )
             _cf_result = self.cognitive_frame.assess(
                 uncertainty=uncertainty,
                 coherence_deficit=self._cached_coherence_deficit,
@@ -37888,6 +37934,14 @@ class AEONDeltaV3(nn.Module):
                 convergence_quality=_cus_convergence,
                 uncertainty_sources=uncertainty_sources,
                 unity_components=result.get('cognitive_unity_components', {}),
+            )
+            self.provenance_tracker.record_after(
+                "cognitive_frame", z_out,
+            )
+            self.coherence_registry.register_output(
+                "cognitive_frame",
+                validated=True,
+                quality=_cf_result.get('frame_score', 1.0),
             )
             result['cognitive_frame'] = _cf_result
             # When the frame triggers a meta-cognitive boost, escalate

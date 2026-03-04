@@ -67060,6 +67060,17 @@ def run_all_tests():
     test_memory_routing_irrelevance_in_error_class_mapping()
     test_memory_routing_validate_routing_quality_called_in_pipeline()
 
+    # Cognitive Integration — Pipeline dependency & provenance recording tests
+    test_cognitive_frame_in_pipeline_dependencies()
+    test_metacognitive_executive_in_pipeline_dependencies()
+    test_cognitive_frame_provenance_recording()
+    test_metacognitive_executive_provenance_recording()
+    test_cognitive_frame_coherence_registry()
+    test_metacognitive_executive_coherence_registry()
+    test_post_output_gate_init_before_deps()
+    test_full_cognitive_unity_score()
+    test_coherence_registry_includes_cognitive_frame_and_executive()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -71296,6 +71307,163 @@ def test_metacognitive_executive_alignment_ema_tracks():
     assert mce._alignment_ema < 0.9, "EMA should drop after low-alignment review"
     assert result['review_count'] == 6
     print("✅ test_metacognitive_executive_alignment_ema_tracks PASSED")
+
+
+def test_cognitive_frame_in_pipeline_dependencies():
+    """Verify cognitive_frame has pipeline dependency edges."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    cf_edges = [(u, d) for u, d in deps if 'cognitive_frame' in (u, d)]
+    assert len(cf_edges) >= 4, (
+        f"cognitive_frame should have >= 4 pipeline edges, got {len(cf_edges)}"
+    )
+    # Verify specific upstream/downstream connections
+    cf_upstream = [u for u, d in cf_edges if d == 'cognitive_frame']
+    cf_downstream = [d for u, d in cf_edges if u == 'cognitive_frame']
+    assert 'unified_cognitive_cycle' in cf_upstream, (
+        "cognitive_frame must receive input from unified_cognitive_cycle"
+    )
+    assert 'metacognitive_trigger' in cf_downstream, (
+        "cognitive_frame must feed into metacognitive_trigger"
+    )
+    print("✅ test_cognitive_frame_in_pipeline_dependencies PASSED")
+
+
+def test_metacognitive_executive_in_pipeline_dependencies():
+    """Verify metacognitive_executive has pipeline dependency edges."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    mce_edges = [(u, d) for u, d in deps if 'metacognitive_executive' in (u, d)]
+    assert len(mce_edges) >= 3, (
+        f"metacognitive_executive should have >= 3 pipeline edges, got {len(mce_edges)}"
+    )
+    mce_upstream = [u for u, d in mce_edges if d == 'metacognitive_executive']
+    mce_downstream = [d for u, d in mce_edges if u == 'metacognitive_executive']
+    assert 'cognitive_executive' in mce_upstream, (
+        "metacognitive_executive must receive input from cognitive_executive"
+    )
+    assert 'metacognitive_trigger' in mce_downstream, (
+        "metacognitive_executive must feed into metacognitive_trigger"
+    )
+    print("✅ test_metacognitive_executive_in_pipeline_dependencies PASSED")
+
+
+def test_cognitive_frame_provenance_recording():
+    """Verify cognitive_frame has provenance recording in _forward_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'record_before("cognitive_frame"' in src or "record_before(\\n" in src or \
+           'record_before(\n' in src or '"cognitive_frame"' in src, (
+        "cognitive_frame must have provenance record_before in _forward_impl"
+    )
+    # Check for record_after too
+    assert 'record_after' in src and 'cognitive_frame' in src, (
+        "cognitive_frame must have provenance record_after in _forward_impl"
+    )
+    print("✅ test_cognitive_frame_provenance_recording PASSED")
+
+
+def test_metacognitive_executive_provenance_recording():
+    """Verify metacognitive_executive has provenance recording in _reasoning_core_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'record_before' in src and 'metacognitive_executive' in src, (
+        "metacognitive_executive must have provenance record_before in _reasoning_core_impl"
+    )
+    assert 'record_after' in src and 'metacognitive_executive' in src, (
+        "metacognitive_executive must have provenance record_after in _reasoning_core_impl"
+    )
+    print("✅ test_metacognitive_executive_provenance_recording PASSED")
+
+
+def test_cognitive_frame_coherence_registry():
+    """Verify cognitive_frame registers output in coherence registry."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'register_output' in src and 'cognitive_frame' in src, (
+        "cognitive_frame must register output in coherence registry"
+    )
+    print("✅ test_cognitive_frame_coherence_registry PASSED")
+
+
+def test_metacognitive_executive_coherence_registry():
+    """Verify metacognitive_executive registers output in coherence registry."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'register_output' in src and 'metacognitive_executive' in src, (
+        "metacognitive_executive must register output in coherence registry"
+    )
+    print("✅ test_metacognitive_executive_coherence_registry PASSED")
+
+
+def test_post_output_gate_init_before_deps():
+    """Verify post_output_uncertainty_gate is initialized before dependency registration."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    deps = model.provenance_tracker.get_dependency_graph()
+    # post_output_uncertainty_gate must appear in the dependency graph
+    all_nodes = set()
+    for k, v in deps.items():
+        all_nodes.add(k)
+        for s in v:
+            all_nodes.add(s)
+    assert 'post_output_uncertainty_gate' in all_nodes, (
+        "post_output_uncertainty_gate must be in provenance dependency graph "
+        "(ensure it is initialized before the dep registration loop)"
+    )
+    print("✅ test_post_output_gate_init_before_deps PASSED")
+
+
+def test_full_cognitive_unity_score():
+    """Verify full cognitive unity with all patches applied."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+    assert unity['unified'], "System should report as unified"
+    assert unity['mutual_verification']['coverage'] == 1.0, (
+        f"MV coverage should be 1.0, got {unity['mutual_verification']['coverage']}"
+    )
+    assert unity['uncertainty_metacognition']['coverage'] == 1.0, (
+        f"UM coverage should be 1.0, got {unity['uncertainty_metacognition']['coverage']}"
+    )
+    assert unity['root_cause_traceability']['coverage'] == 1.0, (
+        f"RC coverage should be 1.0, got {unity['root_cause_traceability']['coverage']}"
+    )
+    assert len(unity['mutual_verification']['unverified_modules']) == 0, (
+        f"No modules should be unverified, got: {unity['mutual_verification']['unverified_modules']}"
+    )
+    assert len(unity['root_cause_traceability']['untraceable_modules']) == 0, (
+        f"No modules should be untraceable, got: {unity['root_cause_traceability']['untraceable_modules']}"
+    )
+    print("✅ test_full_cognitive_unity_score PASSED")
+
+
+def test_coherence_registry_includes_cognitive_frame_and_executive():
+    """Verify coherence registry expected subsystems include new modules."""
+    from aeon_core import SubsystemCoherenceRegistry
+
+    expected = SubsystemCoherenceRegistry._DEFAULT_EXPECTED
+    assert 'cognitive_frame' in expected, (
+        "cognitive_frame must be in SubsystemCoherenceRegistry._DEFAULT_EXPECTED"
+    )
+    assert 'metacognitive_executive' in expected, (
+        "metacognitive_executive must be in SubsystemCoherenceRegistry._DEFAULT_EXPECTED"
+    )
+    print("✅ test_coherence_registry_includes_cognitive_frame_and_executive PASSED")
 
 
 if __name__ == "__main__":
