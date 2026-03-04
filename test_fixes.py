@@ -36596,6 +36596,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "cross_validation_correction": "cross_validator",
         "subsystem_health_gate": "subsystem_health_gate",
         "post_output_uncertainty_gate": "post_output_uncertainty_gate",
+        "cognitive_frame": "cognitive_frame",
+        "metacognitive_executive": "metacognitive_executive",
     }
 
     # Verify every optional node has a known attribute mapping
