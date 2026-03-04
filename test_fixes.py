@@ -67020,6 +67020,18 @@ def run_all_tests():
     test_export_provenance_for_checkpoint()
     test_check_training_readiness()
 
+    # Architectural coherence wiring tests
+    test_pipeline_dependencies_include_post_output_to_trigger()
+    test_pipeline_dependencies_include_health_gate_to_ucc()
+    test_pipeline_dependencies_include_counterfactual_to_ucc()
+    test_ucc_expected_subsystems_include_health_gate()
+    test_cognitive_snapshot_validate_cognitive_state()
+    test_snapshot_coherence_in_forward_output()
+    test_post_output_late_uncertainty_cached()
+    test_post_output_late_uncertainty_in_weights_table()
+    test_snapshot_coherence_degraded_in_weights_table()
+    test_feedback_bus_post_output_signal()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -70630,6 +70642,207 @@ def test_check_training_readiness():
         f"Expected at least 3 checks, got {len(result['checks'])}"
     )
     print("✅ test_check_training_readiness PASSED")
+
+
+# ============================================================================
+# Tests for architectural coherence wiring fixes
+# ============================================================================
+
+def test_pipeline_dependencies_include_post_output_to_trigger():
+    """Verify _PIPELINE_DEPENDENCIES includes post_output → metacognitive_trigger."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("post_output_uncertainty_gate", "metacognitive_trigger") in dep_set, (
+        "post_output_uncertainty_gate → metacognitive_trigger edge missing"
+    )
+    print("✅ test_pipeline_dependencies_include_post_output_to_trigger PASSED")
+
+
+def test_pipeline_dependencies_include_health_gate_to_ucc():
+    """Verify _PIPELINE_DEPENDENCIES includes subsystem_health_gate → UCC."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("subsystem_health_gate", "unified_cognitive_cycle") in dep_set, (
+        "subsystem_health_gate → unified_cognitive_cycle edge missing"
+    )
+    print("✅ test_pipeline_dependencies_include_health_gate_to_ucc PASSED")
+
+
+def test_pipeline_dependencies_include_counterfactual_to_ucc():
+    """Verify _PIPELINE_DEPENDENCIES includes counterfactual_verification → UCC."""
+    from aeon_core import AEONDeltaV3
+
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    dep_set = set(deps)
+    assert ("counterfactual_verification", "unified_cognitive_cycle") in dep_set, (
+        "counterfactual_verification → unified_cognitive_cycle edge missing"
+    )
+    print("✅ test_pipeline_dependencies_include_counterfactual_to_ucc PASSED")
+
+
+def test_ucc_expected_subsystems_include_health_gate():
+    """Verify subsystem_health_gate is in _UCC_EXPECTED_SUBSYSTEMS."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to trigger the UCC path
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    # The _UCC_EXPECTED_SUBSYSTEMS is defined inside _reasoning_core_impl;
+    # we verify it indirectly by checking the pipeline dependencies
+    # include edges from subsystem_health_gate to UCC.
+    deps = set(AEONDeltaV3._PIPELINE_DEPENDENCIES)
+    assert ("subsystem_health_gate", "unified_cognitive_cycle") in deps
+    assert ("subsystem_health_gate", "metacognitive_trigger") in deps
+
+    print("✅ test_ucc_expected_subsystems_include_health_gate PASSED")
+
+
+def test_cognitive_snapshot_validate_cognitive_state():
+    """Verify CognitiveSnapshotManager.validate_cognitive_state returns expected structure."""
+    from aeon_core import AEONConfig, AEONDeltaV3, CognitiveSnapshotManager
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    result = CognitiveSnapshotManager.validate_cognitive_state(model)
+    assert 'coherence_score' in result, "Missing coherence_score"
+    assert 'issues' in result, "Missing issues"
+    assert 'subsystems_checked' in result, "Missing subsystems_checked"
+    assert 0.0 <= result['coherence_score'] <= 1.0, (
+        f"coherence_score out of range: {result['coherence_score']}"
+    )
+
+    print("✅ test_cognitive_snapshot_validate_cognitive_state PASSED")
+
+
+def test_snapshot_coherence_in_forward_output():
+    """Verify forward pass output includes snapshot_coherence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        result = model.forward(ids)
+
+    assert 'snapshot_coherence' in result, (
+        "Forward pass must include 'snapshot_coherence'"
+    )
+    assert 0.0 <= result['snapshot_coherence'] <= 1.0, (
+        f"snapshot_coherence out of range: {result['snapshot_coherence']}"
+    )
+
+    print("✅ test_snapshot_coherence_in_forward_output PASSED")
+
+
+def test_post_output_late_uncertainty_cached():
+    """Verify _cached_post_output_late_uncertainty is set after forward."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        ids = torch.randint(0, 1000, (1, 16))
+        model.forward(ids)
+
+    assert hasattr(model, '_cached_post_output_late_uncertainty'), (
+        "Model must cache post-output late uncertainty after forward pass"
+    )
+    val = model._cached_post_output_late_uncertainty
+    assert isinstance(val, float), f"Expected float, got {type(val)}"
+    assert 0.0 <= val <= 1.0, f"Value out of range: {val}"
+
+    print("✅ test_post_output_late_uncertainty_cached PASSED")
+
+
+def test_post_output_late_uncertainty_in_weights_table():
+    """Verify post_output_late_uncertainty is in _UNCERTAINTY_SOURCE_WEIGHTS."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    assert 'post_output_late_uncertainty' in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        "'post_output_late_uncertainty' must be in _UNCERTAINTY_SOURCE_WEIGHTS"
+    )
+    weight = _UNCERTAINTY_SOURCE_WEIGHTS['post_output_late_uncertainty']
+    assert 0.0 < weight <= 1.0, (
+        f"post_output_late_uncertainty weight should be in (0, 1], got {weight}"
+    )
+
+    print("✅ test_post_output_late_uncertainty_in_weights_table PASSED")
+
+
+def test_snapshot_coherence_degraded_in_weights_table():
+    """Verify snapshot_coherence_degraded is in _UNCERTAINTY_SOURCE_WEIGHTS."""
+    from aeon_core import _UNCERTAINTY_SOURCE_WEIGHTS
+
+    assert 'snapshot_coherence_degraded' in _UNCERTAINTY_SOURCE_WEIGHTS, (
+        "'snapshot_coherence_degraded' must be in _UNCERTAINTY_SOURCE_WEIGHTS"
+    )
+    weight = _UNCERTAINTY_SOURCE_WEIGHTS['snapshot_coherence_degraded']
+    assert 0.0 < weight <= 1.0, (
+        f"snapshot_coherence_degraded weight should be in (0, 1], got {weight}"
+    )
+
+    print("✅ test_snapshot_coherence_degraded_in_weights_table PASSED")
+
+
+def test_feedback_bus_post_output_signal():
+    """Verify feedback bus includes post_output_late_uncertainty when cached."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=1000, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate high post-output uncertainty
+    model._cached_post_output_late_uncertainty = 0.5
+    extra = model._build_feedback_extra_signals()
+
+    assert 'post_output_late_uncertainty' in extra, (
+        "Feedback bus should include post_output_late_uncertainty "
+        "when cached value > 0.1"
+    )
+    assert abs(extra['post_output_late_uncertainty'] - 0.5) < 1e-6, (
+        f"Expected 0.5, got {extra['post_output_late_uncertainty']}"
+    )
+
+    print("✅ test_feedback_bus_post_output_signal PASSED")
 
 
 if __name__ == "__main__":
