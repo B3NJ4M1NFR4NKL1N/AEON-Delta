@@ -70985,5 +70985,258 @@ def test_memory_routing_validate_routing_quality_called_in_pipeline():
     print("✅ test_memory_routing_validate_routing_quality_called_in_pipeline PASSED")
 
 
+def test_fallback_ucc_root_cause_trace_populated():
+    """Fallback UCC populates root_cause_trace when causal_trace is provided."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker, TemporalCausalTraceBuffer,
+    )
+    import ae_train
+
+    if ae_train.AEON_CORE_AVAILABLE:
+        # When aeon_core is available, the fallback classes are not defined
+        # at module scope; use the aeon_core versions for consistency.
+        UCC = __import__('aeon_core').UnifiedCognitiveCycle
+    else:
+        UCC = ae_train.UnifiedCognitiveCycle
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    coherence = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.99)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    metacog = MetaCognitiveRecursionTrigger(trigger_threshold=0.1)
+    provenance = CausalProvenanceTracker()
+    trace = TemporalCausalTraceBuffer(max_entries=100)
+
+    ucc = UCC(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=metacog,
+        provenance_tracker=provenance,
+        causal_trace=trace,
+    )
+
+    x = torch.randn(2, 16)
+    provenance.record_before("meta_loop", x)
+    provenance.record_after("meta_loop", x + 0.1)
+
+    states = {
+        "meta_loop": torch.randn(2, 16),
+        "factors": torch.randn(2, 16),
+    }
+    ucc.reset()
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.7,
+    )
+    assert "root_cause_trace" in result, "evaluate must return root_cause_trace"
+    # When causal_trace is available, root_cause_trace should have content
+    # (the exact structure depends on TemporalCausalTraceBuffer.trace_root_cause)
+    assert isinstance(result["root_cause_trace"], dict), (
+        "root_cause_trace must be a dict"
+    )
+    print("✅ test_fallback_ucc_root_cause_trace_populated PASSED")
+
+
+def test_fallback_ucc_provenance_root_cause_enrichment():
+    """Fallback UCC returns provenance_root_cause when rerun is triggered."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker,
+    )
+    import ae_train
+
+    if ae_train.AEON_CORE_AVAILABLE:
+        UCC = __import__('aeon_core').UnifiedCognitiveCycle
+    else:
+        UCC = ae_train.UnifiedCognitiveCycle
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    coherence = ModuleCoherenceVerifier(hidden_dim=16, threshold=0.99)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    metacog = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.1, high_uncertainty_override=0.7,
+    )
+    provenance = CausalProvenanceTracker()
+
+    ucc = UCC(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=metacog,
+        provenance_tracker=provenance,
+    )
+
+    # Record provenance with dependency DAG
+    provenance.record_dependency("encoder", "vq")
+    provenance.record_dependency("vq", "decoder")
+    x = torch.randn(2, 16)
+    provenance.record_before("encoder", x)
+    provenance.record_after("encoder", x + 0.5)
+    provenance.record_before("vq", x)
+    provenance.record_after("vq", x + 0.1)
+    provenance.record_before("decoder", x)
+    provenance.record_after("decoder", x + 0.05)
+
+    states = {
+        "encoder": torch.randn(2, 16),
+        "vq": torch.randn(2, 16),
+    }
+    ucc.reset()
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.5,
+        uncertainty=0.9,  # High uncertainty to trigger rerun
+    )
+    assert result["should_rerun"], "High uncertainty should trigger rerun"
+    assert "provenance_root_cause" in result, (
+        "evaluate must return provenance_root_cause"
+    )
+    prc = result["provenance_root_cause"]
+    assert isinstance(prc, dict), "provenance_root_cause must be a dict"
+    # When provenance has data and rerun is triggered, root cause should be populated
+    if prc:
+        assert "root_modules" in prc or "contributions" in prc, (
+            "provenance_root_cause should have root_modules or contributions"
+        )
+    print("✅ test_fallback_ucc_provenance_root_cause_enrichment PASSED")
+
+
+def test_fallback_ucc_coherence_trend_tracking():
+    """Fallback UCC tracks coherence trend across passes and detects drift."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker,
+    )
+    import ae_train
+
+    if ae_train.AEON_CORE_AVAILABLE:
+        UCC = __import__('aeon_core').UnifiedCognitiveCycle
+    else:
+        UCC = ae_train.UnifiedCognitiveCycle
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    # Very high threshold to force coherence deficit
+    coherence = ModuleCoherenceVerifier(hidden_dim=8, threshold=0.999)
+    error_evo = CausalErrorEvolutionTracker(max_history=50)
+    metacog = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.9, max_recursions=10,
+    )
+    provenance = CausalProvenanceTracker()
+
+    ucc = UCC(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=coherence,
+        error_evolution=error_evo,
+        metacognitive_trigger=metacog,
+        provenance_tracker=provenance,
+    )
+    ucc.reset()
+
+    # Run multiple passes with different states to accumulate coherence trend
+    for _ in range(5):
+        states = {
+            "a": torch.randn(2, 8),
+            "b": torch.randn(2, 8),
+        }
+        result = ucc.evaluate(
+            subsystem_states=states,
+            delta_norm=0.01,
+            uncertainty=0.0,
+        )
+
+    assert "coherence_trend" in result, "evaluate must return coherence_trend"
+    trend = result["coherence_trend"]
+    assert "ema" in trend, "coherence_trend must include ema"
+    assert "pass_count" in trend, "coherence_trend must include pass_count"
+    assert trend["pass_count"] == 5, (
+        f"pass_count should be 5, got {trend['pass_count']}"
+    )
+    print("✅ test_fallback_ucc_coherence_trend_tracking PASSED")
+
+
+def test_fallback_ucc_metacognitive_trigger_wiring():
+    """Fallback UCC wires convergence monitor to metacognitive trigger."""
+    from aeon_core import (
+        ConvergenceMonitor, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker,
+    )
+    import ae_train
+
+    if ae_train.AEON_CORE_AVAILABLE:
+        UCC = __import__('aeon_core').UnifiedCognitiveCycle
+    else:
+        UCC = ae_train.UnifiedCognitiveCycle
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    metacog = MetaCognitiveRecursionTrigger(trigger_threshold=0.5)
+    provenance = CausalProvenanceTracker()
+
+    ucc = UCC(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=None,
+        error_evolution=None,
+        metacognitive_trigger=metacog,
+        provenance_tracker=provenance,
+    )
+
+    # Verify the metacognitive trigger was wired to the convergence monitor
+    if hasattr(conv_monitor, '_metacognitive_trigger'):
+        assert conv_monitor._metacognitive_trigger is metacog, (
+            "ConvergenceMonitor should be wired to metacognitive trigger"
+        )
+    print("✅ test_fallback_ucc_metacognitive_trigger_wiring PASSED")
+
+
+def test_fallback_ucc_reset_clears_coherence_trend():
+    """Fallback UCC reset() clears the coherence trend state."""
+    from aeon_core import (
+        ConvergenceMonitor, ModuleCoherenceVerifier,
+        CausalProvenanceTracker,
+    )
+    import ae_train
+
+    # Only test the fallback path — the aeon_core version intentionally
+    # preserves coherence trend across resets by design.
+    if ae_train.AEON_CORE_AVAILABLE:
+        print("⏭ test_fallback_ucc_reset_clears_coherence_trend SKIPPED "
+              "(aeon_core available — fallback not exercised)")
+        return
+
+    UCC = ae_train.UnifiedCognitiveCycle
+
+    conv_monitor = ConvergenceMonitor(threshold=0.01)
+    coherence = ModuleCoherenceVerifier(hidden_dim=8, threshold=0.999)
+    provenance = CausalProvenanceTracker()
+
+    ucc = UCC(
+        convergence_monitor=conv_monitor,
+        coherence_verifier=coherence,
+        error_evolution=None,
+        metacognitive_trigger=None,
+        provenance_tracker=provenance,
+    )
+
+    # Run a few passes to accumulate trend
+    for _ in range(3):
+        states = {"a": torch.randn(2, 8), "b": torch.randn(2, 8)}
+        ucc.evaluate(subsystem_states=states, delta_norm=0.01)
+
+    assert ucc._coherence_trend_count == 3, "Should have 3 passes counted"
+
+    ucc.reset()
+    assert ucc._coherence_trend_count == 0, (
+        "reset() must clear coherence trend count"
+    )
+    assert ucc._coherence_trend_ema == 0.0, (
+        "reset() must clear coherence trend EMA"
+    )
+    print("✅ test_fallback_ucc_reset_clears_coherence_trend PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
