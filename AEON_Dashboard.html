@@ -665,10 +665,22 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Pipeline Stage Health Overview -->
-  <div class="card">
+  <div class="card" style="margin-top:18px">
     <div class="ct">Pipeline Stage Health Overview — All Modules</div>
     <div id="arch-stage-health" style="margin-top:12px;display:grid;grid-template-columns:repeat(6,1fr);gap:10px;font-size:11px">
       <div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>
+    </div>
+  </div>
+
+  <!-- Cognitive Unity & Architectural Coherence -->
+  <div class="g2" style="margin-top:18px">
+    <div class="card">
+      <div class="ct">◈ Cognitive Unity Score</div>
+      <div id="arch-cog-unity" style="margin-top:10px;font-size:12px;color:var(--text3)">Initialize model to compute cognitive unity</div>
+    </div>
+    <div class="card">
+      <div class="ct">🏗 Architectural Health</div>
+      <div id="arch-health-detail" style="margin-top:10px;font-size:12px;color:var(--text3)">Initialize model for health assessment</div>
     </div>
   </div>
 </div>
@@ -3543,6 +3555,55 @@ async function loadArch() {
       }).join('');
     }
   } catch(e) { log('ERROR', 'arch', e.message); }
+
+  // Cognitive Unity & Architectural Health (supplementary diagnostics)
+  try {
+    const cu = await api('GET', '/api/cognitive_unity');
+    const cuEl = document.getElementById('arch-cog-unity');
+    if (cu && cuEl) {
+      const score = cu.cognitive_unity_score ?? cu.score ?? null;
+      let html = '';
+      if (score !== null && score !== undefined) {
+        const pct = (typeof score === 'number' ? score * 100 : 0).toFixed(1);
+        const clr = score >= 0.8 ? 'var(--green)' : score >= 0.5 ? 'var(--warn)' : 'var(--danger)';
+        html += `<div style="font-family:var(--display);font-size:28px;font-weight:700;color:${clr};margin-bottom:8px">${pct}%</div>`;
+      }
+      const keys = Object.keys(cu).filter(k => !['ok','cognitive_unity_score','score'].includes(k));
+      if (keys.length) {
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">';
+        keys.slice(0, 6).forEach(k => {
+          let v = cu[k];
+          if (typeof v === 'number') v = v.toFixed(4);
+          if (typeof v === 'boolean') v = v ? '✓' : '✕';
+          if (typeof v === 'object' && v !== null) v = JSON.stringify(v).slice(0, 60);
+          html += `<div style="padding:4px 6px;background:var(--surface3);border-radius:4px"><span style="color:var(--text3)">${k}:</span> <span style="color:var(--accent)">${v ?? '—'}</span></div>`;
+        });
+        html += '</div>';
+      }
+      cuEl.innerHTML = html || 'No cognitive unity data';
+    }
+  } catch(e) { /* cognitive unity not available */ }
+
+  try {
+    const ah = await api('GET', '/api/architectural_health');
+    const ahEl = document.getElementById('arch-health-detail');
+    if (ah && ahEl) {
+      const keys = Object.keys(ah).filter(k => k !== 'ok');
+      if (keys.length) {
+        let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">';
+        keys.slice(0, 8).forEach(k => {
+          let v = ah[k];
+          if (typeof v === 'number') v = v.toFixed(4);
+          if (typeof v === 'boolean') v = v ? '✓ Yes' : '✕ No';
+          if (typeof v === 'object' && v !== null) v = JSON.stringify(v).slice(0, 60);
+          const clr = k.includes('health') || k.includes('score') ? 'var(--green)' : 'var(--accent)';
+          html += `<div style="padding:4px 6px;background:var(--surface3);border-radius:4px"><span style="color:var(--text3)">${k}:</span> <span style="color:${clr}">${v ?? '—'}</span></div>`;
+        });
+        html += '</div>';
+        ahEl.innerHTML = html;
+      }
+    }
+  } catch(e) { /* architectural health not available */ }
 }
 
 // Build pipeline on first visit
