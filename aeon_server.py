@@ -3356,10 +3356,11 @@ async def engine_memory():
         mm = getattr(APP.model, 'memory_manager', None)
         if mm is None:
             return {"ok": True, "available": False, "reason": "MemoryManager not initialized"}
+        _cap = getattr(mm, '_max_capacity', None)
         stats = {
             "size": mm.size,
-            "max_capacity": getattr(mm, '_max_capacity', None),
-            "utilization": mm.size / max(getattr(mm, '_max_capacity', 1), 1),
+            "max_capacity": _cap,
+            "utilization": mm.size / _cap if _cap else 0.0,
         }
         # Causal context window stats
         ccw = getattr(APP.model, 'causal_context', None)
@@ -3579,11 +3580,12 @@ async def engine_all_monitoring():
     try:
         mm = getattr(APP.model, 'memory_manager', None)
         if mm is not None:
+            _cap = getattr(mm, '_max_capacity', None)
             mem_info: Dict[str, Any] = {
                 "available": True,
                 "size": mm.size,
-                "max_capacity": getattr(mm, '_max_capacity', None),
-                "utilization": mm.size / max(getattr(mm, '_max_capacity', 1), 1),
+                "max_capacity": _cap,
+                "utilization": mm.size / _cap if _cap else 0.0,
             }
             ccw = getattr(APP.model, 'causal_context', None)
             if ccw is not None:
@@ -4056,7 +4058,8 @@ async def _heartbeat():
                 mm = getattr(APP.model, 'memory_manager', None)
                 if mm is not None:
                     engine["memory_size"] = mm.size
-                    engine["memory_utilization"] = mm.size / max(getattr(mm, '_max_capacity', 1), 1)
+                    _cap = getattr(mm, '_max_capacity', None)
+                    engine["memory_utilization"] = mm.size / _cap if _cap else 0.0
             except Exception:
                 pass
             try:
