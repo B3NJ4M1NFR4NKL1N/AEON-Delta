@@ -819,11 +819,28 @@ except ImportError:
             self.metacognitive_trigger = metacognitive_trigger
             self.provenance_tracker = provenance_tracker
             self.causal_trace = causal_trace
+            # Cross-pass coherence trend tracking — EMA of coherence
+            # deficit across successive evaluate() calls.  When coherence
+            # is systematically degrading (trend rising), the cycle
+            # escalates uncertainty even if individual-pass deficits are
+            # below the rerun threshold.
+            self._coherence_trend_ema: float = 0.0
+            self._coherence_trend_alpha: float = 0.3
+            self._coherence_trend_count: int = 0
             # Wire convergence monitor → error evolution automatically.
             if self.error_evolution is not None:
                 self.convergence_monitor.set_error_evolution(self.error_evolution)
             # Wire convergence monitor → provenance tracker.
             self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
+            # Wire convergence monitor → metacognitive trigger so that
+            # active trigger count tightens the convergence threshold.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.convergence_monitor.set_metacognitive_trigger(
+                        self.metacognitive_trigger,
+                    )
+                except AttributeError:
+                    pass  # Older ConvergenceMonitor without this method
             # Wire error evolution → causal trace.
             if self.error_evolution is not None and self.causal_trace is not None:
                 self.error_evolution.set_causal_trace(self.causal_trace)
@@ -933,10 +950,83 @@ except ImportError:
                 }
             should_rerun = trigger_detail.get("should_trigger", False) or needs_recheck
 
-            # 4. Provenance snapshot
+            # 4. Record UCC decision into causal trace so that
+            # root-cause analysis can trace re-reasoning decisions
+            # back to their triggering conditions.
+            trace_entry_id = None
+            if self.causal_trace is not None:
+                try:
+                    _ucc_severity = (
+                        'warning' if should_rerun else 'info'
+                    )
+                    trace_entry_id = self.causal_trace.record(
+                        subsystem='unified_cognitive_cycle',
+                        decision=f"rerun={should_rerun}",
+                        metadata={
+                            'convergence_status': convergence_verdict.get(
+                                'status',
+                            ),
+                            'coherence_deficit': coherence_deficit,
+                            'uncertainty': uncertainty,
+                        },
+                        severity=_ucc_severity,
+                    )
+                except Exception:
+                    pass  # Non-critical notification
+
+            # 5. Provenance snapshot
             provenance = self.provenance_tracker.compute_attribution()
 
-            # 4b. Weakest-pair identification for consistency with
+            # 5b. Provenance root-cause enrichment — walk the
+            # provenance dependency DAG backward from the dominant
+            # module to identify which upstream modules had the
+            # largest L2 impact, making provenance actionable.
+            provenance_root_cause = {}
+            contribs = provenance.get("contributions", {})
+            if should_rerun and contribs:
+                dominant = max(contribs, key=contribs.get)
+                if hasattr(self.provenance_tracker, 'trace_root_cause'):
+                    provenance_root_cause = (
+                        self.provenance_tracker.trace_root_cause(dominant)
+                    )
+
+            # 5c. Provenance root-cause dominance trigger — when a
+            # single root module dominates (>60% of contribution) and
+            # multiple modules were recorded, trigger re-reasoning
+            # even if the composite trigger did not fire.
+            if not should_rerun and provenance_root_cause:
+                _rc_contribs = provenance_root_cause.get(
+                    'contributions', {},
+                )
+                _rc_total = (
+                    sum(abs(v) for v in _rc_contribs.values()) or 1.0
+                )
+                for _rc_mod, _rc_val in _rc_contribs.items():
+                    if (abs(_rc_val) / _rc_total > 0.6
+                            and len(_rc_contribs) > 2):
+                        should_rerun = True
+                        trigger_detail['triggers_active'] = list(
+                            set(trigger_detail.get(
+                                'triggers_active', [],
+                            ))
+                            | {
+                                'provenance_root_cause_dominance:'
+                                + _rc_mod,
+                            }
+                        )
+                        break
+
+            # 6. Root-cause trace (if available).
+            root_cause_trace = {}
+            if self.causal_trace is not None and trace_entry_id is not None:
+                try:
+                    root_cause_trace = self.causal_trace.trace_root_cause(
+                        trace_entry_id,
+                    )
+                except Exception:
+                    pass  # Non-critical: trace may not support this
+
+            # 6b. Weakest-pair identification for consistency with
             # aeon_core.UnifiedCognitiveCycle return structure.
             weakest_pair = None
             if (self.coherence_verifier is not None
@@ -945,7 +1035,28 @@ except ImportError:
                     coherence_result.get("pairwise", {}),
                 )
 
-            # 5. Restore coherence threshold
+            # 7. Cross-pass coherence trend tracking — detect slow
+            # architectural drift that per-pass evaluation misses.
+            coherence_trend_escalation = 0.0
+            self._coherence_trend_ema = (
+                self._coherence_trend_alpha * coherence_deficit
+                + (1.0 - self._coherence_trend_alpha)
+                * self._coherence_trend_ema
+            )
+            self._coherence_trend_count += 1
+            if (self._coherence_trend_count >= 3
+                    and self._coherence_trend_ema > 0.2):
+                coherence_trend_escalation = min(
+                    0.3, self._coherence_trend_ema - 0.2,
+                )
+                if not should_rerun and coherence_trend_escalation > 0.05:
+                    should_rerun = True
+                    trigger_detail['triggers_active'] = list(
+                        set(trigger_detail.get('triggers_active', []))
+                        | {'coherence_trend_drift'}
+                    )
+
+            # 8. Restore coherence threshold
             if _original_threshold is not None and self.coherence_verifier is not None:
                 self.coherence_verifier.threshold = _original_threshold
 
@@ -960,13 +1071,21 @@ except ImportError:
                 "should_rerun": should_rerun,
                 "trigger_detail": trigger_detail,
                 "provenance": provenance,
-                "root_cause_trace": {},
+                "provenance_root_cause": provenance_root_cause,
+                "root_cause_trace": root_cause_trace,
+                "coherence_trend": {
+                    "ema": self._coherence_trend_ema,
+                    "escalation": coherence_trend_escalation,
+                    "pass_count": self._coherence_trend_count,
+                },
             }
 
         def reset(self):
             self.convergence_monitor.reset()
             if self.metacognitive_trigger is not None:
                 self.metacognitive_trigger.reset()
+            self._coherence_trend_ema = 0.0
+            self._coherence_trend_count = 0
 
 # --- Токенизатор ---
 try:
