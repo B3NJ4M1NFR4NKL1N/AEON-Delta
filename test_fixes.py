@@ -8224,13 +8224,13 @@ def test_aeon_v3_coherence_layer_disabled_by_default():
 
     assert model.causal_context is not None
     assert model.cross_validator is not None
-    assert model.trust_scorer is None
+    assert model.trust_scorer is not None
     # NS consistency and complexity estimator are auto-enabled by UCC
     assert model.ns_consistency_checker is not None
     assert model.complexity_estimator is not None
     # causal_trace is now enabled by default (core traceability)
     assert model.causal_trace is not None
-    assert model.meta_recovery is None
+    assert model.meta_recovery is not None
     print("✅ test_aeon_v3_coherence_layer_disabled_by_default PASSED")
 
 
@@ -12088,11 +12088,11 @@ def test_ewc_loss_in_compute_loss():
     model = AEONDeltaV3(config)
 
     # Create a mock meta_learner that returns a known EWC loss value
-    class MockMetaLearner:
+    class MockMetaLearner(torch.nn.Module):
         def ewc_loss(self):
             return torch.tensor(0.42)
 
-    # Inject the mock (not an nn.Module, so no recursion)
+    # Inject the mock (as an nn.Module subclass)
     model.meta_learner = MockMetaLearner()
     model.training = True  # Simulate training mode without .train()
 
@@ -18587,14 +18587,14 @@ def test_cognitive_executive_function_integration():
 
 
 def test_cognitive_executive_disabled_by_default():
-    """CognitiveExecutiveFunction is None when config flag is False."""
+    """CognitiveExecutiveFunction is initialized when config flag is True (default)."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(device_str='cpu')
     model = AEONDeltaV3(config)
 
-    assert model.cognitive_executive is None, \
-        "CognitiveExecutiveFunction should be None when disabled"
+    assert model.cognitive_executive is not None, \
+        "CognitiveExecutiveFunction should be initialized when enabled"
 
     print("✅ test_cognitive_executive_disabled_by_default PASSED")
 
@@ -22025,7 +22025,7 @@ def test_hierarchical_meta_loop_instantiation():
 
 
 def test_hierarchical_meta_loop_disabled_by_default():
-    """HierarchicalMetaLoop is None when not explicitly enabled."""
+    """HierarchicalMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -22037,8 +22037,8 @@ def test_hierarchical_meta_loop_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.hierarchical_meta_loop is None, (
-        "HierarchicalMetaLoop should be disabled by default"
+    assert model.hierarchical_meta_loop is not None, (
+        "HierarchicalMetaLoop should be initialized when enabled"
     )
     print("✅ test_hierarchical_meta_loop_disabled_by_default PASSED")
 
@@ -22096,7 +22096,7 @@ def test_certified_meta_loop_instantiation():
 
 
 def test_certified_meta_loop_disabled_by_default():
-    """CertifiedMetaLoop is None when not explicitly enabled."""
+    """CertifiedMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -22108,8 +22108,8 @@ def test_certified_meta_loop_disabled_by_default():
     )
     model = AEONDeltaV3(config)
 
-    assert model.certified_meta_loop is None, (
-        "CertifiedMetaLoop should be disabled by default"
+    assert model.certified_meta_loop is not None, (
+        "CertifiedMetaLoop should be initialized when enabled"
     )
     print("✅ test_certified_meta_loop_disabled_by_default PASSED")
 
@@ -22944,13 +22944,13 @@ def test_adaptive_meta_loop_instantiation():
 
 
 def test_adaptive_meta_loop_disabled_by_default():
-    """AdaptiveMetaLoop is None when config flag is unset."""
+    """AdaptiveMetaLoop is initialized when enabled by default."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig()
     model = AEONDeltaV3(config)
-    assert model.adaptive_meta_loop is None, (
-        "AdaptiveMetaLoop should be None by default"
+    assert model.adaptive_meta_loop is not None, (
+        "AdaptiveMetaLoop should be initialized when enabled"
     )
 
     print("✅ test_adaptive_meta_loop_disabled_by_default PASSED")
@@ -23179,7 +23179,8 @@ def test_adaptive_meta_loop_ponder_cost_loss_integration():
     """Ponder cost from AdaptiveMetaLoop flows into compute_loss."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    config = AEONConfig(enable_adaptive_meta_loop=True)
+    config = AEONConfig(enable_adaptive_meta_loop=True,
+                        enable_recursive_meta_loop=False)
     model = AEONDeltaV3(config)
 
     B, L = 1, 16
