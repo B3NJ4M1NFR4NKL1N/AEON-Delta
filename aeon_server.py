@@ -1625,12 +1625,12 @@ async def introspect_modules():
                         "l2_norm": round(all_grads.norm(2).item(), 4),
                         "max_abs": round(all_grads.abs().max().item(), 6),
                     }
-                # Parameter shapes and dtypes
-                for p in params[:10]:  # Cap at 10 to limit response size
+                # Parameter shapes and dtypes (cap at 10 to limit response size)
+                for p in params[:10]:
                     shapes.append(list(p.shape))
                     dtypes.add(str(p.dtype))
 
-            # Memory estimation (bytes)
+            # Memory estimation (bytes) — approximation based on first parameter's dtype
             bytes_per_param = 4  # Default FP32
             for p in params[:1]:
                 if p.dtype == torch.float16 or p.dtype == torch.bfloat16:
