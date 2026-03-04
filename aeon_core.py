@@ -7118,7 +7118,12 @@ class CausalProvenanceTracker:
         color: Dict[str, int] = {n: WHITE for n in all_nodes}
         cycles_found: List[Dict[str, str]] = []
 
-        for start in all_nodes:
+        # Sort nodes for deterministic DFS traversal order regardless
+        # of Python hash randomization.  Without this, different runs
+        # remove different back-edges from the same cyclic graph,
+        # causing non-deterministic provenance DAG structure and
+        # unpredictable UPB↔provenance alignment.
+        for start in sorted(all_nodes):
             if color[start] != WHITE:
                 continue
             stack = [(start, False)]
@@ -7132,7 +7137,7 @@ class CausalProvenanceTracker:
                     continue
                 color[node] = GRAY
                 stack.append((node, True))
-                for parent in list(deps.get(node, set())):
+                for parent in sorted(deps.get(node, set())):
                     if color[parent] == GRAY:
                         # Back-edge detected → cycle
                         cycles_found.append({
@@ -23905,6 +23910,35 @@ class AEONDeltaV3(nn.Module):
             pipeline_dependencies=self._PIPELINE_DEPENDENCIES,
             node_attr_map=self._NODE_ATTR_MAP,
         )
+
+        # ===== UPB ↔ PROVENANCE DAG RECONCILIATION =====
+        # After cycle detection (triggered by verify_pipeline_wiring above),
+        # some UPB critical edges may have been removed from the provenance
+        # DAG as back-edges.  Prune those edges from the UPB's critical set
+        # so that uncertainty propagation operates on the same graph as
+        # root-cause tracing, ensuring causal transparency between the two
+        # subsystems.  Without this reconciliation, the UPB would reference
+        # edges absent from the provenance DAG, creating a disconnect where
+        # uncertainty cascades along paths that provenance cannot trace.
+        if self.uncertainty_propagation is not None:
+            _prov_deps = self.provenance_tracker.get_dependency_graph()
+            _prov_edges: Set[Tuple[str, str]] = set()
+            for _target, _sources in _prov_deps.items():
+                for _src in (
+                    _sources if isinstance(_sources, (set, list)) else []
+                ):
+                    _prov_edges.add((_src, _target))
+            _upb_to_remove = {
+                edge for edge in self.uncertainty_propagation._critical_edges
+                if edge not in _prov_edges
+            }
+            if _upb_to_remove:
+                self.uncertainty_propagation._critical_edges -= _upb_to_remove
+                logger.info(
+                    "Reconciled UPB critical edges with provenance DAG: "
+                    "removed %d edge(s) culled by cycle detection",
+                    len(_upb_to_remove),
+                )
 
         logger.info("="*70)
         logger.info("✅ AEON-Delta RMT v3.1 initialization complete")

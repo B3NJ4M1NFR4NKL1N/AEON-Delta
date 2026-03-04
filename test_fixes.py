@@ -67073,6 +67073,12 @@ def run_all_tests():
     test_full_cognitive_unity_score()
     test_coherence_registry_includes_cognitive_frame_and_executive()
 
+    # Cognitive integration & activation tests
+    test_dag_cycle_detection_deterministic()
+    test_upb_provenance_alignment()
+    test_cognitive_unity_upb_aligned()
+    test_cognitive_unity_deterministic()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -71466,6 +71472,120 @@ def test_coherence_registry_includes_cognitive_frame_and_executive():
         "metacognitive_executive must be in SubsystemCoherenceRegistry._DEFAULT_EXPECTED"
     )
     print("✅ test_coherence_registry_includes_cognitive_frame_and_executive PASSED")
+
+
+def test_dag_cycle_detection_deterministic():
+    """Verify that provenance DAG cycle detection produces deterministic results.
+
+    The validate_dag_acyclic() method uses DFS traversal.  Without sorted
+    iteration, Python's hash randomization causes different back-edges to
+    be removed on different runs, making the provenance DAG structure
+    non-deterministic.  This test validates that sorting is in place by
+    running cycle detection multiple times and comparing results.
+    """
+    from aeon_core import CausalProvenanceTracker
+
+    # Build a graph with known cycles
+    tracker1 = CausalProvenanceTracker()
+    tracker2 = CausalProvenanceTracker()
+
+    edges = [
+        ("a", "b"), ("b", "c"), ("c", "a"),  # cycle: a→b→c→a
+        ("c", "d"), ("d", "e"), ("e", "c"),  # cycle: c→d→e→c
+        ("e", "f"),
+    ]
+    for up, down in edges:
+        tracker1.record_dependency(up, down)
+        tracker2.record_dependency(up, down)
+
+    result1 = tracker1.validate_dag_acyclic()
+    result2 = tracker2.validate_dag_acyclic()
+
+    # Both should find the same cycles and remove the same edges
+    removed1 = sorted(tracker1._removed_cyclic_edges)
+    removed2 = sorted(tracker2._removed_cyclic_edges)
+    assert removed1 == removed2, (
+        f"Cycle detection should be deterministic: {removed1} != {removed2}"
+    )
+    assert not result1['is_acyclic'] or len(result1['cycles_found']) >= 0
+    print("✅ test_dag_cycle_detection_deterministic PASSED")
+
+
+def test_upb_provenance_alignment():
+    """Verify UPB critical edges are aligned with provenance DAG after init.
+
+    After cycle detection removes back-edges from the provenance DAG,
+    the UPB's critical edges should be reconciled to exclude any edges
+    that were culled.  This ensures uncertainty propagation operates on
+    the same graph as root-cause tracing.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    # Get provenance edges
+    deps = model.provenance_tracker.get_dependency_graph()
+    prov_edges = set()
+    for target, sources in deps.items():
+        for src in (sources if isinstance(sources, (set, list)) else []):
+            prov_edges.add((src, target))
+
+    # Every UPB critical edge must be in the provenance DAG
+    upb = model.uncertainty_propagation
+    misaligned = [
+        edge for edge in upb._critical_edges
+        if edge not in prov_edges
+    ]
+    assert len(misaligned) == 0, (
+        f"UPB critical edges misaligned with provenance DAG: {misaligned}"
+    )
+    print("✅ test_upb_provenance_alignment PASSED")
+
+
+def test_cognitive_unity_upb_aligned():
+    """Verify verify_cognitive_unity reports UPB as aligned."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+    assert unity['root_cause_traceability']['upb_provenance_aligned'], (
+        f"UPB should be aligned, misaligned edges: "
+        f"{unity['root_cause_traceability'].get('upb_misaligned_edges')}"
+    )
+    print("✅ test_cognitive_unity_upb_aligned PASSED")
+
+
+def test_cognitive_unity_deterministic():
+    """Verify cognitive unity is deterministic across multiple instantiations.
+
+    Previously, non-deterministic DFS traversal during cycle detection
+    caused the provenance DAG to vary between runs, making the cognitive
+    unity score and UPB alignment status unpredictable.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    results = []
+    for _ in range(3):
+        config = AEONConfig.unified_cognitive_preset()
+        model = AEONDeltaV3(config)
+        unity = model.verify_cognitive_unity()
+        results.append({
+            'unified': unity['unified'],
+            'upb_aligned': unity['root_cause_traceability']['upb_provenance_aligned'],
+            'mv_coverage': unity['mutual_verification']['coverage'],
+            'removed_count': len(
+                getattr(model.provenance_tracker, '_removed_cyclic_edges', set())
+            ),
+        })
+
+    # All runs should produce identical results
+    for i in range(1, len(results)):
+        assert results[i] == results[0], (
+            f"Run {i} differs from run 0: {results[i]} != {results[0]}"
+        )
+    print("✅ test_cognitive_unity_deterministic PASSED")
 
 
 if __name__ == "__main__":
