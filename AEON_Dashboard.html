@@ -423,7 +423,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
   <div class="nav-group">
     <div class="nav-label">Diagnostics</div>
-    <div class="nav-item" onclick="go('testsuite')"><span class="nav-icon">🧪</span> Test Suite<span style="font-size:9px;color:var(--text3);margin-left:4px">642</span></div>
+    <div class="nav-item" onclick="go('testsuite')"><span class="nav-icon">🧪</span> Test Suite<span id="ts-nav-count" style="font-size:9px;color:var(--text3);margin-left:4px">…</span></div>
     <div class="nav-item" onclick="go('benchmark')"><span class="nav-icon">⚡</span> Benchmark</div>
     <div class="nav-item" onclick="go('vq')"><span class="nav-icon">◈</span> VQ Codebook</div>
   </div>
@@ -698,21 +698,33 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ MODULE INSPECTOR ══ -->
 <div class="panel" id="panel-modules">
   <div class="ph">
-    <div><div class="ph-title">Module Inspector</div><div class="ph-sub">Per-layer parameters, weight statistics, gradient analysis</div></div>
+    <div><div class="ph-title">Module Inspector</div><div class="ph-sub">Per-layer parameters, weight statistics, gradient analysis, memory estimation</div></div>
     <div class="btns">
+      <button class="btn btn-ghost" onclick="exportModules()">↓ Export JSON</button>
       <button class="btn btn-secondary" onclick="loadModules()">↻ Refresh</button>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g5" style="margin-bottom:14px">
     <div class="card ca"><div class="ct">Total Params</div><div class="cv ca" id="mi-total">—</div></div>
     <div class="card cg"><div class="ct">Trainable</div><div class="cv cg" id="mi-train">—</div></div>
     <div class="card cp"><div class="ct">Frozen</div><div class="cv cp" id="mi-frozen">—</div></div>
     <div class="card cw"><div class="ct">Modules</div><div class="cv cw" id="mi-count">—</div></div>
+    <div class="card"><div class="ct">Est. Memory</div><div class="cv" style="color:var(--text2)" id="mi-mem">—</div><div class="cm-t">FP32 weights</div></div>
   </div>
   <div class="chart-wrap" style="margin-bottom:14px">
     <div class="chart-head"><div class="chart-title">Parameter Distribution by Module</div></div>
     <canvas id="mod-chart" height="120"></canvas>
   </div>
+
+  <!-- Module search / filter -->
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+    <input type="text" id="mi-search" placeholder="Search module name…" oninput="miFilterModules()" style="flex:1;min-width:160px;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+    <select id="mi-filter" onchange="miFilterModules()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px">
+      <option value="">All</option><option value="has_nan">Has NaN</option><option value="has_inf">Has Inf</option><option value="large">Large (>1M)</option><option value="frozen_only">Frozen Only</option>
+    </select>
+    <button class="btn btn-ghost" onclick="miExpandAll()" style="font-size:10px;padding:3px 8px">⊞ Expand All</button>
+  </div>
+
   <div id="mod-list"><div style="color:var(--text3);font-size:12px">Initialize model to inspect modules</div></div>
 </div>
 
@@ -1527,7 +1539,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="ph">
     <div>
       <div class="ph-title">🧪 Test Suite — test_fixes.py</div>
-      <div class="ph-sub" id="ts-sub">642 tests · 49 sections · click ▶ to run</div>
+      <div class="ph-sub" id="ts-sub">Loading tests… · click ▶ to run</div>
     </div>
     <div class="btns">
       <button class="btn btn-secondary" id="ts-fmt-btn" onclick="tsToggleFormat()" title="Toggle log format">📋 Full Log</button>
@@ -1809,7 +1821,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   </div>
 
   <!-- Row 8: Hyperparameters -->
-  <div class="card">
+  <div class="card" style="margin-bottom:14px">
     <div class="ct">VQ Hyperparameters</div>
     <div class="vq-hp-grid" style="margin-top:10px" id="vq-hp-grid">
       <div class="vq-hp-item"><span class="hp-k">commitment_cost</span><span class="hp-v" id="vq-hp-cc">—</span></div>
@@ -1818,6 +1830,32 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="vq-hp-item"><span class="hp-k">revival_threshold</span><span class="hp-v" id="vq-hp-revival">—</span></div>
       <div class="vq-hp-item"><span class="hp-k">split_threshold</span><span class="hp-v" id="vq-hp-split">—</span></div>
       <div class="vq-hp-item"><span class="hp-k">use_ema</span><span class="hp-v" id="vq-hp-ema">—</span></div>
+    </div>
+  </div>
+
+  <!-- Row 9: Basic Stats (all fields from API) -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct">📊 Basic Stats — Raw Codebook Usage (all fields from get_codebook_usage_stats)</div>
+    <div class="vq-hp-grid" style="margin-top:10px" id="vq-basic-stats-grid">
+      <div class="vq-hp-item"><span class="hp-k">—</span><span class="hp-v">—</span></div>
+    </div>
+  </div>
+
+  <!-- Row 10: Per-Code Detail Table -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div class="ct" style="margin:0">🔬 Per-Code Detail Table (first 512 codes)</div>
+      <div style="flex:1"></div>
+      <input type="text" id="vq-code-search" placeholder="Search code #…" oninput="vqFilterCodeTable()" style="width:120px;font-size:11px;padding:3px 6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <select id="vq-code-filter" onchange="vqFilterCodeTable()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px">
+        <option value="">All</option><option value="active">Active</option><option value="low">Low</option><option value="rare">Rare</option><option value="dead">Dead</option>
+      </select>
+    </div>
+    <div class="vq-code-tbl">
+      <table class="tbl" id="vq-code-tbl">
+        <thead><tr><th>Code</th><th>Status</th><th>Usage</th><th>Norm</th><th>Steps Since Used</th><th>Bar</th></tr></thead>
+        <tbody id="vq-code-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">Load VQ data to inspect per-code details</td></tr></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -2174,13 +2212,22 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-ghost" onclick="exportProvenance()">↓ Export</button>
     </div>
   </div>
+
+  <!-- Summary KPI cards -->
+  <div class="g4" style="margin-bottom:14px">
+    <div class="card ca"><div class="ct">Modules Tracked</div><div class="cv ca" id="prov-mod-count">—</div><div class="cm-t">contributing modules</div></div>
+    <div class="card cg"><div class="ct">Top Contributor</div><div class="cv cg" id="prov-top-mod" style="font-size:14px">—</div><div class="cm-t" id="prov-top-pct">—</div></div>
+    <div class="card cp"><div class="ct">Total L2 Delta</div><div class="cv cp" id="prov-total-l2">—</div><div class="cm-t">sum of all deltas</div></div>
+    <div class="card cw"><div class="ct">Concentration</div><div class="cv cw" id="prov-concentration">—</div><div class="cm-t" id="prov-concentration-m">top module share</div></div>
+  </div>
+
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">⛓ Module Attribution</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:360px;overflow-y:auto">
+      <div class="ct">⛓ Module Attribution (sorted by contribution)</div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:400px;overflow-y:auto">
         <table class="tbl" id="prov-attr-tbl">
-          <thead><tr><th>Module</th><th>Contribution</th><th>L2 Delta</th><th>Bar</th></tr></thead>
-          <tbody id="prov-attr-tbody"><tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">Initialize model and run inference to compute provenance</td></tr></tbody>
+          <thead><tr><th>#</th><th>Module</th><th>Contribution</th><th>%</th><th>L2 Delta</th><th>Bar</th></tr></thead>
+          <tbody id="prov-attr-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">Initialize model and run inference to compute provenance</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -2206,17 +2253,31 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-ghost" onclick="exportCausalTrace()">↓ Export</button>
     </div>
   </div>
-  <div class="g4" style="margin-bottom:14px">
+  <div class="g5" style="margin-bottom:14px">
     <div class="card ca"><div class="ct">Available</div><div class="cv ca" id="ct-available" style="font-size:16px">—</div><div class="cm-t">causal trace status</div></div>
     <div class="card cg"><div class="ct">Entries</div><div class="cv cg" id="ct-count">0</div><div class="cm-t">trace entries recorded</div></div>
+    <div class="card cp"><div class="ct">Subsystems</div><div class="cv cp" id="ct-subsystems">—</div><div class="cm-t">unique modules traced</div></div>
+    <div class="card cw"><div class="ct">Warnings</div><div class="cv cw" id="ct-warnings">0</div><div class="cm-t">warning+ severity</div></div>
+    <div class="card cd"><div class="ct">Critical</div><div class="cv" style="color:var(--danger)" id="ct-critical">0</div><div class="cm-t">critical/error entries</div></div>
   </div>
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">🔍 Causal Decision Chain</div>
-      <div style="overflow-x:auto;margin-top:8px;max-height:380px;overflow-y:auto">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div class="ct" style="margin:0">🔍 Causal Decision Chain</div>
+        <div style="flex:1"></div>
+        <select id="ct-sev-filter" onchange="ctFilterEntries()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px">
+          <option value="">All severity</option>
+          <option value="critical">Critical</option>
+          <option value="error">Error</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        <input type="text" id="ct-search" placeholder="Search…" oninput="ctFilterEntries()" style="width:120px;font-size:11px;padding:3px 6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      </div>
+      <div style="overflow-x:auto;margin-top:8px;max-height:420px;overflow-y:auto">
         <table class="tbl" id="ct-tbl">
-          <thead><tr><th>Time</th><th>Module</th><th>Decision</th><th>Severity</th><th>Actions</th></tr></thead>
-          <tbody id="ct-tbody"><tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">Enable causal trace and run inference to record decisions</td></tr></tbody>
+          <thead><tr><th>Time</th><th>Module</th><th>Decision</th><th>Severity</th><th>Context</th><th>Actions</th></tr></thead>
+          <tbody id="ct-tbody"><tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">Enable causal trace and run inference to record decisions</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -3808,6 +3869,7 @@ if (document.readyState === 'loading') {
 async function loadModules() {
   try {
     const d = await api('GET', '/api/introspect/modules');
+    S._modulesData = d;
     const total = d.total_parameters || 0;
     const trainable = d.modules?.reduce((s, m) => s + (m.trainable||0), 0) || 0;
     const frozen = total - trainable;
@@ -3815,40 +3877,93 @@ async function loadModules() {
     document.getElementById('mi-train').textContent = trainable > 1e6 ? (trainable/1e6).toFixed(2)+'M' : trainable.toLocaleString();
     document.getElementById('mi-frozen').textContent = frozen > 1e6 ? (frozen/1e6).toFixed(2)+'M' : frozen.toLocaleString();
     document.getElementById('mi-count').textContent = (d.modules || []).length;
+    // Estimated memory (FP32 = 4 bytes per param)
+    const memMB = (total * 4 / 1024 / 1024).toFixed(1);
+    document.getElementById('mi-mem').textContent = memMB > 1000 ? (memMB/1000).toFixed(2)+'GB' : memMB+'MB';
 
     // Draw chart
     drawModChart(d.modules || [], total);
 
     // Module list
-    const list = document.getElementById('mod-list');
-    list.innerHTML = (d.modules || []).map((m, i) => {
-      const ws = m.weight_stats || {};
-      const pct = total > 0 ? (m.params/total*100).toFixed(1) : '0.0';
-      const hasNaN = ws.has_nan ? '<span class="badge br" style="margin-left:6px">NaN!</span>' : '';
-      const hasInf = ws.has_inf ? '<span class="badge br" style="margin-left:6px">Inf!</span>' : '';
-      return `<div class="mod-row" onclick="toggleModDetail(${i})">
-        <div class="mod-header">
-          <span style="font-size:10px;color:var(--text3);width:20px">${i+1}</span>
-          <span class="mod-name">${m.name}${hasNaN}${hasInf}</span>
-          <span class="mod-type">${m.type}</span>
-          <span class="mod-params">${m.params?.toLocaleString()}</span>
-          <span style="font-size:10px;color:var(--text3);margin-left:8px">${pct}%</span>
-        </div>
-        <div class="mod-sub" id="mod-sub-${i}">
-          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-            <div class="mod-stat">mean: <span>${ws.mean||'?'}</span></div>
-            <div class="mod-stat">std: <span>${ws.std||'?'}</span></div>
-            <div class="mod-stat">min: <span>${ws.min||'?'}</span></div>
-            <div class="mod-stat">max: <span>${ws.max||'?'}</span></div>
-            <div class="mod-stat">L2: <span>${ws.l2_norm||'?'}</span></div>
-            <div class="mod-stat">trainable: <span style="color:var(--green)">${m.trainable?.toLocaleString()}</span></div>
-            <div class="mod-stat">frozen: <span style="color:var(--text3)">${m.frozen?.toLocaleString()}</span></div>
-          </div>
-          ${m.submodules?.length ? `<div style="font-size:10px;color:var(--text3)">Submodules: ${m.submodules.map(s=>`${s.name}(${s.type}):${s.params?.toLocaleString()}`).join(' · ')}</div>` : ''}
-        </div>
-      </div>`;
-    }).join('');
+    miRenderModuleList(d.modules || [], total);
   } catch(e) { log('ERROR', 'modules', e.message); }
+}
+
+function miRenderModuleList(modules, total) {
+  const list = document.getElementById('mod-list');
+  list.innerHTML = modules.map((m, i) => {
+    const ws = m.weight_stats || {};
+    const pct = total > 0 ? (m.params/total*100).toFixed(1) : '0.0';
+    const hasNaN = ws.has_nan ? '<span class="badge br" style="margin-left:6px">NaN!</span>' : '';
+    const hasInf = ws.has_inf ? '<span class="badge br" style="margin-left:6px">Inf!</span>' : '';
+    const memKB = (m.params * 4 / 1024).toFixed(1);
+    const memStr = memKB > 1024 ? (memKB/1024).toFixed(1)+'MB' : memKB+'KB';
+    return `<div class="mod-row" data-name="${m.name}" data-params="${m.params}" data-nan="${ws.has_nan||false}" data-inf="${ws.has_inf||false}" data-frozen="${m.frozen||0}" onclick="toggleModDetail(${i})">
+      <div class="mod-header">
+        <span style="font-size:10px;color:var(--text3);width:20px">${i+1}</span>
+        <span class="mod-name">${m.name}${hasNaN}${hasInf}</span>
+        <span class="mod-type">${m.type}</span>
+        <span class="mod-params">${m.params?.toLocaleString()}</span>
+        <span style="font-size:10px;color:var(--text3);margin-left:8px">${pct}%</span>
+      </div>
+      <div class="mod-sub" id="mod-sub-${i}">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+          <div class="mod-stat">mean: <span>${ws.mean ?? '?'}</span></div>
+          <div class="mod-stat">std: <span>${ws.std ?? '?'}</span></div>
+          <div class="mod-stat">min: <span>${ws.min ?? '?'}</span></div>
+          <div class="mod-stat">max: <span>${ws.max ?? '?'}</span></div>
+          <div class="mod-stat">L2: <span>${ws.l2_norm ?? '?'}</span></div>
+          <div class="mod-stat">trainable: <span style="color:var(--green)">${m.trainable?.toLocaleString()}</span></div>
+          <div class="mod-stat">frozen: <span style="color:var(--text3)">${m.frozen?.toLocaleString()}</span></div>
+          <div class="mod-stat">memory: <span style="color:var(--purple)">${memStr}</span></div>
+          <div class="mod-stat">share: <span style="color:var(--accent)">${pct}%</span></div>
+          ${m.dtypes?.length ? `<div class="mod-stat">dtype: <span style="color:var(--warn)">${m.dtypes.join(', ')}</span></div>` : ''}
+        </div>
+        ${(m.grad_stats && Object.keys(m.grad_stats).length) ? `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"><div class="mod-stat" style="color:var(--green)">⚡ grad mean: <span>${m.grad_stats.mean}</span></div><div class="mod-stat" style="color:var(--green)">grad std: <span>${m.grad_stats.std}</span></div><div class="mod-stat" style="color:var(--green)">grad L2: <span>${m.grad_stats.l2_norm}</span></div><div class="mod-stat" style="color:var(--green)">grad max|abs|: <span>${m.grad_stats.max_abs}</span></div></div>` : ''}
+        ${m.shapes?.length ? `<div style="font-size:10px;color:var(--text3);margin-bottom:4px">Shapes: ${m.shapes.map(s=>'['+s.join('×')+']').join(' · ')}</div>` : ''}
+        <div style="display:flex;gap:16px;margin-bottom:6px">
+          <div style="flex:1;height:8px;background:var(--surface3);border-radius:4px;overflow:hidden;margin-top:2px">
+            <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--accent),var(--purple));border-radius:4px"></div>
+          </div>
+        </div>
+        ${m.submodules?.length ? `<div style="font-size:10px;color:var(--text3);margin-top:4px"><strong>Submodules (${m.submodules.length}):</strong> ${m.submodules.map(s=>`<span style="color:var(--accent)">${s.name}</span>(<span style="color:var(--purple)">${s.type}</span>):${s.params?.toLocaleString()}`).join(' · ')}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function miFilterModules() {
+  const q = (document.getElementById('mi-search')?.value || '').toLowerCase();
+  const f = document.getElementById('mi-filter')?.value || '';
+  document.querySelectorAll('.mod-row').forEach(row => {
+    const name = (row.dataset.name || '').toLowerCase();
+    const params = parseInt(row.dataset.params || '0');
+    const hasNaN = row.dataset.nan === 'true';
+    const hasInf = row.dataset.inf === 'true';
+    const frozen = parseInt(row.dataset.frozen || '0');
+    let show = true;
+    if (q && !name.includes(q)) show = false;
+    if (f === 'has_nan' && !hasNaN) show = false;
+    if (f === 'has_inf' && !hasInf) show = false;
+    if (f === 'large' && params < 1000000) show = false;
+    if (f === 'frozen_only' && frozen === 0) show = false;
+    row.style.display = show ? '' : 'none';
+  });
+}
+
+function miExpandAll() {
+  document.querySelectorAll('.mod-sub').forEach(el => { el.style.display = el.style.display === 'block' ? 'none' : 'block'; });
+}
+
+function exportModules() {
+  if (!S._modulesData) { log('WARN','modules','No module data to export'); return; }
+  const blob = new Blob([JSON.stringify(S._modulesData, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `modules_${new Date().toISOString().slice(0,19)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log('INFO','modules','Module data exported');
 }
 
 function toggleModDetail(i) {
@@ -5080,7 +5195,10 @@ async function tsRefreshCatalogue() {
       TS.catalogue = d.sections;
       tsBuildCatalogueUI();
       document.getElementById('ts-sub').textContent =
-        `${d.total_tests} tests · ${d.total_sections} sections`;
+        `${d.total_tests} tests · ${d.total_sections} sections · click ▶ to run`;
+      // Update sidebar nav badge dynamically
+      const navCount = document.getElementById('ts-nav-count');
+      if (navCount) navCount.textContent = d.total_tests;
       // Populate section filter dropdown
       const sel = document.getElementById('ts-filter-section');
       sel.innerHTML = '<option value="">All sections</option>';
@@ -5582,6 +5700,23 @@ async function loadVQ() {
     document.getElementById('vq-hp-split').textContent = hp.split_threshold ?? '—';
     document.getElementById('vq-hp-ema').textContent = hp.use_ema != null ? (hp.use_ema ? 'true' : 'false') : '—';
 
+    // Basic stats (all fields)
+    const bsGrid = document.getElementById('vq-basic-stats-grid');
+    if (bsGrid) {
+      const bsEntries = Object.entries(basic);
+      if (bsEntries.length) {
+        bsGrid.innerHTML = bsEntries.map(([k, v]) => {
+          const val = typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(6)) : String(v ?? '—');
+          return `<div class="vq-hp-item"><span class="hp-k">${k}</span><span class="hp-v">${val}</span></div>`;
+        }).join('');
+      } else {
+        bsGrid.innerHTML = '<div class="vq-hp-item"><span class="hp-k">No data</span><span class="hp-v">—</span></div>';
+      }
+    }
+
+    // Per-code detail table
+    vqBuildCodeTable(d);
+
     drawVQCharts();
 
     // Draw heatmap
@@ -5618,6 +5753,51 @@ function exportVQDiag() {
   a.click();
   URL.revokeObjectURL(a.href);
   log('INFO','vq','VQ diagnostics exported');
+}
+
+function vqBuildCodeTable(d) {
+  const tbody = document.getElementById('vq-code-tbody');
+  if (!tbody) return;
+  const counts = d.usage_counts || [];
+  const norms = d.embedding_norms || [];
+  const statuses = d.code_status || [];
+  const ssu = d.steps_since_used || {};
+  if (!counts.length && !statuses.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No per-code data available</td></tr>';
+    return;
+  }
+  const n = Math.max(counts.length, statuses.length);
+  const maxUsage = Math.max(...counts, 1);
+  S._vqCodeRows = [];
+  for (let i = 0; i < n; i++) {
+    S._vqCodeRows.push({ code: i, status: statuses[i] || '—', usage: counts[i] ?? 0, norm: norms[i] ?? null });
+  }
+  vqRenderCodeRows(S._vqCodeRows, maxUsage);
+}
+
+function vqRenderCodeRows(rows, maxUsage) {
+  const tbody = document.getElementById('vq-code-tbody');
+  if (!tbody || !rows.length) return;
+  const clr = { active: 'var(--green)', low: 'var(--text3)', rare: 'var(--warn)', dead: 'var(--danger)' };
+  tbody.innerHTML = rows.slice(0, 200).map(r => {
+    const pct = maxUsage > 0 ? (r.usage / maxUsage * 100).toFixed(1) : '0';
+    const c = clr[r.status] || 'var(--text2)';
+    return `<tr><td style="color:var(--accent)">${r.code}</td><td class="${r.status}" style="color:${c};font-weight:600">${r.status}</td><td>${typeof r.usage === 'number' ? r.usage.toFixed(2) : '—'}</td><td>${r.norm != null ? r.norm.toFixed(4) : '—'}</td><td style="color:var(--text3)">—</td><td><div style="background:var(--surface3);border-radius:3px;overflow:hidden;height:10px"><div style="background:${c};width:${pct}%;height:100%"></div></div></td></tr>`;
+  }).join('');
+  if (rows.length > 200) {
+    tbody.innerHTML += `<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:8px">Showing 200 / ${rows.length} codes — use filter to narrow</td></tr>`;
+  }
+}
+
+function vqFilterCodeTable() {
+  if (!S._vqCodeRows) return;
+  const q = (document.getElementById('vq-code-search')?.value || '').trim();
+  const sf = document.getElementById('vq-code-filter')?.value || '';
+  let rows = S._vqCodeRows;
+  if (sf) rows = rows.filter(r => r.status === sf);
+  if (q) rows = rows.filter(r => String(r.code).includes(q));
+  const maxUsage = Math.max(...S._vqCodeRows.map(r => r.usage), 1);
+  vqRenderCodeRows(rows, maxUsage);
 }
 
 // ─── MONITOR / HEALTH ─────────────────────────────────────────────────────────
@@ -6050,22 +6230,45 @@ async function loadProvenance() {
     const deltas = attr.deltas || {};
     const order = attr.order || Object.keys(contribs);
 
+    // Summary KPIs
+    document.getElementById('prov-mod-count').textContent = order.length || '—';
+    const totalContrib = order.reduce((s, m) => s + Math.abs(contribs[m] || 0), 0);
+    const totalDelta = order.reduce((s, m) => s + Math.abs(deltas[m] || 0), 0);
+    document.getElementById('prov-total-l2').textContent = totalDelta > 0 ? totalDelta.toFixed(6) : '—';
+
+    if (order.length) {
+      // Sort by contribution descending
+      const sorted = [...order].sort((a, b) => Math.abs(contribs[b] || 0) - Math.abs(contribs[a] || 0));
+      const topMod = sorted[0];
+      const topPct = totalContrib > 0 ? (Math.abs(contribs[topMod] || 0) / totalContrib * 100).toFixed(1) : 0;
+      document.getElementById('prov-top-mod').textContent = topMod || '—';
+      document.getElementById('prov-top-pct').textContent = `${topPct}% of total`;
+      document.getElementById('prov-concentration').textContent = `${topPct}%`;
+      document.getElementById('prov-concentration-m').textContent = `${topMod || '—'} dominance`;
+    } else {
+      document.getElementById('prov-top-mod').textContent = '—';
+      document.getElementById('prov-top-pct').textContent = '—';
+      document.getElementById('prov-concentration').textContent = '—';
+    }
+
     // Populate module selector
     const sel = document.getElementById('prov-module-sel');
     sel.innerHTML = '<option value="">Select module…</option>' + order.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
 
-    // Build attribution table
+    // Build attribution table (sorted by contribution descending)
     const tbody = document.getElementById('prov-attr-tbody');
     if (order.length) {
-      const maxContrib = Math.max(...order.map(m => Math.abs(contribs[m] || 0)), 1e-12);
-      tbody.innerHTML = order.map(m => {
+      const sorted = [...order].sort((a, b) => Math.abs(contribs[b] || 0) - Math.abs(contribs[a] || 0));
+      const maxContrib = Math.max(...sorted.map(m => Math.abs(contribs[m] || 0)), 1e-12);
+      tbody.innerHTML = sorted.map((m, idx) => {
         const c = contribs[m] || 0;
         const delta = deltas[m] || 0;
-        const pct = Math.abs(c / maxContrib * 100);
-        return `<tr><td style="color:var(--accent)">${escHtml(m)}</td><td>${typeof c === 'number' ? c.toFixed(6) : c}</td><td>${typeof delta === 'number' ? delta.toFixed(6) : delta}</td><td><div style="background:var(--surface3);border-radius:3px;overflow:hidden;height:14px"><div style="background:var(--purple);width:${pct.toFixed(1)}%;height:100%"></div></div></td></tr>`;
+        const pct = totalContrib > 0 ? (Math.abs(c) / totalContrib * 100).toFixed(1) : '0.0';
+        const barPct = Math.abs(c / maxContrib * 100);
+        return `<tr><td style="color:var(--text3)">${idx+1}</td><td style="color:var(--accent)">${escHtml(m)}</td><td>${typeof c === 'number' ? c.toFixed(6) : c}</td><td style="color:var(--purple);font-weight:600">${pct}%</td><td>${typeof delta === 'number' ? delta.toFixed(6) : delta}</td><td><div style="background:var(--surface3);border-radius:3px;overflow:hidden;height:14px"><div style="background:var(--purple);width:${barPct.toFixed(1)}%;height:100%"></div></div></td></tr>`;
       }).join('');
     } else {
-      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text3);text-align:center;padding:20px">No attribution data — run inference first</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No attribution data — run inference first</td></tr>';
     }
   } catch(e) { log('ERROR', 'provenance', e.message); }
 }
@@ -6112,26 +6315,65 @@ async function loadCausalTrace() {
     document.getElementById('ct-count').textContent = d.count || 0;
 
     if (!d.available) {
-      document.getElementById('ct-tbody').innerHTML = `<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">${escHtml(d.reason || 'Causal trace not enabled')}</td></tr>`;
+      document.getElementById('ct-tbody').innerHTML = `<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">${escHtml(d.reason || 'Causal trace not enabled')}</td></tr>`;
+      document.getElementById('ct-subsystems').textContent = '—';
+      document.getElementById('ct-warnings').textContent = '0';
+      document.getElementById('ct-critical').textContent = '0';
       return;
     }
 
     const entries = d.entries || [];
-    const tbody = document.getElementById('ct-tbody');
-    if (entries.length) {
-      tbody.innerHTML = entries.slice(-100).reverse().map((e, i) => {
-        const ts = e.timestamp || e.time || e.ts || '';
-        const mod = e.module || e.subsystem || e.source || '—';
-        const dec = e.decision || e.msg || e.event || '';
-        const sev = e.severity || 'info';
-        const sevCls = sev === 'critical' || sev === 'error' ? 'color:var(--danger)' : sev === 'warning' ? 'color:var(--warn)' : 'color:var(--text3)';
-        const eid = e.id || e.entry_id || i;
-        return `<tr><td style="color:var(--text3)">${typeof ts === 'number' ? ts.toFixed(2) : escHtml(String(ts))}</td><td style="color:var(--accent)">${escHtml(mod)}</td><td style="color:var(--text2)">${escHtml(String(dec)).slice(0, 80)}</td><td style="${sevCls}">${sev}</td><td><button class="btn btn-ghost" style="padding:2px 6px;font-size:10px" onclick="loadCausalTraceRootCause('${escHtml(String(eid))}')">Trace</button></td></tr>`;
-      }).join('');
-    } else {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text3);text-align:center;padding:20px">No trace entries recorded yet</td></tr>';
-    }
+    // Compute summary stats
+    const modules = new Set();
+    let warnings = 0, criticals = 0;
+    entries.forEach(e => {
+      const mod = e.module || e.subsystem || e.source || '—';
+      modules.add(mod);
+      const sev = (e.severity || 'info').toLowerCase();
+      if (sev === 'warning') warnings++;
+      if (sev === 'critical' || sev === 'error') criticals++;
+    });
+    document.getElementById('ct-subsystems').textContent = modules.size || '—';
+    document.getElementById('ct-warnings').textContent = warnings;
+    document.getElementById('ct-critical').textContent = criticals;
+
+    S._ctEntries = entries;
+    ctRenderEntries(entries);
   } catch(e) { log('ERROR', 'causal_trace', e.message); }
+}
+
+function ctRenderEntries(entries) {
+  const tbody = document.getElementById('ct-tbody');
+  if (entries.length) {
+    tbody.innerHTML = entries.slice(-100).reverse().map((e, i) => {
+      const ts = e.timestamp || e.time || e.ts || '';
+      const mod = e.module || e.subsystem || e.source || '—';
+      const dec = e.decision || e.msg || e.event || '';
+      const sev = e.severity || 'info';
+      const sevCls = sev === 'critical' || sev === 'error' ? 'color:var(--danger)' : sev === 'warning' ? 'color:var(--warn)' : 'color:var(--text3)';
+      const eid = e.id || e.entry_id || i;
+      // Extract context/extra data
+      const ctx = e.context || e.data || e.extra || '';
+      const ctxStr = typeof ctx === 'object' ? JSON.stringify(ctx).slice(0, 80) : String(ctx).slice(0, 80);
+      return `<tr><td style="color:var(--text3)">${typeof ts === 'number' ? ts.toFixed(2) : escHtml(String(ts))}</td><td style="color:var(--accent)">${escHtml(mod)}</td><td style="color:var(--text2)">${escHtml(String(dec)).slice(0, 80)}</td><td style="${sevCls};font-weight:600">${sev}</td><td style="color:var(--text3);font-size:10px" title="${escHtml(ctxStr)}">${escHtml(ctxStr).slice(0, 40)}</td><td><button class="btn btn-ghost" style="padding:2px 6px;font-size:10px" onclick="loadCausalTraceRootCause('${escHtml(String(eid))}')">Trace</button></td></tr>`;
+    }).join('');
+  } else {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text3);text-align:center;padding:20px">No trace entries recorded yet</td></tr>';
+  }
+}
+
+function ctFilterEntries() {
+  if (!S._ctEntries) return;
+  const q = (document.getElementById('ct-search')?.value || '').toLowerCase();
+  const sf = document.getElementById('ct-sev-filter')?.value || '';
+  let entries = S._ctEntries;
+  if (sf) entries = entries.filter(e => (e.severity || 'info').toLowerCase() === sf);
+  if (q) entries = entries.filter(e => {
+    const mod = (e.module || e.subsystem || e.source || '').toLowerCase();
+    const dec = (e.decision || e.msg || e.event || '').toLowerCase();
+    return mod.includes(q) || dec.includes(q);
+  });
+  ctRenderEntries(entries);
 }
 
 async function loadCausalTraceRootCause(entryId) {
@@ -6646,6 +6888,8 @@ connectWS();
 log('INFO','dashboard','AEON Dashboard v3.2.0 initializing · connecting to server...');
 genCode();
 applyPreset('production');
+// Auto-load test catalogue on boot to populate dynamic test count
+setTimeout(() => { tsRefreshCatalogue(); }, 500);
 // Fetch initial logs via REST as WS fallback
 setTimeout(async () => {
   try {
