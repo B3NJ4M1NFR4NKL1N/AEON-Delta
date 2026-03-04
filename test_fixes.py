@@ -24280,18 +24280,38 @@ def test_causal_dag_consensus_in_model_init():
     assert model.causal_dag_consensus is not None, (
         "Expected CausalDAGConsensus to be initialized with ≥2 causal models"
     )
-    # Disable second model → consensus should be None
+    # Disable all but one causal model → consensus should be None
     config2 = AEONConfig(
         hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
         vq_embedding_dim=32, vq_num_embeddings=64,
         enable_causal_model=True,
         enable_notears_causal=False,
+        enable_causal_programmatic=False,
     )
     model2 = AEONDeltaV3(config2)
     assert model2.causal_dag_consensus is None, (
         "Expected CausalDAGConsensus to be None with <2 causal models"
     )
     print("✅ test_causal_dag_consensus_in_model_init PASSED")
+
+
+def test_upb_provenance_dag_alignment():
+    """UPB critical edges are aligned with the provenance DAG after init."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    diag = model.self_diagnostic()
+    cu = diag.get('cognitive_unity', {})
+    rct = cu.get('root_cause_traceability', {})
+    assert rct.get('upb_provenance_aligned') is True, (
+        f"UPB critical edges misaligned with provenance DAG: "
+        f"{rct.get('upb_misaligned_edges')}"
+    )
+    print("✅ test_upb_provenance_dag_alignment PASSED")
 
 
 def test_causal_decision_chain_includes_new_fields():
@@ -26676,6 +26696,9 @@ def test_get_metacognitive_state_includes_dag_consensus():
         vq_embedding_dim=64, vq_num_embeddings=128,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        enable_causal_model=True,
+        enable_notears_causal=False,
+        enable_causal_programmatic=False,
         device_str='cpu',
     )
     model = AEONDeltaV3(config)
@@ -26683,7 +26706,7 @@ def test_get_metacognitive_state_includes_dag_consensus():
     assert 'dag_consensus' in state, (
         "get_metacognitive_state should include 'dag_consensus' key"
     )
-    # Without multiple causal models, it should show as unavailable
+    # With only one causal model, consensus should show as unavailable
     assert state['dag_consensus']['available'] is False
 
     print("✅ test_get_metacognitive_state_includes_dag_consensus PASSED")
@@ -64995,6 +65018,7 @@ def run_all_tests():
     test_gated_fallback_cache_decay()
     test_memory_retrieval_quality_in_output()
     test_causal_dag_consensus_in_model_init()
+    test_upb_provenance_dag_alignment()
     test_causal_decision_chain_includes_new_fields()
     
     # Architectural Unification — Provenance Preservation & Cross-Phase Bridging

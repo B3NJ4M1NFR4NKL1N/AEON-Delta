@@ -42610,6 +42610,10 @@ class AEONDeltaV3(nn.Module):
         # DAG, uncertainty cascades operate on a different graph than
         # root-cause attribution, creating an inconsistency where
         # uncertainty targets modules that provenance cannot trace.
+        # Edges removed by the provenance tracker's cycle detection are
+        # excluded from this check because they represent intentional
+        # feedback loops that are architecturally valid but incompatible
+        # with the acyclic provenance DAG requirement.
         _upb = getattr(self, 'uncertainty_propagation', None)
         _upb_provenance_aligned = True
         _upb_misaligned_edges: List[Tuple[str, str]] = []
@@ -42620,9 +42624,16 @@ class AEONDeltaV3(nn.Module):
                 if isinstance(_sources, (set, list)):
                     for _src in _sources:
                         _prov_edge_set.add((_src, _target))
+            # Edges removed to maintain DAG acyclicity are feedback
+            # edges — they exist in _PIPELINE_DEPENDENCIES and are
+            # architecturally valid, so they should not be flagged as
+            # misaligned.
+            _removed_cyclic = getattr(
+                self.provenance_tracker, '_removed_cyclic_edges', set(),
+            )
             # Check critical edges are in provenance DAG
             for _edge in (getattr(_upb, '_critical_edges', set()) or set()):
-                if _edge not in _prov_edge_set:
+                if _edge not in _prov_edge_set and _edge not in _removed_cyclic:
                     _upb_misaligned_edges.append(_edge)
             _upb_provenance_aligned = len(_upb_misaligned_edges) == 0
             if not _upb_provenance_aligned:
