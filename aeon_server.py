@@ -1591,7 +1591,7 @@ async def introspect():
 
 @app.get("/api/introspect/modules")
 async def introspect_modules():
-    """Per-module parameter breakdown with weight statistics."""
+    """Per-module parameter breakdown with weight statistics, gradient info, shapes, dtype, and memory."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
@@ -1601,6 +1601,9 @@ async def introspect_modules():
             total_p = sum(x.numel() for x in params)
             trainable_p = sum(x.numel() for x in params if x.requires_grad)
             weight_stats = {}
+            grad_stats = {}
+            shapes = []
+            dtypes = set()
             if params:
                 all_weights = torch.cat([p.data.flatten() for p in params if p.data.numel() > 0])
                 weight_stats = {
@@ -1612,6 +1615,30 @@ async def introspect_modules():
                     "has_nan": bool(torch.isnan(all_weights).any()),
                     "has_inf": bool(torch.isinf(all_weights).any()),
                 }
+                # Gradient statistics
+                grad_tensors = [p.grad.flatten() for p in params if p.grad is not None and p.grad.numel() > 0]
+                if grad_tensors:
+                    all_grads = torch.cat(grad_tensors)
+                    grad_stats = {
+                        "mean": round(all_grads.mean().item(), 6),
+                        "std": round(all_grads.std().item(), 6),
+                        "l2_norm": round(all_grads.norm(2).item(), 4),
+                        "max_abs": round(all_grads.abs().max().item(), 6),
+                    }
+                # Parameter shapes and dtypes (cap at 10 to limit response size)
+                for p in params[:10]:
+                    shapes.append(list(p.shape))
+                    dtypes.add(str(p.dtype))
+
+            # Memory estimation (bytes) — approximation based on first parameter's dtype
+            bytes_per_param = 4  # Default FP32
+            for p in params[:1]:
+                if p.dtype == torch.float16 or p.dtype == torch.bfloat16:
+                    bytes_per_param = 2
+                elif p.dtype == torch.float64:
+                    bytes_per_param = 8
+            memory_bytes = total_p * bytes_per_param
+
             # Submodules
             sub = []
             for sname, smod in mod.named_children():
@@ -1625,6 +1652,10 @@ async def introspect_modules():
                 "trainable": trainable_p,
                 "frozen": total_p - trainable_p,
                 "weight_stats": weight_stats,
+                "grad_stats": grad_stats,
+                "shapes": shapes,
+                "dtypes": list(dtypes),
+                "memory_bytes": memory_bytes,
                 "submodules": sub,
             })
 
