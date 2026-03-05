@@ -422,16 +422,57 @@ Enables multi-monitor convergence consensus, targeted uncertainty attribution, a
 
 ---
 
+### **32. Verification Gates & Output Reliability**
+Multi-stage output verification ensuring end-to-end quality and causal consistency:
+- **`CycleConsistencyValidator`**: Validates encoder→reasoning→decoder round-trip fidelity via cosine similarity — escalates uncertainty when reconstruction similarity falls below threshold and optionally triggers re-encoding for verification
+- **`CounterfactualVerificationGate`**: Validates forward-pass conclusions against causal simulator predictions — compares post-integration output with the simulator's counterfactual next-state to detect reasoning-dynamics divergence
+- **`OutputReliabilityGate`**: Computes composite output reliability score ∈ [0, 1] combining six independent signals (uncertainty, auto-critic confidence, convergence rate, coherence, provenance quality, DAG consensus quality) — identifies the weakest contributing factor when output is flagged unreliable
+- **`ProvenanceChainValidator`**: Pure-logic validator ensuring completeness of provenance chains at forward-pass end — verifies that all modules in the dependency DAG recorded provenance entries, flagging any gaps in causal traceability
+
+Ensures every output is verified for round-trip consistency, causal alignment, composite reliability, and provenance completeness.
+
+---
+
+### **33. Subsystem Health Gating, Coherence Registry & Uncertainty Propagation**
+Infrastructure for subsystem-level reliability, cross-pass coherence tracking, and cascading uncertainty:
+- **`SubsystemHealthGate`**: Learned gating module that dampens unreliable subsystem outputs before integration — small MLP producing a multiplicative scalar ∈ [0, 1] per subsystem, learning which health signals predict output reliability
+- **`SubsystemCoherenceRegistry`**: Persistent cross-pass ledger tracking which subsystems were active, validated, or absent across forward passes — prevents over-confidence when self-verification is incomplete and reveals persistent subsystem failures
+- **`UncertaintyPropagationBus`**: Propagates per-module uncertainty through the provenance DAG using topological-order traversal with configurable decay — ensures that a single unreliable upstream module raises uncertainty in all dependent downstream modules
+
+Provides fine-grained subsystem reliability gating, cross-pass coherence tracking, and DAG-aware uncertainty cascading.
+
+---
+
+### **34. Meta-Cognitive Executive & Unified Cognitive Frame**
+High-level meta-cognitive oversight bridging diagnostics with active cognition:
+- **`UnifiedCognitiveFrame`**: Bridges diagnostic verification with active forward-pass cognition — provides a single `assess()` entry-point gathering live signals and on-demand diagnostics into a unified cognitive assessment
+- **`MetaCognitiveExecutive`**: Bridges executive arbitration with meta-cognitive review — evaluates whether the executive function's choice should trigger a meta-cognitive review cycle and produces corrective signals when needed
+- **`PostOutputUncertaintyGate`**: Pure-logic gate re-evaluating meta-cognitive need after late-stage (post-decode) uncertainty — ensures that any residual uncertainty triggers a meta-cognitive cycle regardless of earlier convergence status
+
+Enables integrated meta-cognitive oversight with unified assessment, executive-level review arbitration, and post-output uncertainty safeguards.
+
+---
+
+### **35. Memory Routing, Deception Suppression & State Persistence**
+Intelligent memory access, internal consistency enforcement, and cross-session continuity:
+- **`MemoryRoutingPolicy`**: Routes memory queries to the appropriate memory subsystem with trust-aware gating — computes lightweight relevance scores for each memory subsystem and gates retrieval results through the external data trust scorer
+- **`DeceptionSuppressor`**: Detects and suppresses internal inconsistency between self-reported confidence and actual output divergence — computes an independent consistency signal between encoder input and decoder output, flagging miscalibration as potential self-deception
+- **`CognitiveSnapshotManager`**: Manages full cognitive state persistence across sessions — extends standard save/load to include hierarchical memory subsystems, ensuring experiential continuity across independent execution sessions
+
+Provides trust-gated memory routing, internal honesty enforcement, and full cognitive state persistence for session continuity.
+
+---
+
 ## 🖥️ Dashboard & Server (`aeon_server.py` + `AEON_Dashboard.html`)
 
 ### **Server: aeon_server.py v3.3.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **61 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
+- **76 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
 - **WebSocket** real-time updates (training progress, test events, log streaming)
 - **SSE** log streaming with per-level filtering and per-test event streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 1,609 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 2,546 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, correlation ID middleware
 - **VQ codebook introspection**: `/api/vq/codebook` with utilization history
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
@@ -531,7 +572,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 1,609 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,546 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -563,6 +604,10 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 1,609 tests) verif
 - **Cognitive feedback** (cognitive feedback bus forward/gradient flow, causal provenance tracking and attribution)  
 - **Causal infrastructure** (causal context window with tiers and eviction, temporal causal trace with chain reconstruction, cross-validation reconciliation, external data trust scoring, complexity estimation with subsystem gating, neuro-symbolic consistency checking)  
 - **Adaptive training** (data characteristics analysis, adaptive training controller, loss-based and gradient-norm-based parameter adjustment)  
+- **Verification gates** (cycle consistency validation, counterfactual verification, output reliability scoring, provenance chain completeness)  
+- **Subsystem health** (health gating, coherence registry tracking, uncertainty propagation through provenance DAG)  
+- **Meta-cognitive executive** (unified cognitive frame assessment, executive review arbitration, post-output uncertainty gating)  
+- **Memory & state persistence** (memory routing policy, deception suppression, cognitive snapshot management)
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -584,11 +629,11 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py          # Core architecture — 118 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.3.0 — 61 API endpoints, WebSocket, SSE, training runner
+├── aeon_core.py          # Core architecture — 131 classes, all modules, model (AEONDeltaV3), trainer, CLI
+├── aeon_server.py        # FastAPI backend v3.3.0 — 76 API endpoints, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — real-time monitoring, inference, training UI
 ├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (1,609 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py         # Comprehensive test suite (2,546 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── requirements.txt      # Python dependencies
 ├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
