@@ -67116,6 +67116,16 @@ def run_all_tests():
     test_architecture_node_coverage()
     test_error_class_to_signal_mapping_complete()
     test_pipeline_dependencies_form_dag()
+    test_provenance_chain_complete_after_forward()
+    test_feedback_bus_all_signals_populated()
+    test_metacognitive_executive_provenance_recorded()
+    test_error_evolution_provenance_recorded()
+    test_unified_cognitive_cycle_provenance_recorded()
+    test_output_reliability_provenance_recorded()
+    test_memory_trust_provenance_recorded()
+    test_feedback_bus_populated_signals_tracking()
+    test_cognitive_unity_unified_after_forward()
+    test_upb_provenance_alignment_after_forward()
     test_total_test_count_exceeds_2500()
 
     print("\n" + "=" * 60)
@@ -71832,6 +71842,229 @@ def test_total_test_count_exceeds_2500():
     )
     print(f"  Total activated tests: {count}")
     print("✅ test_total_test_count_exceeds_2500 PASSED")
+
+
+def test_provenance_chain_complete_after_forward():
+    """Provenance chain validator reports 100% completeness after a full forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    chain = model.provenance_chain_validator.validate(
+        provenance_tracker=model.provenance_tracker,
+        model=model,
+    )
+    assert chain['completeness_ratio'] == 1.0, (
+        f"Provenance chain completeness must be 1.0, got {chain['completeness_ratio']}; "
+        f"missing: {chain['missing_modules']}"
+    )
+    assert chain['is_complete'], "Provenance chain must be complete"
+    assert len(chain['missing_modules']) == 0, (
+        f"No modules should be missing: {chain['missing_modules']}"
+    )
+    print("✅ test_provenance_chain_complete_after_forward PASSED")
+
+
+def test_feedback_bus_all_signals_populated():
+    """All registered feedback bus signals are populated after a forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    unity = model.verify_cognitive_unity()
+    fb = unity['feedback_bus_completeness']
+    assert fb['populated_signals'] == fb['registered_signals'], (
+        f"All {fb['registered_signals']} feedback bus signals must be populated, "
+        f"got {fb['populated_signals']}; unpopulated: {fb.get('unpopulated_signals', [])}"
+    )
+    assert fb['coverage'] == 1.0, (
+        f"Feedback bus coverage must be 1.0, got {fb['coverage']}"
+    )
+    print("✅ test_feedback_bus_all_signals_populated PASSED")
+
+
+def test_metacognitive_executive_provenance_recorded():
+    """MetaCognitiveExecutive provenance is recorded during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    attrib = model.provenance_tracker.compute_attribution()
+    contribs = attrib.get('contributions', {})
+    assert 'metacognitive_executive' in contribs, (
+        "metacognitive_executive must be recorded in provenance attribution"
+    )
+    print("✅ test_metacognitive_executive_provenance_recorded PASSED")
+
+
+def test_error_evolution_provenance_recorded():
+    """Error evolution provenance is recorded during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    attrib = model.provenance_tracker.compute_attribution()
+    contribs = attrib.get('contributions', {})
+    assert 'error_evolution' in contribs, (
+        "error_evolution must be recorded in provenance attribution"
+    )
+    print("✅ test_error_evolution_provenance_recorded PASSED")
+
+
+def test_unified_cognitive_cycle_provenance_recorded():
+    """UnifiedCognitiveCycle provenance is recorded during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    attrib = model.provenance_tracker.compute_attribution()
+    contribs = attrib.get('contributions', {})
+    assert 'unified_cognitive_cycle' in contribs, (
+        "unified_cognitive_cycle must be recorded in provenance attribution"
+    )
+    print("✅ test_unified_cognitive_cycle_provenance_recorded PASSED")
+
+
+def test_output_reliability_provenance_recorded():
+    """Output reliability provenance is recorded during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    attrib = model.provenance_tracker.compute_attribution()
+    contribs = attrib.get('contributions', {})
+    assert 'output_reliability' in contribs, (
+        "output_reliability must be recorded in provenance attribution"
+    )
+    print("✅ test_output_reliability_provenance_recorded PASSED")
+
+
+def test_memory_trust_provenance_recorded():
+    """Memory trust provenance is recorded during forward pass (even with empty memory)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    attrib = model.provenance_tracker.compute_attribution()
+    contribs = attrib.get('contributions', {})
+    assert 'memory_trust' in contribs, (
+        "memory_trust must be recorded in provenance attribution "
+        "even when memory manager is empty"
+    )
+    print("✅ test_memory_trust_provenance_recorded PASSED")
+
+
+def test_feedback_bus_populated_signals_tracking():
+    """CognitiveFeedbackBus tracks explicitly populated signals."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    assert hasattr(fb, '_populated_signals'), (
+        "CognitiveFeedbackBus must have _populated_signals attribute"
+    )
+    # Before forward, should be empty
+    assert len(fb._populated_signals) == 0, (
+        "_populated_signals should be empty before forward pass"
+    )
+    # After forward, should be non-empty
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    assert len(fb._populated_signals) > 0, (
+        "_populated_signals should be non-empty after forward pass"
+    )
+    print("✅ test_feedback_bus_populated_signals_tracking PASSED")
+
+
+def test_cognitive_unity_unified_after_forward():
+    """System is unified (cognitive_unity_score threshold met) after forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    unity = model.verify_cognitive_unity()
+    assert unity['unified'], (
+        f"System must be unified after forward pass, "
+        f"score={unity['cognitive_unity_score']}"
+    )
+    assert unity['cognitive_unity_score'] > 0.5, (
+        f"Cognitive unity score must exceed 0.5, got {unity['cognitive_unity_score']}"
+    )
+    print("✅ test_cognitive_unity_unified_after_forward PASSED")
+
+
+def test_upb_provenance_alignment_after_forward():
+    """UPB critical edges are aligned with provenance DAG after forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, num_pillars=8, vocab_size=1000,
+        vq_embedding_dim=32, vq_num_embeddings=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (2, 16))
+    with torch.no_grad():
+        result = model(x, fast=False)
+    unity = model.verify_cognitive_unity()
+    rct = unity['root_cause_traceability']
+    assert rct['upb_provenance_aligned'], (
+        f"UPB critical edges must be aligned with provenance DAG, "
+        f"misaligned: {rct['upb_misaligned_edges']}"
+    )
+    print("✅ test_upb_provenance_alignment_after_forward PASSED")
 
 
 if __name__ == "__main__":
