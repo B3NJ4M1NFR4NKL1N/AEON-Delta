@@ -26720,6 +26720,8 @@ def test_get_metacognitive_state_includes_dag_consensus():
         vq_embedding_dim=64, vq_num_embeddings=128,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        enable_causal_model=False, enable_notears_causal=False,
+        enable_causal_programmatic=False,
         device_str='cpu',
     )
     model = AEONDeltaV3(config)
@@ -67555,9 +67557,11 @@ def test_causal_quality_preserved_when_no_causal_model():
     from aeon_core import AEONConfig, AEONDeltaV3
     import torch
 
-    # Default config has no causal model
+    # Config with no causal models active
     config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
-                        enable_causal_model=False)
+                        enable_causal_model=False,
+                        enable_notears_causal=False,
+                        enable_causal_programmatic=False)
 
     model = AEONDeltaV3(config)
     model.eval()
