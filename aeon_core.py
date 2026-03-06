@@ -22628,8 +22628,20 @@ class AEONDeltaV3(nn.Module):
                 language_dim=config.hidden_dim,
                 latent_dim=config.grounded_multimodal_latent_dim,
             ).to(self.device)
+            # Adapter that projects z_dim proxy vision features to
+            # the expected vision_dim so that encoder outputs (z_in)
+            # can feed GroundedMultimodalLearning without a shape
+            # mismatch when z_dim != grounded_multimodal_vision_dim.
+            if config.z_dim != config.grounded_multimodal_vision_dim:
+                self._gm_vision_adapter = nn.Linear(
+                    config.z_dim,
+                    config.grounded_multimodal_vision_dim,
+                ).to(self.device)
+            else:
+                self._gm_vision_adapter = None
         else:
             self.grounded_multimodal = None
+            self._gm_vision_adapter = None
 
         # ===== CONTINUAL LEARNING CORE =====
         # Progressive columns + EWC for zero-forgetting continual learning.
@@ -27618,7 +27630,7 @@ class AEONDeltaV3(nn.Module):
                 # were never verified by the meta-cognitive system.
                 if self.metacognitive_executive is not None:
                     self.provenance_tracker.record_before(
-                        "metacognitive_executive", z,
+                        "metacognitive_executive", C_star,
                     )
                     _mce_review = self.metacognitive_executive.review(
                         executive_results,
@@ -27626,7 +27638,7 @@ class AEONDeltaV3(nn.Module):
                         coherence_deficit=self._cached_coherence_deficit,
                     )
                     self.provenance_tracker.record_after(
-                        "metacognitive_executive", z,
+                        "metacognitive_executive", C_star,
                     )
                     self.coherence_registry.register_output(
                         "metacognitive_executive",
@@ -32253,7 +32265,10 @@ class AEONDeltaV3(nn.Module):
             try:
                 # Use the original encoder output as a proxy for vision
                 # features and the current reasoning state as language.
+                # When z_dim != vision_dim, project through the adapter.
                 _gm_vision = z_in.detach()
+                if self._gm_vision_adapter is not None:
+                    _gm_vision = self._gm_vision_adapter(_gm_vision)
                 _gm_language = z_rssm
                 _grounded_mm_results = self.grounded_multimodal(
                     vision_features=_gm_vision,
