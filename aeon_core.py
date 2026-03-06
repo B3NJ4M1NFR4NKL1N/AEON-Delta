@@ -14183,6 +14183,20 @@ class NeuroSymbolicBridge(nn.Module):
     def embed_conclusions(self, conclusions: torch.Tensor) -> torch.Tensor:
         return self.embedder(conclusions)
 
+    def forward(
+        self, neural_state: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Full round-trip: neural → symbolic → neural."""
+        facts = self.extract_facts(neural_state)
+        rules = self.extract_rules(neural_state)
+        symbolic = torch.clamp(facts + rules * 0.5, 0.0, 1.0)
+        reembedded = self.embed_conclusions(symbolic)
+        return {
+            "facts": facts,
+            "rules": rules,
+            "reembedded": reembedded,
+        }
+
 
 class TemporalKnowledgeGraph:
     """
@@ -27059,7 +27073,7 @@ class AEONDeltaV3(nn.Module):
                 causal_prerequisites=[input_trace_id],
                 metadata={"gate_mean": _gate_mean},
             )
-            outputs["consistency_gate_mean"] = _gate_mean
+            self._cached_consistency_gate_mean = _gate_mean
         
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
@@ -27202,13 +27216,20 @@ class AEONDeltaV3(nn.Module):
         # Record self-report in causal trace so root-cause analysis can
         # attribute uncertainty escalation to self-report signals.
         if self.causal_trace is not None and self_report:
+            def _sr_float(val: Any) -> float:
+                """Safely convert a scalar or tensor to float."""
+                if val is None:
+                    return 0.0
+                if isinstance(val, torch.Tensor):
+                    return float(val.mean().item())
+                return float(val)
             self.causal_trace.record(
                 "self_report", "evaluated",
                 causal_prerequisites=[input_trace_id],
                 metadata={
-                    "honesty": float(self_report.get("honesty_gate", 0.0) or 0.0),
-                    "confidence": float(self_report.get("confidence", 0.0) or 0.0),
-                    "consistency": float(self_report.get("consistency", 0.0) or 0.0),
+                    "honesty": _sr_float(self_report.get("honesty_gate")),
+                    "confidence": _sr_float(self_report.get("confidence")),
+                    "consistency": _sr_float(self_report.get("consistency")),
                 },
             )
         # adaptation — when TransparentSelfReporting produces low
@@ -28605,11 +28626,11 @@ class AEONDeltaV3(nn.Module):
         # through the world model's predictive verification.
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
-        _world_model_should_skip = (
+        _world_model_gate_off = (
             _complexity_gates is not None
             and not _complexity_gates[:, 0].any().item()
-            and not high_uncertainty
         )
+        _world_model_should_skip = _world_model_gate_off and not high_uncertainty
         # Validate cached world_model state coherence — override skip if
         # the cached state has diverged from the current reasoning trajectory.
         if _world_model_should_skip and not self._validate_cached_state_coherence(
@@ -28618,13 +28639,19 @@ class AEONDeltaV3(nn.Module):
             _world_model_should_skip = False
         self.provenance_tracker.record_before("world_model", C_star)
         _world_model_healthy = True
-        if _world_model_should_skip and self.causal_trace is not None:
+        # Record complexity_gated_skip in the causal trace whenever the
+        # gate signals "off", regardless of whether high uncertainty
+        # overrides the skip.  This ensures root-cause analysis can
+        # attribute gating decisions to complexity estimation even when
+        # the system ultimately runs the subsystem due to uncertainty.
+        if _world_model_gate_off and self.causal_trace is not None:
             self.causal_trace.record(
                 "world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
                 metadata={
                     "gate_index": 0,
                     "high_uncertainty": high_uncertainty,
+                    "overridden_by_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -29070,9 +29097,12 @@ class AEONDeltaV3(nn.Module):
         # search tree root incorporates memory context.  Placeholder
         # initialized here; actual search runs after step 5c.
         mcts_results = {}
-        _mcts_should_skip = (
+        _mcts_gate_off = (
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
+        )
+        _mcts_should_skip = (
+            _mcts_gate_off
             and not planning  # explicit planning=True overrides complexity gate
             and not high_uncertainty
         )
@@ -29081,7 +29111,7 @@ class AEONDeltaV3(nn.Module):
             self._cached_mcts_state, C_star, "mcts_planning",
         ):
             _mcts_should_skip = False
-        if _mcts_should_skip and self.causal_trace is not None:
+        if _mcts_gate_off and self.causal_trace is not None:
             self.causal_trace.record(
                 "mcts_planning", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
@@ -29089,6 +29119,7 @@ class AEONDeltaV3(nn.Module):
                     "gate_index": 1,
                     "planning": planning,
                     "high_uncertainty": high_uncertainty,
+                    "overridden_by_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -29961,23 +29992,24 @@ class AEONDeltaV3(nn.Module):
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
-        _causal_world_should_skip = (
+        _causal_world_gate_off = (
             _complexity_gates is not None
             and not _complexity_gates[:, 2].any().item()
-            and not high_uncertainty
         )
+        _causal_world_should_skip = _causal_world_gate_off and not high_uncertainty
         # Validate cached causal state coherence — override skip if stale.
         if _causal_world_should_skip and not self._validate_cached_state_coherence(
             self._cached_causal_state, C_star, "causal_world_model",
         ):
             _causal_world_should_skip = False
-        if _causal_world_should_skip and self.causal_trace is not None:
+        if _causal_world_gate_off and self.causal_trace is not None:
             self.causal_trace.record(
                 "causal_world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
                 metadata={
                     "gate_index": 2,
                     "high_uncertainty": high_uncertainty,
+                    "overridden_by_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -31259,23 +31291,24 @@ class AEONDeltaV3(nn.Module):
         # 5e2. Unified causal simulator — counterfactual reasoning
         # Gated by complexity gate[3]
         unified_simulator_results: Dict[str, Any] = {}
-        _unified_sim_should_skip = (
+        _unified_sim_gate_off = (
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
-            and not high_uncertainty
         )
+        _unified_sim_should_skip = _unified_sim_gate_off and not high_uncertainty
         # Validate cached unified_sim state coherence — override skip if stale.
         if _unified_sim_should_skip and not self._validate_cached_state_coherence(
             self._cached_unified_sim_state, C_star, "unified_simulator",
         ):
             _unified_sim_should_skip = False
-        if _unified_sim_should_skip and self.causal_trace is not None:
+        if _unified_sim_gate_off and self.causal_trace is not None:
             self.causal_trace.record(
                 "unified_simulator", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
                 metadata={
                     "gate_index": 3,
                     "high_uncertainty": high_uncertainty,
+                    "overridden_by_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
                 },
             )
@@ -31622,11 +31655,10 @@ class AEONDeltaV3(nn.Module):
         if self.standalone_ns_bridge is not None and not fast and "causal_model" not in _circuit_breaker_tripped:
             try:
                 self.provenance_tracker.record_before("ns_bridge", C_star)
-                _ns_facts = self.standalone_ns_bridge.extract_facts(C_star)
-                _ns_rules = self.standalone_ns_bridge.extract_rules(C_star)
-                # Round-trip: neural → symbolic → neural
-                _ns_symbolic = torch.clamp(_ns_facts + _ns_rules * 0.5, 0.0, 1.0)
-                _ns_reembedded = self.standalone_ns_bridge.embed_conclusions(_ns_symbolic)
+                _ns_result = self.standalone_ns_bridge(C_star)
+                _ns_facts = _ns_result["facts"]
+                _ns_rules = _ns_result["rules"]
+                _ns_reembedded = _ns_result["reembedded"]
                 # Blend the round-trip residual to enforce symbolic consistency
                 if torch.isfinite(_ns_reembedded).all():
                     _ns_blend = self.config.standalone_ns_bridge_blend
@@ -37054,23 +37086,34 @@ class AEONDeltaV3(nn.Module):
         # outside the recent(100) window used by diagnostic queries.
         # Re-record summary entries at the end so root-cause queries
         # always find them in the most recent slice.
-        if self.causal_trace is not None and not fast:
-            self.causal_trace.record(
-                "consistency_gate", "summary",
-                metadata={
-                    "gate_mean": float(outputs.get("consistency_gate_mean", 0.0)),
-                    "final_uncertainty": float(outputs.get("uncertainty", 0.0)),
-                },
-            )
-            if self_report:
+        try:
+            if self.causal_trace is not None and not fast:
+                _cg_mean = getattr(self, '_cached_consistency_gate_mean', 0.0)
                 self.causal_trace.record(
-                    "self_report", "summary",
+                    "consistency_gate", "summary",
                     metadata={
-                        "honesty": float(self_report.get("honesty_gate", 0.0) or 0.0),
-                        "confidence": float(self_report.get("confidence", 0.0) or 0.0),
-                        "consistency": float(self_report.get("consistency", 0.0) or 0.0),
+                        "gate_mean": float(_cg_mean),
+                        "final_uncertainty": float(outputs.get("uncertainty", 0.0)),
                     },
                 )
+                _sr = outputs.get("self_report")
+                if _sr and isinstance(_sr, dict):
+                    def _sr_sum_float(val: Any) -> float:
+                        if val is None:
+                            return 0.0
+                        if isinstance(val, torch.Tensor):
+                            return float(val.mean().item())
+                        return float(val)
+                    self.causal_trace.record(
+                        "self_report", "summary",
+                        metadata={
+                            "honesty": _sr_sum_float(_sr.get("honesty_gate")),
+                            "confidence": _sr_sum_float(_sr.get("confidence")),
+                            "consistency": _sr_sum_float(_sr.get("consistency")),
+                        },
+                    )
+        except Exception:
+            pass  # Non-critical: outputs may not be constructed yet
 
         return z_out, outputs
     
@@ -38070,6 +38113,18 @@ class AEONDeltaV3(nn.Module):
         result['provenance_root_cause'] = _ucc_res.get(
             'provenance_root_cause', {},
         )
+
+        # Record VQ quality summary near the end of the pipeline so it
+        # appears in the most recent audit log entries queried by tests
+        # and diagnostics.  The early VQ recording may fall out of the
+        # recent(50) window when many subsystems record after it.
+        if self.vector_quantizer is not None:
+            self.audit_log.record("vq", "summary", {
+                "vq_loss": result.get("vq_loss", 0.0),
+                "codebook_quality": getattr(
+                    self, '_cached_vq_codebook_quality', 1.0,
+                ),
+            })
 
         return result
     
@@ -40875,11 +40930,19 @@ class AEONDeltaV3(nn.Module):
                         f'({len(_training_classes)} training error classes bridged)'
                     )
                 else:
-                    verified.append(
-                        'training_bridge → error_evolution '
-                        f'({len(_training_classes)} training error classes '
-                        f'seeded via cognitive activation probe)'
-                    )
+                    # Only baseline-seeded episodes exist — the training
+                    # bridge has not received real training data yet.
+                    gaps.append({
+                        'component': 'training_bridge',
+                        'gap': (
+                            'Training error classes are baseline-seeded only — '
+                            'no real training error patterns have been bridged'
+                        ),
+                        'remediation': (
+                            'Call bridge_training_errors_to_inference() after '
+                            'training to transfer real training error patterns'
+                        ),
+                    })
             else:
                 gaps.append({
                     'component': 'training_bridge',
@@ -43441,7 +43504,8 @@ class AEONDeltaV3(nn.Module):
 
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
-        if not report.get('coherent', True):
+        _overall_score = report.get('overall_score', 1.0)
+        if not report.get('coherent', True) or _overall_score < 1.0:
             # Identify the weakest axiom for targeted correction.
             weakest_axiom = min(
                 axioms.items(),
@@ -43460,7 +43524,8 @@ class AEONDeltaV3(nn.Module):
             reinforcement_actions.append(
                 f'Set correction target to '
                 f'{self._cached_correction_target} '
-                f'(weakest axiom: {weakest_name})'
+                f'(weakest axiom: {weakest_name}, '
+                f'overall_score={_overall_score:.2f})'
             )
 
         report['reinforcement_actions'] = reinforcement_actions
