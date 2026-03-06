@@ -40830,11 +40830,28 @@ class AEONDeltaV3(nn.Module):
                         f'({len(_training_classes)} training error classes bridged)'
                     )
                 else:
+                    # Seeded-only baseline entries (from cognitive activation
+                    # probe) are a fallback, not a real training bridge.
+                    # Report as a gap so callers know the feedback loop is
+                    # primed but not yet receiving real training data.
                     verified.append(
                         'training_bridge → error_evolution '
                         f'({len(_training_classes)} training error classes '
                         f'seeded via cognitive activation probe)'
                     )
+                    gaps.append({
+                        'component': 'training_bridge',
+                        'gap': (
+                            'Training error classes seeded with baseline '
+                            'episodes only — no real training data has been '
+                            'bridged via bridge_training_errors_to_inference()'
+                        ),
+                        'remediation': (
+                            'Call bridge_training_errors_to_inference() after '
+                            'training to transfer real training error patterns '
+                            'to the inference error evolution tracker'
+                        ),
+                    })
             else:
                 gaps.append({
                     'component': 'training_bridge',
@@ -41377,6 +41394,7 @@ class AEONDeltaV3(nn.Module):
             'MetaLearner initialized but task buffer empty',
             'Error class "verify_coherence_deficit"',
             'Align UPB critical edges with provenance DAG',
+            'Training error classes seeded with baseline',
         )
         if len(_critical_gaps) >= 3:
             status = 'critical'
@@ -43402,6 +43420,43 @@ class AEONDeltaV3(nn.Module):
                 f'Set correction target to '
                 f'{self._cached_correction_target} '
                 f'(weakest axiom: {weakest_name})'
+            )
+
+        # --- Overall health monitoring ---
+        # When the system is technically coherent but overall_score < 1.0,
+        # record a health-monitoring episode so that the mutual
+        # reinforcement loop remains active for sub-threshold
+        # imperfections.  Without this, small architectural weaknesses
+        # (e.g. convergence warmup, slight coverage gaps) silently
+        # persist because they never cross the per-axiom 0.8 threshold,
+        # violating the requirement that active components continuously
+        # verify and stabilize each other's states.
+        overall_score = report.get('overall_score', 1.0)
+        if overall_score < 1.0 and not reinforcement_actions:
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='overall_health_deficit',
+                    strategy_used='verify_and_reinforce_monitoring',
+                    success=overall_score >= 0.8,
+                    metadata={'overall_score': overall_score},
+                )
+            # Identify the weakest axiom for targeted monitoring even
+            # when no per-axiom threshold is breached.
+            if axioms:
+                weakest_axiom = min(
+                    axioms.items(),
+                    key=lambda x: x[1].get('score', 1.0),
+                    default=('coherence', {}),
+                )
+                weakest_name = weakest_axiom[0]
+                weakest_score = weakest_axiom[1].get('score', 1.0)
+            else:
+                weakest_name = 'overall'
+                weakest_score = overall_score
+            reinforcement_actions.append(
+                f'Recorded overall_health_deficit monitoring episode '
+                f'(overall_score={overall_score:.2f}, '
+                f'weakest_axiom={weakest_name}={weakest_score:.2f})'
             )
 
         report['reinforcement_actions'] = reinforcement_actions
