@@ -657,6 +657,142 @@ async def get_coherence_report():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/cognitive_activation")
+async def get_cognitive_activation():
+    """Return the cognitive activation status of the AEON-Delta system.
+
+    Produces the three deliverables required by the Final Integration &
+    Cognitive Activation task:
+
+    1. **Integration Map** — connected vs. isolated critical paths.
+    2. **Critical Patches** — remaining disconnected nodes with status.
+    3. **Activation Sequence** — logical order for safe online activation.
+
+    This endpoint synthesizes ``verify_cognitive_unity()``,
+    ``verify_pipeline_wiring()``, and ``self_diagnostic()`` into an
+    actionable activation report.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        unity = APP.model.verify_cognitive_unity()
+        wiring = APP.model.verify_pipeline_wiring()
+        diagnostic = APP.model.self_diagnostic()
+        health = APP.model.get_architectural_health()
+
+        # 1. Integration Map
+        _verified = wiring.get('verified_edges', [])
+        _missing = wiring.get('missing_edges', [])
+        integration_map = {
+            "connected_paths": len(_verified),
+            "isolated_paths": len(_missing),
+            "wiring_coverage": wiring.get('wiring_coverage', 0.0),
+            "verified_edges": _verified,
+            "missing_edges": _missing,
+            "dag_acyclic": wiring.get('dag_acyclic', True),
+        }
+
+        # 2. Critical Patches
+        gaps = diagnostic.get('gaps', [])
+        _module_health = unity.get('module_health', {})
+        critical_patches = []
+        for gap in gaps:
+            _comp = gap.get('component', 'unknown')
+            _mh = _module_health.get(_comp, {})
+            critical_patches.append({
+                "component": _comp,
+                "gap": gap.get('gap', ''),
+                "remediation": gap.get('remediation', ''),
+                "module_health_score": _mh.get('score', None),
+                "penalties": _mh.get('penalties', []),
+            })
+
+        # 3. Activation Sequence
+        activation_sequence = [
+            {
+                "order": 1,
+                "phase": "Tensor Safety & Error Classification",
+                "description": (
+                    "Verify TensorGuard and SemanticErrorClassifier are "
+                    "active for NaN/Inf protection and error taxonomy"
+                ),
+                "status": "active" if diagnostic.get('status') != 'critical' else "blocked",
+            },
+            {
+                "order": 2,
+                "phase": "Provenance & Causal Trace Wiring",
+                "description": (
+                    "Ensure CausalProvenanceTracker and "
+                    "TemporalCausalTraceBuffer are wired with acyclic DAG"
+                ),
+                "status": (
+                    "active" if unity.get('root_cause_traceability', {}).get('coverage', 0) >= 0.9
+                    else "incomplete"
+                ),
+            },
+            {
+                "order": 3,
+                "phase": "Convergence & Coherence Verification",
+                "description": (
+                    "Activate ConvergenceMonitor and "
+                    "ModuleCoherenceVerifier for cross-module validation"
+                ),
+                "status": (
+                    "active" if unity.get('mutual_verification', {}).get('coverage', 0) >= 0.9
+                    else "incomplete"
+                ),
+            },
+            {
+                "order": 4,
+                "phase": "Meta-Cognitive Recursion",
+                "description": (
+                    "Enable MetaCognitiveRecursionTrigger so uncertainty "
+                    "automatically initiates higher-order review cycles"
+                ),
+                "status": (
+                    "active" if unity.get('uncertainty_metacognition', {}).get('trigger_active', False)
+                    else "inactive"
+                ),
+            },
+            {
+                "order": 5,
+                "phase": "Unified Cognitive Cycle",
+                "description": (
+                    "Bring UnifiedCognitiveCycle online to orchestrate "
+                    "all subsystems into a single evaluation pass"
+                ),
+                "status": (
+                    "active" if health.get('convergence_summary', {}).get('status') != 'diverging'
+                    else "blocked"
+                ),
+            },
+            {
+                "order": 6,
+                "phase": "System Emergence Validation",
+                "description": (
+                    "Validate cognitive unity across all three axioms: "
+                    "mutual reinforcement, meta-cognitive trigger, "
+                    "causal transparency"
+                ),
+                "status": "achieved" if unity.get('unified', False) else "pending",
+            },
+        ]
+
+        return _make_json_safe({
+            "ok": True,
+            "system_unified": unity.get('unified', False),
+            "cognitive_unity_score": unity.get('cognitive_unity_score', 0.0),
+            "overall_health_score": health.get('overall_health_score', 0.0),
+            "integration_map": integration_map,
+            "critical_patches": critical_patches,
+            "activation_sequence": activation_sequence,
+            "recommendations": health.get('recommendations', []),
+        })
+    except Exception as e:
+        logging.error(f"cognitive_activation error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
