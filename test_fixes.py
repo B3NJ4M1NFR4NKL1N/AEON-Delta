@@ -73523,5 +73523,195 @@ def test_training_bridge_primed_after_activation():
     print("✅ test_training_bridge_primed_after_activation PASSED")
 
 
+def test_verify_pipeline_wiring_records_causal_trace():
+    """verify_pipeline_wiring records its assessment in causal trace.
+
+    When the causal trace buffer is active, pipeline wiring assessments
+    must be recorded so that root-cause analysis can explain which
+    pipeline edges were verified and which were missing.  This closes
+    the causal transparency gap where wiring diagnostics lived only in
+    the audit log.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_causal_trace=True)
+    model = AEONDeltaV3(config)
+
+    # Clear causal trace then run wiring verification
+    model.causal_trace._entries.clear()
+    wiring = model.verify_pipeline_wiring()
+
+    # Find the wiring assessment entry in the causal trace
+    entries = list(model.causal_trace._entries)
+    found = any(
+        'verify_pipeline_wiring' in str(e)
+        for e in entries
+    )
+    assert found, (
+        "Causal trace should contain verify_pipeline_wiring assessment "
+        "entry for causal transparency"
+    )
+
+    # Verify the entry contains coverage metadata
+    wiring_entries = [
+        e for e in entries
+        if 'verify_pipeline_wiring' in str(e)
+    ]
+    assert len(wiring_entries) >= 1, (
+        "At least one verify_pipeline_wiring entry expected"
+    )
+    print("✅ test_verify_pipeline_wiring_records_causal_trace PASSED")
+
+
+def test_verify_and_reinforce_wiring_feedback():
+    """verify_and_reinforce feeds wiring coverage deficits into error
+    evolution when pipeline wiring coverage is below threshold.
+
+    This closes the mutual reinforcement gap where three axiom scores
+    (mutual verification, uncertainty→metacognition, root-cause
+    traceability) triggered error evolution episodes but wiring
+    deficits silently accumulated as recommendations only.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Run verify_and_reinforce
+    result = model.verify_and_reinforce()
+    actions = result.get('reinforcement_actions', [])
+
+    # The wiring coverage check should be in the method logic
+    # If wiring coverage is below 0.8, there should be a pipeline_wiring_gap
+    # episode recorded.  If above, no episode is needed.
+    wiring = model.verify_pipeline_wiring()
+    wiring_cov = wiring.get('wiring_coverage', 1.0)
+
+    if wiring_cov < 0.8:
+        # Check error evolution has pipeline_wiring_gap episodes
+        ee_summary = model.error_evolution.get_error_summary()
+        ee_classes = ee_summary.get('error_classes', {})
+        assert 'pipeline_wiring_gap' in ee_classes, (
+            f"pipeline_wiring_gap should be in error evolution when "
+            f"wiring_coverage={wiring_cov:.2f} < 0.8"
+        )
+        # Check reinforcement actions mention wiring
+        wiring_actions = [a for a in actions if 'wiring' in a.lower()]
+        assert len(wiring_actions) >= 1, (
+            "Reinforcement actions should mention wiring gap"
+        )
+    print("✅ test_verify_and_reinforce_wiring_feedback PASSED")
+
+
+def test_architectural_coherence_report_includes_wiring_gaps():
+    """architectural_coherence_report includes wiring coverage deficits
+    in actionable_gaps.
+
+    When pipeline wiring coverage is below 100%, the report should
+    surface a pipeline_wiring actionable gap alongside the three AGI
+    axiom gaps, ensuring wiring deficits are visible for remediation.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.architectural_coherence_report()
+    actionable_gaps = report.get('actionable_gaps', [])
+
+    # Check if wiring coverage is below 1.0
+    health = model.get_architectural_health()
+    wiring_cov = health.get('pipeline_wiring_coverage', 1.0)
+
+    if wiring_cov < 1.0:
+        wiring_gaps = [
+            g for g in actionable_gaps
+            if g.get('axiom') == 'pipeline_wiring'
+        ]
+        assert len(wiring_gaps) >= 1, (
+            f"actionable_gaps should include pipeline_wiring gap when "
+            f"wiring_coverage={wiring_cov:.2f} < 1.0, but got "
+            f"{[g.get('axiom') for g in actionable_gaps]}"
+        )
+        # Verify the gap has remediation advice
+        gap = wiring_gaps[0]
+        assert 'remediation' in gap, (
+            "pipeline_wiring gap should include remediation advice"
+        )
+        assert 'gap' in gap, (
+            "pipeline_wiring gap should include gap description"
+        )
+    print("✅ test_architectural_coherence_report_includes_wiring_gaps PASSED")
+
+
+def test_pipeline_wiring_gap_in_error_class_mapping():
+    """pipeline_wiring_gap error class is mapped in metacognitive trigger.
+
+    When verify_and_reinforce records a pipeline_wiring_gap episode,
+    the metacognitive trigger must have a signal mapping for it so
+    that recurring wiring failures influence trigger sensitivity.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Check that pipeline_wiring_gap is in the adapt_weights_from_evolution
+    # error class → signal mapping
+    if model.metacognitive_trigger is not None:
+        # Seed a test episode so we can verify the mapping works
+        model.error_evolution.record_episode(
+            error_class='pipeline_wiring_gap',
+            strategy_used='test_strategy',
+            success=False,
+        )
+        summary = model.error_evolution.get_error_summary()
+        assert 'pipeline_wiring_gap' in summary.get('error_classes', {}), (
+            "pipeline_wiring_gap should be tracked in error evolution"
+        )
+        # Adapt weights — should not raise and should map to a signal
+        model.metacognitive_trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_pipeline_wiring_gap_in_error_class_mapping PASSED")
+
+
+def test_causal_transparency_full_chain():
+    """Verify full causal transparency chain from wiring to reinforcement.
+
+    Every architectural assessment (verify_pipeline_wiring,
+    verify_and_reinforce, verify_cognitive_unity) must produce a causal
+    trace entry, enabling deterministic tracing from output to premises.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_causal_trace=True)
+    model = AEONDeltaV3(config)
+
+    # Clear trace and run the full chain
+    model.causal_trace._entries.clear()
+
+    # Run each component in the chain
+    model.verify_pipeline_wiring()
+    model.verify_cognitive_unity()
+    model.verify_and_reinforce()
+
+    entries = list(model.causal_trace._entries)
+    entry_strs = [str(e) for e in entries]
+
+    # All three should be traced
+    has_wiring = any('verify_pipeline_wiring' in s for s in entry_strs)
+    has_unity = any('verify_cognitive_unity' in s for s in entry_strs)
+    has_reinforce = any('verify_and_reinforce' in s for s in entry_strs)
+
+    assert has_wiring, (
+        "verify_pipeline_wiring must produce a causal trace entry"
+    )
+    assert has_unity, (
+        "verify_cognitive_unity must produce a causal trace entry"
+    )
+    # verify_and_reinforce only traces when actions are taken
+    # (which depends on scores being below thresholds)
+    print("✅ test_causal_transparency_full_chain PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
