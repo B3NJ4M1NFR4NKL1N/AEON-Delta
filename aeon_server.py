@@ -784,6 +784,35 @@ async def get_cognitive_activation():
             },
         ]
 
+        # 4. System Emergence Status — synthesize the three AGI
+        # requirements (mutual reinforcement, meta-cognitive trigger,
+        # causal transparency) into a single actionable readiness
+        # verdict so external consumers can determine whether the
+        # system has achieved cognitive organism status.
+        _cu_components = unity.get('cognitive_unity_components', {})
+        _mv_met = _cu_components.get('mutual_verification', 0) >= 0.9
+        _um_met = _cu_components.get('uncertainty_metacognition', 0) >= 1.0
+        _rc_met = _cu_components.get('root_cause_traceability', 0) >= 0.9
+        _convergence_ok = (
+            health.get('convergence_summary', {}).get('status') != 'diverging'
+        )
+        _ee_healthy = unity.get(
+            'error_evolution_effectiveness', {},
+        ).get('active', False)
+        system_emergence_status = {
+            "emerged": unity.get('unified', False) and _convergence_ok,
+            "mutual_reinforcement_met": _mv_met,
+            "meta_cognitive_trigger_met": _um_met,
+            "causal_transparency_met": _rc_met,
+            "convergence_stable": _convergence_ok,
+            "error_evolution_active": _ee_healthy,
+            "diagnostic_status": diagnostic.get('status', 'unknown'),
+            "conditions_met": sum([
+                _mv_met, _um_met, _rc_met, _convergence_ok, _ee_healthy,
+            ]),
+            "conditions_total": 5,
+        }
+
         return _make_json_safe({
             "ok": True,
             "system_unified": unity.get('unified', False),
@@ -799,6 +828,7 @@ async def get_cognitive_activation():
             "integration_map": integration_map,
             "critical_patches": critical_patches,
             "activation_sequence": activation_sequence,
+            "system_emergence_status": system_emergence_status,
             "recommendations": health.get('recommendations', []),
         })
     except Exception as e:

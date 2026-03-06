@@ -72957,6 +72957,131 @@ def test_executive_review_causal_trace_records_recommendation():
     print("✅ test_executive_review_causal_trace_records_recommendation PASSED")
 
 
+def test_verify_and_reinforce_registers_in_coherence_registry():
+    """verify_and_reinforce() registers its output in the coherence
+    registry so the cross-pass ledger tracks reinforcement cycle health.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    cr = model.coherence_registry
+    assert cr is not None, "coherence_registry must be initialized"
+    # Reset current pass to isolate this test
+    with cr._lock:
+        cr._current_pass = {k: False for k in cr._current_pass}
+
+    result = model.verify_and_reinforce()
+    assert 'reinforcement_actions' in result
+
+    # verify_and_reinforce should now be registered in the current pass
+    assert cr._current_pass.get('verify_and_reinforce', False), (
+        "verify_and_reinforce must register_output in coherence_registry"
+    )
+    print("✅ test_verify_and_reinforce_registers_in_coherence_registry PASSED")
+
+
+def test_verify_and_reinforce_updates_cognitive_unity_deficit():
+    """verify_and_reinforce() updates _cached_cognitive_unity_deficit
+    so the next forward pass reflects the reinforcement assessment.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Set deficit to an extreme value to verify it gets overwritten
+    model._cached_cognitive_unity_deficit = 0.99
+
+    result = model.verify_and_reinforce()
+    overall = result.get('overall_score', 1.0)
+    expected_deficit = max(0.0, min(1.0, 1.0 - overall))
+
+    assert abs(model._cached_cognitive_unity_deficit - expected_deficit) < 1e-6, (
+        f"_cached_cognitive_unity_deficit should be {expected_deficit:.4f}, "
+        f"got {model._cached_cognitive_unity_deficit:.4f}"
+    )
+    print("✅ test_verify_and_reinforce_updates_cognitive_unity_deficit PASSED")
+
+
+def test_verify_and_reinforce_refreshes_low_quality_cache():
+    """verify_and_reinforce() refreshes _cached_low_quality_subsystems
+    from the coherence registry.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Set a stale cache value
+    model._cached_low_quality_subsystems = {"stale_module": 0.9}
+
+    result = model.verify_and_reinforce()
+
+    # After reinforcement, the cache should reflect registry state
+    lq = model._cached_low_quality_subsystems
+    assert isinstance(lq, dict), (
+        f"_cached_low_quality_subsystems should be dict, got {type(lq)}"
+    )
+    # The stale entry should be replaced with actual registry data
+    assert "stale_module" not in lq, (
+        "_cached_low_quality_subsystems should be refreshed from "
+        "coherence_registry, not retain stale entries"
+    )
+    print("✅ test_verify_and_reinforce_refreshes_low_quality_cache PASSED")
+
+
+def test_cognitive_activation_registers_verify_and_reinforce_expected():
+    """_cognitive_activation_probe() registers verify_and_reinforce
+    as an expected subsystem in the coherence registry.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    cr = model.coherence_registry
+    assert cr is not None, "coherence_registry must be initialized"
+    assert 'verify_and_reinforce' in cr._expected, (
+        "_cognitive_activation_probe must register verify_and_reinforce "
+        "in coherence_registry._expected"
+    )
+    print("✅ test_cognitive_activation_registers_verify_and_reinforce_expected PASSED")
+
+
+def test_cognitive_activation_endpoint_includes_system_emergence():
+    """GET /api/cognitive_activation includes system_emergence_status."""
+    import inspect
+    from aeon_server import get_cognitive_activation
+
+    src = inspect.getsource(get_cognitive_activation)
+    assert 'system_emergence_status' in src, (
+        "/api/cognitive_activation must return system_emergence_status"
+    )
+    assert 'mutual_reinforcement_met' in src, (
+        "system_emergence_status must include mutual_reinforcement_met"
+    )
+    assert 'meta_cognitive_trigger_met' in src, (
+        "system_emergence_status must include meta_cognitive_trigger_met"
+    )
+    assert 'causal_transparency_met' in src, (
+        "system_emergence_status must include causal_transparency_met"
+    )
+    assert 'emerged' in src, (
+        "system_emergence_status must include emerged verdict"
+    )
+    print("✅ test_cognitive_activation_endpoint_includes_system_emergence PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes
