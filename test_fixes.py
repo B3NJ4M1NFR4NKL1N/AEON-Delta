@@ -23084,7 +23084,7 @@ def test_self_diagnostic_basic():
     report = model.self_diagnostic()
 
     assert 'status' in report, "Report should have status"
-    assert report['status'] in ('healthy', 'degraded', 'critical'), (
+    assert report['status'] in ('healthy', 'degraded', 'critical', 'warmup'), (
         f"Invalid status: {report['status']}"
     )
     assert 'active_modules' in report, "Report should have active_modules"
@@ -31209,7 +31209,7 @@ def test_self_diagnostic_reports_gaps():
     model = AEONDeltaV3(config)
     diag = model.self_diagnostic()
 
-    assert diag["status"] in ("healthy", "degraded", "critical"), (
+    assert diag["status"] in ("healthy", "degraded", "critical", "warmup"), (
         f"Unexpected status: {diag['status']}"
     )
     assert isinstance(diag["verified_connections"], list)
@@ -31608,11 +31608,11 @@ def test_verify_coherence_caches_subsystem_states():
     model = AEONDeltaV3(config)
     model.eval()
 
-    # Before forward pass, no cached states exist — verify_coherence
-    # should return degraded status (score=0.0, needs_recheck=True).
+    # Before forward pass, only activation-seeded baseline states exist —
+    # verify_coherence should return a non-perfect score and flag recheck.
     result_before = model.verify_coherence()
-    assert result_before["coherence_score"] == 0.0, (
-        "Before forward pass, coherence should be 0.0 (no cached states)"
+    assert result_before["coherence_score"] < 1.0, (
+        "Before forward pass, coherence should be < 1.0"
     )
     assert result_before["needs_recheck"] is True, (
         "Before forward pass, needs_recheck should be True"
@@ -31640,8 +31640,11 @@ def test_verify_coherence_caches_subsystem_states():
 
 
 def test_verify_coherence_degraded_when_no_states():
-    """When no subsystem states are cached, verify_coherence() reports
-    degraded status rather than silently returning coherence=1.0."""
+    """When no subsystem states are cached from a forward pass,
+    verify_coherence() reports a non-perfect score rather than silently
+    returning coherence=1.0.  Activation-seeded baseline states produce
+    a low but non-zero coherence score, distinguishing 'never ran' from
+    'fully coherent'."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -31652,11 +31655,11 @@ def test_verify_coherence_degraded_when_no_states():
     model.eval()
 
     result = model.verify_coherence()
-    assert result["coherence_score"] == 0.0, (
-        f"Expected 0.0 when no cached states, got {result['coherence_score']}"
+    assert result["coherence_score"] < 1.0, (
+        f"Expected < 1.0 when no forward pass, got {result['coherence_score']}"
     )
     assert result["needs_recheck"] is True, (
-        "Should flag needs_recheck when no cached states available"
+        "Should flag needs_recheck when no forward pass has run"
     )
     print("✅ test_verify_coherence_degraded_when_no_states PASSED")
 
@@ -72323,6 +72326,103 @@ def test_cognitive_activation_coherence_report():
         "Error evolution should have error classes after activation"
     )
     print("✅ test_cognitive_activation_coherence_report PASSED")
+
+
+def test_cognitive_activation_seeds_coherence_states():
+    """Activation probe seeds baseline subsystem states so
+    verify_coherence() returns non-zero before any forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_module_coherence=True)
+    model = AEONDeltaV3(config)
+
+    # Verify baseline states were seeded
+    assert model._cached_meta_loop_state is not None, (
+        "Activation probe should seed _cached_meta_loop_state"
+    )
+    assert model._cached_safety_state is not None, (
+        "Activation probe should seed _cached_safety_state"
+    )
+    assert model._cached_integration_state is not None, (
+        "Activation probe should seed _cached_integration_state"
+    )
+    # Verify coherence score is non-zero but not 1.0
+    result = model.verify_coherence()
+    assert 0.0 < result["coherence_score"] <= 1.0, (
+        f"Expected non-zero coherence from seeded states, "
+        f"got {result['coherence_score']}"
+    )
+    print("✅ test_cognitive_activation_seeds_coherence_states PASSED")
+
+
+def test_cognitive_activation_primes_feedback_bus():
+    """Activation probe primes feedback bus signals so not all are at
+    their registration defaults."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    fb = model.feedback_bus
+    assert fb is not None, "Feedback bus should be initialized"
+
+    extra = getattr(fb, '_extra_signals', {})
+    defaults = getattr(fb, '_extra_defaults', {})
+    non_default = sum(
+        1 for k, v in extra.items()
+        if v != defaults.get(k, 0.0)
+    )
+    assert non_default > 0, (
+        "Activation probe should prime at least some feedback bus "
+        "signals to non-default values"
+    )
+    print("✅ test_cognitive_activation_primes_feedback_bus PASSED")
+
+
+def test_self_diagnostic_warmup_status():
+    """self_diagnostic reports 'warmup' status before any forward pass
+    when only cold-start gaps remain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    assert diag['status'] == 'warmup', (
+        f"Expected 'warmup' before first forward pass, got '{diag['status']}'. "
+        f"Gaps: {[g['gap'][:60] for g in diag.get('gaps', [])]}"
+    )
+    print("✅ test_self_diagnostic_warmup_status PASSED")
+
+
+def test_cognitive_activation_complete_flag():
+    """_cognitive_activation_probe sets _cognitive_activation_complete."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    assert getattr(model, '_cognitive_activation_complete', False) is True, (
+        "_cognitive_activation_complete should be True after __init__"
+    )
+    print("✅ test_cognitive_activation_complete_flag PASSED")
+
+
+def test_cognitive_activation_seeded_states_shape():
+    """Seeded baseline states have correct shape [1, hidden_dim]."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=256, z_dim=256)
+    model = AEONDeltaV3(config)
+
+    for attr in ('_cached_meta_loop_state', '_cached_safety_state',
+                 '_cached_integration_state'):
+        state = getattr(model, attr, None)
+        assert state is not None, f"{attr} should be seeded"
+        assert state.shape == (1, 256), (
+            f"{attr} shape should be (1, 256), got {state.shape}"
+        )
+    print("✅ test_cognitive_activation_seeded_states_shape PASSED")
 
 
 def test_total_test_count_exceeds_2500():
