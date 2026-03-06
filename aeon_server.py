@@ -2898,9 +2898,9 @@ def _v4_training_loop(req: V4TrainRequest):
             torch.cuda.manual_seed_all(req.seed)
 
         # ── Device selection: honour the globally-initialised device ──
-        _sel = APP.selected_device
-        if _sel not in ("auto", "none"):
-            device = torch.device(_sel)
+        global_device = APP.selected_device
+        if global_device != "auto":
+            device = torch.device(global_device)
             logging.info(f"Using globally selected device: {device}")
         elif torch.cuda.is_available():
             device = torch.device("cuda")
