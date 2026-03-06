@@ -204,6 +204,11 @@ class AppState:
     training_progress: dict    = {}
     gradient_history: List[dict] = []   # per-step grad norms
     step_loss_history: List[dict] = []  # per-step losses
+    # ── Global device selection ───────────────────────────────────
+    # Set during /api/init from the user's device_str choice.
+    # Subsequent subsystems (engine, v4 training, tests) honour this
+    # value so that the entire pipeline runs on the same device.
+    selected_device: str       = "auto"
     test_results: Optional[dict]  = None
     benchmark_results: Optional[dict] = None
     ws_clients: List[WebSocket] = []
@@ -530,6 +535,7 @@ async def get_status():
         "model_ready": APP.model is not None,
         "training": APP.training_active,
         "device": str(APP.model.device) if APP.model else "none",
+        "selected_device": APP.selected_device,
         "torch_version": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
         "cuda_device_count": torch.cuda.device_count(),
@@ -813,6 +819,9 @@ async def init_model(req: InitRequest):
         APP.model = model
         APP.gradient_history.clear()
         APP.step_loss_history.clear()
+        # Store the resolved device globally so that training, engine,
+        # and test subsystems all operate on the same device.
+        APP.selected_device = str(model.device)
 
         params = model.count_parameters()
         trainable = model.count_trainable_parameters()
@@ -851,6 +860,7 @@ async def deinit_model():
         del APP.model
         APP.model = None
         APP.config = None
+        APP.selected_device = "auto"
         APP.gradient_history.clear()
         APP.step_loss_history.clear()
         if torch.cuda.is_available():
@@ -2887,8 +2897,12 @@ def _v4_training_loop(req: V4TrainRequest):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(req.seed)
 
-        # ── Device selection: CUDA → MPS → CPU ────────────────────
-        if torch.cuda.is_available():
+        # ── Device selection: honour the globally-initialised device ──
+        global_device = APP.selected_device
+        if global_device != "auto":
+            device = torch.device(global_device)
+            logging.info(f"Using globally selected device: {device}")
+        elif torch.cuda.is_available():
             device = torch.device("cuda")
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             try:
@@ -3754,7 +3768,7 @@ async def engine_all_monitoring():
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
 
-    result: Dict[str, Any] = {"ok": True}
+    result: Dict[str, Any] = {"ok": True, "device": APP.selected_device}
 
     # ── ProgressTracker ──
     try:
