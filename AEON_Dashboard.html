@@ -216,42 +216,70 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .chart-title{font-size:12px;color:var(--text2);font-weight:600;}
 canvas{display:block;width:100%;}
 
-/* ARCH FLOW — UNIFIED INTERACTIVE PIPELINE v2 */
+/* ARCH FLOW — UNIFIED INTERACTIVE PIPELINE v3 */
 .arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:20px;overflow:auto;margin-bottom:18px;position:relative;}
-.pipeline-svg{width:100%;min-width:1620px;display:block;}
-.pipeline-svg .p-edge{fill:none;stroke:var(--border2);stroke-width:1.2;opacity:0.5;transition:stroke 0.3s,opacity 0.3s,stroke-width 0.3s;}
-.pipeline-svg .p-edge.active{stroke:var(--accent);opacity:0.9;stroke-width:1.8;}
-.pipeline-svg .p-edge.feedback{stroke-dasharray:5 3;opacity:0.4;}
-.pipeline-svg .p-edge.feedback.active{opacity:0.7;}
+.pipeline-svg{width:100%;min-width:1800px;display:block;}
+.pipeline-svg .p-edge{fill:none;stroke:var(--border2);stroke-width:1.2;opacity:0.45;transition:stroke 0.3s,opacity 0.3s,stroke-width 0.3s;}
+.pipeline-svg .p-edge.active{stroke:var(--accent);opacity:0.9;stroke-width:2;}
+.pipeline-svg .p-edge.feedback{stroke-dasharray:5 3;opacity:0.35;stroke:var(--purple);}
+.pipeline-svg .p-edge.feedback.active{opacity:0.7;stroke:var(--purple);}
+.pipeline-svg .p-edge.err-edge{stroke:var(--danger);opacity:0.7;stroke-width:1.5;}
+.pipeline-svg .p-edge.disabled-edge{stroke:var(--text3);opacity:0.15;stroke-dasharray:3 5;}
 .pipeline-svg .p-edge-flow{fill:none;stroke:var(--accent);stroke-width:2;opacity:0;stroke-dasharray:6 4;}
 .pipeline-svg .p-edge-flow.active{opacity:0.7;animation:edgeFlow 1.5s linear infinite;}
 @keyframes edgeFlow{to{stroke-dashoffset:-20}}
-.p-node{cursor:pointer;transition:transform 0.15s;}
+.pipeline-svg .p-tier-bg{fill:var(--surface);stroke:var(--border);stroke-width:0.5;rx:10;ry:10;opacity:0.4;}
+.p-node{cursor:pointer;transition:transform 0.15s,opacity 0.3s;}
 .p-node:hover{transform:scale(1.08);}
-.p-node:hover .p-node-bg{stroke:var(--accent);stroke-width:2;filter:drop-shadow(0 0 6px rgba(0,212,255,0.3));}
-.p-node .p-node-bg{fill:var(--bg2);stroke:var(--border2);stroke-width:1;rx:6;ry:6;transition:all 0.2s;}
-.p-node.selected .p-node-bg{stroke:var(--accent);stroke-width:2;fill:rgba(0,212,255,0.06);}
+.p-node:hover .p-node-bg{stroke:var(--accent);stroke-width:2;filter:drop-shadow(0 0 8px rgba(0,212,255,0.35));}
+.p-node .p-node-bg{fill:var(--bg2);stroke:var(--border2);stroke-width:1;rx:8;ry:8;transition:all 0.2s;}
+.p-node.selected .p-node-bg{stroke:var(--accent);stroke-width:2.5;fill:rgba(0,212,255,0.08);filter:drop-shadow(0 0 10px rgba(0,212,255,0.3));}
 .p-node .p-node-label{fill:var(--text);font-size:9px;font-family:var(--mono);font-weight:600;text-anchor:middle;pointer-events:none;}
 .p-node .p-node-sub{fill:var(--text3);font-size:7px;font-family:var(--mono);text-anchor:middle;pointer-events:none;}
 .p-node .p-node-pulse{transition:all 0.3s;}
+.p-node .p-node-status{fill:var(--text3);font-size:6.5px;font-family:var(--mono);text-anchor:middle;pointer-events:none;opacity:0.7;}
 .p-node.tier-input .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
 .p-node.tier-output .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
-.p-node.tier-meta .p-node-bg{stroke:var(--purple);fill:rgba(124,58,237,0.04);}
-.p-node.tier-safety .p-node-bg{stroke:var(--warn);fill:rgba(245,158,11,0.04);}
-.p-node.tier-memory .p-node-bg{stroke:var(--green);fill:rgba(16,185,129,0.04);}
-.p-node.tier-causal .p-node-bg{stroke:#f472b6;fill:rgba(244,114,182,0.04);}
-.p-tier-label{fill:var(--text3);font-size:8px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;opacity:0.5;}
+.p-node.tier-meta .p-node-bg{stroke:var(--purple);fill:rgba(124,58,237,0.05);}
+.p-node.tier-safety .p-node-bg{stroke:var(--warn);fill:rgba(245,158,11,0.05);}
+.p-node.tier-memory .p-node-bg{stroke:var(--green);fill:rgba(16,185,129,0.05);}
+.p-node.tier-causal .p-node-bg{stroke:#f472b6;fill:rgba(244,114,182,0.05);}
+.p-node.node-healthy .p-node-bg{stroke:var(--green);stroke-width:1.5;}
+.p-node.node-error .p-node-bg{stroke:var(--danger);stroke-width:2;fill:rgba(239,68,68,0.06);animation:errPulse 1.5s infinite;}
+.p-node.node-warn .p-node-bg{stroke:var(--warn);stroke-width:1.5;fill:rgba(245,158,11,0.04);}
+.p-node.node-disabled .p-node-bg{stroke:var(--text3);stroke-width:1;fill:rgba(100,116,139,0.04);stroke-dasharray:4 3;}
+.p-node.node-disabled .p-node-label{fill:var(--text3);opacity:0.5;}
+.p-node.node-disabled .p-node-sub{opacity:0.3;}
+.p-node.node-disabled{opacity:0.5;}
+@keyframes errPulse{0%,100%{filter:none}50%{filter:drop-shadow(0 0 6px rgba(239,68,68,0.5))}}
+.p-tier-label{fill:var(--text3);font-size:8px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;opacity:0.6;font-weight:600;}
 .p-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:9px;color:var(--text3);}
 .p-legend-item{display:flex;align-items:center;gap:6px;}
 .p-legend-dot{width:8px;height:8px;border-radius:50%;}
-.pipeline-controls{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;padding:6px 0;}
+.pipeline-controls{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;padding:6px 0;}
 .pipeline-controls .pc-filter{padding:4px 10px;border-radius:10px;border:1px solid var(--border);font-size:10px;cursor:pointer;color:var(--text3);transition:all 0.12s;user-select:none;font-family:var(--mono);background:transparent;}
 .pipeline-controls .pc-filter.active{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
+.pipeline-controls .pc-filter.pc-err.active{border-color:var(--danger);color:var(--danger);background:var(--danger-dim);}
+.pipeline-controls .pc-filter.pc-dis.active{border-color:var(--text3);color:var(--text);background:var(--surface3);}
 .pipeline-controls .pc-filter:hover{border-color:var(--accent);color:var(--text);}
 .pipeline-zoom{display:flex;align-items:center;gap:4px;}
 .pipeline-zoom button{background:var(--surface3);border:1px solid var(--border);color:var(--text3);width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;}
 .pipeline-zoom button:hover{color:var(--accent);border-color:var(--accent);}
 .pipeline-zoom span{font-size:10px;color:var(--text3);min-width:36px;text-align:center;}
+.arch-diag-banner{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
+.arch-diag-card{flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;}
+.arch-diag-card .adc-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;}
+.arch-diag-card .adc-val{font-family:var(--display);font-size:22px;font-weight:700;}
+.arch-diag-card .adc-sub{font-size:9px;color:var(--text3);}
+.arch-diag-card.adc-err{border-color:rgba(239,68,68,0.3);background:var(--danger-dim);}
+.arch-diag-card.adc-warn{border-color:rgba(245,158,11,0.3);background:var(--warn-dim);}
+.arch-diag-card.adc-ok{border-color:rgba(16,185,129,0.2);}
+.arch-gap-list{margin-top:10px;max-height:200px;overflow-y:auto;}
+.arch-gap-item{display:flex;align-items:flex-start;gap:8px;padding:6px 10px;background:var(--surface3);border-radius:6px;margin-bottom:4px;font-size:10px;border-left:3px solid var(--warn);}
+.arch-gap-item.critical{border-left-color:var(--danger);}
+.arch-gap-item .agi-comp{color:var(--accent);font-weight:600;min-width:120px;}
+.arch-gap-item .agi-text{color:var(--text2);flex:1;}
+.arch-gap-item .agi-fix{color:var(--green);font-size:9px;}
 
 /* BENCHMARK BARS */
 .bench-bar{display:flex;align-items:center;gap:8px;margin:4px 0;}
@@ -585,7 +613,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 <!-- ══ ARCHITECTURE ══ -->
 <div class="panel" id="panel-architecture">
   <div class="ph">
-    <div><div class="ph-title">Architecture — Real-Time Diagnostics</div><div class="ph-sub">Unified interactive pipeline · 52 modules · per-module health · gradient flow · monitoring integration</div></div>
+    <div><div class="ph-title">Architecture — Real-Time Diagnostics</div><div class="ph-sub">Unified interactive pipeline · full dependency graph · per-module health · disabled detection · gradient flow · coherence</div></div>
     <div class="btns">
       <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
         <input type="checkbox" id="arch-auto-refresh" onchange="toggleArchAutoRefresh()" style="accent-color:var(--accent)"> Auto-refresh
@@ -596,6 +624,17 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-secondary" onclick="loadArch()">↻ Refresh</button>
       <button class="btn btn-ghost" onclick="pipelineResetZoom()">⊡ Reset View</button>
     </div>
+  </div>
+
+  <!-- Diagnostic Status Banner -->
+  <div class="arch-diag-banner" id="arch-diag-banner">
+    <div class="arch-diag-card" id="adc-status"><div class="adc-label">System Status</div><div class="adc-val" style="color:var(--text3)" id="arch-sys-status">—</div><div class="adc-sub" id="arch-sys-status-sub">Initialize model</div></div>
+    <div class="arch-diag-card" id="adc-healthy"><div class="adc-label">Healthy</div><div class="adc-val" style="color:var(--green)" id="arch-cnt-healthy">—</div><div class="adc-sub">modules OK</div></div>
+    <div class="arch-diag-card" id="adc-errors"><div class="adc-label">Errors</div><div class="adc-val" style="color:var(--danger)" id="arch-cnt-errors">—</div><div class="adc-sub">NaN / Inf</div></div>
+    <div class="arch-diag-card" id="adc-disabled"><div class="adc-label">Disabled</div><div class="adc-val" style="color:var(--text3)" id="arch-cnt-disabled">—</div><div class="adc-sub">not enabled</div></div>
+    <div class="arch-diag-card" id="adc-gaps"><div class="adc-label">Diag. Gaps</div><div class="adc-val" style="color:var(--warn)" id="arch-cnt-gaps">—</div><div class="adc-sub" id="arch-gaps-sub">self-diagnostic</div></div>
+    <div class="arch-diag-card" id="adc-wiring"><div class="adc-label">Wiring</div><div class="adc-val" style="color:var(--accent)" id="arch-wiring-pct">—</div><div class="adc-sub" id="arch-wiring-sub">pipeline coverage</div></div>
+    <div class="arch-diag-card" id="adc-unity"><div class="adc-label">Coherence</div><div class="adc-val" style="color:var(--purple)" id="arch-unity-score">—</div><div class="adc-sub">cognitive unity</div></div>
   </div>
 
   <!-- Summary cards -->
@@ -620,6 +659,9 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <button class="pc-filter" data-tier="causal" onclick="pipelineFilter('causal',this)">Causal</button>
     <button class="pc-filter" data-tier="reasoning" onclick="pipelineFilter('reasoning',this)">Reasoning</button>
     <button class="pc-filter" data-tier="integration" onclick="pipelineFilter('integration',this)">Integration</button>
+    <span style="width:1px;height:16px;background:var(--border);margin:0 2px"></span>
+    <button class="pc-filter pc-err" data-tier="errors" onclick="pipelineFilter('errors',this)">⚠ Errors</button>
+    <button class="pc-filter pc-dis" data-tier="disabled" onclick="pipelineFilter('disabled',this)">◌ Disabled</button>
     <div style="flex:1"></div>
     <div class="pipeline-zoom">
       <button onclick="pipelineZoom(-0.1)">−</button>
@@ -630,12 +672,16 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
   <!-- Unified Interactive Data Flow Pipeline -->
   <div class="arch-wrap" id="arch-pipeline-wrap">
-    <svg id="pipeline-svg" class="pipeline-svg" viewBox="0 0 1620 950" xmlns="http://www.w3.org/2000/svg">
+    <svg id="pipeline-svg" class="pipeline-svg" viewBox="0 0 1800 1000" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <marker id="arrow" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--text3)" opacity="0.5"/></marker>
         <marker id="arrow-active" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--accent)" opacity="0.8"/></marker>
+        <marker id="arrow-err" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--danger)" opacity="0.7"/></marker>
+        <marker id="arrow-feedback" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--purple)" opacity="0.5"/></marker>
         <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="errGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feFlood flood-color="rgba(239,68,68,0.3)" result="color"/><feComposite in="color" in2="blur" operator="in" result="shadow"/><feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       </defs>
+      <g id="pipeline-tier-bgs"></g>
       <g id="pipeline-edges"></g>
       <g id="pipeline-nodes"></g>
       <g id="pipeline-tier-labels"></g>
@@ -643,10 +689,12 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="p-legend">
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--green)"></div> Healthy</div>
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--warn)"></div> Warning</div>
-      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--danger)"></div> Error</div>
-      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--text3)"></div> Uninitialized</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--danger)"></div> Error (NaN/Inf)</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--text3);opacity:0.4"></div> Disabled / Off</div>
+      <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--border2)"></div> Uninitialized</div>
       <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--text3)" stroke-width="1.2"/></svg> Data flow</div>
       <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--purple)" stroke-width="1.2" stroke-dasharray="4 2"/></svg> Feedback loop</div>
+      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--text3)" stroke-width="1" stroke-dasharray="3 5"/></svg> Disabled path</div>
     </div>
   </div>
 
@@ -657,6 +705,15 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-ghost" onclick="document.getElementById('arch-detail-card').style.display='none';pipelineDeselectAll()" style="padding:2px 8px;font-size:10px">✕ Close</button>
     </div>
     <div id="arch-detail-content" style="font-size:11px">—</div>
+  </div>
+
+  <!-- Diagnostic Gaps / Issues -->
+  <div class="card" id="arch-gaps-card" style="display:none;margin-bottom:18px;border-left:3px solid var(--warn)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="ct">⚠ Self-Diagnostic Gaps & Issues</div>
+      <button class="btn btn-ghost" onclick="document.getElementById('arch-gaps-card').style.display='none'" style="padding:2px 8px;font-size:10px">✕ Close</button>
+    </div>
+    <div id="arch-gaps-content" class="arch-gap-list" style="font-size:11px">—</div>
   </div>
 
   <!-- Module breakdown & summary -->
@@ -3277,12 +3334,24 @@ function drawCodebook(vq) {
     `${vq.used_codes||vq.active_codes||'?'} active / ${n} total codes · ${utilRatio!=null?(utilRatio*100).toFixed(1)+'%':''} utilized`;
 }
 
-// ─── ARCHITECTURE — UNIFIED INTERACTIVE PIPELINE v2 ──────────────────────────
+// ─── ARCHITECTURE — UNIFIED INTERACTIVE PIPELINE v3 ──────────────────────────
 let _archAutoRefreshTimer = null;
 let _archData = null;
+let _archDiagData = null;
 let _pipelineZoom = 1;
 let _pipelineSelectedNode = null;
 let _pipelineBuilt = false;
+let _archNodeStatusMap = {};
+
+// Pipeline layout constants
+const PL_START_X = 40;
+const PL_TIER_GAP = 90;
+const PL_NODE_W = 84;
+const PL_NODE_H = 34;
+const PL_NODE_V_SPACING = 48;
+const PL_CANVAS_H = 1000;
+const PL_NODE_OFFSET_X = 55;
+const PL_MIN_TOP = 30;
 
 // Full pipeline node definitions with tier grouping and layout positions
 const PIPELINE_TIERS = [
@@ -3376,6 +3445,10 @@ const PIPELINE_TIERS = [
   ]}
 ];
 
+// Collect all node IDs
+const ARCH_NODES = [];
+PIPELINE_TIERS.forEach(t => t.nodes.forEach(n => ARCH_NODES.push(n)));
+
 // Pipeline edges — from _PIPELINE_DEPENDENCIES
 const PIPELINE_EDGES = [
   ['input','encoder'],['encoder','vq'],['vq','meta_loop'],['input','meta_loop'],
@@ -3444,16 +3517,15 @@ const FEEDBACK_EDGE_SET = new Set([
 
 function _pipelineNodePositions() {
   const positions = {};
-  const startX = 40, tierGap = 78;
-  let colX = startX;
+  let colX = PL_START_X;
   PIPELINE_TIERS.forEach((tier, ti) => {
     const nodes = tier.nodes;
-    const tierH = nodes.length * 44;
-    const startY = Math.max(20, (950 - tierH) / 2);
+    const tierH = nodes.length * PL_NODE_V_SPACING;
+    const startY = Math.max(PL_MIN_TOP, (PL_CANVAS_H - tierH) / 2);
     nodes.forEach((n, ni) => {
-      positions[n.id] = { x: colX + 50, y: startY + ni * 44 + 18, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
+      positions[n.id] = { x: colX + PL_NODE_OFFSET_X, y: startY + ni * PL_NODE_V_SPACING + 20, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
     });
-    colX += tierGap;
+    colX += PL_TIER_GAP;
   });
   return positions;
 }
@@ -3462,9 +3534,24 @@ function buildPipeline() {
   const svg = document.getElementById('pipeline-svg');
   if (!svg) return;
   const pos = _pipelineNodePositions();
+  const tierBgsG = document.getElementById('pipeline-tier-bgs');
   const edgesG = document.getElementById('pipeline-edges');
   const nodesG = document.getElementById('pipeline-nodes');
   const labelsG = document.getElementById('pipeline-tier-labels');
+
+  // Draw tier background bands
+  let bgsHtml = '';
+  PIPELINE_TIERS.forEach(tier => {
+    const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
+    if (!tNodes.length) return;
+    const x = Math.min(...tNodes.map(n => n.x)) - (PL_NODE_W / 2 + 6);
+    const minY = Math.min(...tNodes.map(n => n.y)) - 28;
+    const maxY = Math.max(...tNodes.map(n => n.y)) + 28;
+    const w = PL_NODE_W + 16;
+    const h = maxY - minY;
+    bgsHtml += `<rect class="p-tier-bg" x="${x}" y="${minY}" width="${w}" height="${h}" rx="10" ry="10" fill="${tier.color}" opacity="0.02" stroke="${tier.color}" stroke-opacity="0.08"/>`;
+  });
+  if (tierBgsG) tierBgsG.innerHTML = bgsHtml;
 
   // Draw edges
   let edgesHtml = '';
@@ -3474,37 +3561,47 @@ function buildPipeline() {
     const key = `${from}→${to}`;
     const isFeedback = FEEDBACK_EDGE_SET.has(key);
     const cls = isFeedback ? 'p-edge feedback' : 'p-edge';
-    edgesHtml += `<path d="M${p1.x+40},${p1.y} C${p1.x+40+(p2.x-p1.x-80)*0.4},${p1.y} ${p1.x+40+(p2.x-p1.x-80)*0.6+40},${p2.y} ${p2.x-40},${p2.y}" class="${cls}" data-from="${from}" data-to="${to}" marker-end="url(#arrow)"/>`;
+    const marker = isFeedback ? 'url(#arrow-feedback)' : 'url(#arrow)';
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    let path;
+    if (Math.abs(dx) < 10) {
+      path = `M${p1.x},${p1.y + 15} L${p2.x},${p2.y - 15}`;
+    } else if (isFeedback && dx < 0) {
+      const midY = Math.min(p1.y, p2.y) - 30;
+      path = `M${p1.x},${p1.y - 15} C${p1.x},${midY} ${p2.x},${midY} ${p2.x},${p2.y - 15}`;
+    } else {
+      path = `M${p1.x + 42},${p1.y} C${p1.x + 42 + dx * 0.35},${p1.y} ${p2.x - 42 - dx * 0.15},${p2.y} ${p2.x - 42},${p2.y}`;
+    }
+    edgesHtml += `<path d="${path}" class="${cls}" data-from="${from}" data-to="${to}" marker-end="${marker}"/>`;
   });
   edgesG.innerHTML = edgesHtml;
 
   // Draw tier labels
   let labelsHtml = '';
-  const tierXs = {};
   PIPELINE_TIERS.forEach(tier => {
     const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
     if (!tNodes.length) return;
     const x = tNodes[0].x;
     const minY = Math.min(...tNodes.map(n => n.y));
-    tierXs[tier.id] = x;
-    labelsHtml += `<text x="${x}" y="${minY - 14}" class="p-tier-label" fill="${tier.color}">${tier.label}</text>`;
+    labelsHtml += `<text x="${x}" y="${minY - 18}" class="p-tier-label" fill="${tier.color}">${tier.label}</text>`;
   });
   labelsG.innerHTML = labelsHtml;
 
   // Draw nodes
   let nodesHtml = '';
-  const nodeW = 80, nodeH = 30;
   for (const [id, p] of Object.entries(pos)) {
     const tierClass = p.tier.includes('meta') || p.tier === 'executive' || p.tier === 'abstraction' || p.tier === 'metacognition' ? 'tier-meta' :
                       p.tier.includes('safety') || p.tier === 'analysis' ? 'tier-safety' :
                       p.tier.includes('memory') || p.tier === 'planning' ? 'tier-memory' :
                       p.tier.includes('causal') || p.tier === 'reasoning' ? 'tier-causal' :
                       p.tier === 'input_layer' || p.tier === 'output' ? 'tier-input' : '';
-    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - nodeW/2},${p.y - nodeH/2})">
-      <rect class="p-node-bg" width="${nodeW}" height="${nodeH}" rx="6" ry="6"/>
-      <circle class="p-node-pulse" cx="${nodeW-5}" cy="5" r="3" fill="var(--text3)" opacity="0.4"/>
-      <text class="p-node-label" x="${nodeW/2}" y="${nodeH/2 - 2}" dy="0">${p.label}</text>
-      <text class="p-node-sub" x="${nodeW/2}" y="${nodeH/2 + 8}">${p.sub}</text>
+    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - PL_NODE_W/2},${p.y - PL_NODE_H/2})">
+      <rect class="p-node-bg" width="${PL_NODE_W}" height="${PL_NODE_H}" rx="8" ry="8"/>
+      <circle class="p-node-pulse" cx="${PL_NODE_W-6}" cy="6" r="3.5" fill="var(--text3)" opacity="0.4"/>
+      <text class="p-node-label" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 - 3}" dy="0">${p.label}</text>
+      <text class="p-node-sub" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 + 8}">${p.sub}</text>
+      <text class="p-node-status" x="${PL_NODE_W/2}" y="${PL_NODE_H - 3}" data-status-id="${id}"></text>
     </g>`;
   }
   nodesG.innerHTML = nodesHtml;
@@ -3513,18 +3610,15 @@ function buildPipeline() {
 
 function pipelineSelectNode(id) {
   _pipelineSelectedNode = id;
-  // Highlight selected node
   document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => n.classList.remove('selected'));
   const node = document.querySelector(`#pipeline-nodes .p-node[data-id="${id}"]`);
   if (node) node.classList.add('selected');
 
-  // Highlight connected edges
   document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
     e.classList.remove('active');
     if (e.dataset.from === id || e.dataset.to === id) e.classList.add('active');
   });
 
-  // Show detail
   archShowDetail(id);
 }
 
@@ -3537,6 +3631,25 @@ function pipelineDeselectAll() {
 function pipelineFilter(tier, btn) {
   document.querySelectorAll('.pipeline-controls .pc-filter').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+
+  // Special filters: errors / disabled
+  if (tier === 'errors') {
+    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
+      const st = _archNodeStatusMap[n.dataset.id] || 'unknown';
+      n.style.opacity = (st === 'error' || st === 'warn') ? '1' : '0.1';
+    });
+    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => { e.style.opacity = '0.05'; });
+    return;
+  }
+  if (tier === 'disabled') {
+    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
+      const st = _archNodeStatusMap[n.dataset.id] || 'unknown';
+      n.style.opacity = (st === 'disabled' || st === 'unknown') ? '1' : '0.1';
+    });
+    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => { e.style.opacity = '0.05'; });
+    return;
+  }
+
   document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
     const pos = _pipelineNodePositions();
     const nodeId = n.dataset.id;
@@ -3590,15 +3703,24 @@ function updatePipelineHealth(modules, stageHealth) {
   if (!_pipelineBuilt) return;
   const modMap = {};
   (modules || []).forEach(m => modMap[m.name] = m);
+  _archNodeStatusMap = {};
+
+  // Determine registered module names
+  const registeredModuleNames = new Set(modules.map(m => m.name));
 
   document.querySelectorAll('#pipeline-nodes .p-node').forEach(node => {
     const id = node.dataset.id;
     const pulse = node.querySelector('.p-node-pulse');
+    const statusText = node.querySelector('.p-node-status');
     if (!pulse) return;
 
-    // Try to match module data from server
+    // Remove previous state classes
+    node.classList.remove('node-healthy','node-error','node-warn','node-disabled');
+
     const mod = modMap[id] || null;
     const sh = stageHealth ? stageHealth[id] : null;
+
+    let statusLabel = '';
 
     if (mod) {
       const healthy = !mod.has_nan && !mod.has_inf;
@@ -3606,22 +3728,40 @@ function updatePipelineHealth(modules, stageHealth) {
       if (healthy && gradOk) {
         pulse.setAttribute('fill', 'var(--green)');
         pulse.setAttribute('opacity', '1');
+        node.classList.add('node-healthy');
+        _archNodeStatusMap[id] = 'healthy';
+        statusLabel = fmtP(mod.params);
       } else if (mod.has_nan || mod.has_inf) {
         pulse.setAttribute('fill', 'var(--danger)');
         pulse.setAttribute('opacity', '1');
+        node.classList.add('node-error');
+        _archNodeStatusMap[id] = 'error';
+        statusLabel = mod.has_nan ? 'NaN!' : 'Inf!';
       } else {
         pulse.setAttribute('fill', 'var(--warn)');
         pulse.setAttribute('opacity', '1');
+        node.classList.add('node-warn');
+        _archNodeStatusMap[id] = 'warn';
+        statusLabel = 'grad⚠';
       }
     } else if (sh) {
       pulse.setAttribute('fill', sh.healthy ? 'var(--green)' : 'var(--danger)');
       pulse.setAttribute('opacity', '1');
+      _archNodeStatusMap[id] = sh.healthy ? 'healthy' : 'error';
+      node.classList.add(sh.healthy ? 'node-healthy' : 'node-error');
+      statusLabel = sh.healthy ? '✓' : '⚠';
     } else {
+      // Not found in modules — likely disabled or not initialized
       pulse.setAttribute('fill', 'var(--text3)');
-      pulse.setAttribute('opacity', '0.4');
+      pulse.setAttribute('opacity', '0.35');
+      node.classList.add('node-disabled');
+      _archNodeStatusMap[id] = 'disabled';
+      statusLabel = 'OFF';
     }
 
-    // Append param count to sub-label if available
+    if (statusText) statusText.textContent = statusLabel;
+
+    // Update sub-label with param count
     if (mod && mod.params) {
       const subText = node.querySelector('.p-node-sub');
       if (subText) {
@@ -3631,6 +3771,38 @@ function updatePipelineHealth(modules, stageHealth) {
       }
     }
   });
+
+  // Update edge styling based on node status
+  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
+    const fromSt = _archNodeStatusMap[e.dataset.from] || 'unknown';
+    const toSt = _archNodeStatusMap[e.dataset.to] || 'unknown';
+    e.classList.remove('err-edge','disabled-edge');
+    if (fromSt === 'error' || toSt === 'error') {
+      e.classList.add('err-edge');
+    } else if (fromSt === 'disabled' || toSt === 'disabled') {
+      e.classList.add('disabled-edge');
+    }
+  });
+
+  // Update diagnostic banner counts
+  let healthyCnt = 0, errCnt = 0, disabledCnt = 0;
+  for (const st of Object.values(_archNodeStatusMap)) {
+    if (st === 'healthy') healthyCnt++;
+    else if (st === 'error') errCnt++;
+    else if (st === 'warn') errCnt++;
+    else if (st === 'disabled' || st === 'unknown') disabledCnt++;
+  }
+  const chEl = document.getElementById('arch-cnt-healthy');
+  if (chEl) chEl.textContent = healthyCnt;
+  const ceEl = document.getElementById('arch-cnt-errors');
+  if (ceEl) { ceEl.textContent = errCnt; ceEl.style.color = errCnt > 0 ? 'var(--danger)' : 'var(--green)'; }
+  const cdEl = document.getElementById('arch-cnt-disabled');
+  if (cdEl) cdEl.textContent = disabledCnt;
+  // Update status card classes
+  const adcErr = document.getElementById('adc-errors');
+  if (adcErr) { adcErr.className = 'arch-diag-card' + (errCnt > 0 ? ' adc-err' : ' adc-ok'); }
+  const adcDis = document.getElementById('adc-disabled');
+  if (adcDis) { adcDis.className = 'arch-diag-card' + (disabledCnt > 0 ? ' adc-warn' : ' adc-ok'); }
 }
 
 function resetArchPipeline() {
@@ -3644,11 +3816,25 @@ function resetArchPipeline() {
   const summary = document.getElementById('arch-summary');
   if(summary) summary.textContent = 'Initialize model first';
   _archData = null;
+  _archDiagData = null;
+  _archNodeStatusMap = {};
+  // Reset banner
+  ['arch-sys-status','arch-cnt-healthy','arch-cnt-errors','arch-cnt-disabled','arch-cnt-gaps','arch-wiring-pct','arch-unity-score'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.textContent = '—';
+  });
+  const ssEl = document.getElementById('arch-sys-status'); if(ssEl) ssEl.style.color = 'var(--text3)';
+  document.getElementById('arch-gaps-card').style.display = 'none';
   // Reset pipeline node pulses
   if (_pipelineBuilt) {
     document.querySelectorAll('#pipeline-nodes .p-node-pulse').forEach(p => {
       p.setAttribute('fill', 'var(--text3)');
       p.setAttribute('opacity', '0.4');
+    });
+    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
+      n.classList.remove('node-healthy','node-error','node-warn','node-disabled');
+    });
+    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
+      e.classList.remove('err-edge','disabled-edge');
     });
   }
 }
@@ -3664,23 +3850,53 @@ function fmtP(n) {
   return n > 1e6 ? (n/1e6).toFixed(2)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
 }
 
+function _findGapsForNode(name) {
+  if (!_archDiagData || !_archDiagData.gaps) return [];
+  const nameClean = name.toLowerCase().replace(/_/g, '');
+  return _archDiagData.gaps.filter(g => {
+    const comp = (g.component || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return comp.includes(nameClean) || nameClean.includes(comp.slice(0, Math.max(6, comp.length)));
+  });
+}
+
+function _renderGapHtml(gaps) {
+  if (!gaps.length) return '';
+  let html = '<div style="margin-top:8px;padding:8px;background:var(--warn-dim);border-radius:6px;border-left:3px solid var(--warn)">';
+  html += '<div style="font-size:9px;color:var(--warn);text-transform:uppercase;margin-bottom:4px;font-weight:600">Diagnostic Gaps</div>';
+  gaps.forEach(g => {
+    html += `<div style="font-size:10px;color:var(--text2);margin-bottom:2px">${escHtml(g.gap || '')}</div>`;
+    if (g.remediation) html += `<div style="font-size:9px;color:var(--green)">Fix: ${escHtml(g.remediation)}</div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
+function _classifyGapSeverity(gap) {
+  const text = gap.gap || '';
+  if (text.includes(' is None') || text.includes('not initialized')) return 'critical';
+  if (text.includes('disabled') || text.includes('not enabled') || text.includes('not wired')) return 'high';
+  return 'warning';
+}
+
 function archShowDetail(name) {
   if (!_archData) {
-    // Show static pipeline info even without model data
     const card = document.getElementById('arch-detail-card');
     card.style.display = '';
     document.getElementById('arch-detail-title').textContent = name;
-    // Find tier info
     let tierInfo = '';
     for (const tier of PIPELINE_TIERS) {
       const node = tier.nodes.find(n => n.id === name);
       if (node) { tierInfo = `<div style="margin-bottom:6px"><span style="color:var(--text3)">Tier:</span> <span style="color:${tier.color}">${tier.label}</span> · <span style="color:var(--text3)">Role:</span> ${node.sub}</div>`; break; }
     }
-    // Count connections
     const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
     const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
+    const nodeStatus = _archNodeStatusMap[name] || 'unknown';
+    const statusBadge = nodeStatus === 'disabled' ? '<span style="color:var(--text3);border:1px solid var(--text3);padding:1px 6px;border-radius:4px;font-size:9px">DISABLED</span>' :
+                        nodeStatus === 'error' ? '<span style="color:var(--danger);border:1px solid var(--danger);padding:1px 6px;border-radius:4px;font-size:9px">ERROR</span>' :
+                        '<span style="color:var(--border2);border:1px solid var(--border2);padding:1px 6px;border-radius:4px;font-size:9px">UNINIT</span>';
     document.getElementById('arch-detail-content').innerHTML = `
       ${tierInfo}
+      <div style="margin-bottom:6px"><span style="color:var(--text3)">Status:</span> ${statusBadge}</div>
       <div style="margin-bottom:6px"><span style="color:var(--text3)">Upstream (${upstream.length}):</span> <span style="color:var(--accent)">${upstream.join(', ') || 'none'}</span></div>
       <div><span style="color:var(--text3)">Downstream (${downstream.length}):</span> <span style="color:var(--green)">${downstream.join(', ') || 'none'}</span></div>
       <div style="margin-top:8px;color:var(--text3);font-style:italic">Initialize model for parameter & health details</div>
@@ -3689,7 +3905,6 @@ function archShowDetail(name) {
   }
   const m = (_archData.modules || []).find(x => x.name === name);
   if (!m) {
-    // Node exists in pipeline but not as a direct named_children module
     const card = document.getElementById('arch-detail-card');
     card.style.display = '';
     document.getElementById('arch-detail-title').textContent = name;
@@ -3700,22 +3915,37 @@ function archShowDetail(name) {
       const node = tier.nodes.find(n => n.id === name);
       if (node) { tierInfo = `<span style="color:${tier.color}">${tier.label}</span> · ${node.sub}`; break; }
     }
+    const nodeStatus = _archNodeStatusMap[name] || 'unknown';
+    const isDisabled = nodeStatus === 'disabled' || nodeStatus === 'unknown';
+    const gapHtml = _renderGapHtml(_findGapsForNode(name));
     document.getElementById('arch-detail-content').innerHTML = `
       <div style="margin-bottom:6px"><span style="color:var(--text3)">Tier:</span> ${tierInfo}</div>
+      <div style="margin-bottom:6px"><span style="color:var(--text3)">Status:</span> ${isDisabled
+        ? '<span style="padding:2px 8px;border-radius:4px;font-size:9px;background:var(--surface3);color:var(--text3);border:1px solid var(--border)">◌ DISABLED / NOT ENABLED</span>'
+        : '<span style="padding:2px 8px;border-radius:4px;font-size:9px;background:var(--green-dim);color:var(--green);border:1px solid rgba(16,185,129,0.3)">ACTIVE</span>'}</div>
       <div style="margin-bottom:6px"><span style="color:var(--text3)">Upstream (${upstream.length}):</span> <span style="color:var(--accent)">${upstream.join(', ')}</span></div>
       <div><span style="color:var(--text3)">Downstream (${downstream.length}):</span> <span style="color:var(--green)">${downstream.join(', ')}</span></div>
-      <div style="margin-top:8px;color:var(--text3)">This is a logical pipeline stage (sub-component or internal module)</div>
+      ${isDisabled ? '<div style="margin-top:8px;padding:6px 10px;background:var(--surface3);border-radius:6px;font-size:10px;color:var(--text3)">This module is not enabled in the current configuration. Enable the corresponding flag to activate it.</div>' : ''}
+      ${gapHtml}
     `;
     return;
   }
   const card = document.getElementById('arch-detail-card');
   card.style.display = '';
+  const nodeStatus = _archNodeStatusMap[name] || 'healthy';
+  const statusBadge = nodeStatus === 'error'
+    ? '<span style="padding:2px 8px;border-radius:4px;font-size:9px;background:var(--danger-dim);color:var(--danger);border:1px solid rgba(239,68,68,0.3)">⚠ ERROR</span>'
+    : nodeStatus === 'warn'
+    ? '<span style="padding:2px 8px;border-radius:4px;font-size:9px;background:var(--warn-dim);color:var(--warn);border:1px solid rgba(245,158,11,0.3)">⚠ WARNING</span>'
+    : '<span style="padding:2px 8px;border-radius:4px;font-size:9px;background:var(--green-dim);color:var(--green);border:1px solid rgba(16,185,129,0.3)">✓ HEALTHY</span>';
   document.getElementById('arch-detail-title').textContent = `${m.name} (${m.type})`;
   const ws = m.weight_stats || {};
   const gs = m.grad_stats || {};
   const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
   const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
+  const gapHtml = _renderGapHtml(_findGapsForNode(name));
   document.getElementById('arch-detail-content').innerHTML = `
+    <div style="margin-bottom:8px">${statusBadge}</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
       <div><span style="color:var(--text3)">Params:</span> <span style="color:var(--accent)">${fmtP(m.params)}</span></div>
       <div><span style="color:var(--text3)">Trainable:</span> <span style="color:var(--green)">${fmtP(m.trainable)}</span></div>
@@ -3747,6 +3977,7 @@ function archShowDetail(name) {
         <div><span style="color:var(--text3)">grad NaN:</span> ${gs.has_nan?'<span style="color:var(--danger)">YES</span>':'<span style="color:var(--green)">No</span>'}</div>
       </div>
     </div>` : '<div style="color:var(--text3)">No gradients available (run training first)</div>'}
+    ${gapHtml}
   `;
 }
 
@@ -3775,6 +4006,19 @@ async function loadArch() {
     if (!_pipelineBuilt) buildPipeline();
     updatePipelineHealth(modules, stageHealth);
 
+    // System status banner
+    const errCount = parseInt(document.getElementById('arch-cnt-errors')?.textContent) || 0;
+    const disCount = parseInt(document.getElementById('arch-cnt-disabled')?.textContent) || 0;
+    const ssEl = document.getElementById('arch-sys-status');
+    const ssSub = document.getElementById('arch-sys-status-sub');
+    if (ssEl) {
+      if (errCount > 0) { ssEl.textContent = 'ERROR'; ssEl.style.color = 'var(--danger)'; if(ssSub) ssSub.textContent = `${errCount} module(s) with errors`; }
+      else if (disCount > 0) { ssEl.textContent = 'PARTIAL'; ssEl.style.color = 'var(--warn)'; if(ssSub) ssSub.textContent = `${disCount} disabled module(s)`; }
+      else { ssEl.textContent = 'HEALTHY'; ssEl.style.color = 'var(--green)'; if(ssSub) ssSub.textContent = 'all modules operational'; }
+    }
+    const adcSt = document.getElementById('adc-status');
+    if (adcSt) { adcSt.className = 'arch-diag-card' + (errCount > 0 ? ' adc-err' : disCount > 0 ? ' adc-warn' : ' adc-ok'); }
+
     // Module table (extended)
     const total = d.total_parameters || 1;
     const tbody = document.querySelector('#arch-mod-tbl tbody');
@@ -3801,7 +4045,7 @@ async function loadArch() {
       shDiv.innerHTML = shEntries.map(([k, sh]) => {
         const clr = sh.healthy ? 'var(--green)' : 'var(--danger)';
         const icon = sh.healthy ? '✓' : (sh.has_nan ? '⚠ NaN' : sh.has_inf ? '⚠ Inf' : '⚠');
-        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center;cursor:pointer" onclick="pipelineSelectNode('${k}')">
+        return `<div style="background:var(--surface);border:1px solid ${sh.healthy ? 'var(--border)' : 'rgba(239,68,68,0.3)'};border-radius:8px;padding:8px;text-align:center;cursor:pointer;transition:border-color 0.2s" onclick="pipelineSelectNode('${k}')">
           <div style="font-size:9px;color:var(--text3);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${sh.label || k}">${sh.label || k}</div>
           <div style="font-size:13px;font-weight:700;color:${clr}">${icon}</div>
           <div style="font-size:8px;color:var(--text3);margin-top:3px">${fmtP(sh.params)} · ${sh.memory_mb?.toFixed(1)} MB</div>
@@ -3810,7 +4054,75 @@ async function loadArch() {
     }
   } catch(e) { log('ERROR', 'arch', e.message); }
 
-  // Cognitive Unity & Architectural Health (supplementary diagnostics)
+  // Load extended diagnostics in parallel
+  await loadArchDiagnostics();
+}
+
+async function loadArchDiagnostics() {
+  // Cognitive Activation endpoint — combines self_diagnostic + cognitive_unity + pipeline_wiring + architectural_health
+  try {
+    const ca = await api('GET', '/api/cognitive_activation');
+    if (ca && ca.ok) {
+      _archDiagData = {
+        gaps: (ca.critical_patches || []).map(p => ({ component: p.component, gap: p.gap, remediation: p.remediation })),
+        wiring_coverage: ca.integration_map?.wiring_coverage,
+        connected: ca.integration_map?.connected_paths,
+        isolated: ca.integration_map?.isolated_paths,
+        missing_edges: ca.integration_map?.missing_edges,
+        system_unified: ca.system_unified,
+        unity_score: ca.cognitive_unity_score,
+        health_score: ca.overall_health_score,
+        activation: ca.activation_sequence,
+        recommendations: ca.recommendations,
+      };
+
+      // Update banner cards
+      const gapEl = document.getElementById('arch-cnt-gaps');
+      const gapSub = document.getElementById('arch-gaps-sub');
+      const gaps = _archDiagData.gaps || [];
+      if (gapEl) { gapEl.textContent = gaps.length; gapEl.style.color = gaps.length > 0 ? 'var(--warn)' : 'var(--green)'; }
+      if (gapSub) gapSub.textContent = gaps.length > 0 ? `${gaps.length} issue(s) found` : 'no gaps';
+      const adcGap = document.getElementById('adc-gaps');
+      if (adcGap) { adcGap.className = 'arch-diag-card' + (gaps.length > 0 ? ' adc-warn' : ' adc-ok'); }
+
+      // Wiring
+      const wirEl = document.getElementById('arch-wiring-pct');
+      const wirSub = document.getElementById('arch-wiring-sub');
+      if (wirEl && _archDiagData.wiring_coverage != null) {
+        const wPct = (_archDiagData.wiring_coverage * 100).toFixed(1);
+        wirEl.textContent = wPct + '%';
+        wirEl.style.color = _archDiagData.wiring_coverage >= 0.9 ? 'var(--green)' : _archDiagData.wiring_coverage >= 0.5 ? 'var(--warn)' : 'var(--danger)';
+      }
+      if (wirSub) wirSub.textContent = `${_archDiagData.connected || 0} connected · ${_archDiagData.isolated || 0} isolated`;
+
+      // Unity
+      const uniEl = document.getElementById('arch-unity-score');
+      if (uniEl && _archDiagData.unity_score != null) {
+        const uPct = (_archDiagData.unity_score * 100).toFixed(1);
+        uniEl.textContent = uPct + '%';
+        uniEl.style.color = _archDiagData.unity_score >= 0.8 ? 'var(--green)' : _archDiagData.unity_score >= 0.5 ? 'var(--warn)' : 'var(--danger)';
+      }
+      const adcUni = document.getElementById('adc-unity');
+      if (adcUni) { adcUni.className = 'arch-diag-card' + (_archDiagData.system_unified ? ' adc-ok' : ''); }
+
+      // Show gaps card if there are gaps
+      if (gaps.length > 0) {
+        const gapsCard = document.getElementById('arch-gaps-card');
+        gapsCard.style.display = '';
+        const gapsContent = document.getElementById('arch-gaps-content');
+        gapsContent.innerHTML = gaps.map(g => {
+          const severity = _classifyGapSeverity(g);
+          return `<div class="arch-gap-item${severity === 'critical' ? ' critical' : ''}">
+            <div class="agi-comp">${escHtml(g.component || 'unknown')}</div>
+            <div class="agi-text">${escHtml(g.gap || '')}</div>
+            ${g.remediation ? `<div class="agi-fix">→ ${escHtml(g.remediation)}</div>` : ''}
+          </div>`;
+        }).join('');
+      }
+    }
+  } catch(e) { /* cognitive activation not available — try individual endpoints */ }
+
+  // Cognitive Unity (supplementary)
   try {
     const cu = await api('GET', '/api/cognitive_unity');
     const cuEl = document.getElementById('arch-cog-unity');
@@ -3838,6 +4150,7 @@ async function loadArch() {
     }
   } catch(e) { /* cognitive unity not available */ }
 
+  // Architectural Health
   try {
     const ah = await api('GET', '/api/architectural_health');
     const ahEl = document.getElementById('arch-health-detail');
