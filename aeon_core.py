@@ -43745,6 +43745,43 @@ class AEONDeltaV3(nn.Module):
                     )
                 _signals['error_evolution_pressure'] = _ee_pressure
 
+        # --- Register reinforcement in coherence registry so the
+        # cross-pass ledger tracks whether the mutual-reinforcement
+        # cycle itself is functioning.  Without this, the coherence
+        # registry only records forward-pass subsystem outputs,
+        # leaving verify_and_reinforce invisible to coverage-deficit
+        # tracking and preventing the registry from detecting that
+        # the reinforcement cycle is healthy or degraded. ---
+        if self.coherence_registry is not None:
+            self.coherence_registry.register_output(
+                "verify_and_reinforce",
+                validated=report.get('coherent', True),
+                quality=_overall_score,
+            )
+
+        # --- Sync _cached_cognitive_unity_deficit so the next forward
+        # pass's uncertainty escalation (COGNITIVE UNITY → UNCERTAINTY
+        # ESCALATION block) immediately reflects the reinforcement
+        # cycle's assessment.  Previously, out-of-band reinforcement
+        # (e.g. via the /api/verify_and_reinforce endpoint) updated
+        # the feedback bus signals but left _cached_cognitive_unity_deficit
+        # stale, causing the next forward pass to use an outdated
+        # deficit value for its in-pass uncertainty boost. ---
+        self._cached_cognitive_unity_deficit = max(
+            0.0, min(1.0, 1.0 - _overall_score),
+        )
+
+        # --- Refresh _cached_low_quality_subsystems from the coherence
+        # registry so that the feedback bus's low_quality_subsystem_pressure
+        # signal stays current after out-of-band reinforcement.  Without
+        # this, the low-quality subsystem cache only updates during forward
+        # passes (via UCC results), leaving the feedback bus unaware of
+        # quality degradation detected between forward passes. ---
+        if self.coherence_registry is not None:
+            self._cached_low_quality_subsystems = (
+                self.coherence_registry.get_low_quality_subsystems()
+            )
+
         report['reinforcement_actions'] = reinforcement_actions
         return report
 
@@ -44168,6 +44205,16 @@ class AEONDeltaV3(nn.Module):
                     "Cognitive activation: registered %d expected "
                     "subsystems in coherence registry", _cr_seeded,
                 )
+
+        # 10. Register verify_and_reinforce as an expected subsystem
+        # in the coherence registry so that its periodic output
+        # (registered in verify_and_reinforce()) is tracked alongside
+        # forward-pass subsystem outputs.  Without this, the
+        # reinforcement cycle is invisible to the registry's coverage
+        # deficit calculation, preventing the system from detecting
+        # when mutual reinforcement has not been running.
+        if _cr is not None and 'verify_and_reinforce' not in _cr._expected:
+            _cr._expected.add('verify_and_reinforce')
 
         # Track that the cognitive activation probe has completed —
         # used by self_diagnostic() to distinguish pre-activation
