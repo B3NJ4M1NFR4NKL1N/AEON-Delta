@@ -40555,6 +40555,30 @@ class AEONDeltaV3(nn.Module):
             'memory_validation': 'enable_hierarchical_memory',
             'deception_suppressor': 'enable_deception_suppressor',
             'complexity_estimator': 'enable_complexity_estimator',
+            'safety': 'enable_safety_guardrails',
+            'self_report': 'enable_safety_guardrails',
+            'topology_analysis': 'enable_catastrophe_detection',
+            'diversity_analysis': 'enable_catastrophe_detection',
+            'cognitive_executive': 'enable_cognitive_executive',
+            'metacognitive_executive': 'enable_cognitive_executive',
+        }
+        # Transitive config dependencies: modules that are gated not only
+        # by their own config flag but also by prerequisite modules that
+        # are themselves config-gated.  For example, cognitive_executive
+        # requires ≥2 subsystems (safety, diversity, topology), so if
+        # enable_safety_guardrails and enable_catastrophe_detection are
+        # both False, cognitive_executive is transitively config-disabled
+        # even though enable_cognitive_executive=True.
+        _TRANSITIVE_CONFIG_FLAGS: Dict[str, List[str]] = {
+            'cognitive_executive': [
+                'enable_safety_guardrails',
+                'enable_catastrophe_detection',
+            ],
+            'metacognitive_executive': [
+                'enable_safety_guardrails',
+                'enable_catastrophe_detection',
+            ],
+            'deception_suppressor': ['enable_safety_guardrails'],
         }
         for _missing in _wiring.get('missing_edges', []):
             _edge = _missing['edge']
@@ -40569,6 +40593,20 @@ class AEONDeltaV3(nn.Module):
                     _node, f'enable_{_attr}',
                 )
                 if hasattr(self.config, _enable_flag) and not getattr(self.config, _enable_flag, True):
+                    _is_config_disabled = True
+                    break
+                # Check transitive config dependencies: a module is
+                # config-disabled if ALL of its prerequisite config
+                # flags are False, meaning none of its required
+                # prerequisites are active.
+                _trans_flags = _TRANSITIVE_CONFIG_FLAGS.get(_node)
+                if (_trans_flags
+                        and getattr(self, _attr, None) is None
+                        and all(
+                            not getattr(self.config, f, True)
+                            for f in _trans_flags
+                            if hasattr(self.config, f)
+                        )):
                     _is_config_disabled = True
                     break
             if _is_config_disabled:
@@ -43717,6 +43755,51 @@ class AEONDeltaV3(nn.Module):
                     "Cognitive activation: primed %d feedback bus "
                     "signals with baseline values", _primed_count,
                 )
+
+        # 7. UPB-provenance DAG alignment — register UPB critical
+        # edges in the provenance dependency DAG so that uncertainty
+        # cascades and root-cause attribution operate on the same
+        # graph.  Without this alignment, verify_cognitive_unity()
+        # reports UPB misalignment because the UPB's critical edges
+        # reference module pairs that the provenance tracker has not
+        # recorded, creating a gap where uncertainty propagation
+        # targets modules that root-cause analysis cannot trace.
+        _upb = getattr(self, 'uncertainty_propagation', None)
+        if _upb is not None:
+            _upb_critical = getattr(_upb, '_critical_edges', set()) or set()
+            _upb_registered = 0
+            for _edge in _upb_critical:
+                if isinstance(_edge, (tuple, list)) and len(_edge) == 2:
+                    _src, _tgt = _edge
+                    self.provenance_tracker.record_dependency(_src, _tgt)
+                    _upb_registered += 1
+            if _upb_registered > 0:
+                logger.info(
+                    "Cognitive activation: registered %d UPB critical "
+                    "edges in provenance DAG for alignment",
+                    _upb_registered,
+                )
+
+        # 8. Init-time mutual reinforcement — run verify_and_reinforce()
+        # to close the mutual reinforcement loop at initialization.
+        # This ensures that any architectural weaknesses identified by
+        # the diagnostic are immediately fed back into error evolution
+        # and metacognitive trigger weights, satisfying the requirement
+        # that "active components verify and stabilize each other's
+        # states" from the moment the system is constructed.
+        try:
+            _reinforce = self.verify_and_reinforce()
+            _actions = _reinforce.get('reinforcement_actions', [])
+            if _actions:
+                logger.info(
+                    "Cognitive activation: verify_and_reinforce applied "
+                    "%d reinforcement action(s)", len(_actions),
+                )
+        except Exception as _vr_err:
+            logger.debug(
+                "Cognitive activation: verify_and_reinforce skipped: %s",
+                _vr_err,
+            )
 
         # Track that the cognitive activation probe has completed —
         # used by self_diagnostic() to distinguish pre-activation

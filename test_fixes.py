@@ -56791,6 +56791,8 @@ def test_self_diagnostic_separates_config_disabled_gaps():
         vocab_size=1000, hidden_dim=64, z_dim=64,
         vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
         device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
     )
     model = AEONDeltaV3(config)
     diag = model.self_diagnostic()
@@ -56799,10 +56801,10 @@ def test_self_diagnostic_separates_config_disabled_gaps():
         "self_diagnostic should include config_disabled_gaps"
     )
     assert 'config_disabled_gap_count' in diag
-    # With default config (many modules disabled), config_disabled_gaps
+    # With safety + catastrophe disabled, config_disabled_gaps
     # should be non-empty
     assert diag['config_disabled_gap_count'] > 0, (
-        "Default config should have config-disabled gaps"
+        "Config with disabled modules should have config-disabled gaps"
     )
     # True gaps should be much fewer than the total wiring gaps
     # (most are config-disabled, not structural defects)
@@ -56823,6 +56825,8 @@ def test_self_diagnostic_config_disabled_gaps_have_remediation():
         vocab_size=1000, hidden_dim=64, z_dim=64,
         vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
         device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
     )
     model = AEONDeltaV3(config)
     diag = model.self_diagnostic()
@@ -72423,6 +72427,138 @@ def test_cognitive_activation_seeded_states_shape():
             f"{attr} shape should be (1, 256), got {state.shape}"
         )
     print("✅ test_cognitive_activation_seeded_states_shape PASSED")
+
+
+def test_cognitive_activation_upb_provenance_alignment():
+    """Cognitive activation probe aligns UPB critical edges with provenance DAG."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    upb = getattr(model, 'uncertainty_propagation', None)
+    assert upb is not None, "UPB should be initialized"
+    critical_edges = getattr(upb, '_critical_edges', set()) or set()
+    prov_deps = model.provenance_tracker.get_dependency_graph()
+
+    # Build provenance edge set
+    prov_edge_set = set()
+    for target, sources in prov_deps.items():
+        if isinstance(sources, (set, list)):
+            for src in sources:
+                prov_edge_set.add((src, target))
+
+    # Most UPB critical edges should be in provenance DAG
+    aligned = sum(1 for e in critical_edges if e in prov_edge_set)
+    total = len(critical_edges)
+    assert total > 0, "UPB should have critical edges"
+    coverage = aligned / max(total, 1)
+    assert coverage >= 0.8, (
+        f"At least 80% of UPB critical edges should be in provenance DAG, "
+        f"got {coverage:.0%} ({aligned}/{total})"
+    )
+    print("✅ test_cognitive_activation_upb_provenance_alignment PASSED")
+
+
+def test_cognitive_activation_verify_and_reinforce_at_init():
+    """Cognitive activation probe runs verify_and_reinforce at init."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # verify_and_reinforce() records error episodes and adjusts
+    # metacognitive trigger weights.  After init, the error_evolution
+    # should have at least attempted processing.
+    assert getattr(model, '_cognitive_activation_complete', False), (
+        "Cognitive activation should be complete after init"
+    )
+
+    # The verify_and_reinforce call should leave the system in a
+    # self-consistent state where mutual reinforcement has been
+    # attempted.
+    report = model.architectural_coherence_report()
+    assert 'coherent' in report, (
+        "architectural_coherence_report should have 'coherent' key"
+    )
+    assert 'axioms' in report, (
+        "architectural_coherence_report should have 'axioms' key"
+    )
+    print("✅ test_cognitive_activation_verify_and_reinforce_at_init PASSED")
+
+
+def test_config_disabled_transitive_classification():
+    """Pipeline gaps from transitively config-disabled modules should be
+    classified as config-disabled, not as true architectural defects."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    # cognitive_executive depends on safety + catastrophe modules;
+    # with both disabled, cognitive_executive is transitively disabled.
+    # Its pipeline gaps should be in config_disabled_gaps, not gaps.
+    _pipeline_gaps = [
+        g for g in diag['gaps'] if g['component'] == 'pipeline_wiring'
+    ]
+    for gap in _pipeline_gaps:
+        gap_text = gap.get('gap', '')
+        assert 'cognitive_executive' not in gap_text, (
+            f"cognitive_executive pipeline gap should be config-disabled, "
+            f"but found in true gaps: {gap_text[:80]}"
+        )
+    print("✅ test_config_disabled_transitive_classification PASSED")
+
+
+def test_self_diagnostic_warmup_with_disabled_modules():
+    """self_diagnostic reports 'warmup' (not 'critical') when gaps are
+    all from config-disabled modules and cold-start artifacts."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+
+    assert diag['status'] in ('warmup', 'healthy'), (
+        f"Expected 'warmup' or 'healthy' when only config-disabled and "
+        f"cold-start gaps remain, got '{diag['status']}'. "
+        f"True gaps: {[g['gap'][:60] for g in diag.get('gaps', [])]}"
+    )
+    print("✅ test_self_diagnostic_warmup_with_disabled_modules PASSED")
+
+
+def test_cognitive_unity_upb_aligned_after_probe():
+    """verify_cognitive_unity reports UPB-provenance alignment after
+    the cognitive activation probe registers critical edges."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+
+    rc = unity.get('root_cause_traceability', {})
+    misaligned = rc.get('upb_misaligned_edges', [])
+    # After probe, at most 1 edge may be misaligned (due to cycle removal)
+    assert len(misaligned) <= 1, (
+        f"Expected at most 1 UPB misaligned edge after probe, "
+        f"got {len(misaligned)}: {misaligned}"
+    )
+    print("✅ test_cognitive_unity_upb_aligned_after_probe PASSED")
 
 
 def test_total_test_count_exceeds_2500():
