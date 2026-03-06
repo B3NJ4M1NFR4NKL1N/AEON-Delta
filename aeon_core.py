@@ -16631,6 +16631,11 @@ class MetaCognitiveRecursionTrigger:
             # Metacognitive gap — a gap in the metacognitive
             # coverage was detected during self-diagnostic.
             "metacognitive_gap": "uncertainty",
+            # Pipeline wiring gap — the verify_and_reinforce cycle
+            # detected that pipeline wiring coverage is below
+            # threshold, indicating disabled or missing modules in
+            # declared dependency edges.
+            "pipeline_wiring_gap": "coherence_deficit",
             # Memory routing irrelevance — the routing policy selected
             # memory subsystems that returned results with low relevance
             # to the query, indicating routing miscalibration.
@@ -17691,6 +17696,10 @@ class CausalErrorEvolutionTracker:
         # detected during self-diagnostic.  Maps to lambda_ucc so
         # training adapts to persistent metacognitive blindspots.
         "metacognitive_gap": "lambda_ucc",
+        # Pipeline wiring gap — verify_and_reinforce detected wiring
+        # coverage below threshold.  Maps to lambda_coherence so
+        # training adapts to persistent pipeline wiring deficits.
+        "pipeline_wiring_gap": "lambda_coherence",
         # Memory routing irrelevance — routing returned results with low
         # relevance, maps to lambda_coherence so training adapts to
         # persistent memory routing miscalibration.
@@ -42203,6 +42212,25 @@ class AEONDeltaV3(nn.Module):
                 'coverage_deficit': _registry.get_coverage_deficit(),
             }
 
+        # --- Causal trace recording for wiring assessment ---
+        # Record the pipeline wiring assessment in the causal trace so
+        # that root-cause analysis can explain which pipeline edges were
+        # verified and which were missing.  Without this, wiring
+        # verification results live only in the audit log and return
+        # value, making them invisible to trace_root_cause() and
+        # violating the causal transparency requirement.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "verify_pipeline_wiring", "assessment",
+                metadata={
+                    'wiring_coverage': coverage,
+                    'verified_count': len(verified_edges),
+                    'missing_count': len(missing_edges),
+                    'dag_acyclic': dag_validation.get('is_acyclic', True),
+                    'provenance_coverage': _provenance_coverage,
+                },
+            )
+
         return {
             'total_edges': total,
             'verified_edges': verified_edges,
@@ -43694,6 +43722,34 @@ class AEONDeltaV3(nn.Module):
                     'monitor training convergence on this subsystem'
                 ),
             })
+        # Pipeline wiring coverage — when verified pipeline edges fall
+        # below full coverage, the system has structural gaps where
+        # modules declared in _PIPELINE_DEPENDENCIES are not
+        # instantiated, leaving data-flow paths unverified.  Surfacing
+        # this as an actionable gap ensures wiring deficits are visible
+        # alongside the three AGI axioms, closing the gap where wiring
+        # issues were only surfaced as general recommendations in
+        # get_architectural_health().
+        _wiring_cov = health.get('pipeline_wiring_coverage', 1.0)
+        if _wiring_cov < 1.0:
+            _wiring = health.get('cognitive_unity', {}).get(
+                'mutual_verification', {},
+            )
+            _n_missing = _wiring.get(
+                'active_modules', 0,
+            ) - _wiring.get('verified_modules', 0)
+            actionable_gaps.append({
+                'axiom': 'pipeline_wiring',
+                'gap': (
+                    f'Pipeline wiring coverage at {_wiring_cov:.0%} — '
+                    f'{max(0, _n_missing)} module(s) in declared '
+                    f'dependencies lack instantiated counterparts'
+                ),
+                'remediation': (
+                    'Enable missing modules via AEONConfig or remove '
+                    'unused edges from _PIPELINE_DEPENDENCIES'
+                ),
+            })
 
         _overall = health.get('overall_health_score', 0.0)
         _coherent = health.get('healthy', False)
@@ -43792,6 +43848,46 @@ class AEONDeltaV3(nn.Module):
             reinforcement_actions.append(
                 f'Recorded provenance_chain_incomplete episode '
                 f'(rc_score={rc_score:.2f})'
+            )
+
+        # --- Feed low wiring coverage into error evolution ---
+        # When pipeline wiring coverage is below the threshold, record a
+        # pipeline_wiring_gap episode so the error evolution tracker
+        # learns from recurring wiring deficits and the metacognitive
+        # trigger adapts its sensitivity.  This closes the gap where
+        # wiring deficits were diagnosed (via architectural_coherence_report
+        # → get_architectural_health → verify_pipeline_wiring) but never
+        # fed back into the system's learning loop — only the three axiom
+        # scores triggered error evolution episodes while wiring gaps
+        # silently accumulated as recommendations.
+        _wiring_cov = report.get('axioms', {}).get(
+            'mutual_verification', {},
+        ).get('score', 1.0)
+        # Also check the wiring-specific coverage from health report.
+        _health_report = getattr(report, '_health', None)
+        if _health_report is None:
+            # The architectural_coherence_report stores pipeline wiring
+            # coverage in the overall health score's wiring component.
+            # Access it from the report's internal health call.
+            try:
+                _wiring_result = self.verify_pipeline_wiring()
+                _pipeline_wiring_cov = _wiring_result.get(
+                    'wiring_coverage', 1.0,
+                )
+            except Exception:
+                _pipeline_wiring_cov = 1.0
+        else:
+            _pipeline_wiring_cov = 1.0
+        if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='pipeline_wiring_gap',
+                strategy_used='verify_and_reinforce_wiring',
+                success=_pipeline_wiring_cov >= 0.5,
+                metadata={'pipeline_wiring_coverage': _pipeline_wiring_cov},
+            )
+            reinforcement_actions.append(
+                f'Recorded pipeline_wiring_gap episode '
+                f'(wiring_coverage={_pipeline_wiring_cov:.2f})'
             )
 
         # --- Boost metacognitive trigger sensitivity for low-scoring
