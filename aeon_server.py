@@ -865,7 +865,7 @@ async def trigger_verify_and_reinforce():
 async def get_system_emergence():
     """Return the unified system emergence report.
 
-    Produces the three deliverables required by the Final Integration &
+    Produces the four deliverables required by the Final Integration &
     Cognitive Activation task:
 
     1. **Integration Map** — connected vs. isolated critical paths with
