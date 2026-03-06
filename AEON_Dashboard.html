@@ -2383,6 +2383,7 @@ const WS_URL = API.replace(/^http/, 'ws') + '/ws';
 // ─── STATE ────────────────────────────────────────────────────────────────────
 const S = {
   connected: false, modelReady: false, ws: null,
+  device: 'auto',
   logEntries: [], logFilters: new Set(['INFO','WARN','WARNING','ERROR','DEBUG','SUCCESS']),
   logPaused: false, logBadge: 0, activePanel: 'dashboard',
   trainHistory: {loss: [], val: [], epochs: []},
@@ -2622,6 +2623,7 @@ function applyStatus(d) {
     S.modelReady = d.model_ready;
     updateModelState(d.model_ready);
   }
+  if(d.selected_device) { S.device = d.selected_device; }
   const devStr = document.getElementById('dev-str');
   if(devStr) devStr.textContent = d.cuda_device_name || d.device || (d.cuda_available ? 'CUDA' : 'CPU');
 }
@@ -2636,7 +2638,7 @@ function updateModelState(ready) {
     initBtn && (initBtn.style.display = 'none');
     deinitBtn && (deinitBtn.style.display = '');
     dashInitBtn && (dashInitBtn.textContent = '⚡ Re-init');
-    if(infStatus) { infStatus.className = 'badge bg'; infStatus.textContent = 'model ready'; }
+    if(infStatus) { infStatus.className = 'badge bg'; infStatus.textContent = 'model ready · device=' + S.device; }
   } else {
     initBtn && (initBtn.style.display = '');
     deinitBtn && (deinitBtn.style.display = 'none');
@@ -2775,6 +2777,7 @@ async function initModel() {
     document.getElementById('init-step-lbl').textContent = `✅ ${d.parameters?.toLocaleString()} params · device=${d.device}`;
 
     S.modelReady = true;
+    S.device = d.device || 'cpu';
     updateModelState(true);
     setTimeout(() => { prog.style.display = 'none'; refreshDash(); }, 1200);
     log('SUCCESS', 'init', `Model initialized · ${d.parameters?.toLocaleString()} params · ${d.enabled_flags?.length || 0} subsystems · device=${d.device}`);
@@ -2793,6 +2796,7 @@ async function initModel() {
 async function deinitModel() {
   await api('POST', '/api/deinit');
   S.modelReady = false;
+  S.device = 'auto';
   updateModelState(false);
   ['d-params','d-health','d-flags','d-vq'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = '—'; });
   document.getElementById('d-vq-bar').style.width = '0%';
@@ -4992,6 +4996,11 @@ function v4ClearLogs() {
 // Initialise v4 state when training panel is opened
 function _v4OnPanelOpen() {
   v4Init();
+  // Show the globally-initialised device in the v4 idle message
+  const idle = document.getElementById('v4-idle');
+  if(idle && S.modelReady && S.device !== 'auto') {
+    idle.textContent = `Ready to train on device: ${S.device}. Select a file and press Start.`;
+  }
   setTimeout(v4DrawCharts, 100);
 }
 
