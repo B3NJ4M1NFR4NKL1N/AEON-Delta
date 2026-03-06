@@ -630,7 +630,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="arch-diag-banner" id="arch-diag-banner">
     <div class="arch-diag-card" id="adc-status"><div class="adc-label">System Status</div><div class="adc-val" style="color:var(--text3)" id="arch-sys-status">—</div><div class="adc-sub" id="arch-sys-status-sub">Initialize model</div></div>
     <div class="arch-diag-card" id="adc-healthy"><div class="adc-label">Healthy</div><div class="adc-val" style="color:var(--green)" id="arch-cnt-healthy">—</div><div class="adc-sub">modules OK</div></div>
-    <div class="arch-diag-card" id="adc-errors"><div class="adc-label">Errors</div><div class="adc-val" style="color:var(--danger)" id="arch-cnt-errors">0</div><div class="adc-sub">NaN / Inf</div></div>
+    <div class="arch-diag-card" id="adc-errors"><div class="adc-label">Errors</div><div class="adc-val" style="color:var(--danger)" id="arch-cnt-errors">—</div><div class="adc-sub">NaN / Inf</div></div>
     <div class="arch-diag-card" id="adc-disabled"><div class="adc-label">Disabled</div><div class="adc-val" style="color:var(--text3)" id="arch-cnt-disabled">—</div><div class="adc-sub">not enabled</div></div>
     <div class="arch-diag-card" id="adc-gaps"><div class="adc-label">Diag. Gaps</div><div class="adc-val" style="color:var(--warn)" id="arch-cnt-gaps">—</div><div class="adc-sub" id="arch-gaps-sub">self-diagnostic</div></div>
     <div class="arch-diag-card" id="adc-wiring"><div class="adc-label">Wiring</div><div class="adc-val" style="color:var(--accent)" id="arch-wiring-pct">—</div><div class="adc-sub" id="arch-wiring-sub">pipeline coverage</div></div>
@@ -3343,6 +3343,16 @@ let _pipelineSelectedNode = null;
 let _pipelineBuilt = false;
 let _archNodeStatusMap = {};
 
+// Pipeline layout constants
+const PL_START_X = 40;
+const PL_TIER_GAP = 90;
+const PL_NODE_W = 84;
+const PL_NODE_H = 34;
+const PL_NODE_V_SPACING = 48;
+const PL_CANVAS_H = 1000;
+const PL_NODE_OFFSET_X = 55;
+const PL_MIN_TOP = 30;
+
 // Full pipeline node definitions with tier grouping and layout positions
 const PIPELINE_TIERS = [
   { id:'input_layer', label:'INPUT', color:'var(--accent)', nodes:[
@@ -3507,16 +3517,15 @@ const FEEDBACK_EDGE_SET = new Set([
 
 function _pipelineNodePositions() {
   const positions = {};
-  const startX = 40, tierGap = 90;
-  let colX = startX;
+  let colX = PL_START_X;
   PIPELINE_TIERS.forEach((tier, ti) => {
     const nodes = tier.nodes;
-    const tierH = nodes.length * 48;
-    const startY = Math.max(30, (1000 - tierH) / 2);
+    const tierH = nodes.length * PL_NODE_V_SPACING;
+    const startY = Math.max(PL_MIN_TOP, (PL_CANVAS_H - tierH) / 2);
     nodes.forEach((n, ni) => {
-      positions[n.id] = { x: colX + 55, y: startY + ni * 48 + 20, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
+      positions[n.id] = { x: colX + PL_NODE_OFFSET_X, y: startY + ni * PL_NODE_V_SPACING + 20, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
     });
-    colX += tierGap;
+    colX += PL_TIER_GAP;
   });
   return positions;
 }
@@ -3535,10 +3544,10 @@ function buildPipeline() {
   PIPELINE_TIERS.forEach(tier => {
     const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
     if (!tNodes.length) return;
-    const x = Math.min(...tNodes.map(n => n.x)) - 48;
+    const x = Math.min(...tNodes.map(n => n.x)) - (PL_NODE_W / 2 + 6);
     const minY = Math.min(...tNodes.map(n => n.y)) - 28;
     const maxY = Math.max(...tNodes.map(n => n.y)) + 28;
-    const w = 100;
+    const w = PL_NODE_W + 16;
     const h = maxY - minY;
     bgsHtml += `<rect class="p-tier-bg" x="${x}" y="${minY}" width="${w}" height="${h}" rx="10" ry="10" fill="${tier.color}" opacity="0.02" stroke="${tier.color}" stroke-opacity="0.08"/>`;
   });
@@ -3581,19 +3590,18 @@ function buildPipeline() {
 
   // Draw nodes
   let nodesHtml = '';
-  const nodeW = 84, nodeH = 34;
   for (const [id, p] of Object.entries(pos)) {
     const tierClass = p.tier.includes('meta') || p.tier === 'executive' || p.tier === 'abstraction' || p.tier === 'metacognition' ? 'tier-meta' :
                       p.tier.includes('safety') || p.tier === 'analysis' ? 'tier-safety' :
                       p.tier.includes('memory') || p.tier === 'planning' ? 'tier-memory' :
                       p.tier.includes('causal') || p.tier === 'reasoning' ? 'tier-causal' :
                       p.tier === 'input_layer' || p.tier === 'output' ? 'tier-input' : '';
-    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - nodeW/2},${p.y - nodeH/2})">
-      <rect class="p-node-bg" width="${nodeW}" height="${nodeH}" rx="8" ry="8"/>
-      <circle class="p-node-pulse" cx="${nodeW-6}" cy="6" r="3.5" fill="var(--text3)" opacity="0.4"/>
-      <text class="p-node-label" x="${nodeW/2}" y="${nodeH/2 - 3}" dy="0">${p.label}</text>
-      <text class="p-node-sub" x="${nodeW/2}" y="${nodeH/2 + 8}">${p.sub}</text>
-      <text class="p-node-status" x="${nodeW/2}" y="${nodeH - 3}" data-status-id="${id}"></text>
+    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - PL_NODE_W/2},${p.y - PL_NODE_H/2})">
+      <rect class="p-node-bg" width="${PL_NODE_W}" height="${PL_NODE_H}" rx="8" ry="8"/>
+      <circle class="p-node-pulse" cx="${PL_NODE_W-6}" cy="6" r="3.5" fill="var(--text3)" opacity="0.4"/>
+      <text class="p-node-label" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 - 3}" dy="0">${p.label}</text>
+      <text class="p-node-sub" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 + 8}">${p.sub}</text>
+      <text class="p-node-status" x="${PL_NODE_W/2}" y="${PL_NODE_H - 3}" data-status-id="${id}"></text>
     </g>`;
   }
   nodesG.innerHTML = nodesHtml;
@@ -3842,6 +3850,34 @@ function fmtP(n) {
   return n > 1e6 ? (n/1e6).toFixed(2)+'M' : n > 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
 }
 
+function _findGapsForNode(name) {
+  if (!_archDiagData || !_archDiagData.gaps) return [];
+  const nameClean = name.toLowerCase().replace(/_/g, '');
+  return _archDiagData.gaps.filter(g => {
+    const comp = (g.component || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return comp.includes(nameClean) || nameClean.includes(comp.slice(0, Math.max(6, comp.length)));
+  });
+}
+
+function _renderGapHtml(gaps) {
+  if (!gaps.length) return '';
+  let html = '<div style="margin-top:8px;padding:8px;background:var(--warn-dim);border-radius:6px;border-left:3px solid var(--warn)">';
+  html += '<div style="font-size:9px;color:var(--warn);text-transform:uppercase;margin-bottom:4px;font-weight:600">Diagnostic Gaps</div>';
+  gaps.forEach(g => {
+    html += `<div style="font-size:10px;color:var(--text2);margin-bottom:2px">${escHtml(g.gap || '')}</div>`;
+    if (g.remediation) html += `<div style="font-size:9px;color:var(--green)">Fix: ${escHtml(g.remediation)}</div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
+function _classifyGapSeverity(gap) {
+  const text = gap.gap || '';
+  if (text.includes(' is None') || text.includes('not initialized')) return 'critical';
+  if (text.includes('disabled') || text.includes('not enabled') || text.includes('not wired')) return 'high';
+  return 'warning';
+}
+
 function archShowDetail(name) {
   if (!_archData) {
     const card = document.getElementById('arch-detail-card');
@@ -3881,23 +3917,7 @@ function archShowDetail(name) {
     }
     const nodeStatus = _archNodeStatusMap[name] || 'unknown';
     const isDisabled = nodeStatus === 'disabled' || nodeStatus === 'unknown';
-    // Find any diagnostic gap for this node
-    let gapHtml = '';
-    if (_archDiagData && _archDiagData.gaps) {
-      const relatedGaps = _archDiagData.gaps.filter(g => {
-        const comp = (g.component || '').toLowerCase();
-        return comp.includes(name.replace(/_/g, '')) || name.toLowerCase().includes(comp.replace(/[^a-z]/g, '').slice(0, 8));
-      });
-      if (relatedGaps.length > 0) {
-        gapHtml = '<div style="margin-top:8px;padding:8px;background:var(--warn-dim);border-radius:6px;border-left:3px solid var(--warn)">';
-        gapHtml += '<div style="font-size:9px;color:var(--warn);text-transform:uppercase;margin-bottom:4px;font-weight:600">Diagnostic Gap</div>';
-        relatedGaps.forEach(g => {
-          gapHtml += `<div style="font-size:10px;color:var(--text2);margin-bottom:2px">${escHtml(g.gap || '')}</div>`;
-          if (g.remediation) gapHtml += `<div style="font-size:9px;color:var(--green)">Fix: ${escHtml(g.remediation)}</div>`;
-        });
-        gapHtml += '</div>';
-      }
-    }
+    const gapHtml = _renderGapHtml(_findGapsForNode(name));
     document.getElementById('arch-detail-content').innerHTML = `
       <div style="margin-bottom:6px"><span style="color:var(--text3)">Tier:</span> ${tierInfo}</div>
       <div style="margin-bottom:6px"><span style="color:var(--text3)">Status:</span> ${isDisabled
@@ -3923,24 +3943,7 @@ function archShowDetail(name) {
   const gs = m.grad_stats || {};
   const upstream = PIPELINE_EDGES.filter(([a, b]) => b === name).map(([a]) => a);
   const downstream = PIPELINE_EDGES.filter(([a, b]) => a === name).map(([, b]) => b);
-  // Check for gaps
-  let gapHtml = '';
-  if (_archDiagData && _archDiagData.gaps) {
-    const relatedGaps = _archDiagData.gaps.filter(g => {
-      const comp = (g.component || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const nameClean = name.toLowerCase().replace(/_/g, '');
-      return comp.includes(nameClean) || nameClean.includes(comp.slice(0, 8));
-    });
-    if (relatedGaps.length > 0) {
-      gapHtml = '<div style="margin-top:8px;padding:8px;background:var(--warn-dim);border-radius:6px;border-left:3px solid var(--warn)">';
-      gapHtml += '<div style="font-size:9px;color:var(--warn);text-transform:uppercase;margin-bottom:4px;font-weight:600">Diagnostic Gaps</div>';
-      relatedGaps.forEach(g => {
-        gapHtml += `<div style="font-size:10px;color:var(--text2);margin-bottom:2px">${escHtml(g.gap || '')}</div>`;
-        if (g.remediation) gapHtml += `<div style="font-size:9px;color:var(--green)">Fix: ${escHtml(g.remediation)}</div>`;
-      });
-      gapHtml += '</div>';
-    }
-  }
+  const gapHtml = _renderGapHtml(_findGapsForNode(name));
   document.getElementById('arch-detail-content').innerHTML = `
     <div style="margin-bottom:8px">${statusBadge}</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
@@ -4108,8 +4111,8 @@ async function loadArchDiagnostics() {
         gapsCard.style.display = '';
         const gapsContent = document.getElementById('arch-gaps-content');
         gapsContent.innerHTML = gaps.map(g => {
-          const isCritical = (g.gap || '').includes('None') || (g.gap || '').includes('not initialized');
-          return `<div class="arch-gap-item${isCritical ? ' critical' : ''}">
+          const severity = _classifyGapSeverity(g);
+          return `<div class="arch-gap-item${severity === 'critical' ? ' critical' : ''}">
             <div class="agi-comp">${escHtml(g.component || 'unknown')}</div>
             <div class="agi-text">${escHtml(g.gap || '')}</div>
             ${g.remediation ? `<div class="agi-fix">→ ${escHtml(g.remediation)}</div>` : ''}
