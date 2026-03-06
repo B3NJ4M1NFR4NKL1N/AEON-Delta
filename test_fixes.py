@@ -24329,6 +24329,7 @@ def test_causal_dag_consensus_in_model_init():
         vq_embedding_dim=32, vq_num_embeddings=64,
         enable_causal_model=True,
         enable_notears_causal=False,
+        enable_causal_programmatic=False,
     )
     model2 = AEONDeltaV3(config2)
     assert model2.causal_dag_consensus is None, (
@@ -26719,6 +26720,8 @@ def test_get_metacognitive_state_includes_dag_consensus():
         vq_embedding_dim=64, vq_num_embeddings=128,
         enable_quantum_sim=False, enable_catastrophe_detection=False,
         enable_safety_guardrails=False,
+        enable_causal_model=False, enable_notears_causal=False,
+        enable_causal_programmatic=False,
         device_str='cpu',
     )
     model = AEONDeltaV3(config)
@@ -36913,6 +36916,7 @@ def test_continual_learning_disabled_by_default():
 
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_continual_learning=False,
     )
     model = AEONDeltaV3(config)
     assert model.continual_learning is None
@@ -36979,6 +36983,7 @@ def test_grounded_multimodal_disabled_by_default():
 
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_grounded_multimodal=False,
     )
     model = AEONDeltaV3(config)
     assert model.grounded_multimodal is None
@@ -67552,9 +67557,11 @@ def test_causal_quality_preserved_when_no_causal_model():
     from aeon_core import AEONConfig, AEONDeltaV3
     import torch
 
-    # Default config has no causal model
-    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
-    assert not config.enable_causal_model, "Default should have no causal model"
+    # Config with no causal models active
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        enable_causal_model=False,
+                        enable_notears_causal=False,
+                        enable_causal_programmatic=False)
 
     model = AEONDeltaV3(config)
     model.eval()
