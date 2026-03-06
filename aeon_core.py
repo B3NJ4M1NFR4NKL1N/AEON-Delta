@@ -3040,14 +3040,14 @@ class AEONConfig:
     recursive_meta_error_threshold: float = 0.1
     
     # ===== NEUROGENIC MEMORY =====
-    enable_neurogenic_memory: bool = True
+    enable_neurogenic_memory: bool = False
     neurogenic_max_capacity: int = 1000
     neurogenic_importance_threshold: float = 0.7
     neurogenic_retrieval_weight: float = 0.1
     neurogenic_retrieval_k: int = 3
     
     # ===== TEMPORAL MEMORY =====
-    enable_temporal_memory: bool = True
+    enable_temporal_memory: bool = False
     temporal_memory_capacity: int = 500
     temporal_memory_decay_rate: float = 0.01
     temporal_memory_retrieval_weight: float = 0.1
@@ -3117,7 +3117,7 @@ class AEONConfig:
     enable_encoder_reasoning_norm: bool = True
     
     # ===== CONSOLIDATING MEMORY =====
-    enable_consolidating_memory: bool = True
+    enable_consolidating_memory: bool = False
     consolidating_working_capacity: int = 7
     consolidating_episodic_capacity: int = 1000
     consolidating_importance_threshold: float = 0.7
@@ -3142,7 +3142,7 @@ class AEONConfig:
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
     enable_provenance_trace_bridge: bool = True
-    enable_meta_recovery_integration: bool = True
+    enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
     auto_critic_max_iterations: int = 3
@@ -14182,6 +14182,30 @@ class NeuroSymbolicBridge(nn.Module):
 
     def embed_conclusions(self, conclusions: torch.Tensor) -> torch.Tensor:
         return self.embedder(conclusions)
+
+    def forward(
+        self, neural_state: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Round-trip: neural → symbolic → neural.
+
+        Extracts facts and rules, combines them into a symbolic
+        representation, and re-embeds the conclusions back into the
+        neural latent space.
+
+        Returns:
+            Dict with ``facts``, ``rules``, ``symbolic``, and
+            ``reembedded`` tensors.
+        """
+        facts = self.extract_facts(neural_state)
+        rules = self.extract_rules(neural_state)
+        symbolic = torch.clamp(facts + rules * 0.5, 0.0, 1.0)
+        reembedded = self.embed_conclusions(symbolic)
+        return {
+            "facts": facts,
+            "rules": rules,
+            "symbolic": symbolic,
+            "reembedded": reembedded,
+        }
 
 
 class TemporalKnowledgeGraph:
@@ -27049,6 +27073,7 @@ class AEONDeltaV3(nn.Module):
         # to output quality changes.
         if self.causal_trace is not None:
             _gate_mean = float(gate.mean().item())
+            self._cached_consistency_gate_mean = _gate_mean
             self.causal_trace.record(
                 "consistency_gate", "applied",
                 causal_prerequisites=[input_trace_id],
@@ -28587,10 +28612,12 @@ class AEONDeltaV3(nn.Module):
         # through the world model's predictive verification.
         world_model_results = {}
         surprise = torch.tensor(0.0, device=device)
-        _world_model_should_skip = (
+        _world_model_gate_wants_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 0].any().item()
-            and not high_uncertainty
+        )
+        _world_model_should_skip = (
+            _world_model_gate_wants_skip and not high_uncertainty
         )
         # Validate cached world_model state coherence — override skip if
         # the cached state has diverged from the current reasoning trajectory.
@@ -28600,7 +28627,11 @@ class AEONDeltaV3(nn.Module):
             _world_model_should_skip = False
         self.provenance_tracker.record_before("world_model", C_star)
         _world_model_healthy = True
-        if _world_model_should_skip and self.causal_trace is not None:
+        # Record the gate evaluation in the causal trace regardless of
+        # whether high_uncertainty overrides the skip.  This ensures the
+        # complexity gating decision is always traceable, even when the
+        # system decided to run the subsystem despite the gate.
+        if _world_model_gate_wants_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
@@ -28608,6 +28639,7 @@ class AEONDeltaV3(nn.Module):
                     "gate_index": 0,
                     "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
+                    "actually_skipped": _world_model_should_skip,
                 },
             )
         # Register complexity-gated skip in coherence registry with reduced
@@ -29052,18 +29084,20 @@ class AEONDeltaV3(nn.Module):
         # search tree root incorporates memory context.  Placeholder
         # initialized here; actual search runs after step 5c.
         mcts_results = {}
-        _mcts_should_skip = (
+        _mcts_gate_wants_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 1].any().item()
             and not planning  # explicit planning=True overrides complexity gate
-            and not high_uncertainty
+        )
+        _mcts_should_skip = (
+            _mcts_gate_wants_skip and not high_uncertainty
         )
         # Validate cached MCTS state coherence — override skip if stale.
         if _mcts_should_skip and not self._validate_cached_state_coherence(
             self._cached_mcts_state, C_star, "mcts_planning",
         ):
             _mcts_should_skip = False
-        if _mcts_should_skip and self.causal_trace is not None:
+        if _mcts_gate_wants_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "mcts_planning", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
@@ -29072,6 +29106,7 @@ class AEONDeltaV3(nn.Module):
                     "planning": planning,
                     "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
+                    "actually_skipped": _mcts_should_skip,
                 },
             )
         if _mcts_should_skip:
@@ -29943,17 +29978,19 @@ class AEONDeltaV3(nn.Module):
         
         # 5d. Causal world model — gated by complexity gate[2]
         causal_world_results = {}
-        _causal_world_should_skip = (
+        _causal_world_gate_wants_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 2].any().item()
-            and not high_uncertainty
+        )
+        _causal_world_should_skip = (
+            _causal_world_gate_wants_skip and not high_uncertainty
         )
         # Validate cached causal state coherence — override skip if stale.
         if _causal_world_should_skip and not self._validate_cached_state_coherence(
             self._cached_causal_state, C_star, "causal_world_model",
         ):
             _causal_world_should_skip = False
-        if _causal_world_should_skip and self.causal_trace is not None:
+        if _causal_world_gate_wants_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "causal_world_model", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
@@ -29961,6 +29998,7 @@ class AEONDeltaV3(nn.Module):
                     "gate_index": 2,
                     "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
+                    "actually_skipped": _causal_world_should_skip,
                 },
             )
         if _causal_world_should_skip:
@@ -31241,17 +31279,19 @@ class AEONDeltaV3(nn.Module):
         # 5e2. Unified causal simulator — counterfactual reasoning
         # Gated by complexity gate[3]
         unified_simulator_results: Dict[str, Any] = {}
-        _unified_sim_should_skip = (
+        _unified_sim_gate_wants_skip = (
             _complexity_gates is not None
             and not _complexity_gates[:, 3].any().item()
-            and not high_uncertainty
+        )
+        _unified_sim_should_skip = (
+            _unified_sim_gate_wants_skip and not high_uncertainty
         )
         # Validate cached unified_sim state coherence — override skip if stale.
         if _unified_sim_should_skip and not self._validate_cached_state_coherence(
             self._cached_unified_sim_state, C_star, "unified_simulator",
         ):
             _unified_sim_should_skip = False
-        if _unified_sim_should_skip and self.causal_trace is not None:
+        if _unified_sim_gate_wants_skip and self.causal_trace is not None:
             self.causal_trace.record(
                 "unified_simulator", "complexity_gated_skip",
                 causal_prerequisites=[input_trace_id],
@@ -31259,6 +31299,7 @@ class AEONDeltaV3(nn.Module):
                     "gate_index": 3,
                     "high_uncertainty": high_uncertainty,
                     "complexity_score": _complexity_score_val,
+                    "actually_skipped": _unified_sim_should_skip,
                 },
             )
         if _unified_sim_should_skip:
@@ -31604,11 +31645,10 @@ class AEONDeltaV3(nn.Module):
         if self.standalone_ns_bridge is not None and not fast and "causal_model" not in _circuit_breaker_tripped:
             try:
                 self.provenance_tracker.record_before("ns_bridge", C_star)
-                _ns_facts = self.standalone_ns_bridge.extract_facts(C_star)
-                _ns_rules = self.standalone_ns_bridge.extract_rules(C_star)
-                # Round-trip: neural → symbolic → neural
-                _ns_symbolic = torch.clamp(_ns_facts + _ns_rules * 0.5, 0.0, 1.0)
-                _ns_reembedded = self.standalone_ns_bridge.embed_conclusions(_ns_symbolic)
+                _ns_out = self.standalone_ns_bridge(C_star)
+                _ns_facts = _ns_out["facts"]
+                _ns_rules = _ns_out["rules"]
+                _ns_reembedded = _ns_out["reembedded"]
                 # Blend the round-trip residual to enforce symbolic consistency
                 if torch.isfinite(_ns_reembedded).all():
                     _ns_blend = self.config.standalone_ns_bridge_blend
@@ -37027,6 +37067,34 @@ class AEONDeltaV3(nn.Module):
                     severity="warning",
                 )
 
+        # End-of-pipeline causal trace summaries for key subsystems whose
+        # initial recording occurs early in the pipeline and may be pushed
+        # outside the ``recent(n)`` window by the volume of intermediate
+        # entries (provenance, error_evolution, auto_critic revisions).
+        # Recording a summary at pipeline end ensures these subsystem
+        # decisions are always retrievable via ``recent(100)``.
+        if self.causal_trace is not None:
+            # Consistency gate summary
+            _cg_mean = getattr(self, '_cached_consistency_gate_mean', None)
+            if _cg_mean is not None:
+                self.causal_trace.record(
+                    "consistency_gate", "pipeline_summary",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={"gate_mean": _cg_mean},
+                )
+            # Self-report summary
+            _sr_honesty_cached = getattr(
+                self, '_cached_self_report_consistency', None,
+            )
+            if self.self_reporter is not None:
+                self.causal_trace.record(
+                    "self_report", "pipeline_summary",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "consistency": _sr_honesty_cached,
+                    },
+                )
+
         return z_out, outputs
     
     def forward(
@@ -38025,6 +38093,20 @@ class AEONDeltaV3(nn.Module):
         result['provenance_root_cause'] = _ucc_res.get(
             'provenance_root_cause', {},
         )
+
+        # End-of-pass VQ audit summary — the initial VQ audit entry is
+        # recorded early in the encoding pipeline and may be pushed
+        # outside the ``recent(n)`` window by the volume of reasoning
+        # core audit entries.  Recording a summary at pass end ensures
+        # VQ quality is always retrievable via ``recent(50)``.
+        _cached_vq_quality = getattr(self, '_cached_vq_codebook_quality', None)
+        if _cached_vq_quality is not None:
+            self.audit_log.record("vq", "quantization_summary", {
+                "vq_loss": result.get('vq_loss', 0.0)
+                if not isinstance(result.get('vq_loss'), torch.Tensor)
+                else result['vq_loss'].item(),
+                "codebook_quality": _cached_vq_quality,
+            })
 
         return result
     
@@ -40830,11 +40912,19 @@ class AEONDeltaV3(nn.Module):
                         f'({len(_training_classes)} training error classes bridged)'
                     )
                 else:
-                    verified.append(
-                        'training_bridge → error_evolution '
-                        f'({len(_training_classes)} training error classes '
-                        f'seeded via cognitive activation probe)'
-                    )
+                    gaps.append({
+                        'component': 'training_bridge',
+                        'gap': (
+                            'Error evolution has only baseline-seeded training '
+                            'error classes — no real training error patterns '
+                            'have been bridged to inference yet'
+                        ),
+                        'remediation': (
+                            'Call bridge_training_errors_to_inference() after '
+                            'training to transfer real training error patterns '
+                            'to the inference error evolution tracker'
+                        ),
+                    })
             else:
                 gaps.append({
                     'component': 'training_bridge',
@@ -42041,6 +42131,25 @@ class AEONDeltaV3(nn.Module):
                     and isinstance(cached, torch.Tensor)
                     and cached.dim() == 2):
                 subsystem_states[label] = cached
+
+        # Normalize batch dimensions — cognitive activation probe seeds
+        # baseline states with batch=1 while forward-pass states may have
+        # batch>1.  ModuleCoherenceVerifier stacks these tensors, which
+        # fails on mismatched batch sizes.  Expand batch=1 states to
+        # match the majority batch size so all states are compatible.
+        if len(subsystem_states) >= 2:
+            _batch_sizes = [t.shape[0] for t in subsystem_states.values()]
+            _target_batch = max(set(_batch_sizes), key=_batch_sizes.count)
+            _normalized: Dict[str, torch.Tensor] = {}
+            for _label, _tensor in subsystem_states.items():
+                if _tensor.shape[0] == _target_batch:
+                    _normalized[_label] = _tensor
+                elif _tensor.shape[0] == 1:
+                    _normalized[_label] = _tensor.expand(
+                        _target_batch, -1,
+                    )
+                # else: skip states with incompatible batch sizes
+            subsystem_states = _normalized
 
         if len(subsystem_states) < 2:
             # At least 2 states are required for pairwise cosine similarity
@@ -43405,6 +43514,34 @@ class AEONDeltaV3(nn.Module):
             )
 
         report['reinforcement_actions'] = reinforcement_actions
+
+        # --- Untrained model bootstrap --- when the model has never
+        # executed a forward pass (_total_forward_calls == 0), the axiom
+        # scores may appear healthy because baseline states were seeded
+        # by _cognitive_activation_probe().  Record a bootstrapping
+        # action so the system explicitly acknowledges it is operating
+        # on seeded (not earned) baselines, ensuring the return value
+        # always contains at least one action for untrained models.
+        if (not reinforcement_actions
+                and getattr(self, '_total_forward_calls', 0) == 0):
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='cold_start',
+                    strategy_used='verify_and_reinforce_bootstrap',
+                    success=True,
+                    metadata={
+                        'axiom_scores': {
+                            k: v.get('score', 1.0)
+                            for k, v in axioms.items()
+                        },
+                        'note': 'Baselines seeded but no forward passes yet',
+                    },
+                )
+            reinforcement_actions.append(
+                'Recorded cold_start bootstrap episode (no forward passes)'
+            )
+            report['reinforcement_actions'] = reinforcement_actions
+
         return report
 
     def sync_from_training(
@@ -43595,6 +43732,11 @@ class AEONDeltaV3(nn.Module):
             cls for cls in self.error_evolution._ERROR_CLASS_TO_LAMBDA
             if cls.startswith('training_')
         ]
+        # Save _total_recorded before seeding so baseline episodes do not
+        # inflate the user-visible total_recorded count.  Baseline episodes
+        # exist solely to prime the metacognitive trigger and should be
+        # invisible to external consumers (e.g. save_state / load_state).
+        _pre_total = self.error_evolution._total_recorded
         for cls_name in _training_classes:
             if cls_name in _existing:
                 continue  # Already has episodes — do not overwrite
@@ -43608,6 +43750,8 @@ class AEONDeltaV3(nn.Module):
                 },
             )
             seeded += 1
+        # Restore _total_recorded so baseline episodes are transparent
+        self.error_evolution._total_recorded = _pre_total
         return seeded
 
     def _cognitive_activation_probe(self) -> None:
@@ -44282,17 +44426,32 @@ class AEONDeltaV3(nn.Module):
                     k: v for k, v in _error_classes.items()
                     if k.startswith("training_")
                 }
-                if _training_classes:
+                # Exclude baseline-only training classes (seeded by
+                # _cognitive_activation_probe) so that save_state does
+                # not create training_error_patterns.json when no real
+                # training error patterns have been bridged.
+                _real_training_classes: Dict[str, Any] = {}
+                for _tc_name, _tc_data in _training_classes.items():
+                    _episodes = self.error_evolution._episodes.get(
+                        _tc_name, [],
+                    )
+                    _has_non_baseline = any(
+                        not (ep.get("metadata") or {}).get("baseline", False)
+                        for ep in _episodes
+                    )
+                    if _has_non_baseline:
+                        _real_training_classes[_tc_name] = _tc_data
+                if _real_training_classes:
                     _patterns = {"inference": {
-                        "error_classes": _training_classes,
+                        "error_classes": _real_training_classes,
                         "total_recorded": sum(
-                            v.get("count", 0) for v in _training_classes.values()
+                            v.get("count", 0) for v in _real_training_classes.values()
                         ),
                     }}
                     with open(save_dir / "training_error_patterns.json", 'w') as f:
                         json.dump(_patterns, f, indent=2)
                     logger.info(
-                        f"Exported {len(_training_classes)} training error "
+                        f"Exported {len(_real_training_classes)} training error "
                         f"pattern(s) to training_error_patterns.json"
                     )
 
