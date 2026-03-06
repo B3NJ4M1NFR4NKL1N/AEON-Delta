@@ -789,6 +789,13 @@ async def get_cognitive_activation():
             "system_unified": unity.get('unified', False),
             "cognitive_unity_score": unity.get('cognitive_unity_score', 0.0),
             "overall_health_score": health.get('overall_health_score', 0.0),
+            "cognitive_unity_components": unity.get(
+                'cognitive_unity_components', {},
+            ),
+            "error_evolution_effectiveness": unity.get(
+                'error_evolution_effectiveness', {},
+            ),
+            "training_bridge": unity.get('training_bridge', {}),
             "integration_map": integration_map,
             "critical_patches": critical_patches,
             "activation_sequence": activation_sequence,
