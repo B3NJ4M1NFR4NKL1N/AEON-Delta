@@ -24329,6 +24329,7 @@ def test_causal_dag_consensus_in_model_init():
         vq_embedding_dim=32, vq_num_embeddings=64,
         enable_causal_model=True,
         enable_notears_causal=False,
+        enable_causal_programmatic=False,
     )
     model2 = AEONDeltaV3(config2)
     assert model2.causal_dag_consensus is None, (
