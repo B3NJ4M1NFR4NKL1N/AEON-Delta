@@ -346,7 +346,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   .ts-section-hdr { display:flex; align-items:center; gap:8px;
     padding:8px 10px; cursor:pointer; border-radius:6px; transition:.1s;
     border:1px solid transparent; margin-bottom:3px; }
-  .ts-section-hdr:hover { background:var(--surface2); border-color:var(--bord); }
+  .ts-section-hdr:hover { background:var(--surface2); border-color:var(--border); }
   .ts-section-hdr.ts-has-failures { border-color:var(--danger)!important; background:rgba(239,68,68,.06)!important; }
   .ts-section-body { display:none; padding:4px 0 8px 22px; }
   .ts-section-body.open { display:block; }
@@ -357,7 +357,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   .ts-test-row .ts-status { width:14px; text-align:center; font-size:12px; }
   .ts-test-row .ts-name { flex:1; color:var(--text); font-family:var(--mono); }
   .ts-test-row .ts-ms { color:var(--text3); font-size:10px; min-width:50px; text-align:right; }
-  .ts-result-card { background:var(--surface2); border:1px solid var(--bord);
+  .ts-result-card { background:var(--surface2); border:1px solid var(--border);
     border-radius:6px; padding:10px 12px; margin-bottom:6px; cursor:pointer; transition:.1s; }
   .ts-result-card:hover { border-color:var(--accent); }
   .ts-result-card.passed { border-left:3px solid var(--green); }
@@ -373,7 +373,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     border-radius:4px; overflow-x:auto; }
   .ts-result-card .ts-rc-detail { display:none; margin-top:8px; }
   .ts-result-card.expanded .ts-rc-detail { display:block; }
-  .ts-log-block { background:var(--bg); border:1px solid var(--bord); border-radius:4px;
+  .ts-log-block { background:var(--bg); border:1px solid var(--border); border-radius:4px;
     padding:8px; font-size:10px; font-family:var(--mono); color:var(--text);
     white-space:pre; overflow-x:auto; max-height:200px; overflow-y:auto; margin-top:6px; }
   .ts-failure-card { background:var(--surface2); border:1px solid var(--danger);
@@ -384,7 +384,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     background:rgba(239,68,68,.08); padding:6px 8px; border-radius:4px; }
   .ts-failure-card .ts-fc-tb { font-size:10px; color:var(--text3); font-family:var(--mono);
     margin-top:6px; white-space:pre; overflow-x:auto; max-height:160px; overflow-y:auto; }
-  .ts-run-btn-sec { background:var(--surface2); border:1px solid var(--bord);
+  .ts-run-btn-sec { background:var(--surface2); border:1px solid var(--border);
     border-radius:4px; padding:2px 8px; font-size:10px; color:var(--text3);
     cursor:pointer; transition:.1s; margin-left:auto; }
   .ts-run-btn-sec:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
@@ -1578,18 +1578,18 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
   <!-- Unified controls bar (single level — no sub-tabs) -->
   <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-    <input type="text" id="ts-search" placeholder="Search tests…" oninput="tsFilterResults()" style="flex:1;min-width:160px;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px">
-    <select id="ts-filter-status" onchange="tsFilterResults()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+    <input type="text" id="ts-search" placeholder="Search tests…" oninput="tsFilterResults()" style="flex:1;min-width:160px;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+    <select id="ts-filter-status" onchange="tsFilterResults()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px">
       <option value="">All status</option>
       <option value="passed">✅ Passed</option>
       <option value="failed">❌ Failed</option>
       <option value="error">💥 Error</option>
       <option value="skipped">⏭ Skipped</option>
     </select>
-    <select id="ts-filter-section" onchange="tsFilterSection()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+    <select id="ts-filter-section" onchange="tsFilterSection()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px">
       <option value="">All sections</option>
     </select>
-    <select id="ts-filter-node" onchange="tsFilterByNode()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:4px 6px">
+    <select id="ts-filter-node" onchange="tsFilterByNode()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px">
       <option value="">All nodes</option>
     </select>
   </div>
@@ -1636,12 +1636,12 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="ct" style="margin:0">📄 Full Test Log</div>
       <div style="flex:1"></div>
       <label style="font-size:11px;color:var(--text3)">Format:</label>
-      <select id="ts-log-display-fmt" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
+      <select id="ts-log-display-fmt" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px">
         <option value="full">Full (stdout + traceback)</option>
         <option value="brief">Brief (one-liner)</option>
       </select>
       <label style="font-size:11px;color:var(--text3)">Show:</label>
-      <select id="ts-log-show" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--bord);border-radius:4px;padding:3px 6px">
+      <select id="ts-log-show" onchange="tsRenderLog()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px">
         <option value="all">All</option>
         <option value="passed">Passed only</option>
         <option value="failed">Failed only</option>
@@ -1649,7 +1649,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       </select>
       <button class="btn btn-secondary" onclick="tsCopyLog()" style="font-size:10px;padding:3px 8px">📋 Copy</button>
     </div>
-    <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--bord);border-radius:6px;padding:12px;max-height:320px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
+    <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:320px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
   </div>
 </div>
 
@@ -2432,7 +2432,8 @@ function connectWS() {
       S.pollInterval = setInterval(pingPoll, 3000);
     };
     S.ws.onmessage = e => {
-      const msg = JSON.parse(e.data);
+      let msg;
+      try { msg = JSON.parse(e.data); } catch(_) { return; }
       if(msg.type === 'log') appendLog(msg.data);
       else if(msg.type === 'heartbeat' || msg.type === 'pong') {
         if(msg.model_ready !== undefined) { S.modelReady = msg.model_ready; updateModelState(msg.model_ready); }
@@ -2499,17 +2500,14 @@ function renderLogEntry(entry) {
   const box = document.getElementById('log-box');
   if (!box) return;
   const lvl = (entry.level || 'INFO').toUpperCase();
-  if (!S.logFilters.has(lvl) && !S.logFilters.has('WARN') ) {
-    if (!(['WARN','WARNING'].includes(lvl) && S.logFilters.has('WARN'))) {
-      if (!S.logFilters.has(lvl)) return;
-    }
-  }
+  const matchFilter = S.logFilters.has(lvl) || (['WARN','WARNING'].includes(lvl) && S.logFilters.has('WARN'));
+  if (!matchFilter) return;
   // Check search
   const search = document.getElementById('log-search')?.value?.toLowerCase() || '';
   if (search && !entry.msg?.toLowerCase().includes(search) && !entry.subsys?.toLowerCase().includes(search)) return;
   const div = document.createElement('div');
   div.className = 'log-e';
-  div.innerHTML = `<span class="lt">${entry.time||''}</span><span class="ll ${lvl}">${lvl}</span><span class="ls">${entry.subsys||''}</span><span class="lm">${entry.msg||''}</span>`;
+  div.innerHTML = `<span class="lt">${escHtml(entry.time||'')}</span><span class="ll ${lvl}">${lvl}</span><span class="ls">${escHtml(entry.subsys||'')}</span><span class="lm">${escHtml(entry.msg||'')}</span>`;
   box.appendChild(div);
   if(box.scrollTop + box.clientHeight > box.scrollHeight - 60) box.scrollTop = box.scrollHeight;
   document.getElementById('log-cnt').textContent = S.logEntries.length;
@@ -2543,10 +2541,13 @@ function togglePause() {
 
 function clearLogs() {
   S.logEntries = [];
-  document.getElementById('log-box').innerHTML = '';
-  document.getElementById('log-cnt').textContent = '0';
+  const box = document.getElementById('log-box');
+  if(box) box.innerHTML = '';
+  const cnt = document.getElementById('log-cnt');
+  if(cnt) cnt.textContent = '0';
   S.logBadge = 0;
-  document.getElementById('log-badge').textContent = '0';
+  const badge = document.getElementById('log-badge');
+  if(badge) badge.textContent = '0';
   api('DELETE', '/api/logs').catch(()=>{});
 }
 
@@ -2573,15 +2574,16 @@ function updateModelState(ready) {
   const initBtn = document.getElementById('init-btn');
   const deinitBtn = document.getElementById('deinit-btn');
   const dashInitBtn = document.getElementById('dash-init-btn');
+  const infStatus = document.getElementById('inf-status');
   if(ready) {
     initBtn && (initBtn.style.display = 'none');
     deinitBtn && (deinitBtn.style.display = '');
     dashInitBtn && (dashInitBtn.textContent = '⚡ Re-init');
-    document.getElementById('inf-status') && (document.getElementById('inf-status').className = 'badge bg', document.getElementById('inf-status').textContent = 'model ready');
+    if(infStatus) { infStatus.className = 'badge bg'; infStatus.textContent = 'model ready'; }
   } else {
     initBtn && (initBtn.style.display = '');
     deinitBtn && (deinitBtn.style.display = 'none');
-    document.getElementById('inf-status') && (document.getElementById('inf-status').className = 'badge br', document.getElementById('inf-status').textContent = 'model not initialized');
+    if(infStatus) { infStatus.className = 'badge br'; infStatus.textContent = 'model not initialized'; }
   }
 }
 
