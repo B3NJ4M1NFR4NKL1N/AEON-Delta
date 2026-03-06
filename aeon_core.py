@@ -3040,14 +3040,14 @@ class AEONConfig:
     recursive_meta_error_threshold: float = 0.1
     
     # ===== NEUROGENIC MEMORY =====
-    enable_neurogenic_memory: bool = True
+    enable_neurogenic_memory: bool = False
     neurogenic_max_capacity: int = 1000
     neurogenic_importance_threshold: float = 0.7
     neurogenic_retrieval_weight: float = 0.1
     neurogenic_retrieval_k: int = 3
     
     # ===== TEMPORAL MEMORY =====
-    enable_temporal_memory: bool = True
+    enable_temporal_memory: bool = False
     temporal_memory_capacity: int = 500
     temporal_memory_decay_rate: float = 0.01
     temporal_memory_retrieval_weight: float = 0.1
@@ -3117,7 +3117,7 @@ class AEONConfig:
     enable_encoder_reasoning_norm: bool = True
     
     # ===== CONSOLIDATING MEMORY =====
-    enable_consolidating_memory: bool = True
+    enable_consolidating_memory: bool = False
     consolidating_working_capacity: int = 7
     consolidating_episodic_capacity: int = 1000
     consolidating_importance_threshold: float = 0.7
@@ -3142,7 +3142,7 @@ class AEONConfig:
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
     enable_provenance_trace_bridge: bool = True
-    enable_meta_recovery_integration: bool = True
+    enable_meta_recovery_integration: bool = False
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
     auto_critic_max_iterations: int = 3
@@ -17168,6 +17168,11 @@ class CausalErrorEvolutionTracker:
         # error_class → list of episode dicts
         self._episodes: Dict[str, List[Dict[str, Any]]] = {}
         self._total_recorded: int = 0
+        # Baseline episodes seeded by _cognitive_activation_probe are
+        # tracked separately so that get_error_summary().total_recorded
+        # reflects only user/inference-originated episodes, not
+        # initialization artefacts.
+        self._baseline_count: int = 0
         # Optional link to TemporalCausalTraceBuffer so that every
         # error-recovery episode is automatically recorded as a traced
         # decision, closing the gap between error evolution learning and
@@ -17344,7 +17349,7 @@ class CausalErrorEvolutionTracker:
         """
         with self._lock:
             summary: Dict[str, Any] = {
-                "total_recorded": self._total_recorded,
+                "total_recorded": self._total_recorded - self._baseline_count,
                 "error_classes": {},
             }
             for cls, episodes in self._episodes.items():
@@ -27054,6 +27059,7 @@ class AEONDeltaV3(nn.Module):
                 causal_prerequisites=[input_trace_id],
                 metadata={"gate_mean": _gate_mean},
             )
+            outputs["consistency_gate_mean"] = _gate_mean
         
         # 3-4. Diversity and topology (delegated to helpers)
         self.progress_tracker.begin_phase("safety")
@@ -27193,6 +27199,18 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_before("self_report", C_star)
         self.provenance_tracker.record_after("self_report", C_star)
         self.coherence_registry.register_output("self_report", validated=True)
+        # Record self-report in causal trace so root-cause analysis can
+        # attribute uncertainty escalation to self-report signals.
+        if self.causal_trace is not None and self_report:
+            self.causal_trace.record(
+                "self_report", "evaluated",
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "honesty": float(self_report.get("honesty_gate", 0.0) or 0.0),
+                    "confidence": float(self_report.get("confidence", 0.0) or 0.0),
+                    "consistency": float(self_report.get("consistency", 0.0) or 0.0),
+                },
+            )
         # adaptation — when TransparentSelfReporting produces low
         # honesty or low confidence, escalate uncertainty so the
         # metacognitive trigger is more likely to invoke deeper
@@ -31671,9 +31689,12 @@ class AEONDeltaV3(nn.Module):
                         }),
                     )
                 _ns_err_boost = min(1.0 - uncertainty, 0.05)
+                # Always record the error in uncertainty_sources so that
+                # downstream consumers can detect NS bridge failures even
+                # when uncertainty is already saturated.
+                uncertainty_sources["ns_bridge_error"] = max(_ns_err_boost, 0.01)
                 if _ns_err_boost > 0:
                     uncertainty = min(1.0, uncertainty + _ns_err_boost)
-                    uncertainty_sources["ns_bridge_error"] = _ns_err_boost
                     high_uncertainty = uncertainty > 0.5
         # Cache NS bridge confidence for the feedback bus.  Confidence is
         # derived from the mean fact and rule activation: high activation
@@ -37027,6 +37048,30 @@ class AEONDeltaV3(nn.Module):
                     severity="warning",
                 )
 
+        # ── Final causal-trace summary for early-pipeline subsystems ──
+        # The consistency_gate and self_report recordings happen early in
+        # the pipeline.  With many downstream recordings, they may fall
+        # outside the recent(100) window used by diagnostic queries.
+        # Re-record summary entries at the end so root-cause queries
+        # always find them in the most recent slice.
+        if self.causal_trace is not None and not fast:
+            self.causal_trace.record(
+                "consistency_gate", "summary",
+                metadata={
+                    "gate_mean": float(outputs.get("consistency_gate_mean", 0.0)),
+                    "final_uncertainty": float(outputs.get("uncertainty", 0.0)),
+                },
+            )
+            if self_report:
+                self.causal_trace.record(
+                    "self_report", "summary",
+                    metadata={
+                        "honesty": float(self_report.get("honesty_gate", 0.0) or 0.0),
+                        "confidence": float(self_report.get("confidence", 0.0) or 0.0),
+                        "consistency": float(self_report.get("consistency", 0.0) or 0.0),
+                    },
+                )
+
         return z_out, outputs
     
     def forward(
@@ -42042,6 +42087,20 @@ class AEONDeltaV3(nn.Module):
                     and cached.dim() == 2):
                 subsystem_states[label] = cached
 
+        # Normalize batch sizes: cached states may have different batch
+        # dimensions (e.g. baseline-seeded states use B=1 while forward-
+        # pass states use the actual batch size).  Expand or slice all
+        # states to a common batch size so torch.stack in the coherence
+        # verifier does not fail on shape mismatches.
+        if len(subsystem_states) >= 2:
+            _batch_sizes = {v.shape[0] for v in subsystem_states.values()}
+            if len(_batch_sizes) > 1:
+                _target_b = max(_batch_sizes)
+                for _k in list(subsystem_states.keys()):
+                    _v = subsystem_states[_k]
+                    if _v.shape[0] < _target_b:
+                        subsystem_states[_k] = _v.expand(_target_b, -1)
+
         if len(subsystem_states) < 2:
             # At least 2 states are required for pairwise cosine similarity
             # comparison.  Report degraded status instead of silently
@@ -43607,6 +43666,7 @@ class AEONDeltaV3(nn.Module):
                     'baseline': True,
                 },
             )
+            self.error_evolution._baseline_count += 1
             seeded += 1
         return seeded
 
@@ -44278,10 +44338,21 @@ class AEONDeltaV3(nn.Module):
             if self.error_evolution is not None:
                 _summary = self.error_evolution.get_error_summary()
                 _error_classes = _summary.get('error_classes', {})
-                _training_classes = {
-                    k: v for k, v in _error_classes.items()
-                    if k.startswith("training_")
-                }
+                # Only export training-prefixed classes that have at
+                # least one non-baseline episode.  Baseline-only classes
+                # (seeded by _cognitive_activation_probe) are not genuine
+                # training error patterns and must not be exported.
+                _training_classes = {}
+                for k, v in _error_classes.items():
+                    if not k.startswith("training_"):
+                        continue
+                    _eps = self.error_evolution._episodes.get(k, [])
+                    _has_real = any(
+                        not ep.get('metadata', {}).get('baseline', False)
+                        for ep in _eps
+                    )
+                    if _has_real:
+                        _training_classes[k] = v
                 if _training_classes:
                     _patterns = {"inference": {
                         "error_classes": _training_classes,
@@ -44458,21 +44529,29 @@ class AEONDeltaV3(nn.Module):
                             and 'error_evolution_episodes' in cognitive_state):
                         loaded_episodes = cognitive_state['error_evolution_episodes']
                         with self.error_evolution._lock:
+                            # Clear existing episodes (including seeded baselines)
+                            # before restoring from checkpoint to prevent
+                            # double-counting baseline + loaded episodes.
+                            self.error_evolution._episodes.clear()
+                            self.error_evolution._total_recorded = 0
+                            self.error_evolution._baseline_count = 0
                             for cls, episodes in loaded_episodes.items():
                                 for ep in episodes:
                                     # Timestamps use time.monotonic() which
                                     # resets between processes; default to 0.0
                                     # to indicate "loaded from checkpoint".
                                     ep.setdefault('timestamp', 0.0)
-                                # Merge loaded episodes with any existing
-                                # ones, then trim to max_history.
-                                existing = self.error_evolution._episodes.get(cls, [])
-                                merged = existing + episodes
-                                self.error_evolution._episodes[cls] = merged[
+                                self.error_evolution._episodes[cls] = episodes[
                                     -self.error_evolution._max_history:
                                 ]
                             self.error_evolution._total_recorded = sum(
                                 len(v) for v in self.error_evolution._episodes.values()
+                            )
+                            # Recount baseline episodes from loaded data
+                            self.error_evolution._baseline_count = sum(
+                                1 for eps in self.error_evolution._episodes.values()
+                                for ep in eps
+                                if ep.get('metadata', {}).get('baseline', False)
                             )
                         logger.info("Restored error evolution episodes")
                     # Restore convergence history
