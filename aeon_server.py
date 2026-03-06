@@ -800,16 +800,18 @@ async def get_cognitive_activation():
             'error_evolution_effectiveness', {},
         ).get('active', False)
         system_emergence_status = {
-            "emerged": unity.get('unified', False) and _convergence_ok,
+            "emerged": (
+                _mv_met and _um_met and _rc_met
+                and _convergence_ok
+                and unity.get('unified', False)
+            ),
             "mutual_reinforcement_met": _mv_met,
             "meta_cognitive_trigger_met": _um_met,
             "causal_transparency_met": _rc_met,
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
             "diagnostic_status": diagnostic.get('status', 'unknown'),
-            "conditions_met": sum([
-                _mv_met, _um_met, _rc_met, _convergence_ok, _ee_healthy,
-            ]),
+            "conditions_met": int(_mv_met) + int(_um_met) + int(_rc_met) + int(_convergence_ok) + int(_ee_healthy),
             "conditions_total": 5,
         }
 
