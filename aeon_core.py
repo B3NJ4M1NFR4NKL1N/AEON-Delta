@@ -27636,6 +27636,27 @@ class AEONDeltaV3(nn.Module):
                     self._cached_executive_review_pressure = (
                         _mce_review.get('corrective_pressure', 0.0)
                     )
+                    # Record executive review in causal trace so that
+                    # root-cause analysis can see how executive
+                    # alignment influenced uncertainty and metacognitive
+                    # decisions.  Without this, executive review
+                    # decisions are invisible to trace_root_cause(),
+                    # breaking the causal transparency requirement.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "metacognitive_executive", "review",
+                            metadata={
+                                'review_triggered': _mce_review.get(
+                                    'review_triggered', False,
+                                ),
+                                'alignment_score': _mce_review.get(
+                                    'alignment_score', 1.0,
+                                ),
+                                'recommendation': _mce_review.get(
+                                    'recommendation', 'accept',
+                                ),
+                            },
+                        )
                     if _mce_review.get('review_triggered', False):
                         _mce_boost = min(
                             1.0 - uncertainty,
@@ -27645,6 +27666,26 @@ class AEONDeltaV3(nn.Module):
                             uncertainty = min(1.0, uncertainty + _mce_boost)
                             uncertainty_sources["executive_review"] = _mce_boost
                             high_uncertainty = uncertainty > 0.5
+                        # Record poor executive alignment in error
+                        # evolution so the system can learn from
+                        # recurring executive review failures and adapt
+                        # metacognitive sensitivity accordingly.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='executive_alignment_deficit',
+                                strategy_used=_mce_review.get(
+                                    'recommendation', 'deepen_reasoning',
+                                ),
+                                success=False,
+                                metadata={
+                                    'alignment_score': _mce_review.get(
+                                        'alignment_score', 1.0,
+                                    ),
+                                    'urgency_entropy': _mce_review.get(
+                                        'urgency_entropy', 1.0,
+                                    ),
+                                },
+                            )
             except Exception as exec_err:
                 logger.warning(f"CognitiveExecutiveFunction error (non-fatal): {exec_err}")
                 self.error_recovery.record_event(
@@ -38049,6 +38090,57 @@ class AEONDeltaV3(nn.Module):
                     1.0,
                     self.metacognitive_trigger._cross_pass_trigger_ema
                     + _cf_result['meta_trigger_boost'],
+                )
+            # When the cognitive frame flags ambiguous uncertainty that
+            # needs diagnostic review, escalate uncertainty with a
+            # dedicated source so the metacognitive trigger picks it up,
+            # and record the event in the causal trace for traceability.
+            # This closes the gap where needs_diagnostic was computed
+            # but never acted upon, leaving ambiguous live states
+            # unreviewed by the meta-cognitive system.
+            if _cf_result.get('needs_diagnostic', False):
+                _diag_boost = min(1.0 - uncertainty, 0.1)
+                if _diag_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _diag_boost)
+                    uncertainty_sources["cognitive_frame_diagnostic"] = (
+                        _diag_boost
+                    )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_frame_ambiguity',
+                        strategy_used='diagnostic_escalation',
+                        success=False,
+                        metadata={
+                            'frame_score': _cf_result.get('frame_score', 1.0),
+                            'weakest_component': _cf_result.get(
+                                'weakest_component',
+                            ),
+                        },
+                    )
+            # Record the cognitive frame's assessment in the causal
+            # trace so that root-cause analysis can trace how the
+            # frame's verdict influenced downstream decisions.  Without
+            # this, the frame's corrective pressures and diagnostic
+            # flags are invisible to trace_root_cause(), violating the
+            # causal transparency requirement.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cognitive_frame", "assessment",
+                    metadata={
+                        'frame_score': _cf_result.get('frame_score', 1.0),
+                        'needs_diagnostic': _cf_result.get(
+                            'needs_diagnostic', False,
+                        ),
+                        'weakest_component': _cf_result.get(
+                            'weakest_component',
+                        ),
+                        'corrective_pressures': {
+                            k: round(v, 4)
+                            for k, v in _cf_result.get(
+                                'corrective_pressures', {},
+                            ).items()
+                        },
+                    },
                 )
 
         # ===== COGNITIVE UNITY → UNCERTAINTY ESCALATION =====

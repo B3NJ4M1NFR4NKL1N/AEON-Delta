@@ -72844,6 +72844,119 @@ def test_verify_and_reinforce_error_evolution_pressure():
     print("✅ test_verify_and_reinforce_error_evolution_pressure PASSED")
 
 
+def test_cognitive_frame_needs_diagnostic_escalates_uncertainty():
+    """Verify needs_diagnostic from cognitive frame escalates uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'cognitive_frame_diagnostic' in src, (
+        "needs_diagnostic=True must escalate uncertainty with "
+        "'cognitive_frame_diagnostic' source in _forward_impl"
+    )
+    assert 'cognitive_frame_ambiguity' in src, (
+        "needs_diagnostic=True must record 'cognitive_frame_ambiguity' "
+        "in error evolution in _forward_impl"
+    )
+    print("✅ test_cognitive_frame_needs_diagnostic_escalates_uncertainty PASSED")
+
+
+def test_cognitive_frame_assessment_in_causal_trace():
+    """Verify cognitive frame assessment is recorded in causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'causal_trace' in src and '"cognitive_frame"' in src, (
+        "Cognitive frame assessment must be recorded in causal_trace "
+        "within _forward_impl for causal transparency"
+    )
+    # Verify the trace includes the key fields
+    assert 'frame_score' in src, (
+        "Causal trace for cognitive_frame must include frame_score"
+    )
+    assert 'weakest_component' in src, (
+        "Causal trace for cognitive_frame must include weakest_component"
+    )
+    print("✅ test_cognitive_frame_assessment_in_causal_trace PASSED")
+
+
+def test_metacognitive_executive_review_in_causal_trace():
+    """Verify MetaCognitiveExecutive review is recorded in causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '"metacognitive_executive"' in src and '"review"' in src, (
+        "MetaCognitiveExecutive review must be recorded in causal_trace "
+        "within _reasoning_core_impl for causal transparency"
+    )
+    # Verify recommendation is included in the trace
+    assert 'recommendation' in src, (
+        "Causal trace for executive review must include recommendation"
+    )
+    print("✅ test_metacognitive_executive_review_in_causal_trace PASSED")
+
+
+def test_executive_review_triggers_error_evolution():
+    """Verify triggered executive review records in error evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'executive_alignment_deficit' in src, (
+        "Triggered executive review must record "
+        "'executive_alignment_deficit' in error evolution"
+    )
+    print("✅ test_executive_review_triggers_error_evolution PASSED")
+
+
+def test_cognitive_frame_diagnostic_escalation_logic():
+    """Verify the diagnostic escalation logic in UnifiedCognitiveFrame."""
+    from aeon_core import UnifiedCognitiveFrame, CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    frame = UnifiedCognitiveFrame(
+        provenance_tracker=tracker,
+        ambiguity_threshold=0.2,
+    )
+    # Ambiguous state: moderate uncertainty, single weak source
+    result = frame.assess(
+        uncertainty=0.4,
+        coherence_deficit=0.2,
+        output_reliability=0.7,
+        convergence_quality=0.8,
+        uncertainty_sources={'single_weak': 0.1},
+    )
+    assert result['needs_diagnostic'], (
+        "Ambiguous uncertainty should trigger needs_diagnostic"
+    )
+    # Verify corrective pressures are produced
+    assert isinstance(result.get('corrective_pressures'), dict), (
+        "assess() must return corrective_pressures dict"
+    )
+    print("✅ test_cognitive_frame_diagnostic_escalation_logic PASSED")
+
+
+def test_executive_review_causal_trace_records_recommendation():
+    """Verify executive review causal trace includes recommendation field."""
+    from aeon_core import MetaCognitiveExecutive
+
+    mce = MetaCognitiveExecutive(alignment_threshold=0.5)
+    # Low alignment should trigger review with recommendation
+    result = mce.review(
+        {'meta_stats': {'mean': 0.1}},
+        uncertainty=0.6,
+        coherence_deficit=0.3,
+    )
+    assert result['review_triggered'], "Low alignment should trigger review"
+    assert result['recommendation'] in (
+        'deepen_reasoning', 'stabilize_alignment',
+        'diversify_hypotheses', 'reduce_uncertainty',
+    ), f"Unexpected recommendation: {result['recommendation']}"
+    print("✅ test_executive_review_causal_trace_records_recommendation PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes
