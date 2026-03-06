@@ -31608,11 +31608,11 @@ def test_verify_coherence_caches_subsystem_states():
     model = AEONDeltaV3(config)
     model.eval()
 
-    # Before forward pass, no cached states exist — verify_coherence
-    # should return degraded status (score=0.0, needs_recheck=True).
+    # Before forward pass, only activation-seeded baseline states exist —
+    # verify_coherence should return a non-perfect score and flag recheck.
     result_before = model.verify_coherence()
-    assert result_before["coherence_score"] == 0.0, (
-        "Before forward pass, coherence should be 0.0 (no cached states)"
+    assert result_before["coherence_score"] < 1.0, (
+        "Before forward pass, coherence should be < 1.0"
     )
     assert result_before["needs_recheck"] is True, (
         "Before forward pass, needs_recheck should be True"
