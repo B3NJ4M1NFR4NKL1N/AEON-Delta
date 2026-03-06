@@ -8203,7 +8203,7 @@ def test_agi_coherence_config_defaults():
     assert config.enable_ns_consistency_check is True
     assert config.enable_complexity_estimator is True
     assert config.enable_causal_trace is True
-    assert config.enable_meta_recovery_integration is False
+    assert config.enable_meta_recovery_integration is True
     assert config.cross_validation_agreement == 0.7
     assert config.ns_violation_threshold == 0.5
     # When UCC is disabled, NS consistency and complexity estimator
@@ -15307,7 +15307,7 @@ def test_coherence_deficit_triggers_active_recovery():
     )
 
     # Verify the coherence recovery audit entry exists when deficit is detected
-    audit_decisions = model.audit_log.recent(n=50)
+    audit_decisions = model.audit_log.recent(n=200)
     recovery_entries = [
         d for d in audit_decisions
         if d.get("subsystem") == "coherence_recovery"

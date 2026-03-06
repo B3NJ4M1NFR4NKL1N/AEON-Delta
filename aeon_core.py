@@ -3047,7 +3047,7 @@ class AEONConfig:
     neurogenic_retrieval_k: int = 3
     
     # ===== TEMPORAL MEMORY =====
-    enable_temporal_memory: bool = False
+    enable_temporal_memory: bool = True
     temporal_memory_capacity: int = 500
     temporal_memory_decay_rate: float = 0.01
     temporal_memory_retrieval_weight: float = 0.1
@@ -3142,7 +3142,7 @@ class AEONConfig:
     enable_complexity_estimator: bool = True
     enable_causal_trace: bool = True
     enable_provenance_trace_bridge: bool = True
-    enable_meta_recovery_integration: bool = False
+    enable_meta_recovery_integration: bool = True
     enable_auto_critic: bool = True
     auto_critic_threshold: float = 0.85
     auto_critic_max_iterations: int = 3
