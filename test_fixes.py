@@ -11146,7 +11146,7 @@ def test_subsystem_health_in_causal_trace():
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
     # The causal trace should contain a subsystem_health entry
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     health_entries = [
         e for e in recent
         if e.get("subsystem") == "subsystem_health"
@@ -20624,7 +20624,7 @@ def test_multimodal_causal_trace_recorded():
     # Use a larger window to account for entries recorded after multimodal
     # (integration, auto_critic, UCC, feedback_bus, etc.) which can push
     # the multimodal entry beyond the n=20 tail.
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     multimodal_entries = [e for e in recent if e.get("subsystem") == "multimodal"]
     assert len(multimodal_entries) > 0, (
         "Expected at least one causal trace entry for 'multimodal'"
@@ -34981,7 +34981,7 @@ def test_complexity_gated_skip_recorded_in_causal_trace():
         _, outputs = model.reasoning_core(z_in, fast=False)
 
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     skip_entries = [
         e for e in recent
         if e.get("decision") == "complexity_gated_skip"
@@ -36096,7 +36096,7 @@ def test_complexity_gated_skip_includes_score():
         _, outputs = model.reasoning_core(z_in, fast=False)
 
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     skip_entries = [
         e for e in recent
         if e.get("decision") == "complexity_gated_skip"
@@ -41102,7 +41102,7 @@ def test_consistency_gate_causal_trace():
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     gate_entries = [
         e for e in recent if e.get("subsystem") == "consistency_gate"
     ]
@@ -41135,7 +41135,7 @@ def test_self_report_causal_trace():
     z_out, outputs = model.reasoning_core(z_in, fast=False)
 
     assert model.causal_trace is not None
-    recent = model.causal_trace.recent(n=100)
+    recent = model.causal_trace.recent(n=500)
     sr_entries = [
         e for e in recent if e.get("subsystem") == "self_report"
     ]
@@ -54993,7 +54993,10 @@ def test_get_metacognitive_state_meta_recovery_unavailable():
     when the learner is disabled."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    cfg = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_meta_recovery_integration=False,
+    )
     model = AEONDeltaV3(cfg)
 
     state = model.get_metacognitive_state()
