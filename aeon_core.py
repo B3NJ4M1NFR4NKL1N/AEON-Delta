@@ -38126,6 +38126,48 @@ class AEONDeltaV3(nn.Module):
                 ),
             })
 
+        # ===== PERIODIC MUTUAL REINFORCEMENT =====
+        # Run verify_and_reinforce() every _REINFORCE_INTERVAL forward
+        # passes so that active components continuously verify and
+        # stabilize each other's states.  This closes the gap where
+        # mutual reinforcement only occurred at init-time, meaning
+        # architectural weaknesses discovered *during* inference were
+        # never fed back into error evolution or metacognitive trigger
+        # sensitivity.  By periodically reinforcing, the system
+        # self-corrects as it runs: any uncertainty or conflict detected
+        # by the coherence report automatically tightens metacognitive
+        # trigger weights and records error-evolution episodes, ensuring
+        # that conclusions remain traceable and the meta-cognitive cycle
+        # stays calibrated to the system's evolving state.
+        _REINFORCE_INTERVAL = 50
+        _fwd = int(self._total_forward_calls.item()) + 1
+        if _fwd % _REINFORCE_INTERVAL == 0:
+            try:
+                _reinforce = self.verify_and_reinforce()
+                _actions = _reinforce.get('reinforcement_actions', [])
+                result['periodic_reinforcement'] = {
+                    'pass_number': _fwd,
+                    'actions_applied': len(_actions),
+                    'actions': _actions,
+                    'overall_score': _reinforce.get('overall_score', 1.0),
+                    'coherent': _reinforce.get('coherent', True),
+                }
+                if _actions:
+                    self.audit_log.record(
+                        "verify_and_reinforce", "periodic", {
+                            "pass_number": _fwd,
+                            "actions": len(_actions),
+                            "overall_score": _reinforce.get(
+                                'overall_score', 1.0,
+                            ),
+                        },
+                    )
+            except Exception as _pr_err:
+                logger.debug(
+                    "Periodic verify_and_reinforce skipped (pass %d): %s",
+                    _fwd, _pr_err,
+                )
+
         return result
     
     def compute_loss(

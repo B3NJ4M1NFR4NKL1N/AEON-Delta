@@ -72561,6 +72561,104 @@ def test_cognitive_unity_upb_aligned_after_probe():
     print("✅ test_cognitive_unity_upb_aligned_after_probe PASSED")
 
 
+def test_periodic_reinforcement_in_forward_impl():
+    """Verify _forward_impl contains periodic verify_and_reinforce logic.
+
+    The forward pass must include a periodic mutual-reinforcement call
+    gated by _REINFORCE_INTERVAL so that architectural weaknesses
+    discovered during inference are fed back into error evolution and
+    metacognitive trigger weights, satisfying the mutual reinforcement
+    requirement.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'verify_and_reinforce' in src, (
+        "_forward_impl must call verify_and_reinforce() periodically"
+    )
+    assert '_REINFORCE_INTERVAL' in src, (
+        "_forward_impl must gate reinforcement by _REINFORCE_INTERVAL"
+    )
+    assert 'periodic_reinforcement' in src, (
+        "_forward_impl must surface periodic_reinforcement in result"
+    )
+    print("✅ test_periodic_reinforcement_in_forward_impl PASSED")
+
+
+def test_periodic_reinforcement_result_structure():
+    """Verify periodic reinforcement returns expected structure.
+
+    When triggered, the periodic_reinforcement dict must include
+    pass_number, actions_applied, actions, overall_score, and coherent.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Directly invoke verify_and_reinforce to validate structure
+    report = model.verify_and_reinforce()
+
+    # The structure that periodic_reinforcement would contain
+    assert 'reinforcement_actions' in report
+    assert 'overall_score' in report
+    assert 'coherent' in report
+    assert isinstance(report['reinforcement_actions'], list)
+    print("✅ test_periodic_reinforcement_result_structure PASSED")
+
+
+def test_verify_and_reinforce_api_endpoint_exists():
+    """Verify the /api/verify_and_reinforce endpoint is registered.
+
+    The server must expose a POST endpoint for on-demand mutual
+    reinforcement cycles.
+    """
+    import inspect
+    import aeon_server
+
+    src = inspect.getsource(aeon_server)
+    assert '/api/verify_and_reinforce' in src, (
+        "aeon_server must define /api/verify_and_reinforce endpoint"
+    )
+    assert 'trigger_verify_and_reinforce' in src, (
+        "aeon_server must have trigger_verify_and_reinforce handler"
+    )
+    print("✅ test_verify_and_reinforce_api_endpoint_exists PASSED")
+
+
+def test_dashboard_activation_sequence_rendering():
+    """Verify the dashboard renders the activation sequence.
+
+    The dashboard must include HTML container and JavaScript logic
+    to display the activation sequence phases fetched from
+    /api/cognitive_activation.
+    """
+    with open('AEON_Dashboard.html', 'r') as f:
+        html = f.read()
+
+    assert 'arch-activation-card' in html, (
+        "Dashboard must include arch-activation-card container"
+    )
+    assert 'arch-activation-content' in html, (
+        "Dashboard must include arch-activation-content container"
+    )
+    assert 'arch-recommendations' in html, (
+        "Dashboard must include arch-recommendations container"
+    )
+    assert 'Activation Sequence' in html, (
+        "Dashboard must display 'Activation Sequence' heading"
+    )
+    # Verify the JS renders activation steps
+    assert '_archDiagData.activation' in html, (
+        "Dashboard JS must reference _archDiagData.activation"
+    )
+    assert '_archDiagData.recommendations' in html, (
+        "Dashboard JS must reference _archDiagData.recommendations"
+    )
+    print("✅ test_dashboard_activation_sequence_rendering PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes

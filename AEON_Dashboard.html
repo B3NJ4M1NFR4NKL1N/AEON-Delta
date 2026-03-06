@@ -716,6 +716,16 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div id="arch-gaps-content" class="arch-gap-list" style="font-size:11px">—</div>
   </div>
 
+  <!-- Activation Sequence & Recommendations -->
+  <div class="card" id="arch-activation-card" style="display:none;margin-bottom:18px;border-left:3px solid var(--accent)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="ct">🧠 Activation Sequence — Cognitive Emergence Phases</div>
+      <button class="btn btn-ghost" onclick="document.getElementById('arch-activation-card').style.display='none'" style="padding:2px 8px;font-size:10px">✕ Close</button>
+    </div>
+    <div id="arch-activation-content" style="font-size:11px">—</div>
+    <div id="arch-recommendations" style="margin-top:12px;font-size:11px;display:none"></div>
+  </div>
+
   <!-- Module breakdown & summary -->
   <div class="g2" style="margin-bottom:20px">
     <div class="card">
@@ -4122,6 +4132,40 @@ async function loadArchDiagnostics() {
             ${g.remediation ? `<div class="agi-fix">→ ${escHtml(g.remediation)}</div>` : ''}
           </div>`;
         }).join('');
+      }
+
+      // Render activation sequence phases
+      const actSteps = _archDiagData.activation || [];
+      if (actSteps.length > 0) {
+        const actCard = document.getElementById('arch-activation-card');
+        if (actCard) actCard.style.display = '';
+        const actEl = document.getElementById('arch-activation-content');
+        if (actEl) {
+          actEl.innerHTML = actSteps.map(s => {
+            const stClr = s.status === 'active' || s.status === 'achieved' ? 'var(--green)' : s.status === 'blocked' ? 'var(--danger)' : 'var(--warn)';
+            const stIcon = s.status === 'active' || s.status === 'achieved' ? '✓' : s.status === 'blocked' ? '✕' : '◌';
+            return `<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 8px;background:var(--surface3);border-radius:4px;margin-bottom:4px">
+              <span style="font-weight:700;color:var(--text3);min-width:18px">${s.order}.</span>
+              <span style="color:${stClr};font-weight:600;min-width:16px">${stIcon}</span>
+              <div style="flex:1">
+                <div style="font-weight:600;color:var(--text1)">${escHtml(s.phase || '')}</div>
+                <div style="color:var(--text3);font-size:10px;margin-top:2px">${escHtml(s.description || '')}</div>
+              </div>
+              <span style="color:${stClr};font-size:10px;font-weight:600;text-transform:uppercase">${escHtml(s.status || '')}</span>
+            </div>`;
+          }).join('');
+        }
+      }
+
+      // Render recommendations
+      const recs = _archDiagData.recommendations || [];
+      if (recs.length > 0) {
+        const recEl = document.getElementById('arch-recommendations');
+        if (recEl) {
+          recEl.style.display = '';
+          recEl.innerHTML = `<div style="font-weight:600;color:var(--text2);margin-bottom:6px">📋 Recommendations</div>` +
+            recs.map(r => `<div style="padding:4px 8px;background:var(--surface3);border-radius:4px;margin-bottom:3px;color:var(--text2)">• ${escHtml(typeof r === 'string' ? r : JSON.stringify(r))}</div>`).join('');
+        }
       }
     }
   } catch(e) { /* cognitive activation not available — try individual endpoints */ }
