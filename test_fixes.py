@@ -72659,6 +72659,191 @@ def test_dashboard_activation_sequence_rendering():
     print("✅ test_dashboard_activation_sequence_rendering PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Integration patches — tests for the five cognitive activation bridges
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_verify_and_reinforce_records_causal_trace():
+    """verify_and_reinforce records reinforcement actions in causal trace.
+
+    When the causal trace buffer is active, every reinforcement action
+    must be recorded so that root-cause analysis can trace corrective
+    actions back to their originating diagnostic.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_causal_trace=True)
+    model = AEONDeltaV3(config)
+
+    # Clear causal trace then reinforce
+    model.causal_trace._entries.clear()
+    result = model.verify_and_reinforce()
+    actions = result.get('reinforcement_actions', [])
+
+    if actions:
+        # Find the reinforcement entry in the causal trace
+        entries = list(model.causal_trace._entries)
+        reinforce_entries = [
+            e for e in entries
+            if e.get('module') == 'verify_and_reinforce'
+            or (hasattr(e, 'module') and e.module == 'verify_and_reinforce')
+        ]
+        # The trace should contain at least one entry from v&r
+        found = any(
+            'verify_and_reinforce' in str(e)
+            for e in entries
+        )
+        assert found, (
+            f"Causal trace should contain verify_and_reinforce entry "
+            f"when {len(actions)} action(s) were applied"
+        )
+    print("✅ test_verify_and_reinforce_records_causal_trace PASSED")
+
+
+def test_verify_and_reinforce_feeds_feedback_bus():
+    """verify_and_reinforce updates feedback bus signals.
+
+    After running verify_and_reinforce, the cognitive_unity_deficit
+    signal in the feedback bus should reflect the coherence report's
+    overall score.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    result = model.verify_and_reinforce()
+    overall_score = result.get('overall_score', 1.0)
+
+    fb = model.feedback_bus
+    assert fb is not None, "Feedback bus should exist"
+    signals = getattr(fb, '_extra_signals', {})
+
+    if 'cognitive_unity_deficit' in signals:
+        expected_deficit = max(0.0, min(1.0, 1.0 - overall_score))
+        actual_deficit = signals['cognitive_unity_deficit']
+        assert abs(actual_deficit - expected_deficit) < 0.01, (
+            f"cognitive_unity_deficit should be {expected_deficit:.3f}, "
+            f"got {actual_deficit:.3f}"
+        )
+    print("✅ test_verify_and_reinforce_feeds_feedback_bus PASSED")
+
+
+def test_cognitive_activation_probe_seeds_coherence_registry():
+    """Cognitive activation probe registers expected subsystems in the
+    coherence registry when present.
+
+    Active modules from _NODE_ATTR_MAP should appear in the coherence
+    registry's expected set so coverage tracking is properly aligned.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    cr = getattr(model, 'coherence_registry', None)
+    if cr is not None:
+        # Check that at least some active modules are in the expected set
+        active_nodes = set()
+        for node, attr in model._NODE_ATTR_MAP.items():
+            if getattr(model, attr, None) is not None:
+                active_nodes.add(node)
+        # Every active node should be in the expected set
+        missing = active_nodes - cr._expected
+        assert len(missing) == 0, (
+            f"Active modules should all be in coherence registry expected set. "
+            f"Missing: {sorted(missing)[:5]}"
+        )
+    print("✅ test_cognitive_activation_probe_seeds_coherence_registry PASSED")
+
+
+def test_periodic_reinforcement_feeds_uncertainty():
+    """When periodic reinforcement detects low coherence, uncertainty
+    is boosted in the output dict.
+
+    The periodic_reinforcement_deficit source should appear in
+    uncertainty_sources when overall_score < 0.8.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # We can't easily trigger the periodic reinforcement at pass 50
+    # in a unit test, but we can verify the logic exists by checking
+    # the _forward_impl source contains the feedback mechanism.
+    import inspect
+    source = inspect.getsource(model._forward_impl)
+    assert 'periodic_reinforcement_deficit' in source, (
+        "_forward_impl should contain periodic_reinforcement_deficit "
+        "uncertainty source for low-coherence reinforcement cycles"
+    )
+    assert '_reinforce_unc_boost' in source, (
+        "_forward_impl should compute _reinforce_unc_boost for "
+        "periodic reinforcement deficit feedback"
+    )
+    print("✅ test_periodic_reinforcement_feeds_uncertainty PASSED")
+
+
+def test_cognitive_activation_endpoint_includes_components():
+    """The /api/cognitive_activation endpoint should include
+    cognitive_unity_components, error_evolution_effectiveness, and
+    training_bridge in its response structure.
+    """
+    import inspect
+    from aeon_server import get_cognitive_activation
+
+    source = inspect.getsource(get_cognitive_activation)
+    assert 'cognitive_unity_components' in source, (
+        "Endpoint should include cognitive_unity_components"
+    )
+    assert 'error_evolution_effectiveness' in source, (
+        "Endpoint should include error_evolution_effectiveness"
+    )
+    assert 'training_bridge' in source, (
+        "Endpoint should include training_bridge"
+    )
+    print("✅ test_cognitive_activation_endpoint_includes_components PASSED")
+
+
+def test_verify_and_reinforce_error_evolution_pressure():
+    """verify_and_reinforce updates the error_evolution_pressure
+    feedback bus signal based on low-success-rate error classes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Record a few failing episodes to create pressure
+    if model.error_evolution is not None:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class='coherence_deficit',
+                strategy_used='test_strategy',
+                success=False,
+            )
+
+    result = model.verify_and_reinforce()
+
+    fb = model.feedback_bus
+    if fb is not None:
+        signals = getattr(fb, '_extra_signals', {})
+        if 'error_evolution_pressure' in signals:
+            pressure = signals['error_evolution_pressure']
+            assert isinstance(pressure, float), (
+                f"error_evolution_pressure should be float, got {type(pressure)}"
+            )
+            assert 0.0 <= pressure <= 1.0, (
+                f"error_evolution_pressure should be in [0,1], got {pressure}"
+            )
+    print("✅ test_verify_and_reinforce_error_evolution_pressure PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes

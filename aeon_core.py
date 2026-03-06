@@ -38145,11 +38145,12 @@ class AEONDeltaV3(nn.Module):
             try:
                 _reinforce = self.verify_and_reinforce()
                 _actions = _reinforce.get('reinforcement_actions', [])
+                _reinforce_score = _reinforce.get('overall_score', 1.0)
                 result['periodic_reinforcement'] = {
                     'pass_number': _fwd,
                     'actions_applied': len(_actions),
                     'actions': _actions,
-                    'overall_score': _reinforce.get('overall_score', 1.0),
+                    'overall_score': _reinforce_score,
                     'coherent': _reinforce.get('coherent', True),
                 }
                 if _actions:
@@ -38157,11 +38158,37 @@ class AEONDeltaV3(nn.Module):
                         "verify_and_reinforce", "periodic", {
                             "pass_number": _fwd,
                             "actions": len(_actions),
-                            "overall_score": _reinforce.get(
-                                'overall_score', 1.0,
-                            ),
+                            "overall_score": _reinforce_score,
                         },
                     )
+                # Feed the reinforcement coherence deficit into the
+                # uncertainty signal so that the next forward pass's
+                # meta-cognitive trigger is immediately aware of any
+                # architectural weakness detected by the periodic
+                # reinforcement cycle.  This closes the gap where
+                # periodic reinforcement adjusted metacognitive weights
+                # but the current pass's uncertainty signal did not
+                # reflect the detected weakness, deferring metacognitive
+                # response until the weights naturally accumulate enough
+                # pressure — which could take many forward passes.
+                if _reinforce_score < 0.8:
+                    _reinforce_unc_boost = min(
+                        1.0 - result.get('uncertainty', 0.0),
+                        (1.0 - _reinforce_score) * 0.1,
+                    )
+                    if _reinforce_unc_boost > 0:
+                        result['uncertainty'] = min(
+                            1.0,
+                            result.get('uncertainty', 0.0)
+                            + _reinforce_unc_boost,
+                        )
+                        _unc_sources = result.get(
+                            'uncertainty_sources', {},
+                        )
+                        _unc_sources[
+                            'periodic_reinforcement_deficit'
+                        ] = _reinforce_unc_boost
+                        result['uncertainty_sources'] = _unc_sources
             except Exception as _pr_err:
                 logger.debug(
                     "Periodic verify_and_reinforce skipped (pass %d): %s",
@@ -43575,6 +43602,57 @@ class AEONDeltaV3(nn.Module):
                 f'overall_score={_overall_score:.2f})'
             )
 
+        # --- Record reinforcement in causal trace for full traceability ---
+        # Every verify_and_reinforce action must be traceable so that
+        # root-cause analysis can answer "what corrective actions were
+        # applied and why?".  Without this, reinforcement actions modify
+        # error evolution and metacognitive weights but those changes
+        # are invisible to trace_root_cause(), breaking the causal
+        # transparency requirement.
+        if self.causal_trace is not None and reinforcement_actions:
+            self.causal_trace.record(
+                "verify_and_reinforce", "reinforcement_applied",
+                metadata={
+                    "actions": reinforcement_actions,
+                    "overall_score": _overall_score,
+                    "coherent": report.get('coherent', True),
+                    "weakest_axiom": (
+                        weakest_name if not report.get('coherent', True)
+                        or _overall_score < 1.0 else None
+                    ),
+                },
+            )
+
+        # --- Feed coherence deficit into feedback bus for next-pass
+        # conditioning.  This closes the gap where
+        # verify_and_reinforce() identified architectural weaknesses
+        # and adjusted metacognitive weights, but those corrections
+        # were not reflected in the feedback bus's conditioning vector
+        # until a full forward pass re-populated the signals.  By
+        # writing the coherence deficit directly, the next forward
+        # pass's meta-loop immediately benefits from the reinforcement
+        # cycle's assessment without waiting for the periodic signal
+        # refresh. ---
+        if self.feedback_bus is not None:
+            _signals = getattr(self.feedback_bus, '_extra_signals', {})
+            if 'cognitive_unity_deficit' in _signals:
+                _signals['cognitive_unity_deficit'] = max(
+                    0.0, min(1.0, 1.0 - _overall_score),
+                )
+            if 'error_evolution_pressure' in _signals:
+                _ee_pressure = 0.0
+                if self.error_evolution is not None:
+                    _ee_sum = self.error_evolution.get_error_summary()
+                    _ee_classes = _ee_sum.get('error_classes', {})
+                    _low_success = sum(
+                        1 for v in _ee_classes.values()
+                        if v.get('success_rate', 1.0) < 0.5
+                    )
+                    _ee_pressure = min(
+                        1.0, _low_success / max(len(_ee_classes), 1),
+                    )
+                _signals['error_evolution_pressure'] = _ee_pressure
+
         report['reinforcement_actions'] = reinforcement_actions
         return report
 
@@ -43973,6 +44051,31 @@ class AEONDeltaV3(nn.Module):
                 "Cognitive activation: verify_and_reinforce skipped: %s",
                 _vr_err,
             )
+
+        # 9. Coherence registry expected-subsystem seeding — when the
+        # SubsystemCoherenceRegistry exists, pre-register all subsystems
+        # that the forward pass is expected to produce outputs for.
+        # Without this, the registry's coverage deficit calculation
+        # uses its construction-time default set, which may diverge
+        # from the actual set of modules initialized during __init__.
+        # By seeding the expected set from _NODE_ATTR_MAP (the
+        # authoritative source), the registry's coverage tracking
+        # aligns with the model's actual composition, preventing
+        # spurious "absent subsystem" reports that would inflate
+        # metacognitive re-reasoning pressure.
+        _cr = getattr(self, 'coherence_registry', None)
+        if _cr is not None:
+            _cr_seeded = 0
+            for _node, _attr in self._NODE_ATTR_MAP.items():
+                if getattr(self, _attr, None) is not None:
+                    if _node not in _cr._expected:
+                        _cr._expected.add(_node)
+                        _cr_seeded += 1
+            if _cr_seeded > 0:
+                logger.info(
+                    "Cognitive activation: registered %d expected "
+                    "subsystems in coherence registry", _cr_seeded,
+                )
 
         # Track that the cognitive activation probe has completed —
         # used by self_diagnostic() to distinguish pre-activation
