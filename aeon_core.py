@@ -3499,24 +3499,6 @@ class AEONConfig:
                 if not getattr(self, flag, False):
                     object.__setattr__(self, flag, True)
 
-        # Prerequisite propagation — auto-enable memory_routing when any
-        # memory subsystem is active so the pipeline dependency edge
-        # ('memory_routing', 'metacognitive_trigger') is realized and
-        # memory retrieval quality feeds into the meta-cognitive cycle.
-        if (any(getattr(self, f, False) for f in (
-                'enable_hierarchical_memory', 'enable_neurogenic_memory',
-                'enable_temporal_memory', 'enable_consolidating_memory'))
-                and not getattr(self, 'enable_memory_routing', False)):
-            object.__setattr__(self, 'enable_memory_routing', True)
-
-        # Auto-enable counterfactual_verification when the unified
-        # simulator is active so the pipeline dependency edge
-        # ('counterfactual_verification', 'integration') is realized
-        # and causal predictions are verified against simulator output.
-        if (getattr(self, 'enable_unified_simulator', False)
-                and not getattr(self, 'enable_counterfactual_verification', False)):
-            object.__setattr__(self, 'enable_counterfactual_verification', True)
-
         # ── Coherence prerequisite warnings ────────────────────────
         # Warn when features are enabled without their prerequisites,
         # creating silent architectural gaps where cross-component

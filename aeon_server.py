@@ -826,13 +826,13 @@ async def run_inference(req: InferRequest):
             sanitize_count = None
             try:
                 sanitize_count = APP.model.tensor_guard._sanitize_count
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning("TensorGuard sanitize_count unavailable: %s", e)
             if sanitize_count is not None:
                 tc.record("sanitize_events", float(sanitize_count))
             tc.increment("total_inferences")
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Telemetry recording failed: %s", e)
 
     # Attach metacognitive state so consumers can assess reasoning
     # confidence, coherence verdict, and provenance attribution for

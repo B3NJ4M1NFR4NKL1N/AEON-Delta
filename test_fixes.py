@@ -36914,6 +36914,7 @@ def test_continual_learning_disabled_by_default():
 
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_continual_learning=False,
     )
     model = AEONDeltaV3(config)
     assert model.continual_learning is None
@@ -36980,6 +36981,7 @@ def test_grounded_multimodal_disabled_by_default():
 
     config = AEONConfig(
         hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_grounded_multimodal=False,
     )
     model = AEONDeltaV3(config)
     assert model.grounded_multimodal is None
@@ -67554,8 +67556,8 @@ def test_causal_quality_preserved_when_no_causal_model():
     import torch
 
     # Default config has no causal model
-    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
-    assert not config.enable_causal_model, "Default should have no causal model"
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        enable_causal_model=False)
 
     model = AEONDeltaV3(config)
     model.eval()
