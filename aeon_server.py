@@ -799,6 +799,29 @@ async def get_cognitive_activation():
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/verify_and_reinforce")
+async def trigger_verify_and_reinforce():
+    """Trigger an on-demand mutual-reinforcement cycle.
+
+    Runs ``verify_and_reinforce()`` which performs a full architectural
+    coherence report and then feeds identified weaknesses back into
+    error evolution and metacognitive trigger weights.  This enables
+    external callers (dashboard, monitoring tools) to force a
+    reinforcement cycle outside the periodic forward-pass schedule.
+
+    Returns the coherence report augmented with ``reinforcement_actions``
+    describing what corrective feedback was applied.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.verify_and_reinforce()
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"verify_and_reinforce error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
