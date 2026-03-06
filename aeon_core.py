@@ -41394,6 +41394,7 @@ class AEONDeltaV3(nn.Module):
             'MetaLearner initialized but task buffer empty',
             'Error class "verify_coherence_deficit"',
             'Align UPB critical edges with provenance DAG',
+            'Training error classes seeded with baseline',
         )
         if len(_critical_gaps) >= 3:
             status = 'critical'

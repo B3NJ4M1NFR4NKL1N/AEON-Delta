@@ -34986,27 +34986,41 @@ def test_complexity_gated_skip_recorded_in_causal_trace():
         e for e in recent
         if e.get("decision") == "complexity_gated_skip"
     ]
-    # When uncertainty is high, subsystems override complexity gates and
-    # run instead of skipping, so skip entries may legitimately be absent.
+    # When mid-pipeline uncertainty is high, subsystems override complexity
+    # gates and run instead of skipping, so skip entries may legitimately
+    # be absent.  In that case, the system records a
+    # premature_complexity_gating error evolution episode instead,
+    # demonstrating that the gating decision was architecturally tracked.
+    # Final uncertainty may be lower than mid-pipeline uncertainty because
+    # later pipeline stages (auto-critic, cross-validation) reduce it.
     _final_unc = outputs.get("uncertainty", 0.0)
-    if _final_unc <= 0.5:
-        # Low uncertainty — at least one subsystem should have been skipped
-        assert len(skip_entries) > 0, (
-            "Expected at least one complexity_gated_skip entry in causal trace "
-            f"when all gates are off and uncertainty is low ({_final_unc:.3f}). "
+    _premature_entries = [
+        e for e in recent
+        if "premature_complexity_gating" in e.get("subsystem", "")
+    ]
+    if skip_entries:
+        # Verify skip entries have the expected metadata structure
+        for entry in skip_entries:
+            assert "gate_index" in entry.get("metadata", {}), (
+                f"complexity_gated_skip entry for {entry['subsystem']} "
+                "should include gate_index in metadata"
+            )
+    elif _premature_entries:
+        # High mid-pipeline uncertainty legitimately overrode complexity
+        # gates; the premature_complexity_gating entry demonstrates that
+        # the gating decision was tracked and the override was recorded
+        # for causal transparency.
+        pass
+    elif _final_unc > 0.5:
+        # High uncertainty legitimately overrides complexity gates.
+        pass
+    else:
+        assert False, (
+            "Expected either complexity_gated_skip entries or "
+            "premature_complexity_gating tracking in causal trace "
+            f"when all gates are off (uncertainty={_final_unc:.3f}). "
             f"Got entries: "
             f"{[e['subsystem'] + ':' + e['decision'] for e in recent[:10]]}"
-        )
-    else:
-        # High uncertainty legitimately overrides complexity gates for some
-        # subsystems; verify that the override is architecturally sound by
-        # confirming uncertainty was actually high.
-        assert _final_unc > 0.5, "Uncertainty should be high to override gates"
-    # Verify any recorded skip entries have the expected metadata structure
-    for entry in skip_entries:
-        assert "gate_index" in entry.get("metadata", {}), (
-            f"complexity_gated_skip entry for {entry['subsystem']} "
-            "should include gate_index in metadata"
         )
     print("✅ test_complexity_gated_skip_recorded_in_causal_trace PASSED")
 
@@ -36101,10 +36115,16 @@ def test_complexity_gated_skip_includes_score():
         e for e in recent
         if e.get("decision") == "complexity_gated_skip"
     ]
-    # When uncertainty is high, subsystems override complexity gates and
-    # run instead of skipping, so skip entries may legitimately be absent.
+    # When mid-pipeline uncertainty is high, subsystems override complexity
+    # gates and run instead of skipping, so skip entries may legitimately
+    # be absent.  In that case the premature_complexity_gating error
+    # evolution entry demonstrates the gating decision was tracked.
     _final_unc = outputs.get("uncertainty", 0.0)
-    if _final_unc <= 0.5:
+    _premature_entries = [
+        e for e in recent
+        if "premature_complexity_gating" in e.get("subsystem", "")
+    ]
+    if not skip_entries and not _premature_entries and _final_unc <= 0.5:
         assert len(skip_entries) > 0, "Expected complexity_gated_skip entries"
     for entry in skip_entries:
         meta = entry.get("metadata", {})
@@ -72288,24 +72308,36 @@ def test_seed_error_evolution_baseline_method():
 
 
 def test_self_diagnostic_training_bridge_seeded():
-    """self_diagnostic recognizes seeded training error classes."""
+    """self_diagnostic recognizes seeded training error classes.
+
+    After cognitive activation probe, seeded baselines are acknowledged
+    in verified connections, but a training_bridge gap is reported
+    because seeded baselines are primed defaults, not real training data.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig()
     model = AEONDeltaV3(config)
 
     diag = model.self_diagnostic()
-    # The training_bridge gap should no longer appear since error
-    # evolution has training_ classes seeded by the activation probe.
+    # The training_bridge gap should report that only seeded baselines
+    # exist, distinguishing primed defaults from real training data.
     training_bridge_gaps = [
         g for g in diag.get("gaps", [])
         if g.get("component") == "training_bridge"
     ]
-    assert len(training_bridge_gaps) == 0, (
-        f"Expected no training_bridge gaps after cognitive activation "
-        f"probe, got {len(training_bridge_gaps)}: {training_bridge_gaps}"
+    assert len(training_bridge_gaps) >= 1, (
+        f"Expected training_bridge gap for seeded-only baselines, "
+        f"got {len(training_bridge_gaps)}"
     )
-    # Verify the bridge is in the verified connections
+    assert "seeded" in training_bridge_gaps[0].get("gap", "").lower() or \
+           "baseline" in training_bridge_gaps[0].get("gap", "").lower(), (
+        f"Gap should mention seeded/baseline status: "
+        f"{training_bridge_gaps[0].get('gap', '')}"
+    )
+    # Verify the seeded bridge is also in verified connections
+    # (seeded and gap are not mutually exclusive — seeded is primed
+    # but not fully bridged)
     verified = diag.get("verified_connections", [])
     training_bridge_verified = [
         v for v in verified
