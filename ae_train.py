@@ -290,7 +290,37 @@ except ImportError:
                     cls_stats["max_loss_magnitude"] = max(loss_values)
                     cls_stats["mean_loss_magnitude"] = sum(loss_values) / len(loss_values)
                 summary["error_classes"][cls] = cls_stats
+            summary["total_recorded"] = sum(
+                len(eps) for eps in self._episodes.values()
+            )
             return summary
+
+        def get_degrading_error_classes(self) -> Dict[str, float]:
+            """Identify error classes whose recovery effectiveness is worsening.
+
+            Compares the success rate of the most recent half of episodes
+            against the older half for each error class.  A negative trend
+            (recent success rate < older success rate) indicates degrading
+            recovery, which should raise metacognitive concern.
+
+            Returns:
+                Dict mapping error class name to trend delta (negative =
+                degrading).  Only classes with >= 4 episodes and a negative
+                trend are included.
+            """
+            degrading: Dict[str, float] = {}
+            for cls, eps in self._episodes.items():
+                if len(eps) < 4:
+                    continue
+                mid = len(eps) // 2
+                older = eps[:mid]
+                recent = eps[mid:]
+                older_rate = sum(1 for e in older if e["success"]) / max(len(older), 1)
+                recent_rate = sum(1 for e in recent if e["success"]) / max(len(recent), 1)
+                trend = recent_rate - older_rate
+                if trend < 0:
+                    degrading[cls] = trend
+            return degrading
 
     class ConvergenceMonitor:
         """Convergence monitor (fallback when aeon_core unavailable).
@@ -414,6 +444,35 @@ except ImportError:
                 )
             return {"status": "converging", "certified": False,
                     "contraction_rate": avg_contraction}
+
+        def get_convergence_summary(self) -> Dict[str, Any]:
+            """Return a summary of convergence state.
+
+            Mirrors ``aeon_core.ConvergenceMonitor.get_convergence_summary``
+            so that ``get_architectural_health()`` can be invoked even
+            when aeon_core is unavailable.
+            """
+            if len(self.history) < 3:
+                return {"status": "warmup", "certified": False,
+                        "history_length": len(self.history)}
+            ratios = [
+                self.history[i] / max(self.history[i - 1], 1e-12)
+                for i in range(1, len(self.history))
+            ]
+            avg_contraction = sum(ratios) / len(ratios)
+            delta_norm = self.history[-1]
+            if avg_contraction < 1.0 and delta_norm < self._threshold:
+                status, certified = "converged", True
+            elif avg_contraction >= 1.0:
+                status, certified = "diverging", False
+            else:
+                status, certified = "converging", False
+            return {
+                "status": status,
+                "certified": certified,
+                "contraction_rate": avg_contraction,
+                "history_length": len(self.history),
+            }
 
     class CausalProvenanceTracker:
         """Provenance tracker (fallback when aeon_core unavailable).
@@ -824,6 +883,12 @@ except ImportError:
                 self.convergence_monitor.set_error_evolution(self.error_evolution)
             # Wire convergence monitor → provenance tracker.
             self.convergence_monitor.set_provenance_tracker(self.provenance_tracker)
+            # Wire convergence monitor → metacognitive trigger so that
+            # high metacognitive pressure tightens convergence threshold.
+            if self.metacognitive_trigger is not None:
+                self.convergence_monitor.set_metacognitive_trigger(
+                    self.metacognitive_trigger,
+                )
             # Wire error evolution → causal trace.
             if self.error_evolution is not None and self.causal_trace is not None:
                 self.error_evolution.set_causal_trace(self.causal_trace)
@@ -945,6 +1010,62 @@ except ImportError:
                     coherence_result.get("pairwise", {}),
                 )
 
+            # 4c. Root-cause trace — use the causal_trace buffer (when
+            # wired) to provide actual root-cause data instead of an
+            # empty dict.  This ensures that conclusions produced during
+            # training are traceable to their originating modules,
+            # satisfying the root-cause traceability requirement even
+            # when aeon_core is unavailable.
+            root_cause_trace: Dict[str, Any] = {}
+            if self.causal_trace is not None:
+                try:
+                    _recent = self.causal_trace.recent(1)
+                    if _recent:
+                        _last_id = _recent[0].get("id") if isinstance(_recent[0], dict) else None
+                        if _last_id is not None:
+                            root_cause_trace = self.causal_trace.trace_root_cause(
+                                _last_id,
+                            ) or {}
+                except Exception:
+                    pass
+
+            # 4d. Correction guidance — synthesize actionable
+            # recommendation from weakest pair, most uncertain module,
+            # and provenance root cause.  Mirrors the correction_guidance
+            # dict produced by aeon_core.UnifiedCognitiveCycle so that
+            # training phases can apply targeted corrections when
+            # aeon_core is unavailable.
+            _correction_target_module: Optional[str] = None
+            _correction_reason: Optional[str] = None
+            contribs = provenance.get("contributions", {})
+            if contribs and coherence_deficit > 0.3:
+                _correction_target_module = max(
+                    contribs, key=contribs.get,
+                )
+                _correction_reason = "dominant_provenance_high_coherence_deficit"
+            if _correction_target_module is None and weakest_pair is not None:
+                _wp_mods = weakest_pair.get("modules", [])
+                if _wp_mods:
+                    _correction_target_module = _wp_mods[0]
+                    _correction_reason = "weakest_coherence_pair"
+            correction_guidance: Dict[str, Any] = {
+                "target_module": _correction_target_module,
+                "reason": _correction_reason,
+                "weakest_pair": weakest_pair,
+            }
+            if (_correction_target_module is not None
+                    and self.error_evolution is not None):
+                _best = self.error_evolution.get_best_strategy(
+                    _correction_target_module,
+                )
+                correction_guidance["recommended_strategy"] = _best
+                _root_causes = self.error_evolution.get_root_causes(
+                    _correction_target_module,
+                )
+                correction_guidance["historical_root_causes"] = (
+                    _root_causes.get("root_causes", {})
+                )
+
             # 5. Restore coherence threshold
             if _original_threshold is not None and self.coherence_verifier is not None:
                 self.coherence_verifier.threshold = _original_threshold
@@ -960,7 +1081,8 @@ except ImportError:
                 "should_rerun": should_rerun,
                 "trigger_detail": trigger_detail,
                 "provenance": provenance,
-                "root_cause_trace": {},
+                "root_cause_trace": root_cause_trace,
+                "correction_guidance": correction_guidance,
             }
 
         def reset(self):
