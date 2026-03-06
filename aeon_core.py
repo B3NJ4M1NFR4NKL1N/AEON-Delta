@@ -2214,6 +2214,24 @@ class SystemIntegrityMonitor:
         scores = [self.get_subsystem_health(s) for s in subsystems]
         return sum(scores) / len(scores)
 
+    def get_health_score(self) -> float:
+        """Return the composite health score across all subsystems.
+
+        Convenience alias for :meth:`get_global_health` used by the
+        ``/api/health`` endpoint in the serving layer.
+        """
+        return self.get_global_health()
+
+    def get_subsystem_scores(self) -> Dict[str, float]:
+        """Return a mapping of subsystem name → current mean health score.
+
+        Used by the ``/api/health`` endpoint to expose per-subsystem
+        health alongside the composite score.
+        """
+        with self._lock:
+            subsystems = list(self._subsystem_health.keys())
+        return {s: self.get_subsystem_health(s) for s in subsystems}
+
     def get_anomalies(self, n: int = 20) -> List[Dict[str, Any]]:
         """Return the *n* most recent anomalies (newest last)."""
         with self._lock:

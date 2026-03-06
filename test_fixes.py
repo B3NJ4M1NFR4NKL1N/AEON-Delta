@@ -7051,6 +7051,49 @@ def test_integrity_monitor_thread_safety():
     print("✅ test_integrity_monitor_thread_safety PASSED")
 
 
+def test_integrity_monitor_get_health_score():
+    """Verify get_health_score returns composite health (alias for get_global_health)."""
+    from aeon_core import SystemIntegrityMonitor
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+
+    # Empty monitor should return 1.0
+    assert monitor.get_health_score() == 1.0
+
+    monitor.record_health("meta_loop", 0.9)
+    monitor.record_health("safety", 1.0)
+
+    score = monitor.get_health_score()
+    assert score == monitor.get_global_health(), (
+        "get_health_score must match get_global_health"
+    )
+    assert abs(score - 0.95) < 1e-6, f"Expected 0.95, got {score}"
+
+    print("✅ test_integrity_monitor_get_health_score PASSED")
+
+
+def test_integrity_monitor_get_subsystem_scores():
+    """Verify get_subsystem_scores returns per-subsystem health dict."""
+    from aeon_core import SystemIntegrityMonitor
+
+    monitor = SystemIntegrityMonitor(window_size=100)
+
+    # Empty monitor should return empty dict
+    assert monitor.get_subsystem_scores() == {}
+
+    monitor.record_health("meta_loop", 0.9)
+    monitor.record_health("meta_loop", 0.8)
+    monitor.record_health("safety", 1.0)
+
+    scores = monitor.get_subsystem_scores()
+    assert isinstance(scores, dict)
+    assert set(scores.keys()) == {"meta_loop", "safety"}
+    assert abs(scores["meta_loop"] - 0.85) < 1e-6
+    assert scores["safety"] == 1.0
+
+    print("✅ test_integrity_monitor_get_subsystem_scores PASSED")
+
+
 # ============================================================================
 # PROGRESS TRACKER TESTS
 # ============================================================================
