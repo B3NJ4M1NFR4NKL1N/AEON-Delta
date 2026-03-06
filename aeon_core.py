@@ -43050,15 +43050,18 @@ class AEONDeltaV3(nn.Module):
         _ee = getattr(self, 'error_evolution', None)
         if _ee is not None:
             _ee_summary = _ee.get_error_summary()
-            _ee_total = _ee_summary.get('total_recorded', 0)
             _ee_successes = 0
             _ee_class_count = 0
+            _ee_total_from_classes = 0
             for _cls, _cls_stats in _ee_summary.get('error_classes', {}).items():
                 _ee_class_count += 1
+                _cls_count = _cls_stats.get('count', 0)
+                _ee_total_from_classes += _cls_count
                 _ee_successes += int(
                     _cls_stats.get('success_rate', 0.0)
-                    * _cls_stats.get('count', 0)
+                    * _cls_count
                 )
+            _ee_total = _ee_total_from_classes
             _ee_rate = (
                 _ee_successes / max(_ee_total, 1)
                 if _ee_total > 0 else 1.0
@@ -43361,7 +43364,9 @@ class AEONDeltaV3(nn.Module):
         if self.error_evolution is not None:
             _summary = self.error_evolution.get_error_summary()
             _error_classes = _summary.get('error_classes', {})
-            _total = _summary.get('total_recorded', 0)
+            _total = sum(
+                v.get('count', 0) for v in _error_classes.values()
+            )
             _healthy_classes = sum(
                 1 for v in _error_classes.values()
                 if v.get('success_rate', 0) >= 0.5
@@ -43850,7 +43855,8 @@ class AEONDeltaV3(nn.Module):
                 and self.error_evolution is not None):
             try:
                 _summary = self.error_evolution.get_error_summary()
-                if _summary.get('total_recorded', 0) > 0:
+                if (_summary.get('total_recorded', 0) > 0
+                        or _summary.get('error_classes')):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         _summary,
                     )
