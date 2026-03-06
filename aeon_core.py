@@ -31713,8 +31713,11 @@ class AEONDeltaV3(nn.Module):
                 _ns_err_boost = min(1.0 - uncertainty, 0.05)
                 if _ns_err_boost > 0:
                     uncertainty = min(1.0, uncertainty + _ns_err_boost)
-                    uncertainty_sources["ns_bridge_error"] = _ns_err_boost
                     high_uncertainty = uncertainty > 0.5
+                # Always record ns_bridge_error in uncertainty_sources
+                # even when uncertainty is already saturated, so the
+                # failure is visible to downstream diagnostics.
+                uncertainty_sources["ns_bridge_error"] = max(_ns_err_boost, 1e-6)
         # Cache NS bridge confidence for the feedback bus.  Confidence is
         # derived from the mean fact and rule activation: high activation
         # indicates strong symbolic grounding; errors yield 0.0.
@@ -43931,8 +43934,16 @@ class AEONDeltaV3(nn.Module):
         # and metacognitive trigger weights, satisfying the requirement
         # that "active components verify and stabilize each other's
         # states" from the moment the system is constructed.
+        # Save and restore _total_recorded so init-time episodes are
+        # transparent to external consumers (same as baseline seeding).
         try:
+            _pre_vr_total = (
+                self.error_evolution._total_recorded
+                if self.error_evolution is not None else 0
+            )
             _reinforce = self.verify_and_reinforce()
+            if self.error_evolution is not None:
+                self.error_evolution._total_recorded = _pre_vr_total
             _actions = _reinforce.get('reinforcement_actions', [])
             if _actions:
                 logger.info(
@@ -44633,6 +44644,16 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution._total_recorded = sum(
                                 len(v) for v in self.error_evolution._episodes.values()
                             )
+                            # Subtract baseline episodes (seeded by
+                            # _cognitive_activation_probe) so total_recorded
+                            # reflects only real user/training episodes.
+                            _baseline_count = sum(
+                                1
+                                for eps in self.error_evolution._episodes.values()
+                                for ep in eps
+                                if (ep.get('metadata') or {}).get('baseline', False)
+                            )
+                            self.error_evolution._total_recorded -= _baseline_count
                         logger.info("Restored error evolution episodes")
                     # Restore convergence history
                     if ('convergence_history' in cognitive_state
