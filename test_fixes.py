@@ -31277,8 +31277,9 @@ def test_self_diagnostic_includes_error_evolution_root_causes():
     model = AEONDeltaV3(config)
 
     # Seed error evolution with repeated failures so root-cause analysis
-    # has data to work with (need count >= 2 and success_rate < 0.5).
-    for _ in range(3):
+    # has data to work with (need count >= 5 during warm-up phase and
+    # success_rate < 0.5).
+    for _ in range(6):
         model.error_evolution.record_episode(
             error_class='test_recurring_failure',
             strategy_used='fallback',
@@ -34775,7 +34776,13 @@ def test_lambda_cycle_consistency_config():
 
 
 def test_self_diagnostic_reports_training_bridge_v2():
-    """Gap 4: self_diagnostic() should report training-bridge status."""
+    """Gap 4: self_diagnostic() should report training-bridge status.
+    
+    After the cognitive activation probe seeds baseline training error
+    classes, the bridge is considered 'primed' and no gap should appear.
+    The bridge gap only appears when no training error classes exist at
+    all (e.g. error evolution disabled or no training_ classes seeded).
+    """
     import torch
     from aeon_core import AEONConfig, AEONDeltaV3
 
@@ -34786,15 +34793,16 @@ def test_self_diagnostic_reports_training_bridge_v2():
     model = AEONDeltaV3(config)
     diag = model.self_diagnostic()
 
-    # Without bridging, should report a gap
-    gaps = diag['gaps']
-    bridge_gaps = [g for g in gaps if g['component'] == 'training_bridge']
-    assert len(bridge_gaps) > 0, (
-        "self_diagnostic should report training_bridge gap when no "
-        "training errors have been bridged"
-    )
-    assert 'bridge_training_errors_to_inference' in bridge_gaps[0]['remediation'], (
-        "Remediation should mention bridge_training_errors_to_inference"
+    # After activation probe seeding, the bridge should be "primed"
+    # (verified) rather than generating a gap.
+    verified = diag.get('verified_connections', [])
+    training_bridge_verified = [
+        v for v in verified
+        if 'training_bridge' in v and 'training error classes' in v
+    ]
+    assert len(training_bridge_verified) >= 1, (
+        "self_diagnostic should verify training_bridge as primed after "
+        f"activation probe seeding. Verified: {verified}"
     )
     print("✅ test_self_diagnostic_reports_training_bridge_v2 PASSED")
 
