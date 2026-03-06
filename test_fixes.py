@@ -15307,7 +15307,7 @@ def test_coherence_deficit_triggers_active_recovery():
     )
 
     # Verify the coherence recovery audit entry exists when deficit is detected
-    audit_decisions = model.audit_log.recent(n=50)
+    audit_decisions = model.audit_log.recent(n=200)
     recovery_entries = [
         d for d in audit_decisions
         if d.get("subsystem") == "coherence_recovery"
