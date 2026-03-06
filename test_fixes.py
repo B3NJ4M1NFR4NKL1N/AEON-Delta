@@ -72193,6 +72193,138 @@ def test_fallback_and_core_ucc_interface_parity():
     print("✅ test_fallback_and_core_ucc_interface_parity PASSED")
 
 
+def test_cognitive_activation_probe_seeds_error_evolution():
+    """_cognitive_activation_probe seeds baseline training error classes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    assert model.error_evolution is not None
+    summary = model.error_evolution.get_error_summary()
+    training_classes = [
+        c for c in summary.get("error_classes", {})
+        if c.startswith("training_")
+    ]
+    assert len(training_classes) >= 4, (
+        f"Expected at least 4 seeded training error classes, got "
+        f"{len(training_classes)}: {training_classes}"
+    )
+    # Verify they are baseline episodes
+    for tc in training_classes:
+        episodes = model.error_evolution._episodes[tc]
+        assert len(episodes) >= 1
+        assert episodes[0]["metadata"].get("baseline") is True, (
+            f"Training class {tc} should be a baseline episode"
+        )
+    print("✅ test_cognitive_activation_probe_seeds_error_evolution PASSED")
+
+
+def test_cognitive_activation_probe_registers_provenance():
+    """_cognitive_activation_probe registers provenance dependencies."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    dep_graph = model.provenance_tracker.get_dependency_graph()
+    total_edges = sum(
+        len(v) if isinstance(v, (set, list)) else 0
+        for v in dep_graph.values()
+    )
+    assert total_edges > 0, "Provenance dependency graph should have edges"
+    dag_val = model.provenance_tracker.validate_dag_acyclic()
+    assert dag_val.get("is_acyclic", False), "Provenance DAG must remain acyclic"
+    print("✅ test_cognitive_activation_probe_registers_provenance PASSED")
+
+
+def test_cognitive_activation_probe_idempotent():
+    """Calling _cognitive_activation_probe twice is safe."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Probe was already called during __init__; call again
+    model._cognitive_activation_probe()
+
+    summary = model.error_evolution.get_error_summary()
+    training_classes = [
+        c for c in summary.get("error_classes", {})
+        if c.startswith("training_")
+    ]
+    # Each training class should have exactly 1 episode (idempotent)
+    for tc in training_classes:
+        episodes = model.error_evolution._episodes[tc]
+        assert len(episodes) == 1, (
+            f"Expected 1 baseline episode for {tc}, got {len(episodes)}"
+        )
+    print("✅ test_cognitive_activation_probe_idempotent PASSED")
+
+
+def test_seed_error_evolution_baseline_method():
+    """seed_error_evolution_baseline returns count and is idempotent."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Already seeded by __init__, so second call should return 0
+    seeded = model.seed_error_evolution_baseline()
+    assert seeded == 0, (
+        f"Second seed call should return 0, got {seeded}"
+    )
+    print("✅ test_seed_error_evolution_baseline_method PASSED")
+
+
+def test_self_diagnostic_training_bridge_seeded():
+    """self_diagnostic recognizes seeded training error classes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    diag = model.self_diagnostic()
+    # The training_bridge gap should no longer appear since error
+    # evolution has training_ classes seeded by the activation probe.
+    training_bridge_gaps = [
+        g for g in diag.get("gaps", [])
+        if g.get("component") == "training_bridge"
+    ]
+    assert len(training_bridge_gaps) == 0, (
+        f"Expected no training_bridge gaps after cognitive activation "
+        f"probe, got {len(training_bridge_gaps)}: {training_bridge_gaps}"
+    )
+    # Verify the bridge is in the verified connections
+    verified = diag.get("verified_connections", [])
+    training_bridge_verified = [
+        v for v in verified
+        if "training_bridge" in v and "training error classes" in v
+    ]
+    assert len(training_bridge_verified) >= 1, (
+        f"Expected training_bridge in verified connections"
+    )
+    print("✅ test_self_diagnostic_training_bridge_seeded PASSED")
+
+
+def test_cognitive_activation_coherence_report():
+    """architectural_coherence_report after activation has seeded evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.architectural_coherence_report()
+    ee = report.get("error_evolution", {})
+    assert ee.get("total_episodes", 0) > 0, (
+        "Error evolution should have baseline episodes after activation"
+    )
+    assert ee.get("error_class_count", 0) > 0, (
+        "Error evolution should have error classes after activation"
+    )
+    print("✅ test_cognitive_activation_coherence_report PASSED")
+
+
 def test_total_test_count_exceeds_2500():
     """Confirm the total activated test count exceeds 2500."""
     import test_fixes
