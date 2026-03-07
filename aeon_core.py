@@ -42339,6 +42339,23 @@ class AEONDeltaV3(nn.Module):
                     "affected_modules": sorted(skipped_edge_modules),
                 },
             )
+        if config_disabled_edges:
+            _cd_modules: Set[str] = set()
+            for cde in config_disabled_edges:
+                _cd_edge = cde['edge']
+                _cd_modules.add(_cd_edge[0])
+                _cd_modules.add(_cd_edge[1])
+            self.audit_log.record(
+                "verify_pipeline_wiring", "skipped_edges", {
+                    "count": len(config_disabled_edges),
+                    "edges": [
+                        (cde['edge'][0], cde['edge'][1])
+                        for cde in config_disabled_edges
+                    ],
+                    "affected_modules": sorted(_cd_modules),
+                    "reason": "config_disabled",
+                },
+            )
 
         # --- DAG acyclicity validation ---
         # Verify that the provenance tracker's dependency graph is acyclic.
@@ -42448,7 +42465,7 @@ class AEONDeltaV3(nn.Module):
             )
 
         return {
-            'total_edges': total,
+            'total_edges': _effective_total,
             'verified_edges': verified_edges,
             'verified_count': len(verified_edges),
             'missing_edges': missing_edges,
