@@ -42114,6 +42114,8 @@ def test_build_feedback_extra_signals_helper():
             lipschitz_target = 0.85
         _cached_diversity_state = torch.tensor([0.1])
         _cached_topology_state = torch.tensor([1.0])
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
         _last_trust_score = 0.4
         _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
         _cached_uncertainty_sources = {"coherence_deficit": 0.3}
@@ -42132,7 +42134,11 @@ def test_build_feedback_extra_signals_helper():
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
         provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42351,7 +42357,13 @@ def test_uncertainty_sources_values_clamped():
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
         provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     # Uncertainty sources are now aggregated into unc_peak and unc_source_count.
@@ -43231,6 +43243,12 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43302,6 +43320,12 @@ def test_build_feedback_extra_signals_default_ucc_state():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43439,6 +43463,12 @@ def test_systematic_uncertainty_in_feedback_bus():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43511,6 +43541,12 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43553,6 +43589,12 @@ def test_auto_critic_quality_deficit_absent_when_good():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
@@ -44768,6 +44810,12 @@ def test_build_feedback_extra_signals_hybrid_ns_cv():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockDegraded())
     assert "hybrid_reasoning_quality" in extra, (
@@ -44822,6 +44870,12 @@ def test_build_feedback_extra_signals_omits_healthy():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockHealthy())
     assert "hybrid_reasoning_quality" not in extra, (
@@ -46916,6 +46970,12 @@ def test_gap4_lipschitz_pressure_in_feedback_bus():
         _cached_empirical_lipschitz = 1.2
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -46960,6 +47020,12 @@ def test_gap4_lipschitz_pressure_absent_when_below_target():
         _cached_empirical_lipschitz = 0.5  # Below target
         _cached_arbiter_has_conflict = False
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -47970,6 +48036,12 @@ def test_build_feedback_routes_arbiter_conflict():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = True  # conflict detected
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -48011,6 +48083,12 @@ def test_build_feedback_no_arbiter_conflict_when_none():
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False  # no conflict
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -49661,6 +49739,12 @@ def test_hvae_abstraction_pressure_in_feedback():
         _cached_arbiter_has_conflict = False
         _cached_hvae_kl = 3.0  # High KL divergence
         provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
 
     mock = _MockHighKL()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
