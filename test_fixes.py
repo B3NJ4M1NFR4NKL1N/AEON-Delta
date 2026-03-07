@@ -67282,6 +67282,95 @@ def run_all_tests():
     test_system_emergence_report_records_causal_trace()
     test_system_emergence_endpoint_exists()
 
+    # Section 52: Final Integration & Cognitive Activation Tests
+    # These tests validate the complete cognitive activation pipeline,
+    # system emergence conditions, and mutual reinforcement loops that
+    # transition AEON-Delta from a connected architecture to a
+    # functional cognitive organism.
+
+    # Integrity monitor tests
+    test_integrity_monitor_get_health_score()
+    test_integrity_monitor_get_subsystem_scores()
+
+    # Fallback UCC & training stub tests
+    test_fallback_ucc_returns_correction_guidance()
+    test_fallback_ucc_correction_guidance_with_high_deficit()
+    test_fallback_ucc_root_cause_trace_with_causal_trace()
+    test_fallback_error_evolution_get_degrading_classes()
+    test_fallback_error_evolution_total_recorded()
+    test_fallback_convergence_monitor_get_summary()
+    test_fallback_ucc_wires_metacognitive_trigger_to_convergence()
+    test_fallback_and_core_ucc_interface_parity()
+    test_fallback_coherence_registry_covers_idle_subsystems()
+    test_fallback_registry_does_not_override_real_registration()
+
+    # Cognitive activation probe tests
+    test_cognitive_activation_endpoint_exists()
+    test_cognitive_activation_probe_seeds_error_evolution()
+    test_cognitive_activation_probe_registers_provenance()
+    test_cognitive_activation_probe_idempotent()
+    test_seed_error_evolution_baseline_method()
+    test_self_diagnostic_training_bridge_seeded()
+    test_cognitive_activation_coherence_report()
+    test_cognitive_activation_seeds_coherence_states()
+    test_cognitive_activation_primes_feedback_bus()
+    test_self_diagnostic_warmup_status()
+    test_cognitive_activation_complete_flag()
+    test_cognitive_activation_seeded_states_shape()
+    test_cognitive_activation_upb_provenance_alignment()
+    test_cognitive_activation_verify_and_reinforce_at_init()
+    test_config_disabled_transitive_classification()
+    test_self_diagnostic_warmup_with_disabled_modules()
+    test_cognitive_unity_upb_aligned_after_probe()
+    test_aeon_core_ucc_returns_correction_guidance()
+
+    # Periodic reinforcement & feedback loop tests
+    test_periodic_reinforcement_in_forward_impl()
+    test_periodic_reinforcement_result_structure()
+    test_dashboard_activation_sequence_rendering()
+
+    # Verify & reinforce integration tests
+    test_verify_and_reinforce_api_endpoint_exists()
+    test_verify_and_reinforce_records_causal_trace()
+    test_verify_and_reinforce_feeds_feedback_bus()
+    test_cognitive_activation_probe_seeds_coherence_registry()
+    test_periodic_reinforcement_feeds_uncertainty()
+    test_cognitive_activation_endpoint_includes_components()
+    test_verify_and_reinforce_error_evolution_pressure()
+    test_cognitive_activation_registers_verify_and_reinforce_expected()
+    test_cognitive_activation_endpoint_includes_system_emergence()
+    test_verify_and_reinforce_registers_in_coherence_registry()
+    test_verify_and_reinforce_updates_cognitive_unity_deficit()
+    test_verify_and_reinforce_refreshes_low_quality_cache()
+
+    # Causal transparency & traceability tests
+    test_verify_cognitive_unity_records_causal_trace()
+    test_feedback_bus_signals_persist_after_forward()
+    test_upb_cycle_exempt_edges_tracked()
+    test_upb_provenance_aligned_after_activation()
+    test_baseline_coherence_states_non_zero()
+    test_self_diagnostic_healthy_during_warmup()
+    test_self_diagnostic_warmup_no_runtime_coherence_gap()
+    test_error_evolution_warmup_threshold()
+    test_verify_pipeline_wiring_records_causal_trace()
+    test_verify_and_reinforce_wiring_feedback()
+
+    # Cognitive frame & executive review tests
+    test_cognitive_frame_needs_diagnostic_escalates_uncertainty()
+    test_cognitive_frame_assessment_in_causal_trace()
+    test_metacognitive_executive_review_in_causal_trace()
+    test_executive_review_triggers_error_evolution()
+    test_cognitive_frame_diagnostic_escalation_logic()
+    test_executive_review_causal_trace_records_recommendation()
+
+    # System emergence & full integration tests
+    test_system_emergence_all_conditions_met()
+    test_activation_recovery_seeds_success_episodes()
+    test_training_bridge_primed_after_activation()
+    test_architectural_coherence_report_includes_wiring_gaps()
+    test_pipeline_wiring_gap_in_error_class_mapping()
+    test_causal_transparency_full_chain()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
