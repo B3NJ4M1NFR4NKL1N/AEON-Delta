@@ -861,6 +861,37 @@ async def trigger_verify_and_reinforce():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/system_emergence")
+async def get_system_emergence():
+    """Return the unified system emergence report.
+
+    Produces the four deliverables required by the Final Integration &
+    Cognitive Activation task:
+
+    1. **Integration Map** — connected vs. isolated critical paths with
+       wiring coverage, provenance coverage, and feedback bus coverage.
+    2. **Critical Patches** — remaining disconnected nodes with module
+       health scores and remediation guidance.
+    3. **Activation Sequence** — logical order for safe online activation.
+    4. **System Emergence Status** — actionable readiness verdict
+       synthesizing mutual reinforcement, meta-cognitive trigger, and
+       causal transparency requirements.
+
+    This endpoint calls ``system_emergence_report()`` on the model,
+    which internally synthesizes ``verify_cognitive_unity()``,
+    ``verify_pipeline_wiring()``, ``self_diagnostic()``, and
+    ``get_architectural_health()`` into a single actionable report.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.system_emergence_report()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"system_emergence error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════

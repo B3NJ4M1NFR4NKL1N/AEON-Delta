@@ -67179,6 +67179,12 @@ def run_all_tests():
     test_error_class_to_signal_mapping_complete()
     test_pipeline_dependencies_form_dag()
     test_total_test_count_exceeds_2500()
+    test_system_emergence_report_method()
+    test_feedback_bus_evaluated_signals_tracking()
+    test_feedback_bus_coverage_after_forward_pass()
+    test_feedback_bus_signal_evaluation_causal_trace()
+    test_system_emergence_report_records_causal_trace()
+    test_system_emergence_endpoint_exists()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -73711,6 +73717,234 @@ def test_causal_transparency_full_chain():
     # verify_and_reinforce only traces when actions are taken
     # (which depends on scores being below thresholds)
     print("✅ test_causal_transparency_full_chain PASSED")
+
+
+def test_system_emergence_report_method():
+    """system_emergence_report() returns a complete report with all four
+    deliverables: integration_map, critical_patches, activation_sequence,
+    and system_emergence_status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+
+    # Verify all four deliverables are present
+    assert 'integration_map' in report, "Must include integration_map"
+    assert 'critical_patches' in report, "Must include critical_patches"
+    assert 'activation_sequence' in report, "Must include activation_sequence"
+    assert 'system_emergence_status' in report, "Must include system_emergence_status"
+
+    # Integration map structure
+    imap = report['integration_map']
+    assert 'connected_paths' in imap, "integration_map needs connected_paths"
+    assert 'isolated_paths' in imap, "integration_map needs isolated_paths"
+    assert 'wiring_coverage' in imap, "integration_map needs wiring_coverage"
+    assert 'feedback_bus_coverage' in imap, (
+        "integration_map needs feedback_bus_coverage"
+    )
+    assert isinstance(imap['connected_paths'], int)
+    assert 0.0 <= imap['wiring_coverage'] <= 1.0
+
+    # Critical patches structure
+    assert isinstance(report['critical_patches'], list)
+
+    # Activation sequence structure
+    seq = report['activation_sequence']
+    assert len(seq) == 6, f"Expected 6 activation phases, got {len(seq)}"
+    for phase in seq:
+        assert 'order' in phase
+        assert 'phase' in phase
+        assert 'status' in phase
+
+    # System emergence status
+    emergence = report['system_emergence_status']
+    assert 'emerged' in emergence
+    assert 'mutual_reinforcement_met' in emergence
+    assert 'meta_cognitive_trigger_met' in emergence
+    assert 'causal_transparency_met' in emergence
+    assert 'conditions_met' in emergence
+    assert 'conditions_total' in emergence
+    assert emergence['conditions_total'] == 5
+
+    # After activation + forward pass, system should be emerged
+    assert emergence['emerged'], (
+        f"System should have emerged, conditions: "
+        f"{emergence['conditions_met']}/{emergence['conditions_total']}"
+    )
+
+    print("✅ test_system_emergence_report_method PASSED")
+
+
+def test_feedback_bus_evaluated_signals_tracking():
+    """After a forward pass, _feedback_bus_evaluated_signals should track
+    which signals were considered by _build_feedback_extra_signals, even
+    for signals whose healthy-state value equals the default."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    evaluated = model._feedback_bus_evaluated_signals
+    assert isinstance(evaluated, set), (
+        "_feedback_bus_evaluated_signals should be a set"
+    )
+    assert len(evaluated) > 0, (
+        "At least some signals should be evaluated after a forward pass"
+    )
+
+    # Signals backed by initialized modules should be in evaluated set
+    if model.safety_system is not None:
+        assert 'safety_violation_pressure' in evaluated, (
+            "safety_violation_pressure should be evaluated when "
+            "safety_system is initialized"
+        )
+    if model.error_evolution is not None:
+        assert 'world_model_prediction_pressure' in evaluated, (
+            "world_model_prediction_pressure should be evaluated when "
+            "error_evolution is initialized"
+        )
+
+    print("✅ test_feedback_bus_evaluated_signals_tracking PASSED")
+
+
+def test_feedback_bus_coverage_after_forward_pass():
+    """After a forward pass, verify_cognitive_unity should report high
+    feedback bus coverage because evaluated signals (even at defaults)
+    are counted as populated."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    unity = model.verify_cognitive_unity()
+    fb = unity.get('feedback_bus_completeness', {})
+    coverage = fb.get('coverage', 0.0)
+
+    assert coverage >= 0.9, (
+        f"Feedback bus coverage should be >= 0.9 after forward pass "
+        f"(signals at healthy defaults are still 'evaluated'), "
+        f"got {coverage:.2f}"
+    )
+
+    # The 'evaluated_signals' count should be present
+    assert 'evaluated_signals' in fb, (
+        "feedback_bus_completeness should include evaluated_signals count"
+    )
+
+    print("✅ test_feedback_bus_coverage_after_forward_pass PASSED")
+
+
+def test_feedback_bus_signal_evaluation_causal_trace():
+    """Forward pass should record feedback bus signal evaluation in
+    the causal trace for full causal transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Check that a feedback_bus signal_evaluation entry exists
+    entries = model.causal_trace._entries
+    fb_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'feedback_bus'
+            and e.get('decision') == 'signal_evaluation')
+    ]
+    assert len(fb_entries) >= 1, (
+        "Forward pass must record feedback_bus signal_evaluation "
+        "in causal trace for causal transparency"
+    )
+    meta = fb_entries[-1].get('metadata', {})
+    assert 'signals_written' in meta, (
+        "Causal trace entry must include signals_written count"
+    )
+    assert 'signals_evaluated' in meta, (
+        "Causal trace entry must include signals_evaluated count"
+    )
+    print("✅ test_feedback_bus_signal_evaluation_causal_trace PASSED")
+
+
+def test_system_emergence_report_records_causal_trace():
+    """system_emergence_report() should record its assessment in the
+    causal trace for deterministic traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.system_emergence_report()
+
+    entries = model.causal_trace._entries
+    emergence_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'system_emergence_report'
+            and e.get('decision') == 'assessment')
+    ]
+    assert len(emergence_entries) >= 1, (
+        "system_emergence_report must record assessment in causal trace"
+    )
+    meta = emergence_entries[-1].get('metadata', {})
+    assert 'emerged' in meta, (
+        "Causal trace must include emerged status"
+    )
+    assert 'cognitive_unity_score' in meta, (
+        "Causal trace must include cognitive_unity_score"
+    )
+    print("✅ test_system_emergence_report_records_causal_trace PASSED")
+
+
+def test_system_emergence_endpoint_exists():
+    """Verify that /api/system_emergence endpoint is registered."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+    src = open(aeon_server.__file__).read()
+    assert '/api/system_emergence' in src, (
+        "/api/system_emergence endpoint must be registered in aeon_server"
+    )
+    assert 'system_emergence_report' in src, (
+        "Endpoint must call system_emergence_report()"
+    )
+    print("✅ test_system_emergence_endpoint_exists PASSED")
 
 
 if __name__ == "__main__":
