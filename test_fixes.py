@@ -39949,7 +39949,7 @@ def test_verify_pipeline_wiring_returns_wellformed():
     assert isinstance(result["missing_edges"], list)
     assert result["total_edges"] > 0, "Should have declared dependencies"
     assert 0.0 <= result["wiring_coverage"] <= 1.0
-    assert result["verified_count"] + result["missing_count"] == result["total_edges"]
+    assert result["verified_count"] + result["missing_count"] + result.get("config_disabled_count", 0) == result["total_edges"]
     print("✅ test_verify_pipeline_wiring_returns_wellformed PASSED")
 
 
@@ -56423,30 +56423,29 @@ def test_error_evolution_to_feedback_bus_bridge():
 
 
 def test_verify_pipeline_wiring_skipped_edges_audit():
-    """verify_pipeline_wiring must log skipped edges in the audit log
-    when modules referenced by _PIPELINE_DEPENDENCIES are None."""
+    """verify_pipeline_wiring must classify edges involving config-disabled
+    modules as config_disabled rather than missing."""
     from aeon_core import AEONDeltaV3, AEONConfig
     config = AEONConfig(
         hidden_dim=64, z_dim=64, vq_embedding_dim=64,
-        # Disable optional modules to create missing edges
+        # Disable optional modules to create config-disabled edges
         enable_world_model=False,
         enable_causal_model=False,
     )
     model = AEONDeltaV3(config)
     result = model.verify_pipeline_wiring()
-    # There should be missing edges since world_model and causal_model are disabled
-    assert result['missing_count'] > 0, (
-        "verify_pipeline_wiring should report missing edges when modules are disabled"
+    # Edges involving disabled modules should be classified as config_disabled
+    assert result['config_disabled_count'] > 0, (
+        "verify_pipeline_wiring should report config_disabled edges "
+        "when modules are disabled via config"
     )
-    # Check that the audit log recorded the skipped edges
-    audit_entries = model.audit_log.filter_by(subsystem="verify_pipeline_wiring")
-    skipped_entries = [
-        e for e in audit_entries
-        if e.get('decision') == 'skipped_edges'
-    ]
-    assert len(skipped_entries) > 0, (
-        "verify_pipeline_wiring should record skipped_edges in the audit log"
-    )
+    # Config-disabled edges should NOT inflate missing_count
+    _disabled_modules = {'world_model', 'causal_model', 'causal_dag_consensus'}
+    for me in result['missing_edges']:
+        edge = me['edge']
+        assert edge[0] not in _disabled_modules and edge[1] not in _disabled_modules, (
+            f"Config-disabled module edge {edge} should not appear in missing_edges"
+        )
     print("✅ test_verify_pipeline_wiring_skipped_edges_audit PASSED")
 
 
