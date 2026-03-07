@@ -697,9 +697,7 @@ async def get_cognitive_activation():
             "missing_edges": _missing,
             "dag_acyclic": wiring.get('dag_acyclic', True),
             "provenance_coverage": wiring.get('provenance_coverage', 0.0),
-            "cycle_rejected_edges": wiring.get(
-                'cycle_rejected_edges', [],
-            ),
+            "cycle_rejected_edges": wiring.get('cycle_rejected_edges', []),
             "feedback_bus_coverage": unity.get(
                 'feedback_bus_completeness', {},
             ).get('coverage', 0.0),
