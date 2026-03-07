@@ -54559,6 +54559,46 @@ def test_verify_pipeline_wiring_includes_provenance_coverage():
     print("✅ test_verify_pipeline_wiring_includes_provenance_coverage PASSED")
 
 
+def test_provenance_coverage_excludes_cycle_rejected_edges():
+    """Cycle-rejected edges are a legitimate DAG constraint, not a wiring
+    gap.  verify_pipeline_wiring must exclude them from unregistered
+    provenance edges so provenance_coverage reflects true integration
+    completeness."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    wiring = model.verify_pipeline_wiring()
+
+    # cycle_rejected_edges must be present in the return dict
+    assert 'cycle_rejected_edges' in wiring, (
+        "verify_pipeline_wiring must return cycle_rejected_edges"
+    )
+
+    # No verified edge should appear in both unregistered AND cycle_rejected
+    _unreg = set(wiring['unregistered_provenance_edges'])
+    _rejected = set(map(tuple, wiring['cycle_rejected_edges']))
+    _overlap = _unreg & _rejected
+    assert len(_overlap) == 0, (
+        f"Cycle-rejected edges should NOT appear in unregistered list, "
+        f"but found overlap: {_overlap}"
+    )
+
+    # Provenance coverage should be 1.0 when the only missing edges
+    # are cycle-rejected ones (all gaps are structurally justified)
+    assert wiring['provenance_coverage'] == 1.0, (
+        f"Expected provenance_coverage=1.0 when only cycle-rejected "
+        f"edges are missing, got {wiring['provenance_coverage']}"
+    )
+
+    print("✅ test_provenance_coverage_excludes_cycle_rejected_edges PASSED")
+
+
 def test_self_diagnostic_includes_trace_verification():
     """Gap 6: self_diagnostic must include provenance_trace_verification
     in its output to surface structured trace health."""
@@ -66443,6 +66483,7 @@ def run_all_tests():
     test_safety_violation_override_forces_trigger()
     test_safety_violation_override_respects_max_recursions()
     test_verify_pipeline_wiring_includes_provenance_coverage()
+    test_provenance_coverage_excludes_cycle_rejected_edges()
     test_self_diagnostic_includes_trace_verification()
     test_verify_coherence_graduated_memory_cv()
     test_ucc_returns_reconciler_threshold_adapted()

@@ -42360,9 +42360,18 @@ class AEONDeltaV3(nn.Module):
         for _target, _sources in _prov_deps.items():
             for _src in (_sources if isinstance(_sources, (set, list)) else []):
                 _prov_edges.add((_src, _target))
+        # Edges removed by validate_dag_acyclic() to maintain DAG
+        # acyclicity are a legitimate structural constraint, not a
+        # wiring gap.  Exclude them from the unregistered count so
+        # provenance coverage reflects true integration completeness
+        # rather than penalising unavoidable cycle-breaking.
+        _removed_cyclic = getattr(
+            self.provenance_tracker, '_removed_cyclic_edges', set(),
+        )
         _unregistered_edges: List[Tuple[str, str]] = []
         for up, down in verified_edges:
-            if (up, down) not in _prov_edges:
+            if ((up, down) not in _prov_edges
+                    and (up, down) not in _removed_cyclic):
                 _unregistered_edges.append((up, down))
         _provenance_coverage = (
             1.0 - len(_unregistered_edges) / max(len(verified_edges), 1)
@@ -42434,6 +42443,7 @@ class AEONDeltaV3(nn.Module):
                     'missing_count': len(missing_edges),
                     'dag_acyclic': dag_validation.get('is_acyclic', True),
                     'provenance_coverage': _provenance_coverage,
+                    'cycle_rejected_count': len(_removed_cyclic),
                 },
             )
 
@@ -42450,6 +42460,7 @@ class AEONDeltaV3(nn.Module):
             'dag_validation': dag_validation,
             'provenance_coverage': _provenance_coverage,
             'unregistered_provenance_edges': _unregistered_edges,
+            'cycle_rejected_edges': sorted(_removed_cyclic),
             'trace_verification': trace_verification,
             'uncertainty_propagation_coverage': _upb_coverage,
             'uncertainty_propagation_unregistered_edges': _upb_unregistered,
@@ -44327,6 +44338,9 @@ class AEONDeltaV3(nn.Module):
             "missing_edges": _missing,
             "dag_acyclic": wiring.get('dag_acyclic', True),
             "provenance_coverage": wiring.get('provenance_coverage', 0.0),
+            "cycle_rejected_edges": wiring.get(
+                'cycle_rejected_edges', [],
+            ),
             "feedback_bus_coverage": unity.get(
                 'feedback_bus_completeness', {},
             ).get('coverage', 0.0),
