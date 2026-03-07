@@ -16645,6 +16645,14 @@ class MetaCognitiveRecursionTrigger:
             # acceptable thresholds, indicating that the live forward-
             # pass signals and diagnostic methods diverged.
             "cognitive_frame_deficit": "coherence_deficit",
+            # Cognitive frame ambiguity — the cognitive frame assessment
+            # detected ambiguous subsystem contributions, triggering a
+            # diagnostic escalation cycle.
+            "cognitive_frame_ambiguity": "coherence_deficit",
+            # Executive alignment deficit — the MetaCognitiveExecutive
+            # review detected poor alignment between reasoning modules,
+            # indicating inter-module coherence degradation.
+            "executive_alignment_deficit": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17709,6 +17717,14 @@ class CausalErrorEvolutionTracker:
         # thresholds.  Maps to lambda_coherence so training strengthens
         # cross-module frame consistency.
         "cognitive_frame_deficit": "lambda_coherence",
+        # Cognitive frame ambiguity — the cognitive frame assessment
+        # detected ambiguous subsystem contributions.  Maps to
+        # lambda_coherence so training strengthens frame clarity.
+        "cognitive_frame_ambiguity": "lambda_coherence",
+        # Executive alignment deficit — the MetaCognitiveExecutive
+        # review detected poor inter-module alignment.  Maps to
+        # lambda_coherence so training strengthens executive coherence.
+        "executive_alignment_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -24773,11 +24789,11 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("complexity_gate_usage")
         if self._deferred_trigger_pressure >= 0.0:
             _evaluated.add("deferred_trigger_pressure")
-        if self.safety_system is not None:
+        if getattr(self, 'safety_system', None) is not None:
             _evaluated.add("safety_violation_pressure")
         if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
             _evaluated.add("lipschitz_pressure")
-        if self.feedback_bus is not None:
+        if getattr(self, 'feedback_bus', None) is not None:
             _evaluated.add("feedback_oscillation_pressure")
         if getattr(self, 'memory_validator', None) is not None:
             _evaluated.add("memory_trust")
@@ -24795,7 +24811,7 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("decoder_provenance_pressure")
             _evaluated.add("trace_incomplete_pressure")
             _evaluated.add("cross_pass_root_pressure")
-        if self.error_evolution is not None:
+        if getattr(self, 'error_evolution', None) is not None:
             _evaluated.add("world_model_prediction_pressure")
         if getattr(self, 'memory_routing_policy', None) is not None:
             _evaluated.add("memory_routing_trust_pressure")
