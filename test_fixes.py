@@ -55001,7 +55001,10 @@ def test_get_metacognitive_state_meta_recovery_unavailable():
     when the learner is disabled."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
-    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    cfg = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_meta_recovery_integration=False,
+    )
     model = AEONDeltaV3(cfg)
 
     state = model.get_metacognitive_state()

@@ -24773,11 +24773,11 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("complexity_gate_usage")
         if self._deferred_trigger_pressure >= 0.0:
             _evaluated.add("deferred_trigger_pressure")
-        if self.safety_system is not None:
+        if getattr(self, 'safety_system', None) is not None:
             _evaluated.add("safety_violation_pressure")
         if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
             _evaluated.add("lipschitz_pressure")
-        if self.feedback_bus is not None:
+        if getattr(self, 'feedback_bus', None) is not None:
             _evaluated.add("feedback_oscillation_pressure")
         if getattr(self, 'memory_validator', None) is not None:
             _evaluated.add("memory_trust")
@@ -24795,7 +24795,7 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("decoder_provenance_pressure")
             _evaluated.add("trace_incomplete_pressure")
             _evaluated.add("cross_pass_root_pressure")
-        if self.error_evolution is not None:
+        if getattr(self, 'error_evolution', None) is not None:
             _evaluated.add("world_model_prediction_pressure")
         if getattr(self, 'memory_routing_policy', None) is not None:
             _evaluated.add("memory_routing_trust_pressure")
