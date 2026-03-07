@@ -16645,6 +16645,14 @@ class MetaCognitiveRecursionTrigger:
             # acceptable thresholds, indicating that the live forward-
             # pass signals and diagnostic methods diverged.
             "cognitive_frame_deficit": "coherence_deficit",
+            # Cognitive frame ambiguity — the cognitive frame assessment
+            # detected ambiguous subsystem contributions, triggering a
+            # diagnostic escalation cycle.
+            "cognitive_frame_ambiguity": "coherence_deficit",
+            # Executive alignment deficit — the MetaCognitiveExecutive
+            # review detected poor alignment between reasoning modules,
+            # indicating inter-module coherence degradation.
+            "executive_alignment_deficit": "coherence_deficit",
         }
 
         # Accumulate boost/dampen factors for each signal.
@@ -17709,6 +17717,14 @@ class CausalErrorEvolutionTracker:
         # thresholds.  Maps to lambda_coherence so training strengthens
         # cross-module frame consistency.
         "cognitive_frame_deficit": "lambda_coherence",
+        # Cognitive frame ambiguity — the cognitive frame assessment
+        # detected ambiguous subsystem contributions.  Maps to
+        # lambda_coherence so training strengthens frame clarity.
+        "cognitive_frame_ambiguity": "lambda_coherence",
+        # Executive alignment deficit — the MetaCognitiveExecutive
+        # review detected poor inter-module alignment.  Maps to
+        # lambda_coherence so training strengthens executive coherence.
+        "executive_alignment_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
