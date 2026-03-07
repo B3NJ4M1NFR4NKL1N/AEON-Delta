@@ -56474,9 +56474,11 @@ def test_verify_pipeline_wiring_skipped_edges_audit():
     )
     model = AEONDeltaV3(config)
     result = model.verify_pipeline_wiring()
-    # There should be missing edges since world_model and causal_model are disabled
-    assert result['missing_count'] > 0, (
-        "verify_pipeline_wiring should report missing edges when modules are disabled"
+    # There should be config-disabled or missing edges since world_model
+    # and causal_model are disabled via config flags.
+    assert result['missing_count'] + result['config_disabled_count'] > 0, (
+        "verify_pipeline_wiring should report missing or config-disabled "
+        "edges when modules are disabled"
     )
     # Check that the audit log recorded the skipped edges
     audit_entries = model.audit_log.filter_by(subsystem="verify_pipeline_wiring")
