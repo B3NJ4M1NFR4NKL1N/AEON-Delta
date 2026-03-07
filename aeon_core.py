@@ -22443,6 +22443,13 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "cognitive_unity_deficit", default=0.0,
         )
+        # Reinforcement weakness pressure — carries the most recent
+        # verify_and_reinforce() weakness score into the feedback bus
+        # so the next pass's meta-loop deepens reasoning when mutual
+        # reinforcement identified architectural weaknesses.
+        self.feedback_bus.register_signal(
+            "reinforce_weakness_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -23270,6 +23277,13 @@ class AEONDeltaV3(nn.Module):
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
 
+        # Reinforcement weakness signal — caches the (1 - overall_score)
+        # from the most recent verify_and_reinforce() call so the
+        # feedback bus can condition the next pass's meta-loop when
+        # mutual reinforcement detects architectural weaknesses.
+        # Initialised to 0.0 (no weakness detected).
+        self._cached_reinforce_weakness: float = 0.0
+
         # Post-output late uncertainty — caches the late-stage uncertainty
         # score from the PostOutputUncertaintyGate so the feedback bus
         # can condition the next pass's meta-loop on post-decode quality.
@@ -23421,6 +23435,13 @@ class AEONDeltaV3(nn.Module):
         # Topology analysis output — cached so verify_coherence can
         # detect loss-landscape instability divergence.
         self._cached_topology_state: Optional[torch.Tensor] = None
+        # Forward-pass counter at which the topology/complexity caches
+        # were last populated.  Used by _build_feedback_extra_signals()
+        # to dampen stale signals: if the current forward-pass counter
+        # exceeds the cached pass by more than 1, the signal is from a
+        # prior pass and may no longer reflect the system's state.
+        self._cached_topology_pass: int = -1
+        self._cached_complexity_pass: int = -1
         # Continual learning regularization state — cached so the UCC
         # coherence verifier can detect drift between the continual
         # learning module's regularization signal and the core reasoning.
@@ -24102,19 +24123,34 @@ class AEONDeltaV3(nn.Module):
             extra["diversity_collapse"] = max(
                 0.0, min(1.0, (_threshold - _div_val) / max(_threshold, 1e-6)),
             )
-        # Topology catastrophe: 1.0 when any catastrophe, 0.0 otherwise
+        # Topology catastrophe: 1.0 when any catastrophe, 0.0 otherwise.
+        # Staleness dampening: if the cached value is from a prior pass
+        # (not the current or immediately preceding pass), halve the
+        # signal to indicate reduced confidence in the stale reading.
         if self._cached_topology_state is not None:
-            extra["topology_catastrophe"] = float(
-                self._cached_topology_state.any().item(),
+            _topo_raw = float(self._cached_topology_state.any().item())
+            _cur_pass = int(
+                getattr(self, '_total_forward_calls', torch.tensor(0)).item()
             )
+            if (self._cached_topology_pass >= 0
+                    and _cur_pass - self._cached_topology_pass > 1):
+                _topo_raw *= 0.5  # dampen stale topology signal
+            extra["topology_catastrophe"] = _topo_raw
         # Memory trust: direct trust score (1.0 = fully trusted)
         extra["memory_trust"] = getattr(self, '_last_trust_score', 1.0)
-        # Complexity gate usage: fraction of gates that are off (skipping)
+        # Complexity gate usage: fraction of gates that are off (skipping).
+        # Staleness dampening: same logic as topology — halve the signal
+        # when the cache is from a non-adjacent pass.
         _cg = getattr(self, '_last_complexity_gates', None)
         if _cg is not None and isinstance(_cg, torch.Tensor):
-            extra["complexity_gate_usage"] = float(
-                1.0 - _cg.float().mean().item(),
+            _cg_raw = float(1.0 - _cg.float().mean().item())
+            _cur_pass_cg = int(
+                getattr(self, '_total_forward_calls', torch.tensor(0)).item()
             )
+            if (self._cached_complexity_pass >= 0
+                    and _cur_pass_cg - self._cached_complexity_pass > 1):
+                _cg_raw *= 0.5  # dampen stale complexity gate signal
+            extra["complexity_gate_usage"] = _cg_raw
         # UCC flagged module pressure — fraction of subsystems flagged as
         # incoherent by the previous pass's UnifiedCognitiveCycle.  This
         # closes the cross-pass verification loop: UCC detects weak modules
@@ -24430,6 +24466,19 @@ class AEONDeltaV3(nn.Module):
         if _cud > 0.1:
             extra["cognitive_unity_deficit"] = max(
                 0.0, min(1.0, _cud),
+            )
+        # Reinforcement weakness — when verify_and_reinforce() detected
+        # architectural weaknesses (low coherence, wiring gaps, or axiom
+        # deficits), signal the meta-loop to deepen reasoning on the next
+        # pass.  This closes the gap where reinforcement results were
+        # logged and fed into error evolution / metacognitive weights but
+        # never surfaced as a dedicated feedback bus signal, leaving the
+        # meta-loop unaware of the specific severity of reinforcement-
+        # detected weaknesses during cross-pass conditioning.
+        _rw = getattr(self, '_cached_reinforce_weakness', 0.0)
+        if _rw > 0.1:
+            extra["reinforce_weakness_pressure"] = max(
+                0.0, min(1.0, _rw),
             )
         # Post-output late uncertainty — when the PostOutputUncertaintyGate
         # detected elevated late-stage uncertainty on the previous pass,
@@ -25961,6 +26010,7 @@ class AEONDeltaV3(nn.Module):
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
             self._last_complexity_gates = _complexity_gates
+            self._cached_complexity_pass = int(self._total_forward_calls.item())
             # Cross-pass HVAE abstraction level bias — when the previous
             # pass's HierarchicalVAE indicated high abstraction complexity
             # (high KL divergence), boost the initial complexity gates so
@@ -27185,6 +27235,7 @@ class AEONDeltaV3(nn.Module):
         _topo_t = topo_results.get('catastrophes')
         if _topo_t is not None and isinstance(_topo_t, torch.Tensor):
             self._cached_topology_state = _topo_t.float().detach()
+            self._cached_topology_pass = int(self._total_forward_calls.item())
 
         # 3a. Record diversity health — low diversity indicates thought
         # collapse, which is a critical architectural failure mode.
@@ -43707,6 +43758,29 @@ class AEONDeltaV3(nn.Module):
                     f"{', '.join(_recurring_roots[:5])} — investigate "
                     f"these subsystems for chronic architectural weakness"
                 )
+        elif self.error_evolution is not None:
+            # Fallback: when UCC is absent, surface chronically failing
+            # error classes from error_evolution as a proxy for recurring
+            # root causes.  This closes the gap where the health report
+            # could only surface recurring weaknesses through the UCC's
+            # cross-pass chain buffer, leaving systems without UCC unable
+            # to detect chronic architectural failures.
+            try:
+                _ee_summary = self.error_evolution.get_error_summary()
+                _ee_classes = _ee_summary.get('error_classes', {})
+                for _cls_name, _cls_stats in _ee_classes.items():
+                    if (_cls_stats.get('count', 0) >= 3
+                            and _cls_stats.get('success_rate', 1.0) < 0.5):
+                        _recurring_roots.append(_cls_name)
+                _recurring_roots.sort()
+                if _recurring_roots:
+                    _recs.append(
+                        f"Chronically failing error classes (UCC absent): "
+                        f"{', '.join(_recurring_roots[:5])} — investigate "
+                        f"these patterns for recurring architectural weakness"
+                    )
+            except Exception:
+                pass
 
         return {
             'healthy': _healthy,
@@ -44112,6 +44186,19 @@ class AEONDeltaV3(nn.Module):
         # stale, causing the next forward pass to use an outdated
         # deficit value for its in-pass uncertainty boost. ---
         self._cached_cognitive_unity_deficit = max(
+            0.0, min(1.0, 1.0 - _overall_score),
+        )
+
+        # --- Cache reinforcement weakness for feedback bus ---
+        # Store the (1 - overall_score) so that
+        # _build_feedback_extra_signals() can inject the reinforcement
+        # weakness signal into the meta-loop conditioning vector on the
+        # next forward pass.  This closes the gap where module-specific
+        # penalties identified by verify_and_reinforce() were logged and
+        # acted on (via error evolution and metacognitive weight boosts)
+        # but never surfaced as a dedicated feedback bus signal for
+        # cross-pass meta-loop conditioning.
+        self._cached_reinforce_weakness = max(
             0.0, min(1.0, 1.0 - _overall_score),
         )
 
@@ -44669,6 +44756,35 @@ class AEONDeltaV3(nn.Module):
                 "states (hidden_dim=%d)", _seeded_states, _hdim,
             )
 
+        # 5b. Seed topology state and complexity gates — when the
+        # backing modules are configured (enable_catastrophe_detection,
+        # enable_complexity_estimator) but no forward pass has yet
+        # populated their caches, seed healthy-default tensors so that
+        # _build_feedback_extra_signals() includes topology_catastrophe
+        # and complexity_gate_usage in its output from the first pass.
+        # Without this, the two signals remain absent until their
+        # respective modules execute, leaving 2 of 47 feedback bus
+        # channels uncovered and preventing full signal coverage.
+        if (self._cached_topology_state is None
+                and getattr(self.config, 'enable_catastrophe_detection', False)):
+            # Baseline: no catastrophe detected (all-zero tensor).
+            self._cached_topology_state = torch.zeros(1)
+            self._cached_topology_pass = -1  # mark as baseline, not fresh
+            logger.info(
+                "Cognitive activation: seeded baseline topology state "
+                "(no catastrophe)"
+            )
+        if (getattr(self, '_last_complexity_gates', None) is None
+                and getattr(self.config, 'enable_complexity_estimator', False)
+                and getattr(self, 'complexity_estimator', None) is not None):
+            # Baseline: all gates fully open (all-ones tensor).
+            self._last_complexity_gates = torch.ones(1)
+            self._cached_complexity_pass = -1  # mark as baseline
+            logger.info(
+                "Cognitive activation: seeded baseline complexity gates "
+                "(fully open)"
+            )
+
         # 6. Prime feedback bus signals — set critical feedback bus
         # signals to non-default baseline values so that
         # verify_cognitive_unity() does not report total signal dropout
@@ -44781,6 +44897,7 @@ class AEONDeltaV3(nn.Module):
                 "weakest_coherence_pair_pressure",
                 "ucc_coherence_trend", "ucc_flagged_pressure",
                 "ucc_recurring_root_pressure",
+                "reinforce_weakness_pressure",
             ]
             for _zhs in _zero_healthy_signals:
                 if _zhs in _signals:

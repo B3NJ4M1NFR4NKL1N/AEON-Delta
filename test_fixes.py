@@ -42114,6 +42114,8 @@ def test_build_feedback_extra_signals_helper():
             lipschitz_target = 0.85
         _cached_diversity_state = torch.tensor([0.1])
         _cached_topology_state = torch.tensor([1.0])
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
         _last_trust_score = 0.4
         _last_complexity_gates = torch.tensor([[0.0, 1.0, 0.0, 1.0]])
         _cached_uncertainty_sources = {"coherence_deficit": 0.3}
@@ -42132,7 +42134,11 @@ def test_build_feedback_extra_signals_helper():
         _deferred_trigger_pressure = 0.0
         _cached_empirical_lipschitz = 0.0
         _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
         provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
