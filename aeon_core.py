@@ -17845,13 +17845,13 @@ class CausalErrorEvolutionTracker:
         # causal trace entries.
         "causal_chain_gap": "lambda_ucc",
         # Backbone adapter error — pretrained backbone enrichment failed.
-        # Maps to lambda_reconstruction so training strengthens encoder
+        # Maps to lambda_coherence so training strengthens encoder
         # output fidelity after backbone blending.
-        "backbone_adapter_error": "lambda_reconstruction",
+        "backbone_adapter_error": "lambda_coherence",
         # Chunked encoding error — overlapping-window aggregation
-        # failed.  Maps to lambda_reconstruction so training
+        # failed.  Maps to lambda_coherence so training
         # adapts to long-sequence encoding failures.
-        "chunked_encoding_error": "lambda_reconstruction",
+        "chunked_encoding_error": "lambda_coherence",
         # Inference cache staleness — cached reasoning result was
         # stale or mismatched.  Maps to lambda_ucc so training
         # adapts to cache-induced reasoning divergence.
