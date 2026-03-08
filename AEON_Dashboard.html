@@ -2248,6 +2248,19 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div id="em-anomalies" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:200px;overflow-y:auto">No anomalies</div>
   </div>
 
+  <!-- Runtime Cached Signals -->
+  <div class="stitle">Runtime Cached Signals</div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🌐 Topology State</div>
+      <div id="em-topology-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct">⚙ Complexity Gates</div>
+      <div id="em-complexity-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
   <!-- Raw JSON -->
   <div class="card">
     <div class="ct">Raw Engine Data</div>
@@ -2333,6 +2346,35 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="card">
       <div class="ct">🎯 Auto-Critic Quality</div>
       <div id="mc-auto-critic" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Load metacognition data</div></div>
+    </div>
+  </div>
+
+  <!-- Full Diagnostic & Pipeline Wiring -->
+  <div class="stitle">Extended Diagnostics</div>
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📋 Full Self-Diagnostic <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadFullDiagnostic()">⊕ Load</button></div>
+      <div id="mc-full-diag" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:320px;overflow-y:auto"><div style="color:var(--text3)">Click Load for complete self-diagnostic report</div></div>
+    </div>
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🔗 Pipeline Wiring <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadPipelineWiring()">⊕ Load</button></div>
+      <div id="mc-pipeline-wiring" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:320px;overflow-y:auto"><div style="color:var(--text3)">Click Load for pipeline wiring verification</div></div>
+    </div>
+  </div>
+
+  <!-- Remediation & Cognitive Snapshot -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🔧 Automated Remediation <button class="btn btn-secondary" style="padding:1px 8px;font-size:9px" onclick="applyRemediation()">▶ Apply</button></div>
+      <div id="mc-remediation" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:220px;overflow-y:auto"><div style="color:var(--text3)">Click Apply to run automated diagnostic remediation</div></div>
+    </div>
+    <div class="card">
+      <div class="ct">💾 Cognitive Snapshot</div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-secondary" style="font-size:10px" onclick="exportCognitiveSnapshot()">↓ Export Snapshot</button>
+        <button class="btn btn-ghost" style="font-size:10px" onclick="importCognitiveSnapshot()">↑ Import Snapshot</button>
+      </div>
+      <div id="mc-snapshot" style="margin-top:8px;font-size:11px;color:var(--text2)"><div style="color:var(--text3)">Export or import cognitive model state</div></div>
     </div>
   </div>
 </div>
@@ -7227,6 +7269,24 @@ async function loadEngineMonitor() {
       html += `<div>Initial threshold: <span style="color:var(--text3)">${mc.initial_threshold?.toFixed(3)||'—'}</span></div>`;
       html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
       html += `</div>`;
+      if(mc.coherence_deficit != null) {
+        html += `<div style="margin-top:6px">Coherence deficit: <span style="color:${mc.coherence_deficit>0.3?'var(--danger)':'var(--green)'}">${mc.coherence_deficit.toFixed(4)}</span></div>`;
+      }
+      if(mc.weakest_pair) {
+        html += `<div style="margin-top:4px">Weakest pair: <span style="color:var(--warn)">${Array.isArray(mc.weakest_pair)?mc.weakest_pair.join(' ↔ '):mc.weakest_pair}</span>`;
+        if(mc.weakest_sim != null) html += ` (sim: <span style="color:${mc.weakest_sim<0.5?'var(--danger)':'var(--green)'}">${mc.weakest_sim.toFixed(4)}</span>)`;
+        html += `</div>`;
+      }
+      if(mc.correction_signals && typeof mc.correction_signals === 'object') {
+        const csKeys = Object.keys(mc.correction_signals);
+        if(csKeys.length) {
+          html += `<div style="margin-top:6px"><strong>Correction signals (${csKeys.length}):</strong></div>`;
+          csKeys.slice(0,8).forEach(k => {
+            const v = mc.correction_signals[k];
+            html += `<div style="margin-left:8px;font-size:10px">${k}: <span style="color:var(--accent)">${typeof v==='number'?v.toFixed(4):JSON.stringify(v).slice(0,60)}</span></div>`;
+          });
+        }
+      }
       document.getElementById('em-coherence-detail').innerHTML = html;
     }
 
@@ -7270,6 +7330,12 @@ async function loadEngineMonitor() {
       html += `<div>Threshold: <span style="color:var(--accent)">${d.auto_critic.threshold?.toFixed(3)||'—'}</span></div>`;
       html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
       html += `</div>`;
+      if(d.auto_critic.current_score != null) {
+        html += `<div style="margin-top:6px">Current score: <span style="color:${d.auto_critic.current_score>=0.7?'var(--green)':'var(--warn)'}">${d.auto_critic.current_score.toFixed(4)}</span></div>`;
+      }
+      if(d.auto_critic.quality_ema != null) {
+        html += `<div>Quality EMA: <span style="color:${d.auto_critic.quality_ema>=0.7?'var(--green)':'var(--warn)'}">${d.auto_critic.quality_ema.toFixed(4)}</span></div>`;
+      }
       document.getElementById('em-critic-detail').innerHTML = html;
     } else {
       document.getElementById('em-critic-detail').textContent = 'Not enabled';
@@ -7277,7 +7343,13 @@ async function loadEngineMonitor() {
 
     // Deception Suppressor
     if(d.deception_suppressor?.available) {
-      document.getElementById('em-deception-detail').innerHTML = '<span style="color:var(--green)">✓ Active</span> — output deception suppression enabled';
+      let html = '<span style="color:var(--green)">✓ Active</span> — output deception suppression enabled';
+      if(d.deception_suppressor.pressure != null) {
+        const dp = d.deception_suppressor.pressure;
+        html += `<div style="margin-top:6px">Deception pressure: <span style="color:${dp>0.5?'var(--danger)':dp>0.2?'var(--warn)':'var(--green)'}">${dp.toFixed(4)}</span></div>`;
+        html += `<div style="margin-top:4px"><div style="background:var(--surface3);border-radius:4px;height:6px;width:100%"><div style="background:${dp>0.5?'var(--danger)':dp>0.2?'var(--warn)':'var(--green)'};height:100%;border-radius:4px;width:${Math.min(dp*100,100).toFixed(1)}%"></div></div></div>`;
+      }
+      document.getElementById('em-deception-detail').innerHTML = html;
     } else {
       document.getElementById('em-deception-detail').textContent = 'Not enabled';
     }
@@ -7308,6 +7380,35 @@ async function loadEngineMonitor() {
         });
       }
       document.getElementById('em-progress-detail').innerHTML = html;
+    }
+
+    // Runtime Cached Signals
+    if(d.runtime_signals?.available) {
+      const rt = d.runtime_signals;
+      if(rt.topology_state != null) {
+        const ts = rt.topology_state;
+        let html = '';
+        if(typeof ts === 'object' && !Array.isArray(ts)) {
+          html = Object.entries(ts).map(([k,v]) =>
+            `<div><span style="color:var(--accent)">${escHtml(k)}</span>: <span style="color:var(--text2)">${typeof v==='number'?v.toFixed(4):JSON.stringify(v).slice(0,80)}</span></div>`
+          ).join('');
+        } else {
+          html = `<pre style="margin:0;font-size:10px;color:var(--text2)">${escHtml(JSON.stringify(ts,null,2).slice(0,500))}</pre>`;
+        }
+        document.getElementById('em-topology-detail').innerHTML = html || '<span style="color:var(--text3)">Empty</span>';
+      }
+      if(rt.complexity_gates != null) {
+        const cg = rt.complexity_gates;
+        let html = '';
+        if(typeof cg === 'object' && !Array.isArray(cg)) {
+          html = Object.entries(cg).map(([k,v]) =>
+            `<div><span style="color:var(--purple)">${escHtml(k)}</span>: <span style="color:${typeof v==='number'&&v<0.5?'var(--warn)':'var(--green)'}">${typeof v==='number'?v.toFixed(4):JSON.stringify(v).slice(0,80)}</span></div>`
+          ).join('');
+        } else {
+          html = `<pre style="margin:0;font-size:10px;color:var(--text2)">${escHtml(JSON.stringify(cg,null,2).slice(0,500))}</pre>`;
+        }
+        document.getElementById('em-complexity-detail').innerHTML = html || '<span style="color:var(--text3)">Empty</span>';
+      }
     }
 
   } catch(e) {
@@ -7400,6 +7501,155 @@ async function verifyCausalChain() {
     }
     log('INFO', 'causal_trace', 'Causal chain verified');
   } catch(e) { log('ERROR', 'causal_trace', e.message); }
+}
+
+// ── Group 2b: Full Diagnostic, Pipeline Wiring, Remediation, Cognitive Snapshot ──
+async function loadFullDiagnostic() {
+  try {
+    const el = document.getElementById('mc-full-diag');
+    el.innerHTML = '<span style="color:var(--text3)">Loading full diagnostic…</span>';
+    const d = await api('GET', '/api/diagnostic/full');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail||'Error')}</span>`; return; }
+    let html = `<div style="margin-bottom:8px"><strong>Status:</strong> <span style="color:${d.status==='healthy'?'var(--green)':d.status==='degraded'?'var(--warn)':'var(--danger)'}">${escHtml(d.status||'unknown')}</span></div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">`;
+    html += `<div>Active modules: <span style="color:var(--accent)">${d.active_module_count||0}</span></div>`;
+    html += `<div>Verified: <span style="color:var(--green)">${d.verified_count||0}</span></div>`;
+    html += `<div>Gaps: <span style="color:${(d.gap_count||0)>0?'var(--warn)':'var(--green)'}">${d.gap_count||0}</span></div>`;
+    html += `<div>Total params: <span style="color:var(--accent)">${(d.total_parameters||0).toLocaleString()}</span></div>`;
+    html += `<div>Trainable: <span style="color:var(--purple)">${(d.trainable_parameters||0).toLocaleString()}</span></div>`;
+    html += `<div>Output reliability: <span style="color:${(d.output_reliability||0)>=0.8?'var(--green)':'var(--warn)'}">${((d.output_reliability||0)*100).toFixed(1)}%</span></div>`;
+    html += `<div>Causal trace: <span style="color:var(--accent)">${typeof d.causal_trace_coverage==='number'?(d.causal_trace_coverage*100).toFixed(0)+'%':d.causal_trace_coverage||'—'}</span></div>`;
+    html += `<div>Provenance: <span style="color:var(--accent)">${typeof d.provenance_completeness==='number'?(d.provenance_completeness*100).toFixed(0)+'%':'—'}</span></div>`;
+    html += `<div>Feedback oscillation: <span style="color:${(d.feedback_oscillation||0)>0.3?'var(--warn)':'var(--green)'}">${typeof d.feedback_oscillation==='number'?d.feedback_oscillation.toFixed(3):'—'}</span></div>`;
+    html += `</div>`;
+    if(d.gaps?.length) {
+      html += `<div style="margin-top:4px"><strong>Gaps:</strong></div>`;
+      d.gaps.forEach(g => {
+        html += `<div style="margin-left:8px;margin-bottom:2px;padding:3px 6px;background:var(--surface3);border-radius:4px;border-left:2px solid var(--warn)">`;
+        html += `<span style="color:var(--accent)">${escHtml(g.component||'?')}</span> → ${escHtml(g.gap||'')}`;
+        if(g.remediation) html += ` <span style="color:var(--text3)">[${escHtml(g.remediation)}]</span>`;
+        html += `</div>`;
+      });
+    }
+    if(d.error_evolution_summary) {
+      html += `<div style="margin-top:6px"><strong>Error Evolution:</strong></div>`;
+      html += `<pre style="margin:0;margin-left:8px;font-size:10px;color:var(--text3);white-space:pre-wrap">${escHtml(JSON.stringify(d.error_evolution_summary,null,2).slice(0,400))}</pre>`;
+    }
+    if(d.runtime_coherence) {
+      html += `<div style="margin-top:6px"><strong>Runtime Coherence:</strong></div>`;
+      html += `<pre style="margin:0;margin-left:8px;font-size:10px;color:var(--text3);white-space:pre-wrap">${escHtml(JSON.stringify(d.runtime_coherence,null,2).slice(0,400))}</pre>`;
+    }
+    if(d.pipeline_wiring) {
+      html += `<div style="margin-top:6px"><strong>Pipeline Wiring (summary):</strong></div>`;
+      const pw = d.pipeline_wiring;
+      html += `<div style="margin-left:8px">Coverage: <span style="color:${(pw.wiring_coverage||0)>=0.8?'var(--green)':'var(--warn)'}">${((pw.wiring_coverage||0)*100).toFixed(0)}%</span>`;
+      html += ` · DAG acyclic: <span style="color:${pw.dag_acyclic?'var(--green)':'var(--danger)'}">${pw.dag_acyclic?'Yes':'No'}</span></div>`;
+    }
+    el.innerHTML = html;
+    log('INFO', 'metacognition', 'Full diagnostic loaded');
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+async function loadPipelineWiring() {
+  try {
+    const el = document.getElementById('mc-pipeline-wiring');
+    el.innerHTML = '<span style="color:var(--text3)">Loading pipeline wiring…</span>';
+    const d = await api('GET', '/api/pipeline_wiring');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail||'Error')}</span>`; return; }
+    let html = `<div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">`;
+    html += `<div>Total edges: <span style="color:var(--accent)">${d.total_edges||0}</span></div>`;
+    html += `<div>Verified: <span style="color:var(--green)">${d.verified_count||0}</span></div>`;
+    html += `<div>Missing: <span style="color:${(d.missing_count||0)>0?'var(--danger)':'var(--green)'}">${d.missing_count||0}</span></div>`;
+    html += `<div>Config disabled: <span style="color:var(--text3)">${d.config_disabled_count||0}</span></div>`;
+    html += `<div>Wiring coverage: <span style="color:${(d.wiring_coverage||0)>=0.8?'var(--green)':'var(--warn)'}">${((d.wiring_coverage||0)*100).toFixed(1)}%</span></div>`;
+    html += `<div>DAG acyclic: <span style="color:${d.dag_acyclic?'var(--green)':'var(--danger)'}">${d.dag_acyclic?'✓ Yes':'✗ No'}</span></div>`;
+    html += `<div>Provenance coverage: <span style="color:${(d.provenance_coverage||0)>=0.8?'var(--green)':'var(--warn)'}">${((d.provenance_coverage||0)*100).toFixed(1)}%</span></div>`;
+    if(d.uncertainty_propagation_coverage!=null) html += `<div>Uncertainty prop: <span style="color:var(--accent)">${((d.uncertainty_propagation_coverage||0)*100).toFixed(1)}%</span></div>`;
+    html += `</div>`;
+    if(d.missing_edges?.length) {
+      html += `<div style="margin-top:4px"><strong style="color:var(--warn)">Missing edges (${d.missing_edges.length}):</strong></div>`;
+      d.missing_edges.slice(0,10).forEach(e => {
+        html += `<div style="margin-left:8px;font-size:10px;color:var(--text3)">${escHtml(typeof e==='object'?e.edge||JSON.stringify(e):String(e))}</div>`;
+      });
+      if(d.missing_edges.length>10) html += `<div style="margin-left:8px;color:var(--text3);font-size:10px">… and ${d.missing_edges.length-10} more</div>`;
+    }
+    if(d.cycle_rejected_edges?.length) {
+      html += `<div style="margin-top:4px"><strong>Cycle rejected (${d.cycle_rejected_edges.length}):</strong></div>`;
+      d.cycle_rejected_edges.slice(0,5).forEach(e => {
+        html += `<div style="margin-left:8px;font-size:10px;color:var(--text3)">${escHtml(JSON.stringify(e))}</div>`;
+      });
+    }
+    if(d.coherence_registry_coverage) {
+      html += `<div style="margin-top:6px"><strong>Coherence Registry:</strong></div>`;
+      html += `<pre style="margin:0;margin-left:8px;font-size:10px;color:var(--text3);white-space:pre-wrap">${escHtml(JSON.stringify(d.coherence_registry_coverage,null,2).slice(0,300))}</pre>`;
+    }
+    el.innerHTML = html;
+    log('INFO', 'metacognition', 'Pipeline wiring loaded');
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+async function applyRemediation() {
+  try {
+    const el = document.getElementById('mc-remediation');
+    el.innerHTML = '<span style="color:var(--text3)">Applying remediation…</span>';
+    const d = await api('POST', '/api/diagnostic/remediate');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail||'Error')}</span>`; return; }
+    let html = `<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:8px">`;
+    html += `<div>Remediated: <span style="color:var(--green)">${d.total_remediated||0}</span></div>`;
+    html += `<div>Skipped: <span style="color:var(--warn)">${d.total_skipped||0}</span></div>`;
+    html += `</div>`;
+    if(d.remediated?.length) {
+      html += `<div><strong style="color:var(--green)">✓ Remediated:</strong></div>`;
+      d.remediated.forEach(r => { html += `<div style="margin-left:8px;color:var(--green)">✓ ${escHtml(r)}</div>`; });
+    }
+    if(d.skipped?.length) {
+      html += `<div style="margin-top:4px"><strong style="color:var(--warn)">⚠ Skipped (manual fix needed):</strong></div>`;
+      d.skipped.forEach(s => { html += `<div style="margin-left:8px;color:var(--warn)">⚠ ${escHtml(s)}</div>`; });
+    }
+    if(!d.remediated?.length && !d.skipped?.length) {
+      html += `<div style="color:var(--green)">✓ No issues found — system is healthy</div>`;
+    }
+    el.innerHTML = html;
+    log('INFO', 'metacognition', `Remediation: ${d.total_remediated||0} fixed, ${d.total_skipped||0} skipped`);
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+async function exportCognitiveSnapshot() {
+  try {
+    const el = document.getElementById('mc-snapshot');
+    el.innerHTML = '<span style="color:var(--text3)">Exporting cognitive snapshot…</span>';
+    const d = await api('POST', '/api/cognitive_snapshot/export');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail||'Export failed')}</span>`; return; }
+    let html = `<div style="color:var(--green)">✓ Snapshot exported successfully</div>`;
+    html += `<div style="margin-top:4px">Model saved: <span style="color:${d.model_saved?'var(--green)':'var(--danger)'}">${d.model_saved?'Yes':'No'}</span></div>`;
+    if(d.memory_results && Object.keys(d.memory_results).length) {
+      html += `<div style="margin-top:4px"><strong>Memory systems:</strong></div>`;
+      Object.entries(d.memory_results).forEach(([k,v]) => {
+        html += `<div style="margin-left:8px">${escHtml(k)}: <span style="color:${v?'var(--green)':'var(--danger)'}">${v?'✓ saved':'✗ failed'}</span></div>`;
+      });
+    }
+    el.innerHTML = html;
+    log('INFO', 'metacognition', 'Cognitive snapshot exported');
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
+}
+
+async function importCognitiveSnapshot() {
+  try {
+    const el = document.getElementById('mc-snapshot');
+    el.innerHTML = '<span style="color:var(--text3)">Importing cognitive snapshot…</span>';
+    const d = await api('POST', '/api/cognitive_snapshot/import');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail||'Import failed')}</span>`; return; }
+    let html = `<div style="color:var(--green)">✓ Snapshot imported successfully</div>`;
+    html += `<div style="margin-top:4px">Model loaded: <span style="color:${d.model_loaded?'var(--green)':'var(--danger)'}">${d.model_loaded?'Yes':'No'}</span></div>`;
+    if(d.memory_results && Object.keys(d.memory_results).length) {
+      html += `<div style="margin-top:4px"><strong>Memory systems:</strong></div>`;
+      Object.entries(d.memory_results).forEach(([k,v]) => {
+        html += `<div style="margin-left:8px">${escHtml(k)}: <span style="color:${v?'var(--green)':'var(--danger)'}">${v?'✓ restored':'✗ failed'}</span></div>`;
+      });
+    }
+    el.innerHTML = html;
+    log('INFO', 'metacognition', 'Cognitive snapshot imported');
+  } catch(e) { log('ERROR', 'metacognition', e.message); }
 }
 
 // ── Group 3: Configuration ──
