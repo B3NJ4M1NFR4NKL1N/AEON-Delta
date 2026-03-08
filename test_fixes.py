@@ -67419,6 +67419,8 @@ def run_all_tests():
     test_verify_causal_chain_method()
     test_verify_causal_chain_records_own_trace()
     test_verify_causal_chain_endpoint_exists()
+    test_system_emergence_includes_causal_chain()
+    test_activation_probe_seeds_causal_trace_for_error_evolution()
     test_emergence_lifecycle_traceability()
 
     print("\n" + "=" * 60)
@@ -74010,7 +74012,7 @@ def test_system_emergence_report_method():
     assert 'causal_transparency_met' in emergence
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
-    assert emergence['conditions_total'] == 5
+    assert emergence['conditions_total'] == 6
 
     # After activation + forward pass, system should be emerged
     assert emergence['emerged'], (
@@ -74322,6 +74324,87 @@ def test_verify_causal_chain_endpoint_exists():
         "Endpoint must call verify_causal_chain()"
     )
     print("✅ test_verify_causal_chain_endpoint_exists PASSED")
+
+
+def test_system_emergence_includes_causal_chain():
+    """system_emergence_report() must include causal_chain field and
+    causal_chain_traceable in system_emergence_status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+
+    # verify_causal_chain() results must be included in the report
+    assert 'causal_chain' in report, (
+        "system_emergence_report must include 'causal_chain' from "
+        "verify_causal_chain()"
+    )
+    chain = report['causal_chain']
+    assert 'traceable' in chain, "causal_chain must have 'traceable' field"
+    assert 'coverage' in chain, "causal_chain must have 'coverage' field"
+    assert 'traced_subsystems' in chain, (
+        "causal_chain must have 'traced_subsystems' field"
+    )
+
+    # System emergence status must include causal chain traceability
+    emergence = report['system_emergence_status']
+    assert 'causal_chain_traceable' in emergence, (
+        "system_emergence_status must include 'causal_chain_traceable'"
+    )
+
+    # After activation + forward pass, causal chain should be traceable
+    assert chain['traceable'], (
+        f"Causal chain should be traceable after full lifecycle, "
+        f"untraced: {chain.get('untraced_subsystems', [])}"
+    )
+    assert emergence['causal_chain_traceable'], (
+        "causal_chain_traceable should be True after full lifecycle"
+    )
+
+    print("✅ test_system_emergence_includes_causal_chain PASSED")
+
+
+def test_activation_probe_seeds_causal_trace_for_error_evolution():
+    """Cognitive activation probe must record causal trace entries for
+    error_evolution and feedback_bus so verify_causal_chain() can find
+    them."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # After init (which runs _cognitive_activation_probe), causal trace
+    # should have entries for error_evolution and feedback_bus.
+    entries = list(model.causal_trace._entries)
+    subsystems = {e.get('subsystem', '') for e in entries}
+
+    # error_evolution recorded as 'error_evolution/activation_baseline'
+    has_ee = any(s.startswith('error_evolution/') for s in subsystems)
+    assert has_ee, (
+        "Activation probe must record causal trace entry for "
+        "error_evolution (prefix 'error_evolution/')"
+    )
+
+    # feedback_bus recorded as 'feedback_bus'
+    assert 'feedback_bus' in subsystems, (
+        "Activation probe must record causal trace entry for feedback_bus"
+    )
+
+    print("✅ test_activation_probe_seeds_causal_trace_for_error_evolution PASSED")
 
 
 def test_emergence_lifecycle_traceability():
