@@ -38592,20 +38592,64 @@ class AEONDeltaV3(nn.Module):
         # uses cached values that are already computed during the forward
         # pass (cognitive_unity_score, coherence deficit, reinforcement
         # weakness) so the overhead is negligible.
+        #
+        # Additionally includes per-axiom satisfaction states and a
+        # composite ``emerged`` verdict so that every forward-pass output
+        # directly communicates whether the three AGI requirements
+        # (mutual reinforcement, meta-cognitive trigger, causal
+        # transparency) are met.  This bridges the gap between high-level
+        # emergence diagnostics and low-level execution output: consumers
+        # no longer need a separate system_emergence_report() call to
+        # determine organism status.
         _cu_score = result.get('cognitive_unity_score', 0.0)
         _cu_deficit = getattr(self, '_cached_cognitive_unity_deficit', 0.0)
         _reinforce_weakness = getattr(
             self, '_cached_reinforce_weakness', 0.0,
         )
+        _cu_components = result.get('cognitive_unity_components', {})
+        _es_mv = _cu_components.get('mutual_verification', 0.0) >= 0.9
+        _es_mc = _cu_components.get(
+            'metacognitive_responsiveness', 0.0,
+        ) >= 0.9
+        _es_ct = _cu_components.get(
+            'root_cause_traceability', 0.0,
+        ) >= 0.9
+        _es_activation = getattr(
+            self, '_cognitive_activation_complete', False,
+        )
         result['emergence_summary'] = {
             'cognitive_unity_score': _cu_score,
             'cognitive_unity_deficit': _cu_deficit,
             'reinforce_weakness': _reinforce_weakness,
-            'activation_complete': getattr(
-                self, '_cognitive_activation_complete', False,
-            ),
+            'activation_complete': _es_activation,
             'forward_pass': _fwd,
+            'mutual_reinforcement_met': _es_mv,
+            'meta_cognitive_trigger_met': _es_mc,
+            'causal_transparency_met': _es_ct,
+            'emerged': (
+                _es_mv and _es_mc and _es_ct and _es_activation
+            ),
         }
+
+        # ===== FORWARD-PASS CAUSAL TRACE =====
+        # Record a causal trace entry summarising this forward pass so
+        # that every output is deterministically traceable back through
+        # the architecture to its originating premise.  Subsystem-level
+        # traces are already recorded above; this top-level entry ties
+        # them together into a single auditable decision record.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "forward_pass", "complete",
+                metadata={
+                    'pass_number': _fwd,
+                    'uncertainty': float(
+                        result.get('uncertainty', 0.0),
+                    ),
+                    'cognitive_unity_score': _cu_score,
+                    'emerged': result['emergence_summary']['emerged'],
+                    'cognitive_unity_deficit': _cu_deficit,
+                },
+            )
 
         return result
     
@@ -44736,6 +44780,25 @@ class AEONDeltaV3(nn.Module):
             "system_emergence_status": system_emergence_status,
             "reinforcement_applied": reinforcement_applied,
             "recommendations": unity.get('recommendations', []),
+            "cognitive_flow_audit": {
+                "forward_passes_completed": int(
+                    self._total_forward_calls.item(),
+                ),
+                "metacognitive_trigger_active": (
+                    self.metacognitive_trigger is not None
+                ),
+                "error_evolution_active": (
+                    self.error_evolution is not None
+                ),
+                "feedback_bus_active": self.feedback_bus is not None,
+                "causal_trace_active": self.causal_trace is not None,
+                "coherence_registry_active": (
+                    self.coherence_registry is not None
+                ),
+                "periodic_reinforcement_interval": (
+                    self._REINFORCE_INTERVAL
+                ),
+            },
         }
 
     def verify_causal_chain(self) -> Dict[str, Any]:
@@ -44787,6 +44850,10 @@ class AEONDeltaV3(nn.Module):
             _expected.add('error_evolution')
         if self.feedback_bus is not None:
             _expected.add('feedback_bus')
+        # After at least one forward pass, forward_pass trace entries
+        # must be present for full causal transparency.
+        if int(self._total_forward_calls.item()) > 0:
+            _expected.add('forward_pass')
 
         # Scan trace entries to find which subsystems are represented.
         entries = list(self.causal_trace._entries)
