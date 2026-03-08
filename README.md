@@ -762,4 +762,9 @@ All contributions must maintain the core principles of **rigor**, **safety**, an
 ---
 
 # **∆: No bits left behind. It begins with the choice to be.**
+## 💎 Support the Project
+
+AEON-Δ is developed as a research-first, open cognitive architecture. If you find value in this work and wish to support its continued development, testing, and benchmarking, donations are gratefully accepted.
+
+**Bitcoin (BTC): 1Fuvwsyc1JR4Vd9Pt8Z5yA5vWRd9fvayXD
 
