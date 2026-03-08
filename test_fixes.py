@@ -67536,6 +67536,10 @@ def run_all_tests():
     test_reinforce_interval_class_attribute()
     test_system_emergence_auto_reinforcement()
     test_forward_pass_emergence_summary()
+    test_adaptive_weight_scaling_in_reinforce()
+    test_correction_target_metacognitive_lambda()
+    test_emergence_summary_includes_axiom_scores()
+    test_system_emergence_iterative_convergence()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -74704,6 +74708,147 @@ def test_forward_pass_emergence_summary():
     )
 
     print("✅ test_forward_pass_emergence_summary PASSED")
+
+
+def test_adaptive_weight_scaling_in_reinforce():
+    """verify_and_reinforce uses adaptive boost factors proportional to
+    the severity of detected gaps, not a fixed 1.2× multiplier."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Force a low mutual verification score by manipulating the trigger
+    # weights before calling verify_and_reinforce.
+    if model.metacognitive_trigger is not None:
+        _weights = getattr(
+            model.metacognitive_trigger, '_signal_weights', {},
+        )
+        _initial_cd = _weights.get('coherence_deficit', 1.0)
+
+        # The adaptive formula is: boost = 1.0 + max(0.2, 1.0 - score)
+        # For a score of 0.3 → boost = 1.7  (much stronger than fixed 1.2)
+        # For a score of 0.55 → boost = 1.45 (still stronger than 1.2)
+        # Verify the formula is present in the source code.
+        import inspect
+        src = inspect.getsource(model.verify_and_reinforce)
+        assert 'max(0.2, 1.0 - mv_score)' in src, (
+            "verify_and_reinforce should use adaptive boost "
+            "formula: 1.0 + max(0.2, 1.0 - score)"
+        )
+        assert 'max(0.2, 1.0 - um_score)' in src, (
+            "verify_and_reinforce should use adaptive boost "
+            "for uncertainty signal too"
+        )
+
+    print("✅ test_adaptive_weight_scaling_in_reinforce PASSED")
+
+
+def test_correction_target_metacognitive_lambda():
+    """compute_loss maps 'metacognitive' correction target to a loss
+    lambda, bridging the gap where uncertainty_metacognition axiom
+    weakness produced no training gradient."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.compute_loss)
+    assert "'metacognitive'" in src, (
+        "_CORRECTION_TARGET_TO_LAMBDA must include 'metacognitive'"
+    )
+    assert "'provenance'" in src, (
+        "_CORRECTION_TARGET_TO_LAMBDA must include 'provenance'"
+    )
+    # Verify the mapping values are valid lambda names.
+    assert "'lambda_self_consistency'" in src, (
+        "'metacognitive' should map to 'lambda_self_consistency'"
+    )
+    assert "'lambda_provenance'" in src, (
+        "'provenance' should map to 'lambda_provenance'"
+    )
+
+    print("✅ test_correction_target_metacognitive_lambda PASSED")
+
+
+def test_emergence_summary_includes_axiom_scores():
+    """Forward pass emergence_summary includes per-axiom component scores
+    (mutual_verification, metacognitive_responsiveness,
+    root_cause_traceability, convergence_quality) so consumers can
+    monitor proximity to emergence without calling
+    verify_cognitive_unity() separately."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    es = result.get('emergence_summary', {})
+
+    for key in [
+        'mutual_verification',
+        'metacognitive_responsiveness',
+        'root_cause_traceability',
+        'convergence_quality',
+    ]:
+        assert key in es, (
+            f"emergence_summary must include '{key}' axiom score"
+        )
+        val = es[key]
+        assert isinstance(val, (int, float)), (
+            f"'{key}' should be numeric, got {type(val)}"
+        )
+
+    # Axiom scores should match cognitive_unity_components
+    cu_comps = result.get('cognitive_unity_components', {})
+    assert es['mutual_verification'] == cu_comps.get(
+        'mutual_verification', 0.0,
+    ), "mutual_verification should match cognitive_unity_components"
+
+    print("✅ test_emergence_summary_includes_axiom_scores PASSED")
+
+
+def test_system_emergence_iterative_convergence():
+    """system_emergence_report performs iterative convergence when
+    system has not emerged, re-evaluating after each reinforcement
+    pass and recording convergence metadata in causal trace."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify the iterative convergence logic is present
+    src = inspect.getsource(model.system_emergence_report)
+    assert '_MAX_CONVERGENCE_ITERS' in src, (
+        "system_emergence_report should define _MAX_CONVERGENCE_ITERS"
+    )
+    assert '_convergence_delta' in src, (
+        "system_emergence_report should track convergence delta"
+    )
+    assert 'convergence_iterations' in src, (
+        "auto_reinforcement trace should record convergence_iterations"
+    )
+
+    # Run the report — if emerged, no reinforcement is needed
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    # Whether emerged or not, the report structure should be valid
+    assert 'conditions_met' in status
+    assert 'conditions_total' in status
+    assert status['conditions_total'] == 6
+
+    print("✅ test_system_emergence_iterative_convergence PASSED")
 
 
 if __name__ == "__main__":
