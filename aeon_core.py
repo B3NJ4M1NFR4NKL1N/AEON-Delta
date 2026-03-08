@@ -16655,6 +16655,10 @@ class MetaCognitiveRecursionTrigger:
             # assessment and expected subsystem behaviour, indicating
             # that executive oversight needs recalibration.
             "executive_alignment_deficit": "uncertainty",
+            # Causal chain gap — verify_and_reinforce detected that the
+            # end-to-end causal chain (verify_causal_chain) has untraced
+            # subsystems, degrading causal transparency.
+            "causal_chain_gap": "low_causal_quality",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -17761,6 +17765,11 @@ class CausalErrorEvolutionTracker:
         # review detected poor alignment.  Maps to lambda_ucc so
         # training adapts to persistent executive oversight failures.
         "executive_alignment_deficit": "lambda_ucc",
+        # Causal chain gap — end-to-end causal chain has untraced
+        # subsystems.  Maps to lambda_ucc so training strengthens
+        # pipeline traceability and ensures all subsystems record
+        # causal trace entries.
+        "causal_chain_gap": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -38518,6 +38527,9 @@ class AEONDeltaV3(nn.Module):
                     'actions': _actions,
                     'overall_score': _reinforce_score,
                     'coherent': _reinforce.get('coherent', True),
+                    'causal_chain_traceable': _reinforce.get(
+                        'causal_chain_traceable', True,
+                    ),
                 }
                 if _actions:
                     self.audit_log.record(
@@ -44198,6 +44210,39 @@ class AEONDeltaV3(nn.Module):
                 f'(wiring_coverage={_pipeline_wiring_cov:.2f})'
             )
 
+        # --- Validate causal chain traceability ---
+        # Call verify_causal_chain() and feed chain coverage gaps into
+        # error evolution.  This closes the gap where causal transparency
+        # was assessed by verify_causal_chain() but never fed back into
+        # the self-correction loop — axiom scores (mutual verification,
+        # metacognitive coverage, root-cause traceability) triggered
+        # error evolution episodes, but end-to-end causal chain gaps
+        # did not.  Now, any untraced subsystem in the causal chain
+        # records a causal_chain_gap episode, ensuring that persistent
+        # chain coverage failures are learned and corrected.
+        _chain_result: Optional[Dict[str, Any]] = None
+        try:
+            _chain_result = self.verify_causal_chain()
+            _chain_coverage = _chain_result.get('coverage', 1.0)
+            if _chain_coverage < 1.0 and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='causal_chain_gap',
+                    strategy_used='verify_and_reinforce_chain',
+                    success=_chain_coverage >= 0.5,
+                    metadata={
+                        'chain_coverage': _chain_coverage,
+                        'untraced': _chain_result.get(
+                            'untraced_subsystems', [],
+                        ),
+                    },
+                )
+                reinforcement_actions.append(
+                    f'Recorded causal_chain_gap episode '
+                    f'(chain_coverage={_chain_coverage:.2f})'
+                )
+        except Exception:
+            _chain_result = None
+
         # --- Boost metacognitive trigger sensitivity for low-scoring
         # axioms so subsequent forward passes are more responsive ---
         if self.metacognitive_trigger is not None:
@@ -44246,19 +44291,27 @@ class AEONDeltaV3(nn.Module):
             )
 
         # --- Record reinforcement in causal trace for full traceability ---
-        # Every verify_and_reinforce action must be traceable so that
-        # root-cause analysis can answer "what corrective actions were
-        # applied and why?".  Without this, reinforcement actions modify
-        # error evolution and metacognitive weights but those changes
-        # are invisible to trace_root_cause(), breaking the causal
-        # transparency requirement.
-        if self.causal_trace is not None and reinforcement_actions:
+        # Every verify_and_reinforce cycle must be traceable — both when
+        # corrective actions are applied AND when the system is healthy —
+        # so that root-cause analysis can answer "what was the system's
+        # coherence state at this point in time?".  Previously, the trace
+        # entry was only recorded when reinforcement_actions was non-empty,
+        # leaving healthy reinforcement cycles invisible to
+        # verify_causal_chain() and breaking the causal transparency
+        # requirement for the reinforcement subsystem itself.
+        if self.causal_trace is not None:
             self.causal_trace.record(
-                "verify_and_reinforce", "reinforcement_applied",
+                "verify_and_reinforce",
+                "reinforcement_applied" if reinforcement_actions
+                else "assessment_healthy",
                 metadata={
                     "actions": reinforcement_actions,
                     "overall_score": _overall_score,
                     "coherent": report.get('coherent', True),
+                    "causal_chain_traceable": (
+                        _chain_result.get('traceable', True)
+                        if _chain_result is not None else True
+                    ),
                     "weakest_axiom": (
                         weakest_name if not report.get('coherent', True)
                         or _overall_score < 1.0 else None
@@ -44347,6 +44400,10 @@ class AEONDeltaV3(nn.Module):
             )
 
         report['reinforcement_actions'] = reinforcement_actions
+        report['causal_chain_traceable'] = (
+            _chain_result.get('traceable', True)
+            if _chain_result is not None else True
+        )
         return report
 
     def system_emergence_report(self) -> Dict[str, Any]:
@@ -44644,6 +44701,7 @@ class AEONDeltaV3(nn.Module):
         _expected = {
             'verify_pipeline_wiring',
             'verify_cognitive_unity',
+            'verify_and_reinforce',
             'system_emergence_report',
         }
         # Add optional subsystems based on what's active.
