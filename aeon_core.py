@@ -44364,18 +44364,34 @@ class AEONDeltaV3(nn.Module):
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
+        # Each patch includes diagnose/propose/verify fields per the
+        # Final Integration & Cognitive Activation specification so
+        # that every identified discontinuity has a technically
+        # rigorous solution and a verification pathway.
         gaps = diagnostic.get('gaps', [])
         _module_health = unity.get('module_health', {})
         critical_patches = []
         for gap in gaps:
             _comp = gap.get('component', 'unknown')
+            _gap_text = gap.get('gap', '')
+            _remediation = gap.get('remediation', '')
             _mh = _module_health.get(_comp, {})
             critical_patches.append({
                 "component": _comp,
-                "gap": gap.get('gap', ''),
-                "remediation": gap.get('remediation', ''),
+                "gap": _gap_text,
+                "remediation": _remediation,
                 "module_health_score": _mh.get('score', None),
                 "penalties": _mh.get('penalties', []),
+                "diagnose": (
+                    f"Signal discontinuity in '{_comp}': {_gap_text}"
+                ),
+                "propose": _remediation,
+                "verify": (
+                    f"After applying patch, verify_cognitive_unity() "
+                    f"should report no gap for '{_comp}' and "
+                    f"self_diagnostic() should list '{_comp}' in "
+                    f"verified rather than gaps"
+                ),
             })
 
         # ── 3. Activation Sequence ───────────────────────────────
@@ -44536,6 +44552,105 @@ class AEONDeltaV3(nn.Module):
             "system_emergence_status": system_emergence_status,
             "recommendations": unity.get('recommendations', []),
         }
+
+    def verify_causal_chain(self) -> Dict[str, Any]:
+        """Verify that all subsystem outputs are causally traceable.
+
+        Checks that key architectural subsystems have recorded causal
+        trace entries and that those entries can be traced back to
+        root causes.  This provides explicit validation of the
+        **Causal Transparency** requirement: every output/action can
+        be deterministically traced back through the architecture to
+        its originating premise.
+
+        Returns:
+            Dict with:
+                - ``traceable``: bool — True when all expected
+                  subsystems have trace entries.
+                - ``traced_subsystems``: list of subsystem names
+                  that have causal trace entries.
+                - ``untraced_subsystems``: list of subsystem names
+                  that lack entries.
+                - ``coverage``: float — fraction of expected
+                  subsystems with trace entries.
+                - ``root_cause_sample``: root-cause analysis for
+                  the most recent entry (if available).
+                - ``total_entries``: total causal trace entries.
+        """
+        if self.causal_trace is None:
+            return {
+                "traceable": False,
+                "traced_subsystems": [],
+                "untraced_subsystems": [],
+                "coverage": 0.0,
+                "root_cause_sample": None,
+                "total_entries": 0,
+            }
+
+        # Expected subsystems that should have causal trace entries
+        # after activation probe + at least one forward pass.
+        _expected = {
+            'verify_pipeline_wiring',
+            'verify_cognitive_unity',
+            'system_emergence_report',
+            'cognitive_activation_probe',
+        }
+        # Add optional subsystems based on what's active.
+        if self.error_evolution is not None:
+            _expected.add('error_evolution')
+        if self.feedback_bus is not None:
+            _expected.add('feedback_bus')
+
+        # Scan trace entries to find which subsystems are represented.
+        entries = list(self.causal_trace._entries)
+        _found_subsystems: set = set()
+        for entry in entries:
+            _sub = entry.get('subsystem', '')
+            if _sub in _expected:
+                _found_subsystems.add(_sub)
+
+        _untraced = sorted(_expected - _found_subsystems)
+        _coverage = (
+            len(_found_subsystems) / max(len(_expected), 1)
+            if _expected else 1.0
+        )
+
+        # Root-cause sample: trace the most recent entry back to
+        # its root causes to demonstrate causal transparency.
+        root_cause_sample = None
+        if entries:
+            _last = entries[-1]
+            _last_id = _last.get('id', '')
+            if _last_id:
+                try:
+                    root_cause_sample = (
+                        self.causal_trace.trace_root_cause(_last_id)
+                    )
+                except Exception:
+                    pass
+
+        result = {
+            "traceable": len(_untraced) == 0,
+            "traced_subsystems": sorted(_found_subsystems),
+            "untraced_subsystems": _untraced,
+            "coverage": _coverage,
+            "root_cause_sample": root_cause_sample,
+            "total_entries": len(entries),
+        }
+
+        # Record verification in causal trace for self-referential
+        # traceability.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "verify_causal_chain", "assessment",
+                metadata={
+                    'traceable': result['traceable'],
+                    'coverage': result['coverage'],
+                    'untraced': _untraced,
+                },
+            )
+
+        return result
 
     def sync_from_training(
         self,

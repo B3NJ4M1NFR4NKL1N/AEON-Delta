@@ -32,3 +32,4 @@ Thumbs.db
 venv/
 .venv/
 env/
+test_output.txt
