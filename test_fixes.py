@@ -36761,6 +36761,9 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "post_output_uncertainty_gate": "post_output_uncertainty_gate",
         "cognitive_frame": "cognitive_frame",
         "metacognitive_executive": "metacognitive_executive",
+        "backbone_adapter": "backbone_adapter",
+        "chunked_processor": "chunked_processor",
+        "inference_cache": "inference_cache",
     }
 
     # Verify every optional node has a known attribute mapping
