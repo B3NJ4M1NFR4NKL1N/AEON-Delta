@@ -67529,6 +67529,11 @@ def run_all_tests():
     test_activation_probe_seeds_causal_trace_for_error_evolution()
     test_emergence_lifecycle_traceability()
 
+    # Final integration & cognitive activation patches
+    test_reinforce_interval_class_attribute()
+    test_system_emergence_auto_reinforcement()
+    test_forward_pass_emergence_summary()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -74565,6 +74570,137 @@ def test_emergence_lifecycle_traceability():
     )
 
     print("✅ test_emergence_lifecycle_traceability PASSED")
+
+
+def test_reinforce_interval_class_attribute():
+    """_REINFORCE_INTERVAL must be a configurable class attribute, not
+    a hardcoded local variable in _forward_impl."""
+    from aeon_core import AEONDeltaV3
+
+    # Should be a class attribute with the expected default
+    assert hasattr(AEONDeltaV3, '_REINFORCE_INTERVAL'), (
+        "_REINFORCE_INTERVAL must be a class-level attribute"
+    )
+    assert AEONDeltaV3._REINFORCE_INTERVAL == 50, (
+        f"Default _REINFORCE_INTERVAL must be 50, "
+        f"got {AEONDeltaV3._REINFORCE_INTERVAL}"
+    )
+
+    # Must be configurable on instance
+    from aeon_core import AEONConfig
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._REINFORCE_INTERVAL = 25
+    assert model._REINFORCE_INTERVAL == 25, (
+        "Instance-level _REINFORCE_INTERVAL override must work"
+    )
+    # Class default should be unaffected
+    assert AEONDeltaV3._REINFORCE_INTERVAL == 50, (
+        "Class-level default must not be affected by instance override"
+    )
+
+    print("✅ test_reinforce_interval_class_attribute PASSED")
+
+
+def test_system_emergence_auto_reinforcement():
+    """system_emergence_report() must trigger verify_and_reinforce()
+    when the system has NOT emerged, closing the diagnostic → corrective
+    action feedback loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # When emerged, reinforcement_applied should be None
+    report = model.system_emergence_report()
+    assert 'reinforcement_applied' in report, (
+        "system_emergence_report must include 'reinforcement_applied' key"
+    )
+    if report['system_emergence_status']['emerged']:
+        assert report['reinforcement_applied'] is None, (
+            "When system is emerged, reinforcement_applied must be None"
+        )
+
+    # Force non-emerged by clearing causal trace entries
+    model.causal_trace._entries.clear()
+    report2 = model.system_emergence_report()
+    assert not report2['system_emergence_status']['emerged'], (
+        "After clearing trace, system should not be emerged"
+    )
+    assert report2['reinforcement_applied'] is not None, (
+        "When system is NOT emerged, reinforcement_applied must be "
+        "a dict from verify_and_reinforce()"
+    )
+    assert 'reinforcement_actions' in report2['reinforcement_applied'], (
+        "reinforcement_applied must include reinforcement_actions list"
+    )
+
+    print("✅ test_system_emergence_auto_reinforcement PASSED")
+
+
+def test_forward_pass_emergence_summary():
+    """Forward pass result must include a lightweight emergence_summary
+    with cached cognitive state indicators."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    assert 'emergence_summary' in result, (
+        "Forward pass result must include 'emergence_summary'"
+    )
+    es = result['emergence_summary']
+    assert 'cognitive_unity_score' in es, (
+        "emergence_summary must include cognitive_unity_score"
+    )
+    assert 'cognitive_unity_deficit' in es, (
+        "emergence_summary must include cognitive_unity_deficit"
+    )
+    assert 'reinforce_weakness' in es, (
+        "emergence_summary must include reinforce_weakness"
+    )
+    assert 'activation_complete' in es, (
+        "emergence_summary must include activation_complete"
+    )
+    assert 'forward_pass' in es, (
+        "emergence_summary must include forward_pass"
+    )
+    assert es['activation_complete'] is True, (
+        "activation_complete should be True after full init"
+    )
+    assert es['forward_pass'] >= 1, (
+        f"forward_pass should be >= 1, got {es['forward_pass']}"
+    )
+    # cognitive_unity_score should match the result's top-level score
+    assert es['cognitive_unity_score'] == result.get(
+        'cognitive_unity_score', 0.0,
+    ), (
+        "emergence_summary cognitive_unity_score should match "
+        "result's cognitive_unity_score"
+    )
+
+    print("✅ test_forward_pass_emergence_summary PASSED")
 
 
 if __name__ == "__main__":
