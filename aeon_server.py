@@ -804,20 +804,29 @@ async def get_cognitive_activation():
         _ee_healthy = unity.get(
             'error_evolution_effectiveness', {},
         ).get('active', False)
+
+        # 4a. Causal chain verification — validate end-to-end causal
+        # transparency by calling verify_causal_chain() so the
+        # activation report includes explicit chain traceability.
+        _causal_chain = APP.model.verify_causal_chain()
+        _causal_chain_met = _causal_chain.get('traceable', False)
+
         system_emergence_status = {
             "emerged": (
                 _mv_met and _um_met and _rc_met
                 and _convergence_ok
+                and _causal_chain_met
                 and unity.get('unified', False)
             ),
             "mutual_reinforcement_met": _mv_met,
             "meta_cognitive_trigger_met": _um_met,
             "causal_transparency_met": _rc_met,
+            "causal_chain_traceable": _causal_chain_met,
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
             "diagnostic_status": diagnostic.get('status', 'unknown'),
-            "conditions_met": int(_mv_met) + int(_um_met) + int(_rc_met) + int(_convergence_ok) + int(_ee_healthy),
-            "conditions_total": 5,
+            "conditions_met": int(_mv_met) + int(_um_met) + int(_rc_met) + int(_convergence_ok) + int(_ee_healthy) + int(_causal_chain_met),
+            "conditions_total": 6,
         }
 
         return _make_json_safe({
@@ -835,6 +844,7 @@ async def get_cognitive_activation():
             "integration_map": integration_map,
             "critical_patches": critical_patches,
             "activation_sequence": activation_sequence,
+            "causal_chain": _causal_chain,
             "system_emergence_status": system_emergence_status,
             "recommendations": health.get('recommendations', []),
         })
