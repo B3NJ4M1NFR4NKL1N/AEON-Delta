@@ -16655,13 +16655,47 @@ class MetaCognitiveRecursionTrigger:
             # assessment and expected subsystem behaviour, indicating
             # that executive oversight needs recalibration.
             "executive_alignment_deficit": "uncertainty",
+            # Sentinel "none" class — recorded on normal (healthy)
+            # pipeline completions.  Explicitly mapping it avoids a
+            # spurious debug log for a benign, expected class.
+            "none": "uncertainty",
         }
+
+        # ── Prefix-based routing for dynamically generated error classes ──
+        # Some error classes are generated at runtime with structured
+        # prefixes (e.g. "coherence_deficit_{A}_vs_{B}" from pairwise
+        # coherence checks, "subsystem_degraded_{name}" from integrity
+        # monitoring).  These are not in the static _class_to_signal map
+        # but carry semantic intent that should route to the correct
+        # metacognitive signal rather than falling through to generic
+        # "uncertainty".
+        #
+        # Mapping:  prefix → signal (checked in order, first match wins)
+        _prefix_to_signal: List[Tuple[str, str]] = [
+            # Pairwise coherence deficit — e.g. "coherence_deficit_meta_loop_vs_factors"
+            ("coherence_deficit_", "coherence_deficit"),
+            # Per-subsystem degradation — route to the most relevant signal
+            # based on the degraded subsystem's domain.
+            ("subsystem_degraded_safety", "safety_violation"),
+            ("subsystem_degraded_diversity", "diversity_collapse"),
+            ("subsystem_degraded_memory", "memory_staleness"),
+            ("subsystem_degraded_causal", "low_causal_quality"),
+            ("subsystem_degraded_world", "world_model_surprise"),
+            # Catch-all for other subsystem degradation.
+            ("subsystem_degraded_", "low_output_reliability"),
+        ]
 
         # Accumulate boost/dampen factors for each signal.
         # Low success rates boost weight; high success rates dampen it.
         _adjustments: Dict[str, List[float]] = {}
         for cls_name, stats in error_classes.items():
             signal = _class_to_signal.get(cls_name)
+            if signal is None:
+                # Try prefix-based routing before the generic fallback.
+                for _prefix, _sig in _prefix_to_signal:
+                    if cls_name.startswith(_prefix):
+                        signal = _sig
+                        break
             if signal is None:
                 # Fallback: unmapped error classes default to the
                 # "uncertainty" signal so that novel failure modes still
