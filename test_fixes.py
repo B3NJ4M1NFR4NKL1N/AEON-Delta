@@ -67534,6 +67534,12 @@ def run_all_tests():
     test_system_emergence_auto_reinforcement()
     test_forward_pass_emergence_summary()
 
+    # Cognitive activation integration patches
+    test_emergence_summary_includes_axiom_states()
+    test_forward_pass_records_causal_trace()
+    test_system_emergence_report_includes_cognitive_flow_audit()
+    test_verify_causal_chain_includes_forward_pass()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -74701,6 +74707,138 @@ def test_forward_pass_emergence_summary():
     )
 
     print("✅ test_forward_pass_emergence_summary PASSED")
+
+
+def test_emergence_summary_includes_axiom_states():
+    """emergence_summary must include per-axiom satisfaction booleans
+    and a composite emerged verdict so consumers can determine organism
+    status from the forward pass alone."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    es = result['emergence_summary']
+    assert 'mutual_reinforcement_met' in es, (
+        "emergence_summary must include mutual_reinforcement_met"
+    )
+    assert 'meta_cognitive_trigger_met' in es, (
+        "emergence_summary must include meta_cognitive_trigger_met"
+    )
+    assert 'causal_transparency_met' in es, (
+        "emergence_summary must include causal_transparency_met"
+    )
+    assert 'emerged' in es, (
+        "emergence_summary must include emerged verdict"
+    )
+    assert isinstance(es['emerged'], bool), (
+        "emerged must be a boolean"
+    )
+    print("✅ test_emergence_summary_includes_axiom_states PASSED")
+
+
+def test_forward_pass_records_causal_trace():
+    """Each forward pass must record a causal trace entry so every
+    output is deterministically traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig.unified_cognitive_preset(
+        vocab_size=128, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 128, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Check causal trace has a forward_pass entry
+    entries = list(model.causal_trace._entries)
+    fp_entries = [
+        e for e in entries if e.get('subsystem') == 'forward_pass'
+    ]
+    assert len(fp_entries) >= 1, (
+        "forward pass must record at least one causal trace entry"
+    )
+    meta = fp_entries[-1].get('metadata', {})
+    assert 'pass_number' in meta, (
+        "forward_pass trace must include pass_number"
+    )
+    assert 'cognitive_unity_score' in meta, (
+        "forward_pass trace must include cognitive_unity_score"
+    )
+    assert 'emerged' in meta, (
+        "forward_pass trace must include emerged status"
+    )
+    print("✅ test_forward_pass_records_causal_trace PASSED")
+
+
+def test_system_emergence_report_includes_cognitive_flow_audit():
+    """system_emergence_report must include cognitive_flow_audit
+    tracking which cognitive components are active."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset(
+        vocab_size=128, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    assert 'cognitive_flow_audit' in report, (
+        "system_emergence_report must include cognitive_flow_audit"
+    )
+    audit = report['cognitive_flow_audit']
+    assert 'metacognitive_trigger_active' in audit
+    assert 'error_evolution_active' in audit
+    assert 'feedback_bus_active' in audit
+    assert 'causal_trace_active' in audit
+    assert 'periodic_reinforcement_interval' in audit
+    assert audit['metacognitive_trigger_active'] is True
+    assert audit['error_evolution_active'] is True
+    print("✅ test_system_emergence_report_includes_cognitive_flow_audit PASSED")
+
+
+def test_verify_causal_chain_includes_forward_pass():
+    """After a forward pass, verify_causal_chain must expect and find
+    forward_pass trace entries."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig.unified_cognitive_preset(
+        vocab_size=128, hidden_dim=64, z_dim=64,
+        vq_embedding_dim=64, meta_dim=64, knowledge_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 128, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Call system_emergence_report to ensure its trace entry exists
+    model.system_emergence_report()
+
+    chain = model.verify_causal_chain()
+    assert chain['traceable'] is True, (
+        f"causal chain must be traceable after forward pass, "
+        f"untraced: {chain.get('untraced_subsystems')}"
+    )
+    assert 'forward_pass' in chain['traced_subsystems'], (
+        "forward_pass must appear in traced_subsystems"
+    )
+    print("✅ test_verify_causal_chain_includes_forward_pass PASSED")
 
 
 if __name__ == "__main__":
