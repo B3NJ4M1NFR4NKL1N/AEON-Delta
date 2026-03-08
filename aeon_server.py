@@ -1125,7 +1125,7 @@ async def run_inference(req: InferRequest):
     except Exception as rs_err:
         logging.warning("Recovery stats unavailable: %s", rs_err)
 
-    return {
+    return _make_json_safe({
         "ok": True,
         "text": text_out,
         "status": result.get("status"),
@@ -1141,7 +1141,11 @@ async def run_inference(req: InferRequest):
         "provenance": result.get("provenance", {}),
         "ucc_result": result.get("ucc_result", {}),
         "recovery_stats": recovery_stats,
-    }
+        "reinforcement_actions": result.get("reinforcement_actions", []),
+        "correction_guidance": result.get("correction_guidance", {}),
+        "actionable_gaps": result.get("actionable_gaps", []),
+        "emergence_summary": result.get("emergence_summary", {}),
+    })
 
 
 @app.post("/api/forward")
@@ -1183,6 +1187,24 @@ async def run_forward(req: ForwardRequest):
             top5 = torch.topk(probs, 5)
             result["top5_tokens"] = top5.indices.tolist()
             result["top5_probs"] = [round(p, 4) for p in top5.values.tolist()]
+
+        # Pass through cognitive unity and emergence data from forward output
+        cu_score = out.get("cognitive_unity_score")
+        if cu_score is not None:
+            result["cognitive_unity_score"] = float(cu_score) if isinstance(cu_score, (int, float)) else (cu_score.item() if hasattr(cu_score, 'item') else cu_score)
+        cu_components = out.get("cognitive_unity_components")
+        if cu_components is not None:
+            result["cognitive_unity_components"] = cu_components
+        post_coherence = out.get("post_output_coherence")
+        if post_coherence is not None:
+            result["post_output_coherence"] = post_coherence
+        emergence = out.get("emergence_summary")
+        if emergence is not None:
+            result["emergence_summary"] = emergence
+        unc_sources = out.get("uncertainty_sources")
+        if unc_sources is not None:
+            result["uncertainty_sources"] = unc_sources
+
         logging.info(f"Forward pass · {elapsed_ms}ms · safety={result.get('safety_score','?'):.4f}" if result.get('safety_score') is not None else f"Forward pass · {elapsed_ms}ms")
 
         # Record telemetry metrics for the Telemetry Metrics Snapshot dashboard
@@ -1200,7 +1222,7 @@ async def run_forward(req: ForwardRequest):
         except Exception:
             pass
 
-        return result
+        return _make_json_safe(result)
     except Exception as e:
         logging.error(f"Forward error: {e}\n{traceback.format_exc()}")
         raise HTTPException(500, str(e))
@@ -3797,7 +3819,7 @@ async def engine_context_window():
 
 @app.get("/api/engine/module_coherence")
 async def engine_module_coherence():
-    """Coherence verifier status and threshold from ModuleCoherenceVerifier."""
+    """Coherence verifier status, thresholds, and runtime coherence data."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
@@ -3806,12 +3828,21 @@ async def engine_module_coherence():
             return {"ok": True, "available": False, "reason": "ModuleCoherenceVerifier not enabled"}
         threshold = getattr(mc, 'threshold', None)
         initial_threshold = getattr(mc, '_initial_threshold', threshold)
-        return {
+        resp: Dict[str, Any] = {
             "ok": True,
             "available": True,
             "threshold": threshold,
             "initial_threshold": initial_threshold,
+            "coherence_deficit": getattr(APP.model, '_cached_coherence_deficit', 0.0),
+            "weakest_pair": getattr(APP.model, '_cached_weakest_coherence_pair', None),
+            "weakest_pair_similarity": getattr(APP.model, '_cached_weakest_coherence_sim', 1.0),
+            "correction_signals": getattr(APP.model, '_cached_coherence_correction_signals', {}),
         }
+        # Include semantic group configuration
+        sg = getattr(mc, '_subsystem_to_group', None)
+        if sg:
+            resp["semantic_groups"] = dict(sg)
+        return _make_json_safe(resp)
     except Exception as e:
         logging.error(f"engine/module_coherence error: {e}")
         raise HTTPException(500, str(e))
@@ -3848,19 +3879,22 @@ async def engine_error_evolution():
 
 @app.get("/api/engine/auto_critic")
 async def engine_auto_critic():
-    """AutoCriticLoop configuration and status."""
+    """AutoCriticLoop configuration, runtime quality metrics, and status."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
         ac = getattr(APP.model, 'auto_critic', None)
         if ac is None:
             return {"ok": True, "available": False, "reason": "AutoCriticLoop not enabled"}
-        return {
+        return _make_json_safe({
             "ok": True,
             "available": True,
             "max_iterations": getattr(ac, 'max_iterations', None),
             "threshold": getattr(ac, 'threshold', None),
-        }
+            "current_score": getattr(APP.model, '_cached_auto_critic_current_score', None),
+            "quality_ema": getattr(APP.model, '_auto_critic_quality_ema', 0.5),
+            "quality_count": getattr(APP.model, '_auto_critic_quality_count', 0),
+        })
     except Exception as e:
         logging.error(f"engine/auto_critic error: {e}")
         raise HTTPException(500, str(e))
@@ -3868,18 +3902,21 @@ async def engine_auto_critic():
 
 @app.get("/api/engine/deception_suppressor")
 async def engine_deception_suppressor():
-    """Deception suppressor status."""
+    """Deception suppressor status, threshold, and runtime pressure metrics."""
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
         ds = getattr(APP.model, 'deception_suppressor', None)
         if ds is None:
             return {"ok": True, "available": False, "reason": "DeceptionSuppressor not enabled"}
-        return {
+        return _make_json_safe({
             "ok": True,
             "available": True,
             "enabled": True,
-        }
+            "threshold": getattr(ds, 'threshold', None),
+            "deception_pressure": getattr(APP.model, '_cached_deception_pressure', 0.0),
+            "self_report_consistency": getattr(APP.model, '_cached_self_report_consistency', None),
+        })
     except Exception as e:
         logging.error(f"engine/deception_suppressor error: {e}")
         raise HTTPException(500, str(e))
@@ -3994,11 +4031,19 @@ async def engine_all_monitoring():
     try:
         mc = getattr(APP.model, 'module_coherence', None)
         if mc is not None:
-            result["module_coherence"] = {
+            mc_data: Dict[str, Any] = {
                 "available": True,
                 "threshold": getattr(mc, 'threshold', None),
                 "initial_threshold": getattr(mc, '_initial_threshold', None),
+                "coherence_deficit": getattr(APP.model, '_cached_coherence_deficit', 0.0),
+                "weakest_pair": getattr(APP.model, '_cached_weakest_coherence_pair', None),
+                "weakest_pair_similarity": getattr(APP.model, '_cached_weakest_coherence_sim', 1.0),
+                "correction_signals": getattr(APP.model, '_cached_coherence_correction_signals', {}),
             }
+            sg = getattr(mc, '_subsystem_to_group', None)
+            if sg:
+                mc_data["semantic_groups"] = dict(sg)
+            result["module_coherence"] = mc_data
     except Exception:
         pass
 
@@ -4029,6 +4074,9 @@ async def engine_all_monitoring():
                 "available": True,
                 "max_iterations": getattr(ac, 'max_iterations', None),
                 "threshold": getattr(ac, 'threshold', None),
+                "current_score": getattr(APP.model, '_cached_auto_critic_current_score', None),
+                "quality_ema": getattr(APP.model, '_auto_critic_quality_ema', 0.5),
+                "quality_count": getattr(APP.model, '_auto_critic_quality_count', 0),
             }
     except Exception:
         pass
@@ -4040,6 +4088,9 @@ async def engine_all_monitoring():
             result["deception_suppressor"] = {
                 "available": True,
                 "enabled": True,
+                "threshold": getattr(ds, 'threshold', None),
+                "deception_pressure": getattr(APP.model, '_cached_deception_pressure', 0.0),
+                "self_report_consistency": getattr(APP.model, '_cached_self_report_consistency', None),
             }
     except Exception:
         pass
