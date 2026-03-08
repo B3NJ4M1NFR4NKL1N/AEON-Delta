@@ -2088,7 +2088,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="card" style="margin-bottom:18px;border-left:3px solid var(--accent)">
     <div class="ct">🔎 Individual Metric Lookup</div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-      <input type="text" id="au-metric-name" placeholder="Enter metric name (e.g. inference_latency)" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <input type="text" id="au-metric-name" placeholder="Enter metric name (e.g. inference_latency)" aria-label="Metric name" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
       <button class="btn btn-secondary" onclick="lookupTelemetryMetric()">🔍 Lookup</button>
     </div>
     <div id="au-metric-result" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:250px;overflow-y:auto">Enter a metric name and click Lookup</div>
@@ -7465,7 +7465,7 @@ async function tsGetProgress() {
       document.getElementById('ts-prog-pct').textContent = `${pct}%`;
       if (p.current_test) document.getElementById('ts-prog-lbl').textContent = p.current_test;
     }
-  } catch(e) {}
+  } catch(e) { /* non-critical polling */ }
 }
 
 async function tsGetTestResult(testName) {
