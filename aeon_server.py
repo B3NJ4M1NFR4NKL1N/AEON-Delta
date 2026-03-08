@@ -795,9 +795,18 @@ async def get_cognitive_activation():
         # verdict so external consumers can determine whether the
         # system has achieved cognitive organism status.
         _cu_components = unity.get('cognitive_unity_components', {})
-        _mv_met = _cu_components.get('mutual_verification', 0) >= 0.9
-        _um_met = _cu_components.get('uncertainty_metacognition', 0) >= 1.0
-        _rc_met = _cu_components.get('root_cause_traceability', 0) >= 0.9
+        _mv_met = (
+            _cu_components.get('mutual_verification', 0)
+            >= APP.model._EMERGENCE_MV_THRESHOLD
+        )
+        _um_met = (
+            _cu_components.get('uncertainty_metacognition', 0)
+            >= APP.model._EMERGENCE_UM_THRESHOLD
+        )
+        _rc_met = (
+            _cu_components.get('root_cause_traceability', 0)
+            >= APP.model._EMERGENCE_RC_THRESHOLD
+        )
         _convergence_ok = (
             health.get('convergence_summary', {}).get('status') != 'diverging'
         )

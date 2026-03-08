@@ -16733,6 +16733,11 @@ class MetaCognitiveRecursionTrigger:
             # stale or mismatched result, degrading reasoning output
             # quality for near-identical inputs.
             "inference_cache_staleness": "low_output_reliability",
+            # Architectural regression — verify_and_reinforce detected
+            # that the number of actionable architectural gaps increased
+            # between reinforcement cycles, indicating that a config
+            # change or module failure introduced new structural issues.
+            "architectural_regression": "coherence_deficit",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -17856,6 +17861,11 @@ class CausalErrorEvolutionTracker:
         # stale or mismatched.  Maps to lambda_ucc so training
         # adapts to cache-induced reasoning divergence.
         "inference_cache_staleness": "lambda_ucc",
+        # Architectural regression — new structural gaps appeared
+        # between reinforcement cycles.  Maps to lambda_coherence so
+        # training strengthens cross-module integration and reduces
+        # structural fragility.
+        "architectural_regression": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -21679,6 +21689,16 @@ class AEONDeltaV3(nn.Module):
     # lower-overhead operation.
     _REINFORCE_INTERVAL: int = 50
 
+    # Named emergence thresholds used by system_emergence_report(),
+    # verify_and_reinforce(), and the /api/cognitive_activation endpoint
+    # to determine whether individual AGI requirements are satisfied.
+    # Promoting these to class-level constants ensures that the
+    # emergence verdict is computed consistently across all code paths
+    # and can be tuned by callers without modifying source code.
+    _EMERGENCE_MV_THRESHOLD: float = 0.9   # mutual verification
+    _EMERGENCE_UM_THRESHOLD: float = 1.0   # uncertainty→metacognition
+    _EMERGENCE_RC_THRESHOLD: float = 0.9   # root-cause traceability
+
     # Standard data-flow dependency chain for the reasoning core.
     # Used by _reasoning_core_impl to auto-populate the provenance
     # tracker's dependency DAG so that trace_root_cause() can walk
@@ -23477,6 +23497,21 @@ class AEONDeltaV3(nn.Module):
         # Initialised to 0.0 (no weakness detected).
         self._cached_reinforce_weakness: float = 0.0
 
+        # Diagnostic gap count — caches the number of unresolved
+        # self_diagnostic() gaps at the most recent verify_and_reinforce()
+        # cycle.  Used to detect when new gaps appear between cycles and
+        # to feed persistent gap pressure into the feedback bus.
+        self._cached_diagnostic_gap_count: int = 0
+
+        # Feedback bus signal coverage — caches the fraction of feedback
+        # bus signals that were populated (non-default) or evaluated
+        # during the most recent _build_feedback_extra_signals() call.
+        # Used for next-pass uncertainty escalation when coverage is low,
+        # closing the gap where signal dropout was detected by
+        # verify_cognitive_unity() after the forward pass completed but
+        # was never fed back into the next pass's uncertainty signal.
+        self._cached_fb_signal_coverage: float = 1.0
+
         # Post-output late uncertainty — caches the late-stage uncertainty
         # score from the PostOutputUncertaintyGate so the feedback bus
         # can condition the next pass's meta-loop on post-decode quality.
@@ -25071,6 +25106,25 @@ class AEONDeltaV3(nn.Module):
             self, '_feedback_bus_evaluated_signals', set(),
         )
         self._feedback_bus_evaluated_signals = _existing_evaluated | _evaluated
+
+        # Cache signal coverage ratio — the fraction of registered
+        # feedback bus signals that are either non-default or were
+        # evaluated by this method.  The next forward pass checks
+        # this cache to escalate uncertainty when coverage is low,
+        # closing the gap where signal dropout was only detected
+        # post-forward by verify_cognitive_unity() but never fed
+        # back into the forward pass's uncertainty signal.
+        _fb_signals = getattr(self.feedback_bus, '_extra_signals', {}) if self.feedback_bus is not None else {}
+        _fb_defaults = getattr(self.feedback_bus, '_extra_defaults', {}) if self.feedback_bus is not None else {}
+        _total_registered = len(_fb_signals) if _fb_signals else 1
+        _populated_or_evaluated = sum(
+            1 for _sn in _fb_signals
+            if (_fb_signals[_sn] != _fb_defaults.get(_sn, 0.0)
+                or _sn in self._feedback_bus_evaluated_signals)
+        )
+        self._cached_fb_signal_coverage = (
+            _populated_or_evaluated / max(_total_registered, 1)
+        )
 
         return extra
 
@@ -38543,6 +38597,22 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
 
+        # ===== SIGNAL DROPOUT → UNCERTAINTY ESCALATION =====
+        # When the previous pass's feedback bus signal coverage was low,
+        # escalate the current pass's uncertainty so that the meta-
+        # cognitive trigger is immediately aware of the signal gap.
+        # This closes the disconnect where signal dropout was detected
+        # after the forward pass by verify_cognitive_unity() but was
+        # never fed back into the next forward pass's uncertainty
+        # signal — leaving the system blind to feedback bus degradation
+        # for one full pass.
+        _fb_coverage = getattr(self, '_cached_fb_signal_coverage', 1.0)
+        if _fb_coverage < 0.5:
+            _fb_unc_boost = min(0.15, (0.5 - _fb_coverage) * 0.3)
+            if _fb_unc_boost > 0:
+                uncertainty = min(1.0, uncertainty + _fb_unc_boost)
+                uncertainty_sources["signal_dropout"] = _fb_unc_boost
+
         # ===== COGNITIVE UNITY → UNCERTAINTY ESCALATION =====
         # When the cognitive unity score is low, escalate the current
         # pass's uncertainty so that the output quality reflects the
@@ -44559,6 +44629,68 @@ class AEONDeltaV3(nn.Module):
         except Exception:
             _chain_result = None
 
+        # --- Re-check diagnostic gaps for runtime correction ---
+        # The architectural_coherence_report already includes actionable
+        # gaps from the three AGI axioms and pipeline wiring.  To also
+        # detect component-level gaps that only self_diagnostic surfaces
+        # (e.g. unwired subsystems, disabled modules), we track the
+        # actionable gap count from the coherence report and — when it
+        # increases between reinforcement cycles — record an error
+        # evolution episode so the metacognitive trigger can learn from
+        # architectural regression.
+        #
+        # We intentionally avoid calling self_diagnostic() here because
+        # it internally invokes verify_coherence() which can mutate
+        # cached feedback bus state — a side-effect that is only safe
+        # during a forward pass.  Instead, we derive the diagnostic gap
+        # count from the report's actionable_gaps field, which captures
+        # the same structural issues without side-effects.
+        _actionable_gaps = report.get('actionable_gaps', [])
+        _diag_gap_count = len(_actionable_gaps)
+        _prev_gap_count = getattr(
+            self, '_cached_diagnostic_gap_count', 0,
+        )
+        self._cached_diagnostic_gap_count = _diag_gap_count
+        if _diag_gap_count > 0:
+            # Feed gap pressure into feedback bus so the next forward
+            # pass's meta-loop is conditioned on unresolved gaps.
+            if self.feedback_bus is not None:
+                _fb_signals = getattr(
+                    self.feedback_bus, '_extra_signals', {},
+                )
+                if 'systematic_uncertainty' in _fb_signals:
+                    _gap_pressure = min(
+                        1.0, _diag_gap_count / 10.0,
+                    )
+                    _fb_signals['systematic_uncertainty'] = max(
+                        _fb_signals['systematic_uncertainty'],
+                        _gap_pressure,
+                    )
+            # When new gaps appear (count increased), record a single
+            # error evolution episode so the metacognitive trigger
+            # learns about architectural regression.
+            if (_diag_gap_count > _prev_gap_count
+                    and self.error_evolution is not None):
+                self.error_evolution.record_episode(
+                    error_class='architectural_regression',
+                    strategy_used='verify_and_reinforce_diagnostic',
+                    success=False,
+                    metadata={
+                        'new_gaps': _diag_gap_count - _prev_gap_count,
+                        'total_gaps': _diag_gap_count,
+                    },
+                )
+                reinforcement_actions.append(
+                    f'Detected {_diag_gap_count - _prev_gap_count} '
+                    f'new diagnostic gap(s) '
+                    f'(total={_diag_gap_count})'
+                )
+            elif _diag_gap_count > 0:
+                reinforcement_actions.append(
+                    f'Monitored {_diag_gap_count} persistent '
+                    f'diagnostic gap(s)'
+                )
+
         # --- Boost metacognitive trigger sensitivity for low-scoring
         # axioms so subsequent forward passes are more responsive.
         # The boost factor scales with deficit magnitude: a score of 0.1
@@ -44803,6 +44935,10 @@ class AEONDeltaV3(nn.Module):
             "feedback_bus_coverage": unity.get(
                 'feedback_bus_completeness', {},
             ).get('coverage', 0.0),
+            "signal_coverage": getattr(
+                self, '_cached_fb_signal_coverage', 1.0,
+            ),
+            "diagnostic_gap_count": len(diagnostic.get('gaps', [])),
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
@@ -44923,12 +45059,17 @@ class AEONDeltaV3(nn.Module):
 
         # ── 4. System Emergence Status ───────────────────────────
         _cu_components = unity.get('cognitive_unity_components', {})
-        _mv_met = _cu_components.get('mutual_verification', 0) >= 0.9
+        _mv_met = (
+            _cu_components.get('mutual_verification', 0)
+            >= self._EMERGENCE_MV_THRESHOLD
+        )
         _um_met = (
-            _cu_components.get('uncertainty_metacognition', 0) >= 1.0
+            _cu_components.get('uncertainty_metacognition', 0)
+            >= self._EMERGENCE_UM_THRESHOLD
         )
         _rc_met = (
-            _cu_components.get('root_cause_traceability', 0) >= 0.9
+            _cu_components.get('root_cause_traceability', 0)
+            >= self._EMERGENCE_RC_THRESHOLD
         )
         _convergence_ok = (
             health.get('convergence_summary', {}).get('status')
