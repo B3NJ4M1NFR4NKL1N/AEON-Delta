@@ -23256,8 +23256,13 @@ def test_meta_learner_task_buffer_populated_by_trainer():
     config = AEONConfig(enable_meta_learning=True)
     model = AEONDeltaV3(config)
     assert model.meta_learner is not None, "MetaLearner should be initialized"
-    assert model.meta_learner.num_tasks == 0, (
-        "Task buffer should be empty initially"
+    # After cognitive activation probe, the task buffer may contain a
+    # baseline task.  Record the initial count so we can verify that
+    # training adds at least one additional task.
+    _initial_tasks = model.meta_learner.num_tasks
+    assert _initial_tasks <= 1, (
+        f"Task buffer should have at most 1 baseline task, "
+        f"got {_initial_tasks}"
     )
 
     trainer = AEONTrainer(model, config)
@@ -23270,8 +23275,8 @@ def test_meta_learner_task_buffer_populated_by_trainer():
     }
     trainer.train_step(batch)
 
-    assert model.meta_learner.num_tasks >= 1, (
-        "MetaLearner task buffer should be populated after training step"
+    assert model.meta_learner.num_tasks > _initial_tasks, (
+        "MetaLearner task buffer should grow after training step"
     )
 
     print("✅ test_meta_learner_task_buffer_populated_by_trainer PASSED")
@@ -23307,17 +23312,30 @@ def test_architecture_summary_includes_adaptive_meta_loop():
 
 
 def test_self_diagnostic_meta_learner_gap():
-    """self_diagnostic detects empty MetaLearner task buffer."""
+    """self_diagnostic reflects MetaLearner task buffer status.
+
+    After cognitive activation probe, the task buffer is seeded with a
+    baseline task so the gap should be resolved.  If meta-learning is
+    disabled, the meta_learner is None and no gap should appear either.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(enable_meta_learning=True)
     model = AEONDeltaV3(config)
     report = model.self_diagnostic()
 
-    # MetaLearner is initialized but task buffer is empty
+    # After activation probe, the baseline task should have been seeded
+    # so the meta_learner gap should be resolved (task buffer not empty).
     gap_components = [g['component'] for g in report['gaps']]
-    assert 'meta_learner' in gap_components, (
-        "Should detect empty MetaLearner task buffer"
+    assert 'meta_learner' not in gap_components, (
+        "meta_learner gap should be resolved after activation probe "
+        "seeded the task buffer with a baseline task"
+    )
+    # The meta_learner should instead appear in verified_connections
+    verified_str = ' '.join(report.get('verified_connections', []))
+    assert 'meta_learner' in verified_str, (
+        "meta_learner should appear in verified_connections after "
+        "activation seeding"
     )
 
     print("✅ test_self_diagnostic_meta_learner_gap PASSED")
