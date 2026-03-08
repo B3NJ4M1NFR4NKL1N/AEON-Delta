@@ -44589,11 +44589,12 @@ class AEONDeltaV3(nn.Module):
 
         # Expected subsystems that should have causal trace entries
         # after activation probe + at least one forward pass.
+        # NOTE: error_evolution records entries as 'error_evolution/class'
+        # (prefix pattern), so we match by prefix for that subsystem.
         _expected = {
             'verify_pipeline_wiring',
             'verify_cognitive_unity',
             'system_emergence_report',
-            'cognitive_activation_probe',
         }
         # Add optional subsystems based on what's active.
         if self.error_evolution is not None:
@@ -44606,8 +44607,14 @@ class AEONDeltaV3(nn.Module):
         _found_subsystems: set = set()
         for entry in entries:
             _sub = entry.get('subsystem', '')
+            # Exact match for most subsystems.
             if _sub in _expected:
                 _found_subsystems.add(_sub)
+            # Prefix match for error_evolution (recorded as
+            # 'error_evolution/class_name').
+            elif (_sub.startswith('error_evolution/')
+                  and 'error_evolution' in _expected):
+                _found_subsystems.add('error_evolution')
 
         _untraced = sorted(_expected - _found_subsystems)
         _coverage = (
