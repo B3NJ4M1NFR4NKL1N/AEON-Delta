@@ -22925,8 +22925,11 @@ def test_save_load_cognitive_state():
     )
     model = AEONDeltaV3(config)
 
-    # Populate error evolution with episodes
+    # Populate error evolution with episodes.
+    # Record model's activation-probe total *before* adding test episodes
+    # (get_error_summary already excludes baseline episodes).
     assert model.error_evolution is not None
+    _activation_total = model.error_evolution.get_error_summary()["total_recorded"]
     model.error_evolution.record_episode(
         error_class="test_error",
         strategy_used="test_strategy",
@@ -22960,16 +22963,24 @@ def test_save_load_cognitive_state():
 
         # Create a fresh model and load state
         model2 = AEONDeltaV3(config)
-        # Verify fresh state is empty
-        assert model2.error_evolution.get_error_summary()["total_recorded"] == 0
+        # Fresh model has no user-added 'test_error' episodes; it may
+        # have activation-probe episodes (baseline + verify_and_reinforce
+        # deficits) which are an expected part of cognitive activation.
+        assert "test_error" not in model2.error_evolution.get_error_summary().get(
+            "error_classes", {}
+        ), "Fresh model should not have 'test_error' episodes"
         assert len(model2.convergence_monitor.history) == 0
 
         model2.load_state(save_path)
 
-        # Verify error evolution restored
+        # Verify error evolution restored — after loading model1's state
+        # the total should be model1's activation-probe total + 2 test
+        # episodes (get_error_summary excludes baseline episodes).
         summary = model2.error_evolution.get_error_summary()
-        assert summary["total_recorded"] == 2, (
-            f"Expected 2 error episodes, got {summary['total_recorded']}"
+        assert summary["total_recorded"] == _activation_total + 2, (
+            f"Expected {_activation_total + 2} non-baseline error episodes "
+            f"(activation={_activation_total} + 2 test), "
+            f"got {summary['total_recorded']}"
         )
         assert "test_error" in summary["error_classes"]
         assert summary["error_classes"]["test_error"]["count"] == 2
