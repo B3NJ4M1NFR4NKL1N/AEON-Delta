@@ -760,6 +760,21 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div id="arch-health-detail" style="margin-top:10px;font-size:12px;color:var(--text3)">Initialize model for health assessment</div>
     </div>
   </div>
+  <!-- Coherence Report & System Emergence -->
+  <div class="g2" style="margin-top:18px">
+    <div class="card" style="border-left:3px solid var(--purple)">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📊 Coherence Report <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadCoherenceReport()">↻ Refresh</button></div>
+      <div id="arch-coherence-report" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:300px;overflow-y:auto">Click Refresh to load coherence report</div>
+    </div>
+    <div class="card" style="border-left:3px solid var(--accent)">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🌐 System Emergence <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadSystemEmergence()">↻ Refresh</button></div>
+      <div id="arch-system-emergence" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:300px;overflow-y:auto">Click Refresh to load emergence status</div>
+    </div>
+  </div>
+  <div style="margin-top:14px;display:flex;gap:8px">
+    <button class="btn btn-purple" onclick="verifyAndReinforce()">⚡ Verify & Reinforce</button>
+    <div id="arch-reinforce-result" style="flex:1;font-size:11px;color:var(--text3);display:flex;align-items:center"></div>
+  </div>
 </div>
 
 <!-- ══ MODULE INSPECTOR ══ -->
@@ -800,6 +815,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="ph">
     <div><div class="ph-title">Configuration</div><div class="ph-sub">AEONConfig parameters · applied on next init</div></div>
     <div class="btns">
+      <button class="btn btn-ghost" onclick="loadCurrentConfig()">⬇ Load Server Config</button>
       <button class="btn btn-ghost" onclick="validateConfig()">✓ Validate</button>
       <button class="btn btn-ghost" onclick="resetCfg()">↺ Reset</button>
       <button class="btn btn-secondary" onclick="copyCfgJSON()">⎘ Copy JSON</button>
@@ -1120,6 +1136,8 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="ph-sub" id="v4-sub">Two-phase: AutoEncoder+VQ (Phase A) → Contextual RSSM (Phase B)</div>
     </div>
     <div class="btns">
+      <button class="btn btn-ghost" onclick="v4ShowConfigSchema()">📐 Config Schema</button>
+      <button class="btn btn-ghost" onclick="v4FetchServerLogs()">📋 Server Logs</button>
       <button class="btn btn-danger"  id="v4-stop-btn"  onclick="v4Stop()"  style="display:none">■ Stop</button>
       <button class="btn btn-primary" id="v4-start-btn" onclick="v4Start()">◉ Start v4 Training</button>
     </div>
@@ -1301,6 +1319,22 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       </div>
     </div>
   </details>
+
+  <!-- ── Server-Side Convergence & Adaptive State ─────────────────── -->
+  <div class="g3" style="margin-bottom:14px">
+    <div class="card" style="border-left:3px solid var(--green)">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📉 Server Convergence <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="v4FetchConvergence()">↻ Refresh</button></div>
+      <div id="v4-srv-convergence" style="margin-top:8px;font-size:11px;color:var(--text3)">Click Refresh to fetch convergence status from server</div>
+    </div>
+    <div class="card" style="border-left:3px solid var(--purple)">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🧬 Adaptive State <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="v4FetchAdaptive()">↻ Refresh</button></div>
+      <div id="v4-srv-adaptive" style="margin-top:8px;font-size:11px;color:var(--text3)">Click Refresh to fetch adaptive training state</div>
+    </div>
+    <div class="card" style="border-left:3px solid var(--accent)">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📐 Config Schema <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="v4ShowConfigSchema()">⊕ Show</button></div>
+      <div id="v4-srv-config" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:250px;overflow-y:auto;display:none"></div>
+    </div>
+  </div>
 
   <!-- ── Live Status ─────────────────────────────────────────────────── -->
   <div class="g2" style="margin-bottom:14px">
@@ -1609,6 +1643,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="ph-sub" id="ts-sub">Loading tests… · click ▶ to run</div>
     </div>
     <div class="btns">
+      <button class="btn btn-ghost" onclick="tsReloadTests()">🔄 Reload Tests</button>
       <button class="btn btn-secondary" id="ts-fmt-btn" onclick="tsToggleFormat()" title="Toggle log format">📋 Full Log</button>
       <button class="btn btn-secondary" id="ts-stop-btn" onclick="tsStop()" style="display:none">⏹ Stop</button>
       <button class="btn btn-secondary" onclick="tsRefreshCatalogue()">⟳ Catalogue</button>
@@ -1717,6 +1752,28 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <button class="btn btn-secondary" onclick="tsCopyLog()" style="font-size:10px;padding:3px 8px">📋 Copy</button>
     </div>
     <pre id="ts-log-pre" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:320px;overflow-y:auto;font-size:10.5px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-all"></pre>
+  </div>
+
+  <!-- Legacy Test Runner -->
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--warn)">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🧪 Legacy Test Runner <span style="font-size:9px;color:var(--text3);font-weight:400">POST /api/test/run · GET /api/test/result</span></div>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <button class="btn btn-primary" id="ts-legacy-run-btn" onclick="tsLegacyRun()">▶ Run Legacy Tests</button>
+      <button class="btn btn-ghost" onclick="tsLegacyResult()">📋 Get Result</button>
+      <div id="ts-legacy-status" style="flex:1;font-size:11px;color:var(--text3)"></div>
+    </div>
+    <div id="ts-legacy-result" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:250px;overflow-y:auto;display:none"></div>
+  </div>
+
+  <!-- Test SSE Stream -->
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--accent)">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📡 Test Event Stream (SSE)
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost" id="ts-sse-btn" onclick="tsToggleSSE()" style="padding:1px 6px;font-size:9px">▶ Connect</button>
+        <span id="ts-sse-status" style="font-size:9px;color:var(--text3);display:flex;align-items:center">Disconnected</span>
+      </div>
+    </div>
+    <div id="ts-sse-log" style="margin-top:8px;font-family:monospace;font-size:10px;line-height:1.6;max-height:200px;overflow-y:auto;color:var(--text3)">Click Connect to start receiving test events</div>
   </div>
 </div>
 
@@ -1932,6 +1989,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="ph">
     <div><div class="ph-title">Live Logs</div><div class="ph-sub">Real Python logging from core.py via WebSocket / SSE</div></div>
     <div class="btns">
+      <button class="btn btn-ghost" id="logs-sse-btn" onclick="logsToggleSSE()">📡 SSE Stream</button>
       <button class="btn btn-ghost" id="pause-btn" onclick="togglePause()">⏸ Pause</button>
       <button class="btn btn-ghost" onclick="clearLogs()">✕ Clear</button>
       <button class="btn btn-secondary" onclick="exportLogs()">↓ Export</button>
@@ -2026,6 +2084,15 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="card"><div class="ct">Pattern Insights (model.audit_log.get_pattern_insights())</div><div id="au-insights" style="margin-top:10px;font-size:12px;color:var(--text3)">Insufficient data</div></div>
     <div class="card"><div class="ct">Telemetry Counters</div><div id="obs-counters" style="margin-top:10px;font-size:12px;color:var(--text3)">No counters recorded</div></div>
   </div>
+  <!-- Individual Metric Lookup -->
+  <div class="card" style="margin-bottom:18px;border-left:3px solid var(--accent)">
+    <div class="ct">🔎 Individual Metric Lookup</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <input type="text" id="au-metric-name" placeholder="Enter metric name (e.g. inference_latency)" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <button class="btn btn-secondary" onclick="lookupTelemetryMetric()">🔍 Lookup</button>
+    </div>
+    <div id="au-metric-result" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:250px;overflow-y:auto">Enter a metric name and click Lookup</div>
+  </div>
 </div>
 
 <!-- ══ MONITOR ══ -->
@@ -2114,7 +2181,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <!-- Detail Cards Row 1: Convergence + Recovery -->
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">◈ Convergence Monitor</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">◈ Convergence Monitor <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/convergence','em-convergence-detail')">⊕ Detail</button></div>
       <div id="em-convergence-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">Initialize model & run inference for convergence data</div>
     </div>
     <div class="card">
@@ -2126,11 +2193,11 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <!-- Detail Cards Row 2: Memory + Guard -->
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">🧠 Memory System</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🧠 Memory System <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/memory','em-memory-detail')">⊕ Detail</button></div>
       <div id="em-memory-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
     <div class="card">
-      <div class="ct">🛡 Deterministic Guard</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🛡 Deterministic Guard <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/deterministic_guard','em-guard-detail')">⊕ Detail</button></div>
       <div id="em-guard-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
   </div>
@@ -2138,11 +2205,11 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <!-- Detail Cards Row 3: Integrity + Module Coherence -->
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">🏥 Integrity Report</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🏥 Integrity Report <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/integrity','em-integrity-detail')">⊕ Detail</button></div>
       <div id="em-integrity-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
     <div class="card">
-      <div class="ct">◧ Module Coherence</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">◧ Module Coherence <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/module_coherence','em-coherence-detail')">⊕ Detail</button></div>
       <div id="em-coherence-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
   </div>
@@ -2150,11 +2217,11 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <!-- Detail Cards Row 4: Error Evolution + Context Window -->
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">📈 Error Evolution</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📈 Error Evolution <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/error_evolution','em-error-evo-detail')">⊕ Detail</button></div>
       <div id="em-error-evo-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
     <div class="card">
-      <div class="ct">📋 Context Window</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📋 Context Window <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/context_window','em-ctx-detail')">⊕ Detail</button></div>
       <div id="em-ctx-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
   </div>
@@ -2162,15 +2229,15 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <!-- Detail Cards Row 5: AutoCritic + Deception Suppressor + Progress -->
   <div class="g3" style="margin-bottom:14px">
     <div class="card">
-      <div class="ct">🔍 Auto-Critic Loop</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🔍 Auto-Critic Loop <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/auto_critic','em-critic-detail')">⊕ Detail</button></div>
       <div id="em-critic-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
     <div class="card">
-      <div class="ct">🚫 Deception Suppressor</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🚫 Deception Suppressor <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/deception_suppressor','em-deception-detail')">⊕ Detail</button></div>
       <div id="em-deception-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
     <div class="card">
-      <div class="ct">◉ Pipeline Progress</div>
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">◉ Pipeline Progress <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadDetail('/api/engine/progress','em-progress-detail')">⊕ Detail</button></div>
       <div id="em-progress-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
     </div>
   </div>
@@ -2318,6 +2385,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     <div class="btns">
       <button class="btn btn-secondary" onclick="loadCausalTrace()">↻ Refresh</button>
       <button class="btn btn-ghost" onclick="exportCausalTrace()">↓ Export</button>
+      <button class="btn btn-secondary" onclick="verifyCausalChain()">✓ Verify Chain</button>
     </div>
   </div>
   <div class="g5" style="margin-bottom:14px">
@@ -2352,6 +2420,11 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="ct">🔗 Root Cause Chain</div>
       <div id="ct-root-cause" style="margin-top:8px;font-size:12px;color:var(--text2);max-height:360px;overflow-y:auto"><div style="color:var(--text3)">Click "Trace" on an entry to view its root cause chain</div></div>
     </div>
+  </div>
+  <!-- Causal Chain Verification -->
+  <div class="card" style="margin-top:14px;border-left:3px solid var(--green);display:none" id="ct-verify-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">✓ Causal Chain Verification <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="document.getElementById('ct-verify-card').style.display='none'">✕ Close</button></div>
+    <div id="ct-verify-result" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:300px;overflow-y:auto">—</div>
   </div>
 </div>
 
@@ -7240,6 +7313,331 @@ async function loadEngineMonitor() {
   } catch(e) {
     document.getElementById('em-raw').textContent = 'Error: ' + e.message;
   }
+}
+
+// ─── UNCONNECTED ENDPOINT HANDLERS ────────────────────────────────────────────
+
+// ── Group 1: Engine Monitor Detail Endpoints ──
+async function emLoadDetail(endpoint, elementId) {
+  try {
+    const el = document.getElementById(elementId);
+    el.innerHTML = '<span style="color:var(--text3)">Loading…</span>';
+    const d = await api('GET', endpoint);
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Not available')}</span>`;
+      return;
+    }
+    el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+  } catch(e) { log('ERROR', 'engine', e.message); }
+}
+
+// ── Group 2: Architecture Coherence & Emergence ──
+async function loadCoherenceReport() {
+  try {
+    const el = document.getElementById('arch-coherence-report');
+    el.innerHTML = '<span style="color:var(--text3)">Loading coherence report…</span>';
+    const d = await api('GET', '/api/coherence_report');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail || 'Error loading report')}</span>`; return; }
+    let html = '';
+    if (d.report) {
+      html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d.report, null, 2)) + '</pre>';
+    } else {
+      html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+    }
+    el.innerHTML = html;
+    log('INFO', 'architecture', 'Coherence report loaded');
+  } catch(e) { log('ERROR', 'architecture', e.message); }
+}
+
+async function loadSystemEmergence() {
+  try {
+    const el = document.getElementById('arch-system-emergence');
+    el.innerHTML = '<span style="color:var(--text3)">Loading system emergence…</span>';
+    const d = await api('GET', '/api/system_emergence');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail || 'Error loading emergence')}</span>`; return; }
+    let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+    if (d.status) html += `<div><strong style="color:var(--accent)">Status:</strong> <span style="color:var(--text2)">${escHtml(typeof d.status === 'string' ? d.status : JSON.stringify(d.status))}</span></div>`;
+    if (d.integration_map) html += `<div><strong style="color:var(--purple)">Integration Map:</strong> <span style="color:var(--text2)">${escHtml(typeof d.integration_map === 'string' ? d.integration_map : JSON.stringify(d.integration_map))}</span></div>`;
+    if (d.critical_patches) html += `<div><strong style="color:var(--danger)">Critical Patches:</strong> <span style="color:var(--text2)">${escHtml(JSON.stringify(d.critical_patches))}</span></div>`;
+    if (d.activation_sequence) html += `<div><strong style="color:var(--green)">Activation Sequence:</strong> <span style="color:var(--text2)">${escHtml(JSON.stringify(d.activation_sequence))}</span></div>`;
+    html += '</div>';
+    el.innerHTML = html;
+    log('INFO', 'architecture', 'System emergence loaded');
+  } catch(e) { log('ERROR', 'architecture', e.message); }
+}
+
+async function verifyAndReinforce() {
+  try {
+    const el = document.getElementById('arch-reinforce-result');
+    el.innerHTML = '<span style="color:var(--text3)">Running mutual-reinforcement cycle…</span>';
+    const d = await api('POST', '/api/verify_and_reinforce');
+    if (d.ok) {
+      el.innerHTML = `<span style="color:var(--green)">✓ ${escHtml(d.message || d.detail || 'Verification & reinforcement complete')}</span>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--danger)">✗ ${escHtml(d.detail || 'Reinforcement failed')}</span>`;
+    }
+    log('INFO', 'architecture', 'Verify & Reinforce executed');
+  } catch(e) { log('ERROR', 'architecture', e.message); }
+}
+
+// ── Group 2 continued: Causal Chain Verification ──
+async function verifyCausalChain() {
+  try {
+    const card = document.getElementById('ct-verify-card');
+    const el = document.getElementById('ct-verify-result');
+    card.style.display = '';
+    el.innerHTML = '<span style="color:var(--text3)">Verifying causal chain…</span>';
+    const d = await api('GET', '/api/verify_causal_chain');
+    if (d.ok) {
+      let html = '<div style="display:flex;flex-direction:column;gap:6px">';
+      html += `<div><strong style="color:var(--green)">✓ Verified:</strong> <span style="color:var(--text2)">${escHtml(d.message || 'Causal chain integrity confirmed')}</span></div>`;
+      if (d.chain) html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d.chain, null, 2)) + '</pre>';
+      if (d.verification) html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d.verification, null, 2)) + '</pre>';
+      html += '</div>';
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = `<span style="color:var(--danger)">✗ ${escHtml(d.detail || d.message || 'Verification failed')}</span>`;
+    }
+    log('INFO', 'causal_trace', 'Causal chain verified');
+  } catch(e) { log('ERROR', 'causal_trace', e.message); }
+}
+
+// ── Group 3: Configuration ──
+async function loadCurrentConfig() {
+  try {
+    const d = await api('GET', '/api/config');
+    if (d && typeof d === 'object') {
+      const jsonStr = JSON.stringify(d, null, 2);
+      const ta = document.getElementById('cfg-json');
+      if (ta) { ta.value = jsonStr; cTab('json-ed'); }
+      log('INFO', 'config', 'Current server config loaded into JSON editor');
+    }
+  } catch(e) { log('ERROR', 'config', e.message); }
+}
+
+// ── Group 4: Telemetry Individual Metric ──
+async function lookupTelemetryMetric() {
+  try {
+    const name = document.getElementById('au-metric-name').value.trim();
+    const el = document.getElementById('au-metric-result');
+    if (!name) { el.innerHTML = '<span style="color:var(--warn)">Please enter a metric name</span>'; return; }
+    el.innerHTML = '<span style="color:var(--text3)">Looking up metric…</span>';
+    const d = await api('GET', `/api/telemetry/metric/${encodeURIComponent(name)}`);
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail || 'Metric not found')}</span>`; return; }
+    let html = '<div style="display:flex;flex-direction:column;gap:6px">';
+    html += `<div><strong style="color:var(--accent)">Metric:</strong> ${escHtml(name)}</div>`;
+    if (d.entries && d.entries.length) {
+      html += '<table class="tbl" style="font-size:10px"><thead><tr><th>Time</th><th>Value</th></tr></thead><tbody>';
+      d.entries.slice(-50).forEach(e => {
+        html += `<tr><td>${escHtml(String(e.time || e.timestamp || '—'))}</td><td style="color:var(--green)">${typeof e.value === 'number' ? e.value.toFixed(6) : escHtml(String(e.value))}</td></tr>`;
+      });
+      html += '</tbody></table>';
+    } else {
+      html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    log('INFO', 'telemetry', `Metric '${name}' looked up`);
+  } catch(e) { log('ERROR', 'telemetry', e.message); }
+}
+
+// ── Group 5: Test Suite Enhancements ──
+async function tsReloadTests() {
+  try {
+    log('INFO', 'tests', 'Reloading test module…');
+    const d = await api('POST', '/api/tests/reload');
+    if (d.ok) {
+      log('INFO', 'tests', d.message || 'Test module reloaded successfully');
+      tsRefreshCatalogue();
+    } else {
+      log('WARN', 'tests', d.detail || 'Reload returned non-ok');
+    }
+  } catch(e) { log('ERROR', 'tests', e.message); }
+}
+
+async function tsGetProgress() {
+  try {
+    const d = await api('GET', '/api/tests/progress');
+    if (d.ok && d.progress) {
+      const p = d.progress;
+      const pct = p.total > 0 ? Math.round(p.current / p.total * 100) : 0;
+      document.getElementById('ts-prog-fill').style.width = `${pct}%`;
+      document.getElementById('ts-prog-pct').textContent = `${pct}%`;
+      if (p.current_test) document.getElementById('ts-prog-lbl').textContent = p.current_test;
+    }
+  } catch(e) {}
+}
+
+async function tsGetTestResult(testName) {
+  try {
+    const d = await api('GET', `/api/tests/results/${encodeURIComponent(testName)}`);
+    if (d.ok) {
+      const detail = document.getElementById('ts-results-list');
+      let html = `<div style="padding:8px;background:var(--surface2);border-radius:6px;margin-bottom:8px;border-left:3px solid var(--accent)">`;
+      html += `<div style="font-weight:600;color:var(--accent);margin-bottom:4px">${escHtml(testName)}</div>`;
+      html += '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+      html += '</div>';
+      detail.innerHTML = html + detail.innerHTML;
+    }
+  } catch(e) { log('ERROR', 'tests', e.message); }
+}
+
+async function tsLegacyRun() {
+  try {
+    const btn = document.getElementById('ts-legacy-run-btn');
+    const status = document.getElementById('ts-legacy-status');
+    btn.disabled = true; btn.textContent = '⏳ Running…';
+    status.innerHTML = '<span style="color:var(--accent)">Running legacy test suite…</span>';
+    const d = await api('POST', '/api/test/run');
+    status.innerHTML = d.ok
+      ? `<span style="color:var(--green)">✓ ${escHtml(d.message || 'Legacy tests started')}</span>`
+      : `<span style="color:var(--danger)">✗ ${escHtml(d.detail || 'Failed')}</span>`;
+    btn.disabled = false; btn.textContent = '▶ Run Legacy Tests';
+    log('INFO', 'tests', 'Legacy test run triggered');
+    setTimeout(tsLegacyResult, 2000);
+  } catch(e) {
+    document.getElementById('ts-legacy-status').innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
+    const btn = document.getElementById('ts-legacy-run-btn');
+    btn.disabled = false; btn.textContent = '▶ Run Legacy Tests';
+    log('ERROR', 'tests', e.message);
+  }
+}
+
+async function tsLegacyResult() {
+  try {
+    const d = await api('GET', '/api/test/result');
+    const el = document.getElementById('ts-legacy-result');
+    el.style.display = '';
+    el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+  } catch(e) { log('ERROR', 'tests', e.message); }
+}
+
+let _tsSSE = null;
+function tsToggleSSE() {
+  const btn = document.getElementById('ts-sse-btn');
+  const status = document.getElementById('ts-sse-status');
+  if (_tsSSE) {
+    _tsSSE.close();
+    _tsSSE = null;
+    btn.textContent = '▶ Connect';
+    status.textContent = 'Disconnected';
+    status.style.color = 'var(--text3)';
+    return;
+  }
+  _tsSSE = new EventSource('/api/tests/stream');
+  btn.textContent = '⏹ Disconnect';
+  status.textContent = 'Connected';
+  status.style.color = 'var(--green)';
+  const logEl = document.getElementById('ts-sse-log');
+  _tsSSE.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      const div = document.createElement('div');
+      div.style.color = msg.status === 'failed' ? 'var(--danger)' : msg.status === 'passed' ? 'var(--green)' : 'var(--text2)';
+      div.textContent = `[${msg.time || new Date().toLocaleTimeString()}] ${msg.test || msg.type || ''} — ${msg.status || msg.message || JSON.stringify(msg)}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    } catch(_) {}
+  };
+  _tsSSE.onerror = () => {
+    status.textContent = 'Error';
+    status.style.color = 'var(--danger)';
+  };
+}
+
+// ── Group 6: Training v4 Enhancements ──
+async function v4FetchConvergence() {
+  try {
+    const el = document.getElementById('v4-srv-convergence');
+    el.innerHTML = '<span style="color:var(--text3)">Loading convergence…</span>';
+    const d = await api('GET', '/api/train/v4/convergence');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail || 'Not available')}</span>`; return; }
+    let html = '<div style="display:flex;flex-direction:column;gap:4px">';
+    if (d.converged !== undefined) html += `<div><strong>${d.converged ? '✓ Converged' : '… Not converged'}</strong></div>`;
+    if (d.velocity !== undefined) html += `<div>Velocity: <span style="color:var(--accent)">${typeof d.velocity === 'number' ? d.velocity.toFixed(6) : d.velocity}</span></div>`;
+    if (d.loss_breakdown) {
+      html += '<div style="margin-top:4px"><strong>Loss Breakdown:</strong></div>';
+      Object.entries(d.loss_breakdown).forEach(([k,v]) => {
+        html += `<div style="padding-left:8px">${escHtml(k)}: <span style="color:var(--green)">${typeof v === 'number' ? v.toFixed(6) : v}</span></div>`;
+      });
+    }
+    if (d.status) html += `<div>Status: <span style="color:var(--text2)">${escHtml(typeof d.status === 'string' ? d.status : JSON.stringify(d.status))}</span></div>`;
+    html += '</div>';
+    el.innerHTML = html;
+    log('INFO', 'training', 'v4 convergence fetched from server');
+  } catch(e) { log('ERROR', 'training', e.message); }
+}
+
+async function v4FetchAdaptive() {
+  try {
+    const el = document.getElementById('v4-srv-adaptive');
+    el.innerHTML = '<span style="color:var(--text3)">Loading adaptive state…</span>';
+    const d = await api('GET', '/api/train/v4/adaptive');
+    if (!d.ok) { el.innerHTML = `<span style="color:var(--danger)">${escHtml(d.detail || 'Not available')}</span>`; return; }
+    el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+    log('INFO', 'training', 'v4 adaptive state fetched from server');
+  } catch(e) { log('ERROR', 'training', e.message); }
+}
+
+async function v4ShowConfigSchema() {
+  try {
+    const el = document.getElementById('v4-srv-config');
+    if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+    el.style.display = '';
+    el.innerHTML = '<span style="color:var(--text3)">Loading config schema…</span>';
+    const d = await api('GET', '/api/train/v4/config');
+    el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
+    log('INFO', 'training', 'v4 config schema loaded');
+  } catch(e) { log('ERROR', 'training', e.message); }
+}
+
+async function v4FetchServerLogs() {
+  try {
+    const d = await api('GET', '/api/train/v4/logs');
+    if (d.logs && d.logs.length) {
+      d.logs.forEach(entry => {
+        if (typeof entry === 'object') v4HandleLog(entry);
+        else v4HandleLog({ time: new Date().toLocaleTimeString(), level: 'INFO', msg: String(entry) });
+      });
+      log('INFO', 'training', `Fetched ${d.logs.length} server logs`);
+    } else {
+      log('INFO', 'training', 'No server logs available');
+    }
+  } catch(e) { log('ERROR', 'training', e.message); }
+}
+
+// ── Logs Panel SSE Stream ──
+let _logsSSE = null;
+function logsToggleSSE() {
+  const btn = document.getElementById('logs-sse-btn');
+  if (_logsSSE) {
+    _logsSSE.close();
+    _logsSSE = null;
+    btn.textContent = '📡 SSE Stream';
+    log('INFO', 'logs', 'SSE log stream disconnected');
+    return;
+  }
+  _logsSSE = new EventSource('/api/logs/stream');
+  btn.textContent = '📡 SSE ■ Stop';
+  log('INFO', 'logs', 'SSE log stream connected');
+  _logsSSE.onmessage = (e) => {
+    try {
+      const entry = JSON.parse(e.data);
+      appendLog({
+        time: entry.time || new Date().toLocaleTimeString('ru', {hour12: false}),
+        level: entry.level || 'INFO',
+        subsys: (entry.subsys || entry.subsystem || 'sse').slice(0, 20),
+        msg: entry.msg || entry.message || JSON.stringify(entry),
+        ts: entry.ts || Date.now() / 1000
+      });
+    } catch(_) {}
+  };
+  _logsSSE.onerror = () => {
+    _logsSSE.close();
+    _logsSSE = null;
+    btn.textContent = '📡 SSE Stream';
+    log('WARN', 'logs', 'SSE log stream connection lost');
+  };
 }
 
 // ─── RESIZE ───────────────────────────────────────────────────────────────────
