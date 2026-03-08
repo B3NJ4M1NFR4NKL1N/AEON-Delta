@@ -38746,11 +38746,18 @@ class AEONDeltaV3(nn.Module):
         # uses cached values that are already computed during the forward
         # pass (cognitive_unity_score, coherence deficit, reinforcement
         # weakness) so the overhead is negligible.
+        #
+        # The per-axiom component scores (mutual_verification,
+        # metacognitive_responsiveness, root_cause_traceability) are
+        # included so that consumers can monitor proximity to emergence
+        # for all three AGI requirements directly from the forward-pass
+        # result, without calling verify_cognitive_unity() separately.
         _cu_score = result.get('cognitive_unity_score', 0.0)
         _cu_deficit = getattr(self, '_cached_cognitive_unity_deficit', 0.0)
         _reinforce_weakness = getattr(
             self, '_cached_reinforce_weakness', 0.0,
         )
+        _cu_comps = result.get('cognitive_unity_components', {})
         result['emergence_summary'] = {
             'cognitive_unity_score': _cu_score,
             'cognitive_unity_deficit': _cu_deficit,
@@ -38759,6 +38766,18 @@ class AEONDeltaV3(nn.Module):
                 self, '_cognitive_activation_complete', False,
             ),
             'forward_pass': _fwd,
+            'mutual_verification': _cu_comps.get(
+                'mutual_verification', 0.0,
+            ),
+            'metacognitive_responsiveness': _cu_comps.get(
+                'metacognitive_responsiveness', 0.0,
+            ),
+            'root_cause_traceability': _cu_comps.get(
+                'root_cause_traceability', 0.0,
+            ),
+            'convergence_quality': _cu_comps.get(
+                'convergence_quality', 0.0,
+            ),
         }
 
         return result
@@ -39651,6 +39670,13 @@ class AEONDeltaV3(nn.Module):
                 'memory': 'lambda_memory_retrieval',
                 'convergence': 'lambda_self_consistency',
                 'topology': 'lambda_safety',
+                # Bridge the metacognitive and provenance axioms into
+                # loss scaling so verify_and_reinforce correction
+                # targets for all three AGI axioms (mutual verification,
+                # uncertainty→metacognition, root-cause traceability)
+                # produce training gradients.
+                'metacognitive': 'lambda_self_consistency',
+                'provenance': 'lambda_provenance',
             }
             _correction_lambda = _CORRECTION_TARGET_TO_LAMBDA.get(
                 _correction_target,
@@ -44437,24 +44463,33 @@ class AEONDeltaV3(nn.Module):
             _chain_result = None
 
         # --- Boost metacognitive trigger sensitivity for low-scoring
-        # axioms so subsequent forward passes are more responsive ---
+        # axioms so subsequent forward passes are more responsive.
+        # The boost factor scales with deficit magnitude: a score of 0.1
+        # (severe) yields a stronger boost than 0.55 (marginal), ensuring
+        # that the system's corrective response is proportional to the
+        # severity of the detected gap. ---
         if self.metacognitive_trigger is not None:
             _weights = getattr(
                 self.metacognitive_trigger, '_signal_weights', {},
             )
             if mv_score < 0.6:
+                _mv_boost = 1.0 + max(0.2, 1.0 - mv_score)
                 _weights['coherence_deficit'] = min(
-                    _weights.get('coherence_deficit', 1.0) * 1.2, 2.0,
+                    _weights.get('coherence_deficit', 1.0) * _mv_boost,
+                    2.0,
                 )
                 reinforcement_actions.append(
-                    'Boosted metacognitive coherence_deficit weight'
+                    f'Boosted metacognitive coherence_deficit weight '
+                    f'(adaptive factor={_mv_boost:.2f})'
                 )
             if um_score < 0.6:
+                _um_boost = 1.0 + max(0.2, 1.0 - um_score)
                 _weights['uncertainty'] = min(
-                    _weights.get('uncertainty', 1.0) * 1.2, 2.0,
+                    _weights.get('uncertainty', 1.0) * _um_boost, 2.0,
                 )
                 reinforcement_actions.append(
-                    'Boosted metacognitive uncertainty weight'
+                    f'Boosted metacognitive uncertainty weight '
+                    f'(adaptive factor={_um_boost:.2f})'
                 )
 
         # --- Store overall coherence as the correction target when
@@ -44844,13 +44879,30 @@ class AEONDeltaV3(nn.Module):
         #
         # The reinforcement results are included in the report under
         # ``reinforcement_applied`` so that callers can see both the
-        # diagnosis and the corrective action taken.  A single
-        # reinforcement pass is performed (no iterative convergence)
-        # to avoid unbounded recursion.
+        # diagnosis and the corrective action taken.  Up to
+        # ``_MAX_CONVERGENCE_ITERS`` reinforcement passes are
+        # performed, stopping early if the overall score improves
+        # beyond a threshold or stops improving.
         reinforcement_applied: Optional[Dict[str, Any]] = None
+        _convergence_delta: Optional[float] = None
+        _MAX_CONVERGENCE_ITERS = 3
         if not system_emergence_status['emerged']:
             try:
-                reinforcement_applied = self.verify_and_reinforce()
+                _prev_score: Optional[float] = None
+                for _conv_iter in range(_MAX_CONVERGENCE_ITERS):
+                    reinforcement_applied = self.verify_and_reinforce()
+                    _cur_score = reinforcement_applied.get(
+                        'overall_score', 1.0,
+                    )
+                    if _prev_score is not None:
+                        _convergence_delta = _cur_score - _prev_score
+                        # Stop if score regressed or improved < 1%
+                        if _convergence_delta < 0.01:
+                            break
+                    # Stop early if score is already strong
+                    if _cur_score >= 0.95:
+                        break
+                    _prev_score = _cur_score
                 # Record the emergence-driven reinforcement in causal
                 # trace for full traceability of the correction loop.
                 if self.causal_trace is not None:
@@ -44867,6 +44919,8 @@ class AEONDeltaV3(nn.Module):
                             'conditions_met': system_emergence_status[
                                 'conditions_met'
                             ],
+                            'convergence_iterations': _conv_iter + 1,
+                            'convergence_delta': _convergence_delta,
                         },
                     )
             except Exception as _ar_err:
