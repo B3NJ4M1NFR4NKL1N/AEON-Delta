@@ -2088,7 +2088,7 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
   <div class="card" style="margin-bottom:18px;border-left:3px solid var(--accent)">
     <div class="ct">🔎 Individual Metric Lookup</div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-      <input type="text" id="au-metric-name" placeholder="Enter metric name (e.g. inference_latency)" aria-label="Metric name" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <input type="text" id="au-metric-name" placeholder="Enter metric name (e.g. inference_latency)" aria-label="Metric name" onkeydown="if(event.key==='Enter')lookupTelemetryMetric()" style="flex:1;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
       <button class="btn btn-secondary" onclick="lookupTelemetryMetric()">🔍 Lookup</button>
     </div>
     <div id="au-metric-result" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:250px;overflow-y:auto">Enter a metric name and click Lookup</div>
@@ -7465,7 +7465,7 @@ async function tsGetProgress() {
       document.getElementById('ts-prog-pct').textContent = `${pct}%`;
       if (p.current_test) document.getElementById('ts-prog-lbl').textContent = p.current_test;
     }
-  } catch(e) { /* non-critical polling */ }
+  } catch(e) { /* non-critical: progress polling may fail between runs */ }
 }
 
 async function tsGetTestResult(testName) {
@@ -7494,7 +7494,7 @@ async function tsLegacyRun() {
       : `<span style="color:var(--danger)">✗ ${escHtml(d.detail || 'Failed')}</span>`;
     btn.disabled = false; btn.textContent = '▶ Run Legacy Tests';
     log('INFO', 'tests', 'Legacy test run triggered');
-    setTimeout(tsLegacyResult, 2000);
+    setTimeout(tsLegacyResult, 2000); // allow server time to complete test run
   } catch(e) {
     document.getElementById('ts-legacy-status').innerHTML = `<span style="color:var(--danger)">${escHtml(e.message)}</span>`;
     const btn = document.getElementById('ts-legacy-run-btn');
@@ -7537,7 +7537,7 @@ function tsToggleSSE() {
       div.textContent = `[${msg.time || new Date().toLocaleTimeString()}] ${msg.test || msg.type || ''} — ${msg.status || msg.message || JSON.stringify(msg)}`;
       logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
-    } catch(_) {}
+    } catch(_) { /* SSE JSON parse errors are expected for malformed events */ }
   };
   _tsSSE.onerror = () => {
     status.textContent = 'Error';
@@ -7630,7 +7630,7 @@ function logsToggleSSE() {
         msg: entry.msg || entry.message || JSON.stringify(entry),
         ts: entry.ts || Date.now() / 1000
       });
-    } catch(_) {}
+    } catch(_) { /* SSE JSON parse errors are expected for partial/malformed events */ }
   };
   _logsSSE.onerror = () => {
     _logsSSE.close();
