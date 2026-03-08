@@ -28,6 +28,8 @@ The system implements a **provably convergent architecture** with certified erro
 - **Production infrastructure** (system integrity monitoring, progress tracking with rollback, deterministic execution guards)
 - **Cognitive feedback** (closed-loop feedback bus conditioning upstream reasoning from downstream signals, causal provenance attribution)
 - **Trust & consistency verification** (causal context windows, cross-validation reconciliation, external data trust scoring, neuro-symbolic consistency checking, complexity-based subsystem gating)
+- **Self-verification & introspection** (self-diagnostic, cognitive unity verification, pipeline wiring validation, mutual reinforcement cycles, system emergence reports, causal chain verification)
+- **Observability & telemetry** (structured JSON logging with correlation IDs, centralized metrics collection, TensorGuard NaN/Inf tracking)
 
 ---
 
@@ -370,14 +372,16 @@ Ensures that: every component verifies others, any unresolved ambiguity triggers
 
 ---
 
-### **27. Production Infrastructure: Safety Guards & Pipeline Tracking**
+### **27. Production Infrastructure: Safety Guards, Pipeline Tracking & Observability**
 Core infrastructure modules ensuring deterministic, observable, and recoverable pipeline execution:
 - **`SafeTensorProcessor`**: Global forward-hook registration that automatically sanitizes NaN/Inf in every module's output — zero-configuration tensor safety across the entire model
 - **`SystemIntegrityMonitor`**: Centralized health tracker aggregating per-subsystem health scores over a sliding window with anomaly detection (threshold and derivative checks), checksum verification, and thread-safe composite health reporting
 - **`ProgressTracker`**: Structured phase-level progress tracking (encode, meta-loop, factor extraction, safety, memory, integration, decode) with timing, success/failure status, checkpointing of intermediate states, and rollback to last-known-good phase on downstream failure
 - **`DeterministicExecutionGuard`**: Wraps pipeline stages with input normalization (clamp + sanitize), output validation (finite + magnitude bounds + shape), SHA-256 execution fingerprinting for reproducibility verification, and deterministic fallback enforcement to prevent corrupt value propagation
+- **`StructuredLogFormatter`**: JSON-structured log formatter emitting ISO 8601 timestamps, log level, module name, message, and correlation IDs for distributed tracing — enables machine-parseable log aggregation
+- **`TelemetryCollector`**: Centralized metrics collector for observability KPIs — records timestamped metrics across subsystems with statistical aggregation (mean, min, max, count), capped history, and JSON-serializable snapshots for monitoring dashboards
 
-Provides production-grade observability, determinism, and autonomous pipeline recovery.
+Provides production-grade observability, structured logging, telemetry collection, determinism, and autonomous pipeline recovery.
 
 ---
 
@@ -463,29 +467,66 @@ Provides trust-gated memory routing, internal honesty enforcement, and full cogn
 
 ---
 
+### **36. AEONDeltaV3 — Self-Verification & Introspection API**
+The main model class (`AEONDeltaV3`) exposes a comprehensive public API for self-verification, diagnostics, and introspection:
+- **`self_diagnostic()`**: Checks wiring of all modules, detects missing components, architectural gaps, training bridge status, and error evolution health — warm-up-aware (suppresses cold-start gaps during first 5 forward passes)
+- **`verify_cognitive_unity()`**: Verifies full cognitive pipeline against three AGI requirements: unified reasoning coherence, feedback bus signal coverage, and metacognitive recursion alignment
+- **`verify_pipeline_wiring()`**: Verifies data-flow dependencies between modules using an internal DAG (`_PIPELINE_DEPENDENCIES`), checking provenance edge coverage with cycle-exempt exclusions
+- **`verify_and_reinforce()`**: Orchestrates a mutual-reinforcement cycle — runs coherence, metacognition, provenance, and wiring checks, then feeds deficit signals back into error evolution and metacognitive trigger weights
+- **`get_architectural_health()`**: Synthesized health report combining cognitive unity, pipeline wiring, convergence monitor status, and self-diagnostic results into a unified score
+- **`architectural_coherence_report()`**: Full architectural coherence report: health + wiring + error evolution + self-diagnostic findings with gap recommendations
+- **`system_emergence_report()`**: Comprehensive system synthesis producing four deliverables: Integration Map, Critical Patches, Activation Sequence, and System Emergence Status
+- **`verify_causal_chain()`**: Checks causal trace entries across architectural subsystems and verifies causal attribution chain completeness
+- **`verify_coherence()`**: Checks runtime behavior coherence across the pipeline via cosine similarity of cached subsystem states
+- **`get_module_registry()`**: Unified introspection of all initialized modules with attributes, parameter counts, and device placement
+- **`get_metacognitive_state()`**: Aggregates metacognitive trigger state, error patterns, convergence history, and trigger sensitivity into a diagnostic snapshot
+- **`bridge_training_loss_to_error_evolution(loss_dict)`**: Bridges training loss signals to the error evolution tracker, closing the training→inference feedback loop
+- **`save_state(save_dir)` / `load_state(save_dir)`**: Full model state persistence — weights, config, memory subsystems, metrics, VQ stats with shape migration for incompatible tensors
+- **`_cognitive_activation_probe()`**: 10-step initialization probe that seeds error evolution baselines, primes feedback bus signals, registers provenance dependencies, and performs init-time verify_and_reinforce
+
+Enables end-to-end self-verification, introspection, and autonomous architectural health monitoring.
+
+---
+
+### **37. Core Model Components: Encoder, Decoder & Memory Management**
+Foundational components of the AEON-Delta forward pipeline:
+- **`ThoughtEncoder`**: LSTM-based encoder converting token sequences into latent thought vectors — supports bidirectional encoding with LayerNorm
+- **`ThoughtDecoder`**: Unified decoder with dual-mode support (autoregressive and parallel) — converts latent thought vectors back to token logits with optional weight tying to encoder embeddings
+- **`MemoryManager`**: Memory management with fallback vector storage — cosine similarity retrieval, automatic save/load with path validation, batch-aware retrieval, and memory fusion combining current state with retrieved context
+- **`AEONTrainer`**: Production-ready training pipeline class with gradient accumulation, AMP support, checkpoint management, and comprehensive loss computation integration
+- **`AEONTestSuite`**: Comprehensive testing framework class providing structured test execution with per-test reporting, scoring, and diagnostic output
+
+---
+
 ## 🖥️ Dashboard & Server (`aeon_server.py` + `AEON_Dashboard.html`)
 
 ### **Server: aeon_server.py v3.3.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **76 API endpoints** covering model lifecycle, inference, training, testing, observability, and session management
-- **WebSocket** real-time updates (training progress, test events, log streaming)
-- **SSE** log streaming with per-level filtering and per-test event streaming
+- **78 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, and session management
+- **WebSocket** real-time updates (training progress, test events, log streaming, heartbeat with engine metrics)
+- **SSE** log streaming with per-level filtering, per-test event streaming, and v4 training progress streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 2,546 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
-- **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, correlation ID middleware
-- **VQ codebook introspection**: `/api/vq/codebook` with utilization history
+- **Comprehensive test runner**: catalogue of 2,631 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **AGI coherence verification**: `/api/cognitive_unity`, `/api/architectural_health`, `/api/coherence_report`, `/api/system_emergence`, `/api/verify_and_reinforce`, `/api/verify_causal_chain`, `/api/cognitive_activation`
+- **Engine monitoring**: convergence, memory, recovery, integrity, deterministic guard, context window, module coherence, error evolution, auto-critic, deception suppressor via `/api/engine/*`
+- **Metacognition & diagnostics**: `/api/metacognition`, `/api/metacognition/resolve` (gap resolution recommendations)
+- **Telemetry & observability**: `/api/telemetry/metrics`, `/api/observability/traces`, `/api/observability/config`, correlation ID middleware
+- **Causal provenance & trace**: `/api/provenance`, `/api/provenance/root_cause/{module}`, `/api/causal_trace`, `/api/causal_trace/root_cause/{entry_id}`
+- **VQ codebook introspection**: `/api/vq/codebook` with utilization history, academic metrics, and embedding analysis
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
 - **Benchmarking**: `/api/benchmark` for N-run latency profiling with statistical summaries
+- **15 server classes**: application state container, 9 Pydantic request models, correlation ID middleware, WebSocket/v4 log handlers, dashboard monitor
 
 ### **Dashboard: AEON_Dashboard.html v3.2**
-Single-file production control dashboard served at `http://localhost:8000`:
-- **Real-time monitoring** of model status, training progress, and system metrics via WebSocket
-- **Interactive inference** with configurable temperature, top-k, and prompt input
-- **Training management** (start/stop/progress) for both legacy and v4 training pipelines with file upload
-- **Configuration validation** and live editing
-- **Test execution** with per-test status streaming
-- **Dark-themed modern UI** with sidebar navigation
+Single-file production control dashboard served at `http://localhost:8000` with **19 panels** organized into 6 navigation groups:
+- **Overview**: Dashboard (real-time KPIs: health score, active flags, VQ utilization, TensorGuard events, cognitive unity, output reliability), Architecture visualization, Module Inspector
+- **Engine**: Configuration (multi-tab editor with validation: architecture, memory, causal, metacognition, coherence, planning, training, observability, advanced, JSON), Interactive Inference (temperature, top-k, top-p, streaming output), Training Management (legacy and v4 pipelines with file upload and progress streaming)
+- **Diagnostics**: Test Suite (catalogue browsing, real-time execution, per-test failure logging, section-level summaries), Benchmark (performance analysis), VQ Codebook (academic metrics: Shannon entropy, Gini coefficient, collapse risk, embedding norms, cosine similarity matrix)
+- **Cognition**: Metacognition (self-reflection data, trigger state), Causal Provenance (per-module attribution tracking), Causal Trace (causal chain visualization and root-cause analysis)
+- **Monitoring**: Live Logs (real-time stream with per-level filtering), Audit & Observability (structured logging, telemetry, traces), System Monitor (CPU, GPU, RAM, disk), TensorGuard (NaN/Inf detection, quarantine policy, sanitization metrics), Engine Monitor (convergence, recovery rate, memory, guard success rate)
+- **Tools**: Code Generator (7 tabs: Init, Inference, Training, Introspection, CLI, Benchmark, Server — generates ready-to-run Python code)
+- **Dark-themed modern UI** with sidebar navigation and WebSocket-driven real-time updates
 
 ### **Quick Start**
 ```bash
@@ -572,7 +613,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,546 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,631 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -630,10 +671,10 @@ This is not merely an academic exercise—it's a foundation for building truly r
 ```
 AEON-Delta/
 ├── aeon_core.py          # Core architecture — 131 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.3.0 — 76 API endpoints, WebSocket, SSE, training runner
-├── AEON_Dashboard.html   # Production control dashboard v3.2 — real-time monitoring, inference, training UI
+├── aeon_server.py        # FastAPI backend v3.3.0 — 78 API endpoints, 15 classes, WebSocket, SSE, training runner
+├── AEON_Dashboard.html   # Production control dashboard v3.2 — 19 panels, real-time monitoring, inference, training UI, code generator
 ├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (2,546 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py         # Comprehensive test suite (2,631 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── requirements.txt      # Python dependencies
 ├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
