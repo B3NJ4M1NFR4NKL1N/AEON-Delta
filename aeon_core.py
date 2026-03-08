@@ -7103,6 +7103,13 @@ class CausalProvenanceTracker:
         offending back-edge is removed so that :meth:`trace_root_cause`
         remains safe.
 
+        After cycle removal, any node that was **orphaned** (had parents
+        before but none remain) gets its earliest-removed parent restored
+        so that :meth:`trace_root_cause` can still walk backward to the
+        pipeline root.  ``trace_root_cause`` already handles residual
+        cycles via its visited-set guard, so restoring one edge preserves
+        causal traceability without risking infinite traversal.
+
         Returns:
             Dict with:
                 - is_acyclic: bool — True if no cycles were found.
@@ -7114,11 +7121,20 @@ class CausalProvenanceTracker:
         for parents in deps.values():
             all_nodes.update(parents)
 
+        # Snapshot which nodes had parents before cycle removal so we can
+        # detect orphaned nodes afterward.
+        _had_parents: Set[str] = {
+            n for n in all_nodes if deps.get(n)
+        }
+
         WHITE, GRAY, BLACK = 0, 1, 2
         color: Dict[str, int] = {n: WHITE for n in all_nodes}
         cycles_found: List[Dict[str, str]] = []
 
-        for start in all_nodes:
+        # Sort nodes for deterministic DFS traversal order so that the
+        # same set of back-edges is removed regardless of Python's hash
+        # randomisation or prior interpreter state.
+        for start in sorted(all_nodes):
             if color[start] != WHITE:
                 continue
             stack = [(start, False)]
@@ -7132,7 +7148,7 @@ class CausalProvenanceTracker:
                     continue
                 color[node] = GRAY
                 stack.append((node, True))
-                for parent in list(deps.get(node, set())):
+                for parent in sorted(deps.get(node, set())):
                     if color[parent] == GRAY:
                         # Back-edge detected → cycle
                         cycles_found.append({
@@ -7152,6 +7168,52 @@ class CausalProvenanceTracker:
                         )
                     elif color[parent] == WHITE:
                         stack.append((parent, False))
+
+        # Restore one removed parent for nodes that were completely
+        # orphaned by cycle removal.  Without this, aggressive back-edge
+        # removal can sever the primary forward-path edge (e.g.
+        # integration → decoder) when ALL parents happen to be GRAY
+        # simultaneously, making trace_root_cause() unable to reach
+        # the pipeline root ('input').
+        #
+        # Before restoring, verify the edge would NOT re-create a cycle
+        # (i.e. the candidate parent is not reachable from the orphaned
+        # node through the remaining DAG).  This keeps the graph acyclic
+        # on subsequent validate_dag_acyclic() calls.
+        _removed = getattr(self, '_removed_cyclic_edges', set())
+        for node in sorted(_had_parents):
+            if not deps.get(node):
+                # Node was orphaned — find removed edges targeting it
+                # and restore the earliest one (sorted for determinism)
+                # that does NOT re-introduce a cycle.
+                _candidates = sorted(
+                    (p, n) for p, n in _removed if n == node
+                )
+                for _restore_parent, _ in _candidates:
+                    # Quick reachability check: can we walk from
+                    # _restore_parent backward through deps to `node`?
+                    # If yes, restoring this edge would close a cycle.
+                    _visited_check: Set[str] = set()
+                    _queue = [_restore_parent]
+                    _creates_cycle = False
+                    while _queue:
+                        _cur = _queue.pop(0)
+                        if _cur == node:
+                            _creates_cycle = True
+                            break
+                        if _cur in _visited_check:
+                            continue
+                        _visited_check.add(_cur)
+                        _queue.extend(deps.get(_cur, set()))
+                    if not _creates_cycle:
+                        deps.setdefault(node, set()).add(_restore_parent)
+                        _removed.discard((_restore_parent, node))
+                        logger.debug(
+                            "CausalProvenanceTracker: restored edge "
+                            "%s → %s to prevent orphaning node '%s'",
+                            _restore_parent, node, node,
+                        )
+                        break  # one parent restored is sufficient
 
         return {
             'is_acyclic': len(cycles_found) == 0,
