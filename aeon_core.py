@@ -21582,6 +21582,17 @@ class AEONDeltaV3(nn.Module):
     - Production-ready error handling
     """
     
+    # Interval (in forward passes) between periodic mutual-reinforcement
+    # cycles.  Every ``_REINFORCE_INTERVAL`` forward passes,
+    # ``_forward_impl`` calls ``verify_and_reinforce()`` so that active
+    # components continuously verify and stabilize each other's states.
+    # Promote to a class attribute (from the former local variable) so
+    # that callers can tune the reinforcement frequency without modifying
+    # source code — e.g. ``model._REINFORCE_INTERVAL = 25`` for tighter
+    # feedback loops or ``model._REINFORCE_INTERVAL = 100`` for
+    # lower-overhead operation.
+    _REINFORCE_INTERVAL: int = 50
+
     # Standard data-flow dependency chain for the reasoning core.
     # Used by _reasoning_core_impl to auto-populate the provenance
     # tracker's dependency DAG so that trace_root_cause() can walk
@@ -38514,9 +38525,8 @@ class AEONDeltaV3(nn.Module):
         # trigger weights and records error-evolution episodes, ensuring
         # that conclusions remain traceable and the meta-cognitive cycle
         # stays calibrated to the system's evolving state.
-        _REINFORCE_INTERVAL = 50
         _fwd = int(self._total_forward_calls.item()) + 1
-        if _fwd % _REINFORCE_INTERVAL == 0:
+        if _fwd % self._REINFORCE_INTERVAL == 0:
             try:
                 _reinforce = self.verify_and_reinforce()
                 _actions = _reinforce.get('reinforcement_actions', [])
@@ -38572,6 +38582,30 @@ class AEONDeltaV3(nn.Module):
                     "Periodic verify_and_reinforce skipped (pass %d): %s",
                     _fwd, _pr_err,
                 )
+
+        # ===== EMERGENCE SUMMARY =====
+        # Attach a lightweight emergence summary to every forward-pass
+        # result using only cached state — no expensive diagnostic calls.
+        # This closes the gap where consumers had to call
+        # system_emergence_report() separately to learn whether the
+        # system had achieved cognitive organism status.  The summary
+        # uses cached values that are already computed during the forward
+        # pass (cognitive_unity_score, coherence deficit, reinforcement
+        # weakness) so the overhead is negligible.
+        _cu_score = result.get('cognitive_unity_score', 0.0)
+        _cu_deficit = getattr(self, '_cached_cognitive_unity_deficit', 0.0)
+        _reinforce_weakness = getattr(
+            self, '_cached_reinforce_weakness', 0.0,
+        )
+        result['emergence_summary'] = {
+            'cognitive_unity_score': _cu_score,
+            'cognitive_unity_deficit': _cu_deficit,
+            'reinforce_weakness': _reinforce_weakness,
+            'activation_complete': getattr(
+                self, '_cognitive_activation_complete', False,
+            ),
+            'forward_pass': _fwd,
+        }
 
         return result
     
@@ -44639,6 +44673,49 @@ class AEONDeltaV3(nn.Module):
             "conditions_total": 6,
         }
 
+        # ── 5. Auto-reinforcement loop ────────────────────────────
+        # When the system has NOT emerged, trigger a
+        # ``verify_and_reinforce()`` cycle so that the emergence
+        # assessment is not purely diagnostic — it actively attempts
+        # to close identified gaps.  This bridges the discontinuity
+        # where ``system_emergence_report()`` could observe architectural
+        # weaknesses but never fed them into the error-evolution /
+        # metacognitive-trigger self-correction loop, leaving the
+        # system in a "diagnosed but uncorrected" state.
+        #
+        # The reinforcement results are included in the report under
+        # ``reinforcement_applied`` so that callers can see both the
+        # diagnosis and the corrective action taken.  A single
+        # reinforcement pass is performed (no iterative convergence)
+        # to avoid unbounded recursion.
+        reinforcement_applied: Optional[Dict[str, Any]] = None
+        if not system_emergence_status['emerged']:
+            try:
+                reinforcement_applied = self.verify_and_reinforce()
+                # Record the emergence-driven reinforcement in causal
+                # trace for full traceability of the correction loop.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "system_emergence_report",
+                        "auto_reinforcement",
+                        metadata={
+                            'actions': reinforcement_applied.get(
+                                'reinforcement_actions', [],
+                            ),
+                            'overall_score': reinforcement_applied.get(
+                                'overall_score', 1.0,
+                            ),
+                            'conditions_met': system_emergence_status[
+                                'conditions_met'
+                            ],
+                        },
+                    )
+            except Exception as _ar_err:
+                logger.debug(
+                    "system_emergence_report: auto-reinforcement "
+                    "skipped: %s", _ar_err,
+                )
+
         return {
             "system_unified": unity.get('unified', False),
             "cognitive_unity_score": unity.get(
@@ -44657,6 +44734,7 @@ class AEONDeltaV3(nn.Module):
             "activation_sequence": activation_sequence,
             "causal_chain": causal_chain,
             "system_emergence_status": system_emergence_status,
+            "reinforcement_applied": reinforcement_applied,
             "recommendations": unity.get('recommendations', []),
         }
 
