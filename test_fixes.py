@@ -16604,6 +16604,100 @@ def test_metacognitive_trigger_adapt_weights():
     print("✅ test_metacognitive_trigger_adapt_weights PASSED")
 
 
+def test_adapt_weights_prefix_routing():
+    """Dynamically generated error classes route via prefix matching."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # ── coherence_deficit_*_vs_* → coherence_deficit ──────────────
+    orig_cd = trigger._signal_weights["coherence_deficit"]
+    trigger.adapt_weights_from_evolution({
+        "error_classes": {
+            "coherence_deficit_meta_loop_vs_factors": {
+                "success_rate": 0.1,
+                "count": 5,
+            },
+        },
+    })
+    assert trigger._signal_weights["coherence_deficit"] > orig_cd, (
+        "Pairwise coherence deficit should boost the coherence_deficit signal"
+    )
+
+    # ── subsystem_degraded_safety → safety_violation ──────────────
+    trigger2 = MetaCognitiveRecursionTrigger()
+    orig_sv = trigger2._signal_weights["safety_violation"]
+    trigger2.adapt_weights_from_evolution({
+        "error_classes": {
+            "subsystem_degraded_safety": {
+                "success_rate": 0.1,
+                "count": 5,
+            },
+        },
+    })
+    assert trigger2._signal_weights["safety_violation"] > orig_sv, (
+        "Safety degradation should boost the safety_violation signal"
+    )
+
+    # ── subsystem_degraded_diversity → diversity_collapse ─────────
+    trigger3 = MetaCognitiveRecursionTrigger()
+    orig_dc = trigger3._signal_weights["diversity_collapse"]
+    trigger3.adapt_weights_from_evolution({
+        "error_classes": {
+            "subsystem_degraded_diversity": {
+                "success_rate": 0.1,
+                "count": 5,
+            },
+        },
+    })
+    assert trigger3._signal_weights["diversity_collapse"] > orig_dc, (
+        "Diversity degradation should boost the diversity_collapse signal"
+    )
+
+    # ── subsystem_degraded_memory → memory_staleness ──────────────
+    trigger4 = MetaCognitiveRecursionTrigger()
+    orig_ms = trigger4._signal_weights["memory_staleness"]
+    trigger4.adapt_weights_from_evolution({
+        "error_classes": {
+            "subsystem_degraded_memory": {
+                "success_rate": 0.1,
+                "count": 5,
+            },
+        },
+    })
+    assert trigger4._signal_weights["memory_staleness"] > orig_ms, (
+        "Memory degradation should boost the memory_staleness signal"
+    )
+
+    # ── subsystem_degraded_meta_loop → low_output_reliability ─────
+    trigger5 = MetaCognitiveRecursionTrigger()
+    orig_lor = trigger5._signal_weights["low_output_reliability"]
+    trigger5.adapt_weights_from_evolution({
+        "error_classes": {
+            "subsystem_degraded_meta_loop": {
+                "success_rate": 0.1,
+                "count": 5,
+            },
+        },
+    })
+    assert trigger5._signal_weights["low_output_reliability"] > orig_lor, (
+        "Generic subsystem degradation should boost low_output_reliability"
+    )
+
+    # ── "none" → explicit mapping (no debug log) ─────────────────
+    trigger6 = MetaCognitiveRecursionTrigger()
+    # Should not raise or log "unmapped"
+    trigger6.adapt_weights_from_evolution({
+        "error_classes": {
+            "none": {"success_rate": 1.0, "count": 10},
+        },
+    })
+    # Weights should still be normalized
+    total = sum(trigger6._signal_weights.values())
+    assert abs(total - 1.0) < 0.01
+
+    print("✅ test_adapt_weights_prefix_routing PASSED")
+
+
 def test_causal_error_evolution_empty_query():
     """CausalErrorEvolutionTracker returns None for unknown error class."""
     from aeon_core import CausalErrorEvolutionTracker
@@ -64888,6 +64982,7 @@ def run_all_tests():
     test_metacognitive_trigger_max_recursions()
     test_metacognitive_trigger_reset()
     test_metacognitive_trigger_adapt_weights()
+    test_adapt_weights_prefix_routing()
     test_causal_error_evolution_empty_query()
     test_causal_error_evolution_thread_safety()
     test_notears_feeds_cached_causal_quality()
