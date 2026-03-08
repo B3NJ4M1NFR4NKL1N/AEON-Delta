@@ -16721,6 +16721,18 @@ class MetaCognitiveRecursionTrigger:
             # end-to-end causal chain (verify_causal_chain) has untraced
             # subsystems, degrading causal transparency.
             "causal_chain_gap": "low_causal_quality",
+            # Backbone adapter error — the pretrained backbone adapter
+            # failed during forward-pass enrichment, degrading encoder
+            # output quality.
+            "backbone_adapter_error": "uncertainty",
+            # Chunked encoding error — the chunked sequence processor
+            # failed to aggregate overlapping token windows, forcing
+            # a fallback to standard encoding.
+            "chunked_encoding_error": "uncertainty",
+            # Inference cache staleness — the inference cache served a
+            # stale or mismatched result, degrading reasoning output
+            # quality for near-identical inputs.
+            "inference_cache_staleness": "low_output_reliability",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -17832,6 +17844,18 @@ class CausalErrorEvolutionTracker:
         # pipeline traceability and ensures all subsystems record
         # causal trace entries.
         "causal_chain_gap": "lambda_ucc",
+        # Backbone adapter error — pretrained backbone enrichment failed.
+        # Maps to lambda_reconstruction so training strengthens encoder
+        # output fidelity after backbone blending.
+        "backbone_adapter_error": "lambda_reconstruction",
+        # Chunked encoding error — overlapping-window aggregation
+        # failed.  Maps to lambda_reconstruction so training
+        # adapts to long-sequence encoding failures.
+        "chunked_encoding_error": "lambda_reconstruction",
+        # Inference cache staleness — cached reasoning result was
+        # stale or mismatched.  Maps to lambda_ucc so training
+        # adapts to cache-induced reasoning divergence.
+        "inference_cache_staleness": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -21871,12 +21895,33 @@ class AEONDeltaV3(nn.Module):
         # so that downstream divergence can trigger re-gating, closing
         # the one-directional complexity gating loop.
         ("world_model", "complexity_estimator"),
+        # ── Backbone adapter enrichment path ────────────────────────
+        # The pretrained backbone adapter enriches the encoder output
+        # with pretrained features before VQ quantization.  These edges
+        # ensure trace_root_cause() can attribute encoding quality
+        # changes to backbone adapter blending decisions.
+        ("encoder", "backbone_adapter"),
+        ("backbone_adapter", "vq"),
         # ── Continual learning pipeline edges ──────────────────────
         # The continual learning core's lateral adapter enriches the
         # encoder output before VQ, enabling trace_root_cause() to
         # attribute encoding quality to cross-task transfer.
         ("encoder", "continual_learning"),
         ("continual_learning", "vq"),
+        # ── Chunked encoding path ─────────────────────────────────
+        # The chunked processor re-encodes long sequences in overlapping
+        # windows after VQ quantization.  These edges ensure
+        # trace_root_cause() can attribute encoding aggregation quality
+        # to the chunked processing decision.
+        ("vq", "chunked_processor"),
+        ("chunked_processor", "encoder_reasoning_norm"),
+        # ── Inference cache path ───────────────────────────────────
+        # The inference cache short-circuits the reasoning core for
+        # near-identical inputs during inference.  These edges ensure
+        # trace_root_cause() can attribute reasoning output provenance
+        # to cache hit/miss decisions.
+        ("vq", "inference_cache"),
+        ("inference_cache", "encoder_reasoning_norm"),
         # ── Grounded multimodal learning edges ─────────────────────
         # CLIP-style grounding sits between multimodal and integration,
         # anchoring linguistic concepts to perceptual exemplars.
@@ -22139,6 +22184,9 @@ class AEONDeltaV3(nn.Module):
         "unified_cognitive_cycle": "unified_cognitive_cycle",
         "decoder": "decoder",
         "encoder_reasoning_norm": "encoder_reasoning_norm",
+        "backbone_adapter": "backbone_adapter",
+        "chunked_processor": "chunked_processor",
+        "inference_cache": "inference_cache",
         "continual_learning": "continual_learning",
         "feedback_bus": "feedback_bus",
         "deception_suppressor": "deception_suppressor",
@@ -26078,9 +26126,30 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after("continual_learning", z_in)
             self.coherence_registry.register_output("continual_learning", validated=torch.isfinite(z_in).all().item())
             self._cached_continual_learning_state = z_in.detach()
+        # Register backbone_adapter stage as a placeholder when active.
+        # Actual enrichment happens in _forward_impl; the placeholder
+        # ensures the module is in the provenance DAG for traceability.
+        if self.backbone_adapter is not None:
+            self.provenance_tracker.record_before("backbone_adapter", z_in)
+            self.provenance_tracker.record_after("backbone_adapter", z_in)
+            self.coherence_registry.register_output("backbone_adapter", validated=torch.isfinite(z_in).all().item())
         self.provenance_tracker.record_before("vq", z_in)
         self.provenance_tracker.record_after("vq", z_in)
         self.coherence_registry.register_output("vq", validated=True)
+        # Register chunked_processor stage as a placeholder when active.
+        # Actual chunked encoding happens in _forward_impl; the
+        # placeholder ensures the module is in the provenance DAG.
+        if self.chunked_processor is not None:
+            self.provenance_tracker.record_before("chunked_processor", z_in)
+            self.provenance_tracker.record_after("chunked_processor", z_in)
+            self.coherence_registry.register_output("chunked_processor", validated=True)
+        # Register inference_cache stage as a placeholder when active.
+        # Actual cache lookup happens in _forward_impl; the placeholder
+        # ensures the cache decision is in the provenance DAG.
+        if self.inference_cache is not None:
+            self.provenance_tracker.record_before("inference_cache", z_in)
+            self.provenance_tracker.record_after("inference_cache", z_in)
+            self.coherence_registry.register_output("inference_cache", validated=True)
         # Register encoder_reasoning_norm stage when active.
         if self.encoder_reasoning_norm is not None:
             self.provenance_tracker.record_before("encoder_reasoning_norm", z_in)
@@ -37524,6 +37593,7 @@ class AEONDeltaV3(nn.Module):
         # the primary encoder output.  This closes the gap where the
         # backbone was loaded but never integrated into the forward path.
         if self.backbone_adapter is not None:
+            self.provenance_tracker.record_before("backbone_adapter", z_encoded)
             try:
                 backbone_features = self.backbone_adapter(
                     input_ids, attention_mask=attention_mask,
@@ -37533,6 +37603,11 @@ class AEONDeltaV3(nn.Module):
                     z_encoded = z_encoded + backbone_pooled
             except Exception as bb_err:
                 logger.warning(f"Backbone adapter error (non-fatal): {bb_err}")
+            self.provenance_tracker.record_after("backbone_adapter", z_encoded)
+            self.coherence_registry.register_output(
+                "backbone_adapter",
+                validated=torch.isfinite(z_encoded).all().item(),
+            )
 
         # ===== CONTINUAL LEARNING ENRICHMENT =====
         # When ContinualLearningCore is active, blend lateral adapter
@@ -37545,6 +37620,7 @@ class AEONDeltaV3(nn.Module):
         # matching ContinualLearningCore.forward() semantics.  When no
         # frozen columns exist (single task), this loop is a no-op.
         if self.continual_learning is not None:
+            self.provenance_tracker.record_before("continual_learning", z_encoded)
             try:
                 for _prev_col in self.continual_learning.columns[:-1]:
                     with torch.no_grad():
@@ -37563,6 +37639,11 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
                 )
+            self.provenance_tracker.record_after("continual_learning", z_encoded)
+            self.coherence_registry.register_output(
+                "continual_learning",
+                validated=torch.isfinite(z_encoded).all().item(),
+            )
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
@@ -37608,6 +37689,7 @@ class AEONDeltaV3(nn.Module):
         # propagation and linear-interpolation blending in overlap regions.
         if (self.chunked_processor is not None
                 and input_ids.shape[1] > self.chunked_processor.chunk_size):
+            self.provenance_tracker.record_before("chunked_processor", z_quantized)
             def _encode_chunk(token_chunk: torch.Tensor, state):
                 # token_chunk: [B, chunk_len, 1] — extract ids and encode
                 ids = token_chunk[..., 0].long()
@@ -37625,6 +37707,11 @@ class AEONDeltaV3(nn.Module):
             except Exception as chunk_err:
                 logger.warning(f"Chunked encoding failed, using standard encoding: {chunk_err}")
                 z_quantized = _z_pre_chunk
+            self.provenance_tracker.record_after("chunked_processor", z_quantized)
+            self.coherence_registry.register_output(
+                "chunked_processor",
+                validated=torch.isfinite(z_quantized).all().item(),
+            )
 
         # ===== INFERENCE CACHE =====
         # During inference, cache reasoning-core outputs keyed by the
@@ -37636,6 +37723,7 @@ class AEONDeltaV3(nn.Module):
         if (self.inference_cache is not None
                 and decode_mode == 'inference'
                 and not self.training):
+            self.provenance_tracker.record_before("inference_cache", z_quantized)
             self.inference_cache.validate_model_version(self._weight_version)
             _cached_ssm = self.inference_cache.get_ssm_state()
             if _cached_ssm is not None and len(_cached_ssm) > 0:
@@ -37648,6 +37736,10 @@ class AEONDeltaV3(nn.Module):
                     _cache_similarity = _cosine_sim
                     if _cosine_sim > self.config.inference_cache_similarity_threshold:
                         _cache_hit = True
+            self.provenance_tracker.record_after("inference_cache", z_quantized)
+            self.coherence_registry.register_output(
+                "inference_cache", validated=True,
+            )
 
         # ===== ENCODER→REASONING NORMALIZATION BRIDGE =====
         # Normalize the encoder output before the reasoning core so that
@@ -40877,6 +40969,7 @@ class AEONDeltaV3(nn.Module):
             'icm_curiosity', 'memory_cross_validation',
             'deception_suppressor',
             'memory_routing', 'counterfactual_verification',
+            'backbone_adapter', 'chunked_processor', 'inference_cache',
         }
         _missing_deps = _provenance_instrumented - _dep_nodes
         if _missing_deps:
@@ -41214,6 +41307,8 @@ class AEONDeltaV3(nn.Module):
             'diversity_analysis': 'enable_catastrophe_detection',
             'cognitive_executive': 'enable_cognitive_executive',
             'metacognitive_executive': 'enable_cognitive_executive',
+            'backbone_adapter': 'pretrained_backbone',
+            'inference_cache': 'enable_inference_cache',
         }
         # Transitive config dependencies: modules that are gated not only
         # by their own config flag but also by prerequisite modules that
@@ -42413,6 +42508,8 @@ class AEONDeltaV3(nn.Module):
             'diversity_analysis': 'enable_catastrophe_detection',
             'cognitive_executive': 'enable_cognitive_executive',
             'metacognitive_executive': 'enable_cognitive_executive',
+            'backbone_adapter': 'pretrained_backbone',
+            'inference_cache': 'enable_inference_cache',
         }
 
         def _is_node_config_disabled(node: str) -> bool:
