@@ -1097,6 +1097,8 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
           <div id="fwd-delta" style="font-family:var(--display);color:var(--accent)"></div>
           <div style="font-size:11px;color:var(--text3);margin-top:6px">elapsed:</div>
           <div id="fwd-time" style="font-family:var(--display);color:var(--green)"></div>
+          <div id="fwd-cognitive" style="margin-top:8px"></div>
+          <div id="fwd-emergence" style="margin-top:4px"></div>
         </div>
       </div>
     </div>
@@ -1115,6 +1117,10 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
       <div class="card" style="margin-bottom:14px">
         <div class="ct">◐ Audit (get_audit_summary)</div>
         <div id="i-audit" style="margin-top:8px;font-size:11px;color:var(--text3)">Run inference to populate</div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="ct">⚙ UCC Reinforcement</div>
+        <div id="i-ucc-reinforcement" style="margin-top:8px;font-size:11px;color:var(--text3)">Run inference to populate</div>
       </div>
       <div class="card">
         <div class="ct">📋 Batch Inference</div>
@@ -4471,6 +4477,30 @@ async function runInfer() {
         <div><div style="font-size:10px;color:var(--text3)">Warnings</div><div style="font-family:var(--display);color:var(--warn)">${audit.warning||0}</div></div>
         <div><div style="font-size:10px;color:var(--text3)">Critical</div><div style="font-family:var(--display);color:var(--danger)">${audit.critical||0}</div></div>
       </div>`;
+    // UCC Reinforcement
+    let uccHtml = '';
+    const ra = d.reinforcement_actions || [];
+    const cg = d.correction_guidance || {};
+    const ag = d.actionable_gaps || [];
+    const es = d.emergence_summary || {};
+    if(ra.length) {
+      uccHtml += `<div><strong>Reinforcement actions (${ra.length}):</strong></div>`;
+      ra.forEach(a => { uccHtml += `<div style="margin-left:8px;color:var(--green);font-size:10px">✓ ${a}</div>`; });
+    }
+    if(cg.target_module) {
+      uccHtml += `<div style="margin-top:4px">Correction target: <span style="color:var(--warn)">${cg.target_module}</span></div>`;
+    }
+    if(ag.length) {
+      uccHtml += `<div style="margin-top:4px"><strong>Actionable gaps (${ag.length}):</strong></div>`;
+      ag.slice(0,5).forEach(g => {
+        uccHtml += `<div style="margin-left:8px;color:var(--warn);font-size:10px">⚠ ${typeof g==='string'?g:(g.description||g.gap||JSON.stringify(g))}</div>`;
+      });
+    }
+    if(Object.keys(es).length) {
+      uccHtml += `<div style="margin-top:4px"><strong>Emergence:</strong> unity=${es.cognitive_unity_score?.toFixed(3)||'—'} · deficit=${es.cognitive_unity_deficit?.toFixed(3)||'—'} · pass=${es.forward_pass||'—'}</div>`;
+    }
+    if(!uccHtml) uccHtml = '<span style="color:var(--text3)">No UCC reinforcement data</span>';
+    document.getElementById('i-ucc-reinforcement').innerHTML = uccHtml;
   } catch(e) {
     document.getElementById('i-out').textContent = '✕ ' + e.message;
     document.getElementById('i-out').style.color = 'var(--danger)';
@@ -4496,6 +4526,32 @@ async function runFwd() {
     if(d.top5_tokens) {
       document.getElementById('fwd-top5').textContent = d.top5_tokens.map((t,i) => `[${t}] ${(d.top5_probs[i]*100).toFixed(1)}%`).join('  ');
     }
+    // Cognitive unity & emergence data from forward pass
+    let cogHtml = '';
+    if(d.cognitive_unity_score !== null && d.cognitive_unity_score !== undefined) {
+      const cu = d.cognitive_unity_score;
+      cogHtml += `<div style="font-size:11px;color:var(--text3)">cognitive_unity_score:</div>`;
+      cogHtml += `<div style="font-family:var(--display);color:${cu>=0.8?'var(--green)':cu>=0.5?'var(--warn)':'var(--danger)'}">${cu.toFixed(4)}</div>`;
+    }
+    if(d.post_output_coherence) {
+      const pc = d.post_output_coherence;
+      cogHtml += `<div style="font-size:11px;color:var(--text3);margin-top:4px">post_output_coherence:</div>`;
+      cogHtml += `<div style="font-size:11px;color:var(--text2)">score: ${pc.coherence_score?.toFixed(4)||'—'} · needs_recheck: ${pc.needs_recheck||false}</div>`;
+    }
+    if(d.uncertainty_sources && Object.keys(d.uncertainty_sources).length) {
+      cogHtml += `<div style="font-size:11px;color:var(--text3);margin-top:4px">uncertainty_sources:</div>`;
+      Object.entries(d.uncertainty_sources).forEach(([k,v]) => {
+        cogHtml += `<div style="font-size:10px;margin-left:8px;color:var(--text2)">${k}: ${typeof v==='number'?v.toFixed(4):v}</div>`;
+      });
+    }
+    document.getElementById('fwd-cognitive').innerHTML = cogHtml;
+    let emHtml = '';
+    if(d.emergence_summary) {
+      const es = d.emergence_summary;
+      emHtml += `<div style="font-size:11px;color:var(--text3)">emergence_summary:</div>`;
+      emHtml += `<div style="font-size:10px;color:var(--text2);margin-left:8px">unity: ${es.cognitive_unity_score?.toFixed(4)||'—'} · deficit: ${es.cognitive_unity_deficit?.toFixed(4)||'—'} · reinforce_weakness: ${es.reinforce_weakness?.toFixed(4)||'—'} · pass: ${es.forward_pass||'—'}</div>`;
+    }
+    document.getElementById('fwd-emergence').innerHTML = emHtml;
   } catch(e) { log('ERROR','forward', e.message); }
 }
 
@@ -7222,11 +7278,29 @@ async function loadEngineMonitor() {
     // Module Coherence
     if(d.module_coherence?.available) {
       const mc = d.module_coherence;
+      const deficit = mc.coherence_deficit || 0;
+      const coherenceScore = (1 - deficit).toFixed(3);
       let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
       html += `<div>Threshold: <span style="color:var(--accent)">${mc.threshold?.toFixed(3)||'—'}</span></div>`;
       html += `<div>Initial threshold: <span style="color:var(--text3)">${mc.initial_threshold?.toFixed(3)||'—'}</span></div>`;
-      html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
+      html += `<div>Coherence score: <span style="color:${deficit<0.2?'var(--green)':deficit<0.5?'var(--warn)':'var(--danger)'}">${coherenceScore}</span></div>`;
+      html += `<div>Deficit: <span style="color:${deficit<0.2?'var(--green)':deficit<0.5?'var(--warn)':'var(--danger)'}">${deficit.toFixed(3)}</span></div>`;
       html += `</div>`;
+      if(mc.weakest_pair) {
+        html += `<div style="margin-top:8px"><strong>Weakest pair:</strong> <span style="color:var(--warn)">${mc.weakest_pair}</span> (sim: ${mc.weakest_pair_similarity?.toFixed(4)||'—'})</div>`;
+      }
+      if(mc.correction_signals && Object.keys(mc.correction_signals).length) {
+        html += `<div style="margin-top:6px"><strong>Correction signals:</strong></div>`;
+        Object.entries(mc.correction_signals).forEach(([k,v]) => {
+          html += `<div style="margin-left:8px">${k}: <span style="color:${Math.abs(v)<0.1?'var(--green)':'var(--warn)'}">${typeof v==='number'?v.toFixed(4):v}</span></div>`;
+        });
+      }
+      if(mc.semantic_groups && Object.keys(mc.semantic_groups).length) {
+        html += `<div style="margin-top:6px"><strong>Semantic groups:</strong></div>`;
+        Object.entries(mc.semantic_groups).forEach(([k,v]) => {
+          html += `<div style="margin-left:8px">${k}: <span style="color:var(--text3)">${v}</span></div>`;
+        });
+      }
       document.getElementById('em-coherence-detail').innerHTML = html;
     }
 
@@ -7265,11 +7339,17 @@ async function loadEngineMonitor() {
 
     // Auto-Critic
     if(d.auto_critic?.available) {
+      const ac = d.auto_critic;
       let html = `<div style="display:flex;flex-wrap:wrap;gap:12px">`;
-      html += `<div>Max iterations: <span style="color:var(--accent)">${d.auto_critic.max_iterations||'—'}</span></div>`;
-      html += `<div>Threshold: <span style="color:var(--accent)">${d.auto_critic.threshold?.toFixed(3)||'—'}</span></div>`;
+      html += `<div>Max iterations: <span style="color:var(--accent)">${ac.max_iterations||'—'}</span></div>`;
+      html += `<div>Threshold: <span style="color:var(--accent)">${ac.threshold?.toFixed(3)||'—'}</span></div>`;
       html += `<div>Status: <span style="color:var(--green)">Active</span></div>`;
       html += `</div>`;
+      if(ac.current_score !== null && ac.current_score !== undefined) {
+        html += `<div style="margin-top:8px">Current score: <span style="color:${ac.current_score>=ac.threshold?'var(--green)':'var(--warn)'}">${ac.current_score.toFixed(4)}</span></div>`;
+      }
+      html += `<div style="margin-top:4px">Quality EMA: <span style="color:${(ac.quality_ema||0)>=0.5?'var(--green)':'var(--warn)'}">${(ac.quality_ema||0).toFixed(4)}</span></div>`;
+      html += `<div>Forward passes: <span style="color:var(--text2)">${ac.quality_count||0}</span></div>`;
       document.getElementById('em-critic-detail').innerHTML = html;
     } else {
       document.getElementById('em-critic-detail').textContent = 'Not enabled';
@@ -7277,7 +7357,18 @@ async function loadEngineMonitor() {
 
     // Deception Suppressor
     if(d.deception_suppressor?.available) {
-      document.getElementById('em-deception-detail').innerHTML = '<span style="color:var(--green)">✓ Active</span> — output deception suppression enabled';
+      const ds = d.deception_suppressor;
+      let html = `<span style="color:var(--green)">✓ Active</span> — output deception suppression enabled`;
+      html += `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:12px">`;
+      if(ds.threshold !== null && ds.threshold !== undefined) {
+        html += `<div>Threshold: <span style="color:var(--accent)">${ds.threshold.toFixed(3)}</span></div>`;
+      }
+      html += `<div>Deception pressure: <span style="color:${(ds.deception_pressure||0)<0.3?'var(--green)':(ds.deception_pressure||0)<0.6?'var(--warn)':'var(--danger)'}">${(ds.deception_pressure||0).toFixed(4)}</span></div>`;
+      if(ds.self_report_consistency !== null && ds.self_report_consistency !== undefined) {
+        html += `<div>Self-report consistency: <span style="color:${ds.self_report_consistency>=0.7?'var(--green)':'var(--warn)'}">${ds.self_report_consistency.toFixed(4)}</span></div>`;
+      }
+      html += `</div>`;
+      document.getElementById('em-deception-detail').innerHTML = html;
     } else {
       document.getElementById('em-deception-detail').textContent = 'Not enabled';
     }
