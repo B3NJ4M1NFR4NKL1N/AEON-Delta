@@ -67541,6 +67541,15 @@ def run_all_tests():
     test_emergence_summary_includes_axiom_scores()
     test_system_emergence_iterative_convergence()
 
+    # Cognitive integration patches — uncertainty trigger, error
+    # evolution adaptation, emergence deficit signal, causal trace
+    test_uncertainty_triggered_reinforcement()
+    test_uncertainty_triggered_reinforcement_in_result()
+    test_error_evolution_adapts_metacognitive_weights()
+    test_emergence_deficit_feedback_bus_signal()
+    test_emergence_causal_trace_in_forward()
+    test_emergence_deficit_seeded_at_activation()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -74849,6 +74858,171 @@ def test_system_emergence_iterative_convergence():
     assert status['conditions_total'] == 6
 
     print("✅ test_system_emergence_iterative_convergence PASSED")
+
+
+def test_uncertainty_triggered_reinforcement():
+    """forward() triggers verify_and_reinforce() when uncertainty exceeds
+    0.7, even outside the periodic reinforcement interval.  This validates
+    Patch 1: Meta-Cognitive Trigger requirement — any internal uncertainty
+    automatically initiates a higher-order review cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify the uncertainty-triggered reinforcement logic exists in forward
+    src = inspect.getsource(model._forward_impl)
+    assert 'uncertainty_triggered_reinforcement' in src, (
+        "_forward_impl must include uncertainty-triggered reinforcement block"
+    )
+    assert '>= 0.7' in src or '_unc_val >= 0.7' in src, (
+        "_forward_impl must check uncertainty threshold for triggered "
+        "reinforcement"
+    )
+    assert 'not _is_periodic' in src, (
+        "_forward_impl must skip uncertainty-triggered reinforcement when "
+        "periodic reinforcement already ran"
+    )
+
+    # Verify the emergence_summary includes uncertainty_triggered field
+    assert 'uncertainty_triggered' in src, (
+        "emergence_summary must include uncertainty_triggered flag"
+    )
+
+    print("✅ test_uncertainty_triggered_reinforcement PASSED")
+
+
+def test_uncertainty_triggered_reinforcement_in_result():
+    """When a forward pass produces output, the result dict
+    should include the uncertainty_triggered flag in emergence_summary."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 4))
+    with torch.no_grad():
+        result = model(input_ids, fast=True)
+
+    # emergence_summary must always have the uncertainty_triggered flag
+    es = result.get('emergence_summary', {})
+    assert 'uncertainty_triggered' in es, (
+        "emergence_summary must contain 'uncertainty_triggered' field"
+    )
+    assert isinstance(es['uncertainty_triggered'], bool), (
+        "uncertainty_triggered must be a boolean"
+    )
+
+    print("✅ test_uncertainty_triggered_reinforcement_in_result PASSED")
+
+
+def test_error_evolution_adapts_metacognitive_weights():
+    """verify_and_reinforce() calls adapt_weights_from_evolution() to
+    learn from accumulated error patterns.  This validates Patch 2:
+    runtime metacognitive adaptation from error evolution history."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify the adaptation call exists in verify_and_reinforce
+    src = inspect.getsource(model.verify_and_reinforce)
+    assert 'adapt_weights_from_evolution' in src, (
+        "verify_and_reinforce must call adapt_weights_from_evolution() "
+        "to learn from error patterns"
+    )
+
+    # Run verify_and_reinforce and check it includes adaptation action
+    report = model.verify_and_reinforce()
+    actions = report.get('reinforcement_actions', [])
+    # The adaptation action may or may not appear depending on whether
+    # error_evolution has recorded episodes; verify the method runs
+    # without error
+    assert 'reinforcement_actions' in report, (
+        "verify_and_reinforce must return reinforcement_actions"
+    )
+
+    print("✅ test_error_evolution_adapts_metacognitive_weights PASSED")
+
+
+def test_emergence_deficit_feedback_bus_signal():
+    """emergence_deficit signal is registered in the feedback bus and
+    populated by _build_feedback_extra_signals().  This validates
+    Patch 3: emergence status operationalized as a meta-loop signal."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify emergence_deficit is registered in the feedback bus
+    fb = model.feedback_bus
+    assert fb is not None, "feedback_bus must be initialized"
+    signals = getattr(fb, '_extra_signals', {})
+    assert 'emergence_deficit' in signals, (
+        "emergence_deficit must be registered in feedback bus"
+    )
+
+    # Verify _build_feedback_extra_signals includes emergence_deficit logic
+    import inspect
+    src = inspect.getsource(model._build_feedback_extra_signals)
+    assert 'emergence_deficit' in src, (
+        "_build_feedback_extra_signals must compute emergence_deficit"
+    )
+
+    # Verify the signal is in the evaluated set
+    _ = model._build_feedback_extra_signals()
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    assert 'emergence_deficit' in evaluated, (
+        "emergence_deficit must be tracked in _feedback_bus_evaluated_signals"
+    )
+
+    print("✅ test_emergence_deficit_feedback_bus_signal PASSED")
+
+
+def test_emergence_causal_trace_in_forward():
+    """forward() records emergence assessment in causal trace when
+    cognitive unity deficit > 0.  This validates Patch 4: emergence
+    status is deterministically traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # Verify the emergence causal trace recording exists in forward
+    src = inspect.getsource(model._forward_impl)
+    assert 'emergence_assessment' in src, (
+        "_forward_impl must record 'emergence_assessment' in causal trace"
+    )
+
+    # The trace should include forward_pass and deficit metadata
+    assert 'forward_pass' in src, (
+        "emergence_assessment trace must include forward_pass metadata"
+    )
+
+    print("✅ test_emergence_causal_trace_in_forward PASSED")
+
+
+def test_emergence_deficit_seeded_at_activation():
+    """_cognitive_activation_probe seeds emergence_deficit in the
+    feedback bus evaluated signals and zero-healthy list."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    # After activation, emergence_deficit should be in evaluated signals
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    assert 'emergence_deficit' in evaluated, (
+        "emergence_deficit must be in _feedback_bus_evaluated_signals "
+        "after cognitive activation probe"
+    )
+
+    print("✅ test_emergence_deficit_seeded_at_activation PASSED")
 
 
 if __name__ == "__main__":

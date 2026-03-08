@@ -22632,6 +22632,17 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "reinforce_weakness_pressure", default=0.0,
         )
+        # Emergence deficit — routes the system's progress toward cognitive
+        # emergence (max of cognitive unity deficit and reinforcement
+        # weakness) into the feedback bus.  This operationalises the
+        # emergence assessment: instead of being a passive report attached
+        # to the forward-pass result, emergence status now actively
+        # conditions the next pass's meta-loop, enabling the system to
+        # deepen reasoning when it detects that it has not yet achieved
+        # the cognitive organism requirements.
+        self.feedback_bus.register_signal(
+            "emergence_deficit", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -24982,6 +24993,24 @@ class AEONDeltaV3(nn.Module):
             extra["executive_review_pressure"] = max(
                 0.0, min(1.0, _mce_pressure),
             )
+        # Emergence deficit — route the cached cognitive unity deficit
+        # and reinforcement weakness into the feedback bus so the meta-
+        # loop is conditioned by the system's progress toward cognitive
+        # emergence.  This closes the gap where the emergence summary
+        # was attached to forward-pass results but never routed through
+        # the feedback bus, leaving the system unable to *act on* its
+        # own emergence status during the next pass's meta-loop
+        # conditioning.  The emergence_deficit signal is the maximum of
+        # the cognitive unity deficit and the reinforcement weakness,
+        # capturing the most severe architectural gap for meta-loop
+        # conditioning.
+        _emg_cu_deficit = getattr(
+            self, '_cached_cognitive_unity_deficit', 0.0,
+        )
+        _emg_rw = getattr(self, '_cached_reinforce_weakness', 0.0)
+        _emg_deficit = max(_emg_cu_deficit, _emg_rw)
+        if _emg_deficit > 0.05:
+            extra["emergence_deficit"] = max(0.0, min(1.0, _emg_deficit))
 
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
@@ -25030,6 +25059,9 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("world_model_prediction_pressure")
         if getattr(self, 'memory_routing_policy', None) is not None:
             _evaluated.add("memory_routing_trust_pressure")
+        # Emergence deficit is always evaluated (backed by cached
+        # cognitive unity deficit and reinforcement weakness).
+        _evaluated.add("emergence_deficit")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -38737,6 +38769,52 @@ class AEONDeltaV3(nn.Module):
                     _fwd, _pr_err,
                 )
 
+        # ===== UNCERTAINTY-TRIGGERED REINFORCEMENT =====
+        # When the current pass's uncertainty exceeds a severity
+        # threshold AND this pass is NOT already a periodic
+        # reinforcement pass, trigger an immediate
+        # verify_and_reinforce() cycle.  This closes the critical gap
+        # where high-uncertainty episodes between periodic checks
+        # (every _REINFORCE_INTERVAL passes) did not initiate a
+        # meta-cognitive review — violating the requirement that "any
+        # internal uncertainty or conflict automatically initiates a
+        # higher-order review cycle".  The threshold (0.7) is set high
+        # enough to avoid excessive overhead on routine passes while
+        # ensuring genuinely uncertain states are promptly assessed.
+        _unc_triggered = False
+        _unc_val = result.get('uncertainty', 0.0)
+        _is_periodic = (_fwd % self._REINFORCE_INTERVAL == 0)
+        if _unc_val >= 0.7 and not _is_periodic:
+            try:
+                _unc_reinforce = self.verify_and_reinforce()
+                _unc_actions = _unc_reinforce.get(
+                    'reinforcement_actions', [],
+                )
+                result['uncertainty_triggered_reinforcement'] = {
+                    'pass_number': _fwd,
+                    'trigger_uncertainty': _unc_val,
+                    'actions_applied': len(_unc_actions),
+                    'actions': _unc_actions,
+                    'overall_score': _unc_reinforce.get(
+                        'overall_score', 1.0,
+                    ),
+                }
+                _unc_triggered = True
+                if _unc_actions:
+                    self.audit_log.record(
+                        "verify_and_reinforce",
+                        "uncertainty_triggered", {
+                            "pass_number": _fwd,
+                            "trigger_uncertainty": _unc_val,
+                            "actions": len(_unc_actions),
+                        },
+                    )
+            except Exception as _ut_err:
+                logger.debug(
+                    "Uncertainty-triggered reinforcement skipped "
+                    "(pass %d, unc=%.2f): %s", _fwd, _unc_val, _ut_err,
+                )
+
         # ===== EMERGENCE SUMMARY =====
         # Attach a lightweight emergence summary to every forward-pass
         # result using only cached state — no expensive diagnostic calls.
@@ -38778,7 +38856,26 @@ class AEONDeltaV3(nn.Module):
             'convergence_quality': _cu_comps.get(
                 'convergence_quality', 0.0,
             ),
+            'uncertainty_triggered': _unc_triggered,
         }
+
+        # ===== EMERGENCE CAUSAL TRACE =====
+        # Record the emergence summary in the causal trace so every
+        # forward pass's emergence assessment is deterministically
+        # traceable.  This closes the gap where the emergence summary
+        # was attached to the result dict but never recorded in the
+        # causal trace, making emergence status invisible to
+        # verify_causal_chain() and root-cause analysis.
+        if self.causal_trace is not None and _cu_deficit > 0.0:
+            self.causal_trace.record(
+                "emergence_assessment", "forward_pass",
+                metadata={
+                    'cognitive_unity_score': _cu_score,
+                    'deficit': _cu_deficit,
+                    'forward_pass': _fwd,
+                    'uncertainty_triggered': _unc_triggered,
+                },
+            )
 
         return result
     
@@ -44492,6 +44589,32 @@ class AEONDeltaV3(nn.Module):
                     f'(adaptive factor={_um_boost:.2f})'
                 )
 
+        # --- Adapt metacognitive trigger weights from accumulated error
+        # evolution patterns.  This closes the gap where
+        # adapt_weights_from_evolution() was only called during
+        # _cognitive_activation_probe() at init-time, meaning runtime
+        # error patterns (accumulated across forward passes) never
+        # influenced metacognitive trigger sensitivity.  By calling
+        # it here, the trigger continuously learns which error classes
+        # recur and adjusts its channel weights accordingly — ensuring
+        # that the system's corrective response evolves with its
+        # observed failure modes rather than relying solely on the
+        # manual per-axiom boosts above. ---
+        if (self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                _ee_summary = self.error_evolution.get_error_summary()
+                if _ee_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _ee_summary,
+                    )
+                    reinforcement_actions.append(
+                        'Adapted metacognitive weights from error '
+                        'evolution patterns'
+                    )
+            except Exception:
+                pass
+
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
         _overall_score = report.get('overall_score', 1.0)
@@ -45522,7 +45645,8 @@ class AEONDeltaV3(nn.Module):
                 "convergence_secondary_pressure", "correction_target_pressure",
                 "counterfactual_divergence_pressure", "coverage_deficit_pressure",
                 "cv_agreement_deficit", "cycle_consistency_pressure",
-                "dag_acyclicity_pressure", "feedback_signal_trend",
+                "dag_acyclicity_pressure", "emergence_deficit",
+                "feedback_signal_trend",
                 "hvae_abstraction_pressure", "low_quality_subsystem_pressure",
                 "memory_cv_disagreement", "memory_re_retrieval_pressure",
                 "memory_routing_trust_pressure", "unc_peak", "unc_source_count",
