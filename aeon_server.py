@@ -927,6 +927,97 @@ async def verify_causal_chain():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/diagnostic/full")
+async def get_full_diagnostic():
+    """Return the complete self-diagnostic report.
+
+    Exposes the full ``self_diagnostic()`` result including active modules,
+    verified connections, gaps with remediation guidance, error evolution
+    summary, runtime coherence, provenance attribution, output reliability,
+    pipeline wiring assessment, and all other diagnostic fields.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.self_diagnostic()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"diagnostic/full error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/pipeline_wiring")
+async def get_pipeline_wiring():
+    """Return the full pipeline wiring verification report.
+
+    Exposes ``verify_pipeline_wiring()`` which checks every declared
+    dependency edge between subsystems, validates the DAG is acyclic,
+    assesses provenance coverage, and reports uncertainty propagation
+    coverage.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.verify_pipeline_wiring()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"pipeline_wiring error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/diagnostic/remediate")
+async def apply_remediation():
+    """Apply automated diagnostic remediation.
+
+    Calls ``apply_diagnostic_remediation()`` which inspects gaps identified
+    by ``self_diagnostic()`` and attempts to fix any that have automated
+    remediation paths.  Returns the list of remediated and skipped
+    components.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.apply_diagnostic_remediation()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"diagnostic/remediate error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/cognitive_snapshot/export")
+async def export_cognitive_snapshot():
+    """Export a cognitive snapshot of the current model state.
+
+    Saves the full model weights and cognitive memory state to a
+    directory.  Returns success status and details of what was saved.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.export_cognitive_snapshot()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"cognitive_snapshot/export error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/cognitive_snapshot/import")
+async def import_cognitive_snapshot():
+    """Import a previously exported cognitive snapshot.
+
+    Loads model weights and cognitive memory state from a snapshot
+    directory.  Returns success status and details of what was restored.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.import_cognitive_snapshot()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"cognitive_snapshot/import error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2028,17 +2119,26 @@ async def get_metacognition():
     try:
         state = APP.model.get_metacognitive_state()
         diagnostic = APP.model.self_diagnostic()
-        return {
+        return _make_json_safe({
             "ok": True,
             "metacognitive_state": state,
             "self_diagnostic": {
                 "status": diagnostic.get("status"),
+                "active_module_count": diagnostic.get("active_module_count"),
                 "verified_count": diagnostic.get("verified_count"),
                 "gap_count": diagnostic.get("gap_count"),
                 "gaps": diagnostic.get("gaps", []),
                 "causal_trace_coverage": diagnostic.get("causal_trace_coverage"),
+                "output_reliability": diagnostic.get("output_reliability"),
+                "total_parameters": diagnostic.get("total_parameters"),
+                "trainable_parameters": diagnostic.get("trainable_parameters"),
+                "error_evolution_summary": diagnostic.get("error_evolution_summary"),
+                "runtime_coherence": diagnostic.get("runtime_coherence"),
+                "pipeline_wiring": diagnostic.get("pipeline_wiring"),
+                "feedback_oscillation": diagnostic.get("feedback_oscillation"),
+                "provenance_completeness": diagnostic.get("provenance_completeness"),
             },
-        }
+        })
     except Exception as e:
         logging.error(f"Metacognition endpoint error: {e}")
         raise HTTPException(500, str(e))
@@ -3806,12 +3906,25 @@ async def engine_module_coherence():
             return {"ok": True, "available": False, "reason": "ModuleCoherenceVerifier not enabled"}
         threshold = getattr(mc, 'threshold', None)
         initial_threshold = getattr(mc, '_initial_threshold', threshold)
-        return {
+        resp: Dict[str, Any] = {
             "ok": True,
             "available": True,
             "threshold": threshold,
             "initial_threshold": initial_threshold,
         }
+        _wpair = getattr(APP.model, '_cached_weakest_coherence_pair', None)
+        if _wpair is not None:
+            resp["weakest_pair"] = list(_wpair) if not isinstance(_wpair, list) else _wpair
+        _wsim = getattr(APP.model, '_cached_weakest_coherence_sim', None)
+        if _wsim is not None:
+            resp["weakest_sim"] = float(_wsim) if hasattr(_wsim, '__float__') else _wsim
+        _csigs = getattr(APP.model, '_cached_coherence_correction_signals', None)
+        if _csigs is not None:
+            resp["correction_signals"] = _csigs
+        _cdef = getattr(APP.model, '_cached_coherence_deficit', None)
+        if _cdef is not None:
+            resp["coherence_deficit"] = float(_cdef) if hasattr(_cdef, '__float__') else _cdef
+        return _make_json_safe(resp)
     except Exception as e:
         logging.error(f"engine/module_coherence error: {e}")
         raise HTTPException(500, str(e))
@@ -3855,12 +3968,19 @@ async def engine_auto_critic():
         ac = getattr(APP.model, 'auto_critic', None)
         if ac is None:
             return {"ok": True, "available": False, "reason": "AutoCriticLoop not enabled"}
-        return {
+        resp: Dict[str, Any] = {
             "ok": True,
             "available": True,
             "max_iterations": getattr(ac, 'max_iterations', None),
             "threshold": getattr(ac, 'threshold', None),
         }
+        _ac_score = getattr(APP.model, '_cached_auto_critic_current_score', None)
+        if _ac_score is not None:
+            resp["current_score"] = float(_ac_score) if hasattr(_ac_score, '__float__') else _ac_score
+        _ac_ema = getattr(APP.model, '_auto_critic_quality_ema', None)
+        if _ac_ema is not None:
+            resp["quality_ema"] = float(_ac_ema) if hasattr(_ac_ema, '__float__') else _ac_ema
+        return _make_json_safe(resp)
     except Exception as e:
         logging.error(f"engine/auto_critic error: {e}")
         raise HTTPException(500, str(e))
@@ -3875,11 +3995,15 @@ async def engine_deception_suppressor():
         ds = getattr(APP.model, 'deception_suppressor', None)
         if ds is None:
             return {"ok": True, "available": False, "reason": "DeceptionSuppressor not enabled"}
-        return {
+        resp: Dict[str, Any] = {
             "ok": True,
             "available": True,
             "enabled": True,
         }
+        _dp = getattr(APP.model, '_cached_deception_pressure', None)
+        if _dp is not None:
+            resp["pressure"] = float(_dp) if hasattr(_dp, '__float__') else _dp
+        return _make_json_safe(resp)
     except Exception as e:
         logging.error(f"engine/deception_suppressor error: {e}")
         raise HTTPException(500, str(e))
@@ -3994,11 +4118,24 @@ async def engine_all_monitoring():
     try:
         mc = getattr(APP.model, 'module_coherence', None)
         if mc is not None:
-            result["module_coherence"] = {
+            _mc_data: Dict[str, Any] = {
                 "available": True,
                 "threshold": getattr(mc, 'threshold', None),
                 "initial_threshold": getattr(mc, '_initial_threshold', None),
             }
+            _wpair = getattr(APP.model, '_cached_weakest_coherence_pair', None)
+            if _wpair is not None:
+                _mc_data["weakest_pair"] = list(_wpair) if not isinstance(_wpair, list) else _wpair
+            _wsim = getattr(APP.model, '_cached_weakest_coherence_sim', None)
+            if _wsim is not None:
+                _mc_data["weakest_sim"] = float(_wsim) if hasattr(_wsim, '__float__') else _wsim
+            _csigs = getattr(APP.model, '_cached_coherence_correction_signals', None)
+            if _csigs is not None:
+                _mc_data["correction_signals"] = _csigs
+            _cdef = getattr(APP.model, '_cached_coherence_deficit', None)
+            if _cdef is not None:
+                _mc_data["coherence_deficit"] = float(_cdef) if hasattr(_cdef, '__float__') else _cdef
+            result["module_coherence"] = _mc_data
     except Exception:
         pass
 
@@ -4025,11 +4162,18 @@ async def engine_all_monitoring():
     try:
         ac = getattr(APP.model, 'auto_critic', None)
         if ac is not None:
-            result["auto_critic"] = {
+            _ac_data: Dict[str, Any] = {
                 "available": True,
                 "max_iterations": getattr(ac, 'max_iterations', None),
                 "threshold": getattr(ac, 'threshold', None),
             }
+            _ac_score = getattr(APP.model, '_cached_auto_critic_current_score', None)
+            if _ac_score is not None:
+                _ac_data["current_score"] = float(_ac_score) if hasattr(_ac_score, '__float__') else _ac_score
+            _ac_ema = getattr(APP.model, '_auto_critic_quality_ema', None)
+            if _ac_ema is not None:
+                _ac_data["quality_ema"] = float(_ac_ema) if hasattr(_ac_ema, '__float__') else _ac_ema
+            result["auto_critic"] = _ac_data
     except Exception:
         pass
 
@@ -4037,10 +4181,29 @@ async def engine_all_monitoring():
     try:
         ds = getattr(APP.model, 'deception_suppressor', None)
         if ds is not None:
-            result["deception_suppressor"] = {
+            _ds_data: Dict[str, Any] = {
                 "available": True,
                 "enabled": True,
             }
+            _dp = getattr(APP.model, '_cached_deception_pressure', None)
+            if _dp is not None:
+                _ds_data["pressure"] = float(_dp) if hasattr(_dp, '__float__') else _dp
+            result["deception_suppressor"] = _ds_data
+    except Exception:
+        pass
+
+    # ── Runtime Cached Signals ──
+    try:
+        _rt: Dict[str, Any] = {}
+        _topo = getattr(APP.model, '_cached_topology_state', None)
+        if _topo is not None:
+            _rt["topology_state"] = _topo
+        _cg = getattr(APP.model, '_last_complexity_gates', None)
+        if _cg is not None:
+            _rt["complexity_gates"] = _cg
+        if _rt:
+            _rt["available"] = True
+            result["runtime_signals"] = _rt
     except Exception:
         pass
 
