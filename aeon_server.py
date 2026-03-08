@@ -1191,7 +1191,7 @@ async def run_forward(req: ForwardRequest):
         # Pass through cognitive unity and emergence data from forward output
         cu_score = out.get("cognitive_unity_score")
         if cu_score is not None:
-            result["cognitive_unity_score"] = float(cu_score) if hasattr(cu_score, 'item') else cu_score
+            result["cognitive_unity_score"] = float(cu_score) if isinstance(cu_score, (int, float)) else (cu_score.item() if hasattr(cu_score, 'item') else cu_score)
         cu_components = out.get("cognitive_unity_components")
         if cu_components is not None:
             result["cognitive_unity_components"] = cu_components
