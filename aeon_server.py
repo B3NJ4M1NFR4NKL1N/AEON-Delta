@@ -897,6 +897,26 @@ async def get_system_emergence():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/verify_causal_chain")
+async def verify_causal_chain():
+    """Verify causal transparency across all subsystems.
+
+    Checks that key architectural subsystems have recorded causal
+    trace entries and that those entries can be traced back to root
+    causes.  Returns coverage and any untraced subsystems so that
+    external consumers can assess whether the Causal Transparency
+    requirement is met.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.verify_causal_chain()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"verify_causal_chain error: {e}")
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  INIT / DEINIT
 # ═══════════════════════════════════════════════════════════════════════════════

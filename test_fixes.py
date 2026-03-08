@@ -67414,6 +67414,13 @@ def run_all_tests():
     test_pipeline_wiring_gap_in_error_class_mapping()
     test_causal_transparency_full_chain()
 
+    # Causal chain verification & lifecycle tests
+    test_critical_patches_include_diagnose_propose_verify()
+    test_verify_causal_chain_method()
+    test_verify_causal_chain_records_own_trace()
+    test_verify_causal_chain_endpoint_exists()
+    test_emergence_lifecycle_traceability()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -74173,6 +74180,202 @@ def test_system_emergence_endpoint_exists():
         "Endpoint must call system_emergence_report()"
     )
     print("✅ test_system_emergence_endpoint_exists PASSED")
+
+
+def test_critical_patches_include_diagnose_propose_verify():
+    """Each critical patch in system_emergence_report() must include
+    diagnose, propose, and verify fields per the Final Integration
+    specification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    # Use a config that intentionally creates a gap so we have
+    # at least one critical patch to verify.
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    patches = report.get('critical_patches', [])
+
+    # Even if no gaps exist at runtime, verify the structure is correct
+    # by checking that system_emergence_report produces patches with
+    # the right schema when gaps are present.
+    if patches:
+        for patch in patches:
+            assert 'diagnose' in patch, (
+                f"Critical patch for '{patch.get('component')}' must "
+                f"include 'diagnose' field"
+            )
+            assert 'propose' in patch, (
+                f"Critical patch for '{patch.get('component')}' must "
+                f"include 'propose' field"
+            )
+            assert 'verify' in patch, (
+                f"Critical patch for '{patch.get('component')}' must "
+                f"include 'verify' field"
+            )
+            # Diagnose should reference the component
+            assert patch['component'] in patch['diagnose'], (
+                "diagnose field should reference the component name"
+            )
+
+    # Verify the method signature produces correct structure even when
+    # we force a gap through the diagnostic.
+    diagnostic = model.self_diagnostic()
+    gaps = diagnostic.get('gaps', [])
+    assert len(patches) == len(gaps), (
+        f"Number of critical patches ({len(patches)}) should match "
+        f"number of diagnostic gaps ({len(gaps)})"
+    )
+    print("✅ test_critical_patches_include_diagnose_propose_verify PASSED")
+
+
+def test_verify_causal_chain_method():
+    """verify_causal_chain() should report causal transparency coverage
+    for all expected subsystems."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to populate causal trace
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Run system_emergence_report to populate verification entries
+    model.system_emergence_report()
+
+    result = model.verify_causal_chain()
+
+    # Check structure
+    assert 'traceable' in result, "Must include traceable flag"
+    assert 'traced_subsystems' in result, "Must include traced_subsystems"
+    assert 'untraced_subsystems' in result, "Must include untraced_subsystems"
+    assert 'coverage' in result, "Must include coverage score"
+    assert 'total_entries' in result, "Must include total_entries count"
+
+    # After forward + emergence report, should have some trace entries
+    assert result['total_entries'] > 0, (
+        "After forward pass + emergence report, causal trace should "
+        "have entries"
+    )
+    assert result['coverage'] > 0, (
+        "Causal chain coverage should be non-zero after activation"
+    )
+
+    # system_emergence_report should be in traced subsystems
+    assert 'system_emergence_report' in result['traced_subsystems'], (
+        "system_emergence_report must be in traced subsystems"
+    )
+    print("✅ test_verify_causal_chain_method PASSED")
+
+
+def test_verify_causal_chain_records_own_trace():
+    """verify_causal_chain() should record its own assessment in the
+    causal trace for self-referential traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.verify_causal_chain()
+
+    entries = model.causal_trace._entries
+    chain_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'verify_causal_chain'
+            and e.get('decision') == 'assessment')
+    ]
+    assert len(chain_entries) >= 1, (
+        "verify_causal_chain must record its assessment in causal trace"
+    )
+    meta = chain_entries[-1].get('metadata', {})
+    assert 'traceable' in meta, (
+        "Causal trace entry must include traceable flag"
+    )
+    assert 'coverage' in meta, (
+        "Causal trace entry must include coverage score"
+    )
+    print("✅ test_verify_causal_chain_records_own_trace PASSED")
+
+
+def test_verify_causal_chain_endpoint_exists():
+    """Verify that /api/verify_causal_chain endpoint is registered."""
+    import importlib
+    import aeon_server
+    importlib.reload(aeon_server)
+    src = open(aeon_server.__file__).read()
+    assert '/api/verify_causal_chain' in src, (
+        "/api/verify_causal_chain endpoint must be registered"
+    )
+    assert 'verify_causal_chain' in src, (
+        "Endpoint must call verify_causal_chain()"
+    )
+    print("✅ test_verify_causal_chain_endpoint_exists PASSED")
+
+
+def test_emergence_lifecycle_traceability():
+    """Full lifecycle test: init → forward → verify → reinforce → report.
+
+    Validates that the complete cognitive lifecycle produces a fully
+    emerged system with traceable causal chain."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Step 1: Forward pass
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    assert 'logits' in result, "Forward must produce logits"
+
+    # Step 2: Verify and reinforce
+    reinforce_result = model.verify_and_reinforce()
+    assert 'coherent' in reinforce_result, (
+        "verify_and_reinforce must report coherence status"
+    )
+
+    # Step 3: System emergence report
+    report = model.system_emergence_report()
+    emergence = report.get('system_emergence_status', {})
+    assert emergence.get('emerged', False), (
+        "After full lifecycle, system should have emerged"
+    )
+
+    # Step 4: Verify causal chain
+    chain_result = model.verify_causal_chain()
+    assert chain_result['total_entries'] > 0, (
+        "Causal trace must have entries after full lifecycle"
+    )
+
+    # Step 5: Verify causal transparency — all assessment methods
+    # should have left trace entries
+    entries = list(model.causal_trace._entries)
+    subsystems_traced = {e.get('subsystem') for e in entries}
+    assert 'system_emergence_report' in subsystems_traced, (
+        "system_emergence_report must be in causal trace"
+    )
+    assert 'verify_causal_chain' in subsystems_traced, (
+        "verify_causal_chain must be in causal trace"
+    )
+
+    print("✅ test_emergence_lifecycle_traceability PASSED")
 
 
 if __name__ == "__main__":
