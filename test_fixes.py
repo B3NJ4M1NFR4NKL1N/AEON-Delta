@@ -67533,6 +67533,7 @@ def run_all_tests():
     test_reinforce_interval_class_attribute()
     test_system_emergence_auto_reinforcement()
     test_forward_pass_emergence_summary()
+    test_causal_chain_traceable_at_boot()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -74700,7 +74701,63 @@ def test_forward_pass_emergence_summary():
         "result's cognitive_unity_score"
     )
 
+    # --- Core emergence indicators ---
+    # These three fields map directly to the System Emergence
+    # requirements: mutual reinforcement, meta-cognitive trigger,
+    # and causal transparency.
+    assert 'mutual_reinforcement_active' in es, (
+        "emergence_summary must include mutual_reinforcement_active"
+    )
+    assert 'meta_cognitive_trigger_active' in es, (
+        "emergence_summary must include meta_cognitive_trigger_active"
+    )
+    assert 'causal_chain_traceable' in es, (
+        "emergence_summary must include causal_chain_traceable"
+    )
+    # After full init with default config, all three should be True.
+    assert es['mutual_reinforcement_active'] is True, (
+        "mutual_reinforcement_active should be True after full init"
+    )
+    assert es['meta_cognitive_trigger_active'] is True, (
+        "meta_cognitive_trigger_active should be True after forward pass"
+    )
+    assert es['causal_chain_traceable'] is True, (
+        "causal_chain_traceable should be True after full init"
+    )
+
     print("✅ test_forward_pass_emergence_summary PASSED")
+
+
+def test_causal_chain_traceable_at_boot():
+    """After init (before any forward pass), verify_causal_chain() must
+    return traceable=True because the activation probe seeds all expected
+    causal trace entries — including system_emergence_report."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    chain = model.verify_causal_chain()
+    assert chain['traceable'] is True, (
+        f"Causal chain should be traceable at boot, "
+        f"untraced: {chain['untraced_subsystems']}"
+    )
+    assert chain['coverage'] == 1.0, (
+        f"Causal chain coverage should be 1.0, got {chain['coverage']}"
+    )
+    assert len(chain['untraced_subsystems']) == 0, (
+        f"No subsystems should be untraced, "
+        f"got: {chain['untraced_subsystems']}"
+    )
+    # system_emergence_report must be among the traced subsystems
+    assert 'system_emergence_report' in chain['traced_subsystems'], (
+        "system_emergence_report must be traced at boot"
+    )
+
+    print("✅ test_causal_chain_traceable_at_boot PASSED")
 
 
 if __name__ == "__main__":
