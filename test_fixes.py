@@ -23250,14 +23250,20 @@ def test_self_diagnostic_full_coherence():
 
 
 def test_meta_learner_task_buffer_populated_by_trainer():
-    """AEONTrainer populates MetaLearner task buffer during training."""
+    """AEONTrainer populates MetaLearner task buffer during training.
+
+    Note: _cognitive_activation_probe step 9b seeds one baseline task
+    during __init__, so the initial count is 1, not 0.  Training must
+    add at least one more task on top of that baseline.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3, AEONTrainer
 
     config = AEONConfig(enable_meta_learning=True)
     model = AEONDeltaV3(config)
     assert model.meta_learner is not None, "MetaLearner should be initialized"
-    assert model.meta_learner.num_tasks == 0, (
-        "Task buffer should be empty initially"
+    baseline_count = model.meta_learner.num_tasks
+    assert baseline_count >= 1, (
+        "Task buffer should contain the activation baseline task"
     )
 
     trainer = AEONTrainer(model, config)
@@ -23270,8 +23276,8 @@ def test_meta_learner_task_buffer_populated_by_trainer():
     }
     trainer.train_step(batch)
 
-    assert model.meta_learner.num_tasks >= 1, (
-        "MetaLearner task buffer should be populated after training step"
+    assert model.meta_learner.num_tasks > baseline_count, (
+        "MetaLearner task buffer should grow after training step"
     )
 
     print("✅ test_meta_learner_task_buffer_populated_by_trainer PASSED")
@@ -23307,17 +23313,26 @@ def test_architecture_summary_includes_adaptive_meta_loop():
 
 
 def test_self_diagnostic_meta_learner_gap():
-    """self_diagnostic detects empty MetaLearner task buffer."""
+    """self_diagnostic reports no meta_learner gap after activation probe.
+
+    _cognitive_activation_probe step 9b seeds one baseline task during
+    __init__, closing the 'MetaLearner initialized but task buffer empty'
+    diagnostic gap.  self_diagnostic should therefore list meta_learner
+    as verified, not as a gap.
+    """
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(enable_meta_learning=True)
     model = AEONDeltaV3(config)
     report = model.self_diagnostic()
 
-    # MetaLearner is initialized but task buffer is empty
+    # MetaLearner task buffer is pre-seeded by activation probe
     gap_components = [g['component'] for g in report['gaps']]
-    assert 'meta_learner' in gap_components, (
-        "Should detect empty MetaLearner task buffer"
+    assert 'meta_learner' not in gap_components, (
+        "meta_learner gap should be closed by activation probe baseline task"
+    )
+    assert 'meta_learner → task buffer populated' in report['verified_connections'], (
+        "meta_learner should appear in verified_connections list"
     )
 
     print("✅ test_self_diagnostic_meta_learner_gap PASSED")
