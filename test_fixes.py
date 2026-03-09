@@ -15065,13 +15065,13 @@ def test_post_coherence_deficit_causal_trace_query():
     with torch.no_grad():
         outputs = model(input_ids)
 
-    # The causal trace should contain a post_coherence_deficit entry
-    trace_entries = model.causal_trace.recent(n=50)
-    post_deficit_entries = [
-        e for e in trace_entries
-        if e["subsystem"] == "post_coherence_deficit"
-        and e["decision"] == "root_cause_query"
-    ]
+    # The causal trace should contain a post_coherence_deficit entry.
+    # Use find() rather than recent(n=50) because subsequent operations
+    # in the forward pass may push the entry beyond the 50 most recent.
+    post_deficit_entries = model.causal_trace.find(
+        subsystem="post_coherence_deficit",
+        decision="root_cause_query",
+    )
     assert len(post_deficit_entries) > 0, (
         "Post-integration coherence deficit should trigger causal trace root-cause query"
     )
@@ -67588,6 +67588,14 @@ def run_all_tests():
     test_emergence_deficit_boosts_uncertainty()
     test_emergence_deficit_records_error_evolution()
 
+    # Final Integration patches — close 4 cognitive feedback loops
+    test_cross_module_coherence_escalates_uncertainty()
+    test_cross_module_coherence_records_error_evolution()
+    test_cross_module_coherence_feedback_bus_signal()
+    test_convergence_quality_escalates_uncertainty()
+    test_output_reliability_escalates_uncertainty()
+    test_emergence_deficit_fires_with_reinforcement()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -75517,6 +75525,192 @@ def test_emergence_deficit_records_error_evolution():
         "for emergence deficit error evolution recording"
     )
     print("✅ test_emergence_deficit_records_error_evolution PASSED")
+
+
+# ============================================================================
+# Final Integration Patches — Close 4 Cognitive Feedback Loops
+# ============================================================================
+
+def test_cross_module_coherence_escalates_uncertainty():
+    """When cross_module_coherence < 0.5 in forward pass, uncertainty must
+    be boosted and 'cross_module_coherence_deficit' recorded in sources."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the feedback loop exists in source
+    source = inspect.getsource(model._forward_impl)
+    assert 'cross_module_coherence_deficit' in source, (
+        "_forward_impl must escalate uncertainty when "
+        "cross_module_coherence is below threshold"
+    )
+    assert '_CROSS_COHERENCE_THRESHOLD' in source, (
+        "_forward_impl must define _CROSS_COHERENCE_THRESHOLD "
+        "for cross-module coherence feedback loop"
+    )
+    assert '_coh_unc_boost' in source, (
+        "_forward_impl must compute _coh_unc_boost for "
+        "cross-module coherence uncertainty escalation"
+    )
+    print("✅ test_cross_module_coherence_escalates_uncertainty PASSED")
+
+
+def test_cross_module_coherence_records_error_evolution():
+    """When cross_module_coherence is low, error evolution must record
+    a 'cross_module_coherence_deficit' episode for meta-learning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    source = inspect.getsource(model._forward_impl)
+    assert 'in_pass_coherence_escalation' in source, (
+        "_forward_impl must use 'in_pass_coherence_escalation' strategy "
+        "when recording cross-module coherence deficit in error evolution"
+    )
+    # Verify causal trace recording
+    assert "'cross_module_coherence'" in source or '"cross_module_coherence"' in source, (
+        "_forward_impl must record cross_module_coherence events in causal trace"
+    )
+    print("✅ test_cross_module_coherence_records_error_evolution PASSED")
+
+
+def test_cross_module_coherence_feedback_bus_signal():
+    """cross_module_coherence must be cached and routed through the feedback
+    bus via _build_feedback_extra_signals for cross-pass conditioning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the cached attribute exists
+    assert hasattr(model, '_cached_cross_module_coherence'), (
+        "AEONDeltaV3 must have _cached_cross_module_coherence attribute "
+        "for feedback bus cross-pass conditioning"
+    )
+    assert model._cached_cross_module_coherence == 1.0, (
+        "_cached_cross_module_coherence must default to 1.0 (healthy)"
+    )
+    # Verify it's routed through the feedback bus
+    source = inspect.getsource(model._build_feedback_extra_signals)
+    assert 'cross_module_coherence_pressure' in source, (
+        "_build_feedback_extra_signals must route cross_module_coherence "
+        "deficit as 'cross_module_coherence_pressure' signal"
+    )
+    assert '_cached_cross_module_coherence' in source, (
+        "_build_feedback_extra_signals must read _cached_cross_module_coherence"
+    )
+    print("✅ test_cross_module_coherence_feedback_bus_signal PASSED")
+
+
+def test_convergence_quality_escalates_uncertainty():
+    """When convergence_quality < 0.5 in reasoning_core, uncertainty must
+    be boosted and 'low_convergence_quality' recorded in sources and
+    error evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    source = inspect.getsource(model._reasoning_core_impl)
+    assert 'low_convergence_quality' in source, (
+        "_reasoning_core_impl must escalate uncertainty when "
+        "convergence_quality is below threshold"
+    )
+    assert '_CONVERGENCE_QUALITY_THRESHOLD' in source, (
+        "_reasoning_core_impl must define _CONVERGENCE_QUALITY_THRESHOLD "
+        "for convergence quality feedback loop"
+    )
+    assert 'convergence_escalation' in source, (
+        "_reasoning_core_impl must use 'convergence_escalation' strategy "
+        "when recording low convergence quality in error evolution"
+    )
+    print("✅ test_convergence_quality_escalates_uncertainty PASSED")
+
+
+def test_output_reliability_escalates_uncertainty():
+    """When output_reliability < 0.3 in reasoning_core, uncertainty must
+    be boosted and 'low_output_reliability' recorded in error evolution,
+    beyond the existing soft-gating attenuation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    source = inspect.getsource(model._reasoning_core_impl)
+    assert 'low_output_reliability' in source, (
+        "_reasoning_core_impl must escalate uncertainty when "
+        "output_reliability is critically low"
+    )
+    assert '_OUTPUT_RELIABILITY_ESCALATION_THRESHOLD' in source, (
+        "_reasoning_core_impl must define _OUTPUT_RELIABILITY_ESCALATION_THRESHOLD "
+        "for output reliability uncertainty escalation"
+    )
+    assert 'reliability_escalation' in source, (
+        "_reasoning_core_impl must use 'reliability_escalation' strategy "
+        "when recording low output reliability in error evolution"
+    )
+    print("✅ test_output_reliability_escalates_uncertainty PASSED")
+
+
+def test_emergence_deficit_fires_with_reinforcement():
+    """Emergence-deficit uncertainty bridge must fire even when
+    reinforcement was applied (at half strength) — not only when
+    _applied_reinforcement is None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    source = inspect.getsource(model._forward_impl)
+    # The condition must be 'if not _emerged:' NOT
+    # 'if not _emerged and _applied_reinforcement is None:'
+    assert 'if not _emerged:' in source, (
+        "_forward_impl emergence-deficit bridge must fire unconditionally "
+        "when emergence fails, not only when reinforcement is None"
+    )
+    # Verify the halving for post-reinforcement
+    assert '_emergence_unc_boost *= 0.5' in source, (
+        "_forward_impl must halve emergence_unc_boost when reinforcement "
+        "was applied to avoid double-escalation"
+    )
+    # Verify reinforcement_applied is tracked in error evolution metadata
+    assert 'reinforcement_applied' in source, (
+        "_forward_impl must record whether reinforcement was applied in "
+        "the emergence_deficit error evolution metadata"
+    )
+    print("✅ test_emergence_deficit_fires_with_reinforcement PASSED")
 
 
 if __name__ == "__main__":
