@@ -17966,6 +17966,10 @@ class CausalErrorEvolutionTracker:
         # training strengthens cross-module integration and reduces
         # structural fragility.
         "architectural_regression": "lambda_coherence",
+        # Emergence deficit — forward-pass emergence monitor detected
+        # that AGI axioms are not met.  Maps to lambda_coherence so
+        # training adapts to persistent emergence failures.
+        "emergence_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
