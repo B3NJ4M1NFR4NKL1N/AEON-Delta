@@ -67558,6 +67558,11 @@ def run_all_tests():
     test_uncertainty_threshold_configurable()
     test_config_has_emergence_parameters()
 
+    # Causal coherence & emergence status patches
+    test_forward_pass_causal_chain_traceable()
+    test_forward_result_includes_emergence_status()
+    test_emergence_assessment_maps_to_system_emergence_report()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -75166,6 +75171,101 @@ def test_config_has_emergence_parameters():
     assert config.uncertainty_reinforcement_threshold == 0.7
 
     print("✅ test_config_has_emergence_parameters PASSED")
+
+
+def test_forward_pass_causal_chain_traceable():
+    """After a forward pass (without explicitly calling
+    system_emergence_report), verify_causal_chain() must report
+    traceable=True with full coverage — validating that the
+    emergence_assessment heartbeat entries keep all expected
+    subsystems visible in the causal trace buffer."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+
+    # Run several forward passes to stress the causal trace buffer
+    for _ in range(8):
+        with torch.no_grad():
+            model(x)
+
+    chain = model.verify_causal_chain()
+    assert chain['traceable'], (
+        f"Causal chain must be traceable after forward passes "
+        f"(without calling system_emergence_report), "
+        f"untraced: {chain.get('untraced_subsystems', [])}"
+    )
+    assert chain['coverage'] == 1.0, (
+        f"Causal chain coverage must be 1.0, got {chain['coverage']}"
+    )
+
+    print("✅ test_forward_pass_causal_chain_traceable PASSED")
+
+
+def test_forward_result_includes_emergence_status():
+    """forward() result must include 'emergence_status' boolean and
+    'reinforcement_applied' field for causal transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    assert 'emergence_status' in result, (
+        "forward() result must include 'emergence_status'"
+    )
+    assert isinstance(result['emergence_status'], bool), (
+        "'emergence_status' must be a boolean"
+    )
+    assert 'reinforcement_applied' in result, (
+        "forward() result must include 'reinforcement_applied'"
+    )
+
+    print("✅ test_forward_result_includes_emergence_status PASSED")
+
+
+def test_emergence_assessment_maps_to_system_emergence_report():
+    """verify_causal_chain() must count 'emergence_assessment' trace
+    entries as satisfying the 'system_emergence_report' subsystem
+    requirement."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Do NOT call system_emergence_report() — only forward pass
+    chain = model.verify_causal_chain()
+
+    assert 'system_emergence_report' in chain['traced_subsystems'], (
+        "emergence_assessment entries from forward pass must map to "
+        "'system_emergence_report' in verify_causal_chain()"
+    )
+
+    print("✅ test_emergence_assessment_maps_to_system_emergence_report PASSED")
 
 
 if __name__ == "__main__":
