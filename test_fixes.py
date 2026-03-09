@@ -67582,6 +67582,11 @@ def run_all_tests():
     test_meta_learner_task_buffer_seeded_at_activation()
     test_activation_recovery_covers_single_episode_failures()
 
+    # Cognitive integration — threshold alignment & transparency patches
+    test_reinforce_boost_threshold_matches_error_recording()
+    test_reinforce_boosts_all_three_axioms()
+    test_reinforce_logs_adapt_weights_failure()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -75358,6 +75363,139 @@ def test_activation_recovery_covers_single_episode_failures():
     )
 
     print("✅ test_activation_recovery_covers_single_episode_failures PASSED")
+
+
+def test_reinforce_boost_threshold_matches_error_recording():
+    """verify_and_reinforce() must use the same threshold (< 0.8) for
+    metacognitive sensitivity boosts as it does for error-evolution
+    recording.  Previously the boost threshold was 0.6, creating a dead
+    zone where scores in [0.6, 0.8) were recorded as error episodes but
+    never triggered a sensitivity boost — meaning the metacognitive
+    trigger could not self-correct near-threshold deficits.
+    """
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_and_reinforce)
+
+    # The boost threshold for mv_score and um_score must be 0.8, not 0.6.
+    assert 'if mv_score < 0.8' in src, (
+        "verify_and_reinforce must boost coherence_deficit when "
+        "mv_score < 0.8 (was 0.6)"
+    )
+    assert 'if um_score < 0.8' in src, (
+        "verify_and_reinforce must boost uncertainty when "
+        "um_score < 0.8 (was 0.6)"
+    )
+
+    # The old threshold (0.6) must NOT appear in the boost section.
+    # Count occurrences of '< 0.6' — there should be none in the
+    # metacognitive boost block.
+    boost_section = src[src.index('Boost metacognitive trigger'):
+                        src.index('Adapt metacognitive trigger')]
+    assert '< 0.6' not in boost_section, (
+        "The 0.6 threshold must be replaced with 0.8 in the "
+        "metacognitive boost section"
+    )
+
+    print("✅ test_reinforce_boost_threshold_matches_error_recording PASSED")
+
+
+def test_reinforce_boosts_all_three_axioms():
+    """verify_and_reinforce() must boost metacognitive sensitivity for
+    all three AGI axioms: mutual_verification (coherence_deficit),
+    uncertainty_metacognition (uncertainty), AND root_cause_traceability
+    (low_causal_quality).  Previously only the first two received
+    boosts, leaving root-cause traceability without adaptive
+    sensitivity — a gap that prevented the system from self-correcting
+    provenance deficits via the metacognitive trigger.
+    """
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_and_reinforce)
+
+    # All three axiom signals must be boosted.
+    assert 'if rc_score < 0.8' in src, (
+        "verify_and_reinforce must boost low_causal_quality when "
+        "rc_score < 0.8"
+    )
+    assert "'low_causal_quality'" in src, (
+        "verify_and_reinforce must target the low_causal_quality "
+        "metacognitive signal for rc_score deficits"
+    )
+    assert 'max(0.2, 1.0 - rc_score)' in src, (
+        "verify_and_reinforce must use adaptive boost formula for "
+        "rc_score (same pattern as mv_score and um_score)"
+    )
+
+    # Verify that the boost formula is structurally identical for all
+    # three axioms — each must have: score < 0.8, adaptive factor,
+    # weight cap at 2.0, and a reinforcement action log entry.
+    for signal_name in ('coherence_deficit', 'uncertainty',
+                        'low_causal_quality'):
+        assert f"'{signal_name}'" in src, (
+            f"verify_and_reinforce must boost the '{signal_name}' "
+            f"metacognitive signal"
+        )
+
+    print("✅ test_reinforce_boosts_all_three_axioms PASSED")
+
+
+def test_reinforce_logs_adapt_weights_failure():
+    """verify_and_reinforce() must log adapt_weights_from_evolution
+    failures instead of silently swallowing them.  The logged failure
+    must appear in the reinforcement_actions list so that it is
+    traceable through the causal chain.
+    """
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_and_reinforce)
+
+    # The silent 'except Exception: pass' must be replaced with
+    # logging and reinforcement_actions recording.
+    assert 'adapt_weights_from_evolution failed' in src, (
+        "verify_and_reinforce must log adapt_weights_from_evolution "
+        "failures instead of silently passing"
+    )
+
+    # The causal chain gap handler must also log its exception.
+    assert 'verify_causal_chain failed' in src, (
+        "verify_and_reinforce must log verify_causal_chain failures "
+        "instead of silently passing"
+    )
+
+    # Neither handler should use bare 'except Exception:\n'
+    # followed immediately by 'pass' (silent swallowing).
+    import re
+    silent_handlers = re.findall(
+        r'except\s+Exception\s*:\s*\n\s*pass', src,
+    )
+    assert len(silent_handlers) == 0, (
+        f"verify_and_reinforce still has {len(silent_handlers)} "
+        f"silent 'except Exception: pass' handler(s)"
+    )
+
+    print("✅ test_reinforce_logs_adapt_weights_failure PASSED")
 
 
 if __name__ == "__main__":

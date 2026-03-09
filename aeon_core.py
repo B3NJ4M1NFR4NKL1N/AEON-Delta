@@ -44877,7 +44877,11 @@ class AEONDeltaV3(nn.Module):
                     f'Recorded causal_chain_gap episode '
                     f'(chain_coverage={_chain_coverage:.2f})'
                 )
-        except Exception:
+        except Exception as _chain_err:
+            logger.warning(
+                "verify_and_reinforce: verify_causal_chain failed: %s",
+                _chain_err,
+            )
             _chain_result = None
 
         # --- Re-check diagnostic gaps for runtime correction ---
@@ -44947,12 +44951,26 @@ class AEONDeltaV3(nn.Module):
         # The boost factor scales with deficit magnitude: a score of 0.1
         # (severe) yields a stronger boost than 0.55 (marginal), ensuring
         # that the system's corrective response is proportional to the
-        # severity of the detected gap. ---
+        # severity of the detected gap.
+        #
+        # The threshold (< 0.8) matches the error-recording threshold
+        # used by the per-axiom error evolution recording above, so that
+        # every deficit that gets recorded as an error episode also
+        # triggers a corresponding metacognitive sensitivity boost.
+        # Previously the threshold was 0.6, creating a dead zone where
+        # scores in [0.6, 0.8) were recorded in error evolution but did
+        # not increase the trigger's responsiveness — preventing the
+        # system from self-correcting near-threshold deficits.
+        #
+        # Root-cause traceability (rc_score) is included alongside
+        # mutual verification and uncertainty metacognition so that all
+        # three AGI axioms receive proportional sensitivity boosts when
+        # their scores indicate a deficit. ---
         if self.metacognitive_trigger is not None:
             _weights = getattr(
                 self.metacognitive_trigger, '_signal_weights', {},
             )
-            if mv_score < 0.6:
+            if mv_score < 0.8:
                 _mv_boost = 1.0 + max(0.2, 1.0 - mv_score)
                 _weights['coherence_deficit'] = min(
                     _weights.get('coherence_deficit', 1.0) * _mv_boost,
@@ -44962,7 +44980,7 @@ class AEONDeltaV3(nn.Module):
                     f'Boosted metacognitive coherence_deficit weight '
                     f'(adaptive factor={_mv_boost:.2f})'
                 )
-            if um_score < 0.6:
+            if um_score < 0.8:
                 _um_boost = 1.0 + max(0.2, 1.0 - um_score)
                 _weights['uncertainty'] = min(
                     _weights.get('uncertainty', 1.0) * _um_boost, 2.0,
@@ -44970,6 +44988,16 @@ class AEONDeltaV3(nn.Module):
                 reinforcement_actions.append(
                     f'Boosted metacognitive uncertainty weight '
                     f'(adaptive factor={_um_boost:.2f})'
+                )
+            if rc_score < 0.8:
+                _rc_boost = 1.0 + max(0.2, 1.0 - rc_score)
+                _weights['low_causal_quality'] = min(
+                    _weights.get('low_causal_quality', 1.0) * _rc_boost,
+                    2.0,
+                )
+                reinforcement_actions.append(
+                    f'Boosted metacognitive low_causal_quality weight '
+                    f'(adaptive factor={_rc_boost:.2f})'
                 )
 
         # --- Adapt metacognitive trigger weights from accumulated error
@@ -44995,8 +45023,15 @@ class AEONDeltaV3(nn.Module):
                         'Adapted metacognitive weights from error '
                         'evolution patterns'
                     )
-            except Exception:
-                pass
+            except Exception as _adapt_err:
+                logger.warning(
+                    "verify_and_reinforce: adapt_weights_from_evolution "
+                    "failed: %s", _adapt_err,
+                )
+                reinforcement_actions.append(
+                    'adapt_weights_from_evolution failed: '
+                    + str(_adapt_err)
+                )
 
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
