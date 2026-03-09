@@ -925,12 +925,37 @@ async def verify_causal_chain():
     causes.  Returns coverage and any untraced subsystems so that
     external consumers can assess whether the Causal Transparency
     requirement is met.
+
+    When untraced subsystems are found, automatically triggers a
+    ``verify_and_reinforce()`` cycle to feed the causal-chain gap
+    into error evolution and metacognitive trigger weights, closing
+    the gap where this endpoint was purely diagnostic and never
+    initiated corrective action.
     """
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
     try:
         result = APP.model.verify_causal_chain()
-        return _make_json_safe({"ok": True, **result})
+        # When causal chain is incomplete, trigger a reinforcement
+        # cycle so the gap is actively corrected rather than merely
+        # reported.  This bridges the discontinuity where the
+        # diagnostic endpoint observed architectural weaknesses but
+        # never fed them into the self-correction loop.
+        corrective_action = None
+        if not result.get('traceable', True):
+            try:
+                corrective_action = APP.model.verify_and_reinforce()
+            except Exception as _corr_err:
+                logging.debug(
+                    "verify_causal_chain corrective action skipped: %s",
+                    _corr_err,
+                )
+        return _make_json_safe({
+            "ok": True,
+            **result,
+            "corrective_action_applied": corrective_action is not None,
+            "corrective_action": corrective_action,
+        })
     except Exception as e:
         logging.error(f"verify_causal_chain error: {e}")
         raise HTTPException(500, str(e))

@@ -3335,6 +3335,23 @@ class AEONConfig:
     counterfactual_divergence_threshold: float = 0.5
     counterfactual_attenuation_strength: float = 0.1
 
+    # ===== COGNITIVE EMERGENCE =====
+    # Configurable thresholds for the system emergence verdict
+    # produced by ``system_emergence_report()`` and the
+    # ``/api/cognitive_activation`` endpoint.  These control when
+    # individual AGI requirements (mutual reinforcement,
+    # uncertainty→metacognition, root-cause traceability) are
+    # considered satisfied.  Exposing them in AEONConfig makes the
+    # emergence framework discoverable and tunable without modifying
+    # class-level constants.
+    emergence_mv_threshold: float = 0.9    # mutual verification
+    emergence_um_threshold: float = 1.0    # uncertainty→metacognition
+    emergence_rc_threshold: float = 0.9    # root-cause traceability
+    reinforce_interval: int = 50           # forward passes between
+    #                                        periodic verify_and_reinforce
+    uncertainty_reinforcement_threshold: float = 0.7  # uncertainty
+    #                         level that triggers immediate reinforcement
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
@@ -24282,6 +24299,28 @@ class AEONDeltaV3(nn.Module):
             node_attr_map=self._NODE_ATTR_MAP,
         )
 
+        # ===== COGNITIVE EMERGENCE CONFIG =====
+        # Override class-level emergence thresholds and reinforcement
+        # interval from AEONConfig so that the emergence framework is
+        # config-driven and discoverable.  Callers can still override
+        # via instance attributes (e.g. ``model._REINFORCE_INTERVAL = 25``)
+        # but the config provides the authoritative defaults.
+        self._REINFORCE_INTERVAL = getattr(
+            config, 'reinforce_interval', self._REINFORCE_INTERVAL,
+        )
+        self._EMERGENCE_MV_THRESHOLD = getattr(
+            config, 'emergence_mv_threshold', self._EMERGENCE_MV_THRESHOLD,
+        )
+        self._EMERGENCE_UM_THRESHOLD = getattr(
+            config, 'emergence_um_threshold', self._EMERGENCE_UM_THRESHOLD,
+        )
+        self._EMERGENCE_RC_THRESHOLD = getattr(
+            config, 'emergence_rc_threshold', self._EMERGENCE_RC_THRESHOLD,
+        )
+        self._UNCERTAINTY_REINFORCE_THRESHOLD = getattr(
+            config, 'uncertainty_reinforcement_threshold', 0.7,
+        )
+
         # ===== COGNITIVE ACTIVATION PROBE =====
         # Transitions the system from "connected architecture" to
         # "functional cognitive organism" by seeding error evolution
@@ -38949,7 +38988,7 @@ class AEONDeltaV3(nn.Module):
         _unc_triggered = False
         _unc_val = result.get('uncertainty', 0.0)
         _is_periodic = (_fwd % self._REINFORCE_INTERVAL == 0)
-        if _unc_val >= 0.7 and not _is_periodic:
+        if _unc_val >= self._UNCERTAINTY_REINFORCE_THRESHOLD and not _is_periodic:
             try:
                 _unc_reinforce = self.verify_and_reinforce()
                 _unc_actions = _unc_reinforce.get(
@@ -46202,6 +46241,39 @@ class AEONDeltaV3(nn.Module):
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
                     },
+                )
+
+        # 13. Training→inference auto-sync — attempt to import training
+        # state (memory snapshots, error patterns) into the inference
+        # pipeline so that training-discovered knowledge is available
+        # from the first forward pass.  This closes the gap where
+        # ``sync_from_training()`` was defined but never auto-invoked,
+        # requiring manual external calls to bridge the training→inference
+        # gap.  Called with no external trainer objects to trigger the
+        # self-contained import paths (memory snapshots from default
+        # directory, convergence adjustments from existing error evolution
+        # episodes).  When external trainer objects are available, callers
+        # should still call ``sync_from_training(trainer_monitor=...)``
+        # explicitly with the full training state.
+        if not getattr(self, '_training_sync_attempted', False):
+            try:
+                _sync_result = self.sync_from_training()
+                self._training_sync_attempted = True
+                _sync_imported = _sync_result.get('events_imported', 0)
+                _sync_mem = _sync_result.get(
+                    'memory_snapshots_imported', 0,
+                )
+                if _sync_imported > 0 or _sync_mem > 0:
+                    logger.info(
+                        "Cognitive activation: auto-synced training "
+                        "state (%d events, %d memory snapshots)",
+                        _sync_imported, _sync_mem,
+                    )
+            except Exception as _sync_err:
+                self._training_sync_attempted = True
+                logger.debug(
+                    "Cognitive activation: training sync skipped: %s",
+                    _sync_err,
                 )
 
         # Track that the cognitive activation probe has completed —
