@@ -67545,6 +67545,7 @@ def run_all_tests():
     test_verify_causal_chain_endpoint_exists()
     test_system_emergence_includes_causal_chain()
     test_activation_probe_seeds_causal_trace_for_error_evolution()
+    test_causal_chain_traceable_at_init()
     test_emergence_lifecycle_traceability()
 
     # Final integration & cognitive activation patches
@@ -74564,6 +74565,47 @@ def test_activation_probe_seeds_causal_trace_for_error_evolution():
     )
 
     print("✅ test_activation_probe_seeds_causal_trace_for_error_evolution PASSED")
+
+
+def test_causal_chain_traceable_at_init():
+    """verify_causal_chain() must return traceable=True immediately after
+    initialization (before any forward pass).
+
+    The cognitive activation probe seeds causal trace entries for all
+    expected subsystems — including emergence_assessment for the
+    system_emergence_report requirement — so the causal chain is
+    complete from the moment the system is constructed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # No forward pass — chain must be traceable at init.
+    chain = model.verify_causal_chain()
+    assert chain['traceable'], (
+        f"Causal chain must be traceable at init (before any forward "
+        f"pass), untraced: {chain.get('untraced_subsystems', [])}"
+    )
+    assert chain['coverage'] == 1.0, (
+        f"Causal chain coverage must be 1.0 at init, got {chain['coverage']}"
+    )
+    assert len(chain['untraced_subsystems']) == 0, (
+        f"No untraced subsystems expected at init, "
+        f"got: {chain['untraced_subsystems']}"
+    )
+
+    # Verify emergence_assessment is in trace entries
+    entries = list(model.causal_trace._entries)
+    subsystems = {e.get('subsystem', '') for e in entries}
+    assert 'emergence_assessment' in subsystems, (
+        "Activation probe must seed emergence_assessment causal trace "
+        "entry so system_emergence_report is traceable at init"
+    )
+
+    print("✅ test_causal_chain_traceable_at_init PASSED")
 
 
 def test_emergence_lifecycle_traceability():
