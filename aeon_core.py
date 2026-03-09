@@ -1082,8 +1082,8 @@ class SafeTensorProcessor:
         for _name, module in model.named_modules():
             try:
                 module.register_forward_hook(_hook)
-            except (RuntimeError, AttributeError):
-                pass
+            except (RuntimeError, AttributeError) as exc:
+                logger.debug("Forward hook registration skipped for module '%s': %s", _name, exc)
 
 
 # ============================================================================
@@ -1939,8 +1939,8 @@ class ErrorRecoveryManager:
                 _degrading = self.error_evolution.get_degrading_error_classes()
                 if _degrading:
                     stats["degrading_classes"] = _degrading
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error evolution degrading-class retrieval failed: %s", exc)
         return stats
 
     def reset_stats(self) -> None:
@@ -7715,8 +7715,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 raise RuntimeError("Non-finite values in solve result")
             alpha = alpha / alpha.sum(dim=1, keepdim=True).clamp_min(1e-8)
             return alpha
-        except (RuntimeError, NotImplementedError):
-            pass
+        except (RuntimeError, NotImplementedError) as exc:
+            logger.debug("GPU gram solve failed, falling back to CPU: %s", exc)
         
         # CPU fallback
         try:
@@ -7727,8 +7727,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 raise RuntimeError("Non-finite values in CPU solve result")
             alpha_cpu = alpha_cpu / alpha_cpu.sum(dim=1, keepdim=True).clamp_min(1e-8)
             return alpha_cpu.to(device)
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            logger.debug("CPU gram solve failed, using uniform weights: %s", exc)
         
         # Last resort: uniform weights (no acceleration)
         return torch.ones(B, m, 1, device=device) / m
@@ -8874,8 +8874,8 @@ class FastHessianComputer:
         try:
             # Try on original device first
             return torch.linalg.eigvalsh(H_sym)
-        except (NotImplementedError, RuntimeError):
-            pass
+        except (NotImplementedError, RuntimeError) as exc:
+            logger.debug("Eigenvalue computation on device failed, falling back to CPU: %s", exc)
         
         # Fallback to CPU
         try:
@@ -15425,8 +15425,8 @@ class CycleConsistencyValidator(nn.Module):
                     result['uncertainty_sources'][
                         'cycle_consistency_violation'
                     ] = boost
-        except (RuntimeError, ValueError):
-            pass
+        except (RuntimeError, ValueError) as exc:
+            logger.debug("Cycle consistency verification failed: %s", exc)
 
         # --- Re-encode verification (second pass) ---
         if (z_reencoded is not None
@@ -15459,8 +15459,8 @@ class CycleConsistencyValidator(nn.Module):
                         result['uncertainty_sources'][
                             'reencode_divergence'
                         ] = re_boost
-            except (RuntimeError, ValueError):
-                pass
+            except (RuntimeError, ValueError) as exc:
+                logger.debug("Re-encode divergence verification failed: %s", exc)
 
         return result
 
@@ -20922,8 +20922,8 @@ class UnifiedCognitiveCycle:
                     self.metacognitive_trigger.adapt_weights_from_provenance(
                         {'contributions': _rr_weights},
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Metacognitive weight adaptation from provenance failed: %s", exc)
 
         # 7j. Low-quality subsystems surface — expose the coherence
         # registry's per-subsystem quality scores in the return dict so
@@ -24892,8 +24892,8 @@ class AEONDeltaV3(nn.Module):
                         extra["error_evolution_trend_pressure"] = max(
                             0.0, min(1.0, _trend_mean),
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error evolution trend pressure computation failed: %s", exc)
         # Uncertainty propagation cascade pressure — when the
         # UncertaintyPropagationBus amplified upstream uncertainty
         # into downstream modules, the total amplification magnitude
@@ -25079,8 +25079,8 @@ class AEONDeltaV3(nn.Module):
                         _pressure_val = max(0.0, min(1.0, 1.0 - _sr_b))
                         if _fb_signal not in extra or extra[_fb_signal] < _pressure_val:
                             extra[_fb_signal] = _pressure_val
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error evolution feedback signal bridging failed: %s", exc)
         # Feedback bus signal trend — when the EMA-tracked signal trend
         # shows monotonically worsening conditions (e.g. rising uncertainty
         # or falling coherence), carry the worst-case trend magnitude into
@@ -25124,8 +25124,8 @@ class AEONDeltaV3(nn.Module):
                         extra[f"fb_correction:{_ch_name}"] = max(
                             0.0, min(1.0, _ch_pressure),
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Feedback bus correction pressure computation failed: %s", exc)
         # Cognitive frame corrective pressures — route per-component
         # pressures from the UnifiedCognitiveFrame's most recent
         # assessment into the feedback bus.  This closes the gap where
@@ -30429,8 +30429,8 @@ class AEONDeltaV3(nn.Module):
                                         'relevance_score': _relevance,
                                     },
                                 )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Memory routing irrelevance recording failed: %s", exc)
                     # 5b1-mrp-trust. Cache memory routing trust-gating
                     # count so the UCC evaluation receives a graduated
                     # memory_trust_deficit signal reflecting how many
@@ -38175,8 +38175,8 @@ class AEONDeltaV3(nn.Module):
                     with torch.no_grad():
                         _z_reencoded = self.encoder(z_out.detach())
                         _core_state = outputs.get('core_state', z_out).detach()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Re-encoding for cycle consistency failed: %s", exc)
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -44504,8 +44504,8 @@ class AEONDeltaV3(nn.Module):
                         f"{', '.join(_recurring_roots[:5])} — investigate "
                         f"these patterns for recurring architectural weakness"
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Chronic error pattern detection failed: %s", exc)
 
         return {
             'healthy': _healthy,
@@ -44995,8 +44995,12 @@ class AEONDeltaV3(nn.Module):
                         'Adapted metacognitive weights from error '
                         'evolution patterns'
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("verify_and_reinforce: adapt_weights_from_evolution failed: %s", exc)
+                reinforcement_actions.append(
+                    'Failed to adapt metacognitive weights from error '
+                    'evolution — logged for traceability'
+                )
 
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
@@ -45579,8 +45583,8 @@ class AEONDeltaV3(nn.Module):
                     root_cause_sample = (
                         self.causal_trace.trace_root_cause(_last_id)
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
 
         result = {
             "traceable": len(_untraced) == 0,
