@@ -2218,8 +2218,8 @@ async def resolve_metacognitive_gaps():
                         "resolved" if r["component"] not in _post_gap_comps
                         else "persists"
                     )
-            except Exception:
-                pass  # defensive — still return original resolutions
+            except Exception as _reinforce_err:
+                logging.debug("resolve_metacognitive_gaps: reinforcement skipped: %s", _reinforce_err)
 
         return _make_json_safe({
             "ok": True,
