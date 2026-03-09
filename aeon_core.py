@@ -16764,6 +16764,16 @@ class MetaCognitiveRecursionTrigger:
             # coherence_deficit so that recurring emergence failures
             # boost the coherence trigger signal weight.
             "emergence_deficit": "coherence_deficit",
+            # Cross-module coherence deficit — pairwise coherence
+            # between subsystem outputs fell below threshold, indicating
+            # inter-module disagreement that should boost the coherence
+            # trigger signal weight.
+            "cross_module_coherence_deficit": "coherence_deficit",
+            # Low convergence quality — the convergence rate is below
+            # acceptable thresholds, indicating stalled optimisation.
+            # Maps to diverging so that recurring stagnation boosts the
+            # divergence trigger signal weight.
+            "low_convergence_quality": "diverging",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -17977,6 +17987,16 @@ class CausalErrorEvolutionTracker:
         # that AGI axioms are not met.  Maps to lambda_coherence so
         # training adapts to persistent emergence failures.
         "emergence_deficit": "lambda_coherence",
+        # Cross-module coherence deficit — pairwise coherence between
+        # subsystem outputs fell below threshold.  Maps to lambda_coherence
+        # so training strengthens inter-module agreement when cross-module
+        # coherence is persistently low.
+        "cross_module_coherence_deficit": "lambda_coherence",
+        # Low convergence quality — convergence rate is below acceptable
+        # thresholds, indicating stalled optimisation.  Maps to
+        # lambda_lipschitz so training adapts Lipschitz regularisation
+        # when convergence quality is persistently poor.
+        "low_convergence_quality": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -27230,9 +27250,11 @@ class AEONDeltaV3(nn.Module):
             _warmup_floor = 0.3 * (
                 1.0 - _fwd_calls / _CONVERGENCE_WARMUP_PASSES
             )
-            convergence_quality_scalar = max(
-                convergence_quality_scalar, _warmup_floor,
-            )
+            # During warmup the true convergence rate is unreliable (too
+            # few passes to build history), so clamp quality to the
+            # decaying floor.  This prevents a spurious spike to 1.0 on
+            # early passes and ensures the warmup floor decays smoothly.
+            convergence_quality_scalar = _warmup_floor
         
         # 1a-iii-cr. Blend per-step convergence rate with the
         # ConvergenceMonitor's cross-pass contraction ratio so the
