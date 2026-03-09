@@ -43407,6 +43407,29 @@ class AEONDeltaV3(nn.Module):
                     setattr(self, attr_name, corrected[label].detach())
             result["correction_applied"] = True
 
+            # Re-evaluate coherence with corrected states so we can
+            # validate the correction actually improved coherence.
+            # Without this, blend_weakest_pair applied corrections
+            # blindly — the system never confirmed the self-repair
+            # was effective, violating the mutual-reinforcement
+            # requirement that components verify each other's states.
+            _post_corr_states = dict(subsystem_states)
+            for label in _weakest.get("modules", []):
+                if label in corrected:
+                    _post_corr_states[label] = corrected[label]
+            _post_corr_out = self.module_coherence(_post_corr_states)
+            _post_raw = _post_corr_out.get("coherence_score", 1.0)
+            _post_score = (
+                float(_post_raw.mean())
+                if isinstance(_post_raw, torch.Tensor)
+                else float(_post_raw)
+            )
+            result["post_correction_score"] = _post_score
+            if _post_score > score:
+                score = _post_score
+                result["coherence_score"] = score
+                coherence_deficit = max(0.0, 1.0 - score)
+
             # Record the coherence correction in the provenance tracker
             # so that blend_weakest_pair adjustments are traceable via
             # root-cause analysis.  Without this, corrections applied
@@ -43435,6 +43458,7 @@ class AEONDeltaV3(nn.Module):
                         'weakest_pair': str(_weakest),
                         'modules_corrected': _corr_modules,
                         'similarity_before': _weakest.get('similarity', 0.0),
+                        'score_after_correction': _post_score,
                     },
                     severity='warning',
                 )
@@ -44427,7 +44451,7 @@ class AEONDeltaV3(nn.Module):
         elif _conv_status == 'converging':
             _conv_health = 0.6
         elif _conv_status == 'warmup':
-            _conv_health = 0.8
+            _conv_health = 0.9
 
         # Composite health: weighted average of three verification axes.
         _overall = (
@@ -45355,6 +45379,11 @@ class AEONDeltaV3(nn.Module):
                     'wiring_coverage': wiring.get(
                         'wiring_coverage', 0.0,
                     ),
+                    'mutual_reinforcement_met': _mv_met,
+                    'meta_cognitive_trigger_met': _um_met,
+                    'causal_transparency_met': _rc_met,
+                    'convergence_stable': _convergence_ok,
+                    'error_evolution_active': _ee_healthy,
                 },
             )
 

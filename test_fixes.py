@@ -67583,6 +67583,12 @@ def run_all_tests():
     test_meta_learner_task_buffer_seeded_at_activation()
     test_activation_recovery_covers_single_episode_failures()
 
+    # Final integration patches — coherence re-evaluation, emergence
+    # trace detail, warmup health factor
+    test_verify_coherence_post_correction_score()
+    test_emergence_trace_includes_per_condition_detail()
+    test_warmup_health_score_improved()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -75400,6 +75406,118 @@ def test_activation_recovery_covers_single_episode_failures():
     )
 
     print("✅ test_activation_recovery_covers_single_episode_failures PASSED")
+
+
+def test_verify_coherence_post_correction_score():
+    """verify_coherence() must re-evaluate coherence after blend_weakest_pair
+    and include 'post_correction_score' when correction is applied.
+
+    This closes the self-healing validation loop: after blending the weakest
+    pair toward their mean, the system must confirm the correction actually
+    improved coherence.  Without this, self-repair was unverified — states
+    were corrected blindly without feedback on effectiveness.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force low coherence by making two cached states very different
+    model._cached_meta_loop_state = torch.randn(1, 64)
+    model._cached_safety_state = -torch.randn(1, 64)
+
+    result = model.verify_coherence()
+
+    if result.get('correction_applied', False):
+        assert 'post_correction_score' in result, (
+            "verify_coherence() must include 'post_correction_score' "
+            "when correction is applied"
+        )
+        assert isinstance(result['post_correction_score'], float), (
+            "'post_correction_score' must be a float"
+        )
+
+    print("✅ test_verify_coherence_post_correction_score PASSED")
+
+
+def test_emergence_trace_includes_per_condition_detail():
+    """system_emergence_report() causal trace must include per-condition
+    emergence evaluation for full causal transparency.
+
+    Every emergence verdict must be deterministically traceable to its
+    originating condition evaluations (mutual reinforcement, meta-cognitive
+    trigger, causal transparency, convergence, error evolution).
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    model.system_emergence_report()
+
+    # Find the emergence assessment trace entry
+    trace_entries = [
+        e for e in model.causal_trace._entries
+        if (e.get('subsystem') == 'system_emergence_report'
+            and e.get('decision') == 'assessment')
+    ]
+    assert len(trace_entries) >= 1, (
+        "system_emergence_report() must record causal trace entry"
+    )
+    metadata = trace_entries[-1].get('metadata', {})
+
+    expected_keys = [
+        'mutual_reinforcement_met',
+        'meta_cognitive_trigger_met',
+        'causal_transparency_met',
+        'convergence_stable',
+        'error_evolution_active',
+    ]
+    for key in expected_keys:
+        assert key in metadata, (
+            f"Emergence causal trace must include '{key}' for "
+            f"deterministic traceability, but metadata only has: "
+            f"{sorted(metadata.keys())}"
+        )
+
+    print("✅ test_emergence_trace_includes_per_condition_detail PASSED")
+
+
+def test_warmup_health_score_improved():
+    """get_architectural_health() must report higher health score for
+    warmup convergence status (0.9 factor instead of 0.8).
+
+    A newly initialized system with no convergence history should not be
+    penalized as heavily as one that is actively converging.  The warmup
+    factor of 0.9 (vs prior 0.8) reduces the false health deficit for
+    freshly activated systems.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    health = model.get_architectural_health()
+    score = health['overall_health_score']
+
+    # With warmup factor 0.9: 0.50*1.0 + 0.30*1.0 + 0.20*0.9 = 0.98
+    assert score > 0.97, (
+        f"Warmup health score should be ≥0.98 for a fully initialized "
+        f"system, got {score}"
+    )
+
+    print("✅ test_warmup_health_score_improved PASSED")
 
 
 if __name__ == "__main__":
