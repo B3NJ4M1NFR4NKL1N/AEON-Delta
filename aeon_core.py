@@ -16755,6 +16755,11 @@ class MetaCognitiveRecursionTrigger:
             # between reinforcement cycles, indicating that a config
             # change or module failure introduced new structural issues.
             "architectural_regression": "coherence_deficit",
+            # Emergence deficit — the forward-pass emergence monitor
+            # detected that AGI axioms are not met.  Maps to
+            # coherence_deficit so that recurring emergence failures
+            # boost the coherence trigger signal weight.
+            "emergence_deficit": "coherence_deficit",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -39063,6 +39068,24 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_triggered': _unc_triggered,
         }
 
+        # ===== EMERGENCE AXIOM EVALUATION =====
+        # Compute per-axiom pass/fail booleans *before* recording the
+        # causal trace so that every emergence_assessment entry carries
+        # axiom-level detail.  This enables root-cause tracing: a
+        # consumer can look at any forward-pass trace entry and
+        # determine exactly which AGI requirement(s) blocked emergence,
+        # rather than relying on the opaque cognitive_unity_score alone.
+        _mv_ok = _cu_comps.get('mutual_verification', 0.0) >= (
+            self._EMERGENCE_MV_THRESHOLD
+        )
+        _um_ok = _cu_comps.get('metacognitive_responsiveness', 0.0) >= (
+            self._EMERGENCE_UM_THRESHOLD
+        )
+        _rc_ok = _cu_comps.get('root_cause_traceability', 0.0) >= (
+            self._EMERGENCE_RC_THRESHOLD
+        )
+        _emerged = _mv_ok and _um_ok and _rc_ok
+
         # ===== EMERGENCE CAUSAL TRACE =====
         # Record the emergence summary in the causal trace so every
         # forward pass's emergence assessment is deterministically
@@ -39080,6 +39103,10 @@ class AEONDeltaV3(nn.Module):
                     'deficit': _cu_deficit,
                     'forward_pass': _fwd,
                     'uncertainty_triggered': _unc_triggered,
+                    'axiom_mutual_verification': _mv_ok,
+                    'axiom_metacognitive_responsiveness': _um_ok,
+                    'axiom_root_cause_traceability': _rc_ok,
+                    'emerged': _emerged,
                 },
             )
             # Record lightweight heartbeat entries for the three
@@ -39124,22 +39151,74 @@ class AEONDeltaV3(nn.Module):
         # the forward result, without calling system_emergence_report().
         # Similarly, surface which reinforcement was applied (periodic or
         # uncertainty-triggered) so every corrective action is traceable.
-        _mv_ok = _cu_comps.get('mutual_verification', 0.0) >= (
-            self._EMERGENCE_MV_THRESHOLD
-        )
-        _um_ok = _cu_comps.get('metacognitive_responsiveness', 0.0) >= (
-            self._EMERGENCE_UM_THRESHOLD
-        )
-        _rc_ok = _cu_comps.get('root_cause_traceability', 0.0) >= (
-            self._EMERGENCE_RC_THRESHOLD
-        )
-        result['emergence_status'] = _mv_ok and _um_ok and _rc_ok
+        result['emergence_status'] = _emerged
 
         _applied_reinforcement = result.get(
             'periodic_reinforcement',
             result.get('uncertainty_triggered_reinforcement'),
         )
         result['reinforcement_applied'] = _applied_reinforcement
+
+        # ===== EMERGENCE-DEFICIT → UNCERTAINTY BRIDGE =====
+        # When the system has NOT emerged and no reinforcement was
+        # applied in this pass, feed the emergence deficit into the
+        # uncertainty signal.  This closes the critical gap where the
+        # forward pass detected an emergence deficit but took no
+        # corrective action unless it happened to be a periodic
+        # reinforcement pass or uncertainty was already high from
+        # other sources.  By boosting uncertainty proportionally to
+        # the weakest failing axiom's deficit, the system organically
+        # triggers the existing uncertainty-based meta-cognitive cycle
+        # on the next forward pass — ensuring that ANY internal
+        # conflict (emergence deficit) automatically initiates a
+        # higher-order review cycle (via uncertainty-triggered
+        # reinforcement).
+        if not _emerged and _applied_reinforcement is None:
+            _weakest_axiom_score = min(
+                _cu_comps.get('mutual_verification', 0.0),
+                _cu_comps.get('metacognitive_responsiveness', 0.0),
+                _cu_comps.get('root_cause_traceability', 0.0),
+            )
+            _emergence_unc_boost = min(
+                0.15, max(0.0, 1.0 - _weakest_axiom_score) * 0.2,
+            )
+            if _emergence_unc_boost > 0:
+                result['uncertainty'] = min(
+                    1.0,
+                    result.get('uncertainty', 0.0)
+                    + _emergence_unc_boost,
+                )
+                _unc_sources = result.get('uncertainty_sources', {})
+                _unc_sources[
+                    'emergence_deficit_boost'
+                ] = _emergence_unc_boost
+                result['uncertainty_sources'] = _unc_sources
+
+            # Record the emergence deficit in error evolution so the
+            # metacognitive trigger learns from recurring emergence
+            # failures.  Throttled to every 10th forward pass to avoid
+            # flooding the tracker on untrained models where emergence
+            # is perpetually unmet.
+            if (self.error_evolution is not None
+                    and _fwd % 10 == 0):
+                self.error_evolution.record_episode(
+                    error_class='emergence_deficit',
+                    strategy_used='forward_emergence_monitor',
+                    success=False,
+                    metadata={
+                        'forward_pass': _fwd,
+                        'mutual_verification': _cu_comps.get(
+                            'mutual_verification', 0.0,
+                        ),
+                        'metacognitive_responsiveness': _cu_comps.get(
+                            'metacognitive_responsiveness', 0.0,
+                        ),
+                        'root_cause_traceability': _cu_comps.get(
+                            'root_cause_traceability', 0.0,
+                        ),
+                        'weakest_axiom_score': _weakest_axiom_score,
+                    },
+                )
 
         return result
     

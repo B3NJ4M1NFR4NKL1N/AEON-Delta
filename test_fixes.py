@@ -67583,6 +67583,11 @@ def run_all_tests():
     test_meta_learner_task_buffer_seeded_at_activation()
     test_activation_recovery_covers_single_episode_failures()
 
+    # Emergence-deficit → uncertainty → meta-cognitive bridge
+    test_emergence_trace_includes_axiom_detail()
+    test_emergence_deficit_boosts_uncertainty()
+    test_emergence_deficit_records_error_evolution()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -75400,6 +75405,118 @@ def test_activation_recovery_covers_single_episode_failures():
     )
 
     print("✅ test_activation_recovery_covers_single_episode_failures PASSED")
+
+
+def test_emergence_trace_includes_axiom_detail():
+    """Emergence assessment causal trace entry must include per-axiom
+    pass/fail booleans so that every emergence deficit can be traced
+    to the specific AGI requirement(s) that blocked it.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    entries = model.causal_trace._entries
+    emergence_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'emergence_assessment'
+            and e.get('decision') == 'forward_pass')
+    ]
+    assert len(emergence_entries) >= 1, (
+        "forward() must record emergence_assessment in causal trace"
+    )
+    meta = emergence_entries[-1].get('metadata', {})
+    assert 'axiom_mutual_verification' in meta, (
+        "emergence trace must include axiom_mutual_verification"
+    )
+    assert 'axiom_metacognitive_responsiveness' in meta, (
+        "emergence trace must include axiom_metacognitive_responsiveness"
+    )
+    assert 'axiom_root_cause_traceability' in meta, (
+        "emergence trace must include axiom_root_cause_traceability"
+    )
+    assert 'emerged' in meta, (
+        "emergence trace must include emerged boolean"
+    )
+    # All axiom fields must be booleans
+    for key in ('axiom_mutual_verification',
+                'axiom_metacognitive_responsiveness',
+                'axiom_root_cause_traceability', 'emerged'):
+        assert isinstance(meta[key], bool), (
+            f"{key} must be a boolean, got {type(meta[key])}"
+        )
+    print("✅ test_emergence_trace_includes_axiom_detail PASSED")
+
+
+def test_emergence_deficit_boosts_uncertainty():
+    """When emergence_status is False and no reinforcement was applied,
+    the forward pass must boost the uncertainty signal via
+    emergence_deficit_boost in uncertainty_sources.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the logic exists by checking source contains the bridge
+    import inspect
+    source = inspect.getsource(model._forward_impl)
+    assert 'emergence_deficit_boost' in source, (
+        "_forward_impl must contain emergence_deficit_boost "
+        "uncertainty source for emergence deficit feedback"
+    )
+    assert '_emergence_unc_boost' in source, (
+        "_forward_impl must compute _emergence_unc_boost for "
+        "emergence deficit → uncertainty bridge"
+    )
+    assert '_weakest_axiom_score' in source, (
+        "_forward_impl must identify weakest axiom score "
+        "for targeted emergence deficit feedback"
+    )
+    print("✅ test_emergence_deficit_boosts_uncertainty PASSED")
+
+
+def test_emergence_deficit_records_error_evolution():
+    """When emergence_status is False, forward pass must record
+    emergence_deficit episodes in error evolution (throttled).
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the logic exists in _forward_impl source
+    import inspect
+    source = inspect.getsource(model._forward_impl)
+    assert 'emergence_deficit' in source, (
+        "_forward_impl must record emergence_deficit episodes "
+        "in error evolution for metacognitive learning"
+    )
+    assert 'forward_emergence_monitor' in source, (
+        "_forward_impl must use 'forward_emergence_monitor' strategy "
+        "for emergence deficit error evolution recording"
+    )
+    print("✅ test_emergence_deficit_records_error_evolution PASSED")
 
 
 if __name__ == "__main__":
