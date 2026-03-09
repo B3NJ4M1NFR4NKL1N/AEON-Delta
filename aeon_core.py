@@ -45744,20 +45744,62 @@ class AEONDeltaV3(nn.Module):
         """Run a lightweight post-init cognitive activation probe.
 
         Transitions the system from a "connected architecture" to a
-        "functional cognitive organism" by performing three activation
-        steps immediately after ``__init__`` completes:
+        "functional cognitive organism" by performing thirteen
+        activation steps immediately after ``__init__`` completes:
 
-        1. **Seed error evolution baseline** — pre-populate the error
-           evolution tracker with known training error classes so the
-           training→inference bridge is primed from initialization.
-        2. **Prime feedback bus** — populate cached signal values so
-           ``_build_feedback_extra_signals()`` returns non-empty data
-           on the first forward pass, closing the feedback-bus signal
-           dropout gap.
-        3. **Record initial provenance** — ensure the provenance
-           dependency DAG includes all ``_PIPELINE_DEPENDENCIES``
-           edges so ``trace_root_cause()`` is functional before the
-           first forward pass.
+        1.  **Seed error evolution baseline** — pre-populate the error
+            evolution tracker with known training error classes so the
+            training→inference bridge is primed from initialization.
+        2.  **Prime feedback bus cached signals** — populate cached
+            signal values so ``_build_feedback_extra_signals()``
+            returns non-empty data on the first forward pass, closing
+            the feedback-bus signal dropout gap.
+        3.  **Register provenance dependencies** — ensure the
+            provenance dependency DAG includes all
+            ``_PIPELINE_DEPENDENCIES`` edges so
+            ``trace_root_cause()`` is functional before the first
+            forward pass.
+        4.  **Adapt metacognitive trigger weights** — calibrate the
+            metacognitive recursion trigger from seeded error
+            evolution episodes so the trigger is not inert at init.
+        5.  **Seed coherence verifier baseline states** — populate
+            cached subsystem states (meta_loop, safety, integration)
+            with deterministic non-zero tensors so
+            ``verify_coherence()`` returns a meaningful baseline
+            score.  Includes 5b: seed topology state and complexity
+            gates for catastrophe detection / complexity estimator.
+        6.  **Prime feedback bus signals** — set critical feedback bus
+            signals to non-default baseline values and mark all
+            module-backed signals as init-evaluated (6b) so
+            ``verify_cognitive_unity()`` does not report signal
+            dropout.
+        7.  **UPB-provenance DAG alignment** — register
+            ``UncertaintyPropagationBus`` critical edges in the
+            provenance dependency DAG so uncertainty cascades and
+            root-cause attribution operate on the same graph.
+        8.  **Init-time mutual reinforcement** — run
+            ``verify_and_reinforce()`` to close the mutual
+            reinforcement loop at initialization.  Includes 8b:
+            record activation-recovery episodes for init-generated
+            error classes, and 8c: seed a nominal provenance delta
+            for ``verify_and_reinforce``.
+        9.  **Coherence registry seeding** — pre-register all
+            initialized subsystems in the
+            ``SubsystemCoherenceRegistry`` expected set.
+        10. **Register verify_and_reinforce** — add
+            ``verify_and_reinforce`` as an expected subsystem in the
+            coherence registry.
+        11. **Provenance delta seeding** — seed baseline provenance
+            deltas for all initialized pipeline modules so
+            ``get_trace_completeness_ratio()`` returns a meaningful
+            value before the first forward pass.
+        12. **Causal trace seeding** — record baseline causal trace
+            entries for ``error_evolution`` and ``feedback_bus`` so
+            ``verify_causal_chain()`` can find these subsystems.
+        13. **Training→inference auto-sync** — attempt to import
+            training state (memory snapshots, error patterns) via
+            ``sync_from_training()`` so training-discovered knowledge
+            is available from the first forward pass.
 
         This method is called automatically at the end of
         ``__init__``.  It is safe to call multiple times (idempotent).

@@ -482,7 +482,7 @@ The main model class (`AEONDeltaV3`) exposes a comprehensive public API for self
 - **`get_metacognitive_state()`**: Aggregates metacognitive trigger state, error patterns, convergence history, and trigger sensitivity into a diagnostic snapshot
 - **`bridge_training_loss_to_error_evolution(loss_dict)`**: Bridges training loss signals to the error evolution tracker, closing the training→inference feedback loop
 - **`save_state(save_dir)` / `load_state(save_dir)`**: Full model state persistence — weights, config, memory subsystems, metrics, VQ stats with shape migration for incompatible tensors
-- **`_cognitive_activation_probe()`**: 10-step initialization probe that seeds error evolution baselines, primes feedback bus signals, registers provenance dependencies, and performs init-time verify_and_reinforce
+- **`_cognitive_activation_probe()`**: 13-step initialization probe that seeds error evolution baselines, primes feedback bus signals, registers provenance dependencies, adapts metacognitive trigger weights, seeds coherence verifier baseline states, aligns UPB-provenance DAGs, performs init-time verify_and_reinforce, seeds coherence registry and provenance deltas, records causal trace baselines, and auto-syncs training state
 
 Enables end-to-end self-verification, introspection, and autonomous architectural health monitoring.
 
