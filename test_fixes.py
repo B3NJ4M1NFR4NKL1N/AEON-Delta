@@ -67550,6 +67550,14 @@ def run_all_tests():
     test_emergence_causal_trace_in_forward()
     test_emergence_deficit_seeded_at_activation()
 
+    # Final integration — config-driven emergence, auto training sync,
+    # corrective causal chain endpoint
+    test_emergence_thresholds_from_config()
+    test_training_sync_attempted_at_activation()
+    test_verify_causal_chain_endpoint_corrective_action()
+    test_uncertainty_threshold_configurable()
+    test_config_has_emergence_parameters()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -74876,7 +74884,8 @@ def test_uncertainty_triggered_reinforcement():
     assert 'uncertainty_triggered_reinforcement' in src, (
         "_forward_impl must include uncertainty-triggered reinforcement block"
     )
-    assert '>= 0.7' in src or '_unc_val >= 0.7' in src, (
+    assert ('>= 0.7' in src or '_unc_val >= 0.7' in src
+            or '_UNCERTAINTY_REINFORCE_THRESHOLD' in src), (
         "_forward_impl must check uncertainty threshold for triggered "
         "reinforcement"
     )
@@ -75023,6 +75032,140 @@ def test_emergence_deficit_seeded_at_activation():
     )
 
     print("✅ test_emergence_deficit_seeded_at_activation PASSED")
+
+
+def test_emergence_thresholds_from_config():
+    """Emergence thresholds in AEONDeltaV3 should be read from AEONConfig
+    when provided, falling back to class-level defaults otherwise."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Default config — thresholds should match class defaults
+    config_default = AEONConfig()
+    model_default = AEONDeltaV3(config_default)
+    assert model_default._EMERGENCE_MV_THRESHOLD == 0.9
+    assert model_default._EMERGENCE_UM_THRESHOLD == 1.0
+    assert model_default._EMERGENCE_RC_THRESHOLD == 0.9
+    assert model_default._REINFORCE_INTERVAL == 50
+    assert model_default._UNCERTAINTY_REINFORCE_THRESHOLD == 0.7
+
+    # Custom config — thresholds should reflect config values
+    config_custom = AEONConfig(
+        emergence_mv_threshold=0.8,
+        emergence_um_threshold=0.95,
+        emergence_rc_threshold=0.85,
+        reinforce_interval=25,
+        uncertainty_reinforcement_threshold=0.6,
+    )
+    model_custom = AEONDeltaV3(config_custom)
+    assert model_custom._EMERGENCE_MV_THRESHOLD == 0.8, (
+        "emergence_mv_threshold should be read from config"
+    )
+    assert model_custom._EMERGENCE_UM_THRESHOLD == 0.95, (
+        "emergence_um_threshold should be read from config"
+    )
+    assert model_custom._EMERGENCE_RC_THRESHOLD == 0.85, (
+        "emergence_rc_threshold should be read from config"
+    )
+    assert model_custom._REINFORCE_INTERVAL == 25, (
+        "reinforce_interval should be read from config"
+    )
+    assert model_custom._UNCERTAINTY_REINFORCE_THRESHOLD == 0.6, (
+        "uncertainty_reinforcement_threshold should be read from config"
+    )
+
+    print("✅ test_emergence_thresholds_from_config PASSED")
+
+
+def test_training_sync_attempted_at_activation():
+    """_cognitive_activation_probe should auto-trigger sync_from_training
+    and set the _training_sync_attempted flag."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    assert getattr(model, '_training_sync_attempted', False), (
+        "_training_sync_attempted must be True after cognitive activation "
+        "probe completes"
+    )
+
+    print("✅ test_training_sync_attempted_at_activation PASSED")
+
+
+def test_verify_causal_chain_endpoint_corrective_action():
+    """GET /api/verify_causal_chain should include corrective_action_applied
+    field and trigger correction when causal chain is incomplete."""
+    import inspect
+    from aeon_server import app
+
+    # Find the verify_causal_chain endpoint
+    _found = False
+    for route in app.routes:
+        if hasattr(route, 'path') and route.path == '/api/verify_causal_chain':
+            _found = True
+            break
+    assert _found, "/api/verify_causal_chain endpoint must exist"
+
+    # Verify the endpoint source includes corrective action logic
+    import aeon_server
+    server_src = inspect.getsource(aeon_server)
+    assert 'corrective_action_applied' in server_src, (
+        "verify_causal_chain endpoint must include corrective_action_applied"
+    )
+    assert 'verify_and_reinforce' in server_src, (
+        "verify_causal_chain endpoint must call verify_and_reinforce "
+        "when causal chain is incomplete"
+    )
+
+    print("✅ test_verify_causal_chain_endpoint_corrective_action PASSED")
+
+
+def test_uncertainty_threshold_configurable():
+    """_forward_impl should use _UNCERTAINTY_REINFORCE_THRESHOLD
+    (config-driven) instead of hardcoded 0.7."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    assert '_UNCERTAINTY_REINFORCE_THRESHOLD' in src, (
+        "_forward_impl must use _UNCERTAINTY_REINFORCE_THRESHOLD for "
+        "uncertainty-triggered reinforcement threshold"
+    )
+
+    print("✅ test_uncertainty_threshold_configurable PASSED")
+
+
+def test_config_has_emergence_parameters():
+    """AEONConfig must expose emergence parameters for discoverability."""
+    from aeon_core import AEONConfig
+    import dataclasses
+
+    config = AEONConfig()
+    field_names = {f.name for f in dataclasses.fields(config)}
+
+    expected_fields = {
+        'emergence_mv_threshold',
+        'emergence_um_threshold',
+        'emergence_rc_threshold',
+        'reinforce_interval',
+        'uncertainty_reinforcement_threshold',
+    }
+    for fname in expected_fields:
+        assert fname in field_names, (
+            f"AEONConfig must have field '{fname}'"
+        )
+
+    # Verify defaults match class-level constants
+    assert config.emergence_mv_threshold == 0.9
+    assert config.emergence_um_threshold == 1.0
+    assert config.emergence_rc_threshold == 0.9
+    assert config.reinforce_interval == 50
+    assert config.uncertainty_reinforcement_threshold == 0.7
+
+    print("✅ test_config_has_emergence_parameters PASSED")
 
 
 if __name__ == "__main__":
