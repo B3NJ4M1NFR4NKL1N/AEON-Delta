@@ -6964,8 +6964,12 @@ class CausalProvenanceTracker:
                             context=f"anomaly:{module_name}",
                             success=False,
                         )
-                    except Exception:
-                        pass  # Non-critical notification
+                    except Exception as _rm_err:
+                        logger.warning(
+                            "Recovery manager notification failed for "
+                            "provenance delta anomaly on '%s': %s",
+                            module_name, _rm_err,
+                        )
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -17499,8 +17503,11 @@ class CausalErrorEvolutionTracker:
                         mod for mod, c in _contribs.items()
                         if c > _mean
                     ]
-            except Exception:
-                pass  # Non-critical: fall through to empty antecedents
+            except Exception as _attr_err:
+                logger.debug(
+                    "Causal antecedent auto-extraction failed: %s",
+                    _attr_err,
+                )
         episode = {
             "strategy": strategy_used,
             "success": success,
@@ -25266,8 +25273,11 @@ class AEONDeltaV3(nn.Module):
                 self.metacognitive_trigger.adapt_weights_from_feedback_signals(
                     extra,
                 )
-            except Exception:
-                pass  # defensive — never break the forward pass
+            except Exception as _fb_err:
+                logger.warning(
+                    "Feedback bus → metacognitive trigger weight "
+                    "adaptation failed: %s", _fb_err,
+                )
 
         return extra
 
@@ -29750,8 +29760,10 @@ class AEONDeltaV3(nn.Module):
         if hasattr(self, 'memory_manager') and self.memory_manager is not None:
             try:
                 self.memory_manager.decay_stale_entries()
-            except Exception:
-                pass  # non-fatal; detailed logging in decay_stale_entries
+            except Exception as _decay_err:
+                logger.warning(
+                    "Memory stale-entry decay failed: %s", _decay_err,
+                )
         memory_retrieved = None
         _memory_empty_count = 0
         _memory_healthy = True
@@ -37727,8 +37739,11 @@ class AEONDeltaV3(nn.Module):
                             "consistency": _sr_sum_float(_sr.get("consistency")),
                         },
                     )
-        except Exception:
-            pass  # Non-critical: outputs may not be constructed yet
+        except Exception as _ct_err:
+            logger.debug(
+                "Causal trace recording for reasoning_core outputs "
+                "failed: %s", _ct_err,
+            )
 
         return z_out, outputs
     
@@ -45551,8 +45566,11 @@ class AEONDeltaV3(nn.Module):
                         _patch['verified_status'] = 'persists'
                     else:
                         _patch['verified_status'] = 'resolved'
-            except Exception:
-                pass  # defensive — don't break report on re-verify failure
+            except Exception as _rv_err:
+                logger.warning(
+                    "Post-reinforcement re-verification failed in "
+                    "system_emergence_report: %s", _rv_err,
+                )
 
         return {
             "system_unified": unity.get('unified', False),
@@ -48230,8 +48248,11 @@ class AEONTrainer:
                             },
                             severity="info",
                         )
-                    except Exception:
-                        pass  # Non-fatal
+                    except Exception as _tb_err:
+                        logger.debug(
+                            "Training bridge causal trace recording "
+                            "failed: %s", _tb_err,
+                        )
 
         # --- Inference → Training ---
         # Adapt gradient clipping from inference convergence conflicts
@@ -48291,8 +48312,11 @@ class AEONTrainer:
                         _unc_summary.get('aggregate_uncertainty', 0.0),
                     )
                     result['adapted_from_inference'] += 1
-            except (AttributeError, TypeError):
-                pass  # Non-fatal
+            except (AttributeError, TypeError) as _ut_err:
+                logger.debug(
+                    "Uncertainty tracker summary in epoch bridge "
+                    "failed: %s", _ut_err,
+                )
 
         if (result['bridged_to_inference'] > 0
                 or result['adapted_from_inference'] > 0):
