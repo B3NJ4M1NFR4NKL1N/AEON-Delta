@@ -942,12 +942,12 @@ async def verify_causal_chain():
         # diagnostic endpoint observed architectural weaknesses but
         # never fed them into the self-correction loop.
         corrective_action = None
-        if not result.get('traceable', True):
+        if not result.get('traceable', False):
             try:
                 corrective_action = APP.model.verify_and_reinforce()
             except Exception as _corr_err:
-                logging.debug(
-                    "verify_causal_chain corrective action skipped: %s",
+                logging.warning(
+                    "verify_causal_chain corrective action failed: %s",
                     _corr_err,
                 )
         return _make_json_safe({
