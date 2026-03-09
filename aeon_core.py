@@ -23546,6 +23546,7 @@ class AEONDeltaV3(nn.Module):
         # prediction-error pressure into the next meta-loop trajectory.
         self._cached_surprise: float = 0.0
         self._cached_coherence_deficit: float = 0.0
+        self._cached_cross_module_coherence: float = 1.0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
         # Deception suppressor pressure from the most recent forward pass.
@@ -24827,6 +24828,20 @@ class AEONDeltaV3(nn.Module):
         if _cud > 0.1:
             extra["cognitive_unity_deficit"] = max(
                 0.0, min(1.0, _cud),
+            )
+        # Cross-module coherence pressure — carries the inter-module
+        # agreement score from the previous pass into the feedback bus.
+        # When subsystem representations diverge significantly (low
+        # coherence), this signal conditions the next pass's meta-loop
+        # to deepen reasoning, promoting representational alignment
+        # across the architecture.  This closes the feedback loop where
+        # cross-module coherence was computed by the UCC and included
+        # in the cognitive_unity_components but never routed through
+        # the feedback bus for cross-pass conditioning.
+        _cmc = getattr(self, '_cached_cross_module_coherence', 1.0)
+        if _cmc < 0.8:
+            extra["cross_module_coherence_pressure"] = max(
+                0.0, min(1.0, 1.0 - _cmc),
             )
         # Reinforcement weakness — when verify_and_reinforce() detected
         # architectural weaknesses (low coherence, wiring gaps, or axiom
@@ -27309,6 +27324,35 @@ class AEONDeltaV3(nn.Module):
             or audit_recommends_deeper
             or is_diverging
         )
+
+        # 1a-iii-conv-fb. Convergence quality feedback loop — when the
+        # meta-loop's convergence quality is critically low, boost
+        # uncertainty and record in error evolution so the metacognitive
+        # trigger's adaptive weighting learns from persistent convergence
+        # failures.  Previously, _needs_deeper was computed and used only
+        # for adaptive safety threshold adjustment (line ~27388), leaving
+        # low convergence quality without uncertainty escalation or error
+        # history.  This patch closes the loop: low convergence quality →
+        # uncertainty boost → deeper reasoning on same pass → improved
+        # convergence on next iteration.
+        _CONVERGENCE_QUALITY_THRESHOLD = 0.5
+        if convergence_quality_scalar < _CONVERGENCE_QUALITY_THRESHOLD:
+            _conv_deficit = 1.0 - convergence_quality_scalar
+            _conv_unc_boost = min(0.15, _conv_deficit * 0.25)
+            uncertainty = min(1.0, uncertainty + _conv_unc_boost)
+            uncertainty_sources["low_convergence_quality"] = _conv_unc_boost
+            high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='low_convergence_quality',
+                    strategy_used='convergence_escalation',
+                    success=convergence_quality_scalar >= 0.3,
+                    metadata={
+                        'convergence_quality': convergence_quality_scalar,
+                        'is_diverging': is_diverging,
+                        'uncertainty_boost': _conv_unc_boost,
+                    },
+                )
 
         # 1a-iii-arb. Unified convergence arbitration — reconcile verdicts
         # from ProvablyConvergentMetaLoop, ConvergenceMonitor, and
@@ -37340,6 +37384,36 @@ class AEONDeltaV3(nn.Module):
                 ),
             )
 
+        # 8i-oq-esc. Output reliability uncertainty escalation — when
+        # the composite reliability score is critically low, the soft
+        # gating above attenuates z_out but does NOT boost uncertainty.
+        # This leaves the metacognitive trigger unaware of severe output
+        # quality degradation, preventing deeper reasoning that could
+        # improve reliability.  The patch below closes this feedback
+        # loop: critically low reliability → uncertainty boost → meta-
+        # cognitive trigger → deeper reasoning → improved reliability.
+        # The threshold (0.3) is stricter than the gate threshold to
+        # avoid double-triggering on mildly unreliable outputs that the
+        # soft gating already handles adequately.
+        _OUTPUT_RELIABILITY_ESCALATION_THRESHOLD = 0.3
+        if _current_output_reliability < _OUTPUT_RELIABILITY_ESCALATION_THRESHOLD:
+            _rel_deficit = 1.0 - _current_output_reliability
+            _rel_unc_boost = min(0.2, _rel_deficit * 0.25)
+            uncertainty = min(1.0, uncertainty + _rel_unc_boost)
+            uncertainty_sources["low_output_reliability"] = _rel_unc_boost
+            high_uncertainty = uncertainty > 0.5
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='low_output_reliability',
+                    strategy_used='reliability_escalation',
+                    success=False,
+                    metadata={
+                        'composite_reliability': _current_output_reliability,
+                        'weakest_factor': _weakest_factor,
+                        'uncertainty_boost': _rel_unc_boost,
+                    },
+                )
+
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
         # analysis, provenance dampening) is complete, refresh the cached
@@ -38659,6 +38733,51 @@ class AEONDeltaV3(nn.Module):
             'convergence_quality': _cus_convergence,
             'cross_module_coherence': _cus_coherence,
         }
+
+        # ===== CROSS-MODULE COHERENCE FEEDBACK LOOP =====
+        # When cross-module coherence is low, the UCC detected severe
+        # inter-module disagreement.  Previously this score was computed
+        # and stored in the components dict but never acted upon — no
+        # uncertainty escalation, no error evolution record, and no
+        # feedback bus signal.  This left the system blind to progressive
+        # module divergence: coherence could degrade to near-zero without
+        # triggering any corrective action.  The patch below closes this
+        # feedback loop by (a) boosting uncertainty proportionally to the
+        # coherence deficit, (b) recording the episode in error evolution
+        # so that metacognitive trigger sensitivity adapts over time, and
+        # (c) caching the deficit for the feedback bus so the next pass's
+        # meta-loop conditions on inter-module agreement quality.
+        _CROSS_COHERENCE_THRESHOLD = 0.5
+        if _cus_coherence < _CROSS_COHERENCE_THRESHOLD:
+            _coh_deficit = 1.0 - _cus_coherence
+            _coh_unc_boost = min(0.2, _coh_deficit * 0.3)
+            uncertainty_sources["cross_module_coherence_deficit"] = _coh_unc_boost
+            uncertainty = min(1.0, outputs.get('uncertainty', 0.0) + _coh_unc_boost)
+            outputs['uncertainty'] = uncertainty
+            outputs['uncertainty_sources'] = uncertainty_sources
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='cross_module_coherence_deficit',
+                    strategy_used='in_pass_coherence_escalation',
+                    success=_cus_coherence >= 0.3,
+                    metadata={
+                        'cross_module_coherence': _cus_coherence,
+                        'coherence_deficit': _coh_deficit,
+                        'uncertainty_boost': _coh_unc_boost,
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cross_module_coherence", "deficit_detected",
+                    metadata={
+                        'score': _cus_coherence,
+                        'deficit': _coh_deficit,
+                    },
+                )
+        # Cache for the feedback bus so the next pass's meta-loop can
+        # condition on cross-module agreement quality.
+        self._cached_cross_module_coherence = _cus_coherence
+
         # Surface coherence_deficit at top level so downstream consumers
         # can access cross-module coherence health directly.
         result['coherence_deficit'] = self._cached_coherence_deficit
@@ -39179,20 +39298,19 @@ class AEONDeltaV3(nn.Module):
         result['reinforcement_applied'] = _applied_reinforcement
 
         # ===== EMERGENCE-DEFICIT → UNCERTAINTY BRIDGE =====
-        # When the system has NOT emerged and no reinforcement was
-        # applied in this pass, feed the emergence deficit into the
-        # uncertainty signal.  This closes the critical gap where the
-        # forward pass detected an emergence deficit but took no
-        # corrective action unless it happened to be a periodic
-        # reinforcement pass or uncertainty was already high from
-        # other sources.  By boosting uncertainty proportionally to
-        # the weakest failing axiom's deficit, the system organically
-        # triggers the existing uncertainty-based meta-cognitive cycle
-        # on the next forward pass — ensuring that ANY internal
-        # conflict (emergence deficit) automatically initiates a
-        # higher-order review cycle (via uncertainty-triggered
-        # reinforcement).
-        if not _emerged and _applied_reinforcement is None:
+        # When the system has NOT emerged, feed the emergence deficit
+        # into the uncertainty signal regardless of whether reinforcement
+        # was applied.  Previously this block only fired when no
+        # reinforcement was applied (_applied_reinforcement is None),
+        # leaving a gap where reinforcement that failed to achieve
+        # emergence produced no further corrective pressure.  By
+        # removing the reinforcement guard, emergence failure ALWAYS
+        # escalates uncertainty, ensuring that ANY internal conflict
+        # automatically initiates a higher-order review cycle.  When
+        # reinforcement WAS applied but emergence still failed, the
+        # boost is halved to avoid double-escalation with the
+        # reinforcement's own corrective signals.
+        if not _emerged:
             _weakest_axiom_score = min(
                 _cu_comps.get('mutual_verification', 0.0),
                 _cu_comps.get('metacognitive_responsiveness', 0.0),
@@ -39201,6 +39319,11 @@ class AEONDeltaV3(nn.Module):
             _emergence_unc_boost = min(
                 0.15, max(0.0, 1.0 - _weakest_axiom_score) * 0.2,
             )
+            # Halve the boost when reinforcement was already applied to
+            # avoid double-escalation with the reinforcement's own
+            # corrective signals.
+            if _applied_reinforcement is not None:
+                _emergence_unc_boost *= 0.5
             if _emergence_unc_boost > 0:
                 result['uncertainty'] = min(
                     1.0,
@@ -39236,6 +39359,7 @@ class AEONDeltaV3(nn.Module):
                             'root_cause_traceability', 0.0,
                         ),
                         'weakest_axiom_score': _weakest_axiom_score,
+                        'reinforcement_applied': _applied_reinforcement is not None,
                     },
                 )
 
