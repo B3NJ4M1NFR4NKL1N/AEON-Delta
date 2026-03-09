@@ -2162,6 +2162,11 @@ async def resolve_metacognitive_gaps():
     configuration change or operational action, enabling automated or
     semi-automated self-repair.  Gaps are ranked by severity so that
     critical issues (``None``-valued subsystems) surface first.
+
+    When gaps exist, ``verify_and_reinforce()`` is called to actively
+    apply corrective feedback (boosting metacognitive weights, recording
+    error evolution episodes), and the diagnostic is re-run to produce
+    a before/after diff showing which gaps were resolved.
     """
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
@@ -2189,13 +2194,46 @@ async def resolve_metacognitive_gaps():
             })
         # Sort critical first
         resolutions.sort(key=lambda r: 0 if r["severity"] == "critical" else 1)
-        return {
+
+        # --- Active remediation via verify_and_reinforce() ---
+        # When gaps exist, apply corrective feedback and re-diagnose
+        # to produce a before/after diff.  This closes the gap where
+        # the endpoint returned recommendations but never applied them.
+        reinforcement_result = None
+        resolved_gaps = []
+        if resolutions:
+            try:
+                reinforcement_result = APP.model.verify_and_reinforce()
+                _post_diag = APP.model.self_diagnostic()
+                _post_gap_comps = {
+                    g.get("component", "")
+                    for g in _post_diag.get("gaps", [])
+                }
+                _pre_gap_comps = {
+                    r["component"] for r in resolutions
+                }
+                resolved_gaps = sorted(_pre_gap_comps - _post_gap_comps)
+                for r in resolutions:
+                    r["post_status"] = (
+                        "resolved" if r["component"] not in _post_gap_comps
+                        else "persists"
+                    )
+            except Exception as _reinforce_err:
+                logging.debug("resolve_metacognitive_gaps: reinforcement skipped: %s", _reinforce_err)
+
+        return _make_json_safe({
             "ok": True,
             "status": diagnostic.get("status"),
             "total_gaps": len(resolutions),
             "critical_gaps": sum(1 for r in resolutions if r["severity"] == "critical"),
             "resolutions": resolutions,
-        }
+            "reinforcement_applied": reinforcement_result is not None,
+            "reinforcement_actions": (
+                reinforcement_result.get("reinforcement_actions", [])
+                if reinforcement_result else []
+            ),
+            "resolved_gaps": resolved_gaps,
+        })
     except Exception as e:
         logging.error(f"Gap resolution endpoint error: {e}")
         raise HTTPException(500, str(e))
