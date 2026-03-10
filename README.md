@@ -467,28 +467,67 @@ Provides trust-gated memory routing, internal honesty enforcement, and full cogn
 
 ---
 
-### **36. AEONDeltaV3 — Self-Verification & Introspection API**
-The main model class (`AEONDeltaV3`) exposes a comprehensive public API for self-verification, diagnostics, and introspection:
+### **36. Social Cognition & Code-Intent Verification**
+Perspective-taking and program-safety modules expanding the cognitive architecture's social reasoning and code verification capabilities:
+- **`SocialCognitionModule`**: Lightweight perspective-taking and agent-intent modelling module providing a differentiable theory-of-mind pathway — ingests the converged cognitive state and an optional external agent embedding to produce perspective alignment (scalar ∈ [0, 1]), an intent embedding summarising inferred agent goals, and a social pressure feedback signal for the CognitiveFeedbackBus quantifying social-context uncertainty
+- **`CodeExecutionSandbox`**: Sandboxed code-intent verification module providing a differentiable program-verification gate — evaluates whether a proposed code-like symbolic representation is internally consistent and safe, producing execution confidence (∈ [0, 1]), a gated verified embedding attenuated by confidence, and a sandbox pressure feedback signal for code-safety uncertainty routing to the CognitiveFeedbackBus
+
+Enables social reasoning about external agent beliefs/goals and safe verification of code-like symbolic representations before downstream processing.
+
+---
+
+### **37. AEONDeltaV3 — Self-Verification & Introspection API**
+The main model class (`AEONDeltaV3`) exposes a comprehensive public API for inference, self-verification, diagnostics, and introspection:
+
+**Core Inference & Training:**
+- **`forward(input_ids, attention_mask, ...)`**: Full cognitive forward pass through encoder → reasoning core → decoder with all subsystem integration, feedback loops, and verification gates
+- **`compute_loss(outputs, targets, attention_mask)`**: Comprehensive multi-component loss computation — language modeling (cross-entropy), VQ commitment, self-consistency, Lipschitz regularization, safety, sparsity, coherence, causal DAG acyclicity, hierarchical VAE KL, and adaptive ponder cost
+- **`generate(prompt, max_length, temperature, top_k, sample)`**: High-level autoregressive generation API with graceful degradation — returns generated text, status (`ok`/`degraded`/`error`), and diagnostic reason
+- **`reasoning_core(z_in, attention_mask, memory_retrieval, planning, fast)`**: Public reasoning pipeline entry point — processes encoded latents through meta-loop, factors, safety, memory, planning, and all cognitive subsystems
+
+**Self-Verification & Diagnostics:**
 - **`self_diagnostic()`**: Checks wiring of all modules, detects missing components, architectural gaps, training bridge status, and error evolution health — warm-up-aware (suppresses cold-start gaps during first 5 forward passes)
+- **`apply_diagnostic_remediation()`**: Auto-remediates gaps detected by `self_diagnostic()` — initializes critical missing pure-logic components (no learnable parameters) that were enabled in config but failed to initialize
 - **`verify_cognitive_unity()`**: Verifies full cognitive pipeline against three AGI requirements: unified reasoning coherence, feedback bus signal coverage, and metacognitive recursion alignment
 - **`verify_pipeline_wiring()`**: Verifies data-flow dependencies between modules using an internal DAG (`_PIPELINE_DEPENDENCIES`), checking provenance edge coverage with cycle-exempt exclusions
 - **`verify_and_reinforce()`**: Orchestrates a mutual-reinforcement cycle — runs coherence, metacognition, provenance, and wiring checks, then feeds deficit signals back into error evolution and metacognitive trigger weights
+- **`verify_causal_chain()`**: Checks causal trace entries across architectural subsystems and verifies causal attribution chain completeness
+- **`verify_coherence()`**: Checks runtime behavior coherence across the pipeline via cosine similarity of cached subsystem states
+
+**Health Reporting:**
 - **`get_architectural_health()`**: Synthesized health report combining cognitive unity, pipeline wiring, convergence monitor status, and self-diagnostic results into a unified score
 - **`architectural_coherence_report()`**: Full architectural coherence report: health + wiring + error evolution + self-diagnostic findings with gap recommendations
 - **`system_emergence_report()`**: Comprehensive system synthesis producing four deliverables: Integration Map, Critical Patches, Activation Sequence, and System Emergence Status
-- **`verify_causal_chain()`**: Checks causal trace entries across architectural subsystems and verifies causal attribution chain completeness
-- **`verify_coherence()`**: Checks runtime behavior coherence across the pipeline via cosine similarity of cached subsystem states
+- **`get_cognitive_activation_report()`**: Single-call entry point for the complete cognitive activation report — wraps `system_emergence_report()` with `ok` flag and `convergence_health` detail for API consumers
+
+**Introspection & Metacognition:**
 - **`get_module_registry()`**: Unified introspection of all initialized modules with attributes, parameter counts, and device placement
 - **`get_metacognitive_state()`**: Aggregates metacognitive trigger state, error patterns, convergence history, and trigger sensitivity into a diagnostic snapshot
+- **`count_parameters()` / `count_trainable_parameters()`**: Total and trainable parameter counts
+- **`get_memory_stats()`**: Device memory usage statistics
+- **`get_audit_summary()` / `get_recent_decisions(n)`**: Decision audit log summary and recent entries
+- **`print_architecture_summary()`**: Prints and returns a formatted architecture summary including backend configuration, module status, and parameter counts
+
+**Training Bridge & Initialization:**
 - **`bridge_training_loss_to_error_evolution(loss_dict)`**: Bridges training loss signals to the error evolution tracker, closing the training→inference feedback loop
+- **`sync_from_training(trainer_monitor, training_provenance)`**: Automatically imports training state — transfers error evolution patterns, convergence threshold adjustments, and metacognitive trigger weight adaptations from the training pipeline
+- **`seed_error_evolution_baseline()`**: Seeds the error evolution tracker with baseline training error classes so the metacognitive trigger recognizes all documented failure modes from the first forward pass
+- **`init_meta_learner()` / `init_task2vec_meta_learner()`**: Post-construction initialization of MAML and Task2Vec meta-learners (require `self` reference)
+- **`load_v4_checkpoint(checkpoint_path, strict)`**: Loads weights from an `ae_train.py` v4 training checkpoint with key mapping and training error pattern import
+
+**State Persistence:**
 - **`save_state(save_dir)` / `load_state(save_dir)`**: Full model state persistence — weights, config, memory subsystems, metrics, VQ stats with shape migration for incompatible tensors
+- **`export_cognitive_snapshot(save_dir)` / `import_cognitive_snapshot(save_dir)`**: Extended cognitive state persistence — includes all hierarchical memory subsystems (episodic, temporal, neurogenic, consolidating) for full cross-session cognitive continuity
+- **`unified_memory_query(query, k)`**: Queries all memory subsystems and returns combined results with weighted mean aggregation across hierarchical, neurogenic, consolidating, and temporal memories
+
+**Initialization:**
 - **`_cognitive_activation_probe()`**: 13-step initialization probe that seeds error evolution baselines, primes feedback bus signals, registers provenance dependencies, adapts metacognitive trigger weights, seeds coherence verifier baseline states, aligns UPB-provenance DAGs, performs init-time verify_and_reinforce, seeds coherence registry and provenance deltas, records causal trace baselines, and auto-syncs training state
 
 Enables end-to-end self-verification, introspection, and autonomous architectural health monitoring.
 
 ---
 
-### **37. Core Model Components: Encoder, Decoder & Memory Management**
+### **38. Core Model Components: Encoder, Decoder & Memory Management**
 Foundational components of the AEON-Delta forward pipeline:
 - **`ThoughtEncoder`**: LSTM-based encoder converting token sequences into latent thought vectors — supports bidirectional encoding with LayerNorm
 - **`ThoughtDecoder`**: Unified decoder with dual-mode support (autoregressive and parallel) — converts latent thought vectors back to token logits with optional weight tying to encoder embeddings
@@ -502,12 +541,12 @@ Foundational components of the AEON-Delta forward pipeline:
 
 ### **Server: aeon_server.py v3.3.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **78 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, and session management
+- **85 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, and session management
 - **WebSocket** real-time updates (training progress, test events, log streaming, heartbeat with engine metrics)
 - **SSE** log streaming with per-level filtering, per-test event streaming, and v4 training progress streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 2,631 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 2,748 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **AGI coherence verification**: `/api/cognitive_unity`, `/api/architectural_health`, `/api/coherence_report`, `/api/system_emergence`, `/api/verify_and_reinforce`, `/api/verify_causal_chain`, `/api/cognitive_activation`
 - **Engine monitoring**: convergence, memory, recovery, integrity, deterministic guard, context window, module coherence, error evolution, auto-critic, deception suppressor via `/api/engine/*`
 - **Metacognition & diagnostics**: `/api/metacognition`, `/api/metacognition/resolve` (gap resolution recommendations)
@@ -613,7 +652,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,631 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,748 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -649,6 +688,7 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,631 tests) verif
 - **Subsystem health** (health gating, coherence registry tracking, uncertainty propagation through provenance DAG)  
 - **Meta-cognitive executive** (unified cognitive frame assessment, executive review arbitration, post-output uncertainty gating)  
 - **Memory & state persistence** (memory routing policy, deception suppression, cognitive snapshot management)
+- **Social cognition & code verification** (social cognition perspective alignment, intent embedding, social pressure, code execution sandbox confidence, verified embeddings, sandbox pressure)
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -670,11 +710,11 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py          # Core architecture — 131 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.3.0 — 78 API endpoints, 15 classes, WebSocket, SSE, training runner
+├── aeon_core.py          # Core architecture — 133 classes, all modules, model (AEONDeltaV3), trainer, CLI
+├── aeon_server.py        # FastAPI backend v3.3.0 — 85 API endpoints, 15 classes, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — 19 panels, real-time monitoring, inference, training UI, code generator
 ├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (2,631 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py         # Comprehensive test suite (2,748 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── requirements.txt      # Python dependencies
 ├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
