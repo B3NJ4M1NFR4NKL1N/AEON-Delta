@@ -67635,6 +67635,14 @@ def run_all_tests():
     test_verify_causal_chain_escalates_untraced()
     test_verify_cognitive_unity_escalates_signal_dropout()
 
+    # Integration bridge patches — error evolution recording
+    test_integration_error_classes_registered()
+    test_cycle_consistency_failure_records_error_evolution()
+    test_decoder_distortion_records_error_evolution()
+    test_world_model_verification_failure_records_error_evolution()
+    test_ewc_drift_failure_records_error_evolution()
+    test_vq_codebook_quality_records_error_evolution()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76412,6 +76420,190 @@ def test_verify_cognitive_unity_escalates_signal_dropout():
     )
 
     print("✅ test_verify_cognitive_unity_escalates_signal_dropout PASSED")
+
+
+def test_integration_error_classes_registered():
+    """New integration error classes (cycle_consistency_check_failure,
+    decoder_distortion, world_model_verification_failure,
+    meta_learner_drift_failure) must be registered in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA mappings."""
+    from aeon_core import CausalErrorEvolutionTracker
+    import re, os
+
+    tracker = CausalErrorEvolutionTracker()
+
+    new_classes = [
+        'cycle_consistency_check_failure',
+        'decoder_distortion',
+        'world_model_verification_failure',
+        'meta_learner_drift_failure',
+    ]
+
+    for cls in new_classes:
+        assert cls in tracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # Verify _class_to_signal via source inspection
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    for cls in new_classes:
+        assert cls in mapped, (
+            f"{cls} must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+
+    # Verify they can be recorded
+    for cls in new_classes:
+        tracker.record_episode(
+            error_class=cls,
+            success=False,
+            strategy_used='test',
+        )
+    summary = tracker.get_error_summary()
+    classes = summary.get('error_classes', {})
+    for cls in new_classes:
+        assert cls in classes, f"{cls} must be recordable in error evolution"
+
+    print("✅ test_integration_error_classes_registered PASSED")
+
+
+def test_cycle_consistency_failure_records_error_evolution():
+    """When the cycle-consistency check raises an exception, the handler
+    must record an error_evolution episode so the metacognitive trigger
+    learns from the failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'cycle_consistency_check_failure' in src, (
+        "_forward_impl must record cycle_consistency_check_failure "
+        "in error_evolution when the cycle-consistency validator fails"
+    )
+    # Verify the handler uses logger.warning (not debug) so failures
+    # are visible in operational logs.
+    # Find the except block for cycle consistency
+    idx = src.find('Cycle-consistency check failed')
+    assert idx != -1, "cycle-consistency exception handler must exist"
+    handler_region = src[max(0, idx - 200):idx + 100]
+    assert 'logger.warning' in handler_region, (
+        "cycle-consistency check failure must use logger.warning, "
+        "not logger.debug, to ensure visibility"
+    )
+
+    print("✅ test_cycle_consistency_failure_records_error_evolution PASSED")
+
+
+def test_decoder_distortion_records_error_evolution():
+    """When decoder distortion exceeds the threshold, the system must
+    record an error_evolution episode so the metacognitive trigger can
+    learn from persistent decoder distortion patterns."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "error_class='decoder_distortion'" in src, (
+        "_forward_impl must record decoder_distortion in error_evolution "
+        "when the decoder's provenance contribution exceeds the threshold"
+    )
+
+    print("✅ test_decoder_distortion_records_error_evolution PASSED")
+
+
+def test_world_model_verification_failure_records_error_evolution():
+    """When world model prediction verification raises an exception,
+    the handler must record an error_evolution episode so the
+    metacognitive trigger can learn from verification infrastructure
+    failures."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Must appear at least twice — once for each world model
+    # (base world model + hierarchical world model)
+    count = src.count("'world_model_verification_failure'")
+    assert count >= 2, (
+        f"_reasoning_core_impl must record world_model_verification_failure "
+        f"for both world model and hierarchical WM verification handlers "
+        f"(found {count}, expected >= 2)"
+    )
+    # Both handlers must use logger.warning
+    idx1 = src.find('World model prediction verification failed')
+    assert idx1 != -1
+    handler1 = src[max(0, idx1 - 200):idx1 + 100]
+    assert 'logger.warning' in handler1, (
+        "World model prediction verification failure must use "
+        "logger.warning for operational visibility"
+    )
+    idx2 = src.find('Hierarchical WM prediction verification failed')
+    assert idx2 != -1
+    handler2 = src[max(0, idx2 - 200):idx2 + 100]
+    assert 'logger.warning' in handler2, (
+        "Hierarchical WM prediction verification failure must use "
+        "logger.warning for operational visibility"
+    )
+
+    print("✅ test_world_model_verification_failure_records_error_evolution PASSED")
+
+
+def test_ewc_drift_failure_records_error_evolution():
+    """When MetaLearner EWC drift estimation fails, the handler must
+    record an error_evolution episode so catastrophic-forgetting
+    detection failures are visible to the metacognitive trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "'meta_learner_drift_failure'" in src, (
+        "_reasoning_core_impl must record meta_learner_drift_failure "
+        "in error_evolution when EWC drift estimation fails"
+    )
+    idx = src.find('MetaLearner EWC drift estimation failed')
+    assert idx != -1
+    handler = src[max(0, idx - 200):idx + 100]
+    assert 'logger.warning' in handler, (
+        "EWC drift failure must use logger.warning for visibility"
+    )
+
+    print("✅ test_ewc_drift_failure_records_error_evolution PASSED")
+
+
+def test_vq_codebook_quality_records_error_evolution():
+    """When VQ codebook quality drops below 0.5 in _forward_impl,
+    the system must record an error_evolution episode so the
+    metacognitive trigger can react to codebook degradation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Check that _forward_impl records VQ codebook collapse when
+    # quality is low (in addition to the existing recording in
+    # _reasoning_core_impl for low utilization).
+    assert "forward_vq_monitor" in src, (
+        "_forward_impl must record vq_codebook_collapse with "
+        "strategy 'forward_vq_monitor' when codebook quality < 0.5"
+    )
+
+    print("✅ test_vq_codebook_quality_records_error_evolution PASSED")
 
 
 if __name__ == "__main__":
