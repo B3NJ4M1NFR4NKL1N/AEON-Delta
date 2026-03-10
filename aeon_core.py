@@ -16840,6 +16840,26 @@ class MetaCognitiveRecursionTrigger:
             # degenerate decoder outputs raised an exception, leaving
             # decoder quality unmeasured for the current pass.
             "decoder_degenerate_check_failure": "coherence_deficit",
+            # World model verification failure — the cross-step prediction
+            # verification raised an exception, leaving world model
+            # prediction accuracy unmeasured.
+            "world_model_verification_failure": "world_model_surprise",
+            # Hierarchical WM verification failure — the multi-horizon
+            # prediction verification raised an exception, leaving
+            # hierarchical prediction quality unmeasured.
+            "hierarchical_wm_verification_failure": "world_model_surprise",
+            # Memory conditioning failure — the pre-meta-loop unified
+            # memory conditioning raised an exception, degrading the
+            # memory signal fed into the meta-loop.
+            "memory_conditioning_failure": "memory_staleness",
+            # Causal context conditioning failure — the pre-meta-loop
+            # causal context retrieval and blending raised an exception,
+            # leaving the meta-loop without temporal context.
+            "causal_context_conditioning_failure": "low_causal_quality",
+            # Memory validation failure — the pre-meta-loop memory
+            # coherence validation raised an exception, leaving memory
+            # consistency unverified before the meta-loop.
+            "memory_validation_failure": "memory_staleness",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18124,6 +18144,25 @@ class CausalErrorEvolutionTracker:
         # degenerate decoder outputs errored.  Maps to lambda_coherence
         # so training strengthens decoder quality monitoring.
         "decoder_degenerate_check_failure": "lambda_coherence",
+        # World model verification failure — cross-step prediction
+        # verification errored.  Maps to lambda_hierarchical_wm so
+        # training strengthens world model prediction reliability.
+        "world_model_verification_failure": "lambda_hierarchical_wm",
+        # Hierarchical WM verification failure — multi-horizon
+        # prediction verification errored.  Maps to lambda_hierarchical_wm.
+        "hierarchical_wm_verification_failure": "lambda_hierarchical_wm",
+        # Memory conditioning failure — pre-meta-loop memory conditioning
+        # errored.  Maps to lambda_memory_retrieval so training
+        # strengthens memory subsystem reliability.
+        "memory_conditioning_failure": "lambda_memory_retrieval",
+        # Causal context conditioning failure — pre-meta-loop causal
+        # context retrieval errored.  Maps to lambda_coherence so
+        # training strengthens temporal context integration.
+        "causal_context_conditioning_failure": "lambda_coherence",
+        # Memory validation failure — pre-meta-loop memory validation
+        # errored.  Maps to lambda_memory_retrieval so training
+        # strengthens memory consistency checking.
+        "memory_validation_failure": "lambda_memory_retrieval",
     }
 
     def recommend_loss_adjustments(
@@ -26781,6 +26820,13 @@ class AEONDeltaV3(nn.Module):
                     "World model prediction verification failed: %s",
                     _vpe_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='world_model_verification_failure',
+                        strategy_used='prediction_verification',
+                        success=False,
+                        metadata={'error': str(_vpe_err)},
+                    )
             finally:
                 self._cached_world_model_prediction = None
 
@@ -26832,6 +26878,13 @@ class AEONDeltaV3(nn.Module):
                     "Hierarchical WM prediction verification failed: %s",
                     _hwm_vpe_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='hierarchical_wm_verification_failure',
+                        strategy_used='hwm_prediction_verification',
+                        success=False,
+                        metadata={'error': str(_hwm_vpe_err)},
+                    )
             finally:
                 self._cached_hwm_prediction = None
 
@@ -27083,6 +27136,13 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _umq_boost)
                     uncertainty_sources["unified_memory_error"] = _umq_boost
                     high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='memory_conditioning_failure',
+                        strategy_used='pre_loop_memory_conditioning',
+                        success=False,
+                        metadata={'error': str(_umq_err)},
+                    )
         
         # 0h. Pre-meta-loop causal context conditioning — retrieve historical
         # reasoning outcomes from the CausalContextWindowManager and blend
@@ -27113,6 +27173,13 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _cc_boost)
                     uncertainty_sources["causal_context_error"] = _cc_boost
                     high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='causal_context_conditioning_failure',
+                        strategy_used='pre_loop_causal_context',
+                        success=False,
+                        metadata={'error': str(_cc_err)},
+                    )
         
         # 0i. Pre-meta-loop memory coherence validation — validate that
         # the retrieved memory signal is consistent with the current input
@@ -27178,6 +27245,13 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Pre-meta-loop memory validation failed: %s", _pmv_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='memory_validation_failure',
+                        strategy_used='pre_loop_memory_validation',
+                        success=False,
+                        metadata={'error': str(_pmv_err)},
+                    )
             self.provenance_tracker.record_after(
                 "memory_validation", z_conditioned,
             )
@@ -38129,6 +38203,10 @@ class AEONDeltaV3(nn.Module):
         **kwargs,
     ) -> Dict[str, Any]:
         """Inner forward logic (separated for OOM recovery)."""
+        # Collect causal decisions from pre-reasoning subsystems (backbone,
+        # continual learning, chunked processor) for deferred insertion into
+        # outputs['causal_decision_chain'] after the reasoning core runs.
+        _pre_reasoning_causal_decisions: Dict[str, Any] = {}
         # ===== ENCODE =====
         z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
         
@@ -38169,6 +38247,12 @@ class AEONDeltaV3(nn.Module):
                 "backbone_adapter",
                 validated=torch.isfinite(z_encoded).all().item(),
             )
+            # Record backbone adapter decision for deferred insertion into
+            # causal_decision_chain (outputs dict is not yet available).
+            _pre_reasoning_causal_decisions['backbone_adapter'] = {
+                'applied': True,
+                'finite': torch.isfinite(z_encoded).all().item(),
+            }
 
         # ===== CONTINUAL LEARNING ENRICHMENT =====
         # When ContinualLearningCore is active, blend lateral adapter
@@ -38219,6 +38303,12 @@ class AEONDeltaV3(nn.Module):
                 "continual_learning",
                 validated=torch.isfinite(z_encoded).all().item(),
             )
+            # Record continual learning decision for deferred insertion
+            # into causal_decision_chain (outputs dict is not yet available).
+            _pre_reasoning_causal_decisions['continual_learning'] = {
+                'applied': True,
+                'finite': torch.isfinite(z_encoded).all().item(),
+            }
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
@@ -38301,6 +38391,12 @@ class AEONDeltaV3(nn.Module):
                 "chunked_processor",
                 validated=torch.isfinite(z_quantized).all().item(),
             )
+            # Record chunked processing decision for deferred insertion
+            # into causal_decision_chain (outputs dict is not yet available).
+            _pre_reasoning_causal_decisions['chunked_processor'] = {
+                'applied': True,
+                'finite': torch.isfinite(z_quantized).all().item(),
+            }
 
         # ===== INFERENCE CACHE =====
         # During inference, cache reasoning-core outputs keyed by the
@@ -38382,6 +38478,15 @@ class AEONDeltaV3(nn.Module):
 
         outputs['cache_hit'] = _cache_hit
         outputs['cache_similarity'] = _cache_similarity
+
+        # Merge pre-reasoning causal decisions into causal_decision_chain
+        # now that the outputs dict is available.  This ensures backbone
+        # adapter, continual learning, and chunked processor decisions are
+        # deterministically traceable in the final output.
+        if _pre_reasoning_causal_decisions:
+            outputs['causal_decision_chain'].update(
+                _pre_reasoning_causal_decisions
+            )
 
         # Extract causal trace ID produced by _reasoning_core_impl so
         # that downstream causal-trace recordings (cycle-consistency,
@@ -38514,6 +38619,26 @@ class AEONDeltaV3(nn.Module):
                     _sources = outputs.get('uncertainty_sources', {})
                     _sources['decoder_degenerate'] = _DECODER_DEGENERATE_UNC_BOOST
                     outputs['uncertainty_sources'] = _sources
+                    # Record decoder degenerate detection in causal_trace
+                    # so that the degenerate-output → uncertainty escalation
+                    # path is deterministically traceable.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "decoder", "degenerate_output_detected",
+                            causal_prerequisites=[input_trace_id],
+                            severity="warning",
+                            metadata={
+                                'logit_variance': _logit_var,
+                                'uncertainty_boost': _DECODER_DEGENERATE_UNC_BOOST,
+                            },
+                        )
+                    # Record degenerate detection in causal_decision_chain
+                    # so the output's trace includes the decoder quality gate.
+                    outputs['causal_decision_chain']['decoder_degenerate'] = {
+                        'degenerate': True,
+                        'logit_variance': _logit_var,
+                        'uncertainty_boost': _DECODER_DEGENERATE_UNC_BOOST,
+                    }
             except (RuntimeError, ValueError) as _dec_err:
                 logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
@@ -38629,9 +38754,27 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_cc_err)},
                     )
+                    # Adapt metacognitive trigger weights so future passes
+                    # sensitise to coherence-deficit signals after a cycle-
+                    # consistency check failure.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Cycle-consistency trigger adaptation failed"
+                            )
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
+        # Record cycle-consistency result in causal_decision_chain so
+        # that encode→reason→decode fidelity is traceable in the output.
+        outputs['causal_decision_chain']['cycle_consistency'] = {
+            'consistency': _cycle_consistency,
+            'reencode_consistency': _reencode_consistency,
+        }
         # Cache cycle consistency score for cross-pass feedback bus
         # conditioning.  Low cycle consistency indicates the decoder
         # distorts the encoded representation; the next pass's meta-loop
@@ -38806,6 +38949,25 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(_late_err)},
                         )
+                        # Adapt metacognitive trigger weights so future
+                        # passes sensitise to uncertainty signals after
+                        # a late meta-loop failure.
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Late meta-loop trigger adaptation failed"
+                                )
+                # Record the late rerun decision in causal_decision_chain
+                # so that the post-output corrective computation is
+                # deterministically traceable regardless of success/failure.
+                outputs['causal_decision_chain']['late_meta_loop_rerun'] = {
+                    'attempted': True,
+                    'applied': outputs.get('late_metacognitive_rerun', False),
+                }
 
         # ===== PROVENANCE CHAIN VALIDATION =====
         # Validate that all expected pipeline modules have been traced in
@@ -45522,8 +45684,12 @@ class AEONDeltaV3(nn.Module):
                 _pipeline_wiring_cov = _wiring_result.get(
                     'wiring_coverage', 1.0,
                 )
-            except Exception:
-                _pipeline_wiring_cov = 1.0
+            except Exception as _wiring_exc:
+                logger.warning(
+                    "verify_pipeline_wiring failed in verify_and_reinforce: %s",
+                    _wiring_exc,
+                )
+                _pipeline_wiring_cov = 0.0
         else:
             _pipeline_wiring_cov = 1.0
         if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:
