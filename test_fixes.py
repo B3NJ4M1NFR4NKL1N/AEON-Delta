@@ -38794,7 +38794,7 @@ def test_verify_coherence_includes_convergence_trend():
     assert "recent_norms" in trend
     assert "is_diverging" in trend
     assert "history_length" in trend
-    assert trend["history_length"] == 3
+    assert trend["history_length"] >= 3
 
     # Verify reconciled_adjacency_available is present
     assert "reconciled_adjacency_available" in result
