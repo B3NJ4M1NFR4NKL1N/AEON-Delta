@@ -16800,6 +16800,38 @@ class MetaCognitiveRecursionTrigger:
             # entry back to its root causes, degrading causal
             # transparency.
             "root_cause_attribution_failure": "low_causal_quality",
+            # Memory fusion failures — individual memory subsystem
+            # fusion raised an exception during _unified_memory_fusion(),
+            # silently degrading the fused representation.  Maps to
+            # memory_staleness so that recurring fusion failures boost
+            # the memory trigger signal weight.
+            "neurogenic_memory_fusion_failure": "memory_staleness",
+            "temporal_memory_fusion_failure": "memory_staleness",
+            "consolidating_memory_fusion_failure": "memory_staleness",
+            # Re-encode failure — the encoder failed to re-encode the
+            # decoded output for cycle-consistency verification, making
+            # the re-encode consistency check impossible.
+            "reencode_failure": "coherence_deficit",
+            # Cycle-consistency check failure — the cycle consistency
+            # validator itself raised an exception, preventing any
+            # consistency measurement for the current pass.
+            "cycle_consistency_check_failure": "coherence_deficit",
+            # Late meta-loop failure — the post-output meta-loop
+            # re-run raised an exception, leaving late-stage uncertainty
+            # unaddressed by corrective computation.
+            "late_meta_loop_failure": "uncertainty",
+            # Post-output coherence failure — the final coherence
+            # verification after decoding raised an exception, leaving
+            # output-stage coherence unmeasured.
+            "post_output_coherence_failure": "coherence_deficit",
+            # Snapshot validation failure — the cognitive snapshot
+            # manager's parameter validation raised an exception,
+            # leaving memory subsystem integrity unverified.
+            "snapshot_validation_failure": "coherence_deficit",
+            # Verify chain failure — verify_causal_chain() raised an
+            # exception inside verify_and_reinforce(), leaving causal
+            # transparency unassessed for the reinforcement cycle.
+            "verify_chain_failure": "low_causal_quality",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18045,6 +18077,37 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens causal chain
         # integrity and root-cause traceback reliability.
         "root_cause_attribution_failure": "lambda_ucc",
+        # Memory fusion failures — individual memory subsystem fusion
+        # raised an exception during _unified_memory_fusion().  Maps
+        # to lambda_memory_retrieval so training strengthens memory
+        # subsystem reliability.
+        "neurogenic_memory_fusion_failure": "lambda_memory_retrieval",
+        "temporal_memory_fusion_failure": "lambda_memory_retrieval",
+        "consolidating_memory_fusion_failure": "lambda_memory_retrieval",
+        # Re-encode failure — encoder failed to re-encode for cycle
+        # consistency.  Maps to lambda_cycle_consistency so training
+        # strengthens encode-decode fidelity.
+        "reencode_failure": "lambda_cycle_consistency",
+        # Cycle-consistency check failure — the validator itself
+        # errored.  Maps to lambda_cycle_consistency so training
+        # strengthens the consistency check pathway.
+        "cycle_consistency_check_failure": "lambda_cycle_consistency",
+        # Late meta-loop failure — post-output corrective re-run
+        # failed.  Maps to lambda_ucc so training adapts to persistent
+        # late-stage reasoning failures.
+        "late_meta_loop_failure": "lambda_ucc",
+        # Post-output coherence failure — final coherence verification
+        # errored.  Maps to lambda_coherence so training strengthens
+        # output-stage coherence reliability.
+        "post_output_coherence_failure": "lambda_coherence",
+        # Snapshot validation failure — cognitive snapshot parameter
+        # validation errored.  Maps to lambda_coherence so training
+        # strengthens memory subsystem integrity.
+        "snapshot_validation_failure": "lambda_coherence",
+        # Verify chain failure — verify_causal_chain() raised an
+        # exception inside verify_and_reinforce().  Maps to lambda_ucc
+        # so training strengthens causal chain assessment reliability.
+        "verify_chain_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -25718,11 +25781,18 @@ class AEONDeltaV3(nn.Module):
                                 * neuro_vecs.mean(dim=0).to(device)
                             )
                 except Exception as neuro_err:
-                    logger.debug(
-                        "NeurogenicMemory fusion skipped: %s", neuro_err,
+                    logger.warning(
+                        "NeurogenicMemory fusion failed: %s", neuro_err,
                     )
                     self._memory_stale = True
                     self._neurogenic_memory_error = True
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='neurogenic_memory_fusion_failure',
+                            strategy_used='neurogenic_fusion',
+                            success=False,
+                            metadata={'error': str(neuro_err)},
+                        )
                 # Cache neurogenic memory state for fine-grained coherence
                 self._cached_neurogenic_memory_state = C_fused.detach()
 
@@ -25748,11 +25818,18 @@ class AEONDeltaV3(nn.Module):
                                 * temporal_vecs.mean(dim=0).to(device)
                             )
                 except Exception as temporal_err:
-                    logger.debug(
-                        "TemporalMemory fusion skipped: %s", temporal_err,
+                    logger.warning(
+                        "TemporalMemory fusion failed: %s", temporal_err,
                     )
                     self._memory_stale = True
                     self._temporal_memory_error = True
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='temporal_memory_fusion_failure',
+                            strategy_used='temporal_fusion',
+                            success=False,
+                            metadata={'error': str(temporal_err)},
+                        )
                 # Cache temporal memory state for fine-grained coherence
                 self._cached_temporal_memory_state = C_fused.detach()
 
@@ -25779,13 +25856,20 @@ class AEONDeltaV3(nn.Module):
                                 * sem_vecs.mean(dim=0).to(device)
                             )
                 except Exception as cm_err:
-                    logger.debug(
-                        f"ConsolidatingMemory fusion skipped: {cm_err}"
+                    logger.warning(
+                        "ConsolidatingMemory fusion failed: %s", cm_err,
                     )
                     # Record the failure so reasoning_core can escalate
                     # uncertainty — a silent swallow hides memory-subsystem
                     # degradation from the metacognitive cycle.
                     self._consolidating_memory_error = True
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='consolidating_memory_fusion_failure',
+                            strategy_used='consolidating_fusion',
+                            success=False,
+                            metadata={'error': str(cm_err)},
+                        )
                 # Cache consolidating memory state for fine-grained coherence
                 self._cached_consolidating_memory_state = C_fused.detach()
             
@@ -38386,7 +38470,14 @@ class AEONDeltaV3(nn.Module):
                         _z_reencoded = self.encoder(z_out.detach())
                         _core_state = outputs.get('core_state', z_out).detach()
                 except Exception as exc:
-                    logger.debug("Re-encoding for cycle consistency failed: %s", exc)
+                    logger.warning("Re-encoding for cycle consistency failed: %s", exc)
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='reencode_failure',
+                            strategy_used='cycle_consistency_reencode',
+                            success=False,
+                            metadata={'error': str(exc)},
+                        )
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -38441,7 +38532,14 @@ class AEONDeltaV3(nn.Module):
                     validated=not _cc_result['violation'],
                 )
             except (RuntimeError, ValueError) as _cc_err:
-                logger.debug("Cycle-consistency check failed: %s", _cc_err)
+                logger.warning("Cycle-consistency check failed: %s", _cc_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='cycle_consistency_check_failure',
+                        strategy_used='cycle_consistency_validation',
+                        success=False,
+                        metadata={'error': str(_cc_err)},
+                    )
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
@@ -38608,10 +38706,17 @@ class AEONDeltaV3(nn.Module):
                         z_out = _late_rerun_z
                         outputs['late_metacognitive_rerun'] = True
                 except Exception as _late_err:
-                    logger.debug(
+                    logger.warning(
                         "Post-output meta-loop re-run failed: %s",
                         _late_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='late_meta_loop_failure',
+                            strategy_used='post_output_rerun',
+                            success=False,
+                            metadata={'error': str(_late_err)},
+                        )
 
         # ===== PROVENANCE CHAIN VALIDATION =====
         # Validate that all expected pipeline modules have been traced in
@@ -38746,10 +38851,17 @@ class AEONDeltaV3(nn.Module):
                             },
                         )
                 except Exception as _poc_err:
-                    logger.debug(
+                    logger.warning(
                         "Post-output coherence verification error "
                         "(non-fatal): %s", _poc_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_output_coherence_failure',
+                            strategy_used='coherence_recheck',
+                            success=False,
+                            metadata={'error': str(_poc_err)},
+                        )
 
         # ===== COGNITIVE UNITY SCORE =====
         # Synthesize a single composite score ∈ [0, 1] that explicitly
@@ -38815,10 +38927,17 @@ class AEONDeltaV3(nn.Module):
                 outputs['snapshot_coherence'] = _snap_coherence
                 result['snapshot_coherence'] = _snap_coherence
             except Exception as _snap_err:
-                logger.debug(
+                logger.warning(
                     "Cognitive snapshot validation failed (non-fatal): %s",
                     _snap_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='snapshot_validation_failure',
+                        strategy_used='cognitive_snapshot',
+                        success=False,
+                        metadata={'error': str(_snap_err)},
+                    )
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
@@ -45417,8 +45536,22 @@ class AEONDeltaV3(nn.Module):
                     f'Recorded causal_chain_gap episode '
                     f'(chain_coverage={_chain_coverage:.2f})'
                 )
-        except Exception:
+        except Exception as _chain_err:
+            logger.warning(
+                "verify_causal_chain() failed inside verify_and_reinforce: %s",
+                _chain_err,
+            )
             _chain_result = None
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='verify_chain_failure',
+                    strategy_used='verify_and_reinforce',
+                    success=False,
+                    metadata={'error': str(_chain_err)},
+                )
+            reinforcement_actions.append(
+                'Recorded verify_chain_failure (verify_causal_chain exception)'
+            )
 
         # --- Re-check diagnostic gaps for runtime correction ---
         # The architectural_coherence_report already includes actionable
