@@ -16832,6 +16832,14 @@ class MetaCognitiveRecursionTrigger:
             # exception inside verify_and_reinforce(), leaving causal
             # transparency unassessed for the reinforcement cycle.
             "verify_chain_failure": "low_causal_quality",
+            # Continual learning adapter failure — the lateral adapter
+            # from a frozen prior-task column failed during encoding
+            # enrichment, degrading catastrophic-forgetting protection.
+            "continual_learning_adapter_failure": "coherence_deficit",
+            # Decoder degenerate check failure — the runtime check for
+            # degenerate decoder outputs raised an exception, leaving
+            # decoder quality unmeasured for the current pass.
+            "decoder_degenerate_check_failure": "coherence_deficit",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18108,6 +18116,14 @@ class CausalErrorEvolutionTracker:
         # exception inside verify_and_reinforce().  Maps to lambda_ucc
         # so training strengthens causal chain assessment reliability.
         "verify_chain_failure": "lambda_ucc",
+        # Continual learning adapter failure — lateral adapter from a
+        # frozen prior-task column failed.  Maps to lambda_coherence so
+        # training strengthens encoder enrichment reliability.
+        "continual_learning_adapter_failure": "lambda_coherence",
+        # Decoder degenerate check failure — runtime check for
+        # degenerate decoder outputs errored.  Maps to lambda_coherence
+        # so training strengthens decoder quality monitoring.
+        "decoder_degenerate_check_failure": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -26518,6 +26534,23 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+                # Adapt metacognitive trigger weights from the updated
+                # error-evolution history so that provenance DAG cycle
+                # episodes feed back into trigger sensitivity, closing
+                # the loop where DAG cycles were recorded but never
+                # influenced metacognitive re-reasoning.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        _dag_err_summary = self.error_evolution.get_error_summary()
+                        if _dag_err_summary.get('total_recorded', 0) > 0:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                _dag_err_summary,
+                            )
+                    except Exception as _dag_adapt_err:
+                        logger.debug(
+                            "DAG cycle trigger adaptation failed: %s",
+                            _dag_adapt_err,
+                        )
         
         # 0. Register encoder and VQ stages in the provenance tracker.
         # These stages run in _forward_impl before the tracker is reset,
@@ -38117,6 +38150,20 @@ class AEONDeltaV3(nn.Module):
                     z_encoded = z_encoded + backbone_pooled
             except Exception as bb_err:
                 logger.warning(f"Backbone adapter error (non-fatal): {bb_err}")
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='backbone_adapter_error',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(bb_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug("Backbone adapter trigger adaptation failed")
             self.provenance_tracker.record_after("backbone_adapter", z_encoded)
             self.coherence_registry.register_output(
                 "backbone_adapter",
@@ -38153,6 +38200,20 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='continual_learning_adapter_failure',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(cl_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug("Continual learning trigger adaptation failed")
             self.provenance_tracker.record_after("continual_learning", z_encoded)
             self.coherence_registry.register_output(
                 "continual_learning",
@@ -38221,6 +38282,20 @@ class AEONDeltaV3(nn.Module):
             except Exception as chunk_err:
                 logger.warning(f"Chunked encoding failed, using standard encoding: {chunk_err}")
                 z_quantized = _z_pre_chunk
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='chunked_encoding_error',
+                        strategy_used='standard_encoding_fallback',
+                        success=False,
+                        metadata={'error': str(chunk_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug("Chunked encoding trigger adaptation failed")
             self.provenance_tracker.record_after("chunked_processor", z_quantized)
             self.coherence_registry.register_output(
                 "chunked_processor",
@@ -38441,6 +38516,20 @@ class AEONDeltaV3(nn.Module):
                     outputs['uncertainty_sources'] = _sources
             except (RuntimeError, ValueError) as _dec_err:
                 logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='decoder_degenerate_check_failure',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(_dec_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug("Decoder degenerate check trigger adaptation failed")
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -45549,6 +45638,21 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                     metadata={'error': str(_chain_err)},
                 )
+                # Adapt metacognitive trigger weights from the updated
+                # error-evolution history so that verify_causal_chain
+                # failures feed back into trigger sensitivity, closing
+                # the loop where chain verification errors were recorded
+                # but never influenced metacognitive re-reasoning.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _chain_adapt_err:
+                        logger.debug(
+                            "Chain failure trigger adaptation failed: %s",
+                            _chain_adapt_err,
+                        )
             reinforcement_actions.append(
                 'Recorded verify_chain_failure (verify_causal_chain exception)'
             )

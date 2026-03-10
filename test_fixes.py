@@ -67646,6 +67646,13 @@ def run_all_tests():
     test_forward_impl_exception_handlers_record_error_evolution()
     test_verify_and_reinforce_chain_failure_records_error_evolution()
     test_integration_error_classes_registered()
+    test_cognitive_bridge_error_classes_registered()
+    test_backbone_adapter_exception_records_error_evolution()
+    test_continual_learning_exception_records_error_evolution()
+    test_chunked_encoding_exception_records_error_evolution()
+    test_decoder_degenerate_check_exception_records_error_evolution()
+    test_dag_cycle_adapts_metacognitive_trigger()
+    test_verify_chain_failure_adapts_metacognitive_trigger()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -76671,6 +76678,202 @@ def test_integration_error_classes_registered():
         assert cls in classes, f"{cls} must be recordable in error evolution"
 
     print("✅ test_integration_error_classes_registered PASSED")
+
+
+def test_cognitive_bridge_error_classes_registered():
+    """New cognitive-bridge error classes must be registered in both
+    _ERROR_CLASS_TO_LAMBDA and _class_to_signal mappings."""
+    from aeon_core import CausalErrorEvolutionTracker
+    import re, os
+
+    tracker = CausalErrorEvolutionTracker()
+
+    bridge_classes = [
+        'continual_learning_adapter_failure',
+        'decoder_degenerate_check_failure',
+    ]
+
+    # Verify _ERROR_CLASS_TO_LAMBDA
+    for cls in bridge_classes:
+        assert cls in tracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # Verify _class_to_signal via source inspection
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    for cls in bridge_classes:
+        assert cls in mapped, (
+            f"{cls} must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+
+    # Verify they can be recorded
+    for cls in bridge_classes:
+        tracker.record_episode(
+            error_class=cls,
+            success=False,
+            strategy_used='test',
+        )
+    summary = tracker.get_error_summary()
+    classes = summary.get('error_classes', {})
+    for cls in bridge_classes:
+        assert cls in classes, f"{cls} must be recordable in error evolution"
+
+    print("✅ test_cognitive_bridge_error_classes_registered PASSED")
+
+
+def test_backbone_adapter_exception_records_error_evolution():
+    """backbone_adapter exception handler must record episode to error
+    evolution, bridging the gap where adapter errors were only logged."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    assert 'backbone_adapter_error' in src, (
+        "_forward_impl must record 'backbone_adapter_error' in error "
+        "evolution when the backbone adapter raises an exception"
+    )
+    # Must also adapt metacognitive trigger
+    # Find the backbone adapter exception handler region
+    idx = src.find("Backbone adapter error (non-fatal)")
+    assert idx > 0, "backbone adapter exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'adapt_weights_from_evolution' in region, (
+        "backbone adapter exception must adapt metacognitive trigger "
+        "weights after recording the error evolution episode"
+    )
+
+    print("✅ test_backbone_adapter_exception_records_error_evolution PASSED")
+
+
+def test_continual_learning_exception_records_error_evolution():
+    """continual_learning exception handler must record episode to error
+    evolution, bridging the gap where adapter errors were only logged."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    assert 'continual_learning_adapter_failure' in src, (
+        "_forward_impl must record 'continual_learning_adapter_failure' "
+        "in error evolution when ContinualLearningCore adapter fails"
+    )
+    idx = src.find("ContinualLearningCore adapter error (non-fatal)")
+    assert idx > 0, "continual learning exception handler must exist"
+    region = src[idx:idx + 800]
+    assert 'adapt_weights_from_evolution' in region, (
+        "continual learning exception must adapt metacognitive trigger "
+        "weights after recording the error evolution episode"
+    )
+
+    print("✅ test_continual_learning_exception_records_error_evolution PASSED")
+
+
+def test_chunked_encoding_exception_records_error_evolution():
+    """chunked_processor exception handler must record episode to error
+    evolution, bridging the gap where encoding errors were only logged."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    assert 'chunked_encoding_error' in src, (
+        "_forward_impl must record 'chunked_encoding_error' in error "
+        "evolution when the chunked processor raises an exception"
+    )
+    idx = src.find("Chunked encoding failed, using standard encoding")
+    assert idx > 0, "chunked encoding exception handler must exist"
+    region = src[idx:idx + 800]
+    assert 'adapt_weights_from_evolution' in region, (
+        "chunked encoding exception must adapt metacognitive trigger "
+        "weights after recording the error evolution episode"
+    )
+
+    print("✅ test_chunked_encoding_exception_records_error_evolution PASSED")
+
+
+def test_decoder_degenerate_check_exception_records_error_evolution():
+    """decoder_degenerate check exception handler must record episode to
+    error evolution, bridging the gap where check errors were only logged."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    assert 'decoder_degenerate_check_failure' in src, (
+        "_forward_impl must record 'decoder_degenerate_check_failure' in "
+        "error evolution when the decoder degenerate check fails"
+    )
+    idx = src.find("Decoder degenerate-output check failed")
+    assert idx > 0, "decoder degenerate check exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'adapt_weights_from_evolution' in region, (
+        "decoder degenerate check exception must adapt metacognitive "
+        "trigger weights after recording the error evolution episode"
+    )
+
+    print("✅ test_decoder_degenerate_check_exception_records_error_evolution PASSED")
+
+
+def test_dag_cycle_adapts_metacognitive_trigger():
+    """provenance_dag_cycle record_episode must be followed by
+    adapt_weights_from_evolution to close the metacognitive feedback loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = src.find("provenance_dag_cycle")
+    assert idx > 0, "provenance_dag_cycle recording must exist"
+    region = src[idx:idx + 1200]
+    assert 'adapt_weights_from_evolution' in region, (
+        "provenance_dag_cycle recording must be followed by "
+        "adapt_weights_from_evolution so DAG cycle episodes feed back "
+        "into metacognitive trigger sensitivity"
+    )
+
+    print("✅ test_dag_cycle_adapts_metacognitive_trigger PASSED")
+
+
+def test_verify_chain_failure_adapts_metacognitive_trigger():
+    """verify_chain_failure record_episode in verify_and_reinforce must be
+    followed by adapt_weights_from_evolution to close the metacognitive loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    idx = src.find("verify_chain_failure")
+    assert idx > 0, "verify_chain_failure recording must exist"
+    region = src[idx:idx + 800]
+    assert 'adapt_weights_from_evolution' in region, (
+        "verify_chain_failure recording must be followed by "
+        "adapt_weights_from_evolution so chain verification failures "
+        "feed back into metacognitive trigger sensitivity"
+    )
+
+    print("✅ test_verify_chain_failure_adapts_metacognitive_trigger PASSED")
 
 
 if __name__ == "__main__":
