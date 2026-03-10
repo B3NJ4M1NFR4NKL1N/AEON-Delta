@@ -6946,7 +6946,7 @@ class CausalProvenanceTracker:
                         },
                     )
                 except Exception as _ee_err:
-                    logger.debug(
+                    logger.warning(
                         "Provenance delta anomaly recording failed "
                         "(non-fatal): %s", _ee_err,
                     )
@@ -8552,7 +8552,7 @@ class ConvergenceMonitor:
                     metadata=enriched,
                 )
             except Exception as _bridge_err:
-                logger.debug(
+                logger.warning(
                     "Training error bridge record failed (non-fatal): %s",
                     _bridge_err,
                 )
@@ -16840,6 +16840,23 @@ class MetaCognitiveRecursionTrigger:
             # degenerate decoder outputs raised an exception, leaving
             # decoder quality unmeasured for the current pass.
             "decoder_degenerate_check_failure": "coherence_deficit",
+            # Metacognitive adapt failure — adapt_weights_from_evolution()
+            # itself raised an exception, preventing the metacognitive
+            # trigger from learning from accumulated error history.
+            "metacognitive_adapt_failure": "uncertainty",
+            # Provenance adapt failure — provenance threshold adaptation
+            # failed, preventing causal tracing sensitivity from adjusting
+            # to module behaviour.
+            "provenance_adapt_failure": "low_causal_quality",
+            # Compute loss adapt failure — the training-stage trigger
+            # adaptation failed, preventing training difficulties from
+            # influencing metacognitive trigger sensitivity.
+            "compute_loss_adapt_failure": "uncertainty",
+            # Training bridge adapt failure — the bridge between training
+            # loss signals and metacognitive trigger weights failed,
+            # leaving training-time errors unable to influence inference
+            # trigger sensitivity.
+            "training_bridge_adapt_failure": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18124,6 +18141,22 @@ class CausalErrorEvolutionTracker:
         # degenerate decoder outputs errored.  Maps to lambda_coherence
         # so training strengthens decoder quality monitoring.
         "decoder_degenerate_check_failure": "lambda_coherence",
+        # Metacognitive adapt failure — adapt_weights_from_evolution()
+        # itself raised an exception.  Maps to lambda_ucc so training
+        # strengthens the meta-learning pathway's reliability.
+        "metacognitive_adapt_failure": "lambda_ucc",
+        # Provenance adapt failure — provenance threshold adaptation
+        # failed.  Maps to lambda_ucc so training strengthens causal
+        # tracing sensitivity adaptation.
+        "provenance_adapt_failure": "lambda_ucc",
+        # Compute loss adapt failure — training-stage trigger adaptation
+        # failed.  Maps to lambda_ucc so training adapts to persistent
+        # inability to feed training errors into inference triggers.
+        "compute_loss_adapt_failure": "lambda_ucc",
+        # Training bridge adapt failure — training bridge trigger
+        # adaptation failed.  Maps to lambda_ucc so training adapts
+        # to persistent bridge failures between training and inference.
+        "training_bridge_adapt_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -19770,6 +19803,16 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
                     _adapt_err,
                 )
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='metacognitive_adapt_failure',
+                            strategy_used='graceful_degradation',
+                            success=False,
+                            metadata={'error': str(_adapt_err)},
+                        )
+                    except Exception:
+                        logger.debug("Failed to record metacognitive_adapt_failure episode")
 
         # 1d. Adapt provenance tracker thresholds from current-pass delta
         # statistics and error-evolution history so that causal tracing
@@ -19782,10 +19825,20 @@ class UnifiedCognitiveCycle:
                 error_summary=_err_summary or None,
             )
         except Exception as _prov_adapt_err:
-            logger.debug(
+            logger.warning(
                 "UCC: provenance adapt_thresholds failed (non-fatal): %s",
                 _prov_adapt_err,
             )
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='provenance_adapt_failure',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(_prov_adapt_err)},
+                    )
+                except Exception:
+                    logger.debug("Failed to record provenance_adapt_failure episode")
 
         # 2. Cross-module coherence verification.
         if self.coherence_verifier is not None:
@@ -40972,10 +41025,20 @@ class AEONDeltaV3(nn.Module):
                         _train_summary,
                     )
             except Exception as _train_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Training loss trigger adaptation failed: %s",
                     _train_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='compute_loss_adapt_failure',
+                            strategy_used='graceful_degradation',
+                            success=False,
+                            metadata={'error': str(_train_adapt_err)},
+                        )
+                    except Exception:
+                        logger.debug("Failed to record compute_loss_adapt_failure episode")
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
@@ -41582,10 +41645,20 @@ class AEONDeltaV3(nn.Module):
                         _bridge_summary,
                     )
             except Exception as _bridge_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Training bridge trigger adaptation failed: %s",
                     _bridge_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='training_bridge_adapt_failure',
+                            strategy_used='graceful_degradation',
+                            success=False,
+                            metadata={'error': str(_bridge_adapt_err)},
+                        )
+                    except Exception:
+                        logger.debug("Failed to record training_bridge_adapt_failure episode")
 
     def count_parameters(self) -> int:
         """Total parameters."""

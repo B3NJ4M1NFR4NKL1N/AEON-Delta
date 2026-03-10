@@ -67654,6 +67654,15 @@ def run_all_tests():
     test_dag_cycle_adapts_metacognitive_trigger()
     test_verify_chain_failure_adapts_metacognitive_trigger()
 
+    # Adaptation failure feedback loop patches
+    test_ucc_metacognitive_adapt_failure_records_error_evolution()
+    test_ucc_provenance_adapt_failure_records_error_evolution()
+    test_compute_loss_adapt_failure_records_error_evolution()
+    test_training_bridge_adapt_failure_records_error_evolution()
+    test_convergence_bridge_failure_uses_warning()
+    test_provenance_delta_anomaly_failure_uses_warning()
+    test_adaptation_failure_error_classes_registered()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76874,6 +76883,183 @@ def test_verify_chain_failure_adapts_metacognitive_trigger():
     )
 
     print("✅ test_verify_chain_failure_adapts_metacognitive_trigger PASSED")
+
+
+# ── Section 54: Adaptation Failure Feedback Loop Tests ──────────────────
+# These tests verify that exception handlers for metacognitive adaptation
+# failures themselves record episodes to error_evolution, closing the
+# meta-level feedback loop where the learning mechanism's own failures
+# were invisible to the system.
+
+def test_ucc_metacognitive_adapt_failure_records_error_evolution():
+    """UCC evaluate() adapt_weights_from_evolution failure must record
+    a 'metacognitive_adapt_failure' episode to error_evolution so the
+    system can learn about its own learning failures."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+
+    idx = src.find("adapt_weights_from_evolution failed (non-fatal)")
+    assert idx > 0, "UCC adapt_weights_from_evolution exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'metacognitive_adapt_failure' in region, (
+        "UCC adapt_weights_from_evolution exception must record a "
+        "'metacognitive_adapt_failure' episode to error_evolution"
+    )
+
+    print("✅ test_ucc_metacognitive_adapt_failure_records_error_evolution PASSED")
+
+
+def test_ucc_provenance_adapt_failure_records_error_evolution():
+    """UCC evaluate() provenance adapt_thresholds failure must record
+    a 'provenance_adapt_failure' episode to error_evolution and use
+    logger.warning for traceability."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+
+    idx = src.find("provenance adapt_thresholds failed (non-fatal)")
+    assert idx > 0, "UCC provenance adapt_thresholds exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'provenance_adapt_failure' in region, (
+        "UCC provenance adapt_thresholds exception must record a "
+        "'provenance_adapt_failure' episode to error_evolution"
+    )
+    # Verify it uses logger.warning, not logger.debug
+    handler_start = src.find("adapt_thresholds")
+    handler_region = src[handler_start:handler_start + 800]
+    assert 'logger.warning' in handler_region or 'logger.warning(' in handler_region, (
+        "UCC provenance adapt_thresholds exception must use logger.warning "
+        "for cognitive path traceability"
+    )
+
+    print("✅ test_ucc_provenance_adapt_failure_records_error_evolution PASSED")
+
+
+def test_compute_loss_adapt_failure_records_error_evolution():
+    """compute_loss() trigger adaptation failure must record a
+    'compute_loss_adapt_failure' episode to error_evolution and use
+    logger.warning for cognitive path traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+
+    idx = src.find("Training loss trigger adaptation failed")
+    assert idx > 0, "compute_loss trigger adaptation exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'compute_loss_adapt_failure' in region, (
+        "compute_loss exception must record 'compute_loss_adapt_failure' "
+        "in error_evolution when trigger adaptation fails"
+    )
+    # Verify logger.warning is used (appears just before the message)
+    pre_region = src[max(0, idx - 100):idx]
+    assert 'logger.warning' in pre_region, (
+        "compute_loss trigger adaptation exception must use logger.warning "
+        "for cognitive path traceability"
+    )
+
+    print("✅ test_compute_loss_adapt_failure_records_error_evolution PASSED")
+
+
+def test_training_bridge_adapt_failure_records_error_evolution():
+    """bridge_training_loss_to_error_evolution() adaptation failure must
+    record a 'training_bridge_adapt_failure' episode to error_evolution
+    and use logger.warning for cognitive path traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.bridge_training_loss_to_error_evolution)
+
+    idx = src.find("Training bridge trigger adaptation failed")
+    assert idx > 0, "bridge_training_loss adaptation exception handler must exist"
+    region = src[idx:idx + 600]
+    assert 'training_bridge_adapt_failure' in region, (
+        "bridge_training_loss exception must record "
+        "'training_bridge_adapt_failure' in error_evolution when "
+        "trigger adaptation fails"
+    )
+    # Verify logger.warning is used (appears just before the message)
+    pre_region = src[max(0, idx - 100):idx]
+    assert 'logger.warning' in pre_region, (
+        "bridge_training_loss adaptation exception must use "
+        "logger.warning for cognitive path traceability"
+    )
+
+    print("✅ test_training_bridge_adapt_failure_records_error_evolution PASSED")
+
+
+def test_convergence_bridge_failure_uses_warning():
+    """ConvergenceMonitor._bridge_convergence_event() failure must use
+    logger.warning (not logger.debug) so convergence bridge failures
+    are visible in cognitive path tracing."""
+    import inspect
+    from aeon_core import ConvergenceMonitor
+
+    src = inspect.getsource(ConvergenceMonitor._bridge_convergence_event)
+
+    idx = src.find("Training error bridge record failed")
+    assert idx > 0, "convergence bridge exception handler must exist"
+    # Check backwards from the message to verify logger.warning is used
+    pre_region = src[max(0, idx - 100):idx]
+    assert 'logger.warning' in pre_region, (
+        "_bridge_convergence_event must use logger.warning (not "
+        "logger.debug) so convergence bridge failures are traceable"
+    )
+
+    print("✅ test_convergence_bridge_failure_uses_warning PASSED")
+
+
+def test_provenance_delta_anomaly_failure_uses_warning():
+    """CausalProvenanceTracker.record_after() error_evolution recording
+    failure must use logger.warning (not logger.debug) so provenance
+    anomaly recording failures are visible in cognitive path tracing."""
+    import inspect
+    from aeon_core import CausalProvenanceTracker
+
+    src = inspect.getsource(CausalProvenanceTracker.record_after)
+
+    idx = src.find("Provenance delta anomaly recording failed")
+    assert idx > 0, "provenance delta anomaly exception handler must exist"
+    pre_region = src[max(0, idx - 100):idx]
+    assert 'logger.warning' in pre_region, (
+        "record_after error_evolution recording failure must use "
+        "logger.warning (not logger.debug) for cognitive traceability"
+    )
+
+    print("✅ test_provenance_delta_anomaly_failure_uses_warning PASSED")
+
+
+def test_adaptation_failure_error_classes_registered():
+    """All four new adaptation failure error classes must be registered
+    in both _class_to_signal and _ERROR_CLASS_TO_LAMBDA so they
+    influence both metacognitive trigger weights and training loss
+    adjustments."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    trigger = MetaCognitiveRecursionTrigger.__init__
+    import inspect
+    trigger_src = inspect.getsource(MetaCognitiveRecursionTrigger)
+    tracker_cls = CausalErrorEvolutionTracker
+
+    new_classes = [
+        'metacognitive_adapt_failure',
+        'provenance_adapt_failure',
+        'compute_loss_adapt_failure',
+        'training_bridge_adapt_failure',
+    ]
+
+    for cls_name in new_classes:
+        assert cls_name in trigger_src, (
+            f"'{cls_name}' must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+        assert cls_name in tracker_cls._ERROR_CLASS_TO_LAMBDA, (
+            f"'{cls_name}' must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+
+    print("✅ test_adaptation_failure_error_classes_registered PASSED")
 
 
 if __name__ == "__main__":
