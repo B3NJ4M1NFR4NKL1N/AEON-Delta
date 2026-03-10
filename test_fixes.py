@@ -67627,6 +67627,14 @@ def run_all_tests():
     test_reinforcement_failure_records_error_evolution()
     test_reinforcement_failure_records_causal_trace()
 
+    # Cognitive integration & activation patches
+    test_emergence_assessment_in_causal_decision_chain()
+    test_causal_chain_coverage_deficit_signal_registered()
+    test_verify_and_reinforce_writes_causal_chain_deficit()
+    test_new_error_classes_registered()
+    test_verify_causal_chain_escalates_untraced()
+    test_verify_cognitive_unity_escalates_signal_dropout()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76202,6 +76210,208 @@ def test_reinforcement_failure_records_causal_trace():
     )
 
     print("✅ test_reinforcement_failure_records_causal_trace PASSED")
+
+
+def test_emergence_assessment_in_causal_decision_chain():
+    """Forward pass must expose per-axiom emergence assessment in the
+    causal_decision_chain so consumers can deterministically trace which
+    AGI requirements blocked or permitted emergence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    chain = result.get('causal_decision_chain', {})
+    assert 'emergence_assessment' in chain, (
+        "causal_decision_chain must include emergence_assessment"
+    )
+    ea = chain['emergence_assessment']
+    assert 'emerged' in ea, "emergence_assessment must have 'emerged'"
+    assert 'axiom_mutual_verification' in ea, (
+        "emergence_assessment must have 'axiom_mutual_verification'"
+    )
+    assert 'axiom_metacognitive_responsiveness' in ea, (
+        "emergence_assessment must have 'axiom_metacognitive_responsiveness'"
+    )
+    assert 'axiom_root_cause_traceability' in ea, (
+        "emergence_assessment must have 'axiom_root_cause_traceability'"
+    )
+    assert 'cognitive_unity_score' in ea, (
+        "emergence_assessment must have 'cognitive_unity_score'"
+    )
+    assert isinstance(ea['emerged'], bool)
+
+    print("✅ test_emergence_assessment_in_causal_decision_chain PASSED")
+
+
+def test_causal_chain_coverage_deficit_signal_registered():
+    """The causal_chain_coverage_deficit signal must be registered in the
+    feedback bus so verify_and_reinforce() can propagate causal chain
+    traceability degradation to the next forward pass's meta-loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    signals = getattr(model.feedback_bus, '_extra_signals', {})
+    assert 'causal_chain_coverage_deficit' in signals, (
+        "causal_chain_coverage_deficit must be registered in feedback bus"
+    )
+
+    print("✅ test_causal_chain_coverage_deficit_signal_registered PASSED")
+
+
+def test_verify_and_reinforce_writes_causal_chain_deficit():
+    """verify_and_reinforce() must write the causal chain coverage deficit
+    to the feedback bus so the next forward pass's meta-loop conditioning
+    reflects causal transparency degradation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to populate state
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Run verify_and_reinforce
+    report = model.verify_and_reinforce()
+
+    # The feedback bus should have causal_chain_coverage_deficit updated
+    signals = getattr(model.feedback_bus, '_extra_signals', {})
+    assert 'causal_chain_coverage_deficit' in signals, (
+        "causal_chain_coverage_deficit must be in feedback bus after "
+        "verify_and_reinforce()"
+    )
+    val = signals['causal_chain_coverage_deficit']
+    assert 0.0 <= val <= 1.0, (
+        f"causal_chain_coverage_deficit must be in [0, 1], got {val}"
+    )
+
+    print("✅ test_verify_and_reinforce_writes_causal_chain_deficit PASSED")
+
+
+def test_new_error_classes_registered():
+    """New error classes (signal_dropout, active_pass_traceability_gap,
+    root_cause_attribution_failure) must be registered in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA mappings."""
+    from aeon_core import CausalErrorEvolutionTracker
+    import re, os
+
+    # Verify _ERROR_CLASS_TO_LAMBDA via instance
+    tracker = CausalErrorEvolutionTracker()
+
+    new_classes = [
+        'signal_dropout',
+        'active_pass_traceability_gap',
+        'root_cause_attribution_failure',
+    ]
+
+    for cls in new_classes:
+        assert cls in tracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # Verify _class_to_signal via source inspection (same approach as
+    # test_error_class_to_signal_full_coverage)
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    for cls in new_classes:
+        assert cls in mapped, (
+            f"{cls} must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+
+    # Verify they can be recorded
+    for cls in new_classes:
+        tracker.record_episode(
+            error_class=cls,
+            success=False,
+            strategy_used='test',
+        )
+    summary = tracker.get_error_summary()
+    classes = summary.get('error_classes', {})
+    for cls in new_classes:
+        assert cls in classes, f"{cls} must be recordable in error evolution"
+
+    print("✅ test_new_error_classes_registered PASSED")
+
+
+def test_verify_causal_chain_escalates_untraced():
+    """verify_causal_chain() must escalate untraced subsystems to
+    error_evolution so the metacognitive trigger learns that end-to-end
+    traceability is incomplete."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert 'causal_chain_gap' in src, (
+        "verify_causal_chain must record causal_chain_gap in "
+        "error_evolution when untraced subsystems are found"
+    )
+    assert 'root_cause_attribution_failure' in src, (
+        "verify_causal_chain must record root_cause_attribution_failure "
+        "in error_evolution when trace_root_cause() fails"
+    )
+
+    print("✅ test_verify_causal_chain_escalates_untraced PASSED")
+
+
+def test_verify_cognitive_unity_escalates_signal_dropout():
+    """verify_cognitive_unity() must escalate feedback bus signal dropout
+    to error_evolution so the metacognitive trigger learns that cross-pass
+    conditioning is degraded."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert 'signal_dropout' in src, (
+        "verify_cognitive_unity must record signal_dropout in "
+        "error_evolution when feedback bus coverage is below threshold"
+    )
+    assert 'active_pass_traceability_gap' in src, (
+        "verify_cognitive_unity must record active_pass_traceability_gap "
+        "in error_evolution when untraced active subsystems are found"
+    )
+
+    print("✅ test_verify_cognitive_unity_escalates_signal_dropout PASSED")
 
 
 if __name__ == "__main__":
