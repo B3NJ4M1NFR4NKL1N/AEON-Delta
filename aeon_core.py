@@ -16860,6 +16860,15 @@ class MetaCognitiveRecursionTrigger:
             # coherence validation raised an exception, leaving memory
             # consistency unverified before the meta-loop.
             "memory_validation_failure": "memory_staleness",
+            # MCTS causal adjacency failure — extracting the causal
+            # model adjacency matrix for MCTS prior guidance raised
+            # an exception, degrading causal quality of planning.
+            "mcts_causal_adjacency_failure": "low_causal_quality",
+            # Pipeline wiring verification failure — the
+            # verify_pipeline_wiring() call inside
+            # verify_and_reinforce() raised an exception, leaving
+            # pipeline integrity unverified.
+            "pipeline_wiring_verification_failure": "low_output_reliability",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18163,6 +18172,15 @@ class CausalErrorEvolutionTracker:
         # errored.  Maps to lambda_memory_retrieval so training
         # strengthens memory consistency checking.
         "memory_validation_failure": "lambda_memory_retrieval",
+        # MCTS causal adjacency failure — causal model adjacency
+        # extraction errored during planning.  Maps to
+        # lambda_causal_dag so training strengthens causal model
+        # reliability.
+        "mcts_causal_adjacency_failure": "lambda_causal_dag",
+        # Pipeline wiring verification failure — verify_pipeline_wiring
+        # errored inside verify_and_reinforce.  Maps to lambda_coherence
+        # so training strengthens architectural integrity checks.
+        "pipeline_wiring_verification_failure": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -30840,9 +30858,30 @@ class AEONDeltaV3(nn.Module):
             if self.causal_model is not None and hasattr(self.causal_model, 'adjacency'):
                 try:
                     _mcts_causal_adj = self.causal_model.adjacency.detach()
-                except Exception:
+                except Exception as _causal_adj_err:
                     uncertainty_sources["mcts_causal_adj_failure"] = 0.05
                     uncertainty = min(1.0, uncertainty + 0.05)
+                    logger.debug(
+                        "MCTS causal adjacency extraction failed: %s",
+                        _causal_adj_err,
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='mcts_causal_adjacency_failure',
+                            strategy_used='skip_causal_prior',
+                            success=False,
+                            metadata={'error': str(_causal_adj_err)},
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _adj_adapt_err:
+                                logger.debug(
+                                    "MCTS causal adjacency trigger adaptation failed: %s",
+                                    _adj_adapt_err,
+                                )
             try:
                 mcts_results = self.mcts_planner.search(
                     C_star[0], self.world_model,
@@ -38255,8 +38294,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            logger.debug("Backbone adapter trigger adaptation failed")
+                        except Exception as _bb_adapt_err:
+                            logger.debug("Backbone adapter trigger adaptation failed: %s", _bb_adapt_err)
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # backbone signal, closing the gap where adapter errors
@@ -38322,8 +38361,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            logger.debug("Continual learning trigger adaptation failed")
+                        except Exception as _cl_adapt_err:
+                            logger.debug("Continual learning trigger adaptation failed: %s", _cl_adapt_err)
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # continual-learning signal.
@@ -38419,8 +38458,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            logger.debug("Chunked encoding trigger adaptation failed")
+                        except Exception as _chunk_adapt_err:
+                            logger.debug("Chunked encoding trigger adaptation failed: %s", _chunk_adapt_err)
             self.provenance_tracker.record_after("chunked_processor", z_quantized)
             self.coherence_registry.register_output(
                 "chunked_processor",
@@ -38700,8 +38739,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            logger.debug("Decoder degenerate check trigger adaptation failed")
+                        except Exception as _degen_adapt_err:
+                            logger.debug("Decoder degenerate check trigger adaptation failed: %s", _degen_adapt_err)
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -38809,9 +38848,10 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
+                        except Exception as _cyc_adapt_err:
                             logger.debug(
-                                "Cycle-consistency trigger adaptation failed"
+                                "Cycle-consistency trigger adaptation failed: %s",
+                                _cyc_adapt_err,
                             )
 
         outputs['cycle_consistency'] = _cycle_consistency
@@ -39004,9 +39044,10 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
+                            except Exception as _late_adapt_err:
                                 logger.debug(
-                                    "Late meta-loop trigger adaptation failed"
+                                    "Late meta-loop trigger adaptation failed: %s",
+                                    _late_adapt_err,
                                 )
                 # Record the late rerun decision in causal_decision_chain
                 # so that the post-output corrective computation is
@@ -45737,6 +45778,28 @@ class AEONDeltaV3(nn.Module):
                     _wiring_exc,
                 )
                 _pipeline_wiring_cov = 0.0
+                # Escalate the wiring verification failure into
+                # error_evolution so the metacognitive trigger learns
+                # that pipeline integrity verification is degraded,
+                # closing the gap where wiring verification exceptions
+                # were logged but never fed back into the learning loop.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='pipeline_wiring_verification_failure',
+                        strategy_used='verify_and_reinforce',
+                        success=False,
+                        metadata={'error': str(_wiring_exc)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _wiring_adapt_err:
+                            logger.debug(
+                                "Wiring verification trigger adaptation failed: %s",
+                                _wiring_adapt_err,
+                            )
         else:
             _pipeline_wiring_cov = 1.0
         if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:

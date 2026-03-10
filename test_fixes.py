@@ -67669,6 +67669,10 @@ def run_all_tests():
     test_reasoning_core_memory_validation_records_error_evolution()
     test_new_reasoning_core_error_classes_registered()
     test_pre_reasoning_causal_decisions_merged()
+    test_mcts_causal_adjacency_failure_records_error_evolution()
+    test_pipeline_wiring_verification_failure_records_error_evolution()
+    test_adapter_bare_except_blocks_capture_exception()
+    test_new_integration_error_classes_registered()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -77129,6 +77133,88 @@ def test_pre_reasoning_causal_decisions_merged():
         "causal_decision_chain after reasoning core runs"
     )
     print("✅ test_pre_reasoning_causal_decisions_merged PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation Patches
+# ============================================================================
+
+def test_mcts_causal_adjacency_failure_records_error_evolution():
+    """MCTS causal adjacency extraction failure must record an
+    error_evolution episode with error_class='mcts_causal_adjacency_failure'
+    and trigger metacognitive adaptation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "mcts_causal_adjacency_failure" in src, (
+        "_reasoning_core_impl must record 'mcts_causal_adjacency_failure' "
+        "in error_evolution when causal adjacency extraction fails"
+    )
+    assert "skip_causal_prior" in src, (
+        "_reasoning_core_impl must use 'skip_causal_prior' strategy "
+        "when causal adjacency extraction fails"
+    )
+    print("✅ test_mcts_causal_adjacency_failure_records_error_evolution PASSED")
+
+
+def test_pipeline_wiring_verification_failure_records_error_evolution():
+    """verify_pipeline_wiring() exception in verify_and_reinforce must
+    record an error_evolution episode with
+    error_class='pipeline_wiring_verification_failure' and trigger
+    metacognitive adaptation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "pipeline_wiring_verification_failure" in src, (
+        "verify_and_reinforce must record "
+        "'pipeline_wiring_verification_failure' in error_evolution when "
+        "verify_pipeline_wiring() raises an exception"
+    )
+    assert "adapt_weights_from_evolution" in src, (
+        "verify_and_reinforce must call adapt_weights_from_evolution "
+        "after recording pipeline_wiring_verification_failure"
+    )
+    print("✅ test_pipeline_wiring_verification_failure_records_error_evolution PASSED")
+
+
+def test_adapter_bare_except_blocks_capture_exception():
+    """All nested except blocks in adapter error handlers must capture
+    the exception variable for traceability — no bare 'except Exception:'
+    without a variable name."""
+    import inspect
+    import re
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find all 'except Exception:' without a variable (bare catches)
+    bare_catches = re.findall(r'except\s+Exception\s*:', src)
+    assert len(bare_catches) == 0, (
+        f"_forward_impl contains {len(bare_catches)} bare 'except Exception:' "
+        f"blocks without captured exception variables"
+    )
+    print("✅ test_adapter_bare_except_blocks_capture_exception PASSED")
+
+
+def test_new_integration_error_classes_registered():
+    """New error classes introduced by cognitive integration patches must
+    be registered in both _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    # Build the _class_to_signal dict by calling adapt_weights_from_evolution
+    # with an empty summary to trigger dict construction, or access it via
+    # source inspection.
+    import inspect
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    new_classes = [
+        'mcts_causal_adjacency_failure',
+        'pipeline_wiring_verification_failure',
+    ]
+    for cls_name in new_classes:
+        assert cls_name in src, (
+            f"'{cls_name}' must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+        assert cls_name in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"'{cls_name}' must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_integration_error_classes_registered PASSED")
 
 
 if __name__ == "__main__":
