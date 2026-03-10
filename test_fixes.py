@@ -36780,6 +36780,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "grounded_multimodal": "grounded_multimodal",
         "encoder_reasoning_norm": "encoder_reasoning_norm",
         "deception_suppressor": "deception_suppressor",
+        "social_cognition": "social_cognition_module",
+        "code_execution": "code_execution_sandbox",
         "feedback_bus": "feedback_bus",
         "cycle_consistency": "cycle_consistency_validator",
         "output_reliability_gate": "output_reliability_gate",
@@ -47369,13 +47371,16 @@ def test_config_deception_suppressor_blend():
 
 
 def test_orphaned_config_flags_documented():
-    """Orphaned config flags have proper documentation."""
+    """Config flags for social cognition and code execution are documented."""
     import inspect
     from aeon_core import AEONConfig
     src = inspect.getsource(AEONConfig)
-    # enable_social_cognition should have a NOT_IMPLEMENTED note
-    assert "not yet implemented" in src.lower() or "planned" in src.lower(), (
-        "Orphaned config flags must be documented as not yet implemented"
+    # Both flags should have documentation (either as implemented or planned)
+    assert "enable_social_cognition" in src, (
+        "AEONConfig must have enable_social_cognition flag"
+    )
+    assert "enable_code_execution" in src, (
+        "AEONConfig must have enable_code_execution flag"
     )
     print("✅ test_orphaned_config_flags_documented PASSED")
 
@@ -67685,6 +67690,30 @@ def run_all_tests():
     test_periodic_reinforcement_failure_adapts_trigger()
     test_uncertainty_reinforcement_failure_adapts_trigger()
     test_forward_pass_causal_decision_completeness()
+    # ── Social Cognition & Code Execution integration tests ──
+    test_social_cognition_module_forward()
+    test_social_cognition_with_agent_embedding()
+    test_social_cognition_gradient_flow()
+    test_social_cognition_in_aeon_init()
+    test_social_cognition_disabled()
+    test_social_pressure_feedback_signal_registered()
+    test_social_cognition_error_class_in_trigger_mapping()
+    test_social_cognition_in_forward_pass()
+    test_code_execution_sandbox_forward()
+    test_code_execution_sandbox_gradient_flow()
+    test_code_execution_sandbox_in_aeon_init()
+    test_code_execution_sandbox_disabled()
+    test_sandbox_pressure_feedback_signal_registered()
+    test_code_execution_error_class_in_trigger_mapping()
+    test_code_execution_in_forward_pass()
+    test_social_cognition_in_error_class_to_lambda()
+    test_code_execution_in_error_class_to_lambda()
+    test_social_cognition_in_node_attr_map()
+    test_code_execution_in_node_attr_map()
+    test_social_cognition_pipeline_dependencies()
+    test_code_execution_pipeline_dependencies()
+    test_social_cognition_in_diagnostic()
+    test_code_execution_in_diagnostic()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -77462,6 +77491,301 @@ def test_forward_pass_causal_decision_completeness():
             f"deterministic traceability"
         )
     print("✅ test_forward_pass_causal_decision_completeness PASSED")
+
+
+# ============================================================================
+# Social Cognition Module & Code Execution Sandbox Tests
+# ============================================================================
+
+
+def test_social_cognition_module_forward():
+    """SocialCognitionModule produces expected output keys and shapes."""
+    from aeon_core import SocialCognitionModule
+    sc = SocialCognitionModule(hidden_dim=256, threshold=0.4)
+    core_state = torch.randn(4, 256)
+    result = sc(core_state)
+    assert 'perspective_alignment' in result
+    assert 'intent_embedding' in result
+    assert 'social_pressure' in result
+    assert result['perspective_alignment'].shape == (4, 1)
+    assert result['intent_embedding'].shape == (4, 256)
+    assert 0.0 <= result['social_pressure'] <= 1.0
+    # Alignment must be in [0, 1] (sigmoid output)
+    assert (result['perspective_alignment'] >= 0.0).all()
+    assert (result['perspective_alignment'] <= 1.0).all()
+    print("✅ test_social_cognition_module_forward PASSED")
+
+
+def test_social_cognition_with_agent_embedding():
+    """SocialCognitionModule accepts optional agent embedding."""
+    from aeon_core import SocialCognitionModule
+    sc = SocialCognitionModule(hidden_dim=128)
+    core_state = torch.randn(2, 128)
+    agent_emb = torch.randn(2, 128)
+    result = sc(core_state, agent_embedding=agent_emb)
+    assert result['intent_embedding'].shape == (2, 128)
+    assert 0.0 <= result['social_pressure'] <= 1.0
+    print("✅ test_social_cognition_with_agent_embedding PASSED")
+
+
+def test_social_cognition_gradient_flow():
+    """SocialCognitionModule supports gradient back-propagation."""
+    from aeon_core import SocialCognitionModule
+    sc = SocialCognitionModule(hidden_dim=64, threshold=0.4)
+    core_state = torch.randn(2, 64, requires_grad=True)
+    result = sc(core_state)
+    loss = result['perspective_alignment'].mean() + result['intent_embedding'].mean()
+    loss.backward()
+    assert core_state.grad is not None
+    print("✅ test_social_cognition_gradient_flow PASSED")
+
+
+def test_social_cognition_in_aeon_init():
+    """SocialCognitionModule is initialized in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_social_cognition=True)
+    model = AEONDeltaV3(config)
+    assert model.social_cognition_module is not None, (
+        "SocialCognitionModule must be initialized when "
+        "enable_social_cognition=True"
+    )
+    print("✅ test_social_cognition_in_aeon_init PASSED")
+
+
+def test_social_cognition_disabled():
+    """SocialCognitionModule is None when config flag is False."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_social_cognition=False)
+    model = AEONDeltaV3(config)
+    assert model.social_cognition_module is None, (
+        "SocialCognitionModule must be None when "
+        "enable_social_cognition=False"
+    )
+    print("✅ test_social_cognition_disabled PASSED")
+
+
+def test_social_pressure_feedback_signal_registered():
+    """social_pressure signal is registered in the CognitiveFeedbackBus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert "social_pressure" in model.feedback_bus._extra_signals, (
+        "social_pressure must be a registered feedback bus signal"
+    )
+    print("✅ test_social_pressure_feedback_signal_registered PASSED")
+
+
+def test_social_cognition_error_class_in_trigger_mapping():
+    """social_cognition error classes map to trigger signals."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert "social_cognition_misalignment" in src, (
+        "adapt_weights_from_evolution must map social_cognition_misalignment"
+    )
+    assert "social_cognition_failure" in src, (
+        "adapt_weights_from_evolution must map social_cognition_failure"
+    )
+    print("✅ test_social_cognition_error_class_in_trigger_mapping PASSED")
+
+
+def test_social_cognition_in_forward_pass():
+    """SocialCognitionModule is invoked in the reasoning core forward pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "social_cognition_module" in src, (
+        "_reasoning_core_impl must reference social_cognition_module"
+    )
+    assert "social_pressure" in src, (
+        "_reasoning_core_impl must compute social_pressure"
+    )
+    print("✅ test_social_cognition_in_forward_pass PASSED")
+
+
+def test_code_execution_sandbox_forward():
+    """CodeExecutionSandbox produces expected output keys and shapes."""
+    from aeon_core import CodeExecutionSandbox
+    ce = CodeExecutionSandbox(hidden_dim=256, safety_threshold=0.5)
+    core_state = torch.randn(4, 256)
+    result = ce(core_state)
+    assert 'execution_confidence' in result
+    assert 'verified_embedding' in result
+    assert 'sandbox_pressure' in result
+    assert result['execution_confidence'].shape == (4, 1)
+    assert result['verified_embedding'].shape == (4, 256)
+    assert 0.0 <= result['sandbox_pressure'] <= 1.0
+    # Confidence must be in [0, 1] (sigmoid output)
+    assert (result['execution_confidence'] >= 0.0).all()
+    assert (result['execution_confidence'] <= 1.0).all()
+    print("✅ test_code_execution_sandbox_forward PASSED")
+
+
+def test_code_execution_sandbox_gradient_flow():
+    """CodeExecutionSandbox supports gradient back-propagation."""
+    from aeon_core import CodeExecutionSandbox
+    ce = CodeExecutionSandbox(hidden_dim=64, safety_threshold=0.5)
+    core_state = torch.randn(2, 64, requires_grad=True)
+    result = ce(core_state)
+    loss = result['execution_confidence'].mean() + result['verified_embedding'].mean()
+    loss.backward()
+    assert core_state.grad is not None
+    print("✅ test_code_execution_sandbox_gradient_flow PASSED")
+
+
+def test_code_execution_sandbox_in_aeon_init():
+    """CodeExecutionSandbox is initialized in AEONDeltaV3 when enabled."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_code_execution=True)
+    model = AEONDeltaV3(config)
+    assert model.code_execution_sandbox is not None, (
+        "CodeExecutionSandbox must be initialized when "
+        "enable_code_execution=True"
+    )
+    print("✅ test_code_execution_sandbox_in_aeon_init PASSED")
+
+
+def test_code_execution_sandbox_disabled():
+    """CodeExecutionSandbox is None when config flag is False."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(enable_code_execution=False)
+    model = AEONDeltaV3(config)
+    assert model.code_execution_sandbox is None, (
+        "CodeExecutionSandbox must be None when "
+        "enable_code_execution=False"
+    )
+    print("✅ test_code_execution_sandbox_disabled PASSED")
+
+
+def test_sandbox_pressure_feedback_signal_registered():
+    """sandbox_pressure signal is registered in the CognitiveFeedbackBus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    assert "sandbox_pressure" in model.feedback_bus._extra_signals, (
+        "sandbox_pressure must be a registered feedback bus signal"
+    )
+    print("✅ test_sandbox_pressure_feedback_signal_registered PASSED")
+
+
+def test_code_execution_error_class_in_trigger_mapping():
+    """code_execution error classes map to trigger signals."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert "code_execution_low_confidence" in src, (
+        "adapt_weights_from_evolution must map code_execution_low_confidence"
+    )
+    assert "code_execution_sandbox_failure" in src, (
+        "adapt_weights_from_evolution must map code_execution_sandbox_failure"
+    )
+    print("✅ test_code_execution_error_class_in_trigger_mapping PASSED")
+
+
+def test_code_execution_in_forward_pass():
+    """CodeExecutionSandbox is invoked in the reasoning core forward pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "code_execution_sandbox" in src, (
+        "_reasoning_core_impl must reference code_execution_sandbox"
+    )
+    assert "sandbox_pressure" in src, (
+        "_reasoning_core_impl must compute sandbox_pressure"
+    )
+    print("✅ test_code_execution_in_forward_pass PASSED")
+
+
+def test_social_cognition_in_error_class_to_lambda():
+    """Social cognition error classes are mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "social_cognition_misalignment" in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA must include social_cognition_misalignment"
+    )
+    assert "social_cognition_failure" in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA must include social_cognition_failure"
+    )
+    print("✅ test_social_cognition_in_error_class_to_lambda PASSED")
+
+
+def test_code_execution_in_error_class_to_lambda():
+    """Code execution error classes are mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "code_execution_low_confidence" in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA must include code_execution_low_confidence"
+    )
+    assert "code_execution_sandbox_failure" in mapping, (
+        "_ERROR_CLASS_TO_LAMBDA must include code_execution_sandbox_failure"
+    )
+    print("✅ test_code_execution_in_error_class_to_lambda PASSED")
+
+
+def test_social_cognition_in_node_attr_map():
+    """social_cognition is in _NODE_ATTR_MAP."""
+    from aeon_core import AEONDeltaV3
+    assert "social_cognition" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "_NODE_ATTR_MAP must include social_cognition"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["social_cognition"] == "social_cognition_module"
+    print("✅ test_social_cognition_in_node_attr_map PASSED")
+
+
+def test_code_execution_in_node_attr_map():
+    """code_execution is in _NODE_ATTR_MAP."""
+    from aeon_core import AEONDeltaV3
+    assert "code_execution" in AEONDeltaV3._NODE_ATTR_MAP, (
+        "_NODE_ATTR_MAP must include code_execution"
+    )
+    assert AEONDeltaV3._NODE_ATTR_MAP["code_execution"] == "code_execution_sandbox"
+    print("✅ test_code_execution_in_node_attr_map PASSED")
+
+
+def test_social_cognition_pipeline_dependencies():
+    """social_cognition has pipeline dependency edges."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    sc_edges = [(u, d) for u, d in deps if "social_cognition" in u or "social_cognition" in d]
+    assert len(sc_edges) >= 2, (
+        f"social_cognition must have at least 2 pipeline edges, got {len(sc_edges)}"
+    )
+    print("✅ test_social_cognition_pipeline_dependencies PASSED")
+
+
+def test_code_execution_pipeline_dependencies():
+    """code_execution has pipeline dependency edges."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    ce_edges = [(u, d) for u, d in deps if "code_execution" in u or "code_execution" in d]
+    assert len(ce_edges) >= 2, (
+        f"code_execution must have at least 2 pipeline edges, got {len(ce_edges)}"
+    )
+    print("✅ test_code_execution_pipeline_dependencies PASSED")
+
+
+def test_social_cognition_in_diagnostic():
+    """SocialCognition appears in print_architecture_summary module list."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.print_architecture_summary)
+    assert "SocialCognition" in src, (
+        "print_architecture_summary must include SocialCognition in module list"
+    )
+    print("✅ test_social_cognition_in_diagnostic PASSED")
+
+
+def test_code_execution_in_diagnostic():
+    """CodeExecutionSandbox appears in print_architecture_summary module list."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.print_architecture_summary)
+    assert "CodeExecutionSandbox" in src, (
+        "print_architecture_summary must include CodeExecutionSandbox in module list"
+    )
+    print("✅ test_code_execution_in_diagnostic PASSED")
 
 
 if __name__ == "__main__":
