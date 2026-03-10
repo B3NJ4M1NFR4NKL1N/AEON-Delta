@@ -161,6 +161,8 @@ __all__ = [
     "SparseFactorization", "CausalFactorExtractor",
     "MultiLevelSafetySystem", "TransparentSelfReporting",
     "DeceptionSuppressor",
+    "SocialCognitionModule",
+    "CodeExecutionSandbox",
     # Memory
     "MemoryManager", "HierarchicalMemory",
     "NeuralTuringMachine", "TemporalMemory",
@@ -3082,16 +3084,16 @@ class AEONConfig:
     # ===== EXPERIMENTAL =====
     enable_multimodal: bool = True
     enable_hierarchical_vae: bool = True
-    # NOTE: Social cognition module is planned but not yet implemented.
-    # Setting this to True has no effect until the module is available.
+    # Social cognition module — enables perspective-taking and agent-
+    # intent modelling via the SocialCognitionModule.
     enable_social_cognition: bool = True
     enable_deception_suppressor: bool = True
     # Deception suppressor blend weight — controls how strongly the
     # suppressor gates the output when internal inconsistency is detected.
     # Higher values cause stronger suppression.  Range: [0, 1].
     deception_suppressor_blend: float = 0.2
-    # NOTE: Code execution sandbox is planned but not yet implemented.
-    # Setting this to True has no effect until the sandbox is available.
+    # Code execution sandbox — enables the CodeExecutionSandbox module
+    # for differentiable program-verification gating.
     enable_code_execution: bool = True
 
     # ===== CONTINUAL LEARNING =====
@@ -9682,6 +9684,164 @@ class DeceptionSuppressor(nn.Module):
             'independent_consistency': independent_consistency,
             'divergence': divergence,
             'deception_pressure': deception_pressure,
+        }
+
+
+class SocialCognitionModule(nn.Module):
+    """Lightweight perspective-taking and agent-intent modelling module.
+
+    Provides a differentiable *theory-of-mind* pathway that allows the
+    cognitive architecture to reason about external agents' likely
+    beliefs, goals, and intentions.  The module ingests the current
+    converged cognitive state ``C_star`` and an optional external agent
+    embedding, then produces:
+
+    * **perspective_alignment** — how well the system's internal state
+      aligns with the modelled agent perspective (scalar ∈ [0, 1]).
+    * **intent_embedding** — a latent vector summarising the inferred
+      agent intent, usable by downstream reasoning modules.
+    * **social_pressure** — scalar feedback signal for the
+      CognitiveFeedbackBus, quantifying the degree of social-context
+      uncertainty.
+
+    Architecture::
+
+        C_star ─┬─► perspective_probe ──► alignment ∈ [0,1]
+                │
+                └─► intent_encoder ──► intent_embedding [B, hidden_dim]
+                        │
+                        └─► social_pressure (scalar)
+
+    Args:
+        hidden_dim: Dimensionality of internal representations.
+        threshold: Alignment threshold below which social pressure rises.
+    """
+
+    def __init__(self, hidden_dim: int, threshold: float = 0.4):
+        super().__init__()
+        self.threshold = max(0.0, min(threshold, 1.0))
+        self.perspective_probe = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+        self.intent_encoder = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(
+        self,
+        core_state: torch.Tensor,
+        agent_embedding: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Compute perspective alignment and intent embedding.
+
+        Args:
+            core_state: ``[B, hidden_dim]`` converged cognitive state.
+            agent_embedding: Optional ``[B, hidden_dim]`` external agent
+                representation.  When ``None``, the module uses a
+                self-perspective (identity mapping) as a baseline.
+
+        Returns:
+            Dict with ``perspective_alignment``, ``intent_embedding``,
+            and ``social_pressure`` keys.
+        """
+        if agent_embedding is None:
+            agent_embedding = core_state
+
+        perspective_alignment = self.perspective_probe(core_state)
+        intent_embedding = self.intent_encoder(agent_embedding)
+
+        # Social pressure rises when alignment is below threshold
+        _below = (self.threshold - perspective_alignment).clamp(min=0.0)
+        social_pressure = float(_below.mean().item())
+
+        return {
+            'perspective_alignment': perspective_alignment,
+            'intent_embedding': intent_embedding,
+            'social_pressure': social_pressure,
+        }
+
+
+class CodeExecutionSandbox(nn.Module):
+    """Sandboxed code-intent verification module.
+
+    Rather than executing arbitrary code, this module provides a
+    *differentiable program-verification gate* that evaluates whether a
+    proposed code-like symbolic representation is internally consistent
+    and safe before downstream processing.  It acts as a learned
+    classifier over latent ``program embeddings``, producing:
+
+    * **execution_confidence** — estimated probability that the program
+      representation would produce a valid, safe result (∈ [0, 1]).
+    * **verified_embedding** — the program embedding gated by the
+      confidence score, so low-confidence programs are attenuated.
+    * **sandbox_pressure** — scalar feedback signal quantifying the
+      degree of code-safety uncertainty, routed to the
+      CognitiveFeedbackBus.
+
+    Architecture::
+
+        C_star ─► program_encoder ─► program_embedding
+                         │
+                         ├─► safety_classifier ─► execution_confidence
+                         │
+                         └─► gated output = embedding × confidence
+
+    Args:
+        hidden_dim: Dimensionality of internal representations.
+        safety_threshold: Confidence below which sandbox pressure rises.
+    """
+
+    def __init__(self, hidden_dim: int, safety_threshold: float = 0.5):
+        super().__init__()
+        self.safety_threshold = max(0.0, min(safety_threshold, 1.0))
+        self.program_encoder = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.safety_classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        core_state: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Evaluate code-intent safety and produce gated embedding.
+
+        Args:
+            core_state: ``[B, hidden_dim]`` converged cognitive state
+                representing the program intent to be verified.
+
+        Returns:
+            Dict with ``execution_confidence``, ``verified_embedding``,
+            and ``sandbox_pressure`` keys.
+        """
+        program_embedding = self.program_encoder(core_state)
+        execution_confidence = self.safety_classifier(program_embedding)
+
+        # Gate the embedding by confidence
+        verified_embedding = program_embedding * execution_confidence
+
+        # Sandbox pressure rises when confidence is below threshold
+        _below = (self.safety_threshold - execution_confidence).clamp(min=0.0)
+        sandbox_pressure = float(_below.mean().item())
+
+        return {
+            'execution_confidence': execution_confidence,
+            'verified_embedding': verified_embedding,
+            'sandbox_pressure': sandbox_pressure,
         }
 
 
@@ -16565,6 +16725,14 @@ class MetaCognitiveRecursionTrigger:
             # safety_violation so adaptive weights learn from deception
             # history alongside other integrity-related failures.
             "deception_detected": "safety_violation",
+            # Social cognition — perspective misalignment indicates
+            # uncertainty about agent intent modelling.
+            "social_cognition_misalignment": "uncertainty",
+            "social_cognition_failure": "uncertainty",
+            # Code execution sandbox — low execution confidence
+            # signals safety-relevant code-intent uncertainty.
+            "code_execution_low_confidence": "safety_violation",
+            "code_execution_sandbox_failure": "safety_violation",
             # ── Additional error classes for full coverage ─────────
             "active_learning_error": "uncertainty",
             "auto_critic_failure": "uncertainty",
@@ -17181,6 +17349,8 @@ class MetaCognitiveRecursionTrigger:
         "error_evolution_pressure": "uncertainty",
         "emergence_deficit": "coherence_deficit",
         "deception_pressure": "safety_violation",
+        "social_pressure": "uncertainty",
+        "sandbox_pressure": "safety_violation",
         "world_model_prediction_pressure": "world_model_surprise",
         "memory_routing_trust_pressure": "memory_trust_deficit",
         "systematic_uncertainty": "uncertainty",
@@ -17883,6 +18053,10 @@ class CausalErrorEvolutionTracker:
         "safety_rollback": "lambda_safety",
         "safety_critic_revision": "lambda_safety",
         "deception_detected": "lambda_safety",
+        "social_cognition_misalignment": "lambda_coherence",
+        "social_cognition_failure": "lambda_coherence",
+        "code_execution_low_confidence": "lambda_safety",
+        "code_execution_sandbox_failure": "lambda_safety",
         "state_validation_violation": "lambda_safety",
         "terminal_state_invalid": "lambda_safety",
         "trust_scorer_failure": "lambda_safety",
@@ -22294,6 +22468,21 @@ class AEONDeltaV3(nn.Module):
         ("self_report", "deception_suppressor"),
         ("deception_suppressor", "safety"),
         ("deception_suppressor", "metacognitive_trigger"),
+        # ── Social cognition path ─────────────────────────────────
+        # The social cognition module ingests the converged cognitive
+        # state and self-report to model agent perspectives and
+        # intent.  Its social_pressure signal feeds back into the
+        # metacognitive trigger for uncertainty-driven re-reasoning.
+        ("self_report", "social_cognition"),
+        ("social_cognition", "metacognitive_trigger"),
+        # ── Code execution sandbox path ───────────────────────────
+        # The code execution sandbox verifies program-intent
+        # representations for safety before downstream processing.
+        # High sandbox_pressure escalates safety and metacognitive
+        # triggers, ensuring unsafe code intents are caught.
+        ("causal_programmatic", "code_execution"),
+        ("code_execution", "safety"),
+        ("code_execution", "metacognitive_trigger"),
         # ── Memory re-retrieval path ───────────────────────────────
         # When memory staleness triggers consolidation, a re-retrieval
         # pass feeds fresh memories back into the converged state,
@@ -22525,6 +22714,8 @@ class AEONDeltaV3(nn.Module):
         "continual_learning": "continual_learning",
         "feedback_bus": "feedback_bus",
         "deception_suppressor": "deception_suppressor",
+        "social_cognition": "social_cognition_module",
+        "code_execution": "code_execution_sandbox",
         # ucc_rerun_meta_loop is backed by the main meta_loop module
         # since it reuses the same ProvablyConvergentMetaLoop for the
         # UCC-driven same-pass re-reasoning pass.
@@ -22755,6 +22946,18 @@ class AEONDeltaV3(nn.Module):
         # signal conditions the next pass's meta-loop to be more cautious.
         self.feedback_bus.register_signal(
             "deception_pressure", default=0.0,
+        )
+        # Social cognition feedback — when perspective alignment is low,
+        # the social_pressure signal conditions the next pass's meta-loop
+        # to allocate more reasoning to agent-intent modelling.
+        self.feedback_bus.register_signal(
+            "social_pressure", default=0.0,
+        )
+        # Code execution sandbox feedback — when execution confidence is
+        # low, the sandbox_pressure signal conditions the next pass's
+        # meta-loop to be more cautious about program-intent verification.
+        self.feedback_bus.register_signal(
+            "sandbox_pressure", default=0.0,
         )
         # Convergence arbiter conflict — when multiple convergence monitors
         # disagree, the conflict signal conditions the next pass's meta-loop
@@ -23111,6 +23314,26 @@ class AEONDeltaV3(nn.Module):
         else:
             self.deception_suppressor = None
         
+        # ===== SOCIAL COGNITION =====
+        if getattr(config, 'enable_social_cognition', True):
+            logger.info("Loading SocialCognitionModule...")
+            self.social_cognition_module = SocialCognitionModule(
+                hidden_dim=config.hidden_dim,
+                threshold=0.4,
+            ).to(self.device)
+        else:
+            self.social_cognition_module = None
+
+        # ===== CODE EXECUTION SANDBOX =====
+        if getattr(config, 'enable_code_execution', True):
+            logger.info("Loading CodeExecutionSandbox...")
+            self.code_execution_sandbox = CodeExecutionSandbox(
+                hidden_dim=config.hidden_dim,
+                safety_threshold=0.5,
+            ).to(self.device)
+        else:
+            self.code_execution_sandbox = None
+
         # ===== WORLD MODEL =====
         if config.enable_world_model:
             logger.info("Loading Physics-Grounded World Model...")
@@ -24896,6 +25119,18 @@ class AEONDeltaV3(nn.Module):
         _dp = getattr(self, '_cached_deception_pressure', 0.0)
         if _dp > 0.1:
             extra["deception_pressure"] = max(0.0, min(1.0, _dp))
+        # Social cognition feedback — when perspective alignment is low,
+        # the social_pressure signal conditions the next pass's meta-loop
+        # to allocate more reasoning to agent-intent modelling.
+        _sp = getattr(self, '_cached_social_pressure', 0.0)
+        if _sp > 0.1:
+            extra["social_pressure"] = max(0.0, min(1.0, _sp))
+        # Code execution sandbox feedback — when execution confidence is
+        # low, the sandbox_pressure signal conditions the next pass's
+        # meta-loop to be more cautious about program-intent verification.
+        _sbp = getattr(self, '_cached_sandbox_pressure', 0.0)
+        if _sbp > 0.1:
+            extra["sandbox_pressure"] = max(0.0, min(1.0, _sbp))
         # Per-module coherence correction pressure — carries the weakest-
         # pair correction signals from the most recent UCC evaluation into
         # the feedback bus so the meta-loop can allocate proportionally
@@ -25304,6 +25539,10 @@ class AEONDeltaV3(nn.Module):
             "safety_rollback": "safety_violation_pressure",
             "deception_detected": "deception_pressure",
             "deception_suppression": "deception_pressure",
+            "social_cognition_misalignment": "social_pressure",
+            "social_cognition_failure": "social_pressure",
+            "code_execution_low_confidence": "sandbox_pressure",
+            "code_execution_sandbox_failure": "sandbox_pressure",
             "coherence_deficit": "ucc_coherence_trend",
             "post_integration_coherence_deficit": "ucc_coherence_trend",
             "post_auto_critic_coherence_deficit": "ucc_coherence_trend",
@@ -25468,6 +25707,10 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("auto_critic_quality_deficit")
         if getattr(self, 'consistency_gate', None) is not None:
             _evaluated.add("deception_pressure")
+        if getattr(self, 'social_cognition_module', None) is not None:
+            _evaluated.add("social_pressure")
+        if getattr(self, 'code_execution_sandbox', None) is not None:
+            _evaluated.add("sandbox_pressure")
         if getattr(self, 'provenance_tracker', None) is not None:
             _evaluated.add("decoder_provenance_pressure")
             _evaluated.add("trace_incomplete_pressure")
@@ -28329,6 +28572,107 @@ class AEONDeltaV3(nn.Module):
         else:
             self._cached_deception_pressure = 0.0
         
+        # 5-sc. Social cognition — when the SocialCognitionModule is
+        # active, evaluate perspective alignment and social pressure.
+        # High social pressure escalates uncertainty, closing the loop
+        # between agent-intent modelling and metacognitive recursion.
+        social_results: Dict[str, Any] = {}
+        if self.social_cognition_module is not None:
+            try:
+                self.provenance_tracker.record_before("social_cognition", C_star)
+                social_results = self.social_cognition_module(C_star)
+                _social_pressure = social_results.get('social_pressure', 0.0)
+                self._cached_social_pressure = _social_pressure
+                if _social_pressure > 0.3:
+                    _sc_unc_boost = min(
+                        1.0 - uncertainty,
+                        _social_pressure * 0.2,
+                    )
+                    if _sc_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _sc_unc_boost)
+                        uncertainty_sources["social_cognition"] = _sc_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='social_cognition_misalignment',
+                            strategy_used='uncertainty_escalation',
+                            success=True,
+                            metadata={
+                                'social_pressure': _social_pressure,
+                                'uncertainty_boost': _sc_unc_boost,
+                            },
+                        )
+                self.provenance_tracker.record_after("social_cognition", C_star)
+                self.coherence_registry.register_output(
+                    "social_cognition",
+                    validated=torch.isfinite(C_star).all().item(),
+                    quality=max(0.0, 1.0 - _social_pressure),
+                )
+            except Exception as _sc_err:
+                logger.debug(
+                    "SocialCognitionModule forward failed (non-fatal): %s",
+                    _sc_err,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='social_cognition_failure',
+                        strategy_used='skip_social',
+                        success=False,
+                        metadata={'error': str(_sc_err)},
+                    )
+        else:
+            self._cached_social_pressure = 0.0
+
+        # 5-ce. Code execution sandbox — when the CodeExecutionSandbox
+        # is active, verify program-intent safety of the converged state.
+        # Low execution confidence escalates safety and uncertainty.
+        code_exec_results: Dict[str, Any] = {}
+        if self.code_execution_sandbox is not None:
+            try:
+                self.provenance_tracker.record_before("code_execution", C_star)
+                code_exec_results = self.code_execution_sandbox(C_star)
+                _sandbox_pressure = code_exec_results.get('sandbox_pressure', 0.0)
+                self._cached_sandbox_pressure = _sandbox_pressure
+                if _sandbox_pressure > 0.3:
+                    _ce_unc_boost = min(
+                        1.0 - uncertainty,
+                        _sandbox_pressure * 0.2,
+                    )
+                    if _ce_unc_boost > 0:
+                        uncertainty = min(1.0, uncertainty + _ce_unc_boost)
+                        uncertainty_sources["code_execution"] = _ce_unc_boost
+                        high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='code_execution_low_confidence',
+                            strategy_used='uncertainty_escalation',
+                            success=True,
+                            metadata={
+                                'sandbox_pressure': _sandbox_pressure,
+                                'uncertainty_boost': _ce_unc_boost,
+                            },
+                        )
+                self.provenance_tracker.record_after("code_execution", C_star)
+                self.coherence_registry.register_output(
+                    "code_execution",
+                    validated=torch.isfinite(C_star).all().item(),
+                    quality=max(0.0, 1.0 - _sandbox_pressure),
+                )
+            except Exception as _ce_err:
+                logger.debug(
+                    "CodeExecutionSandbox forward failed (non-fatal): %s",
+                    _ce_err,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='code_execution_sandbox_failure',
+                        strategy_used='skip_sandbox',
+                        success=False,
+                        metadata={'error': str(_ce_err)},
+                    )
+        else:
+            self._cached_sandbox_pressure = 0.0
+
         # 5a. Safety enforcement — dampen unsafe states instead of full rollback
         # Uses adaptive_safety_threshold which is tightened when convergence
         # is weak or audit patterns indicate instability.
@@ -47406,6 +47750,10 @@ class AEONDeltaV3(nn.Module):
                 _init_evaluated.add("auto_critic_current_quality")
             if getattr(self, 'consistency_gate', None) is not None:
                 _init_evaluated.add("deception_pressure")
+            if getattr(self, 'social_cognition_module', None) is not None:
+                _init_evaluated.add("social_pressure")
+            if getattr(self, 'code_execution_sandbox', None) is not None:
+                _init_evaluated.add("sandbox_pressure")
             if getattr(self, 'provenance_tracker', None) is not None:
                 _init_evaluated.add("decoder_provenance_pressure")
                 _init_evaluated.add("trace_incomplete_pressure")
@@ -48086,6 +48434,8 @@ class AEONDeltaV3(nn.Module):
             ("SafetySystem", self.safety_system),
             ("SelfReporter", self.self_reporter),
             ("DeceptionSuppressor", self.deception_suppressor),
+            ("SocialCognition", self.social_cognition_module),
+            ("CodeExecutionSandbox", self.code_execution_sandbox),
             ("WorldModel", self.world_model),
             ("HierarchicalMemory", self.hierarchical_memory),
             ("NeurogenicMemory", self.neurogenic_memory),
