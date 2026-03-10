@@ -555,7 +555,7 @@ Production-ready FastAPI backend providing full REST API, WebSocket, and SSE int
 - **VQ codebook introspection**: `/api/vq/codebook` with utilization history, academic metrics, and embedding analysis
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
 - **Benchmarking**: `/api/benchmark` for N-run latency profiling with statistical summaries
-- **15 server classes**: application state container, 9 Pydantic request models, correlation ID middleware, WebSocket/v4 log handlers, dashboard monitor
+- **15 server classes**: application state container, 10 Pydantic request models, correlation ID middleware, WebSocket/v4 log handlers, dashboard monitor
 
 ### **Dashboard: AEON_Dashboard.html v3.2**
 Single-file production control dashboard served at `http://localhost:8000` with **19 panels** organized into 6 navigation groups:
