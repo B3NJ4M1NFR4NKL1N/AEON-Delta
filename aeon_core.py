@@ -16800,6 +16800,20 @@ class MetaCognitiveRecursionTrigger:
             # entry back to its root causes, degrading causal
             # transparency.
             "root_cause_attribution_failure": "low_causal_quality",
+            # Cycle-consistency check failure — the validator itself
+            # raised an exception, preventing any consistency verdict.
+            "cycle_consistency_check_failure": "uncertainty",
+            # Decoder distortion — the decoder's provenance contribution
+            # exceeded the distortion threshold, indicating it altered
+            # the reasoning representation significantly.
+            "decoder_distortion": "low_causal_quality",
+            # World model verification failure — the cross-step
+            # prediction verification raised an exception, preventing
+            # the system from assessing world-model accuracy.
+            "world_model_verification_failure": "uncertainty",
+            # Meta-learner drift failure — EWC drift estimation raised
+            # an exception, preventing catastrophic-forgetting detection.
+            "meta_learner_drift_failure": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18045,6 +18059,23 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens causal chain
         # integrity and root-cause traceback reliability.
         "root_cause_attribution_failure": "lambda_ucc",
+        # Cycle-consistency check failure — the validator itself raised
+        # an exception.  Maps to lambda_self_consistency so training
+        # strengthens the encoder-decoder round-trip fidelity.
+        "cycle_consistency_check_failure": "lambda_self_consistency",
+        # Decoder distortion — the decoder altered the reasoning
+        # representation beyond the distortion threshold.  Maps to
+        # lambda_self_consistency so training penalises decoder drift.
+        "decoder_distortion": "lambda_self_consistency",
+        # World model verification failure — cross-step prediction
+        # verification raised an exception.  Maps to
+        # lambda_hierarchical_wm so training strengthens world-model
+        # robustness.
+        "world_model_verification_failure": "lambda_hierarchical_wm",
+        # Meta-learner drift failure — EWC drift estimation raised an
+        # exception.  Maps to lambda_reg so training strengthens
+        # regularisation and parameter stability.
+        "meta_learner_drift_failure": "lambda_reg",
     }
 
     def recommend_loss_adjustments(
@@ -26660,10 +26691,17 @@ class AEONDeltaV3(nn.Module):
                             },
                         )
             except Exception as _vpe_err:
-                logger.debug(
+                logger.warning(
                     "World model prediction verification failed: %s",
                     _vpe_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='world_model_verification_failure',
+                        strategy_used='exception_logging',
+                        success=False,
+                        metadata={'exception': str(_vpe_err)},
+                    )
             finally:
                 self._cached_world_model_prediction = None
 
@@ -26711,10 +26749,17 @@ class AEONDeltaV3(nn.Module):
                             ),
                         )
             except Exception as _hwm_vpe_err:
-                logger.debug(
+                logger.warning(
                     "Hierarchical WM prediction verification failed: %s",
                     _hwm_vpe_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='world_model_verification_failure',
+                        strategy_used='exception_logging',
+                        success=False,
+                        metadata={'exception': str(_hwm_vpe_err)},
+                    )
             finally:
                 self._cached_hwm_prediction = None
 
@@ -27620,7 +27665,14 @@ class AEONDeltaV3(nn.Module):
                     uncertainty_sources["meta_learner_ewc_drift"] = _ewc_boost
                     high_uncertainty = uncertainty > 0.5
             except Exception as _ewc_err:
-                logger.debug("MetaLearner EWC drift estimation failed: %s", _ewc_err)
+                logger.warning("MetaLearner EWC drift estimation failed: %s", _ewc_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='meta_learner_drift_failure',
+                        strategy_used='exception_logging',
+                        success=False,
+                        metadata={'exception': str(_ewc_err)},
+                    )
         
         # 1a-v. VQ codebook utilization feedback — when the vector
         # quantizer has low codebook utilization (many dead codes),
@@ -38106,6 +38158,19 @@ class AEONDeltaV3(nn.Module):
                 self.config.vq_collapse_utilization_threshold, 1e-6,
             ))
             self._cached_vq_codebook_quality = _vq_codebook_quality
+            # Record low VQ codebook quality in error_evolution so the
+            # metacognitive trigger can learn from codebook degradation
+            # and the training loss adapts via self-consistency pressure.
+            if _vq_codebook_quality < 0.5 and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='vq_codebook_collapse',
+                    strategy_used='forward_vq_monitor',
+                    success=False,
+                    metadata={
+                        'vq_codebook_quality': _vq_codebook_quality,
+                        'vq_utilization': _vq_utilization,
+                    },
+                )
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -38441,7 +38506,14 @@ class AEONDeltaV3(nn.Module):
                     validated=not _cc_result['violation'],
                 )
             except (RuntimeError, ValueError) as _cc_err:
-                logger.debug("Cycle-consistency check failed: %s", _cc_err)
+                logger.warning("Cycle-consistency check failed: %s", _cc_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='cycle_consistency_check_failure',
+                        strategy_used='exception_logging',
+                        success=False,
+                        metadata={'exception': str(_cc_err)},
+                    )
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
@@ -38488,6 +38560,16 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         "decoder_contribution": _decoder_contribution,
                         "uncertainty_boost": _dec_dist_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='decoder_distortion',
+                    strategy_used='uncertainty_escalation',
+                    success=False,
+                    metadata={
+                        'decoder_contribution': _decoder_contribution,
+                        'uncertainty_boost': _dec_dist_boost,
                     },
                 )
         # Write back uncertainty and uncertainty_sources that may have
