@@ -47434,6 +47434,7 @@ class AEONDeltaV3(nn.Module):
                     # Restore convergence history
                     if ('convergence_history' in cognitive_state
                             and hasattr(self, 'convergence_monitor')):
+                        self.convergence_monitor.history.clear()
                         for val in cognitive_state['convergence_history']:
                             self.convergence_monitor.history.append(float(val))
                         logger.info("Restored convergence monitor history")
