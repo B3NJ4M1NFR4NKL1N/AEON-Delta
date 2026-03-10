@@ -38778,6 +38778,16 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(exc)},
                         )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _re_adapt_err:
+                                logger.debug(
+                                    "Reencode failure trigger adaptation "
+                                    "failed: %s", _re_adapt_err,
+                                )
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -39179,6 +39189,16 @@ class AEONDeltaV3(nn.Module):
                     # metacognitive trigger blind to recurring output-
                     # stage coherence failures.
                     _poc_score = result['post_output_coherence']['coherence_score']
+                    # Record post-output coherence in causal_decision_chain
+                    # so that the coherence verdict is deterministically
+                    # traceable from the forward result, closing the gap
+                    # where coherence was evaluated but not transparent in
+                    # the decision chain.
+                    result['causal_decision_chain']['post_output_coherence'] = {
+                        'coherence_score': _poc_score,
+                        'needs_recheck': result['post_output_coherence']['needs_recheck'],
+                        'deficit': _poc_score < 0.5,
+                    }
                     if _poc_score < 0.5 and self.error_evolution is not None:
                         self.error_evolution.record_episode(
                             error_class='post_output_coherence_deficit',
@@ -39201,6 +39221,17 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(_poc_err)},
                         )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _poc_adapt_err:
+                                logger.debug(
+                                    "Post-output coherence trigger "
+                                    "adaptation failed: %s",
+                                    _poc_adapt_err,
+                                )
 
         # ===== COGNITIVE UNITY SCORE =====
         # Synthesize a single composite score ∈ [0, 1] that explicitly
@@ -39265,6 +39296,14 @@ class AEONDeltaV3(nn.Module):
                         )
                 outputs['snapshot_coherence'] = _snap_coherence
                 result['snapshot_coherence'] = _snap_coherence
+                # Record snapshot validation in causal_decision_chain
+                # so that memory subsystem health is deterministically
+                # traceable from the forward result.
+                result['causal_decision_chain']['snapshot_validation'] = {
+                    'coherence_score': _snap_coherence,
+                    'degraded': _snap_coherence < 1.0,
+                    'issues': _snap_val.get('issues', []),
+                }
             except Exception as _snap_err:
                 logger.warning(
                     "Cognitive snapshot validation failed (non-fatal): %s",
@@ -39277,6 +39316,16 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_snap_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _snap_adapt_err:
+                            logger.debug(
+                                "Snapshot validation trigger adaptation "
+                                "failed: %s", _snap_adapt_err,
+                            )
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
@@ -39366,6 +39415,15 @@ class AEONDeltaV3(nn.Module):
                         'deficit': _coh_deficit,
                     },
                 )
+            # Record cross-module coherence deficit in
+            # causal_decision_chain so the inter-module disagreement
+            # and its corrective uncertainty boost are deterministically
+            # traceable from the forward result.
+            result['causal_decision_chain']['cross_module_coherence'] = {
+                'coherence_score': _cus_coherence,
+                'deficit': _coh_deficit,
+                'uncertainty_boost': _coh_unc_boost,
+            }
         # Cache for the feedback bus so the next pass's meta-loop can
         # condition on cross-module agreement quality.
         self._cached_cross_module_coherence = _cus_coherence
@@ -39747,6 +39805,16 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         strategy_used='periodic_reinforce',
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _pr_adapt_err:
+                            logger.debug(
+                                "Periodic reinforcement trigger "
+                                "adaptation failed: %s", _pr_adapt_err,
+                            )
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why reinforcement
                 # was not applied.
@@ -39830,6 +39898,16 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         strategy_used='uncertainty_reinforce',
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _ut_adapt_err:
+                            logger.debug(
+                                "Uncertainty reinforcement trigger "
+                                "adaptation failed: %s", _ut_adapt_err,
+                            )
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why the uncertainty-
                 # triggered correction was not applied.
@@ -40057,6 +40135,80 @@ class AEONDeltaV3(nn.Module):
                         'weakest_axiom_score': _weakest_axiom_score,
                         'reinforcement_applied': _applied_reinforcement is not None,
                     },
+                )
+
+        # ===== CONSOLIDATED METACOGNITIVE ADAPTATION =====
+        # Batch-adapt metacognitive trigger weights from all error
+        # evolution episodes recorded during this forward pass.
+        # Previously, only a subset of record_episode() calls in the
+        # pipeline were followed by adapt_weights_from_evolution(),
+        # leaving 14+ late-stage episodes (post-output coherence,
+        # cross-module coherence, decoder degenerate, emergence deficit,
+        # snapshot validation, etc.) without immediate weight adaptation.
+        # By consolidating adaptation into a single call at the end of
+        # the pipeline, every recorded episode — regardless of where it
+        # occurred — influences the metacognitive trigger's sensitivity
+        # for the next forward pass.  This closes the feedback loop
+        # between error recording and metacognitive learning.
+        if (self.error_evolution is not None
+                and self.metacognitive_trigger is not None):
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary()
+                )
+            except Exception as _batch_adapt_err:
+                logger.debug(
+                    "Consolidated metacognitive adaptation failed: %s",
+                    _batch_adapt_err,
+                )
+
+        # ===== POST-PIPELINE METACOGNITIVE RE-EVALUATION =====
+        # Re-evaluate the metacognitive trigger using the final
+        # accumulated uncertainty from all pipeline stages.  The
+        # trigger was last evaluated in _reasoning_core_impl() *before*
+        # the forward pipeline's post-output checks (decoder degenerate,
+        # cycle consistency, cross-module coherence, emergence deficit)
+        # escalated uncertainty.  Without this re-evaluation, late-stage
+        # uncertainty spikes are recorded in error_evolution but never
+        # trigger a meta-cognitive review cycle within the same pass,
+        # violating the requirement that "any internal uncertainty or
+        # conflict automatically initiates a higher-order review cycle".
+        # The re-evaluation result is stored so downstream consumers can
+        # trace whether the post-pipeline metacognitive cycle fired.
+        _final_uncertainty = result.get('uncertainty', 0.0)
+        if (self.metacognitive_trigger is not None
+                and _final_uncertainty > 0.5):
+            try:
+                _post_pipeline_signals = {
+                    'uncertainty': _final_uncertainty,
+                    'coherence_deficit': self._cached_cognitive_unity_deficit,
+                    'cross_module_coherence': 1.0 - getattr(
+                        self, '_cached_cross_module_coherence', 1.0,
+                    ),
+                }
+                _post_eval = self.metacognitive_trigger.evaluate(
+                    _post_pipeline_signals,
+                )
+                result['post_pipeline_metacognitive_evaluation'] = {
+                    'triggered': _post_eval.get('should_recurse', False),
+                    'signals': _post_pipeline_signals,
+                    'trigger_count': _post_eval.get('trigger_count', 0),
+                }
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "metacognitive_trigger",
+                        "post_pipeline_evaluation",
+                        metadata={
+                            'final_uncertainty': _final_uncertainty,
+                            'triggered': _post_eval.get(
+                                'should_recurse', False,
+                            ),
+                        },
+                    )
+            except Exception as _post_eval_err:
+                logger.debug(
+                    "Post-pipeline metacognitive evaluation failed: %s",
+                    _post_eval_err,
                 )
 
         return result
