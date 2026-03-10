@@ -67617,6 +67617,9 @@ def run_all_tests():
     test_cognitive_activation_report_structure()
     test_cognitive_activation_report_emergence()
     test_system_emergence_health_ordering()
+    test_causal_decision_chain_executive_review()
+    test_causal_decision_chain_post_output_gate()
+    test_causal_decision_chain_cognitive_frame_assessment()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -75913,6 +75916,114 @@ def test_system_emergence_health_ordering():
         f"self_diagnostic mutation, got {report['overall_health_score']}"
     )
     print("✅ test_system_emergence_health_ordering PASSED")
+
+
+# ============================================================================
+# Section 34 Causal Decision Chain Integration Tests
+# ============================================================================
+
+def test_causal_decision_chain_executive_review():
+    """causal_decision_chain must include executive_review entry after
+    a forward pass so that executive-level alignment decisions are
+    deterministically traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    cdc = result.get('causal_decision_chain', {})
+    er = cdc.get('executive_review')
+    assert er is not None, (
+        "causal_decision_chain must contain 'executive_review' entry "
+        "after forward pass for causal transparency"
+    )
+    for key in ('review_triggered', 'alignment_score',
+                'corrective_pressure', 'recommendation'):
+        assert key in er, (
+            f"executive_review missing required key '{key}'"
+        )
+
+    # Also check top-level executive_review in result
+    top_er = result.get('executive_review')
+    assert top_er is not None, (
+        "Forward result must expose 'executive_review' at top level"
+    )
+
+    print("✅ test_causal_decision_chain_executive_review PASSED")
+
+
+def test_causal_decision_chain_post_output_gate():
+    """causal_decision_chain must include post_output_gate entry after
+    a forward pass so that late-stage uncertainty decisions are traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    cdc = result.get('causal_decision_chain', {})
+    pog = cdc.get('post_output_gate')
+    assert pog is not None, (
+        "causal_decision_chain must contain 'post_output_gate' entry "
+        "after forward pass for causal transparency"
+    )
+    for key in ('gate_triggered', 'late_uncertainty',
+                'total_uncertainty', 'late_sources'):
+        assert key in pog, (
+            f"post_output_gate missing required key '{key}'"
+        )
+
+    print("✅ test_causal_decision_chain_post_output_gate PASSED")
+
+
+def test_causal_decision_chain_cognitive_frame_assessment():
+    """causal_decision_chain must include cognitive_frame_assessment entry
+    after a forward pass so that the frame's corrective pressures and
+    diagnostic flags are deterministically traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    cdc = result.get('causal_decision_chain', {})
+    cfa = cdc.get('cognitive_frame_assessment')
+    assert cfa is not None, (
+        "causal_decision_chain must contain 'cognitive_frame_assessment' "
+        "entry after forward pass for causal transparency"
+    )
+    for key in ('frame_score', 'needs_diagnostic', 'weakest_component',
+                'meta_trigger_boost', 'corrective_pressures'):
+        assert key in cfa, (
+            f"cognitive_frame_assessment missing required key '{key}'"
+        )
+
+    print("✅ test_causal_decision_chain_cognitive_frame_assessment PASSED")
 
 
 if __name__ == "__main__":

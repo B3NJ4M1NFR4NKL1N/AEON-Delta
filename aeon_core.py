@@ -23675,6 +23675,13 @@ class AEONDeltaV3(nn.Module):
         # Executive review pressure — corrective pressure from the
         # MetaCognitiveExecutive when executive alignment is poor.
         self._cached_executive_review_pressure: float = 0.0
+        # Full executive review result — the complete dict from
+        # MetaCognitiveExecutive.review() cached so the causal decision
+        # chain can include executive-level review decisions for causal
+        # transparency.  Without this, only the scalar corrective_pressure
+        # was cached, losing review_triggered, alignment_score, and
+        # recommendation details from the causal trace.
+        self._cached_executive_review: Optional[Dict[str, Any]] = None
 
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
@@ -28283,6 +28290,10 @@ class AEONDeltaV3(nn.Module):
                     self._cached_executive_review_pressure = (
                         _mce_review.get('corrective_pressure', 0.0)
                     )
+                    # Cache the full review dict so the causal decision
+                    # chain in _forward_impl can include executive-level
+                    # review decisions for causal transparency.
+                    self._cached_executive_review = _mce_review
                     # Record executive review in causal trace so that
                     # root-cause analysis can see how executive
                     # alignment influenced uncertainty and metacognitive
@@ -37185,6 +37196,29 @@ class AEONDeltaV3(nn.Module):
                 if unified_cycle_results else None
             ),
             "world_model_verified_prediction_error": _verified_prediction_error,
+            # Section 34 bridge: MetaCognitiveExecutive review — include
+            # the full executive review result so that consumers can trace
+            # how executive-level alignment influenced meta-cognitive
+            # decisions.  Previously only the scalar corrective_pressure
+            # was cached, making the review decision invisible in the
+            # causal output chain.
+            "executive_review": (
+                {
+                    "review_triggered": self._cached_executive_review.get(
+                        "review_triggered", False,
+                    ),
+                    "alignment_score": self._cached_executive_review.get(
+                        "alignment_score", 1.0,
+                    ),
+                    "corrective_pressure": self._cached_executive_review.get(
+                        "corrective_pressure", 0.0,
+                    ),
+                    "recommendation": self._cached_executive_review.get(
+                        "recommendation", "accept",
+                    ),
+                }
+                if self._cached_executive_review is not None else None
+            ),
         }
         
         # 8h-honesty. Honesty-gated output modulation — apply the
@@ -38421,6 +38455,19 @@ class AEONDeltaV3(nn.Module):
             ucc_already_triggered=_ucc_already_triggered,
         )
         outputs['post_output_uncertainty_gate'] = _post_gate
+        # Section 34 bridge: record the post-output gate verdict in the
+        # causal decision chain so late-stage uncertainty decisions are
+        # deterministically traceable.  Without this entry, the gate's
+        # influence on the forward result is invisible to consumers
+        # inspecting causal_decision_chain, breaking causal transparency.
+        outputs['causal_decision_chain']['post_output_gate'] = {
+            'gate_triggered': _post_gate.get('gate_triggered', False),
+            'late_uncertainty': _post_gate.get('late_uncertainty', 0.0),
+            'total_uncertainty': _post_gate.get('total_uncertainty', 0.0),
+            'late_sources': list(
+                _post_gate.get('active_late_sources', {}).keys()
+            ),
+        }
         # Register the post-output gate in provenance and coherence
         # registry so that late-stage uncertainty evaluation is traceable
         # and visible to coverage deficit tracking.  Without this, the
@@ -38578,6 +38625,15 @@ class AEONDeltaV3(nn.Module):
             'generated_ids': generated_ids,
             **outputs
         }
+
+        # ===== EXECUTIVE REVIEW EXPOSURE =====
+        # Expose the full MetaCognitiveExecutive review result in the
+        # forward pass result dict so consumers can see executive-level
+        # alignment decisions directly.  Previously only the scalar
+        # corrective_pressure was cached internally, making the review
+        # decision invisible to forward-pass consumers and breaking the
+        # requirement that every output is traceable.
+        result['executive_review'] = self._cached_executive_review
 
         # ===== POST-OUTPUT COHERENCE VERIFICATION =====
         # When the reasoning core signals that coherence needs rechecking
@@ -38834,6 +38890,23 @@ class AEONDeltaV3(nn.Module):
                 quality=_cf_result.get('frame_score', 1.0),
             )
             result['cognitive_frame'] = _cf_result
+            # Section 34 bridge: record the cognitive frame's assessment
+            # in the causal decision chain so that the frame's composite
+            # verdict, corrective pressures, and diagnostic flags are
+            # deterministically traceable.  Without this entry, consumers
+            # inspecting causal_decision_chain cannot see how the frame
+            # influenced the final result, breaking causal transparency.
+            result['causal_decision_chain']['cognitive_frame_assessment'] = {
+                'frame_score': _cf_result.get('frame_score', 1.0),
+                'needs_diagnostic': _cf_result.get('needs_diagnostic', False),
+                'weakest_component': _cf_result.get('weakest_component', None),
+                'meta_trigger_boost': _cf_result.get(
+                    'meta_trigger_boost', 0.0,
+                ),
+                'corrective_pressures': _cf_result.get(
+                    'corrective_pressures', {},
+                ),
+            }
             # When the frame triggers a meta-cognitive boost, escalate
             # the trigger's cross-pass EMA so the next evaluation is
             # more sensitive.
