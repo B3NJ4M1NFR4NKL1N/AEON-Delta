@@ -16784,6 +16784,22 @@ class MetaCognitiveRecursionTrigger:
             # Maps to diverging so that recurring stagnation boosts the
             # divergence trigger signal weight.
             "low_convergence_quality": "diverging",
+            # Signal dropout — feedback bus signal channels were
+            # registered but never populated during the forward pass,
+            # silently degrading cross-pass conditioning.  Maps to
+            # coherence_deficit so recurring dropout boosts the
+            # coherence trigger weight.
+            "signal_dropout": "coherence_deficit",
+            # Active-pass traceability gap — subsystems registered
+            # output in the coherence registry but have no provenance
+            # delta, making them invisible to root-cause analysis for
+            # the current pass.
+            "active_pass_traceability_gap": "low_causal_quality",
+            # Root-cause attribution failure — trace_root_cause()
+            # raised an exception when attempting to trace a causal
+            # entry back to its root causes, degrading causal
+            # transparency.
+            "root_cause_attribution_failure": "low_causal_quality",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18017,6 +18033,18 @@ class CausalErrorEvolutionTracker:
         # lambda_lipschitz so training adapts Lipschitz regularisation
         # when convergence quality is persistently poor.
         "low_convergence_quality": "lambda_lipschitz",
+        # Signal dropout — feedback bus signal channels were registered
+        # but never populated.  Maps to lambda_coherence so training
+        # strengthens cross-pass signal propagation reliability.
+        "signal_dropout": "lambda_coherence",
+        # Active-pass traceability gap — subsystems registered output
+        # but have no provenance delta.  Maps to lambda_ucc so training
+        # strengthens provenance recording consistency.
+        "active_pass_traceability_gap": "lambda_ucc",
+        # Root-cause attribution failure — trace_root_cause() failed.
+        # Maps to lambda_ucc so training strengthens causal chain
+        # integrity and root-cause traceback reliability.
+        "root_cause_attribution_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -22813,6 +22841,14 @@ class AEONDeltaV3(nn.Module):
         # the cognitive organism requirements.
         self.feedback_bus.register_signal(
             "emergence_deficit", default=0.0,
+        )
+        # Causal chain coverage deficit — fed by verify_and_reinforce()
+        # when verify_causal_chain() reports untraced subsystems.  This
+        # closes the loop: causal transparency degradation is now
+        # reflected in the feedback bus conditioning vector, so the next
+        # forward pass's meta-loop deepens reasoning in response.
+        self.feedback_bus.register_signal(
+            "causal_chain_coverage_deficit", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -39412,6 +39448,20 @@ class AEONDeltaV3(nn.Module):
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
 
+        # ===== EMERGENCE → CAUSAL DECISION CHAIN =====
+        # Expose the per-axiom emergence assessment in the causal
+        # decision chain so consumers can deterministically trace which
+        # AGI requirements blocked or permitted emergence from the
+        # forward result alone, without inspecting the causal trace.
+        result['causal_decision_chain']['emergence_assessment'] = {
+            'emerged': _emerged,
+            'axiom_mutual_verification': _mv_ok,
+            'axiom_metacognitive_responsiveness': _um_ok,
+            'axiom_root_cause_traceability': _rc_ok,
+            'cognitive_unity_score': _cu_score,
+            'deficit': _cu_deficit,
+        }
+
         # ===== EMERGENCE CAUSAL TRACE =====
         # Record the emergence summary in the causal trace so every
         # forward pass's emergence assessment is deterministically
@@ -44472,6 +44522,15 @@ class AEONDeltaV3(nn.Module):
                         f"Active subsystems untraced in provenance: "
                         f"{', '.join(_untraced_active[:5])}"
                     )
+                    # Escalate into error_evolution so the metacognitive
+                    # trigger learns that per-pass traceability is
+                    # degraded and training can adapt loss weights.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='active_pass_traceability_gap',
+                            success=False,
+                            strategy_used='verify_cognitive_unity',
+                        )
         _active_pass_coverage = (
             1.0 - len(_untraced_active) / max(len(_active_pass_subsystems), 1)
             if _active_pass_subsystems else 1.0
@@ -44545,6 +44604,15 @@ class AEONDeltaV3(nn.Module):
                     f"channels at default — verify forward pass populates "
                     f"all registered signals"
                 )
+                # Escalate signal dropout into error_evolution so the
+                # metacognitive trigger learns that cross-pass feedback
+                # is degraded and training can adapt loss weights.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='signal_dropout',
+                        success=False,
+                        strategy_used='verify_cognitive_unity',
+                    )
 
         # ── 7. Per-module health synthesis ─────────────────────────
         # Synthesize a per-module health score that aggregates the three
@@ -45496,6 +45564,20 @@ class AEONDeltaV3(nn.Module):
                         1.0, _low_success / max(len(_ee_classes), 1),
                     )
                 _signals['error_evolution_pressure'] = _ee_pressure
+            # Write causal chain coverage deficit so the next forward
+            # pass's meta-loop conditioning vector reflects any
+            # traceability degradation detected by this reinforcement
+            # cycle.  Previously, causal chain gaps were identified and
+            # recorded in error_evolution but never surfaced as a
+            # feedback bus signal, leaving the meta-loop unaware that
+            # root-cause attribution was degraded.
+            _chain_cov = (
+                _chain_result.get('coverage', 1.0)
+                if _chain_result is not None else 1.0
+            )
+            _signals['causal_chain_coverage_deficit'] = max(
+                0.0, min(1.0, 1.0 - _chain_cov),
+            )
 
         # --- Register reinforcement in coherence registry so the
         # cross-pass ledger tracks whether the mutual-reinforcement
@@ -46032,6 +46114,15 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception as exc:
                     logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
+                    # Escalate root-cause attribution failure into
+                    # error_evolution so the metacognitive trigger
+                    # learns that causal transparency is degraded.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='root_cause_attribution_failure',
+                            success=False,
+                            strategy_used='verify_causal_chain',
+                        )
 
         result = {
             "traceable": len(_untraced) == 0,
@@ -46052,6 +46143,17 @@ class AEONDeltaV3(nn.Module):
                     'coverage': result['coverage'],
                     'untraced': _untraced,
                 },
+            )
+
+        # Escalate untraced subsystems into error_evolution so the
+        # metacognitive trigger learns that end-to-end traceability
+        # is incomplete and training can adapt loss weights to
+        # strengthen pipeline-wide provenance recording.
+        if _untraced and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='causal_chain_gap',
+                success=False,
+                strategy_used='verify_causal_chain',
             )
 
         return result
