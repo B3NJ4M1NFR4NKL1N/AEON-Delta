@@ -40745,6 +40745,30 @@ class AEONDeltaV3(nn.Module):
                         metadata={'subsystem_health_loss': _sh_val},
                     )
 
+        # ===== TRAINING LOSS → METACOGNITIVE TRIGGER ADAPTATION =====
+        # After recording all training-stage error evolution episodes above,
+        # adapt the metacognitive trigger's signal weights so that
+        # persistent training difficulties (e.g. high coherence loss,
+        # high NS-consistency loss) sensitise the trigger for the
+        # corresponding inference-time signals.  This closes the feedback
+        # loop where training-stage errors were recorded in error evolution
+        # but never influenced metacognitive trigger sensitivity — meaning
+        # the system could not proactively deepen reasoning for subsystems
+        # that training struggled with.
+        if (self.error_evolution is not None
+                and self.metacognitive_trigger is not None):
+            try:
+                _train_summary = self.error_evolution.get_error_summary()
+                if _train_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _train_summary,
+                    )
+            except Exception as _train_adapt_err:
+                logger.debug(
+                    "Training loss trigger adaptation failed: %s",
+                    _train_adapt_err,
+                )
+
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
         
@@ -41155,6 +41179,21 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(_gen_ucc_err)},
                         )
+                    # Adapt metacognitive trigger weights so that
+                    # generation-time UCC failures sensitise the next
+                    # pass's trigger, closing the loop where generation
+                    # errors were recorded but never influenced
+                    # metacognitive sensitivity.
+                    if (self.metacognitive_trigger is not None
+                            and self.error_evolution is not None):
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Generate UCC trigger adaptation failed"
+                            )
 
             return {
                 'text': generated_text,
@@ -41316,6 +41355,29 @@ class AEONDeltaV3(nn.Module):
                         )
                         _boost = min(2.0, _current_w + 0.1)
                         self.metacognitive_trigger._signal_weights[_signal_name] = _boost
+
+        # Full error-evolution-based adaptation — in addition to the
+        # direct per-signal weight boosts above, run the general
+        # adapt_weights_from_evolution() so that ALL accumulated error
+        # patterns (not just the 3 hardcoded loss→signal mappings)
+        # influence metacognitive trigger sensitivity.  This closes the
+        # remaining gap where training-time errors outside the hardcoded
+        # mapping (e.g. high_total_training_loss, high_ucc_training_loss,
+        # high_memory_retrieval_training_loss) were recorded in error
+        # evolution but never fed back into the trigger.
+        if (self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                _bridge_summary = self.error_evolution.get_error_summary()
+                if _bridge_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _bridge_summary,
+                    )
+            except Exception as _bridge_adapt_err:
+                logger.debug(
+                    "Training bridge trigger adaptation failed: %s",
+                    _bridge_adapt_err,
+                )
 
     def count_parameters(self) -> int:
         """Total parameters."""
