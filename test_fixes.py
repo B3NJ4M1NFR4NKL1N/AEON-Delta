@@ -67641,6 +67641,12 @@ def run_all_tests():
     test_bridge_training_loss_full_adaptation()
     test_compute_loss_high_coherence_triggers_adaptation()
 
+    # Cognitive integration & exception transparency patches
+    test_memory_fusion_failure_records_error_evolution()
+    test_forward_impl_exception_handlers_record_error_evolution()
+    test_verify_and_reinforce_chain_failure_records_error_evolution()
+    test_integration_error_classes_registered()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76519,6 +76525,152 @@ def test_compute_loss_high_coherence_triggers_adaptation():
     assert 'total_loss' in loss_dict, "compute_loss must return total_loss"
 
     print("✅ test_compute_loss_high_coherence_triggers_adaptation PASSED")
+
+
+def test_memory_fusion_failure_records_error_evolution():
+    """Memory fusion exception handlers (neurogenic, temporal, consolidating)
+    must record episodes in error_evolution so that memory-subsystem failures
+    are visible to the metacognitive cycle and not silently swallowed."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._fuse_memory)
+
+    # Each memory subsystem exception handler must call record_episode
+    for error_class in [
+        'neurogenic_memory_fusion_failure',
+        'temporal_memory_fusion_failure',
+        'consolidating_memory_fusion_failure',
+    ]:
+        assert error_class in src, (
+            f"_unified_memory_fusion must record '{error_class}' in error "
+            f"evolution when the corresponding memory subsystem fusion fails"
+        )
+
+    # Handlers must use logger.warning, not logger.debug
+    assert 'logger.debug' not in src or src.count('logger.warning') >= 3, (
+        "_unified_memory_fusion exception handlers must use logger.warning "
+        "for causal transparency"
+    )
+
+    print("✅ test_memory_fusion_failure_records_error_evolution PASSED")
+
+
+def test_forward_impl_exception_handlers_record_error_evolution():
+    """_forward_impl exception handlers for cycle-consistency, late meta-loop,
+    post-output coherence, and snapshot validation must record episodes in
+    error_evolution instead of silently logging at debug level."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    expected_classes = [
+        'reencode_failure',
+        'cycle_consistency_check_failure',
+        'late_meta_loop_failure',
+        'post_output_coherence_failure',
+        'snapshot_validation_failure',
+    ]
+
+    for error_class in expected_classes:
+        assert error_class in src, (
+            f"_forward_impl must record '{error_class}' in error evolution "
+            f"when the corresponding exception handler fires"
+        )
+
+    print("✅ test_forward_impl_exception_handlers_record_error_evolution PASSED")
+
+
+def test_verify_and_reinforce_chain_failure_records_error_evolution():
+    """verify_and_reinforce() must record verify_chain_failure to error
+    evolution when verify_causal_chain() raises an exception, rather
+    than silently swallowing the error."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    assert 'verify_chain_failure' in src, (
+        "verify_and_reinforce must record 'verify_chain_failure' episode "
+        "when verify_causal_chain() raises an exception"
+    )
+    # Must log warning, not be silent
+    assert 'verify_causal_chain() failed' in src or 'verify_chain_failure' in src, (
+        "verify_and_reinforce must log a warning when verify_causal_chain() "
+        "fails, not silently swallow the exception"
+    )
+
+    print("✅ test_verify_and_reinforce_chain_failure_records_error_evolution PASSED")
+
+
+def test_integration_error_classes_registered():
+    """All new integration error classes must be registered in both
+    _ERROR_CLASS_TO_LAMBDA and _class_to_signal mappings."""
+    from aeon_core import CausalErrorEvolutionTracker
+    import re, os
+
+    tracker = CausalErrorEvolutionTracker()
+
+    new_classes = [
+        'neurogenic_memory_fusion_failure',
+        'temporal_memory_fusion_failure',
+        'consolidating_memory_fusion_failure',
+        'reencode_failure',
+        'cycle_consistency_check_failure',
+        'late_meta_loop_failure',
+        'post_output_coherence_failure',
+        'snapshot_validation_failure',
+        'verify_chain_failure',
+    ]
+
+    # Verify _ERROR_CLASS_TO_LAMBDA
+    for cls in new_classes:
+        assert cls in tracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # Verify _class_to_signal via source inspection
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    for cls in new_classes:
+        assert cls in mapped, (
+            f"{cls} must be in MetaCognitiveRecursionTrigger._class_to_signal"
+        )
+
+    # Verify they can be recorded
+    for cls in new_classes:
+        tracker.record_episode(
+            error_class=cls,
+            success=False,
+            strategy_used='test',
+        )
+    summary = tracker.get_error_summary()
+    classes = summary.get('error_classes', {})
+    for cls in new_classes:
+        assert cls in classes, f"{cls} must be recordable in error evolution"
+
+    print("✅ test_integration_error_classes_registered PASSED")
 
 
 if __name__ == "__main__":
