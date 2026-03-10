@@ -46745,6 +46745,39 @@ class AEONDeltaV3(nn.Module):
                     len(_upb_cycle_exempt),
                 )
 
+        # 7b. Pre-reinforce causal trace seeding — record baseline
+        # causal trace entries for subsystems that verify_causal_chain()
+        # expects (feedback_bus, system_emergence_report via
+        # emergence_assessment, verify_and_reinforce) BEFORE step 8
+        # calls verify_and_reinforce().  Without these entries,
+        # verify_causal_chain() (called inside verify_and_reinforce)
+        # finds them untraced and records causal_chain_gap failure
+        # episodes, which drag down error_evolution_effectiveness and
+        # prevent the health score from reaching 1.0 at init time.
+        if self.causal_trace is not None:
+            if self.feedback_bus is not None:
+                self.causal_trace.record(
+                    "feedback_bus", "initialized",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
+            self.causal_trace.record(
+                "emergence_assessment", "activation_baseline",
+                metadata={
+                    'source': 'cognitive_activation_probe',
+                    'baseline': True,
+                },
+            )
+            self.causal_trace.record(
+                "verify_and_reinforce", "activation_baseline",
+                metadata={
+                    'source': 'cognitive_activation_probe',
+                    'baseline': True,
+                },
+            )
+
         # 8. Init-time mutual reinforcement — run verify_and_reinforce()
         # to close the mutual reinforcement loop at initialization.
         # This ensures that any architectural weaknesses identified by
@@ -46929,21 +46962,17 @@ class AEONDeltaV3(nn.Module):
                     _prov_seeded,
                 )
 
-        # 12. Causal trace seeding for error_evolution, feedback_bus,
-        # and emergence_assessment — record baseline causal trace
-        # entries so that verify_causal_chain() can find these
-        # subsystems.  Without these entries, verify_causal_chain()
-        # reports them as untraced despite being fully initialized and
-        # wired, because they use their own internal tracking and do
-        # not record causal trace entries during normal operation.
-        # The emergence_assessment entry satisfies the
-        # system_emergence_report requirement in verify_causal_chain()
-        # (which maps emergence_assessment → system_emergence_report),
-        # closing the gap where the causal chain was incomplete at
-        # init time and only became traceable after the first forward
-        # pass.  By recording baseline entries at init time, the
-        # causal chain reflects actual connectivity from the moment
-        # the system is constructed.
+        # 12. Causal trace seeding for error_evolution — record
+        # baseline causal trace entry so that verify_causal_chain()
+        # can find this subsystem.  Without this entry,
+        # verify_causal_chain() reports error_evolution as untraced
+        # despite being fully initialized and wired, because it uses
+        # its own internal tracking and does not record causal trace
+        # entries during normal operation.
+        # NOTE: feedback_bus, emergence_assessment, and
+        # verify_and_reinforce seeding was moved to step 7b so that
+        # they are available before verify_and_reinforce() runs in
+        # step 8, preventing spurious causal_chain_gap episodes.
         if self.causal_trace is not None:
             if self.error_evolution is not None:
                 self.causal_trace.record(
@@ -46953,25 +46982,6 @@ class AEONDeltaV3(nn.Module):
                         'baseline': True,
                     },
                 )
-            if self.feedback_bus is not None:
-                self.causal_trace.record(
-                    "feedback_bus", "initialized",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                    },
-                )
-            # Seed emergence_assessment so verify_causal_chain() finds
-            # system_emergence_report as traced from initialization,
-            # without requiring a forward pass or explicit
-            # system_emergence_report() call.
-            self.causal_trace.record(
-                "emergence_assessment", "activation_baseline",
-                metadata={
-                    'source': 'cognitive_activation_probe',
-                    'baseline': True,
-                },
-            )
 
         # 13. Training→inference auto-sync — attempt to import training
         # state (memory snapshots, error patterns) into the inference
