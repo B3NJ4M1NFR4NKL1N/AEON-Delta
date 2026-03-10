@@ -58074,7 +58074,7 @@ def test_uncertainty_auto_critic_in_feedback_bridge():
 
     idx = content.find('_ERROR_CLASS_TO_FEEDBACK_SIGNAL')
     assert idx != -1
-    section = content[idx:idx + 2000]
+    section = content[idx:idx + 3000]
 
     expected = [
         "uncertainty_auto_critic_topology_catastrophe",
