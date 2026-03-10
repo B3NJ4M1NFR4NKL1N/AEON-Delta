@@ -67654,6 +67654,22 @@ def run_all_tests():
     test_dag_cycle_adapts_metacognitive_trigger()
     test_verify_chain_failure_adapts_metacognitive_trigger()
 
+    # Final Integration — Causal Transparency & Feedback Loop tests
+    test_causal_decision_chain_backbone_adapter()
+    test_causal_decision_chain_cycle_consistency()
+    test_causal_decision_chain_decoder_degenerate()
+    test_causal_decision_chain_late_meta_loop_rerun()
+    test_late_meta_loop_failure_adapts_trigger()
+    test_cycle_consistency_failure_adapts_trigger()
+    test_verify_pipeline_wiring_exception_not_silent()
+    test_reasoning_core_wm_verification_records_error_evolution()
+    test_reasoning_core_hwm_verification_records_error_evolution()
+    test_reasoning_core_memory_conditioning_records_error_evolution()
+    test_reasoning_core_causal_context_records_error_evolution()
+    test_reasoning_core_memory_validation_records_error_evolution()
+    test_new_reasoning_core_error_classes_registered()
+    test_pre_reasoning_causal_decisions_merged()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76874,6 +76890,245 @@ def test_verify_chain_failure_adapts_metacognitive_trigger():
     )
 
     print("✅ test_verify_chain_failure_adapts_metacognitive_trigger PASSED")
+
+
+# ============================================================================
+# Final Integration Cognitive Activation — Causal Transparency & Feedback Loop Tests
+# ============================================================================
+
+def test_causal_decision_chain_backbone_adapter():
+    """backbone_adapter decision must appear in causal_decision_chain
+    after a forward pass when the backbone adapter is active."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(vocab_size=256, z_dim=32, hidden_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        result = model(x)
+    chain = result.get('causal_decision_chain', {})
+    if model.backbone_adapter is not None:
+        assert 'backbone_adapter' in chain, (
+            "causal_decision_chain must include 'backbone_adapter' entry "
+            "when the backbone adapter is active"
+        )
+    print("✅ test_causal_decision_chain_backbone_adapter PASSED")
+
+
+def test_causal_decision_chain_cycle_consistency():
+    """cycle_consistency decision must appear in causal_decision_chain."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(vocab_size=256, z_dim=32, hidden_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 256, (1, 8))
+    with torch.no_grad():
+        result = model(x)
+    chain = result.get('causal_decision_chain', {})
+    assert 'cycle_consistency' in chain, (
+        "causal_decision_chain must include 'cycle_consistency' entry "
+        "so encode→reason→decode fidelity is traceable"
+    )
+    assert 'consistency' in chain['cycle_consistency'], (
+        "cycle_consistency entry must include 'consistency' score"
+    )
+    print("✅ test_causal_decision_chain_cycle_consistency PASSED")
+
+
+def test_causal_decision_chain_decoder_degenerate():
+    """decoder_degenerate decision must be recordable in causal_decision_chain
+    when decoder output is degenerate (near-constant logits)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "causal_decision_chain']['decoder_degenerate']" in src, (
+        "_forward_impl must record 'decoder_degenerate' in "
+        "causal_decision_chain when degenerate decoder output is detected"
+    )
+    print("✅ test_causal_decision_chain_decoder_degenerate PASSED")
+
+
+def test_causal_decision_chain_late_meta_loop_rerun():
+    """late_meta_loop_rerun decision must be recordable in causal_decision_chain
+    when the post-output meta-loop re-run is attempted."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "causal_decision_chain']['late_meta_loop_rerun']" in src, (
+        "_forward_impl must record 'late_meta_loop_rerun' in "
+        "causal_decision_chain when the post-output meta-loop fires"
+    )
+    print("✅ test_causal_decision_chain_late_meta_loop_rerun PASSED")
+
+
+def test_late_meta_loop_failure_adapts_trigger():
+    """late_meta_loop_failure exception must trigger adapt_weights_from_evolution
+    to close the metacognitive feedback loop for late-stage failures."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    idx = src.find("late_meta_loop_failure")
+    assert idx > 0, "late_meta_loop_failure recording must exist"
+    region = src[idx:idx + 800]
+    assert 'adapt_weights_from_evolution' in region, (
+        "late_meta_loop_failure recording must be followed by "
+        "adapt_weights_from_evolution so late-stage failures feed back "
+        "into metacognitive trigger sensitivity"
+    )
+    print("✅ test_late_meta_loop_failure_adapts_trigger PASSED")
+
+
+def test_cycle_consistency_failure_adapts_trigger():
+    """cycle_consistency_check_failure exception must trigger
+    adapt_weights_from_evolution to close the metacognitive loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    idx = src.find("cycle_consistency_check_failure")
+    assert idx > 0, "cycle_consistency_check_failure recording must exist"
+    region = src[idx:idx + 800]
+    assert 'adapt_weights_from_evolution' in region, (
+        "cycle_consistency_check_failure recording must be followed by "
+        "adapt_weights_from_evolution so consistency failures feed back "
+        "into metacognitive trigger sensitivity"
+    )
+    print("✅ test_cycle_consistency_failure_adapts_trigger PASSED")
+
+
+def test_verify_pipeline_wiring_exception_not_silent():
+    """verify_pipeline_wiring exception handler in verify_and_reinforce must
+    not silently default to 1.0 coverage — it should log and default to 0.0."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Find the verify_pipeline_wiring exception handler
+    idx = src.find("verify_pipeline_wiring()")
+    assert idx > 0, "verify_pipeline_wiring call must exist"
+    region = src[idx:idx + 400]
+    # The exception handler must NOT silently default to 1.0
+    assert '_pipeline_wiring_cov = 0.0' in region or 'logger.warning' in region, (
+        "verify_pipeline_wiring exception handler must not silently "
+        "default to 1.0 coverage — it should log and use 0.0"
+    )
+    print("✅ test_verify_pipeline_wiring_exception_not_silent PASSED")
+
+
+def test_reasoning_core_wm_verification_records_error_evolution():
+    """World model prediction verification exception handler in
+    _reasoning_core_impl must record episode to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx = src.find("World model prediction verification failed")
+    assert idx > 0, "world model verification exception handler must exist"
+    region = src[idx:idx + 500]
+    assert 'world_model_verification_failure' in region, (
+        "World model prediction verification exception must record "
+        "'world_model_verification_failure' in error_evolution"
+    )
+    print("✅ test_reasoning_core_wm_verification_records_error_evolution PASSED")
+
+
+def test_reasoning_core_hwm_verification_records_error_evolution():
+    """Hierarchical WM prediction verification exception handler in
+    _reasoning_core_impl must record episode to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx = src.find("Hierarchical WM prediction verification failed")
+    assert idx > 0, "hierarchical WM verification exception handler must exist"
+    region = src[idx:idx + 500]
+    assert 'hierarchical_wm_verification_failure' in region, (
+        "Hierarchical WM prediction verification exception must record "
+        "'hierarchical_wm_verification_failure' in error_evolution"
+    )
+    print("✅ test_reasoning_core_hwm_verification_records_error_evolution PASSED")
+
+
+def test_reasoning_core_memory_conditioning_records_error_evolution():
+    """Pre-meta-loop memory conditioning exception handler must record
+    episode to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx = src.find("Pre-meta-loop memory conditioning failed")
+    assert idx > 0, "memory conditioning exception handler must exist"
+    region = src[idx:idx + 800]
+    assert 'memory_conditioning_failure' in region, (
+        "Memory conditioning exception must record "
+        "'memory_conditioning_failure' in error_evolution"
+    )
+    print("✅ test_reasoning_core_memory_conditioning_records_error_evolution PASSED")
+
+
+def test_reasoning_core_causal_context_records_error_evolution():
+    """Pre-meta-loop causal context conditioning exception handler must record
+    episode to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx = src.find("Pre-meta-loop causal context conditioning failed")
+    assert idx > 0, "causal context exception handler must exist"
+    region = src[idx:idx + 800]
+    assert 'causal_context_conditioning_failure' in region, (
+        "Causal context exception must record "
+        "'causal_context_conditioning_failure' in error_evolution"
+    )
+    print("✅ test_reasoning_core_causal_context_records_error_evolution PASSED")
+
+
+def test_reasoning_core_memory_validation_records_error_evolution():
+    """Pre-meta-loop memory validation exception handler must record
+    episode to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx = src.find("Pre-meta-loop memory validation failed")
+    assert idx > 0, "memory validation exception handler must exist"
+    region = src[idx:idx + 800]
+    assert 'memory_validation_failure' in region, (
+        "Memory validation exception must record "
+        "'memory_validation_failure' in error_evolution"
+    )
+    print("✅ test_reasoning_core_memory_validation_records_error_evolution PASSED")
+
+
+def test_new_reasoning_core_error_classes_registered():
+    """All new _reasoning_core_impl error classes must be registered in both
+    _ERROR_CLASS_TO_LAMBDA and _class_to_signal mappings."""
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+    tracker = CausalErrorEvolutionTracker.__new__(CausalErrorEvolutionTracker)
+    lambda_map = tracker._ERROR_CLASS_TO_LAMBDA
+    trigger = MetaCognitiveRecursionTrigger.__new__(MetaCognitiveRecursionTrigger)
+    trigger.__init__()
+    new_classes = [
+        'world_model_verification_failure',
+        'hierarchical_wm_verification_failure',
+        'memory_conditioning_failure',
+        'causal_context_conditioning_failure',
+        'memory_validation_failure',
+    ]
+    for cls in new_classes:
+        assert cls in lambda_map, (
+            f"'{cls}' must be registered in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_reasoning_core_error_classes_registered PASSED")
+
+
+def test_pre_reasoning_causal_decisions_merged():
+    """Pre-reasoning causal decisions (backbone, continual_learning,
+    chunked_processor) must be merged into outputs after reasoning core."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_pre_reasoning_causal_decisions' in src, (
+        "_forward_impl must collect pre-reasoning causal decisions"
+    )
+    assert "causal_decision_chain'].update" in src, (
+        "_forward_impl must merge pre-reasoning causal decisions into "
+        "causal_decision_chain after reasoning core runs"
+    )
+    print("✅ test_pre_reasoning_causal_decisions_merged PASSED")
 
 
 if __name__ == "__main__":
