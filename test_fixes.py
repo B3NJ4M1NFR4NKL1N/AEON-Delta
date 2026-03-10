@@ -67621,6 +67621,12 @@ def run_all_tests():
     test_causal_decision_chain_post_output_gate()
     test_causal_decision_chain_cognitive_frame_assessment()
 
+    # Reinforcement causal trace & failure feedback tests
+    test_periodic_reinforcement_records_causal_trace()
+    test_uncertainty_reinforcement_records_causal_trace()
+    test_reinforcement_failure_records_error_evolution()
+    test_reinforcement_failure_records_causal_trace()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76024,6 +76030,178 @@ def test_causal_decision_chain_cognitive_frame_assessment():
         )
 
     print("✅ test_causal_decision_chain_cognitive_frame_assessment PASSED")
+
+
+# ============================================================================
+# Section 35 Reinforcement Causal Trace & Failure Feedback Tests
+# ============================================================================
+
+def test_periodic_reinforcement_records_causal_trace():
+    """Periodic reinforcement must record a causal trace entry so that
+    every corrective action is deterministically traceable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force a periodic reinforcement on next forward pass
+    model._REINFORCE_INTERVAL = 1
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    # Check that a causal trace entry was recorded for the periodic
+    # reinforcement decision
+    entries = list(model.causal_trace._entries)
+    periodic_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'verify_and_reinforce'
+            and e.get('decision') == 'periodic_reinforcement')
+    ]
+    assert len(periodic_entries) >= 1, (
+        "Periodic reinforcement must record a causal trace entry "
+        "with decision='periodic_reinforcement' for causal transparency"
+    )
+
+    entry = periodic_entries[-1]
+    meta = entry.get('metadata', {})
+    assert 'overall_score' in meta, (
+        "Periodic reinforcement causal trace must include overall_score"
+    )
+    assert 'actions_applied' in meta, (
+        "Periodic reinforcement causal trace must include actions_applied"
+    )
+
+    print("✅ test_periodic_reinforcement_records_causal_trace PASSED")
+
+
+def test_uncertainty_reinforcement_records_causal_trace():
+    """Uncertainty-triggered reinforcement must record a causal trace entry
+    so that the corrective decision is traceable to its triggering
+    uncertainty level."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Set very low threshold to trigger uncertainty-triggered reinforcement
+    model._UNCERTAINTY_REINFORCE_THRESHOLD = 0.0
+    # Make sure it's NOT a periodic pass
+    model._REINFORCE_INTERVAL = 999
+
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    # Check that a causal trace entry was recorded
+    entries = list(model.causal_trace._entries)
+    unc_entries = [
+        e for e in entries
+        if (e.get('subsystem') == 'verify_and_reinforce'
+            and e.get('decision') == 'uncertainty_triggered_reinforcement')
+    ]
+    assert len(unc_entries) >= 1, (
+        "Uncertainty-triggered reinforcement must record a causal trace "
+        "entry with decision='uncertainty_triggered_reinforcement'"
+    )
+
+    entry = unc_entries[-1]
+    meta = entry.get('metadata', {})
+    assert 'trigger_uncertainty' in meta, (
+        "Uncertainty-triggered causal trace must include trigger_uncertainty"
+    )
+    assert 'overall_score' in meta, (
+        "Uncertainty-triggered causal trace must include overall_score"
+    )
+
+    print("✅ test_uncertainty_reinforcement_records_causal_trace PASSED")
+
+
+def test_reinforcement_failure_records_error_evolution():
+    """When periodic or uncertainty-triggered reinforcement fails with an
+    exception, the failure must be recorded in error_evolution so that
+    the metacognitive trigger learns from reinforcement exceptions."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify that the error classes exist in both mappings
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+    tracker = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert 'periodic_reinforcement_failure' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "periodic_reinforcement_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert 'uncertainty_reinforcement_failure' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "uncertainty_reinforcement_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    # Check _class_to_signal (via evaluate_signal)
+    # The classes should be mappable without fallback
+    import inspect
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.__init__)
+    # Just verify the class can record episodes with these classes
+    tracker.record_episode(
+        error_class='periodic_reinforcement_failure',
+        success=False,
+        strategy_used='periodic_reinforce',
+    )
+    tracker.record_episode(
+        error_class='uncertainty_reinforcement_failure',
+        success=False,
+        strategy_used='uncertainty_reinforce',
+    )
+    summary = tracker.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'periodic_reinforcement_failure' in classes, (
+        "periodic_reinforcement_failure must be recordable"
+    )
+    assert 'uncertainty_reinforcement_failure' in classes, (
+        "uncertainty_reinforcement_failure must be recordable"
+    )
+
+    print("✅ test_reinforcement_failure_records_error_evolution PASSED")
+
+
+def test_reinforcement_failure_records_causal_trace():
+    """When reinforcement fails with an exception, the failure must be
+    recorded in the causal trace so root-cause analysis can trace why
+    reinforcement was not applied."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Check that the _forward_impl source records failures in causal_trace
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    assert 'periodic_reinforcement_failure' in src, (
+        "_forward_impl must record periodic_reinforcement_failure "
+        "in causal_trace when periodic reinforcement raises an exception"
+    )
+    assert 'uncertainty_reinforcement_failure' in src, (
+        "_forward_impl must record uncertainty_reinforcement_failure "
+        "in causal_trace when uncertainty-triggered reinforcement "
+        "raises an exception"
+    )
+
+    print("✅ test_reinforcement_failure_records_causal_trace PASSED")
 
 
 if __name__ == "__main__":

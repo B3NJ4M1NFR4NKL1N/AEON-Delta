@@ -16759,6 +16759,16 @@ class MetaCognitiveRecursionTrigger:
             # between reinforcement cycles, indicating that a config
             # change or module failure introduced new structural issues.
             "architectural_regression": "coherence_deficit",
+            # Periodic reinforcement failure — the scheduled
+            # verify_and_reinforce() cycle raised an exception,
+            # preventing mutual-reinforcement feedback from reaching
+            # error evolution and metacognitive trigger weights.
+            "periodic_reinforcement_failure": "coherence_deficit",
+            # Uncertainty reinforcement failure — the uncertainty-
+            # triggered verify_and_reinforce() cycle raised an exception
+            # while attempting to correct a high-uncertainty state,
+            # leaving the detected uncertainty unaddressed.
+            "uncertainty_reinforcement_failure": "uncertainty",
             # Emergence deficit — the forward-pass emergence monitor
             # detected that AGI axioms are not met.  Maps to
             # coherence_deficit so that recurring emergence failures
@@ -17983,6 +17993,16 @@ class CausalErrorEvolutionTracker:
         # training strengthens cross-module integration and reduces
         # structural fragility.
         "architectural_regression": "lambda_coherence",
+        # Periodic reinforcement failure — the scheduled mutual-
+        # reinforcement cycle failed, preventing architectural weakness
+        # feedback.  Maps to lambda_coherence so training strengthens
+        # integration reliability when periodic checks repeatedly fail.
+        "periodic_reinforcement_failure": "lambda_coherence",
+        # Uncertainty reinforcement failure — the uncertainty-triggered
+        # self-correction cycle failed.  Maps to lambda_ucc so training
+        # adapts to persistent inability to resolve high-uncertainty
+        # states via reinforcement.
+        "uncertainty_reinforcement_failure": "lambda_ucc",
         # Emergence deficit — forward-pass emergence monitor detected
         # that AGI axioms are not met.  Maps to lambda_coherence so
         # training adapts to persistent emergence failures.
@@ -39177,6 +39197,20 @@ class AEONDeltaV3(nn.Module):
                             "overall_score": _reinforce_score,
                         },
                     )
+                # Record the periodic reinforcement decision in the
+                # causal trace so that every corrective action is
+                # deterministically traceable to its originating premise.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "periodic_reinforcement",
+                        metadata={
+                            'pass_number': _fwd,
+                            'overall_score': _reinforce_score,
+                            'actions_applied': len(_actions),
+                            'coherent': _reinforce.get('coherent', True),
+                        },
+                    )
                 # Feed the reinforcement coherence deficit into the
                 # uncertainty signal so that the next forward pass's
                 # meta-cognitive trigger is immediately aware of any
@@ -39206,10 +39240,31 @@ class AEONDeltaV3(nn.Module):
                         ] = _reinforce_unc_boost
                         result['uncertainty_sources'] = _unc_sources
             except Exception as _pr_err:
-                logger.debug(
-                    "Periodic verify_and_reinforce skipped (pass %d): %s",
+                logger.warning(
+                    "Periodic verify_and_reinforce failed (pass %d): %s",
                     _fwd, _pr_err,
                 )
+                # Record the failure in error evolution so that the
+                # metacognitive trigger learns from reinforcement
+                # exceptions and adapts its sensitivity weights.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='periodic_reinforcement_failure',
+                        success=False,
+                        strategy_used='periodic_reinforce',
+                    )
+                # Record the failure in the causal trace so that
+                # root-cause analysis can trace why reinforcement
+                # was not applied.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "periodic_reinforcement_failure",
+                        metadata={
+                            'pass_number': _fwd,
+                            'error': str(_pr_err),
+                        },
+                    )
 
         # ===== UNCERTAINTY-TRIGGERED REINFORCEMENT =====
         # When the current pass's uncertainty exceeds a severity
@@ -39251,11 +39306,49 @@ class AEONDeltaV3(nn.Module):
                             "actions": len(_unc_actions),
                         },
                     )
+                # Record the uncertainty-triggered reinforcement in
+                # the causal trace so that the corrective decision and
+                # its outcome are deterministically traceable.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "uncertainty_triggered_reinforcement",
+                        metadata={
+                            'pass_number': _fwd,
+                            'trigger_uncertainty': _unc_val,
+                            'overall_score': _unc_reinforce.get(
+                                'overall_score', 1.0,
+                            ),
+                            'actions_applied': len(_unc_actions),
+                        },
+                    )
             except Exception as _ut_err:
-                logger.debug(
-                    "Uncertainty-triggered reinforcement skipped "
+                logger.warning(
+                    "Uncertainty-triggered reinforcement failed "
                     "(pass %d, unc=%.2f): %s", _fwd, _unc_val, _ut_err,
                 )
+                # Record the failure in error evolution so that the
+                # metacognitive trigger adapts to persistent inability
+                # to resolve high-uncertainty states.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='uncertainty_reinforcement_failure',
+                        success=False,
+                        strategy_used='uncertainty_reinforce',
+                    )
+                # Record the failure in the causal trace so that
+                # root-cause analysis can trace why the uncertainty-
+                # triggered correction was not applied.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "uncertainty_reinforcement_failure",
+                        metadata={
+                            'pass_number': _fwd,
+                            'trigger_uncertainty': _unc_val,
+                            'error': str(_ut_err),
+                        },
+                    )
 
         # ===== EMERGENCE SUMMARY =====
         # Attach a lightweight emergence summary to every forward-pass
