@@ -22968,6 +22968,21 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "causal_chain_coverage_deficit", default=0.0,
         )
+        # Per-deficit feedback bus signals — fed by verify_and_reinforce()
+        # when individual axiom scores fall below threshold.  This closes
+        # the gap where only aggregate signals (systematic_uncertainty,
+        # cognitive_unity_deficit) were written, preventing the meta-loop
+        # from distinguishing between coherence, metacognitive, and
+        # provenance deficits.
+        self.feedback_bus.register_signal(
+            "coherence_deficit", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "metacognitive_gap", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "provenance_chain_incomplete", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -38242,6 +38257,17 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception:
                             logger.debug("Backbone adapter trigger adaptation failed")
+                    # Propagate adapter failure into feedback bus so the
+                    # next meta-loop pass is conditioned on the degraded
+                    # backbone signal, closing the gap where adapter errors
+                    # were recorded in error_evolution but invisible to the
+                    # feedback bus conditioning vector.
+                    if self.feedback_bus is not None:
+                        _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
+                        if 'systematic_uncertainty' in _fb_sig:
+                            _fb_sig['systematic_uncertainty'] = max(
+                                _fb_sig['systematic_uncertainty'], 0.3,
+                            )
             self.provenance_tracker.record_after("backbone_adapter", z_encoded)
             self.coherence_registry.register_output(
                 "backbone_adapter",
@@ -38298,6 +38324,15 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception:
                             logger.debug("Continual learning trigger adaptation failed")
+                    # Propagate adapter failure into feedback bus so the
+                    # next meta-loop pass is conditioned on the degraded
+                    # continual-learning signal.
+                    if self.feedback_bus is not None:
+                        _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
+                        if 'systematic_uncertainty' in _fb_sig:
+                            _fb_sig['systematic_uncertainty'] = max(
+                                _fb_sig['systematic_uncertainty'], 0.3,
+                            )
             self.provenance_tracker.record_after("continual_learning", z_encoded)
             self.coherence_registry.register_output(
                 "continual_learning",
@@ -38557,6 +38592,18 @@ class AEONDeltaV3(nn.Module):
             _penalty = _unc_scale * (_unc - _unc_threshold) / max(1.0 - _unc_threshold, 1e-6)
             _penalty = min(_penalty, _unc_scale)
             logits = logits * (1.0 - _penalty)
+        # Record the uncertainty penalty decision in causal_decision_chain
+        # so that logit scaling is traceable to its originating uncertainty.
+        # Without this entry, the penalty's influence on the final output
+        # is invisible to root-cause analysis, breaking causal transparency.
+        if 'causal_decision_chain' in outputs:
+            outputs['causal_decision_chain']['uncertainty_logit_penalty'] = {
+                'applied': _apply_penalty,
+                'uncertainty': float(_unc),
+                'threshold': float(_unc_threshold),
+                'penalty_factor': float(_penalty) if _apply_penalty else 0.0,
+                'decode_mode': decode_mode,
+            }
 
         # ===== POST-OUTPUT UNCERTAINTY → ERROR EVOLUTION =====
         # When the final reasoning uncertainty exceeds the trigger
@@ -45724,6 +45771,12 @@ class AEONDeltaV3(nn.Module):
                 ('metacognitive_gap', 'uncertainty', um_score),
                 ('provenance_chain_incomplete', 'low_causal_quality',
                  rc_score),
+                # Include pipeline wiring gap so that wiring deficits
+                # also trigger auto-correction, closing the gap where
+                # wiring coverage failures were recorded in error
+                # evolution but excluded from the learned recovery loop.
+                ('pipeline_wiring_gap', 'low_output_reliability',
+                 _pipeline_wiring_cov),
             ]
             for _ec, _trigger_signal, _score in _deficit_classes:
                 if _score >= 0.8:
@@ -45940,6 +45993,16 @@ class AEONDeltaV3(nn.Module):
                     )
             except Exception as exc:
                 logger.warning("verify_and_reinforce: adapt_weights_from_evolution failed: %s", exc)
+                # Record the adaptation failure so the error evolution
+                # tracker can learn from recurring metacognitive adaptation
+                # failures, closing the gap where adaptation exceptions
+                # were logged but invisible to the learning system.
+                self.error_evolution.record_episode(
+                    error_class='recovery_reinforcement_failed',
+                    strategy_used='verify_and_reinforce_adapt',
+                    success=False,
+                    metadata={'error': str(exc)},
+                )
                 reinforcement_actions.append(
                     'Failed to adapt metacognitive weights from error '
                     'evolution — logged for traceability'
@@ -46043,6 +46106,27 @@ class AEONDeltaV3(nn.Module):
             _signals['causal_chain_coverage_deficit'] = max(
                 0.0, min(1.0, 1.0 - _chain_cov),
             )
+            # Write per-deficit feedback bus signals so the next forward
+            # pass's meta-loop conditioning vector reflects each specific
+            # axiom deficit independently.  Previously, only aggregate
+            # signals (systematic_uncertainty, cognitive_unity_deficit)
+            # were written, leaving the meta-loop unable to distinguish
+            # between coherence, metacognitive, and provenance deficits.
+            if 'coherence_deficit' in _signals:
+                _signals['coherence_deficit'] = max(
+                    _signals['coherence_deficit'],
+                    max(0.0, min(1.0, 1.0 - mv_score)),
+                )
+            if 'metacognitive_gap' in _signals:
+                _signals['metacognitive_gap'] = max(
+                    _signals['metacognitive_gap'],
+                    max(0.0, min(1.0, 1.0 - um_score)),
+                )
+            if 'provenance_chain_incomplete' in _signals:
+                _signals['provenance_chain_incomplete'] = max(
+                    _signals['provenance_chain_incomplete'],
+                    max(0.0, min(1.0, 1.0 - rc_score)),
+                )
 
         # --- Register reinforcement in coherence registry so the
         # cross-pass ledger tracks whether the mutual-reinforcement
