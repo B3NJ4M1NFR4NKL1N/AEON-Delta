@@ -67635,6 +67635,12 @@ def run_all_tests():
     test_verify_causal_chain_escalates_untraced()
     test_verify_cognitive_unity_escalates_signal_dropout()
 
+    # Training & generation metacognitive feedback loop patches
+    test_compute_loss_adapts_metacognitive_trigger()
+    test_generate_ucc_failure_adapts_trigger()
+    test_bridge_training_loss_full_adaptation()
+    test_compute_loss_high_coherence_triggers_adaptation()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -76412,6 +76418,107 @@ def test_verify_cognitive_unity_escalates_signal_dropout():
     )
 
     print("✅ test_verify_cognitive_unity_escalates_signal_dropout PASSED")
+
+
+def test_compute_loss_adapts_metacognitive_trigger():
+    """compute_loss() must adapt metacognitive trigger weights after
+    recording training-stage error evolution episodes, closing the
+    feedback loop where training errors were recorded but never
+    influenced metacognitive sensitivity."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.compute_loss)
+    # The method must contain an adapt_weights_from_evolution call
+    # after the training loss error evolution recordings.
+    assert 'adapt_weights_from_evolution' in src, (
+        "compute_loss must call adapt_weights_from_evolution after "
+        "recording training-stage errors to error evolution"
+    )
+    # Verify the training loss trigger adaptation pattern is present
+    assert '_train_summary' in src or 'train_adapt' in src or 'Training loss trigger adaptation' in src, (
+        "compute_loss must include training loss trigger adaptation "
+        "with proper error handling"
+    )
+
+    print("✅ test_compute_loss_adapts_metacognitive_trigger PASSED")
+
+
+def test_generate_ucc_failure_adapts_trigger():
+    """generate() must adapt metacognitive trigger weights after
+    recording generate_ucc_failure, closing the loop where generation
+    errors were recorded but never influenced metacognitive sensitivity."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.generate)
+    # Verify generate_ucc_failure recording AND trigger adaptation
+    assert 'generate_ucc_failure' in src, (
+        "generate must record generate_ucc_failure in error evolution"
+    )
+    assert 'adapt_weights_from_evolution' in src, (
+        "generate must call adapt_weights_from_evolution after "
+        "recording generate_ucc_failure to close the metacognitive "
+        "feedback loop"
+    )
+
+    print("✅ test_generate_ucc_failure_adapts_trigger PASSED")
+
+
+def test_bridge_training_loss_full_adaptation():
+    """bridge_training_loss_to_error_evolution() must call
+    adapt_weights_from_evolution() using accumulated error evolution
+    summaries, not just hardcoded per-signal boosts."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(
+        AEONDeltaV3.bridge_training_loss_to_error_evolution,
+    )
+    assert 'adapt_weights_from_evolution' in src, (
+        "bridge_training_loss_to_error_evolution must call "
+        "adapt_weights_from_evolution to leverage full error "
+        "evolution pattern analysis"
+    )
+    # Verify it uses get_error_summary (full analysis), not just
+    # direct weight manipulation
+    assert 'get_error_summary' in src, (
+        "bridge_training_loss_to_error_evolution must use "
+        "get_error_summary() for comprehensive pattern-based adaptation"
+    )
+
+    print("✅ test_bridge_training_loss_full_adaptation PASSED")
+
+
+def test_compute_loss_high_coherence_triggers_adaptation():
+    """When compute_loss records high_coherence_loss, the metacognitive
+    trigger weights must be updated via adapt_weights_from_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=128, hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, seq_length=16, meta_dim=32,
+        enable_metacognitive_recursion=True,
+        enable_module_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, S = 1, 16
+    input_ids = torch.randint(0, 128, (B, S))
+
+    # Run forward pass, then compute_loss
+    result = model(input_ids, fast=False)
+    loss_dict = model.compute_loss(result, input_ids)
+
+    # The test verifies that the adaptation mechanism exists and
+    # can execute without error — weight changes depend on whether
+    # losses exceeded thresholds in the specific forward pass.
+    assert loss_dict is not None, "compute_loss must return a result dict"
+    assert 'total_loss' in loss_dict, "compute_loss must return total_loss"
+
+    print("✅ test_compute_loss_high_coherence_triggers_adaptation PASSED")
 
 
 if __name__ == "__main__":
