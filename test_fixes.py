@@ -67754,6 +67754,14 @@ def run_all_tests():
     test_icm_reward_failure_flag_in_select_action()
     test_post_pipeline_metacognitive_uses_warning_not_debug()
 
+    # Final Integration — Metacognitive Adaptation Feedback Loop Closure
+    test_safe_adapt_metacognitive_weights_helper_exists()
+    test_safe_adapt_records_failure_to_error_evolution()
+    test_metacognitive_adaptation_failure_in_signal_mapping()
+    test_metacognitive_adaptation_failure_in_lambda_mapping()
+    test_none_error_class_in_lambda_mapping()
+    test_adapt_failure_handlers_use_warning_not_debug()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78029,9 +78037,14 @@ def test_verify_coherence_adapts_trigger_on_deficit():
     )
 
     # Verify adapt_weights_from_evolution appears after the deficit recording
+    # (either directly or via _safe_adapt_metacognitive_weights helper)
     _deficit_pos = _vc_body.find("verify_coherence_deficit")
     _adapt_pos = _vc_body.find("adapt_weights_from_evolution", _deficit_pos)
-    assert _adapt_pos > _deficit_pos, (
+    _safe_pos = _vc_body.find("_safe_adapt_metacognitive_weights", _deficit_pos)
+    _effective_pos = min(
+        p for p in (_adapt_pos, _safe_pos) if p > _deficit_pos
+    ) if any(p > _deficit_pos for p in (_adapt_pos, _safe_pos)) else -1
+    assert _effective_pos > _deficit_pos, (
         "adapt_weights_from_evolution must appear after "
         "verify_coherence_deficit recording in verify_coherence()"
     )
@@ -78215,7 +78228,9 @@ def test_metacognitive_loop_closure_end_to_end():
     with open('aeon_core.py', 'r') as f:
         lines = f.readlines()
 
-    _adapt_pattern = re.compile(r'adapt_weights_from_evolution\(')
+    _adapt_pattern = re.compile(
+        r'adapt_weights_from_evolution\(|_safe_adapt_metacognitive_weights\('
+    )
 
     # Find methods of interest and verify they contain adapt calls
     _methods_of_interest = {
@@ -78857,6 +78872,163 @@ def test_post_pipeline_metacognitive_uses_warning_not_debug():
         f"not logger.debug. Context: {context[-80:]}"
     )
     print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
+
+
+def test_safe_adapt_metacognitive_weights_helper_exists():
+    """The _safe_adapt_metacognitive_weights helper method must exist on
+    AEONDeltaV3 and be callable.  It wraps the common
+    adapt_weights_from_evolution pattern with automatic error recording,
+    closing the feedback-loop gap where adaptation failures were silently
+    logged at debug level.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, '_safe_adapt_metacognitive_weights'), (
+        "AEONDeltaV3 must have _safe_adapt_metacognitive_weights method"
+    )
+    # Should not raise even when called without errors
+    model._safe_adapt_metacognitive_weights(context='test')
+    print("✅ test_safe_adapt_metacognitive_weights_helper_exists PASSED")
+
+
+def test_safe_adapt_records_failure_to_error_evolution():
+    """When adapt_weights_from_evolution raises, the helper must record a
+    metacognitive_adaptation_failure episode in error_evolution rather
+    than silently swallowing the exception.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Sabotage adapt_weights_from_evolution to always raise
+    original = model.metacognitive_trigger.adapt_weights_from_evolution
+    def _raise(*a, **kw):
+        raise RuntimeError("deliberate test failure")
+    model.metacognitive_trigger.adapt_weights_from_evolution = _raise
+
+    episodes_before = sum(
+        v.get('count', 0)
+        for v in model.error_evolution.get_error_summary().get('error_classes', {}).values()
+    )
+
+    # Call the helper — it should NOT raise
+    model._safe_adapt_metacognitive_weights(context='test_sabotage')
+
+    episodes_after = sum(
+        v.get('count', 0)
+        for v in model.error_evolution.get_error_summary().get('error_classes', {}).values()
+    )
+
+    assert episodes_after > episodes_before, (
+        "Adaptation failure must be recorded in error_evolution"
+    )
+
+    # Check the error class
+    summary = model.error_evolution.get_error_summary()
+    assert 'metacognitive_adaptation_failure' in summary.get('error_classes', {}), (
+        "metacognitive_adaptation_failure must appear in error_classes"
+    )
+
+    # Restore
+    model.metacognitive_trigger.adapt_weights_from_evolution = original
+    print("✅ test_safe_adapt_records_failure_to_error_evolution PASSED")
+
+
+def test_metacognitive_adaptation_failure_in_signal_mapping():
+    """metacognitive_adaptation_failure must be in the _class_to_signal
+    mapping inside adapt_weights_from_evolution so that adaptation
+    failures influence the metacognitive trigger's uncertainty signal.
+    """
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        src = f.read()
+
+    # Find the _class_to_signal dict inside adapt_weights_from_evolution
+    start = src.find('_class_to_signal = {')
+    assert start >= 0, "_class_to_signal mapping not found"
+    end = src.find('\n        }', start) + len('\n        }')
+    mapping_block = src[start:end]
+    assert '"metacognitive_adaptation_failure"' in mapping_block, (
+        "metacognitive_adaptation_failure must be in _class_to_signal"
+    )
+    assert '"metacognitive_adaptation_failure": "uncertainty"' in mapping_block, (
+        "metacognitive_adaptation_failure should map to 'uncertainty'"
+    )
+    print("✅ test_metacognitive_adaptation_failure_in_signal_mapping PASSED")
+
+
+def test_metacognitive_adaptation_failure_in_lambda_mapping():
+    """metacognitive_adaptation_failure must be in _ERROR_CLASS_TO_LAMBDA
+    so that training can boost the relevant loss weight.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+    mapping = tracker._ERROR_CLASS_TO_LAMBDA
+    assert 'metacognitive_adaptation_failure' in mapping, (
+        "metacognitive_adaptation_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping['metacognitive_adaptation_failure'] == 'lambda_ucc', (
+        "metacognitive_adaptation_failure should map to 'lambda_ucc'"
+    )
+    print("✅ test_metacognitive_adaptation_failure_in_lambda_mapping PASSED")
+
+
+def test_none_error_class_in_lambda_mapping():
+    """The sentinel 'none' error class (used for healthy pipeline completions)
+    must be in _ERROR_CLASS_TO_LAMBDA so that recommend_loss_adjustments()
+    can compute per-class success rates correctly.
+    """
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+    mapping = tracker._ERROR_CLASS_TO_LAMBDA
+    assert 'none' in mapping, (
+        "'none' error class must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_none_error_class_in_lambda_mapping PASSED")
+
+
+def test_adapt_failure_handlers_use_warning_not_debug():
+    """All adapt_weights_from_evolution failure exception handlers must use
+    logger.warning (not logger.debug) so that adaptation failures are
+    visible in standard logging output.
+    """
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        lines = f.readlines()
+
+    debug_handlers = []
+    for i, line in enumerate(lines):
+        if 'adapt_weights_from_evolution' in line and 'self.metacognitive_trigger' in line:
+            # Look forward for except handler
+            for j in range(i + 1, min(i + 6, len(lines))):
+                if lines[j].strip().startswith('except'):
+                    body = lines[j + 1].strip() if j + 1 < len(lines) else ''
+                    # Skip the helper method definition
+                    if 'context, e)' in body:
+                        break
+                    if body.startswith('logger.debug('):
+                        debug_handlers.append(j + 1)
+                    break
+
+    assert len(debug_handlers) == 0, (
+        f"Found {len(debug_handlers)} adapt_weights_from_evolution failure "
+        f"handlers still using logger.debug at lines {debug_handlers}"
+    )
+    print("✅ test_adapt_failure_handlers_use_warning_not_debug PASSED")
 
 
 if __name__ == "__main__":

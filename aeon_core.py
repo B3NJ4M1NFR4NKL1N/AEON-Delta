@@ -17094,6 +17094,12 @@ class MetaCognitiveRecursionTrigger:
             # checks raised an exception, preventing late-stage
             # uncertainty from triggering a higher-order review.
             "post_pipeline_metacognitive_failure": "uncertainty",
+            # Metacognitive adaptation failure — the weight adaptation
+            # mechanism itself raised an exception, leaving the trigger
+            # with stale weights.  Routed to "uncertainty" because
+            # stale metacognitive weights increase overall system
+            # uncertainty about when to trigger re-reasoning.
+            "metacognitive_adaptation_failure": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18432,6 +18438,15 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the unified
         # cognitive cycle that orchestrates metacognitive re-evaluation.
         "post_pipeline_metacognitive_failure": "lambda_ucc",
+        # Metacognitive adaptation failure — the weight adaptation
+        # mechanism itself raised an exception.  Maps to lambda_ucc so
+        # training strengthens the unified cognitive cycle responsible
+        # for metacognitive orchestration.
+        "metacognitive_adaptation_failure": "lambda_ucc",
+        # Sentinel "none" class — recorded on normal (healthy) pipeline
+        # completions.  Maps to lambda_self_consistency as a neutral
+        # baseline so the tracker can compute per-class success rates.
+        "none": "lambda_self_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -20079,6 +20094,13 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
                     _adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='metacognitive_adaptation_failure',
+                        strategy_used='weight_adaptation',
+                        success=False,
+                        metadata={'error': str(_adapt_err), 'context': 'ucc_evaluate'},
+                    )
 
         # 1d. Adapt provenance tracker thresholds from current-pass delta
         # statistics and error-evolution history so that causal tracing
@@ -26680,6 +26702,13 @@ class AEONDeltaV3(nn.Module):
                             "error_class": error_class,
                         },
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='metacognitive_adaptation_failure',
+                            strategy_used='weight_adaptation',
+                            success=False,
+                            metadata={'error': str(_adapt_err), 'context': 'reasoning_core_error'},
+                        )
 
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
@@ -26986,18 +27015,7 @@ class AEONDeltaV3(nn.Module):
                 # episodes feed back into trigger sensitivity, closing
                 # the loop where DAG cycles were recorded but never
                 # influenced metacognitive re-reasoning.
-                if self.metacognitive_trigger is not None:
-                    try:
-                        _dag_err_summary = self.error_evolution.get_error_summary()
-                        if _dag_err_summary.get('total_recorded', 0) > 0:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                _dag_err_summary,
-                            )
-                    except Exception as _dag_adapt_err:
-                        logger.debug(
-                            "DAG cycle trigger adaptation failed: %s",
-                            _dag_adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
         
         # 0. Register encoder and VQ stages in the provenance tracker.
         # These stages run in _forward_impl before the tracker is reset,
@@ -29970,8 +29988,14 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _ae_err:
-                    logger.debug(
+                    logger.warning(
                         "Metacognitive weight adaptation failed: %s", _ae_err,
+                    )
+                    self.error_evolution.record_episode(
+                        error_class='metacognitive_adaptation_failure',
+                        strategy_used='weight_adaptation',
+                        success=False,
+                        metadata={'error': str(_ae_err), 'context': 'reasoning_core_pre_evaluate'},
                     )
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
@@ -31348,16 +31372,7 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(_causal_adj_err)},
                         )
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _adj_adapt_err:
-                                logger.debug(
-                                    "MCTS causal adjacency trigger adaptation failed: %s",
-                                    _adj_adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
             try:
                 mcts_results = self.mcts_planner.search(
                     C_star[0], self.world_model,
@@ -32707,17 +32722,7 @@ class AEONDeltaV3(nn.Module):
                                 {"icm_reward": 0.0},
                             ),
                         )
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _adapt_err:
-                                logger.debug(
-                                    "Metacognitive weight adaptation failed "
-                                    "after ICM reward computation failure: %s",
-                                    _adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
                 # 5e-iii. Active learning state blending — blend the
                 # planner's best_action into C_star as a small residual
                 # so the epistemic exploration signal shapes downstream
@@ -38843,6 +38848,34 @@ class AEONDeltaV3(nn.Module):
         
         return result
 
+    # ── Helper: safe metacognitive weight adaptation ──────────────
+    def _safe_adapt_metacognitive_weights(self, context: str = '') -> None:
+        """Adapt metacognitive trigger weights, recording any failure.
+
+        Wraps the common pattern of calling
+        ``metacognitive_trigger.adapt_weights_from_evolution()`` inside
+        a try/except that records adaptation failures to
+        ``error_evolution`` instead of silently swallowing them.  This
+        closes the feedback-loop gap where the metacognitive adaptation
+        mechanism was blind to its own failures — 40 exception handlers
+        previously logged at debug level but never recorded the failure,
+        preventing the system from detecting chronic adaptation issues.
+        """
+        if self.metacognitive_trigger is None or self.error_evolution is None:
+            return
+        try:
+            self.metacognitive_trigger.adapt_weights_from_evolution(
+                self.error_evolution.get_error_summary()
+            )
+        except Exception as e:
+            logger.warning("Metacognitive adaptation failed (%s): %s", context, e)
+            self.error_evolution.record_episode(
+                error_class='metacognitive_adaptation_failure',
+                strategy_used='weight_adaptation',
+                success=False,
+                metadata={'error': str(e), 'context': context},
+            )
+
     def _forward_impl(
         self,
         input_ids: torch.Tensor,
@@ -38884,13 +38917,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(bb_err)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _bb_adapt_err:
-                            logger.debug("Backbone adapter trigger adaptation failed: %s", _bb_adapt_err)
+                    self._safe_adapt_metacognitive_weights(context='backbone_adapter')
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # backbone signal, closing the gap where adapter errors
@@ -38951,13 +38978,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(cl_err)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _cl_adapt_err:
-                            logger.debug("Continual learning trigger adaptation failed: %s", _cl_adapt_err)
+                    self._safe_adapt_metacognitive_weights(context='continual_learning')
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # continual-learning signal.
@@ -39048,13 +39069,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(chunk_err)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _chunk_adapt_err:
-                            logger.debug("Chunked encoding trigger adaptation failed: %s", _chunk_adapt_err)
+                    self._safe_adapt_metacognitive_weights(context='chunked_encoding')
             self.provenance_tracker.record_after("chunked_processor", z_quantized)
             self.coherence_registry.register_output(
                 "chunked_processor",
@@ -39343,13 +39358,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_dec_err)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _degen_adapt_err:
-                            logger.debug("Decoder degenerate check trigger adaptation failed: %s", _degen_adapt_err)
+                    self._safe_adapt_metacognitive_weights(context='decoder_degenerate_check')
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -39387,16 +39396,7 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(exc)},
                         )
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _re_adapt_err:
-                                logger.debug(
-                                    "Reencode failure trigger adaptation "
-                                    "failed: %s", _re_adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -39462,16 +39462,7 @@ class AEONDeltaV3(nn.Module):
                     # Adapt metacognitive trigger weights so future passes
                     # sensitise to coherence-deficit signals after a cycle-
                     # consistency check failure.
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _cyc_adapt_err:
-                            logger.debug(
-                                "Cycle-consistency trigger adaptation failed: %s",
-                                _cyc_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
@@ -39608,9 +39599,15 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _post_adapt_err:
-                    logger.debug(
+                    logger.warning(
                         "Post-output trigger adaptation failed: %s",
                         _post_adapt_err,
+                    )
+                    self.error_evolution.record_episode(
+                        error_class='metacognitive_adaptation_failure',
+                        strategy_used='weight_adaptation',
+                        success=False,
+                        metadata={'error': str(_post_adapt_err), 'context': 'post_output_gate'},
                     )
             # Record in causal trace for traceability
             if self.causal_trace is not None:
@@ -39658,16 +39655,7 @@ class AEONDeltaV3(nn.Module):
                         # Adapt metacognitive trigger weights so future
                         # passes sensitise to uncertainty signals after
                         # a late meta-loop failure.
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _late_adapt_err:
-                                logger.debug(
-                                    "Late meta-loop trigger adaptation failed: %s",
-                                    _late_adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
                 # Record the late rerun decision in causal_decision_chain
                 # so that the post-output corrective computation is
                 # deterministically traceable regardless of success/failure.
@@ -39718,16 +39706,7 @@ class AEONDeltaV3(nn.Module):
                     # closing the loop where provenance incompleteness
                     # was recorded in error evolution but never
                     # influenced metacognitive sensitivity.
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _pcv_adapt_err:
-                            logger.debug(
-                                "Provenance chain trigger adaptation failed: %s",
-                                _pcv_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # ===== PACKAGE RESULTS =====
         # Surface VQ codebook quality in the result dict so it is
@@ -39830,17 +39809,7 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             metadata={'error': str(_poc_err)},
                         )
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _poc_adapt_err:
-                                logger.debug(
-                                    "Post-output coherence trigger "
-                                    "adaptation failed: %s",
-                                    _poc_adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # ===== COGNITIVE UNITY SCORE =====
         # Synthesize a single composite score ∈ [0, 1] that explicitly
@@ -39925,16 +39894,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_snap_err)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _snap_adapt_err:
-                            logger.debug(
-                                "Snapshot validation trigger adaptation "
-                                "failed: %s", _snap_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
@@ -40414,16 +40374,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         strategy_used='periodic_reinforce',
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _pr_adapt_err:
-                            logger.debug(
-                                "Periodic reinforcement trigger "
-                                "adaptation failed: %s", _pr_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why reinforcement
                 # was not applied.
@@ -40507,16 +40458,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         strategy_used='uncertainty_reinforce',
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _ut_adapt_err:
-                            logger.debug(
-                                "Uncertainty reinforcement trigger "
-                                "adaptation failed: %s", _ut_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why the uncertainty-
                 # triggered correction was not applied.
@@ -40766,9 +40708,15 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary()
                 )
             except Exception as _batch_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Consolidated metacognitive adaptation failed: %s",
                     _batch_adapt_err,
+                )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(_batch_adapt_err), 'context': 'consolidated_batch'},
                 )
 
         # ===== POST-PIPELINE METACOGNITIVE RE-EVALUATION =====
@@ -40831,9 +40779,15 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary()
                         )
                     except Exception as _adapt_err:
-                        logger.debug(
+                        logger.warning(
                             "Post-pipeline metacognitive weight adaptation "
                             "failed after evaluation error: %s", _adapt_err
+                        )
+                        self.error_evolution.record_episode(
+                            error_class='metacognitive_adaptation_failure',
+                            strategy_used='weight_adaptation',
+                            success=False,
+                            metadata={'error': str(_adapt_err), 'context': 'post_pipeline'},
                         )
 
         return result
@@ -42023,9 +41977,15 @@ class AEONDeltaV3(nn.Module):
                         _train_summary,
                     )
             except Exception as _train_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Training loss trigger adaptation failed: %s",
                     _train_adapt_err,
+                )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(_train_adapt_err), 'context': 'compute_loss'},
                 )
 
         # Update metrics log
@@ -42226,18 +42186,7 @@ class AEONDeltaV3(nn.Module):
                             'post_boost_uncertainty': float(_gen_uncertainty),
                         },
                     )
-                if self.metacognitive_trigger is not None:
-                    try:
-                        self.metacognitive_trigger.adapt_weights_from_evolution(
-                            self.error_evolution.get_error_summary()
-                            if self.error_evolution is not None else {},
-                        )
-                    except Exception as _adapt_err:
-                        logger.debug(
-                            "generate: metacognitive trigger adaptation "
-                            "after uncertainty boost failed (non-fatal): %s",
-                            _adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
             generated_ids = outputs.get('generated_ids')
             
@@ -42480,9 +42429,15 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _adapt_err:
-                            logger.debug(
+                            logger.warning(
                                 "Generate UCC trigger adaptation failed: %s",
                                 _adapt_err,
+                            )
+                            self.error_evolution.record_episode(
+                                error_class='metacognitive_adaptation_failure',
+                                strategy_used='weight_adaptation',
+                                success=False,
+                                metadata={'error': str(_adapt_err), 'context': 'generate_ucc'},
                             )
 
             return {
@@ -42675,9 +42630,15 @@ class AEONDeltaV3(nn.Module):
                         _bridge_summary,
                     )
             except Exception as _bridge_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Training bridge trigger adaptation failed: %s",
                     _bridge_adapt_err,
+                )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(_bridge_adapt_err), 'context': 'training_bridge'},
                 )
 
         # Record training bridge decisions in causal_trace for full
@@ -45466,16 +45427,7 @@ class AEONDeltaV3(nn.Module):
             # blind to coherence failures observed outside the forward
             # pass, breaking the "any uncertainty triggers a
             # meta-cognitive cycle" requirement.
-            if self.metacognitive_trigger is not None:
-                try:
-                    self.metacognitive_trigger.adapt_weights_from_evolution(
-                        self.error_evolution.get_error_summary()
-                    )
-                except Exception as _vc_adapt_err:
-                    logger.debug(
-                        "verify_coherence trigger adaptation failed: %s",
-                        _vc_adapt_err,
-                    )
+            self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # --- Convergence arbiter reconciliation ---
         # When the convergence arbiter is available, reconcile the
@@ -45570,16 +45522,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_fb_err)[:200]},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _fb_adapt_err:
-                            logger.debug(
-                                "Feedback bus failure trigger adaptation failed: %s",
-                                _fb_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # --- Directional uncertainty summary ---
         # Include per-module uncertainty from the DirectionalUncertaintyTracker
@@ -45953,16 +45896,7 @@ class AEONDeltaV3(nn.Module):
                         # ensuring causal transparency failures are not
                         # silently accumulated without meta-cognitive
                         # review.
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _tg_adapt_err:
-                                logger.debug(
-                                    "Traceability gap trigger adaptation failed: %s",
-                                    _tg_adapt_err,
-                                )
+                        self._safe_adapt_metacognitive_weights(context='cognitive_path')
         _active_pass_coverage = (
             1.0 - len(_untraced_active) / max(len(_active_pass_subsystems), 1)
             if _active_pass_subsystems else 1.0
@@ -46048,16 +45982,7 @@ class AEONDeltaV3(nn.Module):
                     # Adapt trigger weights so signal dropout
                     # immediately influences metacognitive sensitivity,
                     # preventing silent cross-pass feedback degradation.
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _sd_adapt_err:
-                            logger.debug(
-                                "Signal dropout trigger adaptation failed: %s",
-                                _sd_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # ── 7. Per-module health synthesis ─────────────────────────
         # Synthesize a per-module health score that aggregates the three
@@ -46695,9 +46620,15 @@ class AEONDeltaV3(nn.Module):
                         'deficit episodes (immediate)'
                     )
             except Exception as _axiom_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Axiom deficit trigger adaptation failed: %s",
                     _axiom_adapt_err,
+                )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(_axiom_adapt_err), 'context': 'verify_and_reinforce_axiom'},
                 )
 
         # --- Feed low wiring coverage into error evolution ---
@@ -46742,16 +46673,7 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_wiring_exc)},
                     )
-                    if self.metacognitive_trigger is not None:
-                        try:
-                            self.metacognitive_trigger.adapt_weights_from_evolution(
-                                self.error_evolution.get_error_summary()
-                            )
-                        except Exception as _wiring_adapt_err:
-                            logger.debug(
-                                "Wiring verification trigger adaptation failed: %s",
-                                _wiring_adapt_err,
-                            )
+                    self._safe_adapt_metacognitive_weights(context='cognitive_path')
         else:
             _pipeline_wiring_cov = 1.0
         if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:
@@ -46768,16 +46690,7 @@ class AEONDeltaV3(nn.Module):
             # Adapt trigger weights so pipeline wiring gaps sensitise
             # the metacognitive trigger immediately, ensuring the
             # auto-correction loop below operates with updated weights.
-            if self.metacognitive_trigger is not None:
-                try:
-                    self.metacognitive_trigger.adapt_weights_from_evolution(
-                        self.error_evolution.get_error_summary()
-                    )
-                except Exception as _pwg_adapt_err:
-                    logger.debug(
-                        "Pipeline wiring gap trigger adaptation failed: %s",
-                        _pwg_adapt_err,
-                    )
+            self._safe_adapt_metacognitive_weights(context='cognitive_path')
 
         # --- Auto-correction loop: apply learned recovery strategies ---
         # Previously, error evolution recorded failure episodes but the
@@ -46884,16 +46797,7 @@ class AEONDeltaV3(nn.Module):
                 # Adapt trigger weights immediately so chain coverage
                 # gaps sensitise the metacognitive trigger before the
                 # batch adaptation at the end of verify_and_reinforce.
-                if self.metacognitive_trigger is not None:
-                    try:
-                        self.metacognitive_trigger.adapt_weights_from_evolution(
-                            self.error_evolution.get_error_summary()
-                        )
-                    except Exception as _ccg_adapt_err:
-                        logger.debug(
-                            "Causal chain gap trigger adaptation failed: %s",
-                            _ccg_adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
         except Exception as _chain_err:
             logger.warning(
                 "verify_causal_chain() failed inside verify_and_reinforce: %s",
@@ -46912,16 +46816,7 @@ class AEONDeltaV3(nn.Module):
                 # failures feed back into trigger sensitivity, closing
                 # the loop where chain verification errors were recorded
                 # but never influenced metacognitive re-reasoning.
-                if self.metacognitive_trigger is not None:
-                    try:
-                        self.metacognitive_trigger.adapt_weights_from_evolution(
-                            self.error_evolution.get_error_summary()
-                        )
-                    except Exception as _chain_adapt_err:
-                        logger.debug(
-                            "Chain failure trigger adaptation failed: %s",
-                            _chain_adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
             reinforcement_actions.append(
                 'Recorded verify_chain_failure (verify_causal_chain exception)'
             )
@@ -46986,16 +46881,7 @@ class AEONDeltaV3(nn.Module):
                 # reflected in metacognitive sensitivity immediately,
                 # closing the gap where new diagnostic gaps were recorded
                 # but the trigger only adapted at the batch step below.
-                if self.metacognitive_trigger is not None:
-                    try:
-                        self.metacognitive_trigger.adapt_weights_from_evolution(
-                            self.error_evolution.get_error_summary()
-                        )
-                    except Exception as _reg_adapt_err:
-                        logger.debug(
-                            "Architectural regression trigger adaptation "
-                            "failed: %s", _reg_adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
             elif _diag_gap_count > 0:
                 reinforcement_actions.append(
                     f'Monitored {_diag_gap_count} persistent '
@@ -47890,6 +47776,12 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     "sync_from_training: trigger adaptation failed: %s", e,
                 )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(e), 'context': 'sync_from_training'},
+                )
 
         # 3. Adjust convergence thresholds based on imported history.
         if (self.error_evolution is not None
@@ -48017,10 +47909,17 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary()
                 )
             except Exception as _seed_adapt_err:
-                logger.debug(
+                logger.warning(
                     "Baseline seeding trigger adaptation failed: %s",
                     _seed_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='metacognitive_adaptation_failure',
+                        strategy_used='weight_adaptation',
+                        success=False,
+                        metadata={'error': str(_seed_adapt_err), 'context': 'seed_baseline'},
+                    )
 
         return seeded
 
@@ -48155,9 +48054,15 @@ class AEONDeltaV3(nn.Module):
                         _summary,
                     )
             except Exception as _e:
-                logger.debug(
+                logger.warning(
                     "Cognitive activation: trigger weight adaptation "
                     "skipped: %s", _e,
+                )
+                self.error_evolution.record_episode(
+                    error_class='metacognitive_adaptation_failure',
+                    strategy_used='weight_adaptation',
+                    success=False,
+                    metadata={'error': str(_e), 'context': 'cognitive_activation_probe'},
                 )
 
         # 5. Seed coherence verifier baseline states — populate cached
@@ -48535,16 +48440,7 @@ class AEONDeltaV3(nn.Module):
                 # metacognitive trigger starts with calibrated sensitivity
                 # that reflects both the init-time failures AND their
                 # successful recovery by the activation probe.
-                if self.metacognitive_trigger is not None:
-                    try:
-                        self.metacognitive_trigger.adapt_weights_from_evolution(
-                            self.error_evolution.get_error_summary()
-                        )
-                    except Exception as _rec_adapt_err:
-                        logger.debug(
-                            "Activation recovery trigger adaptation "
-                            "failed: %s", _rec_adapt_err,
-                        )
+                self._safe_adapt_metacognitive_weights(context='cognitive_path')
         except Exception as _vr_err:
             logger.debug(
                 "Cognitive activation: verify_and_reinforce skipped: %s",
