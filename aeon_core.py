@@ -37925,7 +37925,7 @@ class AEONDeltaV3(nn.Module):
             # downstream auditing.
             "world_model": (
                 {
-                    "surprise": float(surprise.item())
+                    "surprise": float(surprise.mean().item())
                     if torch.is_tensor(surprise) else 0.0,
                     "active": bool(world_model_results),
                 }
@@ -37948,7 +37948,9 @@ class AEONDeltaV3(nn.Module):
             "cross_validator": (
                 {
                     "agreement": float(
-                        reconciliation_results.get("agreement_score", 0.0)
+                        reconciliation_results.get("agreement_score", torch.tensor(0.0)).mean().item()
+                        if torch.is_tensor(reconciliation_results.get("agreement_score", 0.0))
+                        else reconciliation_results.get("agreement_score", 0.0)
                     ) if reconciliation_results else 0.0,
                     "active": bool(reconciliation_results),
                 }
