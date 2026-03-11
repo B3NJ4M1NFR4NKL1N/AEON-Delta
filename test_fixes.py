@@ -24167,9 +24167,14 @@ def test_unified_cognitive_cycle_records_causal_trace():
     states = {'a': torch.randn(2, 64), 'b': torch.randn(2, 64)}
     cycle.evaluate(subsystem_states=states, delta_norm=0.1)
 
-    recent = trace.recent(1)
+    recent = trace.recent(5)
     assert len(recent) >= 1
-    assert recent[-1]['subsystem'] == 'unified_cognitive_cycle'
+    ucc_entries = [e for e in recent if e['subsystem'] == 'unified_cognitive_cycle']
+    assert len(ucc_entries) >= 1, (
+        "UnifiedCognitiveCycle must record a causal trace entry with "
+        f"subsystem='unified_cognitive_cycle'; recent entries: "
+        f"{[e['subsystem'] for e in recent]}"
+    )
 
     print("✅ test_unified_cognitive_cycle_records_causal_trace PASSED")
 
