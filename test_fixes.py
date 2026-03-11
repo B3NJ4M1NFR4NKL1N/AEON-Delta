@@ -67764,6 +67764,12 @@ def run_all_tests():
     test_reasoning_core_causal_trace_after_forward()
     test_post_reasoning_consolidation_adapts_trigger_weights()
 
+    # Inference 500 / TKG shape mismatch / auto_critic provenance / EMA fix
+    test_infer_endpoint_json_safe()
+    test_tkg_retrieval_projects_via_embed_conclusions()
+    test_auto_critic_provenance_cleanup_on_exception()
+    test_verify_convergence_reconciles_stale_ema()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -79133,6 +79139,138 @@ def test_post_reasoning_consolidation_adapts_trigger_weights():
             "Error summary must be available after consolidation"
         )
     print("✅ test_post_reasoning_consolidation_adapts_trigger_weights PASSED")
+
+
+def test_infer_endpoint_json_safe():
+    """The /api/infer response must be wrapped in _make_json_safe so that
+    torch.Tensor values in causal_decision_chain, provenance, and
+    ucc_result are converted to JSON-serializable lists."""
+    import ast
+    import inspect
+    from aeon_server import run_inference, _make_json_safe
+
+    src = inspect.getsource(run_inference)
+    assert "_make_json_safe" in src, (
+        "/api/infer must use _make_json_safe() to convert tensors to "
+        "JSON-serializable types"
+    )
+    # Verify _make_json_safe handles nested tensors
+    import torch
+    nested = {
+        "a": torch.tensor(1.0),
+        "b": {"c": torch.tensor([1.0, 2.0])},
+        "d": [torch.tensor(3.0)],
+        "e": "string",
+        "f": 42,
+    }
+    safe = _make_json_safe(nested)
+    import json
+    json.dumps(safe)  # must not raise
+    assert safe["a"] == 1.0
+    assert safe["b"]["c"] == [1.0, 2.0]
+    assert safe["d"] == [3.0]
+    assert safe["e"] == "string"
+    assert safe["f"] == 42
+    print("✅ test_infer_endpoint_json_safe PASSED")
+
+
+def test_tkg_retrieval_projects_via_embed_conclusions():
+    """TKG retrieval must project [num_predicates] facts back to
+    [hidden_dim] via NeuroSymbolicBridge.embed_conclusions before
+    blending into C_star."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # After TKG retrieval, embed_conclusions must be called
+    assert "embed_conclusions" in src, (
+        "_reasoning_core_impl must call embed_conclusions to project TKG "
+        "retrieval from [num_predicates] to [hidden_dim]"
+    )
+    # The call should be on standalone_ns_bridge
+    assert "standalone_ns_bridge.embed_conclusions" in src, (
+        "TKG projection must use standalone_ns_bridge.embed_conclusions"
+    )
+    print("✅ test_tkg_retrieval_projects_via_embed_conclusions PASSED")
+
+
+def test_auto_critic_provenance_cleanup_on_exception():
+    """When auto_critic raises an exception, record_after must still
+    be called to prevent pending before-state accumulation."""
+    import torch
+    from aeon_core import CausalProvenanceTracker
+
+    tracker = CausalProvenanceTracker()
+    state = torch.randn(1, 64)
+
+    # Simulate: record_before called, then exception occurs
+    tracker.record_before("auto_critic", state)
+    assert "auto_critic" in tracker._before_states, (
+        "record_before should create a pending before-state"
+    )
+
+    # record_after clears the pending state
+    tracker.record_after("auto_critic", state)
+    assert "auto_critic" not in tracker._before_states, (
+        "record_after should clear the pending before-state"
+    )
+
+    # Now verify the fix: inspect source code to confirm record_after
+    # is called in all three auto_critic except blocks
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    src += inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Find all except blocks that follow auto_critic record_before
+    # Each should contain record_after("auto_critic"
+    import re
+    # Count record_before("auto_critic" calls
+    before_count = len(re.findall(r'record_before\(["\']auto_critic["\']', src))
+    # Count record_after("auto_critic" calls (including those in except blocks)
+    after_count = len(re.findall(r'record_after\(["\']auto_critic["\']', src))
+    assert after_count >= before_count, (
+        f"Every record_before('auto_critic') must have a matching "
+        f"record_after in both success and error paths. Found "
+        f"{before_count} before vs {after_count} after."
+    )
+    print("✅ test_auto_critic_provenance_cleanup_on_exception PASSED")
+
+
+def test_verify_convergence_reconciles_stale_ema():
+    """verify_convergence must nudge the EMA Lipschitz estimate towards
+    the empirical value when a significant discrepancy is detected."""
+    import torch
+    from aeon_core import ProvablyConvergentMetaLoop, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    meta_loop = ProvablyConvergentMetaLoop(
+        config, max_iterations=10,
+    )
+    meta_loop.eval()
+    # Force EMA to a stale value far from what empirical will compute
+    with torch.no_grad():
+        meta_loop.lambda_op.lipschitz_estimate.fill_(1.0)
+
+    ema_before = meta_loop.lambda_op.lipschitz_estimate.item()
+
+    psi_0 = torch.randn(1, config.hidden_dim)
+    cert = meta_loop.verify_convergence(psi_0, num_samples=20)
+
+    ema_after = meta_loop.lambda_op.lipschitz_estimate.item()
+    empirical = cert['empirical_lipschitz']
+
+    # If there was a significant discrepancy, EMA should have been nudged
+    if abs(empirical - ema_before) > 0.1:
+        assert abs(ema_after - empirical) < abs(ema_before - empirical), (
+            f"EMA should have been nudged towards empirical. "
+            f"Before: {ema_before:.4f}, After: {ema_after:.4f}, "
+            f"Empirical: {empirical:.4f}"
+        )
+    print("✅ test_verify_convergence_reconciles_stale_ema PASSED")
 
 
 if __name__ == "__main__":

@@ -7988,6 +7988,15 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 f'EMA estimate ({ema_L:.4f}) differs significantly from '
                 f'empirical estimate ({empirical_L:.4f}).'
             )
+            # Reconcile stale EMA: nudge towards the fresh empirical
+            # estimate so subsequent fixed-point iterations use an
+            # accurate Lipschitz bound.  This prevents the EMA from
+            # drifting arbitrarily far during inference when training
+            # updates are absent.
+            with torch.no_grad():
+                _emp_t = torch.tensor(empirical_L, device=self.lambda_op.lipschitz_estimate.device)
+                if torch.isfinite(_emp_t):
+                    self.lambda_op.lipschitz_estimate.mul_(0.5).add_(_emp_t * 0.5)
         warnings_list.append(
             'Completeness of the latent metric space is assumed, not proven.'
         )
@@ -29509,6 +29518,7 @@ class AEONDeltaV3(nn.Module):
                                 success=_coh_revised is not None,
                             )
                     except Exception as _coh_ac_err:
+                        self.provenance_tracker.record_after("auto_critic", C_star)
                         logger.debug(
                             "Coherence-driven auto-critic failed: %s",
                             _coh_ac_err,
@@ -33291,9 +33301,23 @@ class AEONDeltaV3(nn.Module):
                     )
                     if _tkg_retrieved is not None and torch.isfinite(_tkg_retrieved).all():
                         _tkg_retrieved = _tkg_retrieved.to(device)
+                        # Project retrieved symbolic facts back to neural
+                        # space via the NeuroSymbolicBridge embedder.  TKG
+                        # stores facts in [num_predicates] dim; C_star is
+                        # [hidden_dim].  embed_conclusions maps predicates
+                        # back to the neural domain.
+                        if (self.standalone_ns_bridge is not None
+                                and _tkg_retrieved.shape[-1] != C_star.shape[-1]):
+                            if _tkg_retrieved.dim() == 1:
+                                _tkg_retrieved = _tkg_retrieved.unsqueeze(0)
+                            _tkg_retrieved = self.standalone_ns_bridge.embed_conclusions(
+                                _tkg_retrieved,
+                            )
                         # Align retrieved facts to C_star shape
                         if _tkg_retrieved.dim() == 1 and C_star.dim() == 2:
                             _tkg_retrieved = _tkg_retrieved.unsqueeze(0).expand(B, -1)
+                        elif _tkg_retrieved.dim() == 2 and _tkg_retrieved.shape[0] == 1 and B > 1:
+                            _tkg_retrieved = _tkg_retrieved.expand(B, -1)
                         # Only blend if dimensions match
                         if _tkg_retrieved.shape[-1] == C_star.shape[-1]:
                             C_star = C_star + self.config.tkg_retrieval_blend * _tkg_retrieved
@@ -34108,14 +34132,24 @@ class AEONDeltaV3(nn.Module):
                             _ns_critic_contribs,
                             key=_ns_critic_contribs.get,
                         )
-                    self.provenance_tracker.record_before("auto_critic", z_out)
-                    _pre_critic_z_out = z_out.detach().clone()
-                    critic_result = self.auto_critic(z_out)
-                    revised = critic_result.get("candidate", None)
-                    if revised is not None and torch.isfinite(revised).all():
-                        z_out = revised
-                        _any_auto_critic_revised = True
-                    self.provenance_tracker.record_after("auto_critic", z_out)
+                    try:
+                        self.provenance_tracker.record_before("auto_critic", z_out)
+                        _pre_critic_z_out = z_out.detach().clone()
+                        critic_result = self.auto_critic(z_out)
+                        revised = critic_result.get("candidate", None)
+                        if revised is not None and torch.isfinite(revised).all():
+                            z_out = revised
+                            _any_auto_critic_revised = True
+                        self.provenance_tracker.record_after("auto_critic", z_out)
+                    except Exception as _ns_ac_err:
+                        self.provenance_tracker.record_after("auto_critic", z_out)
+                        logger.debug(
+                            "NS-violation auto-critic failed (non-fatal): %s",
+                            _ns_ac_err,
+                        )
+                        critic_result = {"candidate": None, "final_score": 0.0}
+                        revised = None
+                        _pre_critic_z_out = z_out
                     self.coherence_registry.register_output(
                         "auto_critic",
                         validated=torch.isfinite(z_out).all().item(),
@@ -34436,6 +34470,7 @@ class AEONDeltaV3(nn.Module):
                         }),
                     )
             except Exception as _uc_err:
+                self.provenance_tracker.record_after("auto_critic", z_out)
                 logger.debug(
                     "Unconditional auto-critic error (non-fatal): %s",
                     _uc_err,
@@ -34562,12 +34597,22 @@ class AEONDeltaV3(nn.Module):
                     _orig_critic_max_iterations + _extra,
                     _orig_critic_max_iterations * 2,
                 )
-            critic_result = self.auto_critic(z_out)
+            try:
+                critic_result = self.auto_critic(z_out)
+            except Exception as _ac_call_err:
+                self.provenance_tracker.record_after("auto_critic", z_out)
+                logger.debug(
+                    "Metacognitive auto-critic call failed (non-fatal): %s",
+                    _ac_call_err,
+                )
+                critic_result = None
             # Restore original threshold and max_iterations so the
             # adaptation is per-pass and does not drift unboundedly
             # across forward calls.
             self.auto_critic.threshold = _orig_critic_threshold
             self.auto_critic.max_iterations = _orig_critic_max_iterations
+            if critic_result is None:
+                critic_result = {"candidate": None, "final_score": 0.0}
             revised = critic_result.get("candidate", None)
             if revised is not None and torch.isfinite(revised).all():
                 z_out = revised
@@ -37484,6 +37529,7 @@ class AEONDeltaV3(nn.Module):
                             "provenance_dominant_module": _post_prov_dominant,
                         })
                     except Exception as ac_err:
+                        self.provenance_tracker.record_after("auto_critic", z_out)
                         logger.warning(
                             "Post-integration auto-critic error (non-fatal): %s",
                             ac_err,
