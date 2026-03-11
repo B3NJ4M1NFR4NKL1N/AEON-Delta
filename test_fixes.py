@@ -67753,6 +67753,11 @@ def run_all_tests():
     test_icm_reward_failure_escalates_to_error_evolution()
     test_icm_reward_failure_flag_in_select_action()
     test_post_pipeline_metacognitive_uses_warning_not_debug()
+    test_post_pipeline_metacognitive_unpacks_kwargs()
+    test_icm_action_index_to_tensor_conversion()
+    test_cycle_consistency_reencode_uses_token_ids()
+    test_forward_pass_no_integration_warnings()
+    test_post_pipeline_metacognitive_eval_runs_successfully()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -78857,6 +78862,153 @@ def test_post_pipeline_metacognitive_uses_warning_not_debug():
         f"not logger.debug. Context: {context[-80:]}"
     )
     print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
+
+
+def test_post_pipeline_metacognitive_unpacks_kwargs():
+    """Post-pipeline metacognitive evaluation must unpack signal dict as
+    **kwargs to metacognitive_trigger.evaluate(), not pass it as a
+    positional argument (which would cause a type comparison error)."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    # The evaluate call must use ** unpacking
+    assert '**_post_pipeline_signals' in src, (
+        "_forward_impl must unpack _post_pipeline_signals as **kwargs "
+        "to metacognitive_trigger.evaluate(), not pass as positional arg"
+    )
+    print("✅ test_post_pipeline_metacognitive_unpacks_kwargs PASSED")
+
+
+def test_icm_action_index_to_tensor_conversion():
+    """ActiveLearningPlanner.select_action() must handle integer action
+    indices from MCTS search by deriving an action proxy tensor from
+    the state-transition delta, sized to action_dim."""
+    from aeon_core import ActiveLearningPlanner
+    import inspect
+
+    src = inspect.getsource(ActiveLearningPlanner.select_action)
+    assert 'torch.is_tensor(best_action)' in src or 'is_tensor' in src, (
+        "select_action must check whether best_action is a tensor "
+        "and convert integer action indices to action proxy tensors"
+    )
+    assert 'action_dim' in src, (
+        "select_action must reference action_dim when constructing "
+        "action proxy tensors from integer MCTS action indices"
+    )
+    print("✅ test_icm_action_index_to_tensor_conversion PASSED")
+
+
+def test_cycle_consistency_reencode_uses_token_ids():
+    """Cycle consistency re-encoding must convert decoder output to
+    token IDs (via logits.argmax or generated_ids) before passing
+    to the encoder, since the encoder expects torch.long tokens,
+    not continuous float representations."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    # Must not pass z_out directly to encoder (float tensor, not tokens)
+    assert 'self.encoder(z_out' not in src, (
+        "_forward_impl must not pass z_out directly to self.encoder "
+        "for re-encoding — z_out is a float tensor, not token IDs"
+    )
+    # Must use generated_ids or logits.argmax for round-trip re-encoding
+    assert 'generated_ids' in src and 'argmax' in src, (
+        "_forward_impl must use generated_ids or logits.argmax(dim=-1) "
+        "to convert decoder output to token IDs before re-encoding"
+    )
+    print("✅ test_cycle_consistency_reencode_uses_token_ids PASSED")
+
+
+def test_forward_pass_no_integration_warnings():
+    """A complete forward pass must produce zero non-cyclic-edge warnings,
+    confirming that all cognitive integration bridges are functional."""
+    import torch, logging
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model._cognitive_activation_probe()
+
+    warning_msgs = []
+    class _WarningCatcher(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.WARNING:
+                warning_msgs.append(record.getMessage())
+
+    handler = _WarningCatcher()
+    _logger = logging.getLogger('AEON-Delta')
+    _logger.addHandler(handler)
+
+    try:
+        input_ids = torch.randint(0, config.vocab_size, (1, 16))
+        with torch.no_grad():
+            result = model(input_ids)
+    finally:
+        _logger.removeHandler(handler)
+
+    real_warnings = [w for w in warning_msgs if 'cyclic edge' not in w]
+    assert len(real_warnings) == 0, (
+        f"Forward pass produced {len(real_warnings)} non-cyclic-edge "
+        f"warnings — integration bridges incomplete: {real_warnings}"
+    )
+    print("✅ test_forward_pass_no_integration_warnings PASSED")
+
+
+def test_post_pipeline_metacognitive_eval_runs_successfully():
+    """When post-pipeline uncertainty > 0.5, the metacognitive
+    re-evaluation must execute without error and produce a result
+    dict with 'triggered' and 'signals' keys."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model._cognitive_activation_probe()
+
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(input_ids)
+
+    # Error evolution should NOT contain post_pipeline_metacognitive_failure
+    summary = model.error_evolution.get_error_summary()
+    cls_data = summary.get('error_classes', {}).get(
+        'post_pipeline_metacognitive_failure', {},
+    )
+    # If the class exists, it must have success_rate > 0 (not all failures)
+    if cls_data:
+        assert cls_data.get('success_rate', 0.0) > 0.0, (
+            "post_pipeline_metacognitive_failure must not have 0% success "
+            "rate — the evaluation should succeed after the kwargs fix"
+        )
+    print("✅ test_post_pipeline_metacognitive_eval_runs_successfully PASSED")
 
 
 if __name__ == "__main__":

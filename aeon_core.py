@@ -12819,12 +12819,34 @@ class ActiveLearningPlanner(MCTSPlanner):
         best_action = result.get('best_action')
         if best_action is not None:
             try:
-                with torch.no_grad():
-                    _next = world_model.predict(
-                        state.unsqueeze(0),
-                        best_action.unsqueeze(0) if best_action.dim() == 1 else best_action,
-                    )
-                    _s_next = _next['predicted_state'].squeeze(0) if isinstance(_next, dict) else _next.squeeze(0)
+                # MCTS search returns action_idx as int; the world model's
+                # predict() expects a continuous action vector of shape
+                # [B, state_dim].  When the action is a scalar index, use
+                # the MCTS best_state (already predicted during tree
+                # expansion) as the next state, and derive an action proxy
+                # from the state difference for ICM reward computation.
+                if not torch.is_tensor(best_action):
+                    _s_next = result.get('best_state', state).detach()
+                    # Derive action proxy sized to action_dim from the
+                    # state transition delta, truncating or padding to
+                    # match the ICM forward model's expected input.
+                    _delta = (_s_next - state).detach()
+                    if _delta.shape[-1] > self.action_dim:
+                        best_action = _delta[..., :self.action_dim]
+                    elif _delta.shape[-1] < self.action_dim:
+                        best_action = F.pad(
+                            _delta,
+                            (0, self.action_dim - _delta.shape[-1]),
+                        )
+                    else:
+                        best_action = _delta
+                else:
+                    with torch.no_grad():
+                        _next = world_model.predict(
+                            state.unsqueeze(0),
+                            best_action.unsqueeze(0) if best_action.dim() == 1 else best_action,
+                        )
+                        _s_next = _next['predicted_state'].squeeze(0) if isinstance(_next, dict) else _next.squeeze(0)
                 result['icm_reward'] = self.compute_icm_reward(
                     state, best_action, _s_next,
                 )
@@ -39376,7 +39398,17 @@ class AEONDeltaV3(nn.Module):
                     and not fast):
                 try:
                     with torch.no_grad():
-                        _z_reencoded = self.encoder(z_out.detach())
+                        # Convert decoder output to token IDs for
+                        # round-trip re-encoding.  z_out is a continuous
+                        # latent vector, not token IDs, so passing it
+                        # directly to the encoder (which expects
+                        # torch.long) would raise a TypeError.
+                        _recon_tokens = (
+                            generated_ids
+                            if generated_ids is not None
+                            else logits.detach().argmax(dim=-1)
+                        )
+                        _z_reencoded = self.encoder(_recon_tokens)
                         _core_state = outputs.get('core_state', z_out).detach()
                 except Exception as exc:
                     logger.warning("Re-encoding for cycle consistency failed: %s", exc)
@@ -40790,13 +40822,15 @@ class AEONDeltaV3(nn.Module):
             try:
                 _post_pipeline_signals = {
                     'uncertainty': _final_uncertainty,
-                    'coherence_deficit': self._cached_cognitive_unity_deficit,
-                    'cross_module_coherence': 1.0 - getattr(
-                        self, '_cached_cross_module_coherence', 1.0,
+                    'coherence_deficit': max(
+                        self._cached_cognitive_unity_deficit,
+                        1.0 - getattr(
+                            self, '_cached_cross_module_coherence', 1.0,
+                        ),
                     ),
                 }
                 _post_eval = self.metacognitive_trigger.evaluate(
-                    _post_pipeline_signals,
+                    **_post_pipeline_signals,
                 )
                 result['post_pipeline_metacognitive_evaluation'] = {
                     'triggered': _post_eval.get('should_recurse', False),
