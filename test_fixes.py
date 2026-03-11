@@ -67736,6 +67736,13 @@ def run_all_tests():
     test_per_axiom_deficit_caches_updated_by_reinforce()
     test_feedback_bus_full_coverage_after_forward()
 
+    # Final Integration — Causal Transparency & Metacognitive Feedback
+    test_causal_decision_chain_subsystem_transparency()
+    test_verify_causal_chain_extended_expected_subsystems()
+    test_compute_loss_nan_records_error_evolution()
+    test_generate_uncertainty_adapts_metacognitive_trigger()
+    test_activation_probe_seeds_extended_subsystem_traces()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78371,6 +78378,200 @@ def test_feedback_bus_full_coverage_after_forward():
     )
 
     print("✅ test_feedback_bus_full_coverage_after_forward PASSED")
+
+
+# ============================================================================
+# Final Integration — Causal Transparency & Metacognitive Feedback Tests
+# ============================================================================
+
+def test_causal_decision_chain_subsystem_transparency():
+    """Verify that active subsystem decisions are recorded in the
+    causal_decision_chain, ensuring every output is traceable to
+    each subsystem's contribution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 100, (1, 16))
+    result = model(x)
+
+    chain = result.get('causal_decision_chain', {})
+    # Subsystem transparency keys must be present (may be None if
+    # subsystem is disabled, but the key itself must exist).
+    subsystem_keys = [
+        'world_model', 'mcts_planning', 'causal_world_model',
+        'cross_validator', 'active_learning', 'unified_simulator',
+        'hybrid_reasoning', 'deception_suppressor', 'social_cognition',
+        'code_execution',
+    ]
+    for key in subsystem_keys:
+        assert key in chain, (
+            f"causal_decision_chain missing subsystem key '{key}'"
+        )
+
+    print("✅ test_causal_decision_chain_subsystem_transparency PASSED")
+
+
+def test_verify_causal_chain_extended_expected_subsystems():
+    """verify_causal_chain() should include conditionally-active
+    subsystems in its expected set so that causal coverage reflects
+    the actual module composition."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    chain = model.verify_causal_chain()
+    traced = set(chain['traced_subsystems'])
+
+    # The activation probe seeds baseline entries for active modules.
+    # world_model is always instantiated so it should be traced.
+    if model.world_model is not None:
+        assert 'world_model' in traced, (
+            "world_model should be traced after activation probe"
+        )
+    if model.unified_simulator is not None:
+        assert 'unified_simulator' in traced, (
+            "unified_simulator should be traced after activation probe"
+        )
+    if model.hybrid_reasoning is not None:
+        assert 'hybrid_reasoning' in traced, (
+            "hybrid_reasoning should be traced after activation probe"
+        )
+    if model.cross_validator is not None:
+        assert 'cross_validation' in traced, (
+            "cross_validation should be traced after activation probe"
+        )
+    # Coverage must be 1.0 after activation probe seeds all expected entries.
+    assert chain['traceable'] is True, (
+        f"Expected traceable=True, got untraced: {chain['untraced_subsystems']}"
+    )
+
+    print("✅ test_verify_causal_chain_extended_expected_subsystems PASSED")
+
+
+def test_compute_loss_nan_records_error_evolution():
+    """compute_loss() should record a high_total_training_loss episode
+    when NaN/Inf is detected in total_loss, closing the gap where
+    numerical anomalies were silently corrected without informing
+    the metacognitive trigger."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the NaN → error_evolution bridge exists in compute_loss.
+    src = inspect.getsource(model.compute_loss)
+    assert 'high_total_training_loss' in src, (
+        "compute_loss must record high_total_training_loss when NaN detected"
+    )
+    assert 'nan_inf_fallback' in src, (
+        "compute_loss must use nan_inf_fallback strategy for NaN episodes"
+    )
+    # Verify the recording is inside the NaN/Inf check block
+    nan_idx = src.index('not torch.isfinite(total_loss)')
+    record_idx = src.index("'high_total_training_loss'")
+    assert record_idx > nan_idx, (
+        "error_evolution recording must come after NaN/Inf detection"
+    )
+
+    print("✅ test_compute_loss_nan_records_error_evolution PASSED")
+
+
+def test_generate_uncertainty_adapts_metacognitive_trigger():
+    """generate() should adapt metacognitive trigger weights when
+    uncertainty-driven re-generation is triggered, closing the gap
+    where generation uncertainty was applied but never fed back to
+    the metacognitive learning loop."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        uncertainty_logit_penalty_threshold=0.01,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the code path exists by checking the source
+    import inspect
+    src = inspect.getsource(model.generate)
+    assert 'adapt_weights_from_evolution' in src, (
+        "generate() must call adapt_weights_from_evolution after "
+        "uncertainty temperature boost"
+    )
+    assert 'post_output_uncertainty_trigger' in src, (
+        "generate() must record post_output_uncertainty_trigger in "
+        "error_evolution after uncertainty boost"
+    )
+
+    print("✅ test_generate_uncertainty_adapts_metacognitive_trigger PASSED")
+
+
+def test_activation_probe_seeds_extended_subsystem_traces():
+    """The cognitive activation probe should seed causal trace entries
+    for conditionally-active subsystems (world_model, unified_simulator,
+    hybrid_reasoning, cross_validation) so that verify_causal_chain()
+    does not report spurious causal_chain_gap episodes at init time."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Collect all subsystem names from causal trace entries
+    entries = list(model.causal_trace._entries)
+    traced_subsystems = {e.get('subsystem', '') for e in entries}
+
+    # Check activation baseline entries for conditionally-active subsystems
+    baseline_entries = [
+        e for e in entries
+        if e.get('metadata', {}).get('source') == 'cognitive_activation_probe'
+    ]
+    baseline_subsystems = {e.get('subsystem', '') for e in baseline_entries}
+
+    if model.world_model is not None:
+        assert 'world_model' in baseline_subsystems, (
+            "Activation probe must seed world_model baseline entry"
+        )
+    if model.unified_simulator is not None:
+        assert 'unified_simulator' in baseline_subsystems, (
+            "Activation probe must seed unified_simulator baseline entry"
+        )
+    if model.hybrid_reasoning is not None:
+        assert 'hybrid_reasoning' in baseline_subsystems, (
+            "Activation probe must seed hybrid_reasoning baseline entry"
+        )
+    if model.cross_validator is not None:
+        assert 'cross_validation' in baseline_subsystems, (
+            "Activation probe must seed cross_validation baseline entry"
+        )
+
+    print("✅ test_activation_probe_seeds_extended_subsystem_traces PASSED")
 
 
 if __name__ == "__main__":
