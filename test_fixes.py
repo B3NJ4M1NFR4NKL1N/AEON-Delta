@@ -67730,6 +67730,12 @@ def run_all_tests():
     test_verify_and_reinforce_causal_chain_gap_adapts()
     test_metacognitive_loop_closure_end_to_end()
 
+    # Cognitive Integration — per-axiom feedback bus signal bridging
+    test_per_axiom_deficit_signals_evaluated_at_init()
+    test_per_axiom_deficit_signals_in_forward_pass()
+    test_per_axiom_deficit_caches_updated_by_reinforce()
+    test_feedback_bus_full_coverage_after_forward()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78227,6 +78233,144 @@ def test_metacognitive_loop_closure_end_to_end():
         )
 
     print("✅ test_metacognitive_loop_closure_end_to_end PASSED")
+
+
+def test_per_axiom_deficit_signals_evaluated_at_init():
+    """The 4 per-axiom deficit signals must be in _feedback_bus_evaluated_signals
+    immediately after model initialization (before any forward pass).
+
+    The cognitive activation probe's _zero_healthy_signals list must include
+    causal_chain_coverage_deficit, coherence_deficit, metacognitive_gap,
+    and provenance_chain_incomplete so they count as evaluated at init.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    for sig in ['causal_chain_coverage_deficit', 'coherence_deficit',
+                'metacognitive_gap', 'provenance_chain_incomplete']:
+        assert sig in evaluated, (
+            f"Signal '{sig}' must be in _feedback_bus_evaluated_signals "
+            f"at init (present: {sorted(evaluated)})"
+        )
+
+    print("✅ test_per_axiom_deficit_signals_evaluated_at_init PASSED")
+
+
+def test_per_axiom_deficit_signals_in_forward_pass():
+    """_build_feedback_extra_signals() must mark the 4 per-axiom deficit
+    signals as evaluated during a forward pass.
+
+    After a forward pass, _feedback_bus_evaluated_signals must contain
+    all 4 per-axiom signals, ensuring feedback_bus_completeness coverage
+    remains 100% across passes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    for sig in ['causal_chain_coverage_deficit', 'coherence_deficit',
+                'metacognitive_gap', 'provenance_chain_incomplete']:
+        assert sig in evaluated, (
+            f"Signal '{sig}' must be in _feedback_bus_evaluated_signals "
+            f"after forward pass"
+        )
+
+    print("✅ test_per_axiom_deficit_signals_in_forward_pass PASSED")
+
+
+def test_per_axiom_deficit_caches_updated_by_reinforce():
+    """verify_and_reinforce() must update the 4 per-axiom deficit caches.
+
+    After calling verify_and_reinforce(), the cached deficit values
+    (_cached_causal_chain_deficit, _cached_coherence_deficit,
+    _cached_metacognitive_gap, _cached_provenance_incomplete) must
+    reflect the current axiom scores.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.verify_and_reinforce()
+    axioms = report.get('axioms', {})
+
+    # Verify caches match axiom scores
+    mv_score = axioms.get('mutual_verification', {}).get('score', 1.0)
+    um_score = axioms.get('uncertainty_metacognition', {}).get('score', 1.0)
+    rc_score = axioms.get('root_cause_traceability', {}).get('score', 1.0)
+
+    assert abs(model._cached_coherence_deficit - max(0.0, 1.0 - mv_score)) < 1e-6, (
+        f"_cached_coherence_deficit should be {1.0 - mv_score:.4f}, "
+        f"got {model._cached_coherence_deficit:.4f}"
+    )
+    assert abs(model._cached_metacognitive_gap - max(0.0, 1.0 - um_score)) < 1e-6, (
+        f"_cached_metacognitive_gap should be {1.0 - um_score:.4f}, "
+        f"got {model._cached_metacognitive_gap:.4f}"
+    )
+    assert abs(model._cached_provenance_incomplete - max(0.0, 1.0 - rc_score)) < 1e-6, (
+        f"_cached_provenance_incomplete should be {1.0 - rc_score:.4f}, "
+        f"got {model._cached_provenance_incomplete:.4f}"
+    )
+    # Causal chain deficit should be >= 0.0
+    assert model._cached_causal_chain_deficit >= 0.0
+
+    print("✅ test_per_axiom_deficit_caches_updated_by_reinforce PASSED")
+
+
+def test_feedback_bus_full_coverage_after_forward():
+    """After a forward pass, verify_cognitive_unity() must report 100%
+    feedback bus coverage with 0 unpopulated signals.
+
+    This validates that the per-axiom deficit signals are properly
+    integrated into the feedback loop and no longer appear as gaps
+    in the cognitive organism's signal coverage.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    unity = model.verify_cognitive_unity()
+    fb = unity.get('feedback_bus_completeness', {})
+
+    assert fb.get('coverage') == 1.0, (
+        f"Feedback bus coverage must be 1.0, got {fb.get('coverage')}"
+    )
+    unpopulated = fb.get('unpopulated_signals', [])
+    assert len(unpopulated) == 0, (
+        f"No unpopulated signals expected, got: {unpopulated}"
+    )
+
+    print("✅ test_feedback_bus_full_coverage_after_forward PASSED")
 
 
 if __name__ == "__main__":

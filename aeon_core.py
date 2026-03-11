@@ -24059,6 +24059,23 @@ class AEONDeltaV3(nn.Module):
         # Initialised to 0.0 (no weakness detected).
         self._cached_reinforce_weakness: float = 0.0
 
+        # Per-axiom deficit caches — store the individual axiom
+        # deficits (1 - axiom_score) from the most recent
+        # verify_and_reinforce() call so _build_feedback_extra_signals()
+        # can route per-axiom deficit signals through the feedback bus
+        # on every forward pass, not only when verify_and_reinforce()
+        # is explicitly called.  This closes the gap where the 4
+        # per-deficit feedback bus signals (causal_chain_coverage_deficit,
+        # coherence_deficit, metacognitive_gap,
+        # provenance_chain_incomplete) were registered and populated in
+        # verify_and_reinforce() but never evaluated during normal
+        # forward passes, leaving them as unpopulated signals in the
+        # feedback bus completeness check.
+        self._cached_causal_chain_deficit: float = 0.0
+        self._cached_coherence_deficit: float = 0.0
+        self._cached_metacognitive_gap: float = 0.0
+        self._cached_provenance_incomplete: float = 0.0
+
         # Diagnostic gap count — caches the number of unresolved
         # self_diagnostic() gaps at the most recent verify_and_reinforce()
         # cycle.  Used to detect when new gaps appear between cycles and
@@ -25668,6 +25685,35 @@ class AEONDeltaV3(nn.Module):
         if _emg_deficit > 0.05:
             extra["emergence_deficit"] = max(0.0, min(1.0, _emg_deficit))
 
+        # Per-axiom deficit signals — route the individual axiom deficit
+        # values cached by verify_and_reinforce() into the feedback bus
+        # so the meta-loop can distinguish between coherence, metacognitive,
+        # provenance, and causal chain deficits.  This closes the gap where
+        # these 4 signals were registered and populated by
+        # verify_and_reinforce() but never evaluated during normal forward
+        # passes, leaving them as unpopulated signals in the feedback bus
+        # completeness check.
+        _cc_deficit = getattr(self, '_cached_causal_chain_deficit', 0.0)
+        if _cc_deficit > 0.0:
+            extra["causal_chain_coverage_deficit"] = max(
+                0.0, min(1.0, _cc_deficit),
+            )
+        _coh_deficit = getattr(self, '_cached_coherence_deficit', 0.0)
+        if _coh_deficit > 0.0:
+            extra["coherence_deficit"] = max(
+                0.0, min(1.0, _coh_deficit),
+            )
+        _mc_gap = getattr(self, '_cached_metacognitive_gap', 0.0)
+        if _mc_gap > 0.0:
+            extra["metacognitive_gap"] = max(
+                0.0, min(1.0, _mc_gap),
+            )
+        _prov_inc = getattr(self, '_cached_provenance_incomplete', 0.0)
+        if _prov_inc > 0.0:
+            extra["provenance_chain_incomplete"] = max(
+                0.0, min(1.0, _prov_inc),
+            )
+
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
         # considered during evaluation.  Signals may be omitted from
@@ -25722,6 +25768,12 @@ class AEONDeltaV3(nn.Module):
         # Emergence deficit is always evaluated (backed by cached
         # cognitive unity deficit and reinforcement weakness).
         _evaluated.add("emergence_deficit")
+        # Per-axiom deficit signals are always evaluated (backed by
+        # cached axiom scores from verify_and_reinforce).
+        _evaluated.add("causal_chain_coverage_deficit")
+        _evaluated.add("coherence_deficit")
+        _evaluated.add("metacognitive_gap")
+        _evaluated.add("provenance_chain_incomplete")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -46908,6 +46960,24 @@ class AEONDeltaV3(nn.Module):
             0.0, min(1.0, 1.0 - _overall_score),
         )
 
+        # --- Cache per-axiom deficit values so _build_feedback_extra_signals
+        # can route them through the feedback bus on every forward pass. ---
+        self._cached_causal_chain_deficit = max(
+            0.0, min(1.0, 1.0 - (
+                _chain_result.get('coverage', 1.0)
+                if _chain_result is not None else 1.0
+            )),
+        )
+        self._cached_coherence_deficit = max(
+            0.0, min(1.0, 1.0 - mv_score),
+        )
+        self._cached_metacognitive_gap = max(
+            0.0, min(1.0, 1.0 - um_score),
+        )
+        self._cached_provenance_incomplete = max(
+            0.0, min(1.0, 1.0 - rc_score),
+        )
+
         # --- Refresh _cached_low_quality_subsystems from the coherence
         # registry so that the feedback bus's low_quality_subsystem_pressure
         # signal stays current after out-of-band reinforcement.  Without
@@ -47988,6 +48058,10 @@ class AEONDeltaV3(nn.Module):
                 "ucc_coherence_trend", "ucc_flagged_pressure",
                 "ucc_recurring_root_pressure",
                 "reinforce_weakness_pressure",
+                "causal_chain_coverage_deficit",
+                "coherence_deficit",
+                "metacognitive_gap",
+                "provenance_chain_incomplete",
             ]
             for _zhs in _zero_healthy_signals:
                 if _zhs in _signals:
