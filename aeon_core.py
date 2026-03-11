@@ -39066,6 +39066,19 @@ class AEONDeltaV3(nn.Module):
         outputs['cache_hit'] = _cache_hit
         outputs['cache_similarity'] = _cache_similarity
 
+        # Record inference cache decision in causal_decision_chain so that
+        # downstream root-cause analysis can trace whether the reasoning
+        # core was fully executed or bypassed via cache.  Without this,
+        # a cache-hit forward pass produces output whose provenance is
+        # invisible in the causal chain — uncertainty may trace to the
+        # reasoning core, but the actual source is a cached result.
+        if self.inference_cache is not None:
+            outputs['causal_decision_chain']['inference_cache'] = {
+                'cache_hit': _cache_hit,
+                'cache_similarity': _cache_similarity,
+                'reasoning_bypassed': _cache_hit,
+            }
+
         # Merge pre-reasoning causal decisions into causal_decision_chain
         # now that the outputs dict is available.  This ensures backbone
         # adapter, continual learning, and chunked processor decisions are
@@ -39191,6 +39204,20 @@ class AEONDeltaV3(nn.Module):
                     "decode_mode": decode_mode,
                 },
             )
+            # Adapt metacognitive trigger weights so that future passes
+            # sensitise to high-uncertainty signals, closing the loop
+            # where output uncertainty was recorded but never influenced
+            # metacognitive sensitivity.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _hou_adapt_err:
+                    logger.debug(
+                        "High-output-uncertainty trigger adaptation "
+                        "failed: %s", _hou_adapt_err,
+                    )
         
         # ===== DECODER DEGENERATE OUTPUT → ERROR EVOLUTION =====
         # Detect degenerate decoder output (e.g. near-zero variance
@@ -39252,6 +39279,20 @@ class AEONDeltaV3(nn.Module):
                         'logit_variance': _logit_var,
                         'uncertainty_boost': _DECODER_DEGENERATE_UNC_BOOST,
                     }
+                    # Adapt metacognitive trigger weights so future passes
+                    # sensitise to decoder-collapse signals, completing the
+                    # feedback loop from degenerate detection to meta-
+                    # cognitive sensitivity adjustment.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _ddeg_adapt_err:
+                            logger.debug(
+                                "Decoder degenerate trigger adaptation "
+                                "failed: %s", _ddeg_adapt_err,
+                            )
             except (RuntimeError, ValueError) as _dec_err:
                 logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
@@ -39361,6 +39402,24 @@ class AEONDeltaV3(nn.Module):
                                 'reencode_consistency': _reencode_consistency,
                             },
                         )
+                # Adapt metacognitive trigger weights when any cycle-
+                # consistency violation is detected, so future passes
+                # sensitise to coherence-deficit signals.  This closes
+                # the loop where violations were recorded in error
+                # evolution but never influenced metacognitive trigger
+                # sensitivity.
+                if (_cc_result['violation'] or _cc_result['reencode_violation']):
+                    if (self.metacognitive_trigger is not None
+                            and self.error_evolution is not None):
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _ccv_adapt_err:
+                            logger.debug(
+                                "Cycle-consistency violation trigger "
+                                "adaptation failed: %s", _ccv_adapt_err,
+                            )
                 # Provenance tracking for cycle consistency
                 self.provenance_tracker.record_before("cycle_consistency", z_encoded)
                 self.provenance_tracker.record_after("cycle_consistency", z_out)
@@ -39736,6 +39795,21 @@ class AEONDeltaV3(nn.Module):
                                 'needs_recheck': result['post_output_coherence']['needs_recheck'],
                             },
                         )
+                        # Adapt metacognitive trigger weights so future
+                        # passes sensitise to coherence-deficit signals
+                        # when post-output coherence is low, closing the
+                        # loop where deficits were recorded but never
+                        # influenced metacognitive sensitivity.
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _pocd_adapt_err:
+                                logger.debug(
+                                    "Post-output coherence deficit trigger "
+                                    "adaptation failed: %s", _pocd_adapt_err,
+                                )
                 except Exception as _poc_err:
                     logger.warning(
                         "Post-output coherence verification error "
@@ -39934,6 +40008,20 @@ class AEONDeltaV3(nn.Module):
                         'uncertainty_boost': _coh_unc_boost,
                     },
                 )
+                # Adapt metacognitive trigger weights so future passes
+                # sensitise to coherence-deficit signals when cross-module
+                # agreement is low, closing the loop where deficits were
+                # recorded but never drove metacognitive sensitivity.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _cmc_adapt_err:
+                        logger.debug(
+                            "Cross-module coherence deficit trigger "
+                            "adaptation failed: %s", _cmc_adapt_err,
+                        )
             if self.causal_trace is not None:
                 self.causal_trace.record(
                     "cross_module_coherence", "deficit_detected",
@@ -40042,6 +40130,22 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                    # Adapt metacognitive trigger weights so future
+                    # passes sensitise to coherence-deficit signals
+                    # when the cognitive frame flags ambiguity, closing
+                    # the loop where frame-level diagnostics were
+                    # recorded but never influenced metacognitive
+                    # sensitivity.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _cfa_adapt_err:
+                            logger.debug(
+                                "Cognitive frame ambiguity trigger "
+                                "adaptation failed: %s", _cfa_adapt_err,
+                            )
             # Record the cognitive frame's assessment in the causal
             # trace so that root-cause analysis can trace how the
             # frame's verdict influenced downstream decisions.  Without
@@ -40119,6 +40223,21 @@ class AEONDeltaV3(nn.Module):
                         'weakest_component': _weakest_component,
                     },
                 )
+                # Adapt metacognitive trigger weights so future passes
+                # sensitise to coherence-deficit signals when cognitive
+                # unity is violated, closing the loop where AGI coherence
+                # failures were recorded but never drove metacognitive
+                # sensitivity adjustment.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _cuv_adapt_err:
+                        logger.debug(
+                            "Cognitive unity violation trigger "
+                            "adaptation failed: %s", _cuv_adapt_err,
+                        )
             # Record in causal trace so conclusions can be traced
             # back to the specific AGI requirement failure.
             if self.causal_trace is not None:
