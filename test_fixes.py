@@ -67754,6 +67754,12 @@ def run_all_tests():
     test_icm_reward_failure_flag_in_select_action()
     test_post_pipeline_metacognitive_uses_warning_not_debug()
 
+    # Final Integration — Cognitive Activation & Causal Coherence
+    test_verify_causal_chain_root_cause_adapts_trigger()
+    test_verify_causal_chain_gap_adapts_trigger()
+    test_verify_and_reinforce_guards_coherence_report()
+    test_activation_probe_seeds_pipeline_and_unity_traces()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78857,6 +78863,103 @@ def test_post_pipeline_metacognitive_uses_warning_not_debug():
         f"not logger.debug. Context: {context[-80:]}"
     )
     print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
+
+
+def test_verify_causal_chain_root_cause_adapts_trigger():
+    """verify_causal_chain() must call adapt_weights_from_evolution()
+    after recording root_cause_attribution_failure so the metacognitive
+    trigger learns from causal transparency degradation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    # Find the root_cause_attribution_failure recording block
+    idx = src.find("root_cause_attribution_failure")
+    assert idx != -1, (
+        "verify_causal_chain must record root_cause_attribution_failure"
+    )
+    # The adapt_weights_from_evolution call must appear AFTER the
+    # record_episode call within the same exception handler block.
+    after_record = src[idx:]
+    assert 'adapt_weights_from_evolution' in after_record, (
+        "verify_causal_chain must call adapt_weights_from_evolution() "
+        "after recording root_cause_attribution_failure"
+    )
+    print("✅ test_verify_causal_chain_root_cause_adapts_trigger PASSED")
+
+
+def test_verify_causal_chain_gap_adapts_trigger():
+    """verify_causal_chain() must call adapt_weights_from_evolution()
+    after recording causal_chain_gap so the metacognitive trigger
+    sensitises to end-to-end traceability failures."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    # Find the causal_chain_gap escalation block
+    idx = src.find("'causal_chain_gap'")
+    assert idx != -1, (
+        "verify_causal_chain must record causal_chain_gap episodes"
+    )
+    # The adapt_weights_from_evolution call must appear after the
+    # record_episode call in the same block.
+    after_gap = src[idx:]
+    assert 'adapt_weights_from_evolution' in after_gap, (
+        "verify_causal_chain must call adapt_weights_from_evolution() "
+        "after recording causal_chain_gap"
+    )
+    print("✅ test_verify_causal_chain_gap_adapts_trigger PASSED")
+
+
+def test_verify_and_reinforce_guards_coherence_report():
+    """verify_and_reinforce() must wrap architectural_coherence_report()
+    in a try-except so that a failure in the coherence assessment does
+    not crash the entire orchestration point."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # The self.architectural_coherence_report() call is the actual
+    # invocation (vs docstring references without 'self.').
+    idx = src.find('self.architectural_coherence_report()')
+    assert idx != -1, (
+        "verify_and_reinforce must call self.architectural_coherence_report"
+    )
+    # Look for a try block before the call (within 200 chars)
+    before_call = src[max(0, idx - 200):idx]
+    assert 'try:' in before_call, (
+        "self.architectural_coherence_report() must be inside a "
+        "try-except block in verify_and_reinforce"
+    )
+    print("✅ test_verify_and_reinforce_guards_coherence_report PASSED")
+
+
+def test_activation_probe_seeds_pipeline_and_unity_traces():
+    """_cognitive_activation_probe must pre-seed verify_pipeline_wiring
+    and verify_cognitive_unity in causal_trace so verify_causal_chain()
+    finds them before their first full assessment runs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    if model.causal_trace is None:
+        print("✅ test_activation_probe_seeds_pipeline_and_unity_traces "
+              "SKIPPED (no causal trace)")
+        return
+
+    entries = list(model.causal_trace._entries)
+    subsystems_found = {e.get('subsystem', '') for e in entries}
+
+    assert 'verify_pipeline_wiring' in subsystems_found, (
+        "causal_trace must have verify_pipeline_wiring entry after "
+        "cognitive activation probe"
+    )
+    assert 'verify_cognitive_unity' in subsystems_found, (
+        "causal_trace must have verify_cognitive_unity entry after "
+        "cognitive activation probe"
+    )
+    print("✅ test_activation_probe_seeds_pipeline_and_unity_traces PASSED")
 
 
 if __name__ == "__main__":
