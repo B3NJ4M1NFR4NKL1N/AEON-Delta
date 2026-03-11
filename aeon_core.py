@@ -12792,7 +12792,8 @@ class ActiveLearningPlanner(MCTSPlanner):
                 result['icm_reward'] = self.compute_icm_reward(
                     state, best_action, _s_next,
                 )
-            except Exception:
+            except Exception as _icm_err:
+                logger.debug("ICM reward computation failed: %s", _icm_err)
                 result['icm_reward'] = 0.0
         else:
             result['icm_reward'] = 0.0
@@ -13453,7 +13454,8 @@ class DifferentiableForwardChainer(nn.Module):
                         _ca.unsqueeze(0).unsqueeze(0), (P, P),
                     ).squeeze(0).squeeze(0)
                 _causal_bias = _ca.to(facts.device)
-            except Exception:
+            except Exception as _cb_err:
+                logger.debug("Causal bias computation failed: %s", _cb_err)
                 _causal_bias = None
 
         for _ in range(self.max_depth):
@@ -17037,6 +17039,15 @@ class MetaCognitiveRecursionTrigger:
             # verify_and_reinforce() raised an exception, leaving
             # pipeline integrity unverified.
             "pipeline_wiring_verification_failure": "low_output_reliability",
+            # Meta-recovery loss failure — the meta-recovery RL loss
+            # computation raised an exception during compute_loss(),
+            # leaving the recovery subsystem unoptimised for the step.
+            "meta_recovery_loss_failure": "uncertainty",
+            # Task2Vec EWC loss failure — the Task2Vec EWC
+            # regularisation loss raised an exception during
+            # compute_loss(), leaving catastrophic-forgetting
+            # protection unoptimised for the step.
+            "task2vec_ewc_loss_failure": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18355,6 +18366,16 @@ class CausalErrorEvolutionTracker:
         # errored inside verify_and_reinforce.  Maps to lambda_coherence
         # so training strengthens architectural integrity checks.
         "pipeline_wiring_verification_failure": "lambda_coherence",
+        # Meta-recovery loss failure — the RL loss computation for the
+        # meta-recovery subsystem failed during compute_loss.  Maps to
+        # lambda_safety so training strengthens the safety and recovery
+        # pathways to reduce future meta-recovery failures.
+        "meta_recovery_loss_failure": "lambda_safety",
+        # Task2Vec EWC loss failure — the EWC regularisation loss for
+        # catastrophic-forgetting prevention failed during compute_loss.
+        # Maps to lambda_reg so training strengthens the regularisation
+        # pathways to reduce future Task2Vec EWC failures.
+        "task2vec_ewc_loss_failure": "lambda_reg",
     }
 
     def recommend_loss_adjustments(
@@ -19454,7 +19475,8 @@ class MemoryRoutingPolicy:
                     'trust': trust,
                     'norm': norm_val,
                 }
-            except Exception:
+            except Exception as _mq_err:
+                logger.debug("Memory subsystem '%s' query failed: %s", name, _mq_err)
                 continue
 
         # Fuse results.
@@ -21688,7 +21710,8 @@ class MetaCognitiveExecutive:
                 _entropy = -(_probs * _log_probs).sum().item()
                 _max_entropy = math.log(max(_probs.numel(), 2))
                 urgency_entropy = _entropy / max(_max_entropy, 1e-6)
-            except Exception:
+            except Exception as _ue_err:
+                logger.debug("Urgency entropy computation failed: %s", _ue_err)
                 urgency_entropy = 1.0
 
         # 3. Determine if review is needed
@@ -22129,7 +22152,8 @@ class CognitiveSnapshotManager:
                     issues.append(f"{name}: non-finite parameters detected")
                 else:
                     subsystems_healthy += 1
-            except Exception:
+            except Exception as _sh_err:
+                logger.debug("Subsystem '%s' health check failed: %s", name, _sh_err)
                 subsystems_healthy += 1  # no params = healthy
 
         coherence = (
@@ -41375,6 +41399,13 @@ class AEONDeltaV3(nn.Module):
             except Exception as _mr_err:
                 logger.debug("Meta-recovery loss computation failed: %s", _mr_err)
                 meta_recovery_loss = torch.tensor(0.0, device=self.device)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='meta_recovery_loss_failure',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(_mr_err)[:200]},
+                    )
 
         # ===== 20. TASK2VEC EWC LOSS =====
         # When Task2VecMetaLearner has accumulated task clusters, apply
@@ -41399,6 +41430,13 @@ class AEONDeltaV3(nn.Module):
             except Exception as _t2v_err:
                 logger.debug("Task2Vec EWC loss computation failed: %s", _t2v_err)
                 task2vec_loss = torch.tensor(0.0, device=self.device)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='task2vec_ewc_loss_failure',
+                        strategy_used='graceful_degradation',
+                        success=False,
+                        metadata={'error': str(_t2v_err)[:200]},
+                    )
 
         # ===== TOTAL LOSS =====
         _coherence_weight = getattr(self.config, 'lambda_coherence', 0.05)
@@ -44311,7 +44349,8 @@ class AEONDeltaV3(nn.Module):
         # exercised on-demand.
         try:
             _cognitive_unity = self.verify_cognitive_unity()
-        except Exception:
+        except Exception as _cu_err:
+            logger.debug("verify_cognitive_unity failed in self_diagnostic: %s", _cu_err)
             _cognitive_unity = {'unified': False, 'error': 'evaluation_failed'}
 
         # --- Cross-validate cognitive unity recommendations as gaps ---
@@ -50102,8 +50141,9 @@ class AEONTrainer:
                         }
                     metrics['eval_rerun_triggered'] = 1.0
                     metrics['eval_rerun_improved'] = float(_rerun_loss < _orig_loss)
-                except Exception:
+                except Exception as _rerun_err:
                     # Non-fatal: if re-reasoning fails, keep original metrics
+                    logger.debug("Eval rerun failed: %s", _rerun_err)
                     metrics['eval_rerun_triggered'] = 1.0
                     metrics['eval_rerun_improved'] = 0.0
 
