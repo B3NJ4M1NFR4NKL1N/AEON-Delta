@@ -37916,6 +37916,97 @@ class AEONDeltaV3(nn.Module):
                 }
                 if self._cached_executive_review is not None else None
             ),
+            # ── Subsystem transparency entries ──────────────────────
+            # Every active subsystem's key decision metrics are recorded
+            # here so that causal chain verification can trace any
+            # output back to each subsystem's contribution.  Previously
+            # these results were consumed internally but invisible in
+            # the causal output chain, breaking causal transparency for
+            # downstream auditing.
+            "world_model": (
+                {
+                    "surprise": float(surprise.item())
+                    if torch.is_tensor(surprise) else 0.0,
+                    "active": bool(world_model_results),
+                }
+                if world_model_results else None
+            ),
+            "mcts_planning": (
+                {
+                    "active": bool(mcts_results),
+                    "value": float(mcts_results.get("value", 0.0))
+                    if mcts_results else 0.0,
+                }
+                if mcts_results else None
+            ),
+            "causal_world_model": (
+                {
+                    "active": bool(causal_world_results),
+                }
+                if causal_world_results else None
+            ),
+            "cross_validator": (
+                {
+                    "agreement": float(
+                        reconciliation_results.get("agreement_score", 0.0)
+                    ) if reconciliation_results else 0.0,
+                    "active": bool(reconciliation_results),
+                }
+                if reconciliation_results else None
+            ),
+            "active_learning": (
+                {
+                    "active": bool(active_learning_results),
+                }
+                if active_learning_results else None
+            ),
+            "unified_simulator": (
+                {
+                    "active": bool(unified_simulator_results),
+                    "interventional": bool(
+                        unified_simulator_results.get("interventional", False)
+                    ) if unified_simulator_results else False,
+                }
+                if unified_simulator_results else None
+            ),
+            "hybrid_reasoning": (
+                {
+                    "active": bool(hybrid_reasoning_results),
+                    "num_derived": int(
+                        hybrid_reasoning_results.get(
+                            "derived", torch.zeros(1),
+                        ).sum().item()
+                    ) if hybrid_reasoning_results else 0,
+                }
+                if hybrid_reasoning_results else None
+            ),
+            "deception_suppressor": (
+                {
+                    "pressure": float(
+                        deception_results.get("deception_pressure", 0.0)
+                    ) if deception_results else 0.0,
+                    "active": bool(deception_results),
+                }
+                if deception_results else None
+            ),
+            "social_cognition": (
+                {
+                    "pressure": float(
+                        social_results.get("social_pressure", 0.0)
+                    ) if social_results else 0.0,
+                    "active": bool(social_results),
+                }
+                if social_results else None
+            ),
+            "code_execution": (
+                {
+                    "pressure": float(
+                        code_exec_results.get("sandbox_pressure", 0.0)
+                    ) if code_exec_results else 0.0,
+                    "active": bool(code_exec_results),
+                }
+                if code_exec_results else None
+            ),
         }
         
         # 8h-honesty. Honesty-gated output modulation — apply the
@@ -41662,6 +41753,16 @@ class AEONDeltaV3(nn.Module):
         if not torch.isfinite(total_loss).all():
             logger.warning("⚠️  NaN/Inf in total_loss, using fallback")
             total_loss = lm_loss
+            # Record numerical anomaly in error evolution so the
+            # metacognitive trigger learns that training is unstable and
+            # can bias inference-time re-reasoning appropriately.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='high_total_training_loss',
+                    strategy_used='nan_inf_fallback',
+                    success=False,
+                    metadata={'fallback': 'lm_loss'},
+                )
         
         # ===== LOSS → ERROR EVOLUTION BRIDGE =====
         # Feed loss magnitude and composition back to the error evolution
@@ -41969,6 +42070,35 @@ class AEONDeltaV3(nn.Module):
                     "elevated_temperature": _elevated_temp,
                     "uncertainty": _gen_uncertainty,
                 })
+                # Feed generation-phase uncertainty back into the
+                # metacognitive trigger so that persistent high
+                # uncertainty during generation sensitises future
+                # inference passes.  This closes the gap where
+                # uncertainty-driven re-generation was applied but
+                # never informed the metacognitive learning loop.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='post_output_uncertainty_trigger',
+                        strategy_used='generate_temperature_boost',
+                        success=(_gen_uncertainty
+                                 <= self.config.uncertainty_logit_penalty_threshold),
+                        metadata={
+                            'original_temperature': temperature,
+                            'elevated_temperature': _elevated_temp,
+                            'post_boost_uncertainty': float(_gen_uncertainty),
+                        },
+                    )
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                            if self.error_evolution is not None else {},
+                        )
+                    except Exception:
+                        logger.debug(
+                            "generate: metacognitive trigger adaptation "
+                            "after uncertainty boost failed (non-fatal)"
+                        )
 
             generated_ids = outputs.get('generated_ids')
             
@@ -47426,11 +47556,22 @@ class AEONDeltaV3(nn.Module):
             'verify_and_reinforce',
             'system_emergence_report',
         }
-        # Add optional subsystems based on what's active.
+        # Add optional subsystems based on what's active.  Each
+        # subsystem is only expected when the corresponding module
+        # is instantiated, so verify_causal_chain adapts its
+        # coverage expectation to the actual module composition.
         if self.error_evolution is not None:
             _expected.add('error_evolution')
         if self.feedback_bus is not None:
             _expected.add('feedback_bus')
+        if self.world_model is not None:
+            _expected.add('world_model')
+        if self.unified_simulator is not None:
+            _expected.add('unified_simulator')
+        if self.hybrid_reasoning is not None:
+            _expected.add('hybrid_reasoning')
+        if self.cross_validator is not None:
+            _expected.add('cross_validation')
 
         # Scan trace entries to find which subsystems are represented.
         entries = list(self.causal_trace._entries)
@@ -48165,6 +48306,43 @@ class AEONDeltaV3(nn.Module):
                     'baseline': True,
                 },
             )
+            # Seed causal trace entries for conditionally-active
+            # subsystems that verify_causal_chain() now expects.
+            # Without these seeds, verify_causal_chain() called in
+            # step 8 would log causal_chain_gap episodes for
+            # subsystems that simply haven't run yet.
+            if self.world_model is not None:
+                self.causal_trace.record(
+                    "world_model", "activation_baseline",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
+            if self.unified_simulator is not None:
+                self.causal_trace.record(
+                    "unified_simulator", "activation_baseline",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
+            if self.hybrid_reasoning is not None:
+                self.causal_trace.record(
+                    "hybrid_reasoning", "activation_baseline",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
+            if self.cross_validator is not None:
+                self.causal_trace.record(
+                    "cross_validation", "activation_baseline",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
 
         # 8. Init-time mutual reinforcement — run verify_and_reinforce()
         # to close the mutual reinforcement loop at initialization.
