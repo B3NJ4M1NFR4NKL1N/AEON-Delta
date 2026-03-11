@@ -39197,7 +39197,62 @@ class AEONDeltaV3(nn.Module):
         # that downstream causal-trace recordings (cycle-consistency,
         # re-encode verification, etc.) can reference it.
         input_trace_id = outputs.get('causal_trace_id', '')
-        
+
+        # ===== POST-REASONING METACOGNITIVE CONSOLIDATION =====
+        # Error episodes recorded during _reasoning_core_impl (world model
+        # verification, memory conditioning, causal context failures, etc.)
+        # accumulate in error_evolution but do not individually trigger
+        # metacognitive weight adaptation.  This consolidation point
+        # batch-adapts the metacognitive trigger from ALL reasoning-phase
+        # episodes in one shot, closing the feedback loop where reasoning
+        # errors inform trigger sensitivity for the current pass's
+        # remaining stages (decode, post-output gates, reinforcement).
+        _reasoning_unc = outputs.get('uncertainty', 0.0)
+        _reasoning_episode_count = 0
+        if (self.error_evolution is not None
+                and self.metacognitive_trigger is not None):
+            _post_reasoning_summary = self.error_evolution.get_error_summary()
+            _reasoning_episode_count = _post_reasoning_summary.get(
+                'total_recorded', 0
+            )
+            if _reasoning_episode_count > 0 or _reasoning_unc > 0.3:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _post_reasoning_summary
+                    )
+                except Exception as _pr_adapt_err:
+                    logger.debug(
+                        "Post-reasoning metacognitive adaptation failed: %s",
+                        _pr_adapt_err,
+                    )
+                # Record the consolidation in the causal decision chain
+                # so root-cause analysis can trace when and why the trigger
+                # was adapted based on reasoning-phase errors.
+                if 'causal_decision_chain' in outputs:
+                    outputs['causal_decision_chain'][
+                        'post_reasoning_metacognitive_consolidation'
+                    ] = {
+                        'adapted': True,
+                        'reasoning_episode_count': _reasoning_episode_count,
+                        'reasoning_uncertainty': float(_reasoning_unc),
+                    }
+
+        # Record a causal trace entry summarizing the reasoning core
+        # outcome so that root-cause analysis can trace the full
+        # reasoning path from inputs through uncertainty accumulation
+        # to output quality.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                subsystem="reasoning_core",
+                decision="consolidation",
+                metadata={
+                    'uncertainty': float(_reasoning_unc),
+                    'high_uncertainty': _reasoning_unc > 0.5,
+                    'cache_hit': _cache_hit,
+                    'error_episode_count': _reasoning_episode_count,
+                },
+            )
+
         # ===== DECODE =====
         # Register decoder transform with provenance tracker so that
         # trace_root_cause() can attribute output quality to the decode
