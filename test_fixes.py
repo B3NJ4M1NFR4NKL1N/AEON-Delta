@@ -67746,6 +67746,14 @@ def run_all_tests():
     test_compute_loss_meta_recovery_records_error_evolution()
     test_compute_loss_task2vec_records_error_evolution()
 
+    # Final Integration — World Model Predict Bridge & Error Escalation
+    test_world_model_predict_method_exists()
+    test_world_model_predict_action_sensitivity()
+    test_post_pipeline_metacognitive_failure_escalates_to_error_evolution()
+    test_icm_reward_failure_escalates_to_error_evolution()
+    test_icm_reward_failure_flag_in_select_action()
+    test_post_pipeline_metacognitive_uses_warning_not_debug()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78690,6 +78698,165 @@ def test_compute_loss_task2vec_records_error_evolution():
         "error_evolution when Task2Vec EWC loss computation fails"
     )
     print("✅ test_compute_loss_task2vec_records_error_evolution PASSED")
+
+
+# ============================================================================
+# Final Integration — World Model Predict Bridge & Error Escalation Tests
+# ============================================================================
+
+def test_world_model_predict_method_exists():
+    """PhysicsGroundedWorldModel must expose a predict(state, action) method
+    so that ActiveLearningPlanner.select_action() can compute ICM rewards
+    without falling through to the zero-reward fallback."""
+    from aeon_core import PhysicsGroundedWorldModel
+    import torch
+
+    wm = PhysicsGroundedWorldModel(input_dim=32, state_dim=16)
+    wm.eval()
+
+    assert hasattr(wm, 'predict'), (
+        "PhysicsGroundedWorldModel must have a predict() method"
+    )
+
+    state = torch.randn(1, 32)
+    action = torch.randn(1, 32)
+    with torch.no_grad():
+        result = wm.predict(state, action)
+
+    assert isinstance(result, dict), "predict() must return a dict"
+    assert 'predicted_state' in result, (
+        "predict() return must contain 'predicted_state'"
+    )
+    assert result['predicted_state'].shape[-1] == 16, (
+        "predicted_state must have state_dim dimensions"
+    )
+    print("✅ test_world_model_predict_method_exists PASSED")
+
+
+def test_world_model_predict_action_sensitivity():
+    """predict() must produce different outputs for different actions,
+    confirming that the action tensor influences the transition."""
+    from aeon_core import PhysicsGroundedWorldModel
+    import torch
+
+    wm = PhysicsGroundedWorldModel(input_dim=32, state_dim=16)
+    wm.eval()
+
+    state = torch.randn(1, 32)
+    action_a = torch.zeros(1, 32)
+    action_b = torch.ones(1, 32) * 5.0
+
+    with torch.no_grad():
+        result_a = wm.predict(state, action_a)
+        result_b = wm.predict(state, action_b)
+
+    diff = (result_a['predicted_state'] - result_b['predicted_state']).abs().sum()
+    assert diff > 1e-6, (
+        "predict() must produce different outputs for different actions"
+    )
+    print("✅ test_world_model_predict_action_sensitivity PASSED")
+
+
+def test_post_pipeline_metacognitive_failure_escalates_to_error_evolution():
+    """When the post-pipeline metacognitive evaluation fails, the exception
+    handler must record a post_pipeline_metacognitive_failure episode in
+    error_evolution and call adapt_weights_from_evolution, not silently
+    log at debug level."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    assert 'post_pipeline_metacognitive_failure' in src, (
+        "_forward_impl must record post_pipeline_metacognitive_failure in "
+        "error_evolution when post-pipeline metacognitive evaluation fails"
+    )
+    assert 'adapt_weights_from_evolution' in src, (
+        "_forward_impl must call adapt_weights_from_evolution after "
+        "post-pipeline metacognitive evaluation failure"
+    )
+    print("✅ test_post_pipeline_metacognitive_failure_escalates_to_error_evolution PASSED")
+
+
+def test_icm_reward_failure_escalates_to_error_evolution():
+    """When ICM reward computation fails inside select_action(), the
+    failure flag must be surfaced to the calling code in
+    _reasoning_core_impl, which records an icm_reward_computation_failure
+    episode in error_evolution and adapts metacognitive trigger weights."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._reasoning_core_impl)
+    assert 'icm_reward_computation_failure' in src, (
+        "_reasoning_core_impl must record icm_reward_computation_failure "
+        "in error_evolution when ICM reward computation fails"
+    )
+    assert 'icm_reward_failed' in src, (
+        "_reasoning_core_impl must check icm_reward_failed flag from "
+        "select_action results"
+    )
+    print("✅ test_icm_reward_failure_escalates_to_error_evolution PASSED")
+
+
+def test_icm_reward_failure_flag_in_select_action():
+    """ActiveLearningPlanner.select_action() must set icm_reward_failed=True
+    in the result dict when ICM reward computation raises an exception,
+    so the calling code can detect and escalate the failure."""
+    from aeon_core import ActiveLearningPlanner
+    import inspect
+
+    src = inspect.getsource(ActiveLearningPlanner.select_action)
+    assert 'icm_reward_failed' in src, (
+        "select_action must set icm_reward_failed flag when ICM reward "
+        "computation fails"
+    )
+    assert "logger.warning" in src, (
+        "select_action must use logger.warning (not debug) for ICM failures"
+    )
+    print("✅ test_icm_reward_failure_flag_in_select_action PASSED")
+
+
+def test_post_pipeline_metacognitive_uses_warning_not_debug():
+    """The post-pipeline metacognitive evaluation exception handler must
+    use logger.warning (not logger.debug) so failures are visible in
+    standard log output."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect, re
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    # Find the block around "Post-pipeline metacognitive evaluation failed"
+    idx = src.find("Post-pipeline metacognitive evaluation failed")
+    assert idx != -1, "Must contain post-pipeline metacognitive failure message"
+    # Check the 200 chars before the message for logger level
+    context = src[max(0, idx - 200):idx]
+    assert 'logger.warning' in context, (
+        "Post-pipeline metacognitive failure must use logger.warning, "
+        f"not logger.debug. Context: {context[-80:]}"
+    )
+    print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
 
 
 if __name__ == "__main__":

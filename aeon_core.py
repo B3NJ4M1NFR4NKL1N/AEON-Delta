@@ -10193,6 +10193,42 @@ class PhysicsGroundedWorldModel(nn.Module):
 
         return result
 
+    def predict(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Predict next state given current state and action.
+
+        This bridges the interface expected by
+        :class:`ActiveLearningPlanner` (``world_model.predict(state, action)``)
+        with the internal physics-routed transition model.  The *action*
+        tensor is additively blended with the encoded state before the
+        routed physics transition, so that different actions yield
+        different predicted trajectories.
+
+        Args:
+            state: ``[B, input_dim]`` current observation.
+            action: ``[B, input_dim]`` or ``[B, state_dim]`` action vector.
+
+        Returns:
+            Dict with ``predicted_state`` (``[B, state_dim]``).
+        """
+        encoded = self.state_encoder(state)
+        # Blend action into encoded state — project action to state_dim
+        # if dimensions mismatch, otherwise add directly.
+        if action.shape[-1] != encoded.shape[-1]:
+            action_proj = F.linear(
+                action,
+                self.state_encoder[0].weight,
+                self.state_encoder[0].bias,
+            )
+        else:
+            action_proj = action
+        blended = encoded + action_proj
+        predicted = self._transition(blended)
+        return {"predicted_state": predicted}
+
 
 class LatentDynamicsModel(nn.Module):
     """
@@ -12793,8 +12829,9 @@ class ActiveLearningPlanner(MCTSPlanner):
                     state, best_action, _s_next,
                 )
             except Exception as _icm_err:
-                logger.debug("ICM reward computation failed: %s", _icm_err)
+                logger.warning("ICM reward computation failed: %s", _icm_err)
                 result['icm_reward'] = 0.0
+                result['icm_reward_failed'] = True
         else:
             result['icm_reward'] = 0.0
         return result
@@ -17048,6 +17085,15 @@ class MetaCognitiveRecursionTrigger:
             # compute_loss(), leaving catastrophic-forgetting
             # protection unoptimised for the step.
             "task2vec_ewc_loss_failure": "uncertainty",
+            # ICM reward computation failure — the ICM forward/inverse
+            # model prediction failed inside select_action(), leaving
+            # curiosity-driven exploration with a zero reward fallback.
+            "icm_reward_computation_failure": "uncertainty",
+            # Post-pipeline metacognitive evaluation failure — the
+            # final metacognitive re-evaluation after all post-output
+            # checks raised an exception, preventing late-stage
+            # uncertainty from triggering a higher-order review.
+            "post_pipeline_metacognitive_failure": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18376,6 +18422,16 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_reg so training strengthens the regularisation
         # pathways to reduce future Task2Vec EWC failures.
         "task2vec_ewc_loss_failure": "lambda_reg",
+        # ICM reward computation failure — the ICM forward/inverse model
+        # prediction failed during active learning.  Maps to
+        # lambda_hierarchical_wm so training strengthens the world model
+        # that the ICM depends on.
+        "icm_reward_computation_failure": "lambda_hierarchical_wm",
+        # Post-pipeline metacognitive evaluation failure — the final
+        # metacognitive re-evaluation after post-output checks failed.
+        # Maps to lambda_ucc so training strengthens the unified
+        # cognitive cycle that orchestrates metacognitive re-evaluation.
+        "post_pipeline_metacognitive_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -32636,6 +32692,31 @@ class AEONDeltaV3(nn.Module):
                     "icm_curiosity",
                     validated=isinstance(_icm_reward, (int, float)) and math.isfinite(_icm_reward),
                 )
+                # 5e-ii-b. ICM failure escalation — when the ICM reward
+                # computation failed inside select_action(), record the
+                # failure in error_evolution and adapt metacognitive
+                # trigger weights so the system learns to compensate for
+                # degraded curiosity signals.
+                if active_learning_results.get("icm_reward_failed", False):
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="icm_reward_computation_failure",
+                            strategy_used="fallback_zero_reward",
+                            success=False,
+                            metadata=self._provenance_enriched_metadata(
+                                {"icm_reward": 0.0},
+                            ),
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Metacognitive weight adaptation failed "
+                                    "after ICM reward computation failure"
+                                )
                 # 5e-iii. Active learning state blending — blend the
                 # planner's best_action into C_star as a small residual
                 # so the epistemic exploration signal shapes downstream
@@ -40733,10 +40814,26 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
             except Exception as _post_eval_err:
-                logger.debug(
+                logger.warning(
                     "Post-pipeline metacognitive evaluation failed: %s",
                     _post_eval_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="post_pipeline_metacognitive_failure",
+                        strategy_used="post_pipeline_evaluation",
+                        success=False,
+                        metadata={"error": str(_post_eval_err)},
+                    )
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Post-pipeline metacognitive weight adaptation "
+                            "failed after evaluation error"
+                        )
 
         return result
     
