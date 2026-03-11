@@ -29519,6 +29519,11 @@ class AEONDeltaV3(nn.Module):
                             )
                     except Exception as _coh_ac_err:
                         self.provenance_tracker.record_after("auto_critic", C_star)
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(C_star).all().item(),
+                            quality=0.0,
+                        )
                         logger.debug(
                             "Coherence-driven auto-critic failed: %s",
                             _coh_ac_err,
@@ -32529,6 +32534,11 @@ class AEONDeltaV3(nn.Module):
                         self.provenance_tracker.record_after(
                             "auto_critic", C_star,
                         )
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(C_star).all().item(),
+                            quality=_cv_critic.get("final_score", 1.0),
+                        )
                         self.audit_log.record(
                             "auto_critic",
                             "reconciliation_exhaustion_revision",
@@ -32544,6 +32554,14 @@ class AEONDeltaV3(nn.Module):
                                 success=_cv_revised is not None,
                             )
                     except Exception as _cv_ac_err:
+                        self.provenance_tracker.record_after(
+                            "auto_critic", C_star,
+                        )
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(C_star).all().item(),
+                            quality=0.0,
+                        )
                         logger.debug(
                             "Reconciliation-exhaustion auto-critic "
                             "failed: %s", _cv_ac_err,
@@ -34471,6 +34489,11 @@ class AEONDeltaV3(nn.Module):
                     )
             except Exception as _uc_err:
                 self.provenance_tracker.record_after("auto_critic", z_out)
+                self.coherence_registry.register_output(
+                    "auto_critic",
+                    validated=torch.isfinite(z_out).all().item(),
+                    quality=0.0,
+                )
                 logger.debug(
                     "Unconditional auto-critic error (non-fatal): %s",
                     _uc_err,
@@ -34600,7 +34623,6 @@ class AEONDeltaV3(nn.Module):
             try:
                 critic_result = self.auto_critic(z_out)
             except Exception as _ac_call_err:
-                self.provenance_tracker.record_after("auto_critic", z_out)
                 logger.debug(
                     "Metacognitive auto-critic call failed (non-fatal): %s",
                     _ac_call_err,
@@ -37530,6 +37552,11 @@ class AEONDeltaV3(nn.Module):
                         })
                     except Exception as ac_err:
                         self.provenance_tracker.record_after("auto_critic", z_out)
+                        self.coherence_registry.register_output(
+                            "auto_critic",
+                            validated=torch.isfinite(z_out).all().item(),
+                            quality=0.0,
+                        )
                         logger.warning(
                             "Post-integration auto-critic error (non-fatal): %s",
                             ac_err,

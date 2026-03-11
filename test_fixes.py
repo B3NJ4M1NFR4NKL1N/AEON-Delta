@@ -57905,7 +57905,7 @@ def test_auto_critic_metacognitive_path_coherence_registry():
     idx_8b4 = content.find('_should_trigger_metacognition = (')
     assert idx_8b4 != -1, "Could not find metacognitive trigger section"
     # Look from 8b4 to the next major section (8b5) for the auto_critic
-    section = content[idx_8b4:idx_8b4 + 5000]
+    section = content[idx_8b4:idx_8b4 + 6000]
     # Find provenance_tracker.record_after("auto_critic" in this section
     prov_pattern = 'provenance_tracker.record_after("auto_critic"'
     prov_idx = section.find(prov_pattern)
