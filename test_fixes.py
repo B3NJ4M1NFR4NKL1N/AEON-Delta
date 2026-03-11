@@ -67754,6 +67754,13 @@ def run_all_tests():
     test_icm_reward_failure_flag_in_select_action()
     test_post_pipeline_metacognitive_uses_warning_not_debug()
 
+    # Final Integration — Cognitive Activation Bridge Tests
+    test_generate_includes_causal_chain_verification()
+    test_compute_loss_records_causal_trace()
+    test_forward_impl_per_pass_causal_chain_verification()
+    test_forward_pass_includes_causal_chain_in_output()
+    test_compute_loss_causal_trace_recorded()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78857,6 +78864,180 @@ def test_post_pipeline_metacognitive_uses_warning_not_debug():
         f"not logger.debug. Context: {context[-80:]}"
     )
     print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation Bridge Tests
+# ============================================================================
+
+def test_generate_includes_causal_chain_verification():
+    """generate() must call verify_causal_chain() before returning and
+    include the result in the return dict as 'causal_chain_verification'.
+    This bridges the gap where generation outputs had no verified causal
+    transparency — callers could not determine whether the reasoning
+    that produced the text was fully traceable."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.generate)
+    assert 'verify_causal_chain' in src, (
+        "generate() must call verify_causal_chain() before returning"
+    )
+    assert 'causal_chain_verification' in src, (
+        "generate() must include causal_chain_verification in return dict"
+    )
+    assert 'generate_verification' in src, (
+        "generate() must use 'generate_verification' strategy when "
+        "recording causal_chain_gap episodes"
+    )
+    print("✅ test_generate_includes_causal_chain_verification PASSED")
+
+
+def test_compute_loss_records_causal_trace():
+    """compute_loss() must record its loss composition decision in the
+    causal trace so that root-cause analysis can trace why particular
+    loss weights were boosted or adaptive scaling was applied.  Without
+    this, compute_loss decisions were invisible to provenance tracking."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.compute_loss)
+    assert 'causal_trace' in src, (
+        "compute_loss() must record decisions in causal_trace"
+    )
+    assert 'loss_composition' in src, (
+        "compute_loss() must use 'loss_composition' as the decision type "
+        "when recording causal trace entries"
+    )
+    assert 'compute_loss' in src, (
+        "compute_loss() causal trace must use 'compute_loss' subsystem"
+    )
+    print("✅ test_compute_loss_records_causal_trace PASSED")
+
+
+def test_forward_impl_per_pass_causal_chain_verification():
+    """_forward_impl() must call verify_causal_chain() on every pass and
+    include the result in the output dict.  This bridges the gap where
+    causal chain integrity was only assessed during periodic reinforcement,
+    making it impossible for callers to determine whether most outputs
+    were fully traceable."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._forward_impl)
+    assert 'causal_chain_verification' in src, (
+        "_forward_impl must include causal_chain_verification in result"
+    )
+    assert 'verify_causal_chain' in src, (
+        "_forward_impl must call verify_causal_chain() per pass"
+    )
+    assert 'causal_chain_gap' in src, (
+        "_forward_impl must escalate uncertainty when causal chain "
+        "has gaps"
+    )
+    print("✅ test_forward_impl_per_pass_causal_chain_verification PASSED")
+
+
+def test_forward_pass_includes_causal_chain_in_output():
+    """A forward pass through AEONDeltaV3 should include
+    'causal_chain_verification' in the output dict, proving that
+    causal chain integrity is verified on every pass."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    B, S = 1, 8
+    input_ids = torch.randint(0, config.vocab_size, (B, S))
+    with torch.no_grad():
+        result = model(input_ids)
+
+    assert 'causal_chain_verification' in result, (
+        "Forward pass output must include causal_chain_verification"
+    )
+    chain = result['causal_chain_verification']
+    assert isinstance(chain, dict), (
+        "causal_chain_verification must be a dict"
+    )
+    assert 'traceable' in chain, (
+        "causal_chain_verification must include 'traceable' key"
+    )
+    assert 'coverage' in chain, (
+        "causal_chain_verification must include 'coverage' key"
+    )
+    print("✅ test_forward_pass_includes_causal_chain_in_output PASSED")
+
+
+def test_compute_loss_causal_trace_recorded():
+    """When compute_loss() is called, it should record a causal trace
+    entry under the 'compute_loss' subsystem, making loss composition
+    decisions visible to root-cause analysis."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+
+    B, S = 1, 8
+    input_ids = torch.randint(0, config.vocab_size, (B, S))
+    targets = torch.randint(0, config.vocab_size, (B, S))
+
+    outputs = model(input_ids)
+    # Clear existing trace entries from init/forward
+    initial_count = len(list(model.causal_trace._entries))
+    loss_dict = model.compute_loss(outputs, targets)
+
+    entries = list(model.causal_trace._entries)
+    compute_loss_entries = [
+        e for e in entries
+        if e.get('subsystem', '') == 'compute_loss'
+    ]
+    assert len(compute_loss_entries) > 0, (
+        "compute_loss() must record at least one causal trace entry "
+        "with subsystem='compute_loss'"
+    )
+    meta = compute_loss_entries[-1].get('metadata', {})
+    assert 'total_loss' in meta, (
+        "compute_loss causal trace must include total_loss in metadata"
+    )
+    print("✅ test_compute_loss_causal_trace_recorded PASSED")
 
 
 if __name__ == "__main__":

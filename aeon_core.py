@@ -40836,6 +40836,41 @@ class AEONDeltaV3(nn.Module):
                             "failed after evaluation error: %s", _adapt_err
                         )
 
+        # ===== PER-PASS CAUSAL CHAIN VERIFICATION =====
+        # Verify the causal chain at the end of every forward pass and
+        # include the result in the output dict.  This bridges the gap
+        # where causal chain integrity was only assessed during periodic
+        # reinforcement (every _REINFORCE_INTERVAL passes) or on high
+        # uncertainty — most passes returned without any causal chain
+        # status, making it impossible for callers to determine whether
+        # the output was fully traceable.  If the chain has gaps, the
+        # uncertainty is escalated so the next pass's meta-cognitive
+        # trigger is immediately aware.
+        try:
+            _fwd_chain = self.verify_causal_chain()
+            result['causal_chain_verification'] = _fwd_chain
+            if not _fwd_chain.get('traceable', True):
+                _chain_gap_boost = min(
+                    1.0 - result.get('uncertainty', 0.0),
+                    (1.0 - _fwd_chain.get('coverage', 1.0)) * 0.15,
+                )
+                if _chain_gap_boost > 0:
+                    result['uncertainty'] = min(
+                        1.0,
+                        result.get('uncertainty', 0.0)
+                        + _chain_gap_boost,
+                    )
+                    _unc_sources = result.get('uncertainty_sources', {})
+                    _unc_sources[
+                        'causal_chain_gap'
+                    ] = _chain_gap_boost
+                    result['uncertainty_sources'] = _unc_sources
+        except Exception as _fwd_chain_err:
+            logger.debug(
+                "Per-pass causal chain verification failed: %s",
+                _fwd_chain_err,
+            )
+
         return result
     
     def compute_loss(
@@ -42028,6 +42063,38 @@ class AEONDeltaV3(nn.Module):
                     _train_adapt_err,
                 )
 
+        # ===== COMPUTE LOSS CAUSAL TRACE =====
+        # Record the loss composition decision in the causal trace so
+        # that root-cause analysis can trace WHY particular loss weights
+        # were boosted or adaptive scaling was applied.  Without this,
+        # compute_loss decisions were invisible to the causal provenance
+        # system — a downstream metacognitive trigger that fired because
+        # of elevated loss-weight sensitivity could not be traced back
+        # to the specific compute_loss invocation that caused it.
+        if self.causal_trace is not None:
+            try:
+                _total_val_ct = (
+                    float(total_loss.detach().item())
+                    if torch.isfinite(total_loss) else 0.0
+                )
+                self.causal_trace.record(
+                    "compute_loss", "loss_composition",
+                    metadata={
+                        'total_loss': _total_val_ct,
+                        'convergence_loss_scale': _convergence_loss_scale,
+                        'uncertainty_loss_scale': _uncertainty_loss_scale,
+                        'uncertainty': outputs.get('uncertainty', 0.0),
+                        'convergence_quality': outputs.get(
+                            'convergence_quality', 0.0,
+                        ),
+                    },
+                )
+            except Exception as _ct_err:
+                logger.debug(
+                    "compute_loss causal trace recording failed: %s",
+                    _ct_err,
+                )
+
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
         
@@ -42485,6 +42552,37 @@ class AEONDeltaV3(nn.Module):
                                 _adapt_err,
                             )
 
+            # ===== GENERATION CAUSAL CHAIN VERIFICATION =====
+            # Verify that the causal chain is complete for this generation
+            # pass before returning.  Without this check, generation
+            # outputs had no verified causal transparency — the caller
+            # could not determine whether the reasoning that produced
+            # the text was fully traceable.  This bridges the gap between
+            # high-level generation and low-level causal provenance.
+            _gen_chain_result = None
+            try:
+                _gen_chain_result = self.verify_causal_chain()
+                if (not _gen_chain_result.get('traceable', True)
+                        and self.error_evolution is not None):
+                    self.error_evolution.record_episode(
+                        error_class='causal_chain_gap',
+                        strategy_used='generate_verification',
+                        success=False,
+                        metadata={
+                            'coverage': _gen_chain_result.get(
+                                'coverage', 0.0,
+                            ),
+                            'untraced': _gen_chain_result.get(
+                                'untraced_subsystems', [],
+                            ),
+                        },
+                    )
+            except Exception as _gen_chain_err:
+                logger.debug(
+                    "Generate causal chain verification failed: %s",
+                    _gen_chain_err,
+                )
+
             return {
                 'text': generated_text,
                 'status': 'ok',
@@ -42504,6 +42602,10 @@ class AEONDeltaV3(nn.Module):
                 # (e.g. retry with different parameters) when the reasoning
                 # pipeline flagged internal inconsistencies.
                 'metacognitive_info': outputs.get('metacognitive_info', {}),
+                # Causal chain verification — exposes whether the
+                # reasoning pipeline's causal trace is complete for
+                # this generation pass.
+                'causal_chain_verification': _gen_chain_result,
             }
         
         except Exception as e:
