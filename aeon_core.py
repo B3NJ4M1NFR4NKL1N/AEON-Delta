@@ -32712,10 +32712,11 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
+                            except Exception as _adapt_err:
                                 logger.debug(
                                     "Metacognitive weight adaptation failed "
-                                    "after ICM reward computation failure"
+                                    "after ICM reward computation failure: %s",
+                                    _adapt_err,
                                 )
                 # 5e-iii. Active learning state blending — blend the
                 # planner's best_action into C_star as a small residual
@@ -40829,10 +40830,10 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger.adapt_weights_from_evolution(
                             self.error_evolution.get_error_summary()
                         )
-                    except Exception:
+                    except Exception as _adapt_err:
                         logger.debug(
                             "Post-pipeline metacognitive weight adaptation "
-                            "failed after evaluation error"
+                            "failed after evaluation error: %s", _adapt_err
                         )
 
         return result
@@ -42231,10 +42232,11 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary()
                             if self.error_evolution is not None else {},
                         )
-                    except Exception:
+                    except Exception as _adapt_err:
                         logger.debug(
                             "generate: metacognitive trigger adaptation "
-                            "after uncertainty boost failed (non-fatal)"
+                            "after uncertainty boost failed (non-fatal): %s",
+                            _adapt_err,
                         )
 
             generated_ids = outputs.get('generated_ids')
@@ -42477,9 +42479,10 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
+                        except Exception as _adapt_err:
                             logger.debug(
-                                "Generate UCC trigger adaptation failed"
+                                "Generate UCC trigger adaptation failed: %s",
+                                _adapt_err,
                             )
 
             return {
