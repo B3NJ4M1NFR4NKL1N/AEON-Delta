@@ -37274,10 +37274,14 @@ class AEONDeltaV3(nn.Module):
         # Apply the same warmup floor used in convergence_quality_scalar
         # so the output-level convergence_quality is consistent with the
         # value used internally by the feedback bus and reliability gate.
+        # During warmup the true convergence rate is unreliable (too few
+        # passes to build history), so clamp quality to the decaying floor
+        # — matching the internal override at line 27941 — rather than
+        # using max(), which would let a spurious early 1.0 leak through.
         _fwd_count = int(self._total_forward_calls.item())
         if _fwd_count < 5:
             _out_warmup_floor = 0.3 * (1.0 - _fwd_count / 5.0)
-            convergence_quality = max(convergence_quality, _out_warmup_floor)
+            convergence_quality = _out_warmup_floor
         # convergence_delta = final residual norm from the meta-loop, measuring
         # how far the last iteration was from a true fixed point.
         convergence_delta = meta_results.get('residual_norm', None)
