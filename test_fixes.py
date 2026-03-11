@@ -67754,6 +67754,10 @@ def run_all_tests():
     test_icm_reward_failure_flag_in_select_action()
     test_post_pipeline_metacognitive_uses_warning_not_debug()
 
+    # Final Integration — UCC Post-Evaluation Metacognitive Adaptation
+    test_ucc_post_eval_bulk_adaptation()
+    test_ucc_post_eval_adaptation_causal_trace()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -78857,6 +78861,111 @@ def test_post_pipeline_metacognitive_uses_warning_not_debug():
         f"not logger.debug. Context: {context[-80:]}"
     )
     print("✅ test_post_pipeline_metacognitive_uses_warning_not_debug PASSED")
+
+
+def test_ucc_post_eval_bulk_adaptation():
+    """UnifiedCognitiveCycle.evaluate() must call
+    adapt_weights_from_evolution() AFTER recording error episodes so the
+    metacognitive trigger's signal weights reflect the current evaluation
+    cycle's failures, not just the historical baseline."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+    )
+    import torch
+
+    hidden = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden)
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger()
+    pt = CausalProvenanceTracker()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt)
+
+    # Record a baseline state so weights are initialised.
+    initial_weights = dict(mt._signal_weights)
+
+    # Feed a high diversity_collapse to trigger a record_episode inside
+    # evaluate().  The diversity_collapse > 0.3 branch records a
+    # 'diversity_collapse' episode.
+    states = {
+        'encoder': torch.randn(1, 4, hidden),
+        'decoder': torch.randn(1, 4, hidden),
+    }
+    result = ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        diversity_collapse=0.8,
+        topology_catastrophe=True,
+    )
+
+    # After evaluate(), the error evolution should have at least one
+    # episode and adapt_weights_from_evolution should have been called.
+    summary = ee.get_error_summary()
+    assert summary.get('total_recorded', 0) > 0, (
+        "evaluate() must record error episodes when diversity_collapse > 0.3"
+    )
+
+    # Verify that the weights were adapted by checking that at least one
+    # signal weight differs from the initial uniform distribution.
+    current_weights = dict(mt._signal_weights)
+    any_changed = any(
+        abs(current_weights.get(k, 0) - initial_weights.get(k, 0)) > 1e-9
+        for k in set(initial_weights) | set(current_weights)
+    )
+    assert any_changed, (
+        "adapt_weights_from_evolution() must have been called during "
+        "evaluate() — signal weights should differ from initial values "
+        "after recording diversity_collapse/topology_catastrophe episodes"
+    )
+    print("✅ test_ucc_post_eval_bulk_adaptation PASSED")
+
+
+def test_ucc_post_eval_adaptation_causal_trace():
+    """The post-evaluation adaptation in UnifiedCognitiveCycle.evaluate()
+    must record its decision in the causal trace buffer for traceability."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        ModuleCoherenceVerifier, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger, CausalProvenanceTracker,
+        TemporalCausalTraceBuffer,
+    )
+    import torch
+
+    hidden = 32
+    cm = ConvergenceMonitor()
+    cv = ModuleCoherenceVerifier(hidden_dim=hidden)
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger()
+    pt = CausalProvenanceTracker()
+    ct = TemporalCausalTraceBuffer()
+    ucc = UnifiedCognitiveCycle(cm, cv, ee, mt, pt, causal_trace=ct)
+
+    states = {
+        'encoder': torch.randn(1, 4, hidden),
+        'decoder': torch.randn(1, 4, hidden),
+    }
+    ucc.evaluate(
+        subsystem_states=states,
+        delta_norm=0.01,
+        uncertainty=0.0,
+        diversity_collapse=0.8,
+    )
+
+    # The causal trace should contain a 'ucc_post_eval_adaptation' entry.
+    trace_entries = ct.find(subsystem='ucc_post_eval_adaptation')
+    assert len(trace_entries) > 0, (
+        "Post-evaluation adaptation must be recorded in causal trace "
+        "(no 'ucc_post_eval_adaptation' entries found)"
+    )
+    # Verify the entry contains the expected metadata fields.
+    entry = trace_entries[0]
+    assert 'adapted' in entry.get('metadata', {}), (
+        "Causal trace entry must contain 'adapted' in metadata"
+    )
+    print("✅ test_ucc_post_eval_adaptation_causal_trace PASSED")
 
 
 if __name__ == "__main__":

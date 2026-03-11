@@ -21413,6 +21413,48 @@ class UnifiedCognitiveCycle:
                 self.coherence_registry.get_degrading_subsystems()
             )
 
+        # 7k. Bulk metacognitive adaptation — all error-evolution episodes
+        # recorded during steps 2–7j above (coverage deficit, coherence
+        # deficit, diversity collapse, topology catastrophe, memory trust,
+        # convergence certificate, integrity, convergence conflict,
+        # feedback oscillation, DAG consensus, memory cross-validation,
+        # output reliability, executive health, decoder quality, auto-critic,
+        # NS consistency, coherence trend, recurring root cause) have been
+        # committed but NOT yet fed back into the metacognitive trigger's
+        # signal weights.  Without this sweep the trigger remains calibrated
+        # to the error history that existed at step 1c — before the current
+        # evaluation cycle recorded any new episodes.  This closes the
+        # feedback loop where error patterns were recorded in the evolution
+        # tracker but never influenced trigger sensitivity within the same
+        # cognitive cycle, violating the mutual-reinforcement requirement.
+        _post_eval_adapted = False
+        if (self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                _post_eval_summary = self.error_evolution.get_error_summary()
+                if _post_eval_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _post_eval_summary,
+                    )
+                    _post_eval_adapted = True
+            except Exception as _post_adapt_err:
+                logger.warning(
+                    "UCC: post-evaluation adapt_weights_from_evolution "
+                    "failed (non-fatal): %s",
+                    _post_adapt_err,
+                )
+        # Record the adaptation decision in causal trace for traceability.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "ucc_post_eval_adaptation", "metacognitive_feedback",
+                metadata={
+                    'adapted': _post_eval_adapted,
+                    'should_rerun': should_rerun,
+                    'coherence_deficit': coherence_deficit,
+                    'uncertainty': uncertainty,
+                },
+            )
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
