@@ -67742,6 +67742,9 @@ def run_all_tests():
     test_compute_loss_nan_records_error_evolution()
     test_generate_uncertainty_adapts_metacognitive_trigger()
     test_activation_probe_seeds_extended_subsystem_traces()
+    test_no_silent_exception_handlers_in_cognitive_paths()
+    test_compute_loss_meta_recovery_records_error_evolution()
+    test_compute_loss_task2vec_records_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -78572,6 +78575,121 @@ def test_activation_probe_seeds_extended_subsystem_traces():
         )
 
     print("✅ test_activation_probe_seeds_extended_subsystem_traces PASSED")
+
+
+def test_no_silent_exception_handlers_in_cognitive_paths():
+    """Every ``except Exception`` block in aeon_core.py must contain a
+    logging call (logger.debug / logger.warning / logger.error / logging.*)
+    so that failures in cognitive paths are observable and can feed into
+    the metacognitive learning loop.  Silent swallowing breaks causal
+    transparency and prevents the system from learning from errors."""
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        content = f.read()
+
+    lines = content.split('\n')
+    silent_handlers = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Match except clauses (both bare and with exception type)
+        if re.match(r'^except\s*(Exception|RuntimeError|ValueError|TypeError|KeyError|AttributeError|OSError)?\s*(\sas\s+\w+)?:', stripped):
+            # Find the handler body (indented lines following the except)
+            except_indent = len(line) - len(line.lstrip())
+            handler_lines = []
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j]
+                if next_line.strip() == '':
+                    j += 1
+                    continue
+                next_indent = len(next_line) - len(next_line.lstrip())
+                if next_indent <= except_indent:
+                    break
+                handler_lines.append(next_line)
+                j += 1
+
+            handler_text = '\n'.join(handler_lines)
+            has_logging = bool(re.search(
+                r'logger\.(debug|info|warning|error|critical)|logging\.(debug|info|warning|error|critical)',
+                handler_text,
+            ))
+            has_pass_only = (
+                len([l for l in handler_lines if l.strip() and not l.strip().startswith('#')]) == 1
+                and handler_lines[0].strip() == 'pass'
+            ) if handler_lines else False
+
+            if has_pass_only and not has_logging:
+                silent_handlers.append((i + 1, stripped))
+
+            i = j
+        else:
+            i += 1
+
+    # Allow the one known benign OSError handler for log file setup
+    silent_handlers = [
+        (ln, txt) for ln, txt in silent_handlers
+        if 'OSError' not in txt
+    ]
+
+    assert not silent_handlers, (
+        f"Found {len(silent_handlers)} silent exception handler(s) "
+        f"(except + pass without logging) in cognitive paths: "
+        f"{silent_handlers}"
+    )
+    print("✅ test_no_silent_exception_handlers_in_cognitive_paths PASSED")
+
+
+def test_compute_loss_meta_recovery_records_error_evolution():
+    """compute_loss() should record a meta_recovery_loss_failure episode
+    in error_evolution when the meta-recovery RL loss computation raises
+    an exception, closing the gap where meta-recovery failures were
+    silently degraded without informing the metacognitive trigger."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.compute_loss)
+    assert 'meta_recovery_loss_failure' in src, (
+        "compute_loss must record meta_recovery_loss_failure in "
+        "error_evolution when meta-recovery loss computation fails"
+    )
+    print("✅ test_compute_loss_meta_recovery_records_error_evolution PASSED")
+
+
+def test_compute_loss_task2vec_records_error_evolution():
+    """compute_loss() should record a task2vec_ewc_loss_failure episode
+    in error_evolution when the Task2Vec EWC regularisation loss
+    computation raises an exception, closing the gap where Task2Vec
+    failures were silently degraded without informing the metacognitive
+    trigger."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.compute_loss)
+    assert 'task2vec_ewc_loss_failure' in src, (
+        "compute_loss must record task2vec_ewc_loss_failure in "
+        "error_evolution when Task2Vec EWC loss computation fails"
+    )
+    print("✅ test_compute_loss_task2vec_records_error_evolution PASSED")
 
 
 if __name__ == "__main__":
