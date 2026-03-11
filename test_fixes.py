@@ -67715,6 +67715,13 @@ def run_all_tests():
     test_social_cognition_in_diagnostic()
     test_code_execution_in_diagnostic()
 
+    # Final Integration — Cognitive Activation Patches
+    test_loss_to_signal_covers_all_subsystem_losses()
+    test_training_bridge_records_causal_trace()
+    test_vq_codebook_quality_in_causal_decision_chain()
+    test_emergence_deficit_in_auto_correction_loop()
+    test_expanded_loss_to_signal_boosts_weights()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -77786,6 +77793,171 @@ def test_code_execution_in_diagnostic():
         "print_architecture_summary must include CodeExecutionSandbox in module list"
     )
     print("✅ test_code_execution_in_diagnostic PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation Patches
+# ============================================================================
+
+def test_loss_to_signal_covers_all_subsystem_losses():
+    """_LOSS_TO_SIGNAL in bridge_training_loss_to_error_evolution must map
+    every declared subsystem loss to a metacognitive signal, ensuring that
+    elevated training losses for ANY subsystem directly boost the
+    corresponding trigger weight."""
+    import inspect, re
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.bridge_training_loss_to_error_evolution)
+    # Extract _subsystem_losses list entries (loss_key, error_class)
+    subsystem_keys = set(re.findall(
+        r"\('([a-z_]+_loss)',\s*'high_", src,
+    ))
+    # Extract _LOSS_TO_SIGNAL keys
+    signal_keys = set(re.findall(
+        r"'([a-z_]+_loss)':\s*'[a-z_]+'", src,
+    ))
+    missing = subsystem_keys - signal_keys
+    assert not missing, (
+        f"Subsystem losses declared in _subsystem_losses but missing from "
+        f"_LOSS_TO_SIGNAL (no direct signal boost): {sorted(missing)}"
+    )
+    # Verify all 14 subsystem losses are covered
+    assert len(signal_keys) >= 14, (
+        f"_LOSS_TO_SIGNAL should map at least 14 subsystem losses, "
+        f"got {len(signal_keys)}: {sorted(signal_keys)}"
+    )
+    print(f"✅ test_loss_to_signal_covers_all_subsystem_losses PASSED "
+          f"({len(signal_keys)} losses mapped)")
+
+
+def test_training_bridge_records_causal_trace():
+    """bridge_training_loss_to_error_evolution must record its adaptation
+    decisions in causal_trace so training-time weight changes are
+    traceable to root causes."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    assert model.causal_trace is not None, "Causal trace must be initialized"
+    initial_entries = len(model.causal_trace._entries)
+
+    # Simulate a training step with high coherence loss
+    loss_dict = {
+        'total_loss': torch.tensor(6.0),
+        'lm_loss': torch.tensor(3.0),
+        'coherence_loss': torch.tensor(2.0),
+    }
+    model.bridge_training_loss_to_error_evolution(loss_dict)
+
+    # Causal trace should have a new entry for the training bridge
+    new_entries = [
+        e for e in list(model.causal_trace._entries)
+        if e.get('subsystem') == 'training_bridge'
+    ]
+    assert len(new_entries) > 0, (
+        "bridge_training_loss_to_error_evolution must record a "
+        "'training_bridge' entry in causal_trace for traceability"
+    )
+    # Verify the entry contains boosted_signals metadata
+    entry = new_entries[-1]
+    meta = entry.get('metadata', {})
+    assert 'boosted_signals' in meta, (
+        "Training bridge causal trace entry must include 'boosted_signals' "
+        "metadata listing which signal weights were boosted"
+    )
+    print("✅ test_training_bridge_records_causal_trace PASSED")
+
+
+def test_vq_codebook_quality_in_causal_decision_chain():
+    """VQ codebook quality must appear in causal_decision_chain when
+    the vector quantizer is active, so root-cause analysis can trace
+    output uncertainty back to VQ encoding health."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'vq_codebook_quality' in src, (
+        "_forward_impl must record vq_codebook_quality in "
+        "causal_decision_chain for causal transparency"
+    )
+    # Verify the entry includes a 'degraded' field
+    assert "'degraded'" in src or '"degraded"' in src, (
+        "vq_codebook_quality causal chain entry must include a "
+        "'degraded' boolean for actionable root-cause attribution"
+    )
+    print("✅ test_vq_codebook_quality_in_causal_decision_chain PASSED")
+
+
+def test_emergence_deficit_in_auto_correction_loop():
+    """verify_and_reinforce auto-correction loop must include
+    emergence_deficit so that composite health degradation triggers
+    learned recovery strategy application."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "'emergence_deficit'" in src, (
+        "verify_and_reinforce auto-correction _deficit_classes must "
+        "include 'emergence_deficit' so the overall health score "
+        "feeds back into the learned recovery loop"
+    )
+    print("✅ test_emergence_deficit_in_auto_correction_loop PASSED")
+
+
+def test_expanded_loss_to_signal_boosts_weights():
+    """When a subsystem training loss exceeds threshold, the
+    corresponding metacognitive trigger signal weight must be boosted
+    for ALL mapped losses, not just the original 3."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    assert model.metacognitive_trigger is not None
+    # Record initial weights for signals that were previously unmapped
+    initial_weights = {
+        'diverging': model.metacognitive_trigger._signal_weights.get(
+            'diverging', 1.0,
+        ),
+        'diversity_collapse': model.metacognitive_trigger._signal_weights.get(
+            'diversity_collapse', 1.0,
+        ),
+        'world_model_surprise': model.metacognitive_trigger._signal_weights.get(
+            'world_model_surprise', 1.0,
+        ),
+        'memory_staleness': model.metacognitive_trigger._signal_weights.get(
+            'memory_staleness', 1.0,
+        ),
+    }
+
+    # Simulate training step with high losses for previously unmapped
+    # subsystems
+    loss_dict = {
+        'total_loss': torch.tensor(10.0),
+        'lm_loss': torch.tensor(3.0),
+        'lipschitz_loss': torch.tensor(2.0),      # → diverging
+        'sparsity_loss': torch.tensor(2.0),        # → diversity_collapse
+        'hierarchical_wm_loss': torch.tensor(2.0), # → world_model_surprise
+        'memory_retrieval_loss': torch.tensor(2.0), # → memory_staleness
+    }
+    model.bridge_training_loss_to_error_evolution(loss_dict)
+
+    # Verify all 4 previously unmapped signals were boosted
+    boosted = 0
+    for signal_name, initial_w in initial_weights.items():
+        new_w = model.metacognitive_trigger._signal_weights.get(
+            signal_name, 1.0,
+        )
+        if new_w > initial_w:
+            boosted += 1
+    assert boosted >= 4, (
+        f"Expected all 4 newly mapped signals to be boosted, "
+        f"got {boosted} boosted"
+    )
+    print("✅ test_expanded_loss_to_signal_boosts_weights PASSED")
 
 
 if __name__ == "__main__":

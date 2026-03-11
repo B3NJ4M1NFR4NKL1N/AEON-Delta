@@ -38906,6 +38906,20 @@ class AEONDeltaV3(nn.Module):
                 _pre_reasoning_causal_decisions
             )
 
+        # Surface VQ codebook quality in causal_decision_chain so that
+        # root-cause analysis can trace output uncertainty back to VQ
+        # encoding health.  Without this, a forward pass with degraded
+        # codebook utilization is invisible in the causal chain — the
+        # uncertainty boost recorded in _reasoning_core_impl shows
+        # *that* VQ collapse occurred, but the per-pass quality metric
+        # is lost.
+        _vq_q_snapshot = getattr(self, '_cached_vq_codebook_quality', None)
+        if _vq_q_snapshot is not None:
+            outputs['causal_decision_chain']['vq_codebook_quality'] = {
+                'quality': _vq_q_snapshot,
+                'degraded': _vq_q_snapshot < 0.8,
+            }
+
         # Extract causal trace ID produced by _reasoning_core_impl so
         # that downstream causal-trace recordings (cycle-consistency,
         # re-encode verification, etc.) can reference it.
@@ -42290,12 +42304,23 @@ class AEONDeltaV3(nn.Module):
         # influenced the metacognitive trigger's sensitivity, preventing
         # the system from proactively deepening reasoning for the
         # specific subsystem that training struggled with.
+        _LOSS_TO_SIGNAL: Dict[str, str] = {
+            'coherence_loss': 'coherence_deficit',
+            'causal_dag_loss': 'low_causal_quality',
+            'ns_consistency_loss': 'coherence_deficit',
+            'consistency_loss': 'coherence_deficit',
+            'lipschitz_loss': 'diverging',
+            'sparsity_loss': 'diversity_collapse',
+            'hvae_kl_loss': 'uncertainty',
+            'self_report_loss': 'low_output_reliability',
+            'cross_validation_loss': 'coherence_deficit',
+            'causal_cv_supervision_loss': 'low_causal_quality',
+            'factor_cv_supervision_loss': 'coherence_deficit',
+            'decoder_provenance_loss': 'low_causal_quality',
+            'hierarchical_wm_loss': 'world_model_surprise',
+            'memory_retrieval_loss': 'memory_staleness',
+        }
         if self.metacognitive_trigger is not None:
-            _LOSS_TO_SIGNAL: Dict[str, str] = {
-                'coherence_loss': 'coherence_deficit',
-                'causal_dag_loss': 'low_causal_quality',
-                'ns_consistency_loss': 'coherence_deficit',
-            }
             for _loss_key, _signal_name in _LOSS_TO_SIGNAL.items():
                 _sub_loss = loss_dict.get(_loss_key, None)
                 if _sub_loss is not None and torch.is_tensor(_sub_loss):
@@ -42313,12 +42338,12 @@ class AEONDeltaV3(nn.Module):
         # Full error-evolution-based adaptation — in addition to the
         # direct per-signal weight boosts above, run the general
         # adapt_weights_from_evolution() so that ALL accumulated error
-        # patterns (not just the 3 hardcoded loss→signal mappings)
-        # influence metacognitive trigger sensitivity.  This closes the
-        # remaining gap where training-time errors outside the hardcoded
-        # mapping (e.g. high_total_training_loss, high_ucc_training_loss,
-        # high_memory_retrieval_training_loss) were recorded in error
-        # evolution but never fed back into the trigger.
+        # patterns influence metacognitive trigger sensitivity.  The
+        # per-subsystem _LOSS_TO_SIGNAL mapping above covers the 14
+        # declared subsystem losses; this call catches any remaining
+        # error patterns (e.g. high_total_training_loss,
+        # high_ucc_training_loss) that were recorded in error evolution
+        # but fall outside the per-subsystem mapping.
         if (self.metacognitive_trigger is not None
                 and self.error_evolution is not None):
             try:
@@ -42332,6 +42357,31 @@ class AEONDeltaV3(nn.Module):
                     "Training bridge trigger adaptation failed: %s",
                     _bridge_adapt_err,
                 )
+
+        # Record training bridge decisions in causal_trace for full
+        # traceability.  Without this, training-time adaptations
+        # (loss→signal weight boosts, error-evolution-based trigger
+        # adjustments) are invisible to root-cause analysis — a forward
+        # pass whose metacognitive trigger fires with unusual weights
+        # cannot be traced back to the training-bridge call that set
+        # those weights.
+        if self.causal_trace is not None:
+            _boosted_signals = []
+            if self.metacognitive_trigger is not None:
+                for _lk, _sn in _LOSS_TO_SIGNAL.items():
+                    _sl = loss_dict.get(_lk, None)
+                    if (_sl is not None and torch.is_tensor(_sl)
+                            and torch.isfinite(_sl)
+                            and float(_sl.detach().item()) > _SUBSYSTEM_LOSS_THRESHOLD):
+                        _boosted_signals.append(_sn)
+            self.causal_trace.record(
+                "training_bridge", "loss_to_signal_adaptation",
+                metadata={
+                    'total_loss': _total_val,
+                    'boosted_signals': list(set(_boosted_signals)),
+                    'source': 'bridge_training_loss_to_error_evolution',
+                },
+            )
 
     def count_parameters(self) -> int:
         """Total parameters."""
@@ -46336,6 +46386,15 @@ class AEONDeltaV3(nn.Module):
                 # evolution but excluded from the learned recovery loop.
                 ('pipeline_wiring_gap', 'low_output_reliability',
                  _pipeline_wiring_cov),
+                # Include emergence deficit so that the overall system
+                # health score feeds back into the auto-correction loop.
+                # Previously, emergence failures were recorded in error
+                # evolution during forward passes but excluded from the
+                # verify_and_reinforce recovery loop, leaving the system
+                # unable to apply learned recovery strategies for
+                # composite health degradation.
+                ('emergence_deficit', 'coherence_deficit',
+                 report.get('overall_score', 1.0)),
             ]
             for _ec, _trigger_signal, _score in _deficit_classes:
                 if _score >= 0.8:
