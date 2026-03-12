@@ -1077,7 +1077,7 @@ async def run_inference(req: InferRequest):
     except Exception as rs_err:
         logging.warning("Recovery stats unavailable: %s", rs_err)
 
-    return {
+    return _make_json_safe({
         "ok": True,
         "text": text_out,
         "status": result.get("status"),
@@ -1093,7 +1093,7 @@ async def run_inference(req: InferRequest):
         "provenance": result.get("provenance", {}),
         "ucc_result": result.get("ucc_result", {}),
         "recovery_stats": recovery_stats,
-    }
+    })
 
 
 @app.post("/api/forward")
