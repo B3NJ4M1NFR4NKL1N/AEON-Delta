@@ -67838,6 +67838,13 @@ def run_all_tests():
     test_verify_cognitive_unity_enforces_missing_signals()
     test_verify_cognitive_unity_enforcement_normalises_weights()
 
+    # Final Integration & Cognitive Activation patches
+    test_cognitive_activation_ok_reflects_emergence()
+    test_cognitive_activation_ok_matches_emerged()
+    test_system_emergence_post_reinforcement_re_evaluation()
+    test_system_emergence_post_reinforcement_causal_trace()
+    test_cognitive_frame_ambiguity_adapts_trigger()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -80800,6 +80807,146 @@ def test_verify_cognitive_unity_enforcement_normalises_weights():
             f"Weights must sum to ~1.0 after normalisation, got {total}"
         )
     print("✅ test_verify_cognitive_unity_enforcement_normalises_weights PASSED")
+
+
+
+# ============================================================================
+# Final Integration & Cognitive Activation — Patch Verification Tests
+# ============================================================================
+
+
+def test_cognitive_activation_ok_reflects_emergence():
+    """get_cognitive_activation_report()['ok'] must reflect the actual
+    system emergence status rather than being hardcoded to True.  This
+    ensures the API accurately communicates whether the system has
+    achieved cognitive emergence."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.get_cognitive_activation_report)
+
+    # The 'ok' field must NOT be hardcoded True
+    assert "report['ok'] = True" not in source, (
+        "get_cognitive_activation_report must derive 'ok' from emergence "
+        "status, not hardcode True"
+    )
+    # It must reference system_emergence_status
+    assert "system_emergence_status" in source or "emerged" in source, (
+        "get_cognitive_activation_report 'ok' must be derived from "
+        "system_emergence_status['emerged']"
+    )
+    print("✅ test_cognitive_activation_ok_reflects_emergence PASSED")
+
+
+def test_cognitive_activation_ok_matches_emerged():
+    """get_cognitive_activation_report()['ok'] must equal
+    system_emergence_status['emerged'] for a freshly initialized model."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=500, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.get_cognitive_activation_report()
+
+    emerged = report.get('system_emergence_status', {}).get('emerged')
+    ok = report.get('ok')
+    assert ok == emerged, (
+        f"'ok' ({ok}) must equal emerged ({emerged})"
+    )
+    print("✅ test_cognitive_activation_ok_matches_emerged PASSED")
+
+
+def test_system_emergence_post_reinforcement_re_evaluation():
+    """system_emergence_report() must re-evaluate the emergence status
+    after the auto-reinforcement loop so the final verdict reflects
+    corrections applied during the assessment."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+
+    # Find the post-reinforcement emergence re-evaluation section
+    re_eval_idx = source.find("Post-reinforcement emergence re-evaluation")
+    assert re_eval_idx > 0, (
+        "system_emergence_report must contain a post-reinforcement "
+        "emergence re-evaluation section"
+    )
+
+    # Ensure verify_cognitive_unity is called after the marker
+    post_unity_idx = source.find("verify_cognitive_unity", re_eval_idx)
+    assert post_unity_idx > re_eval_idx, (
+        "Post-reinforcement re-evaluation must call "
+        "verify_cognitive_unity()"
+    )
+
+    # Ensure the system_emergence_status dict is reassigned
+    reassign_idx = source.find("system_emergence_status = {", re_eval_idx)
+    assert reassign_idx > re_eval_idx, (
+        "Post-reinforcement re-evaluation must reassign "
+        "system_emergence_status dict"
+    )
+    print("✅ test_system_emergence_post_reinforcement_re_evaluation PASSED")
+
+
+def test_system_emergence_post_reinforcement_causal_trace():
+    """system_emergence_report() must record a post-reinforcement
+    final-verdict causal trace entry so that the correction lifecycle
+    is fully traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+
+    # Find the post-reinforcement causal trace section
+    ct_idx = source.find("post_reinforcement_verdict")
+    assert ct_idx > 0, (
+        "system_emergence_report must record a "
+        "'post_reinforcement_verdict' causal trace entry"
+    )
+
+    # Ensure it appears after the auto-reinforcement loop
+    reinforce_idx = source.find("auto-reinforcement")
+    assert ct_idx > reinforce_idx, (
+        "post_reinforcement_verdict causal trace must appear "
+        "after the auto-reinforcement loop"
+    )
+    print("✅ test_system_emergence_post_reinforcement_causal_trace PASSED")
+
+
+def test_cognitive_frame_ambiguity_adapts_trigger():
+    """When the cognitive frame detects ambiguity and records an error
+    evolution episode, it must also call
+    adapt_weights_from_evolution() so that trigger sensitivity is
+    updated — matching the established metacognitive feedback pattern."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Find the cognitive_frame_ambiguity error class recording
+    amb_idx = source.find("cognitive_frame_ambiguity")
+    assert amb_idx > 0, (
+        "_forward_impl must record 'cognitive_frame_ambiguity' "
+        "error evolution episodes"
+    )
+
+    # Find the adapt_weights_from_evolution call AFTER the ambiguity record
+    adapt_idx = source.find("adapt_weights_from_evolution", amb_idx)
+    assert adapt_idx > amb_idx, (
+        "adapt_weights_from_evolution must be called after recording "
+        "'cognitive_frame_ambiguity' episode (metacognitive feedback "
+        "pattern)"
+    )
+
+    # The adaptation must be wrapped in a try/except for robustness
+    next_section = source[amb_idx:amb_idx + 1500]
+    assert "except Exception" in next_section, (
+        "cognitive_frame_ambiguity trigger adaptation must be "
+        "wrapped in try/except"
+    )
+    print("✅ test_cognitive_frame_ambiguity_adapts_trigger PASSED")
 
 
 if __name__ == "__main__":

@@ -40723,6 +40723,23 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                    # Adapt metacognitive trigger weights from the
+                    # accumulated error evolution so that frame-detected
+                    # ambiguity sensitises future metacognitive cycles
+                    # toward the specific error classes that fired.
+                    # Without this, the episode is recorded but never
+                    # influences trigger sensitivity, breaking the
+                    # meta-cognitive feedback loop.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _cfa_adapt_err:
+                            logger.debug(
+                                "cognitive_frame ambiguity trigger "
+                                "adaptation failed: %s", _cfa_adapt_err,
+                            )
             # Record the cognitive frame's assessment in the causal
             # trace so that root-cause analysis can trace how the
             # frame's verdict influenced downstream decisions.  Without
@@ -48510,6 +48527,92 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: %s", _rv_err,
                 )
 
+        # ── 5c. Post-reinforcement emergence re-evaluation ────────
+        # After the auto-reinforcement loop and verification, recompute
+        # the system_emergence_status so that the emerged flag reflects
+        # the corrected state rather than the pre-correction snapshot.
+        # Without this, the report claims the system has not emerged
+        # even when auto-reinforcement successfully closed all gaps,
+        # breaking the mutual reinforcement requirement.
+        if reinforcement_applied is not None:
+            try:
+                _post_unity = self.verify_cognitive_unity()
+                _post_health = self.get_architectural_health()
+                _post_mv = _post_unity.get('mutual_verification', False)
+                _post_um = _post_unity.get('uncertainty_metacognition', False)
+                _post_rc = _post_unity.get('root_cause_traceability', False)
+                _post_conv = (
+                    _post_health.get('convergence_summary', {}).get(
+                        'status',
+                    ) != 'diverging'
+                )
+                _post_ee = _post_unity.get(
+                    'error_evolution_effectiveness', {},
+                ).get('active', False)
+                _post_causal = causal_chain.get('traceable', False)
+                _post_emerged = (
+                    _post_mv and _post_um and _post_rc
+                    and _post_conv
+                    and _post_unity.get('unified', False)
+                    and _post_causal
+                )
+                system_emergence_status = {
+                    "emerged": _post_emerged,
+                    "mutual_reinforcement_met": _post_mv,
+                    "meta_cognitive_trigger_met": _post_um,
+                    "causal_transparency_met": _post_rc,
+                    "causal_chain_traceable": _post_causal,
+                    "convergence_stable": _post_conv,
+                    "error_evolution_active": _post_ee,
+                    "diagnostic_status": system_emergence_status.get(
+                        'diagnostic_status', 'unknown',
+                    ),
+                    "conditions_met": (
+                        int(_post_mv) + int(_post_um) + int(_post_rc)
+                        + int(_post_conv) + int(_post_ee)
+                        + int(_post_causal)
+                    ),
+                    "conditions_total": 6,
+                }
+            except Exception as _re_eval_err:
+                logger.debug(
+                    "system_emergence_report: post-reinforcement "
+                    "emergence re-evaluation failed: %s", _re_eval_err,
+                )
+
+        # ── 5d. Post-reinforcement final-verdict causal trace ─────
+        # Record the final emergence verdict after auto-reinforcement
+        # so that root-cause analysis can trace the full correction
+        # lifecycle: initial assessment → reinforcement → final state.
+        # Without this, the causal trace only shows the pre-correction
+        # snapshot, making the correction effectiveness invisible to
+        # trace_root_cause() and breaking causal transparency.
+        if reinforcement_applied is not None and self.causal_trace is not None:
+            try:
+                self.causal_trace.record(
+                    "system_emergence_report",
+                    "post_reinforcement_verdict",
+                    metadata={
+                        'emerged': system_emergence_status.get(
+                            'emerged', False,
+                        ),
+                        'conditions_met': system_emergence_status.get(
+                            'conditions_met', 0,
+                        ),
+                        'conditions_total': system_emergence_status.get(
+                            'conditions_total', 6,
+                        ),
+                        'reinforcement_score': reinforcement_applied.get(
+                            'overall_score', 0.0,
+                        ),
+                    },
+                )
+            except Exception as _ct_err:
+                logger.debug(
+                    "system_emergence_report: post-reinforcement "
+                    "causal trace failed: %s", _ct_err,
+                )
+
         return {
             "system_unified": unity.get('unified', False),
             "cognitive_unity_score": unity.get(
@@ -48554,7 +48657,9 @@ class AEONDeltaV3(nn.Module):
         """
         report = self.system_emergence_report()
         convergence = self.convergence_monitor.get_convergence_summary()
-        report['ok'] = True
+        report['ok'] = report.get(
+            'system_emergence_status', {},
+        ).get('emerged', False)
         report['convergence_health'] = convergence
         return report
 
