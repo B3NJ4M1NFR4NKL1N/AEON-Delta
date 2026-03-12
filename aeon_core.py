@@ -43009,7 +43009,52 @@ class AEONDeltaV3(nn.Module):
     def get_recent_decisions(self, n: int = 10) -> List[Dict[str, Any]]:
         """Return the *n* most recent audit log entries."""
         return self.audit_log.recent(n)
-    
+
+    def _record_and_adapt_episode(
+        self,
+        error_class: str,
+        success: bool,
+        strategy_used: str = 'diagnostic_detection',
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record an error-evolution episode **and** immediately adapt the
+        metacognitive trigger weights from the updated error summary.
+
+        This helper closes the feedback loop between error detection and
+        metacognitive sensitivity: without the adaptation step, recorded
+        episodes remain invisible to the trigger until the next
+        ``verify_and_reinforce()`` cycle, creating a 1–N pass lag where
+        uncertainty or conflict does not automatically initiate a
+        higher-order review cycle.
+
+        Args:
+            error_class: The canonical error class label (must be
+                registered in ``_ERROR_CLASS_TO_LAMBDA`` and
+                ``_class_to_signal``).
+            success: Whether the episode represents a successful
+                recovery or a persisting failure.
+            strategy_used: The strategy label recorded with the episode.
+            metadata: Optional dict of additional context attached to
+                the episode.
+        """
+        if self.error_evolution is None:
+            return
+        self.error_evolution.record_episode(
+            error_class=error_class,
+            success=success,
+            strategy_used=strategy_used,
+            metadata=metadata,
+        )
+        if self.metacognitive_trigger is not None:
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary(),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "_record_and_adapt_episode: adaptation failed: %s", exc,
+                )
+
     def self_diagnostic(self) -> Dict[str, Any]:
         """Run a comprehensive self-diagnostic validating all module
         interconnections and reporting actionable architectural gaps.
@@ -44791,6 +44836,48 @@ class AEONDeltaV3(nn.Module):
             _gap_inflation = min(0.3, len(gaps) * 0.03)
             self._cached_coherence_deficit = max(
                 self._cached_coherence_deficit, _gap_inflation,
+            )
+
+        # ── Consolidated metacognitive adaptation ─────────────────────
+        # self_diagnostic records multiple error-evolution episodes
+        # (coverage deficits, provenance gaps, diversity collapses, etc.)
+        # but previously never adapted the metacognitive trigger from
+        # the accumulated evidence.  This left a feedback-loop gap:
+        # diagnostic findings influenced error_evolution history but
+        # did NOT sensitize the metacognitive trigger until the next
+        # verify_and_reinforce() cycle — meaning uncertainty or conflict
+        # detected here would not immediately initiate a higher-order
+        # review cycle.  A single batch adaptation at the end of the
+        # diagnostic pass closes this loop.
+        if (self.error_evolution is not None
+                and self.metacognitive_trigger is not None):
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary(),
+                )
+            except Exception as exc:
+                logger.debug(
+                    "self_diagnostic: consolidated metacognitive "
+                    "adaptation failed: %s", exc,
+                )
+
+        # ── Record diagnostic assessment in causal trace ──────────────
+        # For causal transparency, the self-diagnostic assessment must
+        # itself be traceable so that root-cause analysis can explain
+        # why the system was declared healthy, degraded, or critical.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "self_diagnostic", "assessment",
+                metadata={
+                    'status': status,
+                    'gap_count': len(gaps),
+                    'active_module_count': len(active_modules),
+                    'verified_count': len(verified),
+                    'cognitive_unity_score': (
+                        _cognitive_unity.get('cognitive_unity_score', 0.0)
+                        if _cognitive_unity else 0.0
+                    ),
+                },
             )
 
         return {
@@ -46652,19 +46739,43 @@ class AEONDeltaV3(nn.Module):
         elif _conv_status == 'warmup':
             _conv_health = 0.8
 
-        # Composite health: weighted average of three verification axes.
+        # ── Feedback bus stability ────────────────────────────────────
+        # The feedback bus oscillation score ∈ [0, 1] measures the
+        # fraction of signal channels with repeated sign reversals.
+        # High oscillation indicates instability that degrades reasoning
+        # reliability even when other health axes look healthy.
+        # Including it as a penalty in the composite score ensures
+        # mutual reinforcement: the feedback bus's own health is
+        # verified alongside cognitive unity, wiring, and convergence.
+        _fb_oscillation = 0.0
+        if self.feedback_bus is not None:
+            try:
+                _fb_oscillation = self.feedback_bus.get_oscillation_score()
+            except Exception:
+                pass
+        _fb_stability = 1.0 - _fb_oscillation
+
+        # Composite health: weighted average of four verification axes.
         _overall = (
-            0.50 * _cu_score
-            + 0.30 * _wiring_cov
-            + 0.20 * _conv_health
+            0.45 * _cu_score
+            + 0.25 * _wiring_cov
+            + 0.15 * _conv_health
+            + 0.15 * _fb_stability
         )
         _healthy = (
             unity.get('unified', False)
             and _wiring_cov >= 0.9
             and _conv_status != 'diverging'
+            and _fb_oscillation < 0.5
         )
 
         _recs = list(unity.get('recommendations', []))
+        if _fb_oscillation >= 0.5:
+            _recs.append(
+                f"Feedback bus oscillation is high "
+                f"({_fb_oscillation:.0%} of channels) — "
+                f"investigate signal stability"
+            )
         if _wiring_cov < 0.9:
             _missing_ct = len(wiring.get('missing_edges', []))
             _recs.append(
@@ -46735,6 +46846,7 @@ class AEONDeltaV3(nn.Module):
             'overall_health_score': _overall,
             'cognitive_unity_score': _cu_score,
             'pipeline_wiring_coverage': _wiring_cov,
+            'feedback_bus_stability': _fb_stability,
             'convergence_summary': convergence,
             'cognitive_unity': unity,
             'weakest_module': unity.get('weakest_module'),

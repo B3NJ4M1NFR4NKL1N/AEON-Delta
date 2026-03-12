@@ -67779,6 +67779,13 @@ def run_all_tests():
     test_get_cognitive_state_snapshot_exists()
     test_get_cognitive_state_snapshot_after_forward()
     test_cognitive_state_snapshot_endpoint_exists()
+    test_record_and_adapt_episode_exists()
+    test_record_and_adapt_episode_records_and_adapts()
+    test_self_diagnostic_adapts_metacognitive_trigger()
+    test_self_diagnostic_records_causal_trace()
+    test_architectural_health_includes_feedback_stability()
+    test_architectural_health_penalizes_oscillation()
+    test_record_and_adapt_episode_handles_none_components()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -79520,6 +79527,226 @@ def test_cognitive_state_snapshot_endpoint_exists():
         "/api/cognitive_state_snapshot endpoint must exist"
     )
     print("✅ test_cognitive_state_snapshot_endpoint_exists PASSED")
+
+
+# ============================================================================
+# Final Integration & Cognitive Activation Tests
+# ============================================================================
+
+def test_record_and_adapt_episode_exists():
+    """AEONDeltaV3 must expose _record_and_adapt_episode() helper."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_record_and_adapt_episode'), (
+        "AEONDeltaV3 must have _record_and_adapt_episode method"
+    )
+    print("✅ test_record_and_adapt_episode_exists PASSED")
+
+
+def test_record_and_adapt_episode_records_and_adapts():
+    """_record_and_adapt_episode must record an error episode AND adapt
+    the metacognitive trigger weights in a single call."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Get initial trigger state
+    initial_weights = dict(model.metacognitive_trigger._signal_weights)
+
+    # Record a failing episode via the helper
+    model._record_and_adapt_episode(
+        error_class='coherence_deficit',
+        success=False,
+        strategy_used='test',
+    )
+
+    # Verify episode was recorded
+    summary = model.error_evolution.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'coherence_deficit' in classes, (
+        "Episode must be recorded in error_evolution"
+    )
+
+    # Verify trigger weights were adapted (at least one weight changed)
+    post_weights = dict(model.metacognitive_trigger._signal_weights)
+    changed = any(
+        initial_weights.get(k) != post_weights.get(k)
+        for k in post_weights
+    )
+    assert changed, (
+        "Trigger weights must change after _record_and_adapt_episode"
+    )
+    print("✅ test_record_and_adapt_episode_records_and_adapts PASSED")
+
+
+def test_self_diagnostic_adapts_metacognitive_trigger():
+    """self_diagnostic must adapt the metacognitive trigger from
+    accumulated diagnostic episodes before returning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed some error episodes so adaptation has data to work with
+    model.error_evolution.record_episode(
+        error_class='coherence_deficit', success=False,
+        strategy_used='seed',
+    )
+
+    # Capture trigger state before diagnostic
+    initial_weights = dict(model.metacognitive_trigger._signal_weights)
+
+    # Run diagnostic — should adapt trigger at the end
+    report = model.self_diagnostic()
+    assert 'status' in report
+
+    # After diagnostic, trigger must have adapted from the accumulated
+    # error episodes (including the seeded one and any diagnostic ones)
+    post_weights = dict(model.metacognitive_trigger._signal_weights)
+    changed = any(
+        initial_weights.get(k) != post_weights.get(k)
+        for k in post_weights
+    )
+    assert changed, (
+        "self_diagnostic must adapt metacognitive trigger weights "
+        "from accumulated error episodes"
+    )
+    print("✅ test_self_diagnostic_adapts_metacognitive_trigger PASSED")
+
+
+def test_self_diagnostic_records_causal_trace():
+    """self_diagnostic must record its assessment in the causal trace
+    for causal transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.self_diagnostic()
+
+    # Find entries recorded by self_diagnostic using the public API
+    diag_entries = model.causal_trace.find(subsystem='self_diagnostic')
+    assert len(diag_entries) >= 1, (
+        "self_diagnostic must record at least one causal trace entry "
+        f"with subsystem='self_diagnostic', found {len(diag_entries)}"
+    )
+    entry = diag_entries[0]
+    meta = entry.get('metadata', {})
+    assert 'status' in meta, "Causal trace entry must include status"
+    assert 'gap_count' in meta, "Causal trace entry must include gap_count"
+    print("✅ test_self_diagnostic_records_causal_trace PASSED")
+
+
+def test_architectural_health_includes_feedback_stability():
+    """get_architectural_health must include feedback_bus_stability in
+    its report and factor it into the composite health score."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    health = model.get_architectural_health()
+    assert 'feedback_bus_stability' in health, (
+        "get_architectural_health must include feedback_bus_stability"
+    )
+    assert isinstance(health['feedback_bus_stability'], float)
+    assert 0.0 <= health['feedback_bus_stability'] <= 1.0, (
+        f"feedback_bus_stability must be in [0, 1], "
+        f"got {health['feedback_bus_stability']}"
+    )
+    print("✅ test_architectural_health_includes_feedback_stability PASSED")
+
+
+def test_architectural_health_penalizes_oscillation():
+    """When the feedback bus has high oscillation, the overall health
+    score must decrease and the healthy flag must be False."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Get baseline health
+    baseline = model.get_architectural_health()
+    baseline_score = baseline['overall_health_score']
+
+    # Simulate high oscillation by injecting alternating sign history
+    fb = model.feedback_bus
+    num_channels = fb.projection[0].in_features
+    fb._trend_sign_history.clear()
+    for i in range(fb._oscillation_window):
+        sign = torch.ones(num_channels) if i % 2 == 0 else -torch.ones(num_channels)
+        fb._trend_sign_history.append(sign)
+
+    # Re-check health — oscillation should penalize the score
+    penalized = model.get_architectural_health()
+    assert penalized['overall_health_score'] < baseline_score, (
+        f"High oscillation must reduce health score: "
+        f"baseline={baseline_score}, penalized={penalized['overall_health_score']}"
+    )
+    assert penalized['feedback_bus_stability'] < 1.0, (
+        "feedback_bus_stability must be < 1.0 with high oscillation"
+    )
+    assert penalized['healthy'] is False, (
+        "System must not be reported as healthy with high oscillation"
+    )
+    print("✅ test_architectural_health_penalizes_oscillation PASSED")
+
+
+def test_record_and_adapt_episode_handles_none_components():
+    """_record_and_adapt_episode must not raise when error_evolution or
+    metacognitive_trigger is None."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Temporarily set error_evolution to None — should be a no-op
+    original_ee = model.error_evolution
+    model.error_evolution = None
+    model._record_and_adapt_episode(
+        error_class='coherence_deficit', success=False,
+    )
+    model.error_evolution = original_ee
+
+    # Temporarily set metacognitive_trigger to None — should still record
+    original_mt = model.metacognitive_trigger
+    model.metacognitive_trigger = None
+    model._record_and_adapt_episode(
+        error_class='coherence_deficit', success=True,
+    )
+    model.metacognitive_trigger = original_mt
+
+    summary = model.error_evolution.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'coherence_deficit' in classes, (
+        "Episode must still be recorded even when trigger is None"
+    )
+    print("✅ test_record_and_adapt_episode_handles_none_components PASSED")
 
 
 if __name__ == "__main__":
