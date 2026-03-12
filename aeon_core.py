@@ -25135,8 +25135,11 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass
+                except Exception as _brevo_err:
+                    logger.debug(
+                        "Metacognitive trigger adaptation failed in "
+                        "recovery-to-evolution bridge: %s", _brevo_err,
+                    )
 
     def _validate_cached_state_coherence(
         self,
@@ -29784,8 +29787,12 @@ class AEONDeltaV3(nn.Module):
                                     self.metacognitive_trigger.adapt_weights_from_evolution(
                                         self.error_evolution.get_error_summary()
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _coh_adapt_err:
+                                    logger.debug(
+                                        "Metacognitive trigger adaptation failed "
+                                        "in coherence-deficit auto-critic: %s",
+                                        _coh_adapt_err,
+                                    )
                     except Exception as _coh_ac_err:
                         self.provenance_tracker.record_after("auto_critic", C_star)
                         self.coherence_registry.register_output(
