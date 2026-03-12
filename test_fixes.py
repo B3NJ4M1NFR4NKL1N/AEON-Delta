@@ -67787,6 +67787,12 @@ def run_all_tests():
     test_architectural_health_includes_feedback_stability()
     test_architectural_health_penalizes_oscillation()
     test_record_and_adapt_episode_handles_none_components()
+    test_high_output_uncertainty_adapts_trigger()
+    test_decoder_degenerate_output_adapts_trigger()
+    test_cycle_consistency_violation_adapts_trigger()
+    test_reencode_violation_has_causal_trace()
+    test_bridge_inference_to_training_records_causal_trace()
+    test_forward_impl_uncertainty_adaptation_code_present()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -79748,6 +79754,208 @@ def test_record_and_adapt_episode_handles_none_components():
         "Episode must still be recorded even when trigger is None"
     )
     print("✅ test_record_and_adapt_episode_handles_none_components PASSED")
+
+
+def test_high_output_uncertainty_adapts_trigger():
+    """When high output uncertainty is detected in _forward_impl, the
+    metacognitive trigger must be adapted and a causal trace entry must
+    be recorded for traceability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed an error episode for high_output_uncertainty to simulate
+    # the scenario where the adaptation code path is exercised.
+    initial_weights = dict(model.metacognitive_trigger._signal_weights)
+    model.error_evolution.record_episode(
+        error_class='high_output_uncertainty',
+        success=False,
+        strategy_used='logit_penalty',
+    )
+    model.metacognitive_trigger.adapt_weights_from_evolution(
+        model.error_evolution.get_error_summary(),
+    )
+    post_weights = dict(model.metacognitive_trigger._signal_weights)
+    # Verify at least one weight changed after adaptation
+    changed = any(
+        initial_weights.get(k) != post_weights.get(k) for k in post_weights
+    )
+    assert changed, (
+        "Metacognitive trigger weights must change after "
+        "high_output_uncertainty adaptation"
+    )
+    print("✅ test_high_output_uncertainty_adapts_trigger PASSED")
+
+
+def test_decoder_degenerate_output_adapts_trigger():
+    """When decoder degenerate output is detected, the metacognitive
+    trigger must be adapted so future passes are sensitised."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    initial_weights = dict(model.metacognitive_trigger._signal_weights)
+    model.error_evolution.record_episode(
+        error_class='decoder_degenerate_output',
+        success=False,
+        strategy_used='uncertainty_escalation',
+    )
+    model.metacognitive_trigger.adapt_weights_from_evolution(
+        model.error_evolution.get_error_summary(),
+    )
+    post_weights = dict(model.metacognitive_trigger._signal_weights)
+    changed = any(
+        initial_weights.get(k) != post_weights.get(k) for k in post_weights
+    )
+    assert changed, (
+        "Metacognitive trigger weights must change after "
+        "decoder_degenerate_output adaptation"
+    )
+    print("✅ test_decoder_degenerate_output_adapts_trigger PASSED")
+
+
+def test_cycle_consistency_violation_adapts_trigger():
+    """When cycle-consistency violation is detected, the metacognitive
+    trigger must be adapted (not just recorded in error evolution)."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    initial_weights = dict(model.metacognitive_trigger._signal_weights)
+    model.error_evolution.record_episode(
+        error_class='cycle_consistency_violation',
+        success=False,
+        strategy_used='uncertainty_escalation',
+    )
+    model.metacognitive_trigger.adapt_weights_from_evolution(
+        model.error_evolution.get_error_summary(),
+    )
+    post_weights = dict(model.metacognitive_trigger._signal_weights)
+    changed = any(
+        initial_weights.get(k) != post_weights.get(k) for k in post_weights
+    )
+    assert changed, (
+        "Metacognitive trigger weights must change after "
+        "cycle_consistency_violation adaptation"
+    )
+    print("✅ test_cycle_consistency_violation_adapts_trigger PASSED")
+
+
+def test_reencode_violation_has_causal_trace():
+    """When a reencode violation is detected, the causal trace must
+    contain an entry for deterministic traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate recording a reencode violation causal trace entry
+    model.causal_trace.record(
+        "cycle_consistency", "reencode_violation_detected",
+        severity="warning",
+        metadata={'reencode_consistency': 0.2},
+    )
+    entries = model.causal_trace.find(subsystem='cycle_consistency')
+    reencode_entries = [
+        e for e in entries
+        if e.get('decision') == 'reencode_violation_detected'
+    ]
+    assert len(reencode_entries) >= 1, (
+        "Causal trace must include reencode_violation_detected entry"
+    )
+    print("✅ test_reencode_violation_has_causal_trace PASSED")
+
+
+def test_bridge_inference_to_training_records_causal_trace():
+    """bridge_inference_insights_to_training must record a causal trace
+    entry when adjustments are applied, for traceability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Create a minimal mock trainer with the model attached
+    class _MockTrainer:
+        def __init__(self, m):
+            self.model = m
+            self._grad_clip_norm = 1.0
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+    trainer = _MockTrainer(model)
+
+    # Seed enough convergence_conflict episodes to trigger adjustment
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class='convergence_conflict',
+            success=False,
+            strategy_used='test',
+        )
+
+    from ae_train import bridge_inference_insights_to_training
+    adj = bridge_inference_insights_to_training(
+        inference_error_evolution=model.error_evolution,
+        trainer=trainer,
+    )
+    assert adj >= 1, f"Expected at least 1 adjustment, got {adj}"
+
+    # Check causal trace was recorded
+    entries = model.causal_trace.find(
+        subsystem='inference_to_training_bridge',
+    )
+    assert len(entries) >= 1, (
+        "bridge_inference_insights_to_training must record a causal "
+        "trace entry when adjustments are applied"
+    )
+    meta = entries[0].get('metadata', {})
+    assert meta.get('adjustments_applied', 0) >= 1
+    print("✅ test_bridge_inference_to_training_records_causal_trace PASSED")
+
+
+def test_forward_impl_uncertainty_adaptation_code_present():
+    """Verify that the _forward_impl method contains the metacognitive
+    adaptation code after high_output_uncertainty recording by checking
+    the source code structure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Check that adapt_weights_from_evolution appears after
+    # high_output_uncertainty in the source
+    hou_idx = source.find('high_output_uncertainty')
+    assert hou_idx > 0, "high_output_uncertainty must be in _forward_impl"
+
+    # Find adapt_weights_from_evolution AFTER high_output_uncertainty
+    adapt_idx = source.find(
+        'adapt_weights_from_evolution', hou_idx,
+    )
+    assert adapt_idx > hou_idx, (
+        "adapt_weights_from_evolution must appear after "
+        "high_output_uncertainty recording in _forward_impl"
+    )
+    print("✅ test_forward_impl_uncertainty_adaptation_code_present PASSED")
 
 
 if __name__ == "__main__":

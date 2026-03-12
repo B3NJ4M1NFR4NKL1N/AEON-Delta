@@ -39525,6 +39525,33 @@ class AEONDeltaV3(nn.Module):
                     "decode_mode": decode_mode,
                 },
             )
+            # Adapt metacognitive trigger so uncertainty signals are
+            # sensitised for future passes — without this, high output
+            # uncertainty is recorded but never triggers a meta-cognitive
+            # review cycle, breaking the requirement that any uncertainty
+            # automatically initiates higher-order reasoning.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _hou_adapt_err:
+                    logger.debug(
+                        "High-output-uncertainty trigger adaptation "
+                        "failed: %s", _hou_adapt_err,
+                    )
+            # Record in causal trace for deterministic traceability of
+            # the high-uncertainty → adaptation path.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "post_output_uncertainty", "high_uncertainty_adaptation",
+                    severity="warning",
+                    metadata={
+                        'uncertainty': float(_unc),
+                        'threshold': float(_unc_threshold),
+                        'penalty_applied': _apply_penalty,
+                    },
+                )
         
         # ===== DECODER DEGENERATE OUTPUT → ERROR EVOLUTION =====
         # Detect degenerate decoder output (e.g. near-zero variance
@@ -39586,6 +39613,23 @@ class AEONDeltaV3(nn.Module):
                         'logit_variance': _logit_var,
                         'uncertainty_boost': _DECODER_DEGENERATE_UNC_BOOST,
                     }
+                    # Adapt metacognitive trigger from the decoder-
+                    # degenerate episode so that future passes sensitise
+                    # to coherence-deficit / uncertainty signals.
+                    # Without this, decoder collapse is recorded and
+                    # uncertainty is boosted, but the trigger weights
+                    # remain unaffected — the meta-cognitive cycle is
+                    # never primed to respond to this class of failure.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _degen_adapt_err2:
+                            logger.debug(
+                                "Decoder degenerate trigger adaptation "
+                                "failed: %s", _degen_adapt_err2,
+                            )
             except (RuntimeError, ValueError) as _dec_err:
                 logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
@@ -39705,6 +39749,37 @@ class AEONDeltaV3(nn.Module):
                                 'reencode_consistency': _reencode_consistency,
                             },
                         )
+                    # Record reencode violation in causal trace for
+                    # deterministic traceability — without this the
+                    # reencode path is invisible to root-cause analysis.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "cycle_consistency", "reencode_violation_detected",
+                            causal_prerequisites=[input_trace_id],
+                            severity="warning",
+                            metadata={
+                                'reencode_consistency': _reencode_consistency,
+                            },
+                        )
+                # Adapt metacognitive trigger after cycle-consistency
+                # violation(s) so the meta-cognitive cycle is sensitised
+                # to coherence-deficit signals on future passes.
+                # Previously these violations were recorded in error
+                # evolution but never propagated to the trigger,
+                # creating a gap where cycle-consistency failures did
+                # not automatically initiate higher-order review.
+                if (_cc_result['violation'] or _cc_result['reencode_violation']):
+                    if (self.error_evolution is not None
+                            and self.metacognitive_trigger is not None):
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _ccv_adapt_err:
+                            logger.debug(
+                                "Cycle-consistency violation trigger "
+                                "adaptation failed: %s", _ccv_adapt_err,
+                            )
                 # Provenance tracking for cycle consistency
                 self.provenance_tracker.record_before("cycle_consistency", z_encoded)
                 self.provenance_tracker.record_after("cycle_consistency", z_out)
