@@ -48538,9 +48538,21 @@ class AEONDeltaV3(nn.Module):
             try:
                 _post_unity = self.verify_cognitive_unity()
                 _post_health = self.get_architectural_health()
-                _post_mv = _post_unity.get('mutual_verification', False)
-                _post_um = _post_unity.get('uncertainty_metacognition', False)
-                _post_rc = _post_unity.get('root_cause_traceability', False)
+                _post_cu = _post_unity.get(
+                    'cognitive_unity_components', {},
+                )
+                _post_mv = (
+                    _post_cu.get('mutual_verification', 0)
+                    >= self._EMERGENCE_MV_THRESHOLD
+                )
+                _post_um = (
+                    _post_cu.get('uncertainty_metacognition', 0)
+                    >= self._EMERGENCE_UM_THRESHOLD
+                )
+                _post_rc = (
+                    _post_cu.get('root_cause_traceability', 0)
+                    >= self._EMERGENCE_RC_THRESHOLD
+                )
                 _post_conv = (
                     _post_health.get('convergence_summary', {}).get(
                         'status',
