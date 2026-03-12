@@ -67816,6 +67816,17 @@ def run_all_tests():
     test_ucc_evaluate_post_phase2_consolidation()
     test_system_emergence_report_post_reinforcement_adaptation()
 
+    # Cognitive Integration Patches — Final Integration
+    test_cognitive_state_snapshot_has_health_score()
+    test_cognitive_state_snapshot_has_degraded_subsystems()
+    test_cognitive_state_snapshot_records_causal_trace()
+    test_cognitive_state_snapshot_logs_exceptions()
+    test_cognitive_snapshot_degradation_error_class_registered()
+    test_verify_causal_chain_has_chain_connected()
+    test_verify_causal_chain_connectivity_in_trace_metadata()
+    test_sync_from_training_calls_reverse_bridge()
+    test_sync_from_training_docstring_documents_reverse_bridge()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -80373,6 +80384,203 @@ def test_system_emergence_report_post_reinforcement_adaptation():
         "Post-reinforcement metacognitive adaptation comment"
     )
     print("✅ test_system_emergence_report_post_reinforcement_adaptation PASSED")
+
+
+# ============================================================================
+# Cognitive Integration Patches — Final Integration Tests
+# ============================================================================
+
+def test_cognitive_state_snapshot_has_health_score():
+    """get_cognitive_state_snapshot must return a system_health_score that
+    aggregates sub-component health into a single 0-1 float."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    snapshot = model.get_cognitive_state_snapshot()
+    assert 'system_health_score' in snapshot, (
+        "snapshot must contain 'system_health_score' key"
+    )
+    score = snapshot['system_health_score']
+    assert isinstance(score, float), "system_health_score must be a float"
+    assert 0.0 <= score <= 1.0, (
+        f"system_health_score must be in [0, 1], got {score}"
+    )
+    print("✅ test_cognitive_state_snapshot_has_health_score PASSED")
+
+
+def test_cognitive_state_snapshot_has_degraded_subsystems():
+    """get_cognitive_state_snapshot must return a degraded_subsystems list
+    that identifies which sub-components failed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    snapshot = model.get_cognitive_state_snapshot()
+    assert 'degraded_subsystems' in snapshot, (
+        "snapshot must contain 'degraded_subsystems' key"
+    )
+    degraded = snapshot['degraded_subsystems']
+    assert isinstance(degraded, list), "degraded_subsystems must be a list"
+    print("✅ test_cognitive_state_snapshot_has_degraded_subsystems PASSED")
+
+
+def test_cognitive_state_snapshot_records_causal_trace():
+    """get_cognitive_state_snapshot must record its aggregation in the
+    causal trace for traceability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 16))
+    with torch.no_grad():
+        model(x)
+    model.get_cognitive_state_snapshot()
+    assert model.causal_trace is not None
+    snap_entries = model.causal_trace.find(
+        subsystem="cognitive_state_snapshot"
+    )
+    assert len(snap_entries) > 0, (
+        "get_cognitive_state_snapshot must record a causal trace entry"
+    )
+    entry = snap_entries[0]
+    meta = entry.get('metadata', {})
+    assert 'system_health_score' in meta, (
+        "causal trace entry must include system_health_score in metadata"
+    )
+    print("✅ test_cognitive_state_snapshot_records_causal_trace PASSED")
+
+
+def test_cognitive_state_snapshot_logs_exceptions():
+    """get_cognitive_state_snapshot must log exceptions via logger.warning
+    rather than silently swallowing them."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+    assert 'logger.warning' in source, (
+        "get_cognitive_state_snapshot must log exceptions via "
+        "logger.warning, not silently swallow them"
+    )
+    print("✅ test_cognitive_state_snapshot_logs_exceptions PASSED")
+
+
+def test_cognitive_snapshot_degradation_error_class_registered():
+    """cognitive_snapshot_degradation error class must be registered in
+    both _class_to_signal (MetaCognitiveRecursionTrigger) and
+    _ERROR_CLASS_TO_LAMBDA (CausalErrorEvolutionTracker)."""
+    import inspect
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    # _class_to_signal is a local dict inside adapt_weights_from_evolution
+    trigger_src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert 'cognitive_snapshot_degradation' in trigger_src, (
+        "cognitive_snapshot_degradation must be in _class_to_signal "
+        "inside adapt_weights_from_evolution"
+    )
+
+    tracker = CausalErrorEvolutionTracker()
+    assert 'cognitive_snapshot_degradation' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "cognitive_snapshot_degradation must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_cognitive_snapshot_degradation_error_class_registered PASSED")
+
+
+def test_verify_causal_chain_has_chain_connected():
+    """verify_causal_chain must return a chain_connected boolean indicating
+    whether traced subsystems are interconnected."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 16))
+    with torch.no_grad():
+        model(x)
+    result = model.verify_causal_chain()
+    assert 'chain_connected' in result, (
+        "verify_causal_chain must return a 'chain_connected' field"
+    )
+    assert isinstance(result['chain_connected'], bool), (
+        "chain_connected must be a boolean"
+    )
+    print("✅ test_verify_causal_chain_has_chain_connected PASSED")
+
+
+def test_verify_causal_chain_connectivity_in_trace_metadata():
+    """verify_causal_chain must include chain_connected in its causal
+    trace metadata."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert "'chain_connected'" in source, (
+        "verify_causal_chain must record chain_connected in "
+        "causal trace metadata"
+    )
+    print("✅ test_verify_causal_chain_connectivity_in_trace_metadata PASSED")
+
+
+def test_sync_from_training_calls_reverse_bridge():
+    """sync_from_training must call bridge_inference_insights_to_training
+    to close the bidirectional feedback loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.sync_from_training)
+    assert 'bridge_inference_insights_to_training' in source, (
+        "sync_from_training must call bridge_inference_insights_to_training "
+        "for the inference→training reverse bridge"
+    )
+    assert 'inference_to_training_adjustments' in source, (
+        "sync_from_training must report inference_to_training_adjustments "
+        "in its result dict"
+    )
+    print("✅ test_sync_from_training_calls_reverse_bridge PASSED")
+
+
+def test_sync_from_training_docstring_documents_reverse_bridge():
+    """sync_from_training docstring must document the reverse bridge
+    (step 5) for discoverability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    doc = inspect.getdoc(AEONDeltaV3.sync_from_training) or ''
+    assert 'bridge_inference_insights_to_training' in doc, (
+        "sync_from_training docstring must mention "
+        "bridge_inference_insights_to_training"
+    )
+    print("✅ test_sync_from_training_docstring_documents_reverse_bridge PASSED")
 
 
 if __name__ == "__main__":
