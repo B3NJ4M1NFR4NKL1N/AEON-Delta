@@ -26998,6 +26998,21 @@ class AEONDeltaV3(nn.Module):
         
         # 0. Deterministic input normalization
         z_in = self.execution_guard.normalize_input(z_in)
+
+        # 0. Capture pre-reset divergence state before anything clears
+        # the convergence monitor history.  The UCC reset (later in this
+        # method) calls convergence_monitor.reset() which erases the
+        # history, so externally-injected divergence (e.g. from prior
+        # check() calls between forward passes) must be captured now.
+        _pre_reset_diverging = False
+        _cm_hist = self.convergence_monitor.history
+        if len(_cm_hist) >= 3:
+            _pre_ratios = [
+                _cm_hist[i] / max(_cm_hist[i - 1], 1e-12)
+                for i in range(1, len(_cm_hist))
+            ]
+            _pre_reset_diverging = float(np.mean(_pre_ratios)) >= 1.0
+        self._pre_reset_diverging = _pre_reset_diverging
         
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
@@ -27929,14 +27944,14 @@ class AEONDeltaV3(nn.Module):
         # diverging.  We check the monitor's existing history directly
         # so that externally-forced divergence (e.g. from prior checks)
         # is preserved as a coherence deficit.
-        _was_diverging = False
+        _was_diverging = getattr(self, '_pre_reset_diverging', False)
         _hist = self.convergence_monitor.history
         if len(_hist) >= 3:
             _prev_ratios = [
                 _hist[i] / max(_hist[i - 1], 1e-12)
                 for i in range(1, len(_hist))
             ]
-            _was_diverging = float(np.mean(_prev_ratios)) >= 1.0
+            _was_diverging = _was_diverging or float(np.mean(_prev_ratios)) >= 1.0
         convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
         is_diverging = convergence_verdict.get('status') == 'diverging'
         if (is_diverging or _was_diverging) and not fast:
@@ -40296,7 +40311,7 @@ class AEONDeltaV3(nn.Module):
 
         # Surface coherence_deficit at top level so downstream consumers
         # can access cross-module coherence health directly.
-        result['coherence_deficit'] = self._cached_coherence_deficit
+        result['coherence_deficit'] = min(self._cached_coherence_deficit, 1.0)
 
         # ===== COGNITIVE FRAME ASSESSMENT =====
         # Run the UnifiedCognitiveFrame's assess() to bridge diagnostic
@@ -46783,7 +46798,7 @@ class AEONDeltaV3(nn.Module):
             try:
                 _fb_oscillation = self.feedback_bus.get_oscillation_score()
             except Exception:
-                pass
+                logger.debug("feedback_bus.get_oscillation_score() failed in health check")
         _fb_stability = 1.0 - _fb_oscillation
 
         # Composite health: weighted average of four verification axes.
