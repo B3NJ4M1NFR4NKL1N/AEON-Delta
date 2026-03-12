@@ -45,6 +45,7 @@ from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 
 import torch
+import numpy as np
 
 # ─── FastAPI / Uvicorn ───────────────────────────────────────────────────────
 try:
@@ -598,14 +599,55 @@ async def get_system_status():
 #  COGNITIVE UNITY / ARCHITECTURAL HEALTH
 # ═══════════════════════════════════════════════════════════════════════════════
 def _make_json_safe(obj):
-    """Recursively convert torch.Tensor values to JSON-serializable lists."""
+    """Recursively convert non-JSON-serializable values to safe types.
+
+    Handles ``torch.Tensor``, NumPy scalars/arrays, ``float('nan')``/
+    ``float('inf')``, ``set``/``frozenset``, ``bytes``, and arbitrary
+    objects (converted via ``str()`` as a last resort) so that FastAPI's
+    default JSON encoder never raises ``TypeError``.
+    """
+    # --- torch Tensors ---
     if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+
+    # --- NumPy arrays ---
+    if isinstance(obj, np.ndarray):
         return obj.tolist()
+
+    # --- NumPy scalars (np.float64, np.int64, np.bool_, …) ---
+    if isinstance(obj, np.generic):
+        return obj.item()
+
+    # --- Python floats with special IEEE-754 values ---
+    if isinstance(obj, float):
+        if math.isnan(obj):
+            return None
+        if math.isinf(obj):
+            return None
+        return obj
+
+    # --- Primitive pass-through ---
+    if isinstance(obj, (int, str, bool, type(None))):
+        return obj
+
+    # --- Dicts ---
     if isinstance(obj, dict):
-        return {k: _make_json_safe(v) for k, v in obj.items()}
+        return {str(k): _make_json_safe(v) for k, v in obj.items()}
+
+    # --- Lists / tuples ---
     if isinstance(obj, (list, tuple)):
         return [_make_json_safe(item) for item in obj]
-    return obj
+
+    # --- Sets / frozensets ---
+    if isinstance(obj, (set, frozenset)):
+        return [_make_json_safe(item) for item in sorted(obj, key=str)]
+
+    # --- Bytes ---
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+
+    # --- Fallback: stringify unknown objects ---
+    return str(obj)
 
 
 @app.get("/api/cognitive_unity")
