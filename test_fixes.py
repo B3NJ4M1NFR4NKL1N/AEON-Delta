@@ -67826,6 +67826,17 @@ def run_all_tests():
     test_verify_causal_chain_connectivity_in_trace_metadata()
     test_sync_from_training_calls_reverse_bridge()
     test_sync_from_training_docstring_documents_reverse_bridge()
+    test_post_pipeline_metacognitive_threshold_lowered()
+    test_post_pipeline_coherence_deficit_triggers_metacognitive()
+    test_ema_decay_prevents_unbounded_accumulation()
+    test_ema_bounded_after_many_evaluations()
+    test_verify_causal_chain_reports_acyclicity()
+    test_verify_causal_chain_acyclicity_in_trace()
+    test_weight_normalization_after_compound_boosts()
+    test_sync_from_training_step_status_tracking()
+    test_adapt_weights_auto_registers_unknown_error_classes()
+    test_verify_cognitive_unity_enforces_missing_signals()
+    test_verify_cognitive_unity_enforcement_normalises_weights()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -80581,6 +80592,214 @@ def test_sync_from_training_docstring_documents_reverse_bridge():
         "bridge_inference_insights_to_training"
     )
     print("✅ test_sync_from_training_docstring_documents_reverse_bridge PASSED")
+
+
+# ── Integration Activation Patch Tests ──────────────────────────────
+
+
+def test_post_pipeline_metacognitive_threshold_lowered():
+    """Post-pipeline metacognitive re-evaluation must trigger at
+    moderate uncertainty (>0.2), not only high uncertainty (>0.5)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_post_pipeline_threshold' in source, (
+        "_forward_impl must use a dynamic _post_pipeline_threshold "
+        "for post-pipeline metacognitive re-evaluation"
+    )
+    # Ensure the hard-coded 0.5 is replaced with a lower threshold
+    assert '0.2' in source or 'trigger_threshold' in source, (
+        "_forward_impl must use a threshold derived from the "
+        "trigger's own threshold or a lower value like 0.2"
+    )
+    print("✅ test_post_pipeline_metacognitive_threshold_lowered PASSED")
+
+
+def test_post_pipeline_coherence_deficit_triggers_metacognitive():
+    """Post-pipeline metacognitive evaluation must also trigger on
+    coherence deficit, not only on uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_coherence_deficit_trigger' in source, (
+        "_forward_impl must check coherence deficit as an independent "
+        "trigger condition for post-pipeline metacognitive evaluation"
+    )
+    print("✅ test_post_pipeline_coherence_deficit_triggers_metacognitive PASSED")
+
+
+def test_ema_decay_prevents_unbounded_accumulation():
+    """MetaCognitiveRecursionTrigger.evaluate() must apply decay to
+    the cross-pass EMA to prevent unbounded pressure growth."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(MetaCognitiveRecursionTrigger.evaluate)
+    assert '_EMA_DECAY' in source or 'EMA_DECAY' in source, (
+        "evaluate() must apply a decay factor to the cross-pass EMA"
+    )
+    assert '_EMA_CAP' in source or 'EMA_CAP' in source, (
+        "evaluate() must cap the cross-pass EMA to prevent runaway growth"
+    )
+    print("✅ test_ema_decay_prevents_unbounded_accumulation PASSED")
+
+
+def test_ema_bounded_after_many_evaluations():
+    """Cross-pass EMA must remain bounded even after many high-pressure
+    evaluations."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger(
+        trigger_threshold=0.3, max_recursions=3,
+    )
+    # Simulate 100 high-pressure evaluations
+    for _ in range(100):
+        trigger.reset()
+        trigger.evaluate(uncertainty=0.9, coherence_deficit=0.8)
+    assert trigger._cross_pass_trigger_ema <= 2.0, (
+        f"EMA should be capped at 2.0, got {trigger._cross_pass_trigger_ema}"
+    )
+    print("✅ test_ema_bounded_after_many_evaluations PASSED")
+
+
+def test_verify_causal_chain_reports_acyclicity():
+    """verify_causal_chain() result must include chain_acyclic flag."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert "'chain_acyclic'" in source or '"chain_acyclic"' in source, (
+        "verify_causal_chain must report chain_acyclic in result dict"
+    )
+    print("✅ test_verify_causal_chain_reports_acyclicity PASSED")
+
+
+def test_verify_causal_chain_acyclicity_in_trace():
+    """verify_causal_chain must include chain_acyclic in its causal
+    trace metadata alongside chain_connected."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert "'chain_acyclic'" in source, (
+        "verify_causal_chain must record chain_acyclic in causal "
+        "trace metadata"
+    )
+    # Ensure it's in the metadata dict, not just computed
+    lines = source.split('\n')
+    in_metadata = False
+    found_acyclic_in_meta = False
+    for line in lines:
+        if 'metadata={' in line or 'metadata =' in line:
+            in_metadata = True
+        if in_metadata and 'chain_acyclic' in line:
+            found_acyclic_in_meta = True
+            break
+        if in_metadata and '}' in line and ')' in line:
+            in_metadata = False
+    assert found_acyclic_in_meta, (
+        "chain_acyclic must appear inside a metadata dict in "
+        "verify_causal_chain"
+    )
+    print("✅ test_verify_causal_chain_acyclicity_in_trace PASSED")
+
+
+def test_weight_normalization_after_compound_boosts():
+    """verify_and_reinforce() must normalise metacognitive trigger
+    weights after all compound boosts to prevent signal dominance."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Must contain normalization logic after the boost section
+    assert '_sw[_k] = _sw[_k] / _total' in source or \
+           'v / total' in source or \
+           '_sw[_k] / _total' in source, (
+        "verify_and_reinforce must normalize signal weights after "
+        "compound boosts"
+    )
+    print("✅ test_weight_normalization_after_compound_boosts PASSED")
+
+
+def test_sync_from_training_step_status_tracking():
+    """sync_from_training() must include step_status in its result
+    dict to track per-step success/failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.sync_from_training)
+    assert "'step_status'" in source or '"step_status"' in source, (
+        "sync_from_training must include step_status in result dict"
+    )
+    assert "'error_bridge'" in source or '"error_bridge"' in source, (
+        "sync_from_training must track error_bridge step status"
+    )
+    assert "'trigger_adaptation'" in source or '"trigger_adaptation"' in source, (
+        "sync_from_training must track trigger_adaptation step status"
+    )
+    print("✅ test_sync_from_training_step_status_tracking PASSED")
+
+
+def test_adapt_weights_auto_registers_unknown_error_classes():
+    """adapt_weights_from_evolution() must auto-register unknown error
+    classes in _class_to_signal for dynamic signal expansion."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert '_class_to_signal[cls_name]' in source, (
+        "adapt_weights_from_evolution must auto-register unknown "
+        "error classes in _class_to_signal"
+    )
+    print("✅ test_adapt_weights_auto_registers_unknown_error_classes PASSED")
+
+
+def test_verify_cognitive_unity_enforces_missing_signals():
+    """verify_cognitive_unity() must auto-register missing signal
+    weights rather than only recommending their addition."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert '_trigger._signal_weights[_sig]' in source or \
+           "._signal_weights[_sig] = _default_w" in source, (
+        "verify_cognitive_unity must auto-register missing signal "
+        "weights in the metacognitive trigger"
+    )
+    print("✅ test_verify_cognitive_unity_enforces_missing_signals PASSED")
+
+
+def test_verify_cognitive_unity_enforcement_normalises_weights():
+    """After auto-registering missing signals, verify_cognitive_unity
+    must normalise the weight vector."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    cfg = AEONConfig(
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(cfg)
+    # Remove a signal to force enforcement
+    trigger = model.metacognitive_trigger
+    if trigger is not None and hasattr(trigger, '_signal_weights'):
+        original_keys = set(trigger._signal_weights.keys())
+        if 'low_output_reliability' in trigger._signal_weights:
+            del trigger._signal_weights['low_output_reliability']
+        result = model.verify_cognitive_unity()
+        # After enforcement the signal should be restored
+        assert 'low_output_reliability' in trigger._signal_weights, (
+            "verify_cognitive_unity must auto-register "
+            "'low_output_reliability' when missing"
+        )
+        # Weights should be normalised
+        total = sum(trigger._signal_weights.values())
+        assert abs(total - 1.0) < 0.01, (
+            f"Weights must sum to ~1.0 after normalisation, got {total}"
+        )
+    print("✅ test_verify_cognitive_unity_enforcement_normalises_weights PASSED")
 
 
 if __name__ == "__main__":
