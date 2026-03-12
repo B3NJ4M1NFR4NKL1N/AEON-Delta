@@ -36765,6 +36765,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "ns_bridge": "standalone_ns_bridge",
         "hierarchical_vae": "hierarchical_vae",
         "auto_critic": "auto_critic",
+        "auto_critic_revision": "auto_critic",
         "mcts_planning": "mcts_planner",
         "active_learning": "active_learning_planner",
         "icm_curiosity": "active_learning_planner",
