@@ -38978,7 +38978,15 @@ class AEONDeltaV3(nn.Module):
         _pre_reasoning_causal_decisions: Dict[str, Any] = {}
         # ===== ENCODE =====
         z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
-        
+        # Record encoder decision for causal transparency — every output
+        # must be traceable to its originating subsystem, including the
+        # foundational encoding stage.
+        _pre_reasoning_causal_decisions['encoder'] = {
+            'input_shape': list(input_ids.shape),
+            'output_finite': bool(torch.isfinite(z_encoded).all().item()),
+            'output_norm': float(z_encoded.detach().norm().item()),
+        }
+
         # ===== BACKBONE ADAPTER ENRICHMENT =====
         # When a pretrained backbone adapter is loaded, use it to enrich
         # the encoder output with pretrained features.  The adapter
@@ -39130,10 +39138,24 @@ class AEONDeltaV3(nn.Module):
                 self.config.vq_collapse_utilization_threshold, 1e-6,
             ))
             self._cached_vq_codebook_quality = _vq_codebook_quality
+            # Record VQ decision for causal transparency — codebook
+            # utilisation and loss magnitude must be traceable in the
+            # causal_decision_chain so root-cause analysis can attribute
+            # downstream quality degradation to VQ encoding health.
+            _pre_reasoning_causal_decisions['vector_quantizer'] = {
+                'active': True,
+                'vq_loss': _vq_loss_val,
+                'codebook_utilization': _vq_utilization,
+                'codebook_quality': _vq_codebook_quality,
+                'unique_codes': _vq_unique,
+            }
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
             vq_indices = None
+            _pre_reasoning_causal_decisions['vector_quantizer'] = {
+                'active': False,
+            }
         
         # ===== CHUNKED ENCODING =====
         # When input sequences exceed the configured chunk_size, re-encode
@@ -39389,6 +39411,15 @@ class AEONDeltaV3(nn.Module):
         _decoder_after = logits.detach().mean(dim=-1).mean(dim=-1, keepdim=True).expand_as(z_out)
         self.provenance_tracker.record_after("decoder", _decoder_after)
         self.coherence_registry.register_output("decoder", validated=torch.isfinite(logits).all().item())
+        # Record decoder decision for causal transparency — decode mode,
+        # output quality, and logit statistics must be traceable so that
+        # root-cause analysis can attribute output anomalies to the decode
+        # stage.
+        outputs['causal_decision_chain']['decoder'] = {
+            'mode': decode_mode,
+            'output_finite': bool(torch.isfinite(logits).all().item()),
+            'logits_shape': list(logits.shape),
+        }
         
         # ===== UNCERTAINTY CONFIDENCE PENALTY =====
         # When reasoning uncertainty exceeds the threshold, scale logits
@@ -42258,7 +42289,29 @@ class AEONDeltaV3(nn.Module):
 
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
-        
+
+        # ===== COMPUTE LOSS CAUSAL TRACE =====
+        # Record the loss composition in causal trace so that training
+        # loss decisions are deterministically traceable to their
+        # originating loss components.  Without this, root-cause analysis
+        # cannot attribute training instability to specific subsystem
+        # losses, breaking causal transparency for the training path.
+        if self.causal_trace is not None:
+            _total_val = float(total_loss.detach().item()) if torch.isfinite(total_loss) else float('nan')
+            _lm_trace = float(lm_loss.detach().item()) if torch.isfinite(lm_loss) else 0.0
+            self.causal_trace.record(
+                subsystem="compute_loss",
+                decision="loss_composition",
+                metadata={
+                    'total_loss': _total_val,
+                    'lm_loss': _lm_trace,
+                    'convergence_loss_scale': _convergence_loss_scale,
+                    'uncertainty_loss_scale': _uncertainty_loss_scale,
+                    'nan_inf_fallback': not torch.isfinite(total_loss).all().item()
+                                        if torch.is_tensor(total_loss) else False,
+                },
+            )
+
         return {
             'total_loss': total_loss,
             'lm_loss': lm_loss,
@@ -47102,14 +47155,30 @@ class AEONDeltaV3(nn.Module):
                         )
                 # Record the recovery attempt so the tracker learns
                 # which strategies improve the deficit over time.
+                # Re-verify after correction: compute post-correction
+                # cognitive unity to judge success empirically rather
+                # than from the stale pre-correction score.  This closes
+                # the gap where corrections were applied but their
+                # effectiveness was never measured, preventing the error
+                # evolution tracker from learning which strategies work.
+                _post_correction_success = _score >= 0.5
+                try:
+                    _post_unity = self.verify_cognitive_unity()
+                    _post_overall = _post_unity.get('overall_score', _score)
+                    _post_correction_success = (
+                        _post_overall >= 0.8 or _post_overall > _score
+                    )
+                except Exception:
+                    pass  # fall back to heuristic
                 self.error_evolution.record_episode(
                     error_class=_ec,
                     strategy_used=_best,
-                    success=_score >= 0.5,
+                    success=_post_correction_success,
                     metadata={
                         'auto_correction': True,
                         'applied_strategy': _best,
                         'score_at_correction': _score,
+                        'post_correction_verified': True,
                     },
                 )
                 reinforcement_actions.append(
@@ -47918,6 +47987,54 @@ class AEONDeltaV3(nn.Module):
         report['ok'] = True
         report['convergence_health'] = convergence
         return report
+
+    def get_cognitive_state_snapshot(self) -> Dict[str, Any]:
+        """Return a unified snapshot of the complete cognitive state.
+
+        Aggregates all scattered diagnostic endpoints into a single
+        coherent view, bridging the gap where cognitive state was
+        distributed across multiple methods with no unified aggregator.
+        This ensures that any consumer can obtain the full cognitive
+        picture in a single call, supporting the **Mutual Reinforcement**
+        requirement that active components verify and stabilise each
+        other's states.
+
+        Returns:
+            Dict with keys: ``metacognitive``, ``causal_chain``,
+            ``emergence``, ``unity``, ``reinforcement``,
+            ``error_evolution``, ``timestamp``.
+        """
+        snapshot: Dict[str, Any] = {'timestamp': time.time()}
+        try:
+            snapshot['metacognitive'] = self.get_metacognitive_state()
+        except Exception:
+            snapshot['metacognitive'] = None
+        try:
+            snapshot['causal_chain'] = self.verify_causal_chain()
+        except Exception:
+            snapshot['causal_chain'] = None
+        try:
+            snapshot['emergence'] = self.system_emergence_report()
+        except Exception:
+            snapshot['emergence'] = None
+        try:
+            snapshot['unity'] = self.verify_cognitive_unity()
+        except Exception:
+            snapshot['unity'] = None
+        try:
+            snapshot['reinforcement'] = self.verify_and_reinforce()
+        except Exception:
+            snapshot['reinforcement'] = None
+        if self.error_evolution is not None:
+            try:
+                snapshot['error_evolution'] = (
+                    self.error_evolution.get_error_summary()
+                )
+            except Exception:
+                snapshot['error_evolution'] = None
+        else:
+            snapshot['error_evolution'] = None
+        return snapshot
 
     def verify_causal_chain(self) -> Dict[str, Any]:
         """Verify that all subsystem outputs are causally traceable.

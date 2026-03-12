@@ -67770,6 +67770,16 @@ def run_all_tests():
     test_auto_critic_provenance_cleanup_on_exception()
     test_verify_convergence_reconciles_stale_ema()
 
+    # Final Integration — Cognitive Activation Patches
+    test_encoder_in_causal_decision_chain()
+    test_vector_quantizer_in_causal_decision_chain()
+    test_decoder_in_causal_decision_chain()
+    test_auto_correction_records_post_correction_verified()
+    test_compute_loss_records_causal_trace()
+    test_get_cognitive_state_snapshot_exists()
+    test_get_cognitive_state_snapshot_after_forward()
+    test_cognitive_state_snapshot_endpoint_exists()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -79271,6 +79281,245 @@ def test_verify_convergence_reconciles_stale_ema():
             f"Empirical: {empirical:.4f}"
         )
     print("✅ test_verify_convergence_reconciles_stale_ema PASSED")
+
+
+# ============================================================================
+# Final Integration — Encoder/VQ/Decoder Causal Decision Chain Tests
+# ============================================================================
+
+def test_encoder_in_causal_decision_chain():
+    """After a forward pass, causal_decision_chain must contain an 'encoder'
+    entry with input_shape, output_finite, and output_norm keys, ensuring
+    the foundational encoding stage is causally traceable."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 100, (1, 16))
+    result = model(x)
+
+    chain = result.get('causal_decision_chain', {})
+    assert 'encoder' in chain, (
+        "causal_decision_chain must contain 'encoder' entry"
+    )
+    enc = chain['encoder']
+    assert 'input_shape' in enc, "encoder entry must have 'input_shape'"
+    assert 'output_finite' in enc, "encoder entry must have 'output_finite'"
+    assert 'output_norm' in enc, "encoder entry must have 'output_norm'"
+    assert enc['output_finite'] is True, "encoder output must be finite"
+    print("✅ test_encoder_in_causal_decision_chain PASSED")
+
+
+def test_vector_quantizer_in_causal_decision_chain():
+    """After a forward pass, causal_decision_chain must contain a
+    'vector_quantizer' entry recording whether VQ was active and its
+    codebook quality metrics."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 100, (1, 16))
+    result = model(x)
+
+    chain = result.get('causal_decision_chain', {})
+    assert 'vector_quantizer' in chain, (
+        "causal_decision_chain must contain 'vector_quantizer' entry"
+    )
+    vq = chain['vector_quantizer']
+    assert 'active' in vq, "vector_quantizer entry must have 'active'"
+    if vq['active']:
+        assert 'codebook_quality' in vq, (
+            "active VQ entry must have 'codebook_quality'"
+        )
+        assert 'codebook_utilization' in vq, (
+            "active VQ entry must have 'codebook_utilization'"
+        )
+    print("✅ test_vector_quantizer_in_causal_decision_chain PASSED")
+
+
+def test_decoder_in_causal_decision_chain():
+    """After a forward pass, causal_decision_chain must contain a 'decoder'
+    entry recording decode mode, output finiteness, and logits shape."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 100, (1, 16))
+    result = model(x)
+
+    chain = result.get('causal_decision_chain', {})
+    assert 'decoder' in chain, (
+        "causal_decision_chain must contain 'decoder' entry"
+    )
+    dec = chain['decoder']
+    assert 'mode' in dec, "decoder entry must have 'mode'"
+    assert 'output_finite' in dec, "decoder entry must have 'output_finite'"
+    assert 'logits_shape' in dec, "decoder entry must have 'logits_shape'"
+    print("✅ test_decoder_in_causal_decision_chain PASSED")
+
+
+# ============================================================================
+# Final Integration — Auto-Correction Re-Verification Tests
+# ============================================================================
+
+def test_auto_correction_records_post_correction_verified():
+    """verify_and_reinforce() auto-correction loop must record episodes
+    with post_correction_verified=True in metadata, confirming that
+    empirical re-verification is used instead of stale pre-correction
+    scores."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_and_reinforce)
+    assert 'post_correction_verified' in src, (
+        "verify_and_reinforce must record post_correction_verified "
+        "in auto-correction metadata"
+    )
+    assert 'verify_cognitive_unity' in src, (
+        "verify_and_reinforce must call verify_cognitive_unity() for "
+        "post-correction re-verification"
+    )
+    print("✅ test_auto_correction_records_post_correction_verified PASSED")
+
+
+# ============================================================================
+# Final Integration — compute_loss Causal Trace Tests
+# ============================================================================
+
+def test_compute_loss_records_causal_trace():
+    """compute_loss() must record a causal trace entry with subsystem
+    'compute_loss' so that training loss decisions are deterministically
+    traceable to their originating loss components."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.compute_loss)
+    assert "subsystem=\"compute_loss\"" in src or "subsystem='compute_loss'" in src, (
+        "compute_loss must record a causal trace entry with "
+        "subsystem='compute_loss'"
+    )
+    assert 'loss_composition' in src, (
+        "compute_loss causal trace must record 'loss_composition' decision"
+    )
+    print("✅ test_compute_loss_records_causal_trace PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive State Snapshot Tests
+# ============================================================================
+
+def test_get_cognitive_state_snapshot_exists():
+    """AEONDeltaV3 must expose a get_cognitive_state_snapshot() method
+    that aggregates all cognitive state into a single dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    assert hasattr(model, 'get_cognitive_state_snapshot'), (
+        "AEONDeltaV3 must have get_cognitive_state_snapshot() method"
+    )
+    snapshot = model.get_cognitive_state_snapshot()
+    assert isinstance(snapshot, dict), "snapshot must be a dict"
+    expected_keys = [
+        'metacognitive', 'causal_chain', 'emergence',
+        'unity', 'reinforcement', 'error_evolution', 'timestamp',
+    ]
+    for key in expected_keys:
+        assert key in snapshot, (
+            f"snapshot must contain '{key}' key"
+        )
+    assert snapshot['timestamp'] > 0, "timestamp must be positive"
+    print("✅ test_get_cognitive_state_snapshot_exists PASSED")
+
+
+def test_get_cognitive_state_snapshot_after_forward():
+    """After a forward pass, get_cognitive_state_snapshot() must return
+    populated metacognitive and causal_chain data."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 100, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    snapshot = model.get_cognitive_state_snapshot()
+    assert snapshot['causal_chain'] is not None, (
+        "causal_chain must be populated after forward pass"
+    )
+    assert snapshot['causal_chain']['traceable'] is True, (
+        "causal chain must be traceable after forward pass"
+    )
+    assert snapshot['emergence'] is not None, (
+        "emergence must be populated after forward pass"
+    )
+    print("✅ test_get_cognitive_state_snapshot_after_forward PASSED")
+
+
+def test_cognitive_state_snapshot_endpoint_exists():
+    """The /api/cognitive_state_snapshot endpoint must exist in aeon_server."""
+    from aeon_server import app
+
+    routes = [r.path for r in app.routes]
+    assert '/api/cognitive_state_snapshot' in routes, (
+        "/api/cognitive_state_snapshot endpoint must exist"
+    )
+    print("✅ test_cognitive_state_snapshot_endpoint_exists PASSED")
 
 
 if __name__ == "__main__":

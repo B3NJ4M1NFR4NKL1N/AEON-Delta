@@ -849,6 +849,26 @@ async def get_full_diagnostic():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/cognitive_state_snapshot")
+async def get_cognitive_state_snapshot():
+    """Return a unified snapshot of the complete cognitive state.
+
+    Aggregates metacognitive state, causal chain verification,
+    system emergence report, cognitive unity, verify-and-reinforce
+    results, and error evolution summary into a single response.
+    This bridges the gap where cognitive state was distributed across
+    multiple API endpoints with no unified aggregator.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result = APP.model.get_cognitive_state_snapshot()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"cognitive_state_snapshot error: {e}")
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/pipeline_wiring")
 async def get_pipeline_wiring():
     """Return the full pipeline wiring verification report.
