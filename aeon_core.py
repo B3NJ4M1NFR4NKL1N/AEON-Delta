@@ -22389,6 +22389,13 @@ class AEONDeltaV3(nn.Module):
         ("rssm", "integration"),
         ("multimodal", "integration"),
         ("integration", "auto_critic"),
+        # ── Auto-critic revision path ─────────────────────────────
+        # The auto-critic's internal revision step records provenance
+        # under "auto_critic_revision".  This edge ensures
+        # trace_root_cause() can walk backward from auto_critic_revision
+        # through auto_critic and ultimately reach the 'input' entry
+        # point, maintaining full causal transparency.
+        ("auto_critic", "auto_critic_revision"),
         # Cross-validation reconciliation sits between causal models
         # and downstream modules; metacognitive trigger and deeper
         # meta-loop feed back into the pipeline when re-reasoning
@@ -22834,6 +22841,9 @@ class AEONDeltaV3(nn.Module):
         "grounded_multimodal": "grounded_multimodal",
         "integration": "integration_proj",
         "auto_critic": "auto_critic",
+        # auto_critic_revision is the internal revision step of the
+        # auto-critic — backed by the same auto_critic module.
+        "auto_critic_revision": "auto_critic",
         # output_reliability is a virtual node gated by the
         # module_coherence attribute.
         "output_reliability": "module_coherence",
@@ -29366,9 +29376,15 @@ class AEONDeltaV3(nn.Module):
                     _cs_val = _coherence_score.mean().item()
                 else:
                     _cs_val = float(_coherence_score)
-                self._cached_coherence_deficit = float(max(0.0, min(1.0, 1.0 - _cs_val)))
+                self._cached_coherence_deficit = max(
+                    self._cached_coherence_deficit,
+                    float(max(0.0, min(1.0, 1.0 - _cs_val))),
+                )
             else:
-                self._cached_coherence_deficit = 1.0 if _coherence_deficit else 0.0
+                self._cached_coherence_deficit = max(
+                    self._cached_coherence_deficit,
+                    1.0 if _coherence_deficit else 0.0,
+                )
             # Record coherence deficit in error evolution tracker so the
             # system can learn from coherence failures over time.
             if _coherence_deficit and self.error_evolution is not None:
