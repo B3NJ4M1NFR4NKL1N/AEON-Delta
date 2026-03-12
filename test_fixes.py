@@ -67794,6 +67794,22 @@ def run_all_tests():
     test_bridge_inference_to_training_records_causal_trace()
     test_forward_impl_uncertainty_adaptation_code_present()
 
+    # Final Integration — Metacognitive feedback loop closure
+    test_convergence_certificate_failure_closes_feedback_loop()
+    test_ewc_drift_failure_closes_feedback_loop()
+    test_vq_auto_critic_failure_closes_feedback_loop()
+    test_vq_utilization_check_failure_closes_feedback_loop()
+    test_deeper_coherence_recheck_failure_closes_feedback_loop()
+    test_coherence_auto_critic_failure_closes_feedback_loop()
+    test_bridge_recovery_to_evolution_adapts_trigger()
+    test_social_cognition_failure_adapts_trigger()
+    test_code_execution_sandbox_failure_adapts_trigger()
+    test_new_error_classes_in_class_to_signal()
+    test_new_error_classes_in_error_class_to_lambda()
+    test_world_model_verification_failure_adapts_trigger()
+    test_memory_validation_failure_adapts_trigger()
+    test_causal_context_failure_adapts_trigger()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -79956,6 +79972,291 @@ def test_forward_impl_uncertainty_adaptation_code_present():
         "high_output_uncertainty recording in _forward_impl"
     )
     print("✅ test_forward_impl_uncertainty_adaptation_code_present PASSED")
+
+
+# ── Tests for metacognitive feedback loop closure ────────────────────────
+# These tests verify that every record_episode() call in _reasoning_core_impl
+# is followed by adapt_weights_from_evolution(), ensuring the metacognitive
+# trigger learns from all error events.
+
+
+def test_convergence_certificate_failure_closes_feedback_loop():
+    """The convergence certificate exception handler must record an
+    error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("convergence_certificate_failure")
+    assert idx > 0, "convergence_certificate_failure must be in _reasoning_core_impl"
+
+    # adapt_weights_from_evolution must appear after this error class
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "convergence_certificate_failure recording"
+    )
+    print("✅ test_convergence_certificate_failure_closes_feedback_loop PASSED")
+
+
+def test_ewc_drift_failure_closes_feedback_loop():
+    """The EWC drift estimation exception handler must record an
+    error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("ewc_drift_estimation_failure")
+    assert idx > 0, "ewc_drift_estimation_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "ewc_drift_estimation_failure recording"
+    )
+    print("✅ test_ewc_drift_failure_closes_feedback_loop PASSED")
+
+
+def test_vq_auto_critic_failure_closes_feedback_loop():
+    """The VQ auto-critic exception handler must record an
+    error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("vq_auto_critic_failure")
+    assert idx > 0, "vq_auto_critic_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "vq_auto_critic_failure recording"
+    )
+    print("✅ test_vq_auto_critic_failure_closes_feedback_loop PASSED")
+
+
+def test_vq_utilization_check_failure_closes_feedback_loop():
+    """The VQ utilization check exception handler must record an
+    error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("vq_utilization_check_failure")
+    assert idx > 0, "vq_utilization_check_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "vq_utilization_check_failure recording"
+    )
+    print("✅ test_vq_utilization_check_failure_closes_feedback_loop PASSED")
+
+
+def test_deeper_coherence_recheck_failure_closes_feedback_loop():
+    """The deeper coherence re-verification exception handler must record
+    an error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("deeper_coherence_recheck_failure")
+    assert idx > 0, "deeper_coherence_recheck_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "deeper_coherence_recheck_failure recording"
+    )
+    print("✅ test_deeper_coherence_recheck_failure_closes_feedback_loop PASSED")
+
+
+def test_coherence_auto_critic_failure_closes_feedback_loop():
+    """The coherence auto-critic exception handler must record an
+    error_evolution episode AND adapt metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("coherence_auto_critic_failure")
+    assert idx > 0, "coherence_auto_critic_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "coherence_auto_critic_failure recording"
+    )
+    print("✅ test_coherence_auto_critic_failure_closes_feedback_loop PASSED")
+
+
+def test_bridge_recovery_to_evolution_adapts_trigger():
+    """_bridge_recovery_to_evolution must call adapt_weights_from_evolution
+    after record_episode so that all bridged recovery events update the
+    metacognitive trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._bridge_recovery_to_evolution)
+
+    record_idx = source.find("record_episode")
+    assert record_idx > 0, "record_episode must be in _bridge_recovery_to_evolution"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", record_idx)
+    assert adapt_idx > record_idx, (
+        "adapt_weights_from_evolution must appear after "
+        "record_episode in _bridge_recovery_to_evolution"
+    )
+    print("✅ test_bridge_recovery_to_evolution_adapts_trigger PASSED")
+
+
+def test_social_cognition_failure_adapts_trigger():
+    """The social cognition failure exception handler must call
+    adapt_weights_from_evolution after record_episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("social_cognition_failure")
+    assert idx > 0, "social_cognition_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "social_cognition_failure recording"
+    )
+    print("✅ test_social_cognition_failure_adapts_trigger PASSED")
+
+
+def test_code_execution_sandbox_failure_adapts_trigger():
+    """The code execution sandbox failure exception handler must call
+    adapt_weights_from_evolution after record_episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("code_execution_sandbox_failure")
+    assert idx > 0, "code_execution_sandbox_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "code_execution_sandbox_failure recording"
+    )
+    print("✅ test_code_execution_sandbox_failure_adapts_trigger PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """All newly added error classes must be present in the
+    MetaCognitiveRecursionTrigger adapt_weights_from_evolution
+    _class_to_signal mapping."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+
+    new_classes = [
+        'convergence_certificate_failure',
+        'ewc_drift_estimation_failure',
+        'vq_auto_critic_failure',
+        'vq_utilization_check_failure',
+        'deeper_coherence_recheck_failure',
+        'coherence_auto_critic_failure',
+    ]
+    for cls in new_classes:
+        assert cls in source, (
+            f"Error class '{cls}' must be in _class_to_signal mapping "
+            f"inside adapt_weights_from_evolution"
+        )
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """All newly added error classes must be present in the
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA mapping."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    new_classes = [
+        'convergence_certificate_failure',
+        'ewc_drift_estimation_failure',
+        'vq_auto_critic_failure',
+        'vq_utilization_check_failure',
+        'deeper_coherence_recheck_failure',
+        'coherence_auto_critic_failure',
+    ]
+    for cls in new_classes:
+        assert cls in mapping, (
+            f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA mapping"
+        )
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_world_model_verification_failure_adapts_trigger():
+    """The world model verification failure handler must call
+    adapt_weights_from_evolution after record_episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("world_model_verification_failure")
+    assert idx > 0, "world_model_verification_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "world_model_verification_failure recording"
+    )
+    print("✅ test_world_model_verification_failure_adapts_trigger PASSED")
+
+
+def test_memory_validation_failure_adapts_trigger():
+    """The memory validation failure handler must call
+    adapt_weights_from_evolution after record_episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("memory_validation_failure")
+    assert idx > 0, "memory_validation_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "memory_validation_failure recording"
+    )
+    print("✅ test_memory_validation_failure_adapts_trigger PASSED")
+
+
+def test_causal_context_failure_adapts_trigger():
+    """The causal context conditioning failure handler must call
+    adapt_weights_from_evolution after record_episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+
+    idx = source.find("causal_context_conditioning_failure")
+    assert idx > 0, "causal_context_conditioning_failure must be in _reasoning_core_impl"
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "causal_context_conditioning_failure recording"
+    )
+    print("✅ test_causal_context_failure_adapts_trigger PASSED")
 
 
 if __name__ == "__main__":
