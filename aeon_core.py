@@ -47808,7 +47808,8 @@ class AEONDeltaV3(nn.Module):
             )),
         )
         self._cached_coherence_deficit = max(
-            0.0, min(1.0, 1.0 - mv_score),
+            self._cached_coherence_deficit,
+            max(0.0, min(1.0, 1.0 - mv_score)),
         )
         self._cached_metacognitive_gap = max(
             0.0, min(1.0, 1.0 - um_score),
