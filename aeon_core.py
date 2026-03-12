@@ -17169,6 +17169,10 @@ class MetaCognitiveRecursionTrigger:
             # auto-critic revision raised an exception, leaving the
             # detected coherence deficit uncorrected.
             "coherence_auto_critic_failure": "coherence_deficit",
+            # Cognitive snapshot degradation — one or more subsystems
+            # failed during get_cognitive_state_snapshot(), indicating
+            # that the unified cognitive view is incomplete.
+            "cognitive_snapshot_degradation": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18532,6 +18536,10 @@ class CausalErrorEvolutionTracker:
         # lambda_lipschitz so training strengthens interval-arithmetic
         # contraction verification.
         "certified_convergence_exception": "lambda_lipschitz",
+        # Cognitive snapshot degradation — subsystem failure during
+        # aggregated state snapshot.  Maps to lambda_self_consistency
+        # so training strengthens overall system stability.
+        "cognitive_snapshot_degradation": "lambda_self_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -48482,38 +48490,126 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with keys: ``metacognitive``, ``causal_chain``,
             ``emergence``, ``unity``, ``reinforcement``,
-            ``error_evolution``, ``timestamp``.
+            ``error_evolution``, ``system_health_score``,
+            ``degraded_subsystems``, ``timestamp``.
         """
         snapshot: Dict[str, Any] = {'timestamp': time.time()}
+        _degraded: List[str] = []
         try:
             snapshot['metacognitive'] = self.get_metacognitive_state()
-        except Exception:
+        except Exception as _mc_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: metacognitive failed: %s",
+                _mc_err,
+            )
             snapshot['metacognitive'] = None
+            _degraded.append('metacognitive')
         try:
             snapshot['causal_chain'] = self.verify_causal_chain()
-        except Exception:
+        except Exception as _cc_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: causal_chain failed: %s",
+                _cc_err,
+            )
             snapshot['causal_chain'] = None
+            _degraded.append('causal_chain')
         try:
             snapshot['emergence'] = self.system_emergence_report()
-        except Exception:
+        except Exception as _em_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: emergence failed: %s",
+                _em_err,
+            )
             snapshot['emergence'] = None
+            _degraded.append('emergence')
         try:
             snapshot['unity'] = self.verify_cognitive_unity()
-        except Exception:
+        except Exception as _un_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: unity failed: %s",
+                _un_err,
+            )
             snapshot['unity'] = None
+            _degraded.append('unity')
         try:
             snapshot['reinforcement'] = self.verify_and_reinforce()
-        except Exception:
+        except Exception as _re_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: reinforcement failed: %s",
+                _re_err,
+            )
             snapshot['reinforcement'] = None
+            _degraded.append('reinforcement')
         if self.error_evolution is not None:
             try:
                 snapshot['error_evolution'] = (
                     self.error_evolution.get_error_summary()
                 )
-            except Exception:
+            except Exception as _ee_err:
+                logger.warning(
+                    "get_cognitive_state_snapshot: error_evolution "
+                    "failed: %s", _ee_err,
+                )
                 snapshot['error_evolution'] = None
+                _degraded.append('error_evolution')
         else:
             snapshot['error_evolution'] = None
+
+        # ── Aggregate overall system health score ──────────────────
+        # Synthesize a single 0-1 health score from sub-component
+        # results so callers don't need to manually cross-reference
+        # six nested dictionaries.  Each sub-component contributes
+        # equally; a None (failed) sub-component scores 0.
+        _n_components = 6
+        _healthy = _n_components - len(_degraded)
+        _sub_score = _healthy / _n_components  # base: fraction available
+        # Refine with actual scores from successful sub-components
+        _unity = snapshot.get('unity')
+        if isinstance(_unity, dict):
+            _cus = _unity.get('cognitive_unity_score', 1.0)
+            _sub_score = min(_sub_score, _cus) if _cus < 1.0 else _sub_score
+        _chain = snapshot.get('causal_chain')
+        if isinstance(_chain, dict):
+            _cov = _chain.get('coverage', 1.0)
+            if _cov < 1.0:
+                _sub_score = min(_sub_score, 0.5 + 0.5 * _cov)
+        snapshot['system_health_score'] = round(
+            max(0.0, min(1.0, _sub_score)), 4,
+        )
+        snapshot['degraded_subsystems'] = _degraded
+
+        # ── Record snapshot in causal trace for traceability ────────
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "cognitive_state_snapshot", "aggregation",
+                metadata={
+                    'system_health_score': snapshot['system_health_score'],
+                    'degraded_subsystems': _degraded,
+                    'components_available': _healthy,
+                },
+            )
+
+        # ── Feed degradation into metacognitive trigger ─────────────
+        # If any sub-component failed, record an error evolution
+        # episode and adapt trigger weights so the meta-cognitive
+        # cycle becomes sensitive to subsystem failures.
+        if _degraded and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='cognitive_snapshot_degradation',
+                success=False,
+                strategy_used='get_cognitive_state_snapshot',
+            )
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Snapshot degradation trigger adaptation "
+                        "failed: %s", _adapt_err,
+                    )
+
         return snapshot
 
     def verify_causal_chain(self) -> Dict[str, Any]:
@@ -48645,11 +48741,60 @@ class AEONDeltaV3(nn.Module):
                                     _rca_adapt_err,
                                 )
 
+        # ── Connectivity validation ──────────────────────────────
+        # Check that traced subsystems are interconnected — i.e. that
+        # they share causal trace entries referencing each other, rather
+        # than being isolated islands of traceability.  A system where
+        # every subsystem records a trace but none reference each other
+        # lacks end-to-end causal transparency.
+        #
+        # We build an adjacency set from entries that cross-reference
+        # subsystems (via metadata or causal_prerequisites) and check
+        # whether found subsystems form a single connected component.
+        _adjacency: Dict[str, Set[str]] = {s: set() for s in _found_subsystems}
+        for entry in entries:
+            _src = entry.get('subsystem', '')
+            # Normalise prefixed subsystems
+            if _src.startswith('error_evolution/'):
+                _src = 'error_evolution'
+            elif _src == 'emergence_assessment':
+                _src = 'system_emergence_report'
+            if _src not in _found_subsystems:
+                continue
+            # Check metadata for cross-references to other subsystems
+            _meta = entry.get('metadata') or {}
+            for _key, _val in _meta.items():
+                if isinstance(_val, str) and _val in _found_subsystems:
+                    _adjacency[_src].add(_val)
+                    _adjacency[_val].add(_src)
+            # Check causal_prerequisites for cross-references
+            _prereqs = entry.get('causal_prerequisites') or []
+            if isinstance(_prereqs, list):
+                for _p in _prereqs:
+                    _p_sub = _p if isinstance(_p, str) else str(_p)
+                    if _p_sub in _found_subsystems:
+                        _adjacency[_src].add(_p_sub)
+                        _adjacency[_p_sub].add(_src)
+
+        # BFS to find connected component size from an arbitrary root
+        _chain_connected = True
+        if len(_found_subsystems) > 1:
+            _visited: Set[str] = set()
+            _queue = [next(iter(_found_subsystems))]
+            while _queue:
+                _node = _queue.pop(0)
+                if _node in _visited:
+                    continue
+                _visited.add(_node)
+                _queue.extend(_adjacency.get(_node, set()) - _visited)
+            _chain_connected = len(_visited) >= len(_found_subsystems)
+
         result = {
             "traceable": len(_untraced) == 0,
             "traced_subsystems": sorted(_found_subsystems),
             "untraced_subsystems": _untraced,
             "coverage": _coverage,
+            "chain_connected": _chain_connected,
             "root_cause_sample": root_cause_sample,
             "total_entries": len(entries),
         }
@@ -48662,6 +48807,7 @@ class AEONDeltaV3(nn.Module):
                 metadata={
                     'traceable': result['traceable'],
                     'coverage': result['coverage'],
+                    'chain_connected': result['chain_connected'],
                     'untraced': _untraced,
                 },
             )
@@ -48713,6 +48859,12 @@ class AEONDeltaV3(nn.Module):
         3. Metacognitive trigger weight adaptation from training error
            patterns so the inference pipeline's sensitivity reflects
            learned training behaviour.
+        4. Cognitive memory snapshot restoration for cross-session
+           continuity.
+        5. Inference-to-training reverse bridge via
+           ``bridge_inference_insights_to_training()`` so that
+           recurring inference error patterns tighten training
+           hyperparameters automatically.
 
         Args:
             trainer_monitor: A ``TrainingConvergenceMonitor`` instance
@@ -48843,6 +48995,39 @@ class AEONDeltaV3(nn.Module):
                         "sync_from_training: memory snapshot import "
                         "failed: %s", e,
                     )
+
+        # 5. Bridge inference insights back into training parameters.
+        #    This closes the bidirectional feedback loop — steps 1-3
+        #    transfer training→inference, while this step transfers
+        #    inference→training so that recurring inference error
+        #    patterns (coherence deficits, convergence conflicts)
+        #    tighten training hyperparameters automatically.
+        if (self.error_evolution is not None
+                and trainer_monitor is not None):
+            try:
+                from ae_train import bridge_inference_insights_to_training
+                _trainer = getattr(trainer_monitor, '_trainer', None)
+                if _trainer is None:
+                    _trainer = trainer_monitor
+                _unc_tracker = getattr(
+                    self, 'directional_uncertainty_tracker', None,
+                )
+                _n_adjustments = bridge_inference_insights_to_training(
+                    inference_error_evolution=self.error_evolution,
+                    trainer=_trainer,
+                    inference_uncertainty_tracker=_unc_tracker,
+                )
+                result['inference_to_training_adjustments'] = _n_adjustments
+            except ImportError:
+                logger.debug(
+                    "sync_from_training: ae_train not available; "
+                    "skipping inference→training bridge"
+                )
+            except Exception as e:
+                logger.debug(
+                    "sync_from_training: inference→training bridge "
+                    "failed (non-fatal): %s", e,
+                )
 
         return result
 
