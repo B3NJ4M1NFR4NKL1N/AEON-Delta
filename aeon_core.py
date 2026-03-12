@@ -14819,14 +14819,17 @@ class AutoCriticLoop(nn.Module):
             }
             revision_reasons.append(revision_reason)
 
-            # Record revision in provenance for root-cause traceability
+            # Record revision in provenance for root-cause traceability.
+            # Uses "auto_critic_revision" to avoid colliding with the
+            # outer "auto_critic" record_before/record_after pairs that
+            # track the overall auto-critic invocation effect.
             if _prov is not None:
-                _prov.record_before("auto_critic", current_query)
+                _prov.record_before("auto_critic_revision", current_query)
 
             current_query = self.reviser(current_query, candidate, critique_signal)
 
             if _prov is not None:
-                _prov.record_after("auto_critic", current_query)
+                _prov.record_after("auto_critic_revision", current_query)
                 _trace = getattr(_prov, '_causal_trace', None)
                 if _trace is not None:
                     _trace.record(
@@ -34589,77 +34592,79 @@ class AEONDeltaV3(nn.Module):
                     key=_pre_critic_contributions.get,
                 )
             self.provenance_tracker.record_before("auto_critic", z_out)
-            # 8b3-adapt. Error-evolution-guided critic threshold — consult
-            # historical success rates of auto-critic revisions to adapt
-            # the acceptance threshold.  When past revisions rarely succeeded
-            # the threshold is lowered so the critic commits sooner rather
-            # than wasting iterations on unproductive revisions.  When
-            # revisions frequently succeeded the threshold is raised to
-            # demand higher quality.  This closes the gap where the critic's
-            # acceptance bar was static regardless of its track record.
-            _orig_critic_threshold = self.auto_critic.threshold
-            if self.error_evolution is not None:
-                _critic_best = self.error_evolution.get_best_strategy(
-                    "uncertainty_auto_critic_uncertainty",
-                )
-                if _critic_best == "auto_critic":
-                    # Past auto-critic revisions worked well — tighten
-                    self.auto_critic.threshold = min(
-                        0.95, _orig_critic_threshold * 1.05,
-                    )
-                elif _critic_best is not None:
-                    # Another strategy outperformed auto-critic — loosen
-                    self.auto_critic.threshold = max(
-                        0.5, _orig_critic_threshold * 0.95,
-                    )
-            elif self._auto_critic_quality_count >= 3:
-                # Fallback: use cross-pass quality EMA when error_evolution
-                # is unavailable, so the critic still self-calibrates.
-                if self._auto_critic_quality_ema > 0.7:
-                    self.auto_critic.threshold = min(
-                        0.95, _orig_critic_threshold * 1.05,
-                    )
-                elif self._auto_critic_quality_ema < 0.4:
-                    self.auto_critic.threshold = max(
-                        0.5, _orig_critic_threshold * 0.95,
-                    )
-            # 8b3-depth. Metacognitive-trigger-guided critic depth — when
-            # the metacognitive trigger fired, increase the auto-critic's
-            # iteration budget proportionally to the trigger score so that
-            # higher-uncertainty situations receive deeper self-critique.
-            # This closes the gap where trigger severity was computed but
-            # never influenced auto-critic inspection depth.
-            _orig_critic_max_iterations = self.auto_critic.max_iterations
-            _trigger_score = metacognitive_info.get("trigger_score", 0.0)
-            if metacognitive_info.get("should_trigger", False) and _trigger_score > 0:
-                _extra = metacognitive_info.get(
-                    "extra_iterations",
-                    max(1, int(_trigger_score * 3)),
-                )
-                self.auto_critic.max_iterations = min(
-                    _orig_critic_max_iterations + _extra,
-                    _orig_critic_max_iterations * 2,
-                )
             try:
-                critic_result = self.auto_critic(z_out)
-            except Exception as _ac_call_err:
-                logger.debug(
-                    "Metacognitive auto-critic call failed (non-fatal): %s",
-                    _ac_call_err,
-                )
-                critic_result = None
-            # Restore original threshold and max_iterations so the
-            # adaptation is per-pass and does not drift unboundedly
-            # across forward calls.
-            self.auto_critic.threshold = _orig_critic_threshold
-            self.auto_critic.max_iterations = _orig_critic_max_iterations
-            if critic_result is None:
-                critic_result = {"candidate": None, "final_score": 0.0}
-            revised = critic_result.get("candidate", None)
-            if revised is not None and torch.isfinite(revised).all():
-                z_out = revised
-                _any_auto_critic_revised = True
-            self.provenance_tracker.record_after("auto_critic", z_out)
+                # 8b3-adapt. Error-evolution-guided critic threshold — consult
+                # historical success rates of auto-critic revisions to adapt
+                # the acceptance threshold.  When past revisions rarely succeeded
+                # the threshold is lowered so the critic commits sooner rather
+                # than wasting iterations on unproductive revisions.  When
+                # revisions frequently succeeded the threshold is raised to
+                # demand higher quality.  This closes the gap where the critic's
+                # acceptance bar was static regardless of its track record.
+                _orig_critic_threshold = self.auto_critic.threshold
+                if self.error_evolution is not None:
+                    _critic_best = self.error_evolution.get_best_strategy(
+                        "uncertainty_auto_critic_uncertainty",
+                    )
+                    if _critic_best == "auto_critic":
+                        # Past auto-critic revisions worked well — tighten
+                        self.auto_critic.threshold = min(
+                            0.95, _orig_critic_threshold * 1.05,
+                        )
+                    elif _critic_best is not None:
+                        # Another strategy outperformed auto-critic — loosen
+                        self.auto_critic.threshold = max(
+                            0.5, _orig_critic_threshold * 0.95,
+                        )
+                elif self._auto_critic_quality_count >= 3:
+                    # Fallback: use cross-pass quality EMA when error_evolution
+                    # is unavailable, so the critic still self-calibrates.
+                    if self._auto_critic_quality_ema > 0.7:
+                        self.auto_critic.threshold = min(
+                            0.95, _orig_critic_threshold * 1.05,
+                        )
+                    elif self._auto_critic_quality_ema < 0.4:
+                        self.auto_critic.threshold = max(
+                            0.5, _orig_critic_threshold * 0.95,
+                        )
+                # 8b3-depth. Metacognitive-trigger-guided critic depth — when
+                # the metacognitive trigger fired, increase the auto-critic's
+                # iteration budget proportionally to the trigger score so that
+                # higher-uncertainty situations receive deeper self-critique.
+                # This closes the gap where trigger severity was computed but
+                # never influenced auto-critic inspection depth.
+                _orig_critic_max_iterations = self.auto_critic.max_iterations
+                _trigger_score = metacognitive_info.get("trigger_score", 0.0)
+                if metacognitive_info.get("should_trigger", False) and _trigger_score > 0:
+                    _extra = metacognitive_info.get(
+                        "extra_iterations",
+                        max(1, int(_trigger_score * 3)),
+                    )
+                    self.auto_critic.max_iterations = min(
+                        _orig_critic_max_iterations + _extra,
+                        _orig_critic_max_iterations * 2,
+                    )
+                try:
+                    critic_result = self.auto_critic(z_out)
+                except Exception as _ac_call_err:
+                    logger.debug(
+                        "Metacognitive auto-critic call failed (non-fatal): %s",
+                        _ac_call_err,
+                    )
+                    critic_result = None
+                # Restore original threshold and max_iterations so the
+                # adaptation is per-pass and does not drift unboundedly
+                # across forward calls.
+                self.auto_critic.threshold = _orig_critic_threshold
+                self.auto_critic.max_iterations = _orig_critic_max_iterations
+                if critic_result is None:
+                    critic_result = {"candidate": None, "final_score": 0.0}
+                revised = critic_result.get("candidate", None)
+                if revised is not None and torch.isfinite(revised).all():
+                    z_out = revised
+                    _any_auto_critic_revised = True
+            finally:
+                self.provenance_tracker.record_after("auto_critic", z_out)
             self.coherence_registry.register_output(
                 "auto_critic",
                 validated=torch.isfinite(z_out).all().item(),
