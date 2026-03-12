@@ -5129,6 +5129,34 @@ def bridge_inference_insights_to_training(
                 "Uncertainty tracker bridge failed (non-fatal): %s", _unc_err,
             )
 
+    # Record bridge adjustments in causal trace for deterministic
+    # traceability — without this, training parameter changes triggered
+    # by inference error patterns are invisible to root-cause analysis.
+    if adjustments > 0:
+        _ct_details: Dict[str, Any] = {
+            'source': 'bridge_inference_insights_to_training',
+        }
+        if (_conflict_stats.get('count', 0) >= 2
+                and _conflict_stats.get('success_rate', 1.0) < 0.5):
+            _ct_details['grad_clip_adjusted'] = True
+        if _total_coh_failures >= 3:
+            _ct_details['lr_factor_adjusted'] = True
+        _model = getattr(trainer, 'model', None)
+        if _model is not None:
+            _ct = getattr(_model, 'causal_trace', None)
+            if _ct is not None:
+                try:
+                    _ct.record(
+                        "inference_to_training_bridge",
+                        "training_parameter_adjustment",
+                        metadata={
+                            'adjustments_applied': adjustments,
+                            **_ct_details,
+                        },
+                    )
+                except Exception:
+                    pass  # non-critical traceability annotation
+
     return adjustments
 
 
