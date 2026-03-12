@@ -21513,6 +21513,34 @@ class UnifiedCognitiveCycle:
                 self.coherence_registry.get_degrading_subsystems()
             )
 
+        # ── Post-Phase-2 consolidation adaptation ──────────────────
+        # Adapt metacognitive trigger weights from ALL episodes
+        # recorded during this evaluation cycle.  The Phase-1c batch
+        # adaptation (above) only captures episodes recorded before
+        # coherence verification.  Episodes recorded during Phase 2+
+        # (coverage deficits, provenance chain gaps, convergence
+        # certificate violations, integrity anomalies) were previously
+        # deferred until the NEXT evaluation cycle, introducing a
+        # one-cycle delay in metacognitive response.  This
+        # consolidation call ensures that ANY internal uncertainty or
+        # conflict detected during the current cycle immediately
+        # influences trigger sensitivity, satisfying the requirement
+        # that uncertainty triggers a meta-cognitive cycle without
+        # delay.
+        if self.metacognitive_trigger is not None and self.error_evolution is not None:
+            try:
+                _final_summary = self.error_evolution.get_error_summary()
+                if _final_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _final_summary,
+                    )
+            except Exception as _final_adapt_err:
+                logger.warning(
+                    "UCC: post-phase-2 adapt_weights_from_evolution "
+                    "failed (non-fatal): %s",
+                    _final_adapt_err,
+                )
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -48341,6 +48369,31 @@ class AEONDeltaV3(nn.Module):
                     "skipped: %s", _ar_err,
                 )
 
+        # ── 5a. Post-reinforcement metacognitive adaptation ──────────
+        # After the auto-reinforcement loop, adapt metacognitive trigger
+        # weights from all episodes accumulated during the reinforcement
+        # passes.  This closes the gap where verify_and_reinforce()
+        # recorded error evolution episodes (coherence_deficit,
+        # metacognitive_gap, provenance_chain_incomplete, etc.) but the
+        # system_emergence_report never consolidated those episodes into
+        # trigger sensitivity — leaving the emergence assessment as a
+        # "diagnosed and partially corrected" state without feeding the
+        # corrections back into metacognitive responsiveness.
+        if (reinforcement_applied is not None
+                and self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                _rein_summary = self.error_evolution.get_error_summary()
+                if _rein_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _rein_summary,
+                    )
+            except Exception as _rein_adapt_err:
+                logger.debug(
+                    "system_emergence_report: post-reinforcement "
+                    "adaptation failed: %s", _rein_adapt_err,
+                )
+
         # ── 5b. Post-reinforcement verification ─────────────────────
         # Re-verify cognitive unity after auto-reinforcement to produce
         # concrete before/after validation for each critical patch.
@@ -48575,6 +48628,22 @@ class AEONDeltaV3(nn.Module):
                             success=False,
                             strategy_used='verify_causal_chain',
                         )
+                        # Adapt metacognitive trigger weights so that
+                        # root-cause attribution failures feed back into
+                        # trigger sensitivity immediately, closing the
+                        # gap where the episode was recorded but never
+                        # influenced metacognitive re-reasoning.
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _rca_adapt_err:
+                                logger.debug(
+                                    "Root-cause attribution trigger "
+                                    "adaptation failed: %s",
+                                    _rca_adapt_err,
+                                )
 
         result = {
             "traceable": len(_untraced) == 0,
@@ -48607,6 +48676,22 @@ class AEONDeltaV3(nn.Module):
                 success=False,
                 strategy_used='verify_causal_chain',
             )
+            # Adapt metacognitive trigger weights so that causal chain
+            # coverage gaps feed back into trigger sensitivity
+            # immediately, ensuring that persistent traceability
+            # failures are learned and corrected rather than silently
+            # accumulated.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _ccg_adapt_err:
+                    logger.debug(
+                        "Causal chain gap trigger adaptation failed "
+                        "in verify_causal_chain: %s",
+                        _ccg_adapt_err,
+                    )
 
         return result
 

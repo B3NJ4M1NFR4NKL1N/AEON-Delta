@@ -67810,6 +67810,12 @@ def run_all_tests():
     test_memory_validation_failure_adapts_trigger()
     test_causal_context_failure_adapts_trigger()
 
+    # Final Integration — Cognitive activation patches
+    test_verify_causal_chain_root_cause_failure_adapts_trigger()
+    test_verify_causal_chain_gap_adapts_trigger()
+    test_ucc_evaluate_post_phase2_consolidation()
+    test_system_emergence_report_post_reinforcement_adaptation()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -80257,6 +80263,116 @@ def test_causal_context_failure_adapts_trigger():
         "causal_context_conditioning_failure recording"
     )
     print("✅ test_causal_context_failure_adapts_trigger PASSED")
+
+
+def test_verify_causal_chain_root_cause_failure_adapts_trigger():
+    """verify_causal_chain must call adapt_weights_from_evolution after
+    recording a root_cause_attribution_failure episode, so metacognitive
+    trigger sensitivity is updated when causal transparency degrades."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+
+    idx = source.find("root_cause_attribution_failure")
+    assert idx > 0, (
+        "root_cause_attribution_failure must be in verify_causal_chain"
+    )
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "root_cause_attribution_failure recording in verify_causal_chain"
+    )
+    print("✅ test_verify_causal_chain_root_cause_failure_adapts_trigger PASSED")
+
+
+def test_verify_causal_chain_gap_adapts_trigger():
+    """verify_causal_chain must call adapt_weights_from_evolution after
+    recording a causal_chain_gap episode, ensuring persistent
+    traceability failures feed back into trigger sensitivity."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+
+    idx = source.find("causal_chain_gap")
+    assert idx > 0, (
+        "causal_chain_gap must be in verify_causal_chain"
+    )
+
+    adapt_idx = source.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx > idx, (
+        "adapt_weights_from_evolution must appear after "
+        "causal_chain_gap recording in verify_causal_chain"
+    )
+    print("✅ test_verify_causal_chain_gap_adapts_trigger PASSED")
+
+
+def test_ucc_evaluate_post_phase2_consolidation():
+    """UnifiedCognitiveCycle.evaluate() must include a post-Phase-2
+    consolidation call to adapt_weights_from_evolution, ensuring episodes
+    recorded during coherence verification are not deferred to the next
+    cycle."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    source = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+
+    # Find the return statement to confirm consolidation is before it
+    return_idx = source.rfind("return {")
+    assert return_idx > 0, "evaluate must have a return statement"
+
+    # Find the post-phase-2 consolidation comment
+    consolidation_idx = source.find("Post-Phase-2 consolidation")
+    assert consolidation_idx > 0, (
+        "UnifiedCognitiveCycle.evaluate must contain post-Phase-2 "
+        "consolidation adaptation"
+    )
+
+    # The consolidation must happen before the return
+    adapt_idx = source.find("adapt_weights_from_evolution", consolidation_idx)
+    assert consolidation_idx < return_idx, (
+        "Post-Phase-2 consolidation must appear before the return statement"
+    )
+    assert adapt_idx > consolidation_idx and adapt_idx < return_idx, (
+        "adapt_weights_from_evolution must appear after "
+        "Post-Phase-2 consolidation comment and before return"
+    )
+    print("✅ test_ucc_evaluate_post_phase2_consolidation PASSED")
+
+
+def test_system_emergence_report_post_reinforcement_adaptation():
+    """system_emergence_report must call adapt_weights_from_evolution
+    after the auto-reinforcement loop so trigger sensitivity reflects
+    corrections applied during emergence assessment."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+
+    # Find the auto-reinforcement section
+    reinforce_idx = source.find("auto-reinforcement")
+    assert reinforce_idx > 0, (
+        "system_emergence_report must contain auto-reinforcement loop"
+    )
+
+    # Find the post-reinforcement adaptation comment
+    post_adapt_idx = source.find(
+        "Post-reinforcement metacognitive adaptation"
+    )
+    assert post_adapt_idx > reinforce_idx, (
+        "Post-reinforcement metacognitive adaptation must appear "
+        "after auto-reinforcement loop"
+    )
+
+    # Find the adapt call after the post-reinforcement section
+    adapt_idx = source.find("adapt_weights_from_evolution", post_adapt_idx)
+    assert adapt_idx > post_adapt_idx, (
+        "adapt_weights_from_evolution must appear after "
+        "Post-reinforcement metacognitive adaptation comment"
+    )
+    print("✅ test_system_emergence_report_post_reinforcement_adaptation PASSED")
 
 
 if __name__ == "__main__":
