@@ -17145,6 +17145,30 @@ class MetaCognitiveRecursionTrigger:
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
             "none": "uncertainty",
+            # Convergence certificate failure — the convergence
+            # certificate computation itself raised an exception,
+            # preventing contraction verification for the current pass.
+            "convergence_certificate_failure": "diverging",
+            # EWC drift estimation failure — the MetaLearner EWC loss
+            # computation raised an exception, leaving catastrophic-
+            # forgetting pressure unmeasured.
+            "ewc_drift_estimation_failure": "uncertainty",
+            # VQ auto-critic failure — the auto-critic revision for VQ
+            # codebook collapse raised an exception, leaving the VQ
+            # collapse unaddressed.
+            "vq_auto_critic_failure": "coherence_deficit",
+            # VQ utilization check failure — the VQ codebook utilization
+            # monitoring raised an exception, leaving codebook health
+            # unmeasured.
+            "vq_utilization_check_failure": "coherence_deficit",
+            # Deeper coherence re-verification failure — the post-
+            # metacognitive-rerun coherence re-check raised an
+            # exception, leaving deeper reasoning quality unverified.
+            "deeper_coherence_recheck_failure": "coherence_deficit",
+            # Coherence auto-critic failure — the coherence-driven
+            # auto-critic revision raised an exception, leaving the
+            # detected coherence deficit uncorrected.
+            "coherence_auto_critic_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18479,6 +18503,35 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the unified
         # cognitive cycle that orchestrates metacognitive re-evaluation.
         "post_pipeline_metacognitive_failure": "lambda_ucc",
+        # Convergence certificate failure — certificate computation
+        # errored.  Maps to lambda_lipschitz so training strengthens
+        # the contraction verification pathway.
+        "convergence_certificate_failure": "lambda_lipschitz",
+        # EWC drift estimation failure — MetaLearner EWC loss errored.
+        # Maps to lambda_reg so training strengthens the regularisation
+        # pathway used for catastrophic-forgetting prevention.
+        "ewc_drift_estimation_failure": "lambda_reg",
+        # VQ auto-critic failure — auto-critic revision for VQ collapse
+        # errored.  Maps to lambda_coherence so training strengthens
+        # the auto-critic pathway responsible for codebook recovery.
+        "vq_auto_critic_failure": "lambda_coherence",
+        # VQ utilization check failure — codebook utilization monitoring
+        # errored.  Maps to lambda_coherence so training strengthens
+        # codebook health monitoring.
+        "vq_utilization_check_failure": "lambda_coherence",
+        # Deeper coherence re-verification failure — post-rerun
+        # coherence re-check errored.  Maps to lambda_coherence so
+        # training strengthens coherence verification reliability.
+        "deeper_coherence_recheck_failure": "lambda_coherence",
+        # Coherence auto-critic failure — coherence-driven auto-critic
+        # errored.  Maps to lambda_coherence so training strengthens
+        # the auto-critic coherence pathway.
+        "coherence_auto_critic_failure": "lambda_coherence",
+        # Certified convergence exception — CertifiedMetaLoop
+        # convergence verification raised an exception.  Maps to
+        # lambda_lipschitz so training strengthens interval-arithmetic
+        # contraction verification.
+        "certified_convergence_exception": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -25041,6 +25094,13 @@ class AEONDeltaV3(nn.Module):
                 success=success,
                 metadata={"context": context},
             )
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception:
+                    pass
 
     def _validate_cached_state_coherence(
         self,
@@ -27314,6 +27374,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_vpe_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
             finally:
                 self._cached_world_model_prediction = None
 
@@ -27372,6 +27439,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_hwm_vpe_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
             finally:
                 self._cached_hwm_prediction = None
 
@@ -27667,6 +27741,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_cc_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         
         # 0i. Pre-meta-loop memory coherence validation — validate that
         # the retrieved memory signal is consistent with the current input
@@ -27739,6 +27820,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_pmv_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
             self.provenance_tracker.record_after(
                 "memory_validation", z_conditioned,
             )
@@ -27914,6 +28002,20 @@ class AEONDeltaV3(nn.Module):
                     "Convergence certificate computation failed (non-fatal): %s",
                     _cert_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='convergence_certificate_failure',
+                        strategy_used='skip_certificate',
+                        success=False,
+                        metadata={'error': str(_cert_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
         # window monitor to detect sustained divergence across forward
@@ -28313,6 +28415,20 @@ class AEONDeltaV3(nn.Module):
                     high_uncertainty = uncertainty > 0.5
             except Exception as _ewc_err:
                 logger.debug("MetaLearner EWC drift estimation failed: %s", _ewc_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='ewc_drift_estimation_failure',
+                        strategy_used='skip_ewc_drift',
+                        success=False,
+                        metadata={'error': str(_ewc_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         
         # 1a-v. VQ codebook utilization feedback — when the vector
         # quantizer has low codebook utilization (many dead codes),
@@ -28387,6 +28503,20 @@ class AEONDeltaV3(nn.Module):
                                 "VQ collapse auto-critic failed: %s",
                                 _vq_ac_err,
                             )
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='vq_auto_critic_failure',
+                                    strategy_used='skip_vq_auto_critic',
+                                    success=False,
+                                    metadata={'error': str(_vq_ac_err)},
+                                )
+                                if self.metacognitive_trigger is not None:
+                                    try:
+                                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                                            self.error_evolution.get_error_summary()
+                                        )
+                                    except Exception:
+                                        pass
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
                 _vq_err_boost = min(1.0 - uncertainty, 0.05)
@@ -28394,6 +28524,20 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _vq_err_boost)
                     uncertainty_sources["vq_check_error"] = _vq_err_boost
                     high_uncertainty = uncertainty > 0.5
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='vq_utilization_check_failure',
+                        strategy_used='skip_vq_check',
+                        success=False,
+                        metadata={'error': str(_vq_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -28845,6 +28989,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_sc_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         else:
             self._cached_social_pressure = 0.0
 
@@ -28895,6 +29046,13 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'error': str(_ce_err)},
                     )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         else:
             self._cached_sandbox_pressure = 0.0
 
@@ -29585,6 +29743,13 @@ class AEONDeltaV3(nn.Module):
                                 strategy_used="auto_critic_revision",
                                 success=_coh_revised is not None,
                             )
+                            if self.metacognitive_trigger is not None:
+                                try:
+                                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                                        self.error_evolution.get_error_summary()
+                                    )
+                                except Exception:
+                                    pass
                     except Exception as _coh_ac_err:
                         self.provenance_tracker.record_after("auto_critic", C_star)
                         self.coherence_registry.register_output(
@@ -29596,6 +29761,20 @@ class AEONDeltaV3(nn.Module):
                             "Coherence-driven auto-critic failed: %s",
                             _coh_ac_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="coherence_auto_critic_failure",
+                                strategy_used="skip_auto_critic",
+                                success=False,
+                                metadata={"error": str(_coh_ac_err)},
+                            )
+                            if self.metacognitive_trigger is not None:
+                                try:
+                                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                                        self.error_evolution.get_error_summary()
+                                    )
+                                except Exception:
+                                    pass
             # 5a-iii-d2. Coherence → CausalContextWindowManager — record
             # the coherence verification result in the causal context
             # hierarchy so that cross-temporal reasoning benefits from
@@ -30020,6 +30199,20 @@ class AEONDeltaV3(nn.Module):
                             "Post-deeper coherence re-verification error "
                             "(non-fatal): %s", _deeper_coh_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class="deeper_coherence_recheck_failure",
+                                strategy_used="skip_recheck",
+                                success=False,
+                                metadata={"error": str(_deeper_coh_err)},
+                            )
+                            if self.metacognitive_trigger is not None:
+                                try:
+                                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                                        self.error_evolution.get_error_summary()
+                                    )
+                                except Exception:
+                                    pass
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
