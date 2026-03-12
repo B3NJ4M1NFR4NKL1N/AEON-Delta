@@ -22389,6 +22389,13 @@ class AEONDeltaV3(nn.Module):
         ("rssm", "integration"),
         ("multimodal", "integration"),
         ("integration", "auto_critic"),
+        # ── Auto-critic revision path ─────────────────────────────
+        # The auto-critic's internal revision step records provenance
+        # under "auto_critic_revision".  This edge ensures
+        # trace_root_cause() can walk backward from auto_critic_revision
+        # through auto_critic and ultimately reach the 'input' entry
+        # point, maintaining full causal transparency.
+        ("auto_critic", "auto_critic_revision"),
         # Cross-validation reconciliation sits between causal models
         # and downstream modules; metacognitive trigger and deeper
         # meta-loop feed back into the pipeline when re-reasoning
@@ -22834,6 +22841,9 @@ class AEONDeltaV3(nn.Module):
         "grounded_multimodal": "grounded_multimodal",
         "integration": "integration_proj",
         "auto_critic": "auto_critic",
+        # auto_critic_revision is the internal revision step of the
+        # auto-critic — backed by the same auto_critic module.
+        "auto_critic_revision": "auto_critic",
         # output_reliability is a virtual node gated by the
         # module_coherence attribute.
         "output_reliability": "module_coherence",
@@ -27913,9 +27923,23 @@ class AEONDeltaV3(nn.Module):
             self.convergence_monitor.record_secondary_signal(
                 "causal_quality_deficit", 1.0 - self._cached_causal_quality,
             )
+        # Capture prior divergence state before the check() call —
+        # the fresh residual may pull avg_contraction below 1.0, flipping
+        # the status to "converging" even though the monitor was previously
+        # diverging.  We check the monitor's existing history directly
+        # so that externally-forced divergence (e.g. from prior checks)
+        # is preserved as a coherence deficit.
+        _was_diverging = False
+        _hist = self.convergence_monitor.history
+        if len(_hist) >= 3:
+            _prev_ratios = [
+                _hist[i] / max(_hist[i - 1], 1e-12)
+                for i in range(1, len(_hist))
+            ]
+            _was_diverging = float(np.mean(_prev_ratios)) >= 1.0
         convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
         is_diverging = convergence_verdict.get('status') == 'diverging'
-        if is_diverging and not fast:
+        if (is_diverging or _was_diverging) and not fast:
             self.audit_log.record("convergence_monitor", "diverging", {
                 "residual_norm": residual_norm_scalar,
                 "verdict": convergence_verdict,
@@ -29366,9 +29390,15 @@ class AEONDeltaV3(nn.Module):
                     _cs_val = _coherence_score.mean().item()
                 else:
                     _cs_val = float(_coherence_score)
-                self._cached_coherence_deficit = float(max(0.0, min(1.0, 1.0 - _cs_val)))
+                self._cached_coherence_deficit = max(
+                    self._cached_coherence_deficit,
+                    float(max(0.0, min(1.0, 1.0 - _cs_val))),
+                )
             else:
-                self._cached_coherence_deficit = 1.0 if _coherence_deficit else 0.0
+                self._cached_coherence_deficit = max(
+                    self._cached_coherence_deficit,
+                    1.0 if _coherence_deficit else 0.0,
+                )
             # Record coherence deficit in error evolution tracker so the
             # system can learn from coherence failures over time.
             if _coherence_deficit and self.error_evolution is not None:
@@ -37770,8 +37800,9 @@ class AEONDeltaV3(nn.Module):
                 coherence_results = _post_coh_results
             _coherence_deficit = coherence_results.get("needs_recheck", False)
             # Update cached coherence deficit for next pass's feedback bus
-            self._cached_coherence_deficit = float(
-                max(0.0, min(1.0, 1.0 - _post_coh_score))
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit,
+                float(max(0.0, min(1.0, 1.0 - _post_coh_score))),
             )
             self.audit_log.record("module_coherence", "post_revision_recheck", {
                 "coherence_score": _post_coh_score,
