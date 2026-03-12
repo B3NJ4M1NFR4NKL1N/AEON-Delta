@@ -67815,6 +67815,8 @@ def run_all_tests():
     test_verify_causal_chain_gap_adapts_trigger()
     test_ucc_evaluate_post_phase2_consolidation()
     test_system_emergence_report_post_reinforcement_adaptation()
+    test_verify_and_reinforce_records_provenance_delta()
+    test_self_diagnostic_no_provenance_gap_after_activation()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -80373,6 +80375,70 @@ def test_system_emergence_report_post_reinforcement_adaptation():
         "Post-reinforcement metacognitive adaptation comment"
     )
     print("✅ test_system_emergence_report_post_reinforcement_adaptation PASSED")
+
+
+def test_verify_and_reinforce_records_provenance_delta():
+    """verify_and_reinforce() records a provenance delta so that
+    verify_cognitive_unity() does not flag it as an active-but-untraced
+    subsystem.  This closes the causal transparency gap where the
+    reinforcement cycle was visible in the coherence registry but
+    invisible to provenance analysis."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Clear any init-time provenance delta for verify_and_reinforce
+    # so we can verify the method itself writes it.
+    if model.provenance_tracker is not None:
+        model.provenance_tracker._deltas.pop(
+            'verify_and_reinforce', None,
+        )
+
+    # Call verify_and_reinforce
+    result = model.verify_and_reinforce()
+
+    # Provenance delta must now exist
+    assert 'verify_and_reinforce' in model.provenance_tracker._deltas, (
+        "verify_and_reinforce must record a provenance delta "
+        "to satisfy causal transparency"
+    )
+    delta = model.provenance_tracker._deltas['verify_and_reinforce']
+    assert isinstance(delta, float), "provenance delta must be a float"
+    assert delta >= 0.0, "provenance delta must be non-negative"
+    print("✅ test_verify_and_reinforce_records_provenance_delta PASSED")
+
+
+def test_self_diagnostic_no_provenance_gap_after_activation():
+    """After cognitive activation, self_diagnostic() must report zero
+    gaps for the verify_and_reinforce provenance trace.  This confirms
+    the causal transparency requirement is fully met at init time."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    diag = model.self_diagnostic()
+    gaps = diag.get('gaps', [])
+    # No gap should mention 'verify_and_reinforce' in provenance
+    provenance_gaps = [
+        g for g in gaps
+        if 'verify_and_reinforce' in str(g.get('gap', ''))
+        and 'provenance' in str(g.get('gap', '')).lower()
+    ]
+    assert len(provenance_gaps) == 0, (
+        f"Expected no provenance gap for verify_and_reinforce, "
+        f"but found: {provenance_gaps}"
+    )
+    print("✅ test_self_diagnostic_no_provenance_gap_after_activation PASSED")
 
 
 if __name__ == "__main__":

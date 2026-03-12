@@ -48050,6 +48050,24 @@ class AEONDeltaV3(nn.Module):
                 self.coherence_registry.get_low_quality_subsystems()
             )
 
+        # --- Record provenance delta so verify_cognitive_unity() does
+        # not flag verify_and_reinforce as "untraced in provenance".
+        # Previously, provenance deltas were only recorded when
+        # verify_and_reinforce was called from within _forward_impl
+        # (periodic or uncertainty-triggered paths).  When called
+        # during the cognitive activation probe (step 8) or via the
+        # /api/verify_and_reinforce endpoint, no provenance delta
+        # was written, causing verify_cognitive_unity() to classify
+        # it as an active-but-untraced subsystem — a false causal
+        # transparency gap.  Recording the delta here ensures every
+        # invocation is provenance-visible, closing the feedback loop
+        # between the reinforcement cycle and the causal transparency
+        # requirement. ---
+        if self.provenance_tracker is not None:
+            self.provenance_tracker._deltas[
+                'verify_and_reinforce'
+            ] = 1.0 - _overall_score
+
         report['reinforcement_actions'] = reinforcement_actions
         report['causal_chain_traceable'] = (
             _chain_result.get('traceable', True)
