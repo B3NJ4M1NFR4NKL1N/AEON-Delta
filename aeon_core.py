@@ -17214,12 +17214,15 @@ class MetaCognitiveRecursionTrigger:
                 # Fallback: unmapped error classes default to the
                 # "uncertainty" signal so that novel failure modes still
                 # influence metacognitive sensitivity rather than being
-                # silently ignored.
+                # silently ignored.  Auto-register the mapping so
+                # subsequent calls resolve without the prefix scan,
+                # enabling dynamic signal expansion at runtime.
                 logger.debug(
                     "adapt_weights_from_evolution: unmapped error class "
                     "'%s' defaulting to 'uncertainty' signal", cls_name,
                 )
                 signal = "uncertainty"
+                _class_to_signal[cls_name] = signal
             success_rate = stats.get("success_rate", 1.0)
             # Bidirectional: low success → positive adjustment (boost),
             # high success → negative adjustment (dampen).  The neutral
@@ -17694,6 +17697,19 @@ class MetaCognitiveRecursionTrigger:
         self._cross_pass_trigger_ema = (
             self._CROSS_PASS_EMA_ALPHA * trigger_score
             + (1.0 - self._CROSS_PASS_EMA_ALPHA) * self._cross_pass_trigger_ema
+        )
+        # Apply natural decay to prevent unbounded pressure
+        # accumulation.  Without this, persistent sub-threshold
+        # pressure grows monotonically and never subsides even when
+        # the system stabilises, causing permanent trigger hyper-
+        # sensitivity.  A gentle decay (factor 0.95) preserves the
+        # cross-pass memory while ensuring the EMA trends toward
+        # zero in the absence of continued pressure.  The cap at
+        # 2.0 provides an absolute upper bound.
+        _EMA_DECAY = 0.95
+        _EMA_CAP = 2.0
+        self._cross_pass_trigger_ema = min(
+            _EMA_CAP, self._cross_pass_trigger_ema * _EMA_DECAY,
         )
         effective_trigger_score = trigger_score + (
             self._cross_pass_trigger_ema * self._CROSS_PASS_EMA_BOOST
@@ -41399,8 +41415,30 @@ class AEONDeltaV3(nn.Module):
         # The re-evaluation result is stored so downstream consumers can
         # trace whether the post-pipeline metacognitive cycle fired.
         _final_uncertainty = result.get('uncertainty', 0.0)
+        # Use a dynamic threshold derived from the trigger's own
+        # threshold rather than a hard-coded 0.5.  This ensures
+        # moderate uncertainty (0.2-0.5) still initiates a
+        # meta-cognitive review, satisfying the requirement that
+        # *any* internal uncertainty automatically triggers a
+        # higher-order review cycle.  The coherence deficit is
+        # also checked as an independent trigger condition so
+        # that post-pipeline coherence degradation is not silently
+        # ignored when uncertainty alone is low.
+        _post_pipeline_threshold = min(
+            0.2,
+            getattr(
+                self.metacognitive_trigger, 'trigger_threshold', 0.3,
+            ) * 0.5 if self.metacognitive_trigger is not None else 0.2,
+        )
+        _coherence_deficit_trigger = (
+            self._cached_cognitive_unity_deficit > 0.3
+            or (1.0 - getattr(
+                self, '_cached_cross_module_coherence', 1.0,
+            )) > 0.3
+        )
         if (self.metacognitive_trigger is not None
-                and _final_uncertainty > 0.5):
+                and (_final_uncertainty > _post_pipeline_threshold
+                     or _coherence_deficit_trigger)):
             try:
                 _post_pipeline_signals = {
                     'uncertainty': _final_uncertainty,
@@ -46415,6 +46453,25 @@ class AEONDeltaV3(nn.Module):
                 1.0 - len(_uncovered) / max(len(_expected_signals), 1)
             )
             if _uncovered:
+                # ── Enforcement: auto-register missing signal weights ──
+                # Rather than only recommending the addition of missing
+                # weights, actively register them with the default weight
+                # so the trigger can respond to all uncertainty sources
+                # from the next forward pass onward.  This converts
+                # verify_cognitive_unity() from a passive validator into
+                # an active enforcer of metacognitive completeness.
+                _default_w = getattr(
+                    _trigger, '_DEFAULT_WEIGHT', 1.0 / 13.0,
+                )
+                for _sig in _uncovered:
+                    _trigger._signal_weights[_sig] = _default_w
+                # Re-normalise after injection.
+                _total_w = sum(_trigger._signal_weights.values())
+                if _total_w > 0:
+                    _trigger._signal_weights = {
+                        k: v / _total_w
+                        for k, v in _trigger._signal_weights.items()
+                    }
                 recommendations.append(
                     f"Add metacognitive trigger weights for: "
                     f"{', '.join(_uncovered)}"
@@ -47876,6 +47933,24 @@ class AEONDeltaV3(nn.Module):
                     'evolution — logged for traceability'
                 )
 
+        # --- Normalize metacognitive trigger weights after compound
+        # boosts.  Multiple weight sources (auto-correction loop,
+        # per-axiom boosts, and adapt_weights_from_evolution) can
+        # compound within a single verify_and_reinforce cycle,
+        # causing individual signal weights to exceed reasonable
+        # bounds.  Normalizing here ensures the weight vector sums
+        # to 1.0, preventing any single signal from dominating
+        # metacognitive decisions purely due to compounding. ---
+        if self.metacognitive_trigger is not None:
+            _sw = getattr(
+                self.metacognitive_trigger, '_signal_weights', None,
+            )
+            if _sw:
+                _total = sum(_sw.values())
+                if _total > 0:
+                    for _k in _sw:
+                        _sw[_k] = _sw[_k] / _total
+
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
         _overall_score = report.get('overall_score', 1.0)
@@ -48796,12 +48871,28 @@ class AEONDeltaV3(nn.Module):
                 _queue.extend(_adjacency.get(_node, set()) - _visited)
             _chain_connected = len(_visited) >= len(_found_subsystems)
 
+        # ── Root-cause chain acyclicity validation ──────────────────
+        # Verify that the root_cause_sample chain is acyclic — i.e.
+        # that no subsystem appears more than once in the sampled
+        # chain.  A cyclic root-cause chain would indicate a circular
+        # dependency in the causal reasoning, violating the
+        # transparency requirement that every conclusion can be
+        # traced to an originating *premise* (not a loop).
+        _chain_acyclic = True
+        if root_cause_sample:
+            _chain_subs = [
+                e.get('subsystem', '') for e in root_cause_sample
+                if isinstance(e, dict)
+            ]
+            _chain_acyclic = len(_chain_subs) == len(set(_chain_subs))
+
         result = {
             "traceable": len(_untraced) == 0,
             "traced_subsystems": sorted(_found_subsystems),
             "untraced_subsystems": _untraced,
             "coverage": _coverage,
             "chain_connected": _chain_connected,
+            "chain_acyclic": _chain_acyclic,
             "root_cause_sample": root_cause_sample,
             "total_entries": len(entries),
         }
@@ -48815,6 +48906,7 @@ class AEONDeltaV3(nn.Module):
                     'traceable': result['traceable'],
                     'coverage': result['coverage'],
                     'chain_connected': result['chain_connected'],
+                    'chain_acyclic': result['chain_acyclic'],
                     'untraced': _untraced,
                 },
             )
@@ -48896,6 +48988,7 @@ class AEONDeltaV3(nn.Module):
             'events_imported': 0,
             'convergence_adjusted': False,
             'trigger_adapted': False,
+            'step_status': {},
         }
 
         # 1. Import training error patterns via the existing bridge.
@@ -48920,15 +49013,18 @@ class AEONDeltaV3(nn.Module):
                     ),
                 )
                 result['events_imported'] = n_imported
+                result['step_status']['error_bridge'] = 'ok'
             except ImportError:
                 logger.warning(
                     "sync_from_training: ae_train not available; "
                     "skipping error bridge"
                 )
+                result['step_status']['error_bridge'] = 'skipped'
             except Exception as e:
                 logger.warning(
                     "sync_from_training: error bridge failed: %s", e,
                 )
+                result['step_status']['error_bridge'] = 'failed'
 
         # 2. Adapt metacognitive trigger weights from imported patterns.
         if (self.metacognitive_trigger is not None
@@ -48940,10 +49036,12 @@ class AEONDeltaV3(nn.Module):
                         summary,
                     )
                     result['trigger_adapted'] = True
+                result['step_status']['trigger_adaptation'] = 'ok'
             except Exception as e:
                 logger.warning(
                     "sync_from_training: trigger adaptation failed: %s", e,
                 )
+                result['step_status']['trigger_adaptation'] = 'failed'
 
         # 3. Adjust convergence thresholds based on imported history.
         if (self.error_evolution is not None
@@ -48968,11 +49066,13 @@ class AEONDeltaV3(nn.Module):
                         self.meta_loop.convergence_threshold,
                         divergence_count,
                     )
+                result['step_status']['convergence_adjustment'] = 'ok'
             except Exception as e:
                 logger.warning(
                     "sync_from_training: convergence adjustment "
                     "failed: %s", e,
                 )
+                result['step_status']['convergence_adjustment'] = 'failed'
 
         # 4. Import cognitive memory snapshots for cross-session
         #    continuity.  When a memory snapshot directory is available,
@@ -48991,6 +49091,7 @@ class AEONDeltaV3(nn.Module):
                     )
                     _imported = sum(1 for v in _mem_results.values() if v)
                     result['memory_snapshots_imported'] = _imported
+                    result['step_status']['memory_snapshot'] = 'ok'
                     if _imported > 0:
                         logger.info(
                             "sync_from_training: imported %d memory "
@@ -49002,6 +49103,7 @@ class AEONDeltaV3(nn.Module):
                         "sync_from_training: memory snapshot import "
                         "failed: %s", e,
                     )
+                    result['step_status']['memory_snapshot'] = 'failed'
 
         # 5. Bridge inference insights back into training parameters.
         #    This closes the bidirectional feedback loop — steps 1-3
@@ -49025,16 +49127,19 @@ class AEONDeltaV3(nn.Module):
                     inference_uncertainty_tracker=_unc_tracker,
                 )
                 result['inference_to_training_adjustments'] = _n_adjustments
+                result['step_status']['inference_to_training'] = 'ok'
             except ImportError:
                 logger.debug(
                     "sync_from_training: ae_train not available; "
                     "skipping inference→training bridge"
                 )
+                result['step_status']['inference_to_training'] = 'skipped'
             except Exception as e:
                 logger.debug(
                     "sync_from_training: inference→training bridge "
                     "failed (non-fatal): %s", e,
                 )
+                result['step_status']['inference_to_training'] = 'failed'
 
         return result
 
