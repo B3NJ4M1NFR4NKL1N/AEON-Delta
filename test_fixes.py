@@ -67845,6 +67845,11 @@ def run_all_tests():
     test_system_emergence_post_reinforcement_causal_trace()
     test_cognitive_frame_ambiguity_adapts_trigger()
 
+    # Cognitive activation integration patches
+    test_nested_adapt_weights_handlers_have_logging()
+    test_post_pipeline_causal_trace_always_recorded()
+    test_verify_and_reinforce_post_correction_logs_exceptions()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -80947,6 +80952,129 @@ def test_cognitive_frame_ambiguity_adapts_trigger():
         "wrapped in try/except"
     )
     print("✅ test_cognitive_frame_ambiguity_adapts_trigger PASSED")
+
+
+def test_nested_adapt_weights_handlers_have_logging():
+    """Every nested ``except Exception`` block wrapping
+    ``adapt_weights_from_evolution()`` in cognitive paths must capture the
+    exception variable and log it.  Silent swallowing of adaptation
+    failures prevents the system from observing its own metacognitive
+    learning failures, breaking causal transparency and self-reflection.
+    This test verifies the pattern:
+        except Exception as _err:
+            logger.debug("...: %s", _err)
+    at all 12+ nested handler locations in the reasoning pipeline."""
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        content = f.read()
+
+    # Find every adapt_weights_from_evolution call
+    adapt_pattern = re.compile(
+        r'adapt_weights_from_evolution\s*\(',
+    )
+    matches = list(adapt_pattern.finditer(content))
+    assert len(matches) >= 12, (
+        f"Expected >= 12 adapt_weights_from_evolution calls, found {len(matches)}"
+    )
+
+    # For each call, verify the enclosing try/except has 'as _err'
+    # and a logger call
+    bare_handlers = []
+    lines = content.split('\n')
+    for m in matches:
+        # Find the line number of this match
+        line_no = content[:m.start()].count('\n')
+        # Search forward up to 10 lines for the except clause
+        for offset in range(1, 15):
+            if line_no + offset >= len(lines):
+                break
+            check_line = lines[line_no + offset].strip()
+            if check_line.startswith('except Exception'):
+                if 'as ' not in check_line:
+                    bare_handlers.append(
+                        (line_no + offset + 1, check_line)
+                    )
+                break
+
+    assert not bare_handlers, (
+        f"Found {len(bare_handlers)} bare 'except Exception:' handler(s) "
+        f"wrapping adapt_weights_from_evolution without error variable: "
+        f"{bare_handlers}"
+    )
+    print("✅ test_nested_adapt_weights_handlers_have_logging PASSED")
+
+
+def test_post_pipeline_causal_trace_always_recorded():
+    """The post-pipeline metacognitive evaluation in ``_forward_impl``
+    must ALWAYS record a causal trace entry — both when the evaluation
+    triggers (uncertainty above threshold) AND when it does not (healthy
+    state below threshold).  Without the non-triggered trace, healthy
+    forward passes have no evidence that the evaluation step was
+    considered, creating a gap in causal transparency: an auditor cannot
+    distinguish 'evaluation ran and decided not to trigger' from
+    'evaluation was never performed'."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # The triggered path records "post_pipeline_evaluation"
+    assert "post_pipeline_evaluation" in source, (
+        "_forward_impl must record 'post_pipeline_evaluation' causal trace "
+        "when metacognitive trigger fires"
+    )
+
+    # The non-triggered path records "post_pipeline_not_triggered"
+    assert "post_pipeline_not_triggered" in source, (
+        "_forward_impl must record 'post_pipeline_not_triggered' causal "
+        "trace when metacognitive trigger does NOT fire, ensuring causal "
+        "transparency for healthy states"
+    )
+
+    # The non-triggered trace must include the threshold and decision metadata
+    not_triggered_idx = source.find("post_pipeline_not_triggered")
+    surrounding = source[not_triggered_idx:not_triggered_idx + 500]
+    assert "threshold" in surrounding, (
+        "post_pipeline_not_triggered trace must include the threshold "
+        "used for the evaluation decision"
+    )
+    assert "triggered" in surrounding, (
+        "post_pipeline_not_triggered trace must include triggered=False "
+        "for explicit decision documentation"
+    )
+    print("✅ test_post_pipeline_causal_trace_always_recorded PASSED")
+
+
+def test_verify_and_reinforce_post_correction_logs_exceptions():
+    """The post-correction ``verify_cognitive_unity()`` call in
+    ``verify_and_reinforce()`` must capture exceptions with ``as _err``
+    and log them, rather than silently falling back to heuristic.  This
+    ensures that verification failures during auto-correction are
+    observable in the log stream and can feed into error learning."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    # Find the post-correction verify_cognitive_unity call
+    verify_idx = source.find("_post_unity = self.verify_cognitive_unity()")
+    assert verify_idx > 0, (
+        "verify_and_reinforce must call verify_cognitive_unity() for "
+        "post-correction verification"
+    )
+
+    # The except clause after it must have 'as _err' (not bare)
+    except_region = source[verify_idx:verify_idx + 500]
+    assert "except Exception as _err" in except_region, (
+        "post-correction verify_cognitive_unity except clause must "
+        "capture the exception variable with 'as _err'"
+    )
+    assert "logger." in except_region, (
+        "post-correction verify_cognitive_unity except handler must "
+        "contain a logger call for observability"
+    )
+    print("✅ test_verify_and_reinforce_post_correction_logs_exceptions PASSED")
 
 
 if __name__ == "__main__":

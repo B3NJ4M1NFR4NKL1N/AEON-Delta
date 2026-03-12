@@ -27434,8 +27434,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (world_model_verification): %s", _err)
             finally:
                 self._cached_world_model_prediction = None
 
@@ -27499,8 +27499,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (hwm_verification): %s", _err)
             finally:
                 self._cached_hwm_prediction = None
 
@@ -27801,8 +27801,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (causal_context_conditioning): %s", _err)
         
         # 0i. Pre-meta-loop memory coherence validation — validate that
         # the retrieved memory signal is consistent with the current input
@@ -27880,8 +27880,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (memory_validation): %s", _err)
             self.provenance_tracker.record_after(
                 "memory_validation", z_conditioned,
             )
@@ -28069,8 +28069,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (convergence_certificate): %s", _err)
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
         # window monitor to detect sustained divergence across forward
@@ -28482,8 +28482,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (ewc_drift): %s", _err)
         
         # 1a-v. VQ codebook utilization feedback — when the vector
         # quantizer has low codebook utilization (many dead codes),
@@ -28570,8 +28570,8 @@ class AEONDeltaV3(nn.Module):
                                         self.metacognitive_trigger.adapt_weights_from_evolution(
                                             self.error_evolution.get_error_summary()
                                         )
-                                    except Exception:
-                                        pass
+                                    except Exception as _err:
+                                        logger.debug("adapt_weights failed (vq_auto_critic): %s", _err)
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
                 _vq_err_boost = min(1.0 - uncertainty, 0.05)
@@ -28591,8 +28591,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (vq_utilization_check): %s", _err)
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -29049,8 +29049,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (social_cognition): %s", _err)
         else:
             self._cached_social_pressure = 0.0
 
@@ -29106,8 +29106,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights failed (code_execution_sandbox): %s", _err)
         else:
             self._cached_sandbox_pressure = 0.0
 
@@ -29832,8 +29832,8 @@ class AEONDeltaV3(nn.Module):
                                     self.metacognitive_trigger.adapt_weights_from_evolution(
                                         self.error_evolution.get_error_summary()
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _err:
+                                    logger.debug("adapt_weights failed (coherence_auto_critic): %s", _err)
             # 5a-iii-d2. Coherence → CausalContextWindowManager — record
             # the coherence verification result in the causal context
             # hierarchy so that cross-temporal reasoning benefits from
@@ -30270,8 +30270,8 @@ class AEONDeltaV3(nn.Module):
                                     self.metacognitive_trigger.adapt_weights_from_evolution(
                                         self.error_evolution.get_error_summary()
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _err:
+                                    logger.debug("adapt_weights failed (deeper_coherence_recheck): %s", _err)
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
@@ -41506,6 +41506,27 @@ class AEONDeltaV3(nn.Module):
                             "Post-pipeline metacognitive weight adaptation "
                             "failed after evaluation error: %s", _adapt_err
                         )
+        else:
+            # ── Causal transparency for non-triggered evaluations ──
+            # When the post-pipeline metacognitive evaluation does NOT
+            # fire (uncertainty below threshold AND no coherence deficit),
+            # record a causal trace entry documenting the decision not to
+            # trigger.  Without this, healthy forward passes have no
+            # causal trace evidence for the post-pipeline evaluation step,
+            # creating a gap in root-cause traceability: an auditor cannot
+            # distinguish "evaluation ran and decided not to trigger" from
+            # "evaluation was never performed".
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "metacognitive_trigger",
+                    "post_pipeline_not_triggered",
+                    metadata={
+                        'final_uncertainty': _final_uncertainty,
+                        'threshold': _post_pipeline_threshold,
+                        'coherence_deficit_trigger': _coherence_deficit_trigger,
+                        'triggered': False,
+                    },
+                )
 
         return result
     
@@ -47182,8 +47203,8 @@ class AEONDeltaV3(nn.Module):
         if self.feedback_bus is not None:
             try:
                 _fb_oscillation = self.feedback_bus.get_oscillation_score()
-            except Exception:
-                logger.debug("feedback_bus.get_oscillation_score() failed in health check")
+            except Exception as _err:
+                logger.debug("feedback_bus.get_oscillation_score() failed in health check: %s", _err)
         _fb_stability = 1.0 - _fb_oscillation
 
         # Composite health: weighted average of four verification axes.
@@ -47711,8 +47732,8 @@ class AEONDeltaV3(nn.Module):
                     _post_correction_success = (
                         _post_overall >= 0.8 or _post_overall > _score
                     )
-                except Exception:
-                    pass  # fall back to heuristic
+                except Exception as _err:
+                    logger.debug("post-correction verify_cognitive_unity failed: %s", _err)
                 self.error_evolution.record_episode(
                     error_class=_ec,
                     strategy_used=_best,
