@@ -67885,6 +67885,13 @@ def run_all_tests():
     test_activation_probe_calls_emergence_report()
     test_activation_probe_stores_emergence_status()
     test_activation_probe_emergence_triggers_reinforcement()
+    # ── Emergence deficit trigger & convergence snapshot patches ──
+    test_emergence_deficit_trigger_in_post_pipeline()
+    test_emergence_deficit_trigger_causal_trace()
+    test_cognitive_state_snapshot_includes_convergence()
+    test_cognitive_state_snapshot_convergence_runtime()
+    test_dag_consensus_disagreement_error_evolution()
+    test_auto_critic_low_quality_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81288,15 +81295,15 @@ def test_convergence_instability_error_class_registered():
 
 def test_cognitive_state_snapshot_health_score_includes_feedback_bus():
     """The system_health_score in get_cognitive_state_snapshot() must
-    account for the feedback_bus component (7 total components)."""
+    account for the feedback_bus and convergence components (8 total)."""
     import inspect
     from aeon_core import AEONDeltaV3
 
     source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
 
-    assert '_n_components = 7' in source, (
-        "get_cognitive_state_snapshot health score must count 7 "
-        "components (including feedback_bus)"
+    assert '_n_components = 8' in source, (
+        "get_cognitive_state_snapshot health score must count 8 "
+        "components (including feedback_bus and convergence)"
     )
     print("✅ test_cognitive_state_snapshot_health_score_includes_feedback_bus PASSED")
 
@@ -81589,6 +81596,99 @@ def test_activation_probe_emergence_triggers_reinforcement():
         "in _initial_emergence_status"
     )
     print("✅ test_activation_probe_emergence_triggers_reinforcement PASSED")
+
+
+# ============================================================================
+# Final Integration — Emergence Deficit Trigger & Convergence Snapshot Patches
+# ============================================================================
+
+def test_emergence_deficit_trigger_in_post_pipeline():
+    """Post-pipeline metacognitive re-evaluation must include
+    _emergence_deficit_trigger as a third independent trigger condition
+    alongside uncertainty and coherence deficit, ensuring that emergence
+    failure always initiates a higher-order review cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_emergence_deficit_trigger' in source, (
+        "_forward_impl must compute _emergence_deficit_trigger"
+    )
+    assert 'or _emergence_deficit_trigger' in source, (
+        "post-pipeline metacognitive condition must include "
+        "_emergence_deficit_trigger as an independent trigger"
+    )
+    print("✅ test_emergence_deficit_trigger_in_post_pipeline PASSED")
+
+
+def test_emergence_deficit_trigger_causal_trace():
+    """Post-pipeline causal trace metadata must include
+    emergence_deficit_trigger for full traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "'emergence_deficit_trigger'" in source, (
+        "post-pipeline causal trace must record emergence_deficit_trigger"
+    )
+    print("✅ test_emergence_deficit_trigger_causal_trace PASSED")
+
+
+def test_cognitive_state_snapshot_includes_convergence():
+    """get_cognitive_state_snapshot() must aggregate convergence monitor
+    state as a named component alongside the other subsystems."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+    assert "snapshot['convergence']" in source, (
+        "get_cognitive_state_snapshot must include convergence component"
+    )
+    assert 'get_convergence_summary' in source, (
+        "convergence component must call get_convergence_summary()"
+    )
+    print("✅ test_cognitive_state_snapshot_includes_convergence PASSED")
+
+
+def test_cognitive_state_snapshot_convergence_runtime():
+    """Runtime: get_cognitive_state_snapshot() returns a convergence
+    entry that is not None when convergence_monitor is present."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+    snap = model.get_cognitive_state_snapshot()
+    assert 'convergence' in snap, (
+        "snapshot must contain 'convergence' key"
+    )
+    assert snap['convergence'] is not None, (
+        "convergence component must not be None when monitor is present"
+    )
+    print("✅ test_cognitive_state_snapshot_convergence_runtime PASSED")
+
+
+def test_dag_consensus_disagreement_error_evolution():
+    """compute_loss must record dag_consensus_disagreement to
+    error_evolution when consensus score < 0.5, closing the feedback
+    loop between causal model agreement and metacognitive learning."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.compute_loss)
+    assert "error_class='dag_consensus_disagreement'" in source, (
+        "compute_loss must record dag_consensus_disagreement "
+        "to error_evolution when consensus is low"
+    )
+    print("✅ test_dag_consensus_disagreement_error_evolution PASSED")
+
+
+def test_auto_critic_low_quality_error_evolution():
+    """compute_loss must record auto_critic_low_quality to
+    error_evolution when auto-critic score < 0.5, closing the feedback
+    loop between auto-critic assessment and metacognitive learning."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.compute_loss)
+    assert "error_class='auto_critic_low_quality'" in source, (
+        "compute_loss must record auto_critic_low_quality "
+        "to error_evolution when critic score is low"
+    )
+    print("✅ test_auto_critic_low_quality_error_evolution PASSED")
 
 
 
