@@ -17173,6 +17173,11 @@ class MetaCognitiveRecursionTrigger:
             # failed during get_cognitive_state_snapshot(), indicating
             # that the unified cognitive view is incomplete.
             "cognitive_snapshot_degradation": "uncertainty",
+            # Convergence instability — verify_and_reinforce detected
+            # a diverging convergence monitor, indicating that the
+            # meta-loop fixed-point iteration is moving away from
+            # the contraction guarantee.
+            "convergence_instability": "convergence_verdict",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18556,6 +18561,10 @@ class CausalErrorEvolutionTracker:
         # aggregated state snapshot.  Maps to lambda_self_consistency
         # so training strengthens overall system stability.
         "cognitive_snapshot_degradation": "lambda_self_consistency",
+        # Convergence instability — verify_and_reinforce detected a
+        # diverging convergence monitor.  Maps to lambda_lipschitz so
+        # training strengthens contraction guarantees.
+        "convergence_instability": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -39883,7 +39892,7 @@ class AEONDeltaV3(nn.Module):
                                 "failed: %s", _degen_adapt_err2,
                             )
             except (RuntimeError, ValueError) as _dec_err:
-                logging.warning("Decoder degenerate-output check failed: %s", _dec_err)
+                logger.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class='decoder_degenerate_check_failure',
@@ -40257,6 +40266,22 @@ class AEONDeltaV3(nn.Module):
                                     "Late meta-loop trigger adaptation failed: %s",
                                     _late_adapt_err,
                                 )
+                    # Record the failure in the causal trace so that
+                    # root-cause analysis can trace late meta-loop
+                    # failures back to the originating exception,
+                    # ensuring causal transparency for post-output
+                    # corrective computations.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "late_meta_loop", "failure",
+                            metadata={
+                                'error': str(_late_err),
+                                'causal_prerequisites': [
+                                    'reasoning_core',
+                                    'metacognitive_trigger',
+                                ],
+                            },
+                        )
                 # Record the late rerun decision in causal_decision_chain
                 # so that the post-output corrective computation is
                 # deterministically traceable regardless of success/failure.
@@ -41392,6 +41417,23 @@ class AEONDeltaV3(nn.Module):
                         'reinforcement_applied': _applied_reinforcement is not None,
                     },
                 )
+                # Record in causal trace so root-cause analysis can
+                # deterministically trace emergence deficits back to
+                # the weakest axiom, closing the gap where emergence
+                # failures were visible in error evolution but invisible
+                # to verify_causal_chain() and trace_root_cause().
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "emergence_monitor", "deficit",
+                        metadata={
+                            'forward_pass': _fwd,
+                            'weakest_axiom_score': _weakest_axiom_score,
+                            'causal_prerequisites': [
+                                'verify_cognitive_unity',
+                                'verify_and_reinforce',
+                            ],
+                        },
+                    )
 
         # ===== CONSOLIDATED METACOGNITIVE ADAPTATION =====
         # Batch-adapt metacognitive trigger weights from all error
@@ -47583,6 +47625,52 @@ class AEONDeltaV3(nn.Module):
                     _axiom_adapt_err,
                 )
 
+        # --- Feed convergence monitor health into error evolution ---
+        # Check convergence stability and record an episode when the
+        # convergence monitor reports a diverging or unstable state.
+        # This closes the gap where verify_and_reinforce() checked
+        # axiom scores and wiring coverage but never consulted the
+        # convergence monitor — leaving convergence instability
+        # invisible to the reinforcement loop and preventing the
+        # metacognitive trigger from learning about divergence.
+        if self.convergence_monitor is not None:
+            try:
+                _conv_summary = (
+                    self.convergence_monitor.get_convergence_summary()
+                )
+                _conv_status = _conv_summary.get('status', 'unknown')
+                if (_conv_status == 'diverging'
+                        and self.error_evolution is not None):
+                    self.error_evolution.record_episode(
+                        error_class='convergence_instability',
+                        strategy_used='verify_and_reinforce_convergence',
+                        success=False,
+                        metadata={
+                            'convergence_status': _conv_status,
+                            'summary': _conv_summary,
+                        },
+                    )
+                    reinforcement_actions.append(
+                        f'Recorded convergence_instability episode '
+                        f'(status={_conv_status})'
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _conv_adapt_err:
+                            logger.debug(
+                                "Convergence instability trigger "
+                                "adaptation failed: %s",
+                                _conv_adapt_err,
+                            )
+            except Exception as _conv_err:
+                logger.debug(
+                    "verify_and_reinforce: convergence monitor "
+                    "check failed: %s", _conv_err,
+                )
+
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
         # pipeline_wiring_gap episode so the error evolution tracker
@@ -48710,8 +48798,9 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with keys: ``metacognitive``, ``causal_chain``,
             ``emergence``, ``unity``, ``reinforcement``,
-            ``error_evolution``, ``system_health_score``,
-            ``degraded_subsystems``, ``timestamp``.
+            ``error_evolution``, ``feedback_bus``,
+            ``system_health_score``, ``degraded_subsystems``,
+            ``timestamp``.
         """
         snapshot: Dict[str, Any] = {'timestamp': time.time()}
         _degraded: List[str] = []
@@ -48775,12 +48864,78 @@ class AEONDeltaV3(nn.Module):
         else:
             snapshot['error_evolution'] = None
 
+        # ── Feedback bus state ─────────────────────────────────────
+        # Include the feedback bus signal state in the snapshot so
+        # that consumers can observe signal trends, EMA values, and
+        # oscillation detection without calling the feedback bus
+        # directly.  This closes the gap where the cognitive state
+        # snapshot aggregated six sub-components (metacognitive,
+        # causal_chain, emergence, unity, reinforcement, error_evolution)
+        # but excluded the feedback bus — the central signal router —
+        # leaving signal coverage and trending data invisible to
+        # unified state consumers.
+        if self.feedback_bus is not None:
+            try:
+                _fb_extra = getattr(
+                    self.feedback_bus, '_extra_signals', {},
+                )
+                if _fb_extra is None:
+                    _fb_extra = {}
+                _fb_ema = getattr(
+                    self.feedback_bus, '_ema_values', None,
+                )
+                _fb_trend = getattr(
+                    self.feedback_bus, '_signal_trend', None,
+                )
+                _fb_evaluated = getattr(
+                    self.feedback_bus, '_init_evaluated', set(),
+                )
+                if _fb_evaluated is None:
+                    _fb_evaluated = set()
+                _signal_count = (
+                    len(_fb_extra) if isinstance(_fb_extra, dict)
+                    else 0
+                )
+                _eval_count = (
+                    len(_fb_evaluated) if isinstance(
+                        _fb_evaluated, (set, list),
+                    )
+                    else 0
+                )
+                _trending = {}
+                if isinstance(_fb_trend, dict):
+                    _trending = {
+                        k: str(v) for k, v in _fb_trend.items()
+                        if str(v) != 'stable'
+                    }
+                snapshot['feedback_bus'] = {
+                    'signal_count': _signal_count,
+                    'evaluated_count': _eval_count,
+                    'coverage': (
+                        _eval_count / max(1, _signal_count)
+                    ),
+                    'ema_signal_count': (
+                        len(_fb_ema) if isinstance(_fb_ema, dict)
+                        else 0
+                    ),
+                    'trending_signals': _trending,
+                }
+            except Exception as _fb_err:
+                logger.warning(
+                    "get_cognitive_state_snapshot: feedback_bus "
+                    "failed: %s", _fb_err,
+                )
+                snapshot['feedback_bus'] = None
+                _degraded.append('feedback_bus')
+        else:
+            snapshot['feedback_bus'] = None
+
         # ── Aggregate overall system health score ──────────────────
         # Synthesize a single 0-1 health score from sub-component
         # results so callers don't need to manually cross-reference
-        # six nested dictionaries.  Each sub-component contributes
+        # seven nested dictionaries.  Each sub-component contributes
         # equally; a None (failed) sub-component scores 0.
-        _n_components = 6
+        _n_components = 7
         _healthy = _n_components - len(_degraded)
         _sub_score = _healthy / _n_components  # base: fraction available
         # Refine with actual scores from successful sub-components
