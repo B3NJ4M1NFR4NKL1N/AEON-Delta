@@ -67858,6 +67858,14 @@ def run_all_tests():
     test_verify_and_reinforce_checks_convergence_monitor()
     test_convergence_instability_error_class_registered()
     test_cognitive_state_snapshot_health_score_includes_feedback_bus()
+    # ── Final Integration — Cognitive Activation Patches ──
+    test_pre_reasoning_subsystems_record_causal_trace()
+    test_pre_reasoning_causal_trace_runtime()
+    test_decoder_success_path_has_causal_trace()
+    test_decoder_causal_trace_runtime()
+    test_verify_and_reinforce_checks_module_health()
+    test_cognitive_activation_probe_verifies_unity()
+    test_cognitive_activation_probe_unity_runtime()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81272,6 +81280,169 @@ def test_cognitive_state_snapshot_health_score_includes_feedback_bus():
         "components (including feedback_bus)"
     )
     print("✅ test_cognitive_state_snapshot_health_score_includes_feedback_bus PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation & System Emergence Patches
+# ============================================================================
+
+def test_pre_reasoning_subsystems_record_causal_trace():
+    """Every pre-reasoning subsystem in _forward_impl must record a
+    causal_trace.record() entry so that verify_causal_chain() can
+    trace through the full encoding→reasoning path."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The batch recording block must iterate over _pre_reasoning_causal_decisions
+    assert "for _pr_subsys, _pr_meta in _pre_reasoning_causal_decisions" in src, (
+        "_forward_impl must iterate over _pre_reasoning_causal_decisions "
+        "to record individual causal_trace entries for pre-reasoning subsystems"
+    )
+    assert 'decision="pre_reasoning"' in src, (
+        "_forward_impl must record causal_trace entries with "
+        "decision='pre_reasoning' for each pre-reasoning subsystem"
+    )
+    print("✅ test_pre_reasoning_subsystems_record_causal_trace PASSED")
+
+
+def test_pre_reasoning_causal_trace_runtime():
+    """Forward pass must produce causal_trace entries for encoder and
+    vector_quantizer subsystems (the two always-active pre-reasoning
+    subsystems)."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    model.causal_trace._entries.clear()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x, decode_mode='inference')
+
+    entries = list(model.causal_trace._entries)
+    subsystems_traced = {
+        e.get('subsystem', '') if isinstance(e, dict)
+        else getattr(e, 'subsystem', '')
+        for e in entries
+    }
+    assert 'encoder' in subsystems_traced, (
+        "Forward pass must produce a causal_trace entry for 'encoder'"
+    )
+    assert 'vector_quantizer' in subsystems_traced, (
+        "Forward pass must produce a causal_trace entry for "
+        "'vector_quantizer'"
+    )
+    print("✅ test_pre_reasoning_causal_trace_runtime PASSED")
+
+
+def test_decoder_success_path_has_causal_trace():
+    """Decoder must record a causal_trace entry on every pass (including
+    the normal success path), not only on failure/high-uncertainty paths."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'decision="decode_complete"' in src, (
+        "_forward_impl must record a causal_trace entry with "
+        "decision='decode_complete' for the decoder success path"
+    )
+    print("✅ test_decoder_success_path_has_causal_trace PASSED")
+
+
+def test_decoder_causal_trace_runtime():
+    """Forward pass must produce a 'decoder' causal_trace entry with
+    decision='decode_complete'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    model.causal_trace._entries.clear()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x, decode_mode='inference')
+
+    entries = list(model.causal_trace._entries)
+    decoder_entries = [
+        e for e in entries
+        if (e.get('subsystem', '') if isinstance(e, dict)
+            else getattr(e, 'subsystem', '')) == 'decoder'
+        and (e.get('decision', '') if isinstance(e, dict)
+             else getattr(e, 'decision', '')) == 'decode_complete'
+    ]
+    assert len(decoder_entries) >= 1, (
+        "Forward pass must produce at least one 'decoder' causal_trace "
+        "entry with decision='decode_complete'"
+    )
+    print("✅ test_decoder_causal_trace_runtime PASSED")
+
+
+def test_verify_and_reinforce_checks_module_health():
+    """verify_and_reinforce() must check per-module health (vq_codebook,
+    output_quality) and feed degraded modules into error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'module_health_' in src, (
+        "verify_and_reinforce must record module_health_* episodes "
+        "in error_evolution for degraded subsystems"
+    )
+    assert '_module_health_checks' in src, (
+        "verify_and_reinforce must maintain a _module_health_checks "
+        "list of per-module health scores"
+    )
+    assert 'vq_codebook' in src, (
+        "verify_and_reinforce must check VQ codebook health"
+    )
+    assert 'output_quality' in src, (
+        "verify_and_reinforce must check output quality health"
+    )
+    print("✅ test_verify_and_reinforce_checks_module_health PASSED")
+
+
+def test_cognitive_activation_probe_verifies_unity():
+    """_cognitive_activation_probe() must call verify_cognitive_unity()
+    after activation to validate subsystem wiring."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'verify_cognitive_unity' in src, (
+        "_cognitive_activation_probe must call verify_cognitive_unity() "
+        "after activation to validate the initial cognitive state"
+    )
+    print("✅ test_cognitive_activation_probe_verifies_unity PASSED")
+
+
+def test_cognitive_activation_probe_unity_runtime():
+    """Constructing AEONDeltaV3 must successfully run the post-activation
+    unity check without raising."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    assert model._cognitive_activation_complete, (
+        "Model must complete cognitive activation (including unity check)"
+    )
+    print("✅ test_cognitive_activation_probe_unity_runtime PASSED")
+
+
+
 
 
 if __name__ == "__main__":
