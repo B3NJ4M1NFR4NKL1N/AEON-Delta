@@ -18027,10 +18027,6 @@ class CausalErrorEvolutionTracker:
         episode metadata when available.  This allows
         :func:`bridge_training_errors_to_inference` and the metacognitive
         trigger to distinguish mild divergence from catastrophic failure.
-
-        Baseline episodes (seeded during cognitive activation) are excluded
-        from per-class statistics so that they remain consistent with the
-        already-adjusted ``total_recorded`` count.
         """
         with self._lock:
             summary: Dict[str, Any] = {
@@ -18038,28 +18034,15 @@ class CausalErrorEvolutionTracker:
                 "error_classes": {},
             }
             for cls, episodes in self._episodes.items():
-                # Filter out baseline episodes so per-class stats are
-                # consistent with the adjusted total_recorded count.
-                non_baseline = [
-                    ep for ep in episodes
-                    if not (
-                        isinstance(ep.get("metadata"), dict)
-                        and ep["metadata"].get("baseline")
-                    )
-                ]
-                if not non_baseline:
-                    continue
-                successes = sum(1 for ep in non_baseline if ep["success"])
+                successes = sum(1 for ep in episodes if ep["success"])
                 cls_stats: Dict[str, Any] = {
-                    "count": len(non_baseline),
-                    "success_rate": successes / max(len(non_baseline), 1),
-                    "strategies_used": list(
-                        {ep["strategy"] for ep in non_baseline}
-                    ),
+                    "count": len(episodes),
+                    "success_rate": successes / max(len(episodes), 1),
+                    "strategies_used": list({ep["strategy"] for ep in episodes}),
                 }
                 loss_values = [
                     ep["metadata"].get("loss_value")
-                    for ep in non_baseline
+                    for ep in episodes
                     if isinstance(ep.get("metadata"), dict)
                     and ep["metadata"].get("loss_value") is not None
                 ]
@@ -44677,9 +44660,8 @@ class AEONDeltaV3(nn.Module):
         # classes, so we distinguish seeded-only (primed) from
         # real-training-bridged (fully active).
         if self.error_evolution is not None:
-            _ee_summary = self.error_evolution.get_error_summary()
             _training_classes = [
-                c for c in _ee_summary.get("error_classes", {})
+                c for c in self.error_evolution._episodes
                 if c.startswith("training_")
             ]
             if _training_classes:
@@ -47071,6 +47053,9 @@ class AEONDeltaV3(nn.Module):
         # validated whether learned strategies were effective, meaning
         # the system could perpetually recommend the same failing
         # strategy without self-correction.
+        # Baseline episodes (seeded during cognitive activation) are
+        # excluded so that init-time artefacts do not inflate the
+        # overall success rate.
         error_evolution_effectiveness: Dict[str, Any] = {}
         _ee = getattr(self, 'error_evolution', None)
         if _ee is not None:
@@ -47079,13 +47064,24 @@ class AEONDeltaV3(nn.Module):
             _ee_class_count = 0
             _ee_total_from_classes = 0
             for _cls, _cls_stats in _ee_summary.get('error_classes', {}).items():
+                # Skip classes whose episodes are all baseline-seeded
+                _cls_episodes = _ee._episodes.get(_cls, [])
+                _non_baseline = [
+                    ep for ep in _cls_episodes
+                    if not (
+                        isinstance(ep.get("metadata"), dict)
+                        and ep["metadata"].get("baseline")
+                    )
+                ]
+                if not _non_baseline:
+                    continue
                 _ee_class_count += 1
-                _cls_count = _cls_stats.get('count', 0)
-                _ee_total_from_classes += _cls_count
-                _ee_successes += int(
-                    _cls_stats.get('success_rate', 0.0)
-                    * _cls_count
+                _nb_count = len(_non_baseline)
+                _ee_total_from_classes += _nb_count
+                _nb_successes = sum(
+                    1 for ep in _non_baseline if ep["success"]
                 )
+                _ee_successes += _nb_successes
             _ee_total = _ee_total_from_classes
             _ee_rate = (
                 _ee_successes / max(_ee_total, 1)
