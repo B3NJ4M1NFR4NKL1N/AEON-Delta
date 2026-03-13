@@ -18027,6 +18027,10 @@ class CausalErrorEvolutionTracker:
         episode metadata when available.  This allows
         :func:`bridge_training_errors_to_inference` and the metacognitive
         trigger to distinguish mild divergence from catastrophic failure.
+
+        Baseline episodes (seeded during cognitive activation) are excluded
+        from per-class statistics so that they remain consistent with the
+        already-adjusted ``total_recorded`` count.
         """
         with self._lock:
             summary: Dict[str, Any] = {
@@ -18034,15 +18038,28 @@ class CausalErrorEvolutionTracker:
                 "error_classes": {},
             }
             for cls, episodes in self._episodes.items():
-                successes = sum(1 for ep in episodes if ep["success"])
+                # Filter out baseline episodes so per-class stats are
+                # consistent with the adjusted total_recorded count.
+                non_baseline = [
+                    ep for ep in episodes
+                    if not (
+                        isinstance(ep.get("metadata"), dict)
+                        and ep["metadata"].get("baseline")
+                    )
+                ]
+                if not non_baseline:
+                    continue
+                successes = sum(1 for ep in non_baseline if ep["success"])
                 cls_stats: Dict[str, Any] = {
-                    "count": len(episodes),
-                    "success_rate": successes / max(len(episodes), 1),
-                    "strategies_used": list({ep["strategy"] for ep in episodes}),
+                    "count": len(non_baseline),
+                    "success_rate": successes / max(len(non_baseline), 1),
+                    "strategies_used": list(
+                        {ep["strategy"] for ep in non_baseline}
+                    ),
                 }
                 loss_values = [
                     ep["metadata"].get("loss_value")
-                    for ep in episodes
+                    for ep in non_baseline
                     if isinstance(ep.get("metadata"), dict)
                     and ep["metadata"].get("loss_value") is not None
                 ]
@@ -50482,10 +50499,12 @@ class AEONDeltaV3(nn.Module):
             if hasattr(self.convergence_monitor, '_secondary_signals'):
                 self.convergence_monitor._secondary_signals.clear()
 
-        # (b) Reset _cached_feedback so the first forward pass starts
-        #     with a clean feedback state, not one leaked from init-time
-        #     verify_coherence().
+        # (b) Reset _cached_feedback and _cached_coherence_deficit so
+        #     the first forward pass starts with a clean state, not one
+        #     leaked from init-time verify_coherence() /
+        #     verify_and_reinforce().
         self._cached_feedback = None
+        self._cached_coherence_deficit = 0.0
 
         # (c) Record recovery episodes for error classes that still
         #     have less-than-perfect success rate after step 8b (e.g.
