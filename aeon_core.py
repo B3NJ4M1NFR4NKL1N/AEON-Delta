@@ -39284,6 +39284,14 @@ class AEONDeltaV3(nn.Module):
             'output_finite': bool(torch.isfinite(z_encoded).all().item()),
             'output_norm': float(z_encoded.detach().norm().item()),
         }
+        # Record encoder in causal_trace for full subsystem traceability.
+        _encoder_trace_id = None
+        if self.causal_trace is not None:
+            _encoder_trace_id = self.causal_trace.record(
+                subsystem="encoder",
+                decision="encode",
+                metadata=_pre_reasoning_causal_decisions['encoder'],
+            )
 
         # ===== BACKBONE ADAPTER ENRICHMENT =====
         # When a pretrained backbone adapter is loaded, use it to enrich
@@ -39339,6 +39347,20 @@ class AEONDeltaV3(nn.Module):
                 'applied': True,
                 'finite': torch.isfinite(z_encoded).all().item(),
             }
+            # Record backbone adapter in causal_trace for subsystem
+            # traceability — adapter enrichment or failure must be
+            # observable in the causal chain.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem="backbone_adapter",
+                    decision="enrich",
+                    causal_prerequisites=(
+                        [_encoder_trace_id] if _encoder_trace_id else None
+                    ),
+                    metadata=_pre_reasoning_causal_decisions[
+                        'backbone_adapter'
+                    ],
+                )
 
         # ===== CONTINUAL LEARNING ENRICHMENT =====
         # When ContinualLearningCore is active, blend lateral adapter
@@ -39404,6 +39426,20 @@ class AEONDeltaV3(nn.Module):
                 'applied': True,
                 'finite': torch.isfinite(z_encoded).all().item(),
             }
+            # Record continual learning in causal_trace for subsystem
+            # traceability — prior-task enrichment decisions must be
+            # observable in the causal chain.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem="continual_learning",
+                    decision="lateral_enrich",
+                    causal_prerequisites=(
+                        [_encoder_trace_id] if _encoder_trace_id else None
+                    ),
+                    metadata=_pre_reasoning_causal_decisions[
+                        'continual_learning'
+                    ],
+                )
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
@@ -39447,6 +39483,19 @@ class AEONDeltaV3(nn.Module):
                 'codebook_quality': _vq_codebook_quality,
                 'unique_codes': _vq_unique,
             }
+            # Record VQ in causal_trace for full subsystem traceability.
+            _vq_trace_id = None
+            if self.causal_trace is not None:
+                _vq_trace_id = self.causal_trace.record(
+                    subsystem="vector_quantizer",
+                    decision="quantize",
+                    causal_prerequisites=(
+                        [_encoder_trace_id] if _encoder_trace_id else None
+                    ),
+                    metadata=_pre_reasoning_causal_decisions[
+                        'vector_quantizer'
+                    ],
+                )
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -39454,6 +39503,7 @@ class AEONDeltaV3(nn.Module):
             _pre_reasoning_causal_decisions['vector_quantizer'] = {
                 'active': False,
             }
+            _vq_trace_id = None
         
         # ===== CHUNKED ENCODING =====
         # When input sequences exceed the configured chunk_size, re-encode
@@ -39534,6 +39584,22 @@ class AEONDeltaV3(nn.Module):
             self.coherence_registry.register_output(
                 "inference_cache", validated=True,
             )
+            # Record inference cache decision in causal_trace for full
+            # subsystem traceability — cache hit/miss decisions must be
+            # observable so root-cause analysis can determine whether
+            # reasoning was skipped via cache.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem="inference_cache",
+                    decision="lookup",
+                    causal_prerequisites=(
+                        [_vq_trace_id] if _vq_trace_id else None
+                    ),
+                    metadata={
+                        'cache_hit': _cache_hit,
+                        'cache_similarity': _cache_similarity,
+                    },
+                )
 
         # ===== ENCODER→REASONING NORMALIZATION BRIDGE =====
         # Normalize the encoder output before the reasoning core so that
@@ -39541,6 +39607,16 @@ class AEONDeltaV3(nn.Module):
         # backbone blending, VQ quantization, or chunked encoding.
         if self.encoder_reasoning_norm is not None:
             z_quantized = self.encoder_reasoning_norm(z_quantized)
+            # Record normalization in causal_trace for subsystem
+            # traceability — activation rescaling must be observable.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    subsystem="encoder_reasoning_norm",
+                    decision="normalize",
+                    metadata={
+                        'applied': True,
+                    },
+                )
 
         # ===== REASONING CORE (with cache short-circuit) =====
         # When a cache hit is detected, reuse the previous reasoning-core
@@ -39660,9 +39736,14 @@ class AEONDeltaV3(nn.Module):
         # reasoning path from inputs through uncertainty accumulation
         # to output quality.
         if self.causal_trace is not None:
+            _rc_prereqs = [
+                _tid for _tid in [_encoder_trace_id, _vq_trace_id]
+                if _tid
+            ] or None
             self.causal_trace.record(
                 subsystem="reasoning_core",
                 decision="consolidation",
+                causal_prerequisites=_rc_prereqs,
                 metadata={
                     'uncertainty': float(_reasoning_unc),
                     'high_uncertainty': _reasoning_unc > 0.5,

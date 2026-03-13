@@ -67850,6 +67850,17 @@ def run_all_tests():
     test_post_pipeline_causal_trace_always_recorded()
     test_verify_and_reinforce_post_correction_logs_exceptions()
 
+    # Pre-reasoning subsystem causal trace coverage patches
+    test_forward_impl_encoder_causal_trace()
+    test_forward_impl_vector_quantizer_causal_trace()
+    test_forward_impl_inference_cache_causal_trace()
+    test_forward_impl_encoder_reasoning_norm_causal_trace()
+    test_forward_impl_backbone_adapter_causal_trace()
+    test_forward_impl_continual_learning_causal_trace()
+    test_reasoning_core_trace_has_upstream_prerequisites()
+    test_forward_pass_records_encoder_in_causal_trace()
+    test_forward_pass_records_vq_in_causal_trace()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -81075,6 +81086,199 @@ def test_verify_and_reinforce_post_correction_logs_exceptions():
         "contain a logger call for observability"
     )
     print("✅ test_verify_and_reinforce_post_correction_logs_exceptions PASSED")
+
+
+# ============================================================================
+# Final Integration — Pre-Reasoning Subsystem Causal Trace Coverage
+# ============================================================================
+
+
+def test_forward_impl_encoder_causal_trace():
+    """_forward_impl must record a causal_trace entry for the encoder
+    subsystem so that the foundational encoding step is traceable in
+    the causal chain.  Without this, the very first transformation in
+    the pipeline is invisible to root-cause analysis."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Must contain a causal_trace.record for encoder
+    assert 'subsystem="encoder"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='encoder'"
+    )
+    # The encoder trace should produce an ID for downstream linking
+    assert '_encoder_trace_id' in source, (
+        "_forward_impl must capture the encoder causal_trace ID as "
+        "'_encoder_trace_id' for downstream causal prerequisite linking"
+    )
+    print("✅ test_forward_impl_encoder_causal_trace PASSED")
+
+
+def test_forward_impl_vector_quantizer_causal_trace():
+    """_forward_impl must record a causal_trace entry for the vector
+    quantizer subsystem so that codebook utilization and VQ loss
+    decisions are traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'subsystem="vector_quantizer"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='vector_quantizer'"
+    )
+    assert '_vq_trace_id' in source, (
+        "_forward_impl must capture the VQ causal_trace ID as "
+        "'_vq_trace_id' for downstream causal prerequisite linking"
+    )
+    print("✅ test_forward_impl_vector_quantizer_causal_trace PASSED")
+
+
+def test_forward_impl_inference_cache_causal_trace():
+    """_forward_impl must record a causal_trace entry for the inference
+    cache lookup so that cache hit/miss decisions are traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'subsystem="inference_cache"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='inference_cache'"
+    )
+    # Metadata must include cache_hit and cache_similarity
+    idx = source.find('subsystem="inference_cache"')
+    section = source[idx:idx + 400]
+    assert 'cache_hit' in section, (
+        "inference_cache causal trace must include cache_hit in metadata"
+    )
+    assert 'cache_similarity' in section, (
+        "inference_cache causal trace must include cache_similarity "
+        "in metadata"
+    )
+    print("✅ test_forward_impl_inference_cache_causal_trace PASSED")
+
+
+def test_forward_impl_encoder_reasoning_norm_causal_trace():
+    """_forward_impl must record a causal_trace entry for the
+    encoder→reasoning normalization bridge so that activation rescaling
+    is traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'subsystem="encoder_reasoning_norm"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='encoder_reasoning_norm'"
+    )
+    print("✅ test_forward_impl_encoder_reasoning_norm_causal_trace PASSED")
+
+
+def test_forward_impl_backbone_adapter_causal_trace():
+    """_forward_impl must record a causal_trace entry for the backbone
+    adapter enrichment so that pretrained feature blending is traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'subsystem="backbone_adapter"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='backbone_adapter'"
+    )
+    print("✅ test_forward_impl_backbone_adapter_causal_trace PASSED")
+
+
+def test_forward_impl_continual_learning_causal_trace():
+    """_forward_impl must record a causal_trace entry for the continual
+    learning enrichment so that prior-task lateral adapter blending is
+    traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'subsystem="continual_learning"' in source, (
+        "_forward_impl must record a causal_trace entry with "
+        "subsystem='continual_learning'"
+    )
+    print("✅ test_forward_impl_continual_learning_causal_trace PASSED")
+
+
+def test_reasoning_core_trace_has_upstream_prerequisites():
+    """The reasoning_core consolidation causal_trace entry must include
+    causal_prerequisites linking to upstream encoder and VQ trace IDs.
+    Without this, the reasoning core trace is disconnected from its
+    inputs, breaking causal chain connectivity."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find the reasoning_core consolidation trace
+    rc_idx = source.find('subsystem="reasoning_core"')
+    assert rc_idx > 0, (
+        "_forward_impl must have a reasoning_core causal_trace entry"
+    )
+    # Check that causal_prerequisites is present near the reasoning_core trace
+    section = source[rc_idx - 200:rc_idx + 400]
+    assert 'causal_prerequisites' in section, (
+        "reasoning_core consolidation trace must include "
+        "causal_prerequisites linking to upstream trace IDs"
+    )
+    assert '_encoder_trace_id' in section or '_vq_trace_id' in section, (
+        "reasoning_core causal_prerequisites must reference upstream "
+        "encoder or VQ trace IDs"
+    )
+    print("✅ test_reasoning_core_trace_has_upstream_prerequisites PASSED")
+
+
+def test_forward_pass_records_encoder_in_causal_trace():
+    """A training forward pass must produce a causal_trace entry with
+    subsystem='encoder', verifying the runtime behaviour (not just
+    source code) of the encoder causal trace recording."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=500, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+    input_ids = torch.randint(0, 500, (1, 8))
+    with torch.no_grad():
+        model(input_ids)
+
+    # Check causal_trace has an encoder entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(subsystem='encoder')
+        assert len(entries) > 0, (
+            "Forward pass must produce at least one causal_trace entry "
+            "with subsystem='encoder'"
+        )
+    print("✅ test_forward_pass_records_encoder_in_causal_trace PASSED")
+
+
+def test_forward_pass_records_vq_in_causal_trace():
+    """A training forward pass must produce a causal_trace entry with
+    subsystem='vector_quantizer', verifying runtime VQ traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=500, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.train()
+    input_ids = torch.randint(0, 500, (1, 8))
+    with torch.no_grad():
+        model(input_ids)
+
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(subsystem='vector_quantizer')
+        assert len(entries) > 0, (
+            "Forward pass must produce at least one causal_trace entry "
+            "with subsystem='vector_quantizer'"
+        )
+    print("✅ test_forward_pass_records_vq_in_causal_trace PASSED")
 
 
 if __name__ == "__main__":
