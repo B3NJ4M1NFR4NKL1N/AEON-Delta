@@ -67885,6 +67885,11 @@ def run_all_tests():
     test_activation_probe_calls_emergence_report()
     test_activation_probe_stores_emergence_status()
     test_activation_probe_emergence_triggers_reinforcement()
+    test_cognitive_state_snapshot_includes_convergence()
+    test_cognitive_state_snapshot_convergence_runtime()
+    test_post_pipeline_emergence_deficit_triggers_metacognitive()
+    test_activation_probe_cleanup_logs_exceptions()
+    test_snapshot_health_score_accounts_for_convergence()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81288,15 +81293,15 @@ def test_convergence_instability_error_class_registered():
 
 def test_cognitive_state_snapshot_health_score_includes_feedback_bus():
     """The system_health_score in get_cognitive_state_snapshot() must
-    account for the feedback_bus component (7 total components)."""
+    account for the feedback_bus and convergence components (8 total)."""
     import inspect
     from aeon_core import AEONDeltaV3
 
     source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
 
-    assert '_n_components = 7' in source, (
-        "get_cognitive_state_snapshot health score must count 7 "
-        "components (including feedback_bus)"
+    assert '_n_components = 8' in source, (
+        "get_cognitive_state_snapshot health score must count 8 "
+        "components (including feedback_bus and convergence)"
     )
     print("✅ test_cognitive_state_snapshot_health_score_includes_feedback_bus PASSED")
 
@@ -81589,6 +81594,113 @@ def test_activation_probe_emergence_triggers_reinforcement():
         "in _initial_emergence_status"
     )
     print("✅ test_activation_probe_emergence_triggers_reinforcement PASSED")
+
+
+# ============================================================================
+# Final Integration Patches — Cognitive Activation & System Emergence
+# ============================================================================
+
+def test_cognitive_state_snapshot_includes_convergence():
+    """get_cognitive_state_snapshot() must include a 'convergence' key
+    that aggregates convergence_monitor state, closing the gap where
+    verify_and_reinforce() checks convergence_monitor but the unified
+    snapshot excluded it."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+    assert 'convergence_monitor' in source, (
+        "get_cognitive_state_snapshot must reference convergence_monitor"
+    )
+    assert "snapshot['convergence']" in source, (
+        "get_cognitive_state_snapshot must populate snapshot['convergence']"
+    )
+    assert 'get_convergence_summary' in source, (
+        "get_cognitive_state_snapshot must call get_convergence_summary()"
+    )
+    print("✅ test_cognitive_state_snapshot_includes_convergence PASSED")
+
+
+def test_cognitive_state_snapshot_convergence_runtime():
+    """Runtime validation: get_cognitive_state_snapshot() returns a
+    'convergence' key with convergence monitor data."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+    snapshot = model.get_cognitive_state_snapshot()
+
+    assert 'convergence' in snapshot, (
+        "Snapshot must include 'convergence' key"
+    )
+    # When convergence_monitor is present, value should be a dict
+    if model.convergence_monitor is not None:
+        assert snapshot['convergence'] is not None, (
+            "Snapshot 'convergence' should not be None when "
+            "convergence_monitor is available"
+        )
+    print("✅ test_cognitive_state_snapshot_convergence_runtime PASSED")
+
+
+def test_post_pipeline_emergence_deficit_triggers_metacognitive():
+    """The post-pipeline metacognitive re-evaluation must consider
+    emergence_deficit as a trigger condition, not just coherence_deficit
+    and uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_emergence_deficit_trigger' in source, (
+        "_forward_impl must compute _emergence_deficit_trigger"
+    )
+    assert 'emergence_deficit_trigger' in source, (
+        "_forward_impl must use emergence_deficit_trigger in the "
+        "post-pipeline metacognitive evaluation condition"
+    )
+    print("✅ test_post_pipeline_emergence_deficit_triggers_metacognitive PASSED")
+
+
+def test_activation_probe_cleanup_logs_exceptions():
+    """The activation probe cleanup adapt_weights call must log
+    exceptions instead of silently swallowing them, per the
+    no-silent-exception-handlers convention."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    # The old pattern was 'except Exception: pass' — now it must log
+    assert 'logger.debug' in source or 'logger.warning' in source, (
+        "_cognitive_activation_probe must log exceptions in "
+        "adapt_weights cleanup instead of silently swallowing"
+    )
+    print("✅ test_activation_probe_cleanup_logs_exceptions PASSED")
+
+
+def test_snapshot_health_score_accounts_for_convergence():
+    """System health score must be computed from 8 components (including
+    convergence), not 7, after adding convergence to the snapshot."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    cfg = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(cfg)
+    snapshot = model.get_cognitive_state_snapshot()
+
+    # Health score should be between 0 and 1
+    assert 0.0 <= snapshot['system_health_score'] <= 1.0, (
+        f"system_health_score out of range: {snapshot['system_health_score']}"
+    )
+    # Verify all 8 components are represented in the snapshot
+    expected_keys = {
+        'metacognitive', 'causal_chain', 'emergence', 'unity',
+        'reinforcement', 'error_evolution', 'feedback_bus', 'convergence',
+    }
+    for key in expected_keys:
+        assert key in snapshot, (
+            f"Snapshot missing expected component: {key}"
+        )
+    print("✅ test_snapshot_health_score_accounts_for_convergence PASSED")
 
 
 
