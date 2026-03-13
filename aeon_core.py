@@ -39585,12 +39585,15 @@ class AEONDeltaV3(nn.Module):
                 # reasoning core is bypassed.  Without this entry the
                 # causal chain has a gap between inference_cache and
                 # the downstream decoder/output stages.
-                causal_trace.append({
-                    'subsystem': 'reasoning_core_cache_hit',
-                    'event': 'cache_hit_bypass',
-                    'cache_similarity': _cache_similarity,
-                    'inference_cache_source': 'inference_cache',
-                })
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        'reasoning_core_cache_hit',
+                        'cache_hit_bypass',
+                        metadata={
+                            'cache_similarity': _cache_similarity,
+                            'inference_cache_source': 'inference_cache',
+                        },
+                    )
             else:
                 # Cache hit by cosine similarity but no stored result yet;
                 # fall through to full reasoning core.
@@ -50692,8 +50695,11 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass
+                except Exception as _cleanup_adapt_err:
+                    logger.debug(
+                        "Cognitive activation cleanup: trigger "
+                        "adaptation skipped: %s", _cleanup_adapt_err,
+                    )
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
