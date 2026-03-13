@@ -44660,9 +44660,8 @@ class AEONDeltaV3(nn.Module):
         # classes, so we distinguish seeded-only (primed) from
         # real-training-bridged (fully active).
         if self.error_evolution is not None:
-            _ee_summary = self.error_evolution.get_error_summary()
             _training_classes = [
-                c for c in _ee_summary.get("error_classes", {})
+                c for c in self.error_evolution._episodes
                 if c.startswith("training_")
             ]
             if _training_classes:
@@ -47054,6 +47053,9 @@ class AEONDeltaV3(nn.Module):
         # validated whether learned strategies were effective, meaning
         # the system could perpetually recommend the same failing
         # strategy without self-correction.
+        # Baseline episodes (seeded during cognitive activation) are
+        # excluded so that init-time artefacts do not inflate the
+        # overall success rate.
         error_evolution_effectiveness: Dict[str, Any] = {}
         _ee = getattr(self, 'error_evolution', None)
         if _ee is not None:
@@ -47062,13 +47064,24 @@ class AEONDeltaV3(nn.Module):
             _ee_class_count = 0
             _ee_total_from_classes = 0
             for _cls, _cls_stats in _ee_summary.get('error_classes', {}).items():
+                # Skip classes whose episodes are all baseline-seeded
+                _cls_episodes = _ee._episodes.get(_cls, [])
+                _non_baseline = [
+                    ep for ep in _cls_episodes
+                    if not (
+                        isinstance(ep.get("metadata"), dict)
+                        and ep["metadata"].get("baseline")
+                    )
+                ]
+                if not _non_baseline:
+                    continue
                 _ee_class_count += 1
-                _cls_count = _cls_stats.get('count', 0)
-                _ee_total_from_classes += _cls_count
-                _ee_successes += int(
-                    _cls_stats.get('success_rate', 0.0)
-                    * _cls_count
+                _nb_count = len(_non_baseline)
+                _ee_total_from_classes += _nb_count
+                _nb_successes = sum(
+                    1 for ep in _non_baseline if ep["success"]
                 )
+                _ee_successes += _nb_successes
             _ee_total = _ee_total_from_classes
             _ee_rate = (
                 _ee_successes / max(_ee_total, 1)
@@ -50482,10 +50495,12 @@ class AEONDeltaV3(nn.Module):
             if hasattr(self.convergence_monitor, '_secondary_signals'):
                 self.convergence_monitor._secondary_signals.clear()
 
-        # (b) Reset _cached_feedback so the first forward pass starts
-        #     with a clean feedback state, not one leaked from init-time
-        #     verify_coherence().
+        # (b) Reset _cached_feedback and _cached_coherence_deficit so
+        #     the first forward pass starts with a clean state, not one
+        #     leaked from init-time verify_coherence() /
+        #     verify_and_reinforce().
         self._cached_feedback = None
+        self._cached_coherence_deficit = 0.0
 
         # (c) Record recovery episodes for error classes that still
         #     have less-than-perfect success rate after step 8b (e.g.
