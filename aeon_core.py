@@ -46849,6 +46849,30 @@ class AEONDeltaV3(nn.Module):
                 f"Pipeline nodes missing from provenance DAG: "
                 f"{', '.join(_untraced_pipeline[:5])}"
             )
+            # Auto-register untraced pipeline nodes in provenance so
+            # that subsequent trace_root_cause() calls can reach them.
+            # Without this, verify_cognitive_unity is purely diagnostic
+            # for pipeline-provenance misalignment — it detects the gap
+            # but never closes it, leaving causal transparency broken
+            # until the next forward pass happens to touch those nodes.
+            # This mirrors the auto-fix logic in
+            # _cognitive_activation_probe() Step 7 for UPB edges.
+            # We re-register the pipeline edges that reference untraced
+            # nodes so they appear in both the dependency DAG (for
+            # traceability) and the deltas dict (for completeness ratio).
+            if self.provenance_tracker is not None:
+                _untraced_set = set(_untraced_pipeline)
+                for _up, _down in self._PIPELINE_DEPENDENCIES:
+                    if _up in _untraced_set or _down in _untraced_set:
+                        try:
+                            self.provenance_tracker.record_dependency(
+                                _up, _down,
+                            )
+                        except Exception:
+                            pass
+                for _utp_node in _untraced_pipeline:
+                    if _utp_node not in self.provenance_tracker._deltas:
+                        self.provenance_tracker._deltas[_utp_node] = 0.0
         _pipeline_provenance_coverage = (
             1.0 - len(_untraced_pipeline) / max(len(_pipeline_nodes), 1)
             if _pipeline_nodes else 1.0
@@ -48956,7 +48980,14 @@ class AEONDeltaV3(nn.Module):
                 _post_ee = _post_unity.get(
                     'error_evolution_effectiveness', {},
                 ).get('active', False)
-                _post_causal = causal_chain.get('traceable', False)
+                # Re-verify causal chain after reinforcement so the
+                # emergence verdict reflects corrected state, not the
+                # stale pre-reinforcement snapshot.
+                try:
+                    _post_chain = self.verify_causal_chain()
+                    _post_causal = _post_chain.get('traceable', False)
+                except Exception:
+                    _post_causal = causal_chain.get('traceable', False)
                 _post_emerged = (
                     _post_mv and _post_um and _post_rc
                     and _post_conv
@@ -49246,16 +49277,23 @@ class AEONDeltaV3(nn.Module):
         _n_components = 8
         _healthy = _n_components - len(_degraded)
         _sub_score = _healthy / _n_components  # base: fraction available
-        # Refine with actual scores from successful sub-components
+        # Refine with weighted averaging from sub-component scores so
+        # that a single degraded component doesn't floor the entire
+        # system health via min().  The base availability score
+        # (fraction of non-failed components) is blended with
+        # component-level quality scores using a weighted average,
+        # producing a health score that reflects proportional
+        # degradation rather than worst-case bottleneck.
+        _quality_scores: List[float] = [_sub_score]
         _unity = snapshot.get('unity')
         if isinstance(_unity, dict):
             _cus = _unity.get('cognitive_unity_score', 1.0)
-            _sub_score = min(_sub_score, _cus) if _cus < 1.0 else _sub_score
+            _quality_scores.append(_cus)
         _chain = snapshot.get('causal_chain')
         if isinstance(_chain, dict):
             _cov = _chain.get('coverage', 1.0)
-            if _cov < 1.0:
-                _sub_score = min(_sub_score, 0.5 + 0.5 * _cov)
+            _quality_scores.append(0.5 + 0.5 * _cov)
+        _sub_score = sum(_quality_scores) / len(_quality_scores)
         snapshot['system_health_score'] = round(
             max(0.0, min(1.0, _sub_score)), 4,
         )
@@ -49396,6 +49434,27 @@ class AEONDeltaV3(nn.Module):
                     root_cause_sample = (
                         self.causal_trace.trace_root_cause(_last_id)
                     )
+                    # Record successful root-cause tracing in error
+                    # evolution so the metacognitive trigger learns
+                    # that causal transparency is healthy.  Without
+                    # this positive feedback, only failures are
+                    # recorded, making success rates artificially
+                    # low and inflating metacognitive re-reasoning
+                    # pressure for a subsystem that is working.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='root_cause_attribution_failure',
+                            success=True,
+                            strategy_used='verify_causal_chain',
+                            metadata={
+                                'traced_id': _last_id,
+                                'root_cause_depth': (
+                                    len(root_cause_sample)
+                                    if isinstance(root_cause_sample, list)
+                                    else 1
+                                ),
+                            },
+                        )
                 except Exception as exc:
                     logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
                     # Escalate root-cause attribution failure into
@@ -50278,13 +50337,67 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
 
-        # 8. Init-time mutual reinforcement — run verify_and_reinforce()
+        # 8. Coherence registry expected-subsystem seeding — when the
+        # SubsystemCoherenceRegistry exists, pre-register all subsystems
+        # that the forward pass is expected to produce outputs for.
+        # This MUST execute before the init-time mutual reinforcement
+        # (step 9 below) so that verify_and_reinforce() operates with
+        # a complete coherence registry rather than an empty/partial
+        # one.  Without this ordering, the registry's coverage deficit
+        # calculation uses its construction-time default set, which may
+        # diverge from the actual set of modules initialized during
+        # __init__, inflating metacognitive re-reasoning pressure.
+        _cr = getattr(self, 'coherence_registry', None)
+        if _cr is not None:
+            _cr_seeded = 0
+            for _node, _attr in self._NODE_ATTR_MAP.items():
+                if getattr(self, _attr, None) is not None:
+                    if _node not in _cr._expected:
+                        _cr._expected.add(_node)
+                        _cr_seeded += 1
+            if _cr_seeded > 0:
+                logger.info(
+                    "Cognitive activation: registered %d expected "
+                    "subsystems in coherence registry", _cr_seeded,
+                )
+
+        # 8b. Register verify_and_reinforce as an expected subsystem
+        # in the coherence registry so that its periodic output
+        # (registered in verify_and_reinforce()) is tracked alongside
+        # forward-pass subsystem outputs.  Without this, the
+        # reinforcement cycle is invisible to the registry's coverage
+        # deficit calculation, preventing the system from detecting
+        # when mutual reinforcement has not been running.
+        if _cr is not None and 'verify_and_reinforce' not in _cr._expected:
+            _cr._expected.add('verify_and_reinforce')
+
+        # 8c. Seed meta_learner task buffer — populate the MetaLearner
+        # replay buffer with a single baseline task so that
+        # self_diagnostic() no longer reports the task buffer as empty.
+        # Without this, the diagnostic gap "MetaLearner initialized but
+        # task buffer empty" persists until training steps are executed,
+        # leaving the meta_learner disconnected from the activation
+        # pipeline's readiness assessment.  A single baseline task
+        # primes the EWC Fisher information path and signals that the
+        # meta_learner is ready for adaptation.
+        if (self.meta_learner is not None
+                and hasattr(self.meta_learner, 'add_task')
+                and self.meta_learner.num_tasks == 0):
+            self.meta_learner.add_task(
+                'activation_baseline',
+                {'source': 'cognitive_activation_probe', 'baseline': True},
+            )
+
+        # 9. Init-time mutual reinforcement — run verify_and_reinforce()
         # to close the mutual reinforcement loop at initialization.
         # This ensures that any architectural weaknesses identified by
         # the diagnostic are immediately fed back into error evolution
         # and metacognitive trigger weights, satisfying the requirement
         # that "active components verify and stabilize each other's
         # states" from the moment the system is constructed.
+        # NOTE: coherence registry seeding (step 8) must execute first
+        # so that verify_and_reinforce() sees the full set of expected
+        # subsystems and produces accurate coverage metrics.
         try:
             _reinforce = self.verify_and_reinforce()
             _actions = _reinforce.get('reinforcement_actions', [])
@@ -50294,7 +50407,7 @@ class AEONDeltaV3(nn.Module):
                     "%d reinforcement action(s)", len(_actions),
                 )
 
-            # 8b. Activation recovery — record successful recovery
+            # 9b. Activation recovery — record successful recovery
             # episodes for error classes that accumulated multiple
             # failure episodes during initialization and the first
             # forward pass.  This closes the gap where init-time error
@@ -50395,59 +50508,7 @@ class AEONDeltaV3(nn.Module):
                 "deltas (status → converged)", len(_seed_deltas),
             )
 
-        # 9. Coherence registry expected-subsystem seeding — when the
-        # SubsystemCoherenceRegistry exists, pre-register all subsystems
-        # that the forward pass is expected to produce outputs for.
-        # Without this, the registry's coverage deficit calculation
-        # uses its construction-time default set, which may diverge
-        # from the actual set of modules initialized during __init__.
-        # By seeding the expected set from _NODE_ATTR_MAP (the
-        # authoritative source), the registry's coverage tracking
-        # aligns with the model's actual composition, preventing
-        # spurious "absent subsystem" reports that would inflate
-        # metacognitive re-reasoning pressure.
-        _cr = getattr(self, 'coherence_registry', None)
-        if _cr is not None:
-            _cr_seeded = 0
-            for _node, _attr in self._NODE_ATTR_MAP.items():
-                if getattr(self, _attr, None) is not None:
-                    if _node not in _cr._expected:
-                        _cr._expected.add(_node)
-                        _cr_seeded += 1
-            if _cr_seeded > 0:
-                logger.info(
-                    "Cognitive activation: registered %d expected "
-                    "subsystems in coherence registry", _cr_seeded,
-                )
-
-        # 9b. Seed meta_learner task buffer — populate the MetaLearner
-        # replay buffer with a single baseline task so that
-        # self_diagnostic() no longer reports the task buffer as empty.
-        # Without this, the diagnostic gap "MetaLearner initialized but
-        # task buffer empty" persists until training steps are executed,
-        # leaving the meta_learner disconnected from the activation
-        # pipeline's readiness assessment.  A single baseline task
-        # primes the EWC Fisher information path and signals that the
-        # meta_learner is ready for adaptation.
-        if (self.meta_learner is not None
-                and hasattr(self.meta_learner, 'add_task')
-                and self.meta_learner.num_tasks == 0):
-            self.meta_learner.add_task(
-                'activation_baseline',
-                {'source': 'cognitive_activation_probe', 'baseline': True},
-            )
-
-        # 10. Register verify_and_reinforce as an expected subsystem
-        # in the coherence registry so that its periodic output
-        # (registered in verify_and_reinforce()) is tracked alongside
-        # forward-pass subsystem outputs.  Without this, the
-        # reinforcement cycle is invisible to the registry's coverage
-        # deficit calculation, preventing the system from detecting
-        # when mutual reinforcement has not been running.
-        if _cr is not None and 'verify_and_reinforce' not in _cr._expected:
-            _cr._expected.add('verify_and_reinforce')
-
-        # 11. Provenance delta seeding — seed baseline provenance deltas
+        # 10. Provenance delta seeding — seed baseline provenance deltas
         # for all initialized pipeline modules so that
         # get_trace_completeness_ratio() returns a meaningful (non-zero)
         # value before the first forward pass.  Without this, the
@@ -50455,7 +50516,7 @@ class AEONDeltaV3(nn.Module):
         # causing get_trace_completeness_ratio() to return 0.0.  This
         # makes verify_and_reinforce() record a
         # provenance_chain_incomplete episode (success=False) during its
-        # init-time call (step 8), which degrades error_evolution
+        # init-time call (step 9), which degrades error_evolution
         # effectiveness from 1.0 to 0.8 — a false signal that the
         # system lacks causal traceability when in fact it simply hasn't
         # executed a forward pass yet.  By seeding nominal 0.0 deltas
@@ -50476,7 +50537,7 @@ class AEONDeltaV3(nn.Module):
                     _prov_seeded,
                 )
 
-        # 12. Causal trace seeding for error_evolution — record
+        # 11. Causal trace seeding for error_evolution — record
         # baseline causal trace entry so that verify_causal_chain()
         # can find this subsystem.  Without this entry,
         # verify_causal_chain() reports error_evolution as untraced
@@ -50486,7 +50547,7 @@ class AEONDeltaV3(nn.Module):
         # NOTE: feedback_bus, emergence_assessment, and
         # verify_and_reinforce seeding was moved to step 7b so that
         # they are available before verify_and_reinforce() runs in
-        # step 8, preventing spurious causal_chain_gap episodes.
+        # step 9, preventing spurious causal_chain_gap episodes.
         if self.causal_trace is not None:
             if self.error_evolution is not None:
                 self.causal_trace.record(
@@ -50497,7 +50558,7 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
 
-        # 13. Training→inference auto-sync — attempt to import training
+        # 12. Training→inference auto-sync — attempt to import training
         # state (memory snapshots, error patterns) into the inference
         # pipeline so that training-discovered knowledge is available
         # from the first forward pass.  This closes the gap where

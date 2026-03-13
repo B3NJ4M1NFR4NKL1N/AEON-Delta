@@ -67905,6 +67905,12 @@ def run_all_tests():
     test_cache_hit_records_causal_trace()
     test_post_output_coherence_deficit_adapts_trigger()
     test_expanded_module_health_runtime()
+    # ── Final cognitive activation patches ──
+    test_verify_causal_chain_success_feeds_error_evolution()
+    test_verify_cognitive_unity_auto_registers_provenance()
+    test_activation_probe_registry_before_reinforce()
+    test_emergence_report_post_reinforce_causal_chain()
+    test_cognitive_state_snapshot_weighted_health_score()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81953,6 +81959,191 @@ def test_expanded_module_health_runtime():
         "degradation when score < 0.5"
     )
     print("✅ test_expanded_module_health_runtime PASSED")
+
+
+def test_verify_causal_chain_success_feeds_error_evolution():
+    """When root-cause tracing succeeds in verify_causal_chain(),
+    a success episode must be recorded in error_evolution so the
+    metacognitive trigger learns that causal transparency is healthy."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Run a forward pass to populate causal trace entries
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # Clear error_evolution episodes before verification
+    if model.error_evolution is not None:
+        model.error_evolution._episodes.clear()
+    result = model.verify_causal_chain()
+    # Check that error_evolution received a success episode for
+    # root_cause_attribution_failure class (success=True on success path)
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        rca_class = summary.get('error_classes', {}).get(
+            'root_cause_attribution_failure', {},
+        )
+        assert rca_class.get('count', 0) >= 1, (
+            "verify_causal_chain must record a success episode for "
+            "root_cause_attribution_failure when tracing succeeds"
+        )
+        assert rca_class.get('success_rate', 0) > 0, (
+            "Success rate for root_cause_attribution_failure must be "
+            "> 0 when root-cause tracing succeeds"
+        )
+    print("✅ test_verify_causal_chain_success_feeds_error_evolution PASSED")
+
+
+def test_verify_cognitive_unity_auto_registers_provenance():
+    """verify_cognitive_unity() must auto-register untraced pipeline
+    nodes in the provenance DAG so that causal transparency gaps
+    are closed rather than merely diagnosed."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    if model.provenance_tracker is None:
+        print("✅ test_verify_cognitive_unity_auto_registers_provenance SKIPPED (no provenance)")
+        return
+    # Collect active pipeline nodes from declared dependencies
+    _pipeline_nodes = set()
+    for _up, _down in model._PIPELINE_DEPENDENCIES:
+        _up_attr = model._NODE_ATTR_MAP.get(_up)
+        _down_attr = model._NODE_ATTR_MAP.get(_down)
+        if _up_attr and getattr(model, _up_attr, None) is not None:
+            _pipeline_nodes.add(_up)
+        if _down_attr and getattr(model, _down_attr, None) is not None:
+            _pipeline_nodes.add(_down)
+    if not _pipeline_nodes:
+        print("✅ test_verify_cognitive_unity_auto_registers_provenance SKIPPED (no pipeline nodes)")
+        return
+    # Pick one active pipeline node and remove from dependency DAG
+    _target_node = sorted(_pipeline_nodes)[0]
+    _deps = getattr(model.provenance_tracker, '_dependencies', {})
+    # Remove from _dependencies keys and values
+    _deps.pop(_target_node, None)
+    for _k in list(_deps.keys()):
+        _deps[_k].discard(_target_node)
+    # Also remove from _deltas
+    model.provenance_tracker._deltas.pop(_target_node, None)
+    # Now verify_cognitive_unity should auto-register it
+    result = model.verify_cognitive_unity()
+    # Check either _deltas or _dependencies for re-registration
+    _dag = model.provenance_tracker.get_dependency_graph()
+    _dag_nodes = set()
+    for _t, _srcs in _dag.items():
+        _dag_nodes.add(_t)
+        _dag_nodes.update(_srcs)
+    _in_dag = _target_node in _dag_nodes
+    _in_deltas = _target_node in model.provenance_tracker._deltas
+    assert _in_dag or _in_deltas, (
+        f"verify_cognitive_unity must auto-register untraced pipeline "
+        f"node '{_target_node}' in provenance DAG or deltas"
+    )
+    print("✅ test_verify_cognitive_unity_auto_registers_provenance PASSED")
+
+
+def test_activation_probe_registry_before_reinforce():
+    """The coherence registry must be fully seeded BEFORE
+    verify_and_reinforce() runs during _cognitive_activation_probe(),
+    so that reinforce operates with a complete registry."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    _cr = getattr(model, 'coherence_registry', None)
+    if _cr is None:
+        print("✅ test_activation_probe_registry_before_reinforce SKIPPED (no registry)")
+        return
+    # After construction (_cognitive_activation_probe runs in __init__),
+    # the registry should contain verify_and_reinforce AND pipeline nodes
+    assert 'verify_and_reinforce' in _cr._expected, (
+        "verify_and_reinforce must be registered in coherence registry "
+        "BEFORE it runs during activation probe"
+    )
+    # Check that pipeline nodes are also registered
+    _registered = 0
+    for _node, _attr in model._NODE_ATTR_MAP.items():
+        if getattr(model, _attr, None) is not None:
+            if _node in _cr._expected:
+                _registered += 1
+    assert _registered > 0, (
+        "Pipeline nodes must be registered in coherence registry "
+        "before verify_and_reinforce runs"
+    )
+    print("✅ test_activation_probe_registry_before_reinforce PASSED")
+
+
+def test_emergence_report_post_reinforce_causal_chain():
+    """system_emergence_report() must re-verify the causal chain after
+    auto-reinforcement rather than using stale pre-reinforcement data."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    # The causal_chain_traceable field should reflect post-reinforcement
+    # state when reinforcement was applied
+    assert 'causal_chain_traceable' in status, (
+        "system_emergence_report must include causal_chain_traceable status"
+    )
+    # If the system emerged, causal_chain_traceable must be True
+    if status.get('emerged', False):
+        assert status['causal_chain_traceable'], (
+            "An emerged system must have causal_chain_traceable=True "
+            "after post-reinforcement re-verification"
+        )
+    print("✅ test_emergence_report_post_reinforce_causal_chain PASSED")
+
+
+def test_cognitive_state_snapshot_weighted_health_score():
+    """get_cognitive_state_snapshot() must use weighted averaging for
+    health score instead of bottleneck min() so that a single degraded
+    component doesn't floor the entire system health."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    snapshot = model.get_cognitive_state_snapshot()
+    health = snapshot.get('system_health_score', 0)
+    assert isinstance(health, float), (
+        "system_health_score must be a float"
+    )
+    assert 0.0 <= health <= 1.0, (
+        f"system_health_score must be in [0, 1], got {health}"
+    )
+    # With all 8 components healthy and reasonable scores, the health
+    # score should be above 0.5 (not bottlenecked by min())
+    degraded = snapshot.get('degraded_subsystems', [])
+    if len(degraded) == 0:
+        assert health > 0.5, (
+            f"With zero degraded subsystems, health score must be > 0.5, "
+            f"got {health}"
+        )
+    print("✅ test_cognitive_state_snapshot_weighted_health_score PASSED")
 
 
 if __name__ == "__main__":
