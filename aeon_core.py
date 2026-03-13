@@ -46868,8 +46868,12 @@ class AEONDeltaV3(nn.Module):
                             self.provenance_tracker.record_dependency(
                                 _up, _down,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _prov_re_err:
+                            logger.debug(
+                                "Provenance re-registration failed for "
+                                "untraced edge %s → %s (non-fatal): %s",
+                                _up, _down, _prov_re_err,
+                            )
                 for _utp_node in _untraced_pipeline:
                     if _utp_node not in self.provenance_tracker._deltas:
                         self.provenance_tracker._deltas[_utp_node] = 0.0
