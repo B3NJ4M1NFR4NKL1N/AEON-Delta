@@ -41548,9 +41548,11 @@ class AEONDeltaV3(nn.Module):
                 self, '_cached_cross_module_coherence', 1.0,
             )) > 0.3
         )
+        _emergence_deficit_trigger = not _emerged
         if (self.metacognitive_trigger is not None
                 and (_final_uncertainty > _post_pipeline_threshold
-                     or _coherence_deficit_trigger)):
+                     or _coherence_deficit_trigger
+                     or _emergence_deficit_trigger)):
             try:
                 _post_pipeline_signals = {
                     'uncertainty': _final_uncertainty,
@@ -41578,6 +41580,7 @@ class AEONDeltaV3(nn.Module):
                             'triggered': _post_eval.get(
                                 'should_recurse', False,
                             ),
+                            'emergence_deficit_trigger': _emergence_deficit_trigger,
                         },
                     )
             except Exception as _post_eval_err:
@@ -41619,6 +41622,7 @@ class AEONDeltaV3(nn.Module):
                         'final_uncertainty': _final_uncertainty,
                         'threshold': _post_pipeline_threshold,
                         'coherence_deficit_trigger': _coherence_deficit_trigger,
+                        'emergence_deficit_trigger': _emergence_deficit_trigger,
                         'triggered': False,
                     },
                 )
@@ -41826,6 +41830,26 @@ class AEONDeltaV3(nn.Module):
                 * (2.0 * _dag_consensus_score_loss - 1.0)
             )
             causal_dag_loss = causal_dag_loss * max(0.1, _consensus_scale)
+        # 9b-bridge. DAG consensus disagreement → error evolution — when
+        # causal models disagree (consensus_score < 0.5), record the
+        # disagreement to error_evolution so the metacognitive trigger
+        # learns from structural causal conflicts.  This closes the
+        # feedback loop between causal model agreement and metacognitive
+        # learning: without this, consensus disagreement only affected
+        # the training loss, leaving inference-time metacognition blind
+        # to recurring causal-structure conflicts.
+        if (_dag_consensus_score_loss is not None
+                and isinstance(_dag_consensus_score_loss, (int, float))
+                and _dag_consensus_score_loss < 0.5
+                and self.error_evolution is not None):
+            self.error_evolution.record_episode(
+                error_class='dag_consensus_disagreement',
+                strategy_used='compute_loss_consensus_monitor',
+                success=False,
+                metadata={
+                    'consensus_score': _dag_consensus_score_loss,
+                },
+            )
         # 9c. Auto-critic quality → causal loss modulation — when the
         # auto-critic assesses the reasoning output as low-quality, the
         # causal model's structural learning should be weighted down
@@ -41844,6 +41868,27 @@ class AEONDeltaV3(nn.Module):
             # Quality >= 0.5 passes through at full strength.
             _ac_causal_scale = max(0.3, min(1.0, _ac_score_for_loss))
             causal_dag_loss = causal_dag_loss * _ac_causal_scale
+        # 9c-bridge. Auto-critic low quality → error evolution — when
+        # the auto-critic scores the reasoning output below 0.5, record
+        # the quality deficit to error_evolution so the metacognitive
+        # trigger adapts its sensitivity.  This closes the feedback
+        # loop between auto-critic assessment and metacognitive
+        # learning: without this, low auto-critic scores only
+        # attenuated the causal loss, leaving the inference pipeline's
+        # metacognitive trigger unaware of recurring reasoning-quality
+        # deficits.
+        if (_ac_score_for_loss is not None
+                and isinstance(_ac_score_for_loss, (int, float))
+                and _ac_score_for_loss < 0.5
+                and self.error_evolution is not None):
+            self.error_evolution.record_episode(
+                error_class='auto_critic_low_quality',
+                strategy_used='compute_loss_critic_monitor',
+                success=False,
+                metadata={
+                    'auto_critic_score': _ac_score_for_loss,
+                },
+            )
         
         # ===== 10. HIERARCHICAL VAE KL LOSS =====
         hvae_kl_loss = torch.tensor(0.0, device=self.device)
@@ -48963,7 +49008,7 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with keys: ``metacognitive``, ``causal_chain``,
             ``emergence``, ``unity``, ``reinforcement``,
-            ``error_evolution``, ``feedback_bus``,
+            ``error_evolution``, ``feedback_bus``, ``convergence``,
             ``system_health_score``, ``degraded_subsystems``,
             ``timestamp``.
         """
@@ -49095,12 +49140,34 @@ class AEONDeltaV3(nn.Module):
         else:
             snapshot['feedback_bus'] = None
 
+        # ── Convergence monitor state ──────────────────────────────
+        # Include the convergence monitor summary so that consumers
+        # can observe convergence health without calling the monitor
+        # directly.  This closes the gap where convergence state was
+        # checked only inside verify_and_reinforce() but invisible to
+        # unified cognitive state consumers, leaving convergence
+        # instability undetectable from the snapshot alone.
+        if self.convergence_monitor is not None:
+            try:
+                snapshot['convergence'] = (
+                    self.convergence_monitor.get_convergence_summary()
+                )
+            except Exception as _cv_err:
+                logger.warning(
+                    "get_cognitive_state_snapshot: convergence "
+                    "failed: %s", _cv_err,
+                )
+                snapshot['convergence'] = None
+                _degraded.append('convergence')
+        else:
+            snapshot['convergence'] = None
+
         # ── Aggregate overall system health score ──────────────────
         # Synthesize a single 0-1 health score from sub-component
         # results so callers don't need to manually cross-reference
-        # seven nested dictionaries.  Each sub-component contributes
+        # eight nested dictionaries.  Each sub-component contributes
         # equally; a None (failed) sub-component scores 0.
-        _n_components = 7
+        _n_components = 8
         _healthy = _n_components - len(_degraded)
         _sub_score = _healthy / _n_components  # base: fraction available
         # Refine with actual scores from successful sub-components
