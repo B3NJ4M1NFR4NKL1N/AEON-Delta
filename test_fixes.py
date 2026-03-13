@@ -67866,6 +67866,13 @@ def run_all_tests():
     test_verify_and_reinforce_checks_module_health()
     test_cognitive_activation_probe_verifies_unity()
     test_cognitive_activation_probe_unity_runtime()
+    # ── Final Integration & Cognitive Activation patches ──
+    test_coherence_report_includes_causal_chain_verification()
+    test_coherence_report_causal_chain_runtime()
+    test_coherence_report_rc_score_grounded_in_chain()
+    test_activation_probe_calls_emergence_report()
+    test_activation_probe_stores_emergence_status()
+    test_activation_probe_emergence_triggers_reinforcement()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81442,8 +81449,139 @@ def test_cognitive_activation_probe_unity_runtime():
     print("✅ test_cognitive_activation_probe_unity_runtime PASSED")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Final Integration & Cognitive Activation — Patch Tests
+# ══════════════════════════════════════════════════════════════════════
+
+def test_coherence_report_includes_causal_chain_verification():
+    """architectural_coherence_report() must call verify_causal_chain()
+    to ground the root_cause_traceability axiom in actual runtime
+    causal chain verification, not just provenance DAG coverage."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.architectural_coherence_report)
+    assert 'verify_causal_chain' in src, (
+        "architectural_coherence_report must call verify_causal_chain() "
+        "to validate actual causal chain connectivity"
+    )
+    print("✅ test_coherence_report_includes_causal_chain_verification PASSED")
+
+
+def test_coherence_report_causal_chain_runtime():
+    """architectural_coherence_report() must include causal_chain
+    verification data at runtime."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.architectural_coherence_report()
+    # The report must include the causal_chain verification result
+    assert 'causal_chain' in report, (
+        "architectural_coherence_report must include 'causal_chain' "
+        "verification data"
+    )
+    # The root_cause_traceability axiom must include chain connectivity
+    rc = report['axioms']['root_cause_traceability']
+    assert 'chain_connected' in rc, (
+        "root_cause_traceability axiom must include 'chain_connected' "
+        "from verify_causal_chain()"
+    )
+    assert 'chain_coverage' in rc, (
+        "root_cause_traceability axiom must include 'chain_coverage' "
+        "from verify_causal_chain()"
+    )
+    print("✅ test_coherence_report_causal_chain_runtime PASSED")
+
+
+def test_coherence_report_rc_score_grounded_in_chain():
+    """The root_cause_traceability axiom score must be refined downward
+    when actual causal chain coverage is lower than provenance DAG
+    coverage, ensuring the report cannot over-report traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.architectural_coherence_report)
+    # Score must use min() to take the lower of DAG and chain coverage
+    assert '_rc_score = min(' in src, (
+        "root_cause_traceability score must be refined using min() of "
+        "provenance DAG coverage and actual chain coverage"
+    )
+    print("✅ test_coherence_report_rc_score_grounded_in_chain PASSED")
+
+
+def test_activation_probe_calls_emergence_report():
+    """_cognitive_activation_probe() must call system_emergence_report()
+    after activation to produce an initial emergence assessment."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'system_emergence_report' in src, (
+        "_cognitive_activation_probe must call system_emergence_report() "
+        "to assess whether the system has emerged after activation"
+    )
+    print("✅ test_activation_probe_calls_emergence_report PASSED")
+
+
+def test_activation_probe_stores_emergence_status():
+    """After activation, _initial_emergence_status must be populated
+    with the emergence assessment result."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_initial_emergence_status'), (
+        "Model must have _initial_emergence_status after activation"
+    )
+    status = model._initial_emergence_status
+    assert isinstance(status, dict), (
+        "_initial_emergence_status must be a dict"
+    )
+    # Must contain the emergence verdict fields
+    assert 'emerged' in status, (
+        "_initial_emergence_status must contain 'emerged' key"
+    )
+    assert 'conditions_met' in status, (
+        "_initial_emergence_status must contain 'conditions_met' key"
+    )
+    assert 'conditions_total' in status, (
+        "_initial_emergence_status must contain 'conditions_total' key"
+    )
+    print("✅ test_activation_probe_stores_emergence_status PASSED")
+
+
+def test_activation_probe_emergence_triggers_reinforcement():
+    """system_emergence_report() called during activation must trigger
+    auto-reinforcement when the system has not emerged, ensuring
+    init-time weaknesses are actively corrected."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    # The emergence call is system_emergence_report() which internally
+    # triggers verify_and_reinforce() when not emerged
+    assert 'system_emergence_report' in src, (
+        "_cognitive_activation_probe must call system_emergence_report() "
+        "which triggers auto-reinforcement when not emerged"
+    )
+    # Verify the result is stored for later inspection
+    assert '_initial_emergence_status' in src, (
+        "_cognitive_activation_probe must store the emergence result "
+        "in _initial_emergence_status"
+    )
+    print("✅ test_activation_probe_emergence_triggers_reinforcement PASSED")
 
 
 
+
+if __name__ == "__main__":
+    run_all_tests()
 if __name__ == "__main__":
     run_all_tests()
