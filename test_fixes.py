@@ -67892,6 +67892,13 @@ def run_all_tests():
     test_cognitive_state_snapshot_convergence_runtime()
     test_dag_consensus_disagreement_error_evolution()
     test_auto_critic_low_quality_error_evolution()
+    # ── Causal chain connectivity & cross-reference patches ──
+    test_causal_chain_connected_after_forward()
+    test_coherence_report_root_cause_fully_grounded()
+    test_feedback_bus_trace_references_upstream_subsystems()
+    test_verify_and_reinforce_trace_references_feedback_and_error()
+    test_system_emergence_trace_references_unity_and_reinforcement()
+    test_verify_cognitive_unity_trace_references_wiring()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81691,6 +81698,145 @@ def test_auto_critic_low_quality_error_evolution():
     print("✅ test_auto_critic_low_quality_error_evolution PASSED")
 
 
+def test_causal_chain_connected_after_forward():
+    """After a forward pass, verify_causal_chain() must report
+    chain_connected=True, meaning all traced subsystems form a
+    single connected component via metadata cross-references.
+    This ensures end-to-end causal transparency across the
+    cognitive pipeline."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    chain = model.verify_causal_chain()
+    assert chain['chain_connected'], (
+        "Causal chain must be connected after a forward pass — "
+        "all traced subsystems should form a single connected "
+        "component via metadata cross-references"
+    )
+    assert chain['traceable'], (
+        "All expected subsystems must have causal trace entries"
+    )
+    assert chain['coverage'] == 1.0, (
+        f"Causal chain coverage must be 1.0, got {chain['coverage']}"
+    )
+    print("✅ test_causal_chain_connected_after_forward PASSED")
+
+
+def test_coherence_report_root_cause_fully_grounded():
+    """architectural_coherence_report() root_cause_traceability score
+    must reflect connected causal chain — score should not be
+    penalised when chain_connected is True."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    coh = model.architectural_coherence_report()
+    rc = coh['axioms']['root_cause_traceability']
+    assert rc.get('chain_connected', False), (
+        "Causal chain must be connected for full root-cause "
+        "traceability"
+    )
+    assert rc['score'] > 0.5, (
+        f"root_cause_traceability score should exceed 0.5 when "
+        f"chain is connected, got {rc['score']}"
+    )
+    print("✅ test_coherence_report_root_cause_fully_grounded PASSED")
+
+
+def test_feedback_bus_trace_references_upstream_subsystems():
+    """feedback_bus causal trace entries must cross-reference
+    upstream subsystems (world_model, cross_validation,
+    hybrid_reasoning, unified_simulator) to enable connected
+    causal chain verification."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'world_model_upstream' in source, (
+        "feedback_bus trace must reference world_model upstream"
+    )
+    assert 'cross_validation_upstream' in source, (
+        "feedback_bus trace must reference cross_validation upstream"
+    )
+    assert 'hybrid_reasoning_upstream' in source, (
+        "feedback_bus trace must reference hybrid_reasoning upstream"
+    )
+    assert 'unified_simulator_upstream' in source, (
+        "feedback_bus trace must reference unified_simulator upstream"
+    )
+    print("✅ test_feedback_bus_trace_references_upstream_subsystems PASSED")
+
+
+def test_verify_and_reinforce_trace_references_feedback_and_error():
+    """verify_and_reinforce causal trace entries must cross-reference
+    feedback_bus and error_evolution to close the mutual reinforcement
+    loop in the causal chain."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "'feedback_source'" in source or '"feedback_source"' in source, (
+        "verify_and_reinforce trace must reference feedback_bus"
+    )
+    assert "'error_source'" in source or '"error_source"' in source, (
+        "verify_and_reinforce trace must reference error_evolution"
+    )
+    print("✅ test_verify_and_reinforce_trace_references_feedback_and_error PASSED")
+
+
+def test_system_emergence_trace_references_unity_and_reinforcement():
+    """system_emergence_report causal trace entries must cross-reference
+    verify_cognitive_unity and verify_and_reinforce to establish causal
+    transparency from emergence verdict back to its constituent checks."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert "'unity_source'" in source or '"unity_source"' in source, (
+        "system_emergence_report trace must reference "
+        "verify_cognitive_unity"
+    )
+    assert "'reinforcement_source'" in source or '"reinforcement_source"' in source, (
+        "system_emergence_report trace must reference "
+        "verify_and_reinforce"
+    )
+    print("✅ test_system_emergence_trace_references_unity_and_reinforcement PASSED")
+
+
+def test_verify_cognitive_unity_trace_references_wiring():
+    """verify_cognitive_unity causal trace entries must cross-reference
+    verify_pipeline_wiring to maintain causal chain connectivity from
+    unity verdict back to pipeline structure validation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert "'wiring_source'" in source or '"wiring_source"' in source, (
+        "verify_cognitive_unity trace must reference "
+        "verify_pipeline_wiring"
+    )
+    print("✅ test_verify_cognitive_unity_trace_references_wiring PASSED")
 
 
 if __name__ == "__main__":

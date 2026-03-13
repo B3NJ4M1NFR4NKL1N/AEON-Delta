@@ -38870,6 +38870,10 @@ class AEONDeltaV3(nn.Module):
                     "feedback_magnitude": float(
                         self._cached_feedback.abs().mean().item()
                     ),
+                    "world_model_upstream": "world_model",
+                    "cross_validation_upstream": "cross_validation",
+                    "hybrid_reasoning_upstream": "hybrid_reasoning",
+                    "unified_simulator_upstream": "unified_simulator",
                 },
             )
         
@@ -47285,6 +47289,7 @@ class AEONDeltaV3(nn.Module):
                     'uncertainty_metacognition_coverage': _um_coverage,
                     'root_cause_traceability_coverage': _rc_coverage,
                     'weakest_module': _weakest_module,
+                    'wiring_source': 'verify_pipeline_wiring',
                 },
             )
 
@@ -48339,6 +48344,8 @@ class AEONDeltaV3(nn.Module):
                         weakest_name if not report.get('coherent', True)
                         or _overall_score < 1.0 else None
                     ),
+                    "feedback_source": "feedback_bus",
+                    "error_source": "error_evolution",
                 },
             )
 
@@ -48702,6 +48709,8 @@ class AEONDeltaV3(nn.Module):
                     'wiring_coverage': wiring.get(
                         'wiring_coverage', 0.0,
                     ),
+                    'unity_source': 'verify_cognitive_unity',
+                    'reinforcement_source': 'verify_and_reinforce',
                 },
             )
 
