@@ -39606,6 +39606,29 @@ class AEONDeltaV3(nn.Module):
                 _pre_reasoning_causal_decisions
             )
 
+        # ── Causal-trace DAG entries for pre-reasoning subsystems ────
+        # The decisions above are recorded in causal_decision_chain (an
+        # output dict), but NOT in the causal_trace DAG.  Without DAG
+        # entries, causal_trace.find(subsystem='encoder') returns nothing
+        # and verify_causal_chain() cannot trace through pre-reasoning
+        # stages — breaking the causal transparency requirement that
+        # every output is deterministically traceable to its originating
+        # premise.  Record one DAG entry per active pre-reasoning
+        # subsystem so the full encoding→reasoning path is connected.
+        if self.causal_trace is not None and _pre_reasoning_causal_decisions:
+            for _pr_subsys, _pr_meta in _pre_reasoning_causal_decisions.items():
+                try:
+                    self.causal_trace.record(
+                        subsystem=_pr_subsys,
+                        decision="pre_reasoning",
+                        metadata=_pr_meta,
+                    )
+                except Exception as _pr_trace_err:
+                    logger.debug(
+                        "Causal trace for pre-reasoning subsystem %s "
+                        "failed: %s", _pr_subsys, _pr_trace_err,
+                    )
+
         # Surface VQ codebook quality in causal_decision_chain so that
         # root-cause analysis can trace output uncertainty back to VQ
         # encoding health.  Without this, a forward pass with degraded
@@ -39727,7 +39750,24 @@ class AEONDeltaV3(nn.Module):
             'output_finite': bool(torch.isfinite(logits).all().item()),
             'logits_shape': list(logits.shape),
         }
-        
+        # Record decoder outcome in the causal trace DAG on every pass
+        # (success *and* failure) so that verify_causal_chain() can trace
+        # through the decode stage regardless of whether an anomaly was
+        # detected.  Previously, causal_trace entries were only recorded
+        # on the high-uncertainty and degenerate-output failure paths,
+        # leaving the normal decode path invisible to root-cause queries.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                subsystem="decoder",
+                decision="decode_complete",
+                metadata={
+                    'mode': decode_mode,
+                    'output_finite': bool(
+                        torch.isfinite(logits).all().item(),
+                    ),
+                },
+            )
+
         # ===== UNCERTAINTY CONFIDENCE PENALTY =====
         # When reasoning uncertainty exceeds the threshold, scale logits
         # toward a uniform distribution to prevent overconfident outputs
@@ -47671,6 +47711,48 @@ class AEONDeltaV3(nn.Module):
                     "check failed: %s", _conv_err,
                 )
 
+        # --- Per-module health validation (mutual reinforcement) ---
+        # Active components must verify each other's states.  The axiom
+        # checks above assess aggregate system properties; this block
+        # inspects per-module cached health signals so that individual
+        # subsystem degradation (VQ codebook collapse, low output
+        # quality) is fed back into error evolution and the
+        # metacognitive trigger.  Without this, a single degraded
+        # module can silently drag down overall output quality while
+        # aggregate axiom scores remain within tolerance.
+        _module_health_checks: List[Tuple[str, float]] = []
+        _vq_health = getattr(self, '_cached_vq_codebook_quality', 1.0)
+        _module_health_checks.append(('vq_codebook', _vq_health))
+        _output_quality = getattr(self, '_cached_output_quality', 1.0)
+        if isinstance(_output_quality, torch.Tensor):
+            _output_quality = float(_output_quality.mean().item())
+        _module_health_checks.append(('output_quality', float(_output_quality)))
+        for _mh_name, _mh_score in _module_health_checks:
+            if _mh_score < 0.5 and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class=f'module_health_{_mh_name}',
+                    strategy_used='verify_and_reinforce_module_health',
+                    success=False,
+                    metadata={
+                        'module': _mh_name,
+                        'health_score': _mh_score,
+                    },
+                )
+                reinforcement_actions.append(
+                    f'Recorded module_health_{_mh_name} episode '
+                    f'(score={_mh_score:.2f})'
+                )
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _mh_adapt_err:
+                        logger.debug(
+                            "Module health trigger adaptation failed "
+                            "for %s: %s", _mh_name, _mh_adapt_err,
+                        )
+
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
         # pipeline_wiring_gap episode so the error evolution tracker
@@ -50227,6 +50309,33 @@ class AEONDeltaV3(nn.Module):
         # (architecture assembled but not yet activated) from post-
         # activation (probe ran, baseline states seeded).
         self._cognitive_activation_complete = True
+
+        # --- Post-activation cognitive unity verification ---
+        # Validate that all seeded baseline states and registered edges
+        # produced a coherent starting point.  Without this check the
+        # system transitions to "activated" without confirming that the
+        # activation steps actually achieved a valid initial state,
+        # leaving latent wiring or seeding failures undetected until
+        # the first forward pass.
+        try:
+            _init_unity = self.verify_cognitive_unity()
+            _init_unity_score = _init_unity.get('overall_score', 0.0)
+            if _init_unity_score < 0.5:
+                logger.warning(
+                    "Cognitive activation: post-activation cognitive "
+                    "unity score is low (%.2f) — some subsystems may "
+                    "not be fully wired", _init_unity_score,
+                )
+            else:
+                logger.info(
+                    "Cognitive activation: post-activation cognitive "
+                    "unity verified (score=%.2f)", _init_unity_score,
+                )
+        except Exception as _init_unity_err:
+            logger.debug(
+                "Cognitive activation: post-activation unity check "
+                "skipped: %s", _init_unity_err,
+            )
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
