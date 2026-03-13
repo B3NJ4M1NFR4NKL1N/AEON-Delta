@@ -41548,9 +41548,13 @@ class AEONDeltaV3(nn.Module):
                 self, '_cached_cross_module_coherence', 1.0,
             )) > 0.3
         )
+        _emergence_deficit_trigger = not result.get(
+            'emergence_status', True,
+        )
         if (self.metacognitive_trigger is not None
                 and (_final_uncertainty > _post_pipeline_threshold
-                     or _coherence_deficit_trigger)):
+                     or _coherence_deficit_trigger
+                     or _emergence_deficit_trigger)):
             try:
                 _post_pipeline_signals = {
                     'uncertainty': _final_uncertainty,
@@ -41619,6 +41623,7 @@ class AEONDeltaV3(nn.Module):
                         'final_uncertainty': _final_uncertainty,
                         'threshold': _post_pipeline_threshold,
                         'coherence_deficit_trigger': _coherence_deficit_trigger,
+                        'emergence_deficit_trigger': _emergence_deficit_trigger,
                         'triggered': False,
                     },
                 )
@@ -49095,12 +49100,34 @@ class AEONDeltaV3(nn.Module):
         else:
             snapshot['feedback_bus'] = None
 
+        # ── Convergence monitor state ──────────────────────────────
+        # Include convergence monitor status in the snapshot so that
+        # consumers can observe whether the meta-loop fixed-point
+        # iteration is converging, diverging, or oscillating.  This
+        # closes the gap where verify_and_reinforce() checks
+        # convergence_monitor but the unified cognitive state snapshot
+        # excluded it, forcing consumers to query the convergence
+        # monitor separately.
+        if self.convergence_monitor is not None:
+            try:
+                _conv_summary = self.convergence_monitor.get_convergence_summary()
+                snapshot['convergence'] = _conv_summary
+            except Exception as _conv_err:
+                logger.warning(
+                    "get_cognitive_state_snapshot: convergence_monitor "
+                    "failed: %s", _conv_err,
+                )
+                snapshot['convergence'] = None
+                _degraded.append('convergence')
+        else:
+            snapshot['convergence'] = None
+
         # ── Aggregate overall system health score ──────────────────
         # Synthesize a single 0-1 health score from sub-component
         # results so callers don't need to manually cross-reference
-        # seven nested dictionaries.  Each sub-component contributes
+        # eight nested dictionaries.  Each sub-component contributes
         # equally; a None (failed) sub-component scores 0.
-        _n_components = 7
+        _n_components = 8
         _healthy = _n_components - len(_degraded)
         _sub_score = _healthy / _n_components  # base: fraction available
         # Refine with actual scores from successful sub-components
@@ -50537,8 +50564,11 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Activation probe cleanup adapt_weights failed: %s",
+                        _adapt_err,
+                    )
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
