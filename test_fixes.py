@@ -67850,6 +67850,15 @@ def run_all_tests():
     test_post_pipeline_causal_trace_always_recorded()
     test_verify_and_reinforce_post_correction_logs_exceptions()
 
+    # Final integration & cognitive activation patches
+    test_decoder_degenerate_uses_logger_not_logging()
+    test_late_meta_loop_failure_has_causal_trace()
+    test_emergence_deficit_has_causal_trace()
+    test_cognitive_state_snapshot_includes_feedback_bus()
+    test_verify_and_reinforce_checks_convergence_monitor()
+    test_convergence_instability_error_class_registered()
+    test_cognitive_state_snapshot_health_score_includes_feedback_bus()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -81075,6 +81084,194 @@ def test_verify_and_reinforce_post_correction_logs_exceptions():
         "contain a logger call for observability"
     )
     print("✅ test_verify_and_reinforce_post_correction_logs_exceptions PASSED")
+
+
+# ============================================================================
+# Final Integration & Cognitive Activation Patches
+# ============================================================================
+
+def test_decoder_degenerate_uses_logger_not_logging():
+    """Decoder degenerate-output check must use ``logger.warning()`` (the
+    module-level logger) rather than ``logging.warning()`` (the root logger).
+    Using the root logger bypasses the configured AEON-Delta log handlers,
+    making decoder failures invisible in structured log consumers."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # The old pattern was: logging.warning("Decoder degenerate-output ...")
+    # After the fix it should be: logger.warning(...)
+    assert 'logging.warning("Decoder degenerate-output' not in source, (
+        "_forward_impl must use logger.warning(), not logging.warning(), "
+        "for the decoder degenerate-output check"
+    )
+    assert 'logger.warning("Decoder degenerate-output' in source, (
+        "_forward_impl must use logger.warning() for the decoder "
+        "degenerate-output check"
+    )
+    print("✅ test_decoder_degenerate_uses_logger_not_logging PASSED")
+
+
+def test_late_meta_loop_failure_has_causal_trace():
+    """When a late meta-loop re-run fails, the exception path must record
+    a causal trace entry so that root-cause analysis can deterministically
+    trace the failure.  Without this, late meta-loop failures were recorded
+    in error evolution but invisible to verify_causal_chain()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Find the late_meta_loop_failure error_evolution recording
+    idx = source.find("error_class='late_meta_loop_failure'")
+    assert idx > 0, (
+        "_forward_impl must record 'late_meta_loop_failure' in error_evolution"
+    )
+
+    # After it, there must be a causal_trace.record call
+    region = source[idx:idx + 2000]
+    assert "causal_trace" in region and '.record(' in region, (
+        "The late_meta_loop_failure exception handler must also record "
+        "a causal trace entry for root-cause traceability"
+    )
+    assert '"late_meta_loop"' in region, (
+        "The causal trace entry for late meta-loop failure must use "
+        "subsystem name 'late_meta_loop'"
+    )
+    print("✅ test_late_meta_loop_failure_has_causal_trace PASSED")
+
+
+def test_emergence_deficit_has_causal_trace():
+    """When an emergence deficit is recorded in error evolution during a
+    forward pass, a corresponding causal trace entry must also be created
+    so that root-cause analysis can trace emergence failures back to
+    the weakest axiom."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Find the emergence_deficit error_evolution recording
+    idx = source.find("error_class='emergence_deficit'")
+    assert idx > 0, (
+        "_forward_impl must record 'emergence_deficit' in error_evolution"
+    )
+
+    # After it, there must be a causal_trace.record call
+    region = source[idx:idx + 2000]
+    assert "causal_trace" in region and '.record(' in region, (
+        "The emergence_deficit recording must also include a "
+        "causal trace entry for root-cause traceability"
+    )
+    assert '"emergence_monitor"' in region, (
+        "The causal trace entry for emergence deficit must use "
+        "subsystem name 'emergence_monitor'"
+    )
+    print("✅ test_emergence_deficit_has_causal_trace PASSED")
+
+
+def test_cognitive_state_snapshot_includes_feedback_bus():
+    """get_cognitive_state_snapshot() must include a 'feedback_bus' key
+    aggregating signal count, coverage, and trending data.  Without this,
+    the unified cognitive state omits the central signal router."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    snapshot = model.get_cognitive_state_snapshot()
+
+    assert 'feedback_bus' in snapshot, (
+        "get_cognitive_state_snapshot() must include 'feedback_bus' key"
+    )
+    fb = snapshot['feedback_bus']
+    assert fb is not None, (
+        "feedback_bus value must not be None when feedback bus is active"
+    )
+    assert 'signal_count' in fb, (
+        "feedback_bus must include 'signal_count'"
+    )
+    assert 'coverage' in fb, (
+        "feedback_bus must include 'coverage'"
+    )
+    assert isinstance(fb['coverage'], float), (
+        "feedback_bus coverage must be a float"
+    )
+    print("✅ test_cognitive_state_snapshot_includes_feedback_bus PASSED")
+
+
+def test_verify_and_reinforce_checks_convergence_monitor():
+    """verify_and_reinforce() must consult the convergence monitor and
+    record a 'convergence_instability' episode when the monitor reports
+    diverging status.  This closes the gap where convergence health was
+    invisible to the reinforcement loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    assert "convergence_monitor" in source, (
+        "verify_and_reinforce must reference convergence_monitor"
+    )
+    assert "convergence_instability" in source, (
+        "verify_and_reinforce must record 'convergence_instability' "
+        "episodes when the convergence monitor is diverging"
+    )
+    assert "get_convergence_summary" in source, (
+        "verify_and_reinforce must call "
+        "convergence_monitor.get_convergence_summary()"
+    )
+    print("✅ test_verify_and_reinforce_checks_convergence_monitor PASSED")
+
+
+def test_convergence_instability_error_class_registered():
+    """The 'convergence_instability' error class must be registered in both
+    _class_to_signal (in MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    and _ERROR_CLASS_TO_LAMBDA (in CausalErrorEvolutionTracker) so it routes
+    to the correct metacognitive signal and loss lambda."""
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Check in _class_to_signal (local dict inside adapt_weights_from_evolution)
+    trigger = model.metacognitive_trigger
+    source = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert '"convergence_instability"' in source, (
+        "convergence_instability must be registered in "
+        "MetaCognitiveRecursionTrigger._class_to_signal mapping"
+    )
+
+    # Check in _ERROR_CLASS_TO_LAMBDA (CausalErrorEvolutionTracker)
+    ee = model.error_evolution
+    _lambda_map = getattr(ee, '_ERROR_CLASS_TO_LAMBDA', {})
+    assert 'convergence_instability' in _lambda_map, (
+        "convergence_instability must be registered in "
+        "CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_convergence_instability_error_class_registered PASSED")
+
+
+def test_cognitive_state_snapshot_health_score_includes_feedback_bus():
+    """The system_health_score in get_cognitive_state_snapshot() must
+    account for the feedback_bus component (7 total components)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+
+    assert '_n_components = 7' in source, (
+        "get_cognitive_state_snapshot health score must count 7 "
+        "components (including feedback_bus)"
+    )
+    print("✅ test_cognitive_state_snapshot_health_score_includes_feedback_bus PASSED")
 
 
 if __name__ == "__main__":
