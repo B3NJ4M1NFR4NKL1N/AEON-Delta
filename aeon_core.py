@@ -47523,6 +47523,54 @@ class AEONDeltaV3(nn.Module):
         _overall = health.get('overall_health_score', 0.0)
         _coherent = health.get('healthy', False)
 
+        # ── Causal chain verification ─────────────────────────────
+        # Ground the root_cause_traceability axiom in actual runtime
+        # causal chain verification, not just provenance DAG coverage.
+        # verify_causal_chain() performs BFS connectivity validation
+        # and acyclicity checks on the trace buffer entries, catching
+        # cases where the provenance DAG is fully wired but runtime
+        # trace entries are missing, disconnected, or cyclic.  The
+        # axiom score is refined downward when chain coverage is lower
+        # than provenance-based coverage, ensuring the coherence report
+        # reflects the *actual* traceability of the system's outputs.
+        _chain_result: Optional[Dict[str, Any]] = None
+        _rc_score = _rc.get('coverage', 0.0)
+        try:
+            _chain_result = self.verify_causal_chain()
+            _chain_cov = _chain_result.get('coverage', 1.0)
+            _chain_connected = _chain_result.get('chain_connected', True)
+            _chain_acyclic = _chain_result.get('acyclic', True)
+            # Refine root-cause score: use the minimum of provenance
+            # DAG coverage and actual chain coverage so the axiom
+            # cannot over-report traceability.
+            _rc_score = min(_rc_score, _chain_cov)
+            if not _chain_connected:
+                _rc_score = min(_rc_score, 0.5)
+            if not _chain_acyclic:
+                _rc_score = min(_rc_score, 0.5)
+        except Exception as _cc_err:
+            logger.debug(
+                "architectural_coherence_report: verify_causal_chain "
+                "failed (non-fatal): %s", _cc_err,
+            )
+
+        # Surface causal chain gaps as actionable when present
+        if _chain_result is not None:
+            _untraced = _chain_result.get('untraced_subsystems', [])
+            if _untraced:
+                actionable_gaps.append({
+                    'axiom': 'causal_chain_verification',
+                    'gap': (
+                        f'{len(_untraced)} subsystem(s) have no '
+                        f'runtime causal trace entries'
+                    ),
+                    'remediation': (
+                        'Ensure these subsystems record causal trace '
+                        'entries during forward passes: '
+                        + ', '.join(_untraced[:5])
+                    ),
+                })
+
         return {
             'coherent': _coherent,
             'overall_score': _overall,
@@ -47538,12 +47586,21 @@ class AEONDeltaV3(nn.Module):
                     'total': _um.get('expected_signals', 0),
                 },
                 'root_cause_traceability': {
-                    'score': _rc.get('coverage', 0.0),
+                    'score': _rc_score,
                     'traceable': _rc.get('traceable_modules', 0),
                     'total': _rc.get('active_modules', 0),
                     'dag_acyclic': _rc.get('dag_acyclic', True),
+                    'chain_connected': (
+                        _chain_result.get('chain_connected', True)
+                        if _chain_result is not None else True
+                    ),
+                    'chain_coverage': (
+                        _chain_result.get('coverage', 1.0)
+                        if _chain_result is not None else None
+                    ),
                 },
             },
+            'causal_chain': _chain_result,
             'error_evolution': _ee_effectiveness,
             'provenance': {
                 'chain_completeness': _prov_completeness,
@@ -50335,6 +50392,53 @@ class AEONDeltaV3(nn.Module):
             logger.debug(
                 "Cognitive activation: post-activation unity check "
                 "skipped: %s", _init_unity_err,
+            )
+
+        # --- Post-activation emergence assessment ---
+        # Produce a full system emergence assessment immediately after
+        # activation to determine whether the system has transitioned
+        # from a "connected architecture" to a "functional cognitive
+        # organism."  Without this, the activation probe completes all
+        # 13 initialization steps and validates cognitive unity, but
+        # never synthesizes the three AGI emergence requirements
+        # (mutual reinforcement, meta-cognitive trigger, causal
+        # transparency) into a single actionable verdict — leaving the
+        # system in a "wired but unevaluated" state.  The emergence
+        # assessment also triggers auto-reinforcement when the system
+        # has NOT emerged, closing the gap where init-time weaknesses
+        # were detected by verify_cognitive_unity() but never driven
+        # through the full emergence → reinforcement → re-evaluation
+        # correction loop.
+        try:
+            _emergence = self.system_emergence_report()
+            self._initial_emergence_status = _emergence.get(
+                'system_emergence_status', {},
+            )
+            _emerged = self._initial_emergence_status.get(
+                'emerged', False,
+            )
+            _conditions = self._initial_emergence_status.get(
+                'conditions_met', 0,
+            )
+            _total = self._initial_emergence_status.get(
+                'conditions_total', 6,
+            )
+            if _emerged:
+                logger.info(
+                    "Cognitive activation: system emergence ACHIEVED "
+                    "(%d/%d conditions met)", _conditions, _total,
+                )
+            else:
+                logger.warning(
+                    "Cognitive activation: system emergence NOT YET "
+                    "achieved (%d/%d conditions met) — auto-"
+                    "reinforcement applied", _conditions, _total,
+                )
+        except Exception as _emergence_err:
+            self._initial_emergence_status = {}
+            logger.debug(
+                "Cognitive activation: emergence assessment "
+                "skipped: %s", _emergence_err,
             )
 
     def get_metacognitive_state(self) -> Dict[str, Any]:
