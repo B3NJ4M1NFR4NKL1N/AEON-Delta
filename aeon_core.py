@@ -39580,6 +39580,17 @@ class AEONDeltaV3(nn.Module):
                 # Re-attach to current computation graph (detached cache)
                 z_out = z_out.to(z_quantized.device)
                 logger.debug("Inference cache hit: reusing cached reasoning result")
+                # Record causal trace for the cache-hit path so that
+                # causal transparency is maintained even when the
+                # reasoning core is bypassed.  Without this entry the
+                # causal chain has a gap between inference_cache and
+                # the downstream decoder/output stages.
+                causal_trace.append({
+                    'subsystem': 'reasoning_core_cache_hit',
+                    'event': 'cache_hit_bypass',
+                    'cache_similarity': _cache_similarity,
+                    'inference_cache_source': 'inference_cache',
+                })
             else:
                 # Cache hit by cosine similarity but no stored result yet;
                 # fall through to full reasoning core.
@@ -40489,6 +40500,23 @@ class AEONDeltaV3(nn.Module):
                                 'needs_recheck': result['post_output_coherence']['needs_recheck'],
                             },
                         )
+                        # Adapt metacognitive trigger sensitivity after
+                        # recording the deficit so the trigger learns
+                        # from recurring post-output coherence failures.
+                        # Previously this adaptation only ran on the
+                        # exception path, leaving the success-but-low-
+                        # score path without feedback.
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _poc_adapt_lo:
+                                logger.debug(
+                                    "Post-output coherence low-score "
+                                    "trigger adaptation failed: %s",
+                                    _poc_adapt_lo,
+                                )
                 except Exception as _poc_err:
                     logger.warning(
                         "Post-output coherence verification error "
@@ -46657,6 +46685,19 @@ class AEONDeltaV3(nn.Module):
                     f"Add metacognitive trigger weights for: "
                     f"{', '.join(_uncovered)}"
                 )
+                # Post-registration revalidation — recompute coverage
+                # after injecting missing weights so the returned
+                # coverage reflects the *actual* post-enforcement state
+                # instead of the stale pre-registration snapshot.
+                _covered_post = set(_trigger._signal_weights.keys())
+                _uncovered_post = sorted(
+                    _expected_signals - _covered_post,
+                )
+                _um_coverage = (
+                    1.0
+                    - len(_uncovered_post)
+                    / max(len(_expected_signals), 1)
+                )
         else:
             _uncovered = sorted(_expected_signals)
             _um_coverage = 0.0
@@ -47860,6 +47901,29 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_output_quality, torch.Tensor):
             _output_quality = float(_output_quality.mean().item())
         _module_health_checks.append(('output_quality', float(_output_quality)))
+        # Expanded mutual-reinforcement health checks — additional
+        # cached subsystem scores are inspected so that degradation
+        # in cross-module coherence, causal quality, cycle
+        # consistency, reasoning quality, and MCTS planning quality
+        # is fed back into error evolution.  Without these, only VQ
+        # codebook and output quality triggered per-module health
+        # episodes, leaving other subsystem regressions invisible.
+        _cross_coh = getattr(
+            self, '_cached_cross_module_coherence', 1.0,
+        )
+        _module_health_checks.append(('cross_module_coherence', float(_cross_coh)))
+        _causal_q = getattr(self, '_cached_causal_quality', 1.0)
+        _module_health_checks.append(('causal_quality', float(_causal_q)))
+        _cc_score = getattr(
+            self, '_cached_cycle_consistency_score', 1.0,
+        )
+        _module_health_checks.append(('cycle_consistency', float(_cc_score)))
+        _hr_quality = getattr(
+            self, '_cached_hybrid_reasoning_quality', 1.0,
+        )
+        _module_health_checks.append(('hybrid_reasoning', float(_hr_quality)))
+        _mcts_q = getattr(self, '_cached_mcts_quality', 1.0)
+        _module_health_checks.append(('mcts_planning', float(_mcts_q)))
         for _mh_name, _mh_score in _module_health_checks:
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(

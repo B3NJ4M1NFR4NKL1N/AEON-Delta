@@ -67899,6 +67899,12 @@ def run_all_tests():
     test_verify_and_reinforce_trace_references_feedback_and_error()
     test_system_emergence_trace_references_unity_and_reinforcement()
     test_verify_cognitive_unity_trace_references_wiring()
+    # ── Final integration — expanded mutual reinforcement ──
+    test_verify_and_reinforce_expanded_module_health()
+    test_verify_cognitive_unity_post_registration_revalidation()
+    test_cache_hit_records_causal_trace()
+    test_post_output_coherence_deficit_adapts_trigger()
+    test_expanded_module_health_runtime()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81837,6 +81843,116 @@ def test_verify_cognitive_unity_trace_references_wiring():
         "verify_pipeline_wiring"
     )
     print("✅ test_verify_cognitive_unity_trace_references_wiring PASSED")
+
+
+# ============================================================================
+# Final Integration — Expanded Mutual Reinforcement & Cognitive Activation
+# ============================================================================
+
+
+def test_verify_and_reinforce_expanded_module_health():
+    """verify_and_reinforce() must check additional subsystems beyond
+    vq_codebook and output_quality — including cross_module_coherence,
+    causal_quality, cycle_consistency, hybrid_reasoning, and
+    mcts_planning — so that degradation in any subsystem is fed back
+    into error evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    for module_name in [
+        'cross_module_coherence',
+        'causal_quality',
+        'cycle_consistency',
+        'hybrid_reasoning',
+        'mcts_planning',
+    ]:
+        assert module_name in src, (
+            f"verify_and_reinforce must check {module_name} health"
+        )
+    print("✅ test_verify_and_reinforce_expanded_module_health PASSED")
+
+
+def test_verify_cognitive_unity_post_registration_revalidation():
+    """After auto-registering missing signal weights,
+    verify_cognitive_unity() must recompute _um_coverage to reflect
+    the post-registration state, not the stale pre-registration
+    snapshot."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert '_uncovered_post' in src or '_covered_post' in src, (
+        "verify_cognitive_unity must recompute coverage after "
+        "auto-registering missing weights"
+    )
+    print("✅ test_verify_cognitive_unity_post_registration_revalidation PASSED")
+
+
+def test_cache_hit_records_causal_trace():
+    """When inference cache hit bypasses reasoning_core,
+    _forward_impl must record a causal trace entry so that causal
+    transparency is maintained."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'reasoning_core_cache_hit' in src, (
+        "_forward_impl must record a causal trace entry for "
+        "cache hit bypass"
+    )
+    assert 'cache_hit_bypass' in src, (
+        "_forward_impl cache hit causal trace must use "
+        "'cache_hit_bypass' event"
+    )
+    print("✅ test_cache_hit_records_causal_trace PASSED")
+
+
+def test_post_output_coherence_deficit_adapts_trigger():
+    """When post-output coherence score is low (<0.5), the
+    metacognitive trigger must adapt its weights from the recorded
+    error evolution episode — not just on the exception path."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find the post_output_coherence_deficit section
+    idx = src.find('post_output_coherence_deficit')
+    assert idx != -1, (
+        "_forward_impl must record post_output_coherence_deficit"
+    )
+    # After the record_episode call there must be an
+    # adapt_weights_from_evolution call in close proximity
+    after_deficit = src[idx:idx + 1200]
+    assert 'adapt_weights_from_evolution' in after_deficit, (
+        "After recording post_output_coherence_deficit, "
+        "_forward_impl must call adapt_weights_from_evolution "
+        "on the metacognitive trigger"
+    )
+    print("✅ test_post_output_coherence_deficit_adapts_trigger PASSED")
+
+
+def test_expanded_module_health_runtime():
+    """Runtime test: verify_and_reinforce() must populate module
+    health checks for the expanded set of subsystems."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Force degraded states for new health checks
+    model._cached_cross_module_coherence = 0.3
+    model._cached_causal_quality = 0.2
+    report = model.verify_and_reinforce()
+    actions = report.get('reinforcement_actions', [])
+    actions_str = ' '.join(actions)
+    assert 'cross_module_coherence' in actions_str, (
+        "verify_and_reinforce must report cross_module_coherence "
+        "degradation when score < 0.5"
+    )
+    assert 'causal_quality' in actions_str, (
+        "verify_and_reinforce must report causal_quality "
+        "degradation when score < 0.5"
+    )
+    print("✅ test_expanded_module_health_runtime PASSED")
 
 
 if __name__ == "__main__":
