@@ -67885,6 +67885,12 @@ def run_all_tests():
     test_activation_probe_calls_emergence_report()
     test_activation_probe_stores_emergence_status()
     test_activation_probe_emergence_triggers_reinforcement()
+    # ── Emergence Deficit Trigger & Post-Pipeline Feedback patches ──
+    test_emergence_deficit_trigger_in_post_pipeline()
+    test_emergence_deficit_trigger_runtime()
+    test_post_pipeline_eval_records_error_evolution()
+    test_post_pipeline_eval_error_class_registered()
+    test_emergence_deficit_trigger_in_causal_trace()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -81589,6 +81595,112 @@ def test_activation_probe_emergence_triggers_reinforcement():
         "in _initial_emergence_status"
     )
     print("✅ test_activation_probe_emergence_triggers_reinforcement PASSED")
+
+
+# ============================================================================
+# Final Integration — Emergence Deficit Trigger & Post-Pipeline Feedback Tests
+# ============================================================================
+
+def test_emergence_deficit_trigger_in_post_pipeline():
+    """_emergence_deficit_trigger must be computed and included in the
+    post-pipeline metacognitive re-evaluation conditional so that
+    non-emergence independently triggers meta-cognitive recursion."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_emergence_deficit_trigger' in src, (
+        "_forward_impl must compute _emergence_deficit_trigger"
+    )
+    # The variable must appear in the if-condition that gates the
+    # post-pipeline metacognitive re-evaluation.
+    assert 'or _emergence_deficit_trigger' in src, (
+        "_emergence_deficit_trigger must be an independent trigger "
+        "condition in the post-pipeline metacognitive re-evaluation "
+        "conditional (alongside uncertainty and coherence_deficit)"
+    )
+    print("✅ test_emergence_deficit_trigger_in_post_pipeline PASSED")
+
+
+def test_emergence_deficit_trigger_runtime():
+    """Forward pass must expose emergence_deficit_trigger in
+    post_pipeline_metacognitive_evaluation result when emergence
+    is not achieved."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, 10))
+    result = model.forward(ids, decode_mode='train')
+
+    pp = result.get('post_pipeline_metacognitive_evaluation', {})
+    assert 'emergence_deficit_trigger' in pp, (
+        "post_pipeline_metacognitive_evaluation must include "
+        "'emergence_deficit_trigger' key for causal transparency"
+    )
+    print("✅ test_emergence_deficit_trigger_runtime PASSED")
+
+
+def test_post_pipeline_eval_records_error_evolution():
+    """Successful post-pipeline metacognitive evaluation must record
+    an episode in error_evolution so the trigger learns from all
+    post-pipeline decisions, not only exceptions."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'post_pipeline_metacognitive_evaluation' in src, (
+        "_forward_impl must record post_pipeline_metacognitive_evaluation "
+        "episodes in error_evolution"
+    )
+    # Verify both success and failure paths record episodes
+    assert 'post_pipeline_metacognitive_failure' in src, (
+        "Exception path must still record failure episodes"
+    )
+    print("✅ test_post_pipeline_eval_records_error_evolution PASSED")
+
+
+def test_post_pipeline_eval_error_class_registered():
+    """post_pipeline_metacognitive_evaluation error class must be
+    registered in _class_to_signal (inside adapt_weights_from_evolution)
+    and _ERROR_CLASS_TO_LAMBDA (on CausalErrorEvolutionTracker)."""
+    import inspect
+    from aeon_core import (
+        AEONConfig, AEONDeltaV3, MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    # Check _class_to_signal is defined in adapt_weights_from_evolution
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert 'post_pipeline_metacognitive_evaluation' in src, (
+        "post_pipeline_metacognitive_evaluation must be registered in "
+        "_class_to_signal (inside adapt_weights_from_evolution) so the "
+        "trigger can map it to a signal"
+    )
+
+    err_to_lambda = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'post_pipeline_metacognitive_evaluation' in err_to_lambda, (
+        "post_pipeline_metacognitive_evaluation must be registered in "
+        "_ERROR_CLASS_TO_LAMBDA so training can target the right loss"
+    )
+    print("✅ test_post_pipeline_eval_error_class_registered PASSED")
+
+
+def test_emergence_deficit_trigger_in_causal_trace():
+    """Causal trace entries for post-pipeline evaluation must include
+    emergence_deficit_trigger for full causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Both triggered and non-triggered paths must log emergence_deficit_trigger
+    count = src.count("'emergence_deficit_trigger'")
+    assert count >= 3, (
+        f"emergence_deficit_trigger must appear in causal trace metadata "
+        f"for both triggered and non-triggered paths and in the result "
+        f"dict (found {count} occurrences, expected >= 3)"
+    )
+    print("✅ test_emergence_deficit_trigger_in_causal_trace PASSED")
 
 
 

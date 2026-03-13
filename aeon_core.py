@@ -17141,6 +17141,10 @@ class MetaCognitiveRecursionTrigger:
             # checks raised an exception, preventing late-stage
             # uncertainty from triggering a higher-order review.
             "post_pipeline_metacognitive_failure": "uncertainty",
+            # Post-pipeline metacognitive evaluation completed
+            # successfully — recorded so the trigger can learn from
+            # both triggered and non-triggered post-pipeline decisions.
+            "post_pipeline_metacognitive_evaluation": "uncertainty",
             # Sentinel "none" class — recorded on normal (healthy)
             # pipeline completions.  Explicitly mapping it avoids a
             # spurious debug log for a benign, expected class.
@@ -18528,6 +18532,9 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the unified
         # cognitive cycle that orchestrates metacognitive re-evaluation.
         "post_pipeline_metacognitive_failure": "lambda_ucc",
+        # Successful post-pipeline metacognitive evaluation — maps to
+        # lambda_ucc so training reinforces the UCC evaluation pathway.
+        "post_pipeline_metacognitive_evaluation": "lambda_ucc",
         # Convergence certificate failure — certificate computation
         # errored.  Maps to lambda_lipschitz so training strengthens
         # the contraction verification pathway.
@@ -41548,9 +41555,16 @@ class AEONDeltaV3(nn.Module):
                 self, '_cached_cross_module_coherence', 1.0,
             )) > 0.3
         )
+        # Emergence deficit: if the system has not achieved cognitive
+        # organism status (any of the three AGI axioms unmet), treat
+        # this as an internal conflict that must trigger a higher-order
+        # review cycle — satisfying the requirement that *any* internal
+        # conflict automatically initiates meta-cognitive recursion.
+        _emergence_deficit_trigger = not _emerged
         if (self.metacognitive_trigger is not None
                 and (_final_uncertainty > _post_pipeline_threshold
-                     or _coherence_deficit_trigger)):
+                     or _coherence_deficit_trigger
+                     or _emergence_deficit_trigger)):
             try:
                 _post_pipeline_signals = {
                     'uncertainty': _final_uncertainty,
@@ -41564,19 +41578,43 @@ class AEONDeltaV3(nn.Module):
                 _post_eval = self.metacognitive_trigger.evaluate(
                     **_post_pipeline_signals,
                 )
+                _post_triggered = _post_eval.get('should_recurse', False)
                 result['post_pipeline_metacognitive_evaluation'] = {
-                    'triggered': _post_eval.get('should_recurse', False),
+                    'triggered': _post_triggered,
                     'signals': _post_pipeline_signals,
                     'trigger_count': _post_eval.get('trigger_count', 0),
+                    'emergence_deficit_trigger': _emergence_deficit_trigger,
                 }
+                # Record evaluation outcome (success/failure) in error
+                # evolution so the metacognitive trigger learns from
+                # all post-pipeline decisions, not only exceptions.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="post_pipeline_metacognitive_evaluation",
+                        strategy_used="post_pipeline_evaluation",
+                        success=True,
+                        metadata={
+                            'triggered': _post_triggered,
+                            'emergence_deficit_trigger': (
+                                _emergence_deficit_trigger
+                            ),
+                            'coherence_deficit_trigger': (
+                                _coherence_deficit_trigger
+                            ),
+                        },
+                    )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_trigger",
                         "post_pipeline_evaluation",
                         metadata={
                             'final_uncertainty': _final_uncertainty,
-                            'triggered': _post_eval.get(
-                                'should_recurse', False,
+                            'triggered': _post_triggered,
+                            'emergence_deficit_trigger': (
+                                _emergence_deficit_trigger
+                            ),
+                            'coherence_deficit_trigger': (
+                                _coherence_deficit_trigger
                             ),
                         },
                     )
@@ -41604,12 +41642,13 @@ class AEONDeltaV3(nn.Module):
         else:
             # ── Causal transparency for non-triggered evaluations ──
             # When the post-pipeline metacognitive evaluation does NOT
-            # fire (uncertainty below threshold AND no coherence deficit),
-            # record a causal trace entry documenting the decision not to
-            # trigger.  Without this, healthy forward passes have no
-            # causal trace evidence for the post-pipeline evaluation step,
-            # creating a gap in root-cause traceability: an auditor cannot
-            # distinguish "evaluation ran and decided not to trigger" from
+            # fire (uncertainty below threshold AND no coherence deficit
+            # AND no emergence deficit), record a causal trace entry
+            # documenting the decision not to trigger.  Without this,
+            # healthy forward passes have no causal trace evidence for
+            # the post-pipeline evaluation step, creating a gap in
+            # root-cause traceability: an auditor cannot distinguish
+            # "evaluation ran and decided not to trigger" from
             # "evaluation was never performed".
             if self.causal_trace is not None:
                 self.causal_trace.record(
@@ -41619,6 +41658,7 @@ class AEONDeltaV3(nn.Module):
                         'final_uncertainty': _final_uncertainty,
                         'threshold': _post_pipeline_threshold,
                         'coherence_deficit_trigger': _coherence_deficit_trigger,
+                        'emergence_deficit_trigger': _emergence_deficit_trigger,
                         'triggered': False,
                     },
                 )
