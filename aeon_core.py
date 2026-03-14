@@ -17201,6 +17201,14 @@ class MetaCognitiveRecursionTrigger:
             # Convergence monitor failure — explicit routing for causal
             # transparency when the convergence subsystem itself fails.
             "convergence_monitor_failure": "convergence_conflict",
+            # Factor re-extraction failure — the diversity subsystem's
+            # post-hoc factor re-extraction raised an error, indicating
+            # instability in the sparse factorization path.
+            "factor_reextraction_failure": "diversity_collapse",
+            # Pre-reasoning causal trace failure — causal trace recording
+            # for a pre-reasoning subsystem failed, degrading causal
+            # transparency and breaking the traceability chain.
+            "pre_reasoning_causal_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18619,6 +18627,14 @@ class CausalErrorEvolutionTracker:
         # raised an error.  Maps to lambda_lipschitz so training
         # strengthens contraction guarantees.
         "convergence_monitor_failure": "lambda_lipschitz",
+        # Factor re-extraction failure — diversity subsystem instability.
+        # Maps to lambda_coherence to strengthen coherence constraints
+        # that stabilise the factorization path.
+        "factor_reextraction_failure": "lambda_coherence",
+        # Pre-reasoning causal trace failure — traceability gap in the
+        # pre-reasoning phase.  Maps to lambda_causal_dag to reinforce
+        # the causal DAG structure.
+        "pre_reasoning_causal_trace_failure": "lambda_causal_dag",
     }
 
     def recommend_loss_adjustments(
@@ -28965,7 +28981,7 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
+                        except Exception as _adapt_err:  # noqa: F841
                             pass
         
         # 5. Safety and self-reporting (delegated to helper)
@@ -39916,7 +39932,7 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
+                            except Exception as _adapt_err:  # noqa: F841
                                 pass
 
         # Surface VQ codebook quality in causal_decision_chain so that
