@@ -22672,6 +22672,13 @@ class AEONDeltaV3(nn.Module):
         # attribute encoding quality to cross-task transfer.
         ("encoder", "continual_learning"),
         ("continual_learning", "vq"),
+        # ── Meta-learner pipeline edges ────────────────────────────
+        # The meta-learner monitors EWC drift pressure from the
+        # encoder output and feeds into the metacognitive trigger,
+        # enabling trace_root_cause() to attribute uncertainty
+        # escalation to meta-learning drift signals.
+        ("encoder", "meta_learner"),
+        ("meta_learner", "metacognitive_trigger"),
         # ── Chunked encoding path ─────────────────────────────────
         # The chunked processor re-encodes long sequences in overlapping
         # windows after VQ quantization.  These edges ensure
@@ -22900,6 +22907,7 @@ class AEONDeltaV3(nn.Module):
         "input": "encoder",
         "encoder": "encoder",
         "vq": "vector_quantizer",
+        "meta_learner": "meta_learner",
         "meta_loop": "meta_loop",
         "certified_meta_loop": "certified_meta_loop",
         "convergence_arbiter": "convergence_arbiter",
@@ -28546,9 +28554,11 @@ class AEONDeltaV3(nn.Module):
                 hasattr(self.meta_learner, 'num_tasks')
                 and self.meta_learner.num_tasks > 0
             )
+            self.provenance_tracker.record_before("meta_learner", z_in)
             self.coherence_registry.register_output(
                 "meta_learner", validated=_meta_learner_ok,
             )
+            self.provenance_tracker.record_after("meta_learner", z_in)
             self._cached_meta_learner_ewc = getattr(
                 self, '_cached_meta_learner_ewc', 0.0,
             )
