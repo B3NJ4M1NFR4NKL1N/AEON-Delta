@@ -17536,6 +17536,10 @@ class MetaCognitiveRecursionTrigger:
         "memory_routing_trust_pressure": "memory_trust_deficit",
         "systematic_uncertainty": "uncertainty",
         "low_quality_subsystem_pressure": "coherence_deficit",
+        "corrective_pressure": "coherence_deficit",
+        "memory_retrieval_quality": "memory_trust_deficit",
+        "auto_critic_quality": "low_output_reliability",
+        "memory_trust_deficit": "memory_trust_deficit",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -23226,6 +23230,33 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "auto_critic_quality_deficit", default=0.0,
         )
+        # Aggregate corrective pressure — single scalar summarising all
+        # corrective pressures from the UnifiedCognitiveFrame so the
+        # meta-loop can perform quick "any correction needed" checks
+        # without scanning per-component ``cf:*`` signals individually.
+        self.feedback_bus.register_signal(
+            "corrective_pressure", default=0.0,
+        )
+        # Memory retrieval quality — exposes fine-grained memory health
+        # as a dedicated extra signal, complementing the core
+        # ``memory_quality`` channel which blends retrieval quality
+        # into a single composite.
+        self.feedback_bus.register_signal(
+            "memory_retrieval_quality", default=1.0,
+        )
+        # Auto-critic quality EMA — the positive quality value (not the
+        # inverted deficit).  Provides the meta-loop with the actual
+        # cross-pass self-critique health alongside the deficit signal.
+        self.feedback_bus.register_signal(
+            "auto_critic_quality", default=0.5,
+        )
+        # Memory trust deficit — routes the per-pass raw memory trust
+        # deficit into the feedback bus for cross-pass conditioning,
+        # closing the loop between MemoryRoutingPolicy attenuation and
+        # the metacognitive trigger's memory_trust_deficit parameter.
+        self.feedback_bus.register_signal(
+            "memory_trust_deficit", default=0.0,
+        )
         # Per-source uncertainty aggregates — peak single-source
         # uncertainty and active source count provide the meta-loop
         # with distributional uncertainty information beyond the
@@ -25300,9 +25331,10 @@ class AEONDeltaV3(nn.Module):
 
         Aggregates diversity collapse, topology catastrophe, memory trust,
         complexity gate usage, UCC cross-pass verification state, provenance
-        root-cause attribution, and memory re-retrieval pressure into scalar
-        signals that the feedback bus can project into the meta-loop
-        conditioning vector.
+        root-cause attribution, memory re-retrieval pressure, corrective
+        pressure, memory retrieval quality, auto-critic quality EMA, and
+        memory trust deficit into scalar signals that the feedback bus can
+        project into the meta-loop conditioning vector.
         """
         extra: Dict[str, float] = {}
         # Diversity collapse: 1.0 when collapsed, 0.0 when healthy
@@ -25426,6 +25458,14 @@ class AEONDeltaV3(nn.Module):
         _ac_current = self._cached_auto_critic_current_score
         if _ac_current is not None and _ac_current < 1.0:
             extra["auto_critic_current_quality"] = max(0.0, min(1.0, _ac_current))
+        # Auto-critic quality EMA — expose the positive cross-pass
+        # quality value so the meta-loop can see *how well* self-
+        # critique is performing, not only the deficit (inverted
+        # value).  Low values signal degraded self-critique capacity.
+        if self._auto_critic_quality_count >= 2:
+            extra["auto_critic_quality"] = max(
+                0.0, min(1.0, self._auto_critic_quality_ema),
+            )
         # Hybrid reasoning quality — when the HybridReasoningEngine
         # produced weak or invalid conclusions, signal the meta-loop
         # to deepen reasoning for neuro-symbolic integration repair.
@@ -25654,6 +25694,24 @@ class AEONDeltaV3(nn.Module):
         if _mrt > 0.1:
             extra["memory_routing_trust_pressure"] = max(
                 0.0, min(1.0, _mrt),
+            )
+        # Memory trust deficit — expose the raw per-pass trust deficit
+        # as a dedicated feedback bus signal so cross-pass conditioning
+        # can directly calibrate the metacognitive trigger's
+        # ``memory_trust_deficit`` parameter, closing the loop between
+        # MemoryRoutingPolicy attenuation and metacognitive recursion.
+        if _mrt > 0.0:
+            extra["memory_trust_deficit"] = max(0.0, min(1.0, _mrt))
+        # Memory retrieval quality — expose the per-pass retrieval
+        # quality as a dedicated extra signal, complementing the core
+        # ``memory_quality`` channel.  When retrieval quality is
+        # degraded (< 1.0), the meta-loop can tighten reasoning to
+        # compensate for unreliable memory-based context.
+        _mrq_dict = getattr(self, '_last_memory_retrieval_quality', {})
+        _mrq = _mrq_dict.get("retrieval_quality", 1.0) if _mrq_dict else 1.0
+        if _mrq < 1.0:
+            extra["memory_retrieval_quality"] = max(
+                0.0, min(1.0, _mrq),
             )
         # Cognitive unity deficit — carries (1 - cognitive_unity_score)
         # from the previous pass into the feedback bus.  When the
@@ -26011,6 +26069,16 @@ class AEONDeltaV3(nn.Module):
             for _cp_name, _cp_val in _cf._last_corrective_pressures.items():
                 if _cp_val > 0.1:
                     extra[f"cf:{_cp_name}"] = max(0.0, min(1.0, _cp_val))
+            # Aggregate corrective pressure — single scalar capturing
+            # the maximum per-component corrective pressure so the
+            # meta-loop can perform a quick "any correction needed"
+            # check without scanning individual ``cf:*`` signals.
+            if _cf._last_corrective_pressures:
+                _agg = max(_cf._last_corrective_pressures.values())
+                if _agg > 0.1:
+                    extra["corrective_pressure"] = max(
+                        0.0, min(1.0, _agg),
+                    )
         # MetaCognitiveExecutive review pressure — when the executive
         # review detected poor alignment or hypothesis fixation, route
         # the corrective pressure into the feedback bus so the next
