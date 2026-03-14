@@ -67918,6 +67918,12 @@ def run_all_tests():
     test_snapshot_includes_module_health()
     test_causal_chain_deficit_pushed_to_feedback_bus()
     test_coherence_report_provenance_chain_divergence()
+    # ── Final integration — convergence & meta-learner coherence ──
+    test_convergence_monitor_registered_in_coherence_registry()
+    test_meta_learner_registered_in_coherence_registry()
+    test_convergence_quality_in_feedback_bus()
+    test_meta_learner_ewc_pressure_in_feedback_bus()
+    test_snapshot_includes_convergence_trend()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -82330,6 +82336,133 @@ def test_coherence_report_provenance_chain_divergence():
         "architectural_coherence_report must include 'causal_chain' key"
     )
     print("✅ test_coherence_report_provenance_chain_divergence PASSED")
+
+
+# ============================================================================
+# Final Integration — Convergence & Meta-Learner Coherence Patches
+# ============================================================================
+
+def test_convergence_monitor_registered_in_coherence_registry():
+    """convergence_monitor must be registered in coherence_registry after
+    its check() call so mutual-verification coverage includes convergence."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    cr = model.coherence_registry
+    current = cr._current_pass
+    assert 'convergence_monitor' in current, (
+        f"convergence_monitor must be in coherence_registry after forward. "
+        f"Registered: {sorted(current.keys())}"
+    )
+    print("✅ test_convergence_monitor_registered_in_coherence_registry PASSED")
+
+
+def test_meta_learner_registered_in_coherence_registry():
+    """meta_learner must be registered in coherence_registry after forward
+    so the meta-learning subsystem is covered by mutual verification."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_meta_learning=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    cr = model.coherence_registry
+    current = cr._current_pass
+    assert 'meta_learner' in current, (
+        f"meta_learner must be in coherence_registry after forward. "
+        f"Registered: {sorted(current.keys())}"
+    )
+    print("✅ test_meta_learner_registered_in_coherence_registry PASSED")
+
+
+def test_convergence_quality_in_feedback_bus():
+    """_build_feedback_extra_signals must include convergence_quality when
+    convergence status is below 'converged'."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Simulate non-converged state
+    model._cached_convergence_quality = 0.5
+    signals = model._build_feedback_extra_signals()
+    assert 'convergence_quality' in signals, (
+        "convergence_quality must appear in feedback signals when "
+        "convergence is below 1.0"
+    )
+    assert signals['convergence_quality'] == 0.5, (
+        f"convergence_quality should be 0.5, got {signals['convergence_quality']}"
+    )
+    print("✅ test_convergence_quality_in_feedback_bus PASSED")
+
+
+def test_meta_learner_ewc_pressure_in_feedback_bus():
+    """_build_feedback_extra_signals must include meta_learner_ewc_pressure
+    when EWC drift is elevated."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Simulate elevated EWC drift
+    model._cached_meta_learner_ewc = 0.3
+    signals = model._build_feedback_extra_signals()
+    assert 'meta_learner_ewc_pressure' in signals, (
+        "meta_learner_ewc_pressure must appear in feedback signals when "
+        "EWC drift exceeds threshold"
+    )
+    assert signals['meta_learner_ewc_pressure'] == 0.3, (
+        f"meta_learner_ewc_pressure should be 0.3, got "
+        f"{signals['meta_learner_ewc_pressure']}"
+    )
+    print("✅ test_meta_learner_ewc_pressure_in_feedback_bus PASSED")
+
+
+def test_snapshot_includes_convergence_trend():
+    """get_cognitive_state_snapshot must include convergence_trend with
+    direction and avg_contraction_ratio fields."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    snapshot = model.get_cognitive_state_snapshot()
+    ct = snapshot.get('convergence_trend')
+    assert ct is not None, (
+        "get_cognitive_state_snapshot must include 'convergence_trend'"
+    )
+    assert 'direction' in ct, (
+        "convergence_trend must include 'direction' field"
+    )
+    assert ct['direction'] in ('improving', 'degrading', 'stable', 'warmup'), (
+        f"convergence_trend direction must be one of improving/degrading/"
+        f"stable/warmup, got '{ct['direction']}'"
+    )
+    assert 'avg_contraction_ratio' in ct, (
+        "convergence_trend must include 'avg_contraction_ratio' field"
+    )
+    print("✅ test_snapshot_includes_convergence_trend PASSED")
 
 
 if __name__ == "__main__":
