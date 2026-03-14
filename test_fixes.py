@@ -45043,6 +45043,244 @@ def test_build_feedback_extra_signals_omits_healthy():
     print("✅ test_build_feedback_extra_signals_omits_healthy PASSED")
 
 
+def test_corrective_pressure_aggregate_in_feedback_bus():
+    """_build_feedback_extra_signals emits corrective_pressure aggregate
+    when the CognitiveFrame has active corrective pressures."""
+    from aeon_core import AEONDeltaV3
+
+    class _FakeCF:
+        _last_corrective_pressures = {
+            "frame_coherence_pressure": 0.6,
+            "traceability_pressure": 0.3,
+        }
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        cognitive_frame = _FakeCF()
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "corrective_pressure" in extra, (
+        "Must include corrective_pressure aggregate when CF has active pressures"
+    )
+    assert abs(extra["corrective_pressure"] - 0.6) < 1e-6, (
+        f"Expected max(0.6, 0.3) = 0.6, got {extra['corrective_pressure']}"
+    )
+    print("✅ test_corrective_pressure_aggregate_in_feedback_bus PASSED")
+
+
+def test_memory_retrieval_quality_feedback_signal():
+    """_build_feedback_extra_signals emits memory_retrieval_quality when
+    retrieval quality is degraded."""
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        _last_memory_retrieval_quality = {"retrieval_quality": 0.4}
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "memory_retrieval_quality" in extra, (
+        "Must include memory_retrieval_quality when retrieval quality < 1.0"
+    )
+    assert abs(extra["memory_retrieval_quality"] - 0.4) < 1e-6, (
+        f"Expected 0.4, got {extra['memory_retrieval_quality']}"
+    )
+    print("✅ test_memory_retrieval_quality_feedback_signal PASSED")
+
+
+def test_auto_critic_quality_ema_in_feedback_bus():
+    """_build_feedback_extra_signals emits auto_critic_quality EMA value
+    when enough passes have accumulated."""
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.7
+        _auto_critic_quality_count = 5
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "auto_critic_quality" in extra, (
+        "Must include auto_critic_quality EMA when count >= 2"
+    )
+    assert abs(extra["auto_critic_quality"] - 0.7) < 1e-6, (
+        f"Expected 0.7, got {extra['auto_critic_quality']}"
+    )
+    print("✅ test_auto_critic_quality_ema_in_feedback_bus PASSED")
+
+
+def test_memory_trust_deficit_feedback_signal():
+    """_build_feedback_extra_signals emits memory_trust_deficit when the
+    routing trust deficit is non-zero."""
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _last_trust_score = 1.0
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 0.5
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        provenance_tracker = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _cached_reinforce_weakness = 0.0
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        _cached_memory_routing_trust_deficit = 0.6
+
+    extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
+    assert "memory_trust_deficit" in extra, (
+        "Must include memory_trust_deficit when routing trust deficit > 0"
+    )
+    assert abs(extra["memory_trust_deficit"] - 0.6) < 1e-6, (
+        f"Expected 0.6, got {extra['memory_trust_deficit']}"
+    )
+    print("✅ test_memory_trust_deficit_feedback_signal PASSED")
+
+
+def test_new_signals_registered_in_feedback_bus():
+    """Verify all new integration signals are registered in the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, vocab_size=1000,
+        device_str='cpu', enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+    expected = [
+        "corrective_pressure",
+        "memory_retrieval_quality",
+        "auto_critic_quality",
+        "memory_trust_deficit",
+    ]
+    for sig in expected:
+        assert sig in model.feedback_bus._extra_signals, (
+            f"feedback_bus must have '{sig}' registered"
+        )
+    print("✅ test_new_signals_registered_in_feedback_bus PASSED")
+
+
+def test_new_signals_in_feedback_trigger_mapping():
+    """Verify new signals are mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    expected = {
+        "corrective_pressure": "coherence_deficit",
+        "memory_retrieval_quality": "memory_trust_deficit",
+        "auto_critic_quality": "low_output_reliability",
+        "memory_trust_deficit": "memory_trust_deficit",
+    }
+    for sig, trigger in expected.items():
+        assert sig in mapping, (
+            f"_FEEDBACK_SIGNAL_TO_TRIGGER must include '{sig}'"
+        )
+        assert mapping[sig] == trigger, (
+            f"'{sig}' should map to '{trigger}', got '{mapping[sig]}'"
+        )
+    print("✅ test_new_signals_in_feedback_trigger_mapping PASSED")
+
+
 def test_cached_hybrid_reasoning_quality_init():
     """AEONDeltaV3.__init__ declares _cached_hybrid_reasoning_quality."""
     import inspect
@@ -67260,6 +67498,12 @@ def run_all_tests():
     test_feedback_bus_hybrid_ns_cv_signals_registered()
     test_build_feedback_extra_signals_hybrid_ns_cv()
     test_build_feedback_extra_signals_omits_healthy()
+    test_corrective_pressure_aggregate_in_feedback_bus()
+    test_memory_retrieval_quality_feedback_signal()
+    test_auto_critic_quality_ema_in_feedback_bus()
+    test_memory_trust_deficit_feedback_signal()
+    test_new_signals_registered_in_feedback_bus()
+    test_new_signals_in_feedback_trigger_mapping()
     test_cached_hybrid_reasoning_quality_init()
     test_cached_ns_bridge_confidence_init()
     test_hybrid_quality_cached_in_forward()
