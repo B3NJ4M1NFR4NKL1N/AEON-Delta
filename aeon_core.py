@@ -17181,6 +17181,26 @@ class MetaCognitiveRecursionTrigger:
             # meta-loop fixed-point iteration is moving away from
             # the contraction guarantee.
             "convergence_instability": "convergence_verdict",
+            # ── Module-health error classes from verify_and_reinforce ──
+            # Each module_health_* class is routed to the metacognitive
+            # signal that best represents the degraded subsystem's domain,
+            # enabling the metacognitive trigger to differentiate between
+            # health degradation types rather than collapsing them all
+            # into generic 'uncertainty'.
+            "module_health_vq_codebook": "low_output_reliability",
+            "module_health_output_quality": "low_output_reliability",
+            "module_health_cross_module_coherence": "coherence_deficit",
+            "module_health_causal_quality": "low_causal_quality",
+            "module_health_cycle_consistency": "coherence_deficit",
+            "module_health_hybrid_reasoning": "uncertainty",
+            "module_health_mcts_planning": "uncertainty",
+            "module_health_convergence_quality": "convergence_conflict",
+            "module_health_deception_suppressor": "safety_violation",
+            "module_health_code_execution": "safety_violation",
+            "module_health_social_cognition": "coherence_deficit",
+            # Convergence monitor failure — explicit routing for causal
+            # transparency when the convergence subsystem itself fails.
+            "convergence_monitor_failure": "convergence_conflict",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -17205,6 +17225,16 @@ class MetaCognitiveRecursionTrigger:
             ("subsystem_degraded_world", "world_model_surprise"),
             # Catch-all for other subsystem degradation.
             ("subsystem_degraded_", "low_output_reliability"),
+            # Module-health prefixes — catch-all for any future
+            # module_health_* classes not in the static map.
+            ("module_health_causal", "low_causal_quality"),
+            ("module_health_convergence", "convergence_conflict"),
+            ("module_health_deception", "safety_violation"),
+            ("module_health_code_execution", "safety_violation"),
+            ("module_health_coherence", "coherence_deficit"),
+            ("module_health_cycle", "coherence_deficit"),
+            ("module_health_social", "coherence_deficit"),
+            ("module_health_", "low_output_reliability"),
         ]
 
         # Accumulate boost/dampen factors for each signal.
@@ -18569,6 +18599,26 @@ class CausalErrorEvolutionTracker:
         # diverging convergence monitor.  Maps to lambda_lipschitz so
         # training strengthens contraction guarantees.
         "convergence_instability": "lambda_lipschitz",
+        # ── Module-health error classes from verify_and_reinforce ──
+        # Each module_health_* class maps to the lambda that governs the
+        # corresponding subsystem's training objective, so error-driven
+        # weight adaptation can target the exact training loss whose
+        # subsystem is degraded.
+        "module_health_vq_codebook": "lambda_self_consistency",
+        "module_health_output_quality": "lambda_self_consistency",
+        "module_health_cross_module_coherence": "lambda_coherence",
+        "module_health_causal_quality": "lambda_ucc",
+        "module_health_cycle_consistency": "lambda_cycle_consistency",
+        "module_health_hybrid_reasoning": "lambda_self_consistency",
+        "module_health_mcts_planning": "lambda_mcts_value",
+        "module_health_convergence_quality": "lambda_lipschitz",
+        "module_health_deception_suppressor": "lambda_safety",
+        "module_health_code_execution": "lambda_safety",
+        "module_health_social_cognition": "lambda_ns_consistency",
+        # Convergence monitor failure — the convergence subsystem itself
+        # raised an error.  Maps to lambda_lipschitz so training
+        # strengthens contraction guarantees.
+        "convergence_monitor_failure": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
