@@ -39313,6 +39313,16 @@ class AEONDeltaV3(nn.Module):
             'output_finite': bool(torch.isfinite(z_encoded).all().item()),
             'output_norm': float(z_encoded.detach().norm().item()),
         }
+        # Register encoder output in the coherence registry so that
+        # mutual-verification coverage includes the foundational encoding
+        # stage.  Without this, the encoder is the only pre-reasoning
+        # subsystem invisible to the coherence ledger, creating an
+        # asymmetry where downstream modules (backbone_adapter,
+        # continual_learning, decoder) are verified but the encoder is not.
+        self.coherence_registry.register_output(
+            "encoder",
+            validated=torch.isfinite(z_encoded).all().item(),
+        )
 
         # ===== BACKBONE ADAPTER ENRICHMENT =====
         # When a pretrained backbone adapter is loaded, use it to enrich
@@ -39465,6 +39475,17 @@ class AEONDeltaV3(nn.Module):
                 self.config.vq_collapse_utilization_threshold, 1e-6,
             ))
             self._cached_vq_codebook_quality = _vq_codebook_quality
+            # Propagate VQ codebook quality into the feedback bus so the
+            # next meta-loop pass is conditioned on codebook health.
+            # Without this, _cached_vq_codebook_quality is visible in
+            # causal_decision_chain and verify_and_reinforce's module
+            # health checks, but invisible to _build_feedback_extra_signals(),
+            # breaking the feedback loop between VQ health and meta-loop
+            # conditioning.
+            if self.feedback_bus is not None:
+                _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
+                if 'vq_codebook_quality' in _fb_sig:
+                    _fb_sig['vq_codebook_quality'] = _vq_codebook_quality
             # Record VQ decision for causal transparency — codebook
             # utilisation and loss magnitude must be traceable in the
             # causal_decision_chain so root-cause analysis can attribute
@@ -47721,6 +47742,33 @@ class AEONDeltaV3(nn.Module):
                         + ', '.join(_untraced[:5])
                     ),
                 })
+            # ── Provenance ↔ causal chain cross-validation ─────────
+            # When provenance DAG completeness and runtime causal chain
+            # coverage diverge significantly, the system's traceability
+            # is inconsistent: the static DAG says modules are wired
+            # but runtime traces show they aren't producing entries (or
+            # vice versa).  Surfacing this discrepancy as an actionable
+            # gap ensures the coherence report flags silent divergence,
+            # closing the gap where the two metrics were independently
+            # healthy but never cross-validated.
+            _chain_cov_val = _chain_result.get('coverage', 1.0)
+            _prov_cov_val = _prov_completeness
+            _divergence = abs(_prov_cov_val - _chain_cov_val)
+            if _divergence > 0.2:
+                actionable_gaps.append({
+                    'axiom': 'provenance_chain_divergence',
+                    'gap': (
+                        f'Provenance DAG completeness ({_prov_cov_val:.0%}) '
+                        f'diverges from runtime causal chain coverage '
+                        f'({_chain_cov_val:.0%}) by {_divergence:.0%}'
+                    ),
+                    'remediation': (
+                        'Reconcile static provenance wiring with runtime '
+                        'causal trace recording — modules may be wired '
+                        'in the DAG but not recording trace entries, or '
+                        'recording traces for modules not in the DAG'
+                    ),
+                })
 
         return {
             'coherent': _coherent,
@@ -47983,6 +48031,29 @@ class AEONDeltaV3(nn.Module):
                             "Module health trigger adaptation failed "
                             "for %s: %s", _mh_name, _mh_adapt_err,
                         )
+
+        # --- Propagate module health into feedback bus ---
+        # Push per-module health degradation signals into the feedback bus
+        # so the next forward pass's meta-loop is conditioned on module
+        # health.  Without this, the 7 health scores are checked and
+        # recorded in error_evolution but never populate
+        # feedback_bus._extra_signals, leaving the feedback loop between
+        # verify_and_reinforce and next-pass conditioning broken.
+        if self.feedback_bus is not None:
+            _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
+            for _mh_name, _mh_score in _module_health_checks:
+                _pressure_key = f'reinforce_{_mh_name}_pressure'
+                if _pressure_key in _fb_sig:
+                    _fb_sig[_pressure_key] = max(0.0, 1.0 - _mh_score)
+            # Aggregate worst-case module health as a single pressure
+            # signal accessible to _build_feedback_extra_signals().
+            if 'reinforce_weakness_pressure' in _fb_sig:
+                _worst_health = min(
+                    s for _, s in _module_health_checks
+                ) if _module_health_checks else 1.0
+                _fb_sig['reinforce_weakness_pressure'] = max(
+                    0.0, 1.0 - _worst_health,
+                )
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
@@ -49276,6 +49347,41 @@ class AEONDeltaV3(nn.Module):
         else:
             snapshot['convergence'] = None
 
+        # ── Per-module health scores ──────────────────────────────────
+        # Include the 7 per-module health scores that verify_and_reinforce()
+        # inspects so snapshot consumers can observe individual subsystem
+        # degradation without calling verify_and_reinforce() themselves.
+        # Without this, module-level health is invisible in the snapshot,
+        # leaving consumers unable to identify which specific module is
+        # dragging down overall system quality.
+        snapshot['module_health'] = {
+            'vq_codebook': getattr(self, '_cached_vq_codebook_quality', 1.0),
+            'output_quality': float(
+                getattr(self, '_cached_output_quality', 1.0)
+                if not isinstance(
+                    getattr(self, '_cached_output_quality', 1.0),
+                    torch.Tensor,
+                )
+                else getattr(self, '_cached_output_quality', torch.tensor(1.0)
+                ).mean().item()
+            ),
+            'cross_module_coherence': float(
+                getattr(self, '_cached_cross_module_coherence', 1.0),
+            ),
+            'causal_quality': float(
+                getattr(self, '_cached_causal_quality', 1.0),
+            ),
+            'cycle_consistency': float(
+                getattr(self, '_cached_cycle_consistency_score', 1.0),
+            ),
+            'hybrid_reasoning': float(
+                getattr(self, '_cached_hybrid_reasoning_quality', 1.0),
+            ),
+            'mcts_planning': float(
+                getattr(self, '_cached_mcts_quality', 1.0),
+            ),
+        }
+
         # ── Aggregate overall system health score ──────────────────
         # Synthesize a single 0-1 health score from sub-component
         # results so callers don't need to manually cross-reference
@@ -49604,6 +49710,20 @@ class AEONDeltaV3(nn.Module):
                         "in verify_causal_chain: %s",
                         _ccg_adapt_err,
                     )
+
+        # ── Propagate coverage deficit to feedback bus ──────────────
+        # Push causal chain coverage deficit into the feedback bus as a
+        # pressure signal so the next forward pass's meta-loop is
+        # conditioned on causal transparency health.  Without this,
+        # untraced subsystems are recorded in error_evolution but never
+        # populate the feedback bus, leaving the next pass uninformed
+        # about prior causal chain gaps.
+        if self.feedback_bus is not None:
+            _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
+            if 'causal_chain_coverage_deficit' in _fb_sig:
+                _fb_sig['causal_chain_coverage_deficit'] = max(
+                    0.0, 1.0 - _coverage,
+                )
 
         return result
 
