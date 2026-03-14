@@ -50525,6 +50525,18 @@ class AEONDeltaV3(nn.Module):
         # NOTE: coherence registry seeding (step 8) must execute first
         # so that verify_and_reinforce() sees the full set of expected
         # subsystems and produces accurate coverage metrics.
+        #
+        # Snapshot episode counts so we can retroactively mark episodes
+        # created during init-time verify_and_reinforce() as baseline.
+        # Without this, verify_cognitive_unity()'s success_rate
+        # computation counts init-time verification successes as
+        # real operational episodes, diluting the failure signal when
+        # actual runtime failures are later recorded.
+        _pre_episode_counts: Dict[str, int] = {}
+        if self.error_evolution is not None:
+            with self.error_evolution._lock:
+                for _cls, _eps in self.error_evolution._episodes.items():
+                    _pre_episode_counts[_cls] = len(_eps)
         try:
             _reinforce = self.verify_and_reinforce()
             _actions = _reinforce.get('reinforcement_actions', [])
@@ -50533,6 +50545,31 @@ class AEONDeltaV3(nn.Module):
                     "Cognitive activation: verify_and_reinforce applied "
                     "%d reinforcement action(s)", len(_actions),
                 )
+
+            # 9a. Retroactively mark init-time episodes as baseline.
+            # Episodes created by verify_and_reinforce() (and its
+            # internal verify_causal_chain() call) during activation
+            # are diagnostic artefacts — they reflect the system's
+            # startup self-check, not real operational error/recovery
+            # events.  If left unmarked, they inflate the aggregate
+            # success_rate in verify_cognitive_unity()'s
+            # error_evolution_effectiveness, masking genuine failures
+            # that are recorded during actual forward passes.
+            if self.error_evolution is not None:
+                _marked_baseline = 0
+                with self.error_evolution._lock:
+                    for _cls, _eps in self.error_evolution._episodes.items():
+                        _prev_count = _pre_episode_counts.get(_cls, 0)
+                        for _ep in _eps[_prev_count:]:
+                            _md = _ep.get('metadata')
+                            if isinstance(_md, dict) and not _md.get('baseline'):
+                                _md['baseline'] = True
+                                _marked_baseline += 1
+                            elif _md is None or not isinstance(_md, dict):
+                                _ep['metadata'] = {'baseline': True}
+                                _marked_baseline += 1
+                if _marked_baseline > 0:
+                    self.error_evolution._baseline_count += _marked_baseline
 
             # 9b. Activation recovery — record successful recovery
             # episodes for error classes that accumulated multiple
@@ -50562,8 +50599,10 @@ class AEONDeltaV3(nn.Module):
                             metadata={
                                 'source': 'cognitive_activation_probe',
                                 'reinforcement_actions': len(_actions),
+                                'baseline': True,
                             },
                         )
+                        self.error_evolution._baseline_count += 1
                 # Adapt trigger weights from recovery episodes so the
                 # metacognitive trigger starts with calibrated sensitivity
                 # that reflects both the init-time failures AND their
