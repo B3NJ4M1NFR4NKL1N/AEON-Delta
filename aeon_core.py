@@ -26087,6 +26087,25 @@ class AEONDeltaV3(nn.Module):
         # now, sustained pressure also adjusts the trigger's channel
         # weights, ensuring the system's metacognitive response evolves
         # with observed feedback patterns.
+        # Convergence quality — when the convergence monitor's status is
+        # below 'converged', signal the meta-loop to deepen reasoning.
+        # This closes the gap where convergence health was checked inside
+        # _forward_impl but never routed through the feedback bus for
+        # cross-pass meta-loop conditioning.
+        _conv_q = getattr(self, '_cached_convergence_quality', 1.0)
+        if _conv_q < 1.0:
+            extra["convergence_quality"] = max(0.0, min(1.0, _conv_q))
+        # Meta-learner EWC drift pressure — when the meta-learner's EWC
+        # penalty is elevated, signal the meta-loop that task distribution
+        # has shifted.  This closes the gap where EWC drift escalated
+        # within-pass uncertainty but never conditioned the *next* pass's
+        # meta-loop depth via the feedback bus.
+        _ml_ewc = getattr(self, '_cached_meta_learner_ewc', 0.0)
+        if _ml_ewc > 0.05:
+            extra["meta_learner_ewc_pressure"] = max(
+                0.0, min(1.0, _ml_ewc),
+            )
+
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
                 self.metacognitive_trigger.adapt_weights_from_feedback_signals(
@@ -28127,6 +28146,21 @@ class AEONDeltaV3(nn.Module):
             _was_diverging = _was_diverging or float(np.mean(_prev_ratios)) >= 1.0
         convergence_verdict = self.convergence_monitor.check(residual_norm_scalar)
         is_diverging = convergence_verdict.get('status') == 'diverging'
+        # ── Convergence monitor → coherence registry & feedback cache ──
+        # Register the convergence monitor's verdict in the coherence
+        # registry so mutual-verification coverage includes convergence
+        # health, and cache the quality score for cross-pass feedback-bus
+        # conditioning.
+        _conv_status = convergence_verdict.get('status', 'warmup')
+        self._cached_convergence_quality = (
+            1.0 if _conv_status == 'converged'
+            else 0.5 if _conv_status == 'converging'
+            else 0.0 if _conv_status == 'diverging'
+            else 0.25  # warmup
+        )
+        self.coherence_registry.register_output(
+            "convergence_monitor", validated=(not is_diverging),
+        )
         if (is_diverging or _was_diverging) and not fast:
             self.audit_log.record("convergence_monitor", "diverging", {
                 "residual_norm": residual_norm_scalar,
@@ -28476,6 +28510,7 @@ class AEONDeltaV3(nn.Module):
                 with torch.no_grad():
                     _ewc_val = self.meta_learner.ewc_loss()
                     _ewc_scalar = float(_ewc_val.item()) if torch.is_tensor(_ewc_val) else 0.0
+                self._cached_meta_learner_ewc = _ewc_scalar
                 if math.isfinite(_ewc_scalar) and _ewc_scalar > _EWC_DRIFT_THRESHOLD:
                     _ewc_boost = min(
                         1.0 - uncertainty,
@@ -28500,6 +28535,23 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             logger.debug("adapt_weights failed (ewc_drift): %s", _err)
+        # ── Meta-learner → coherence registry & feedback cache ──────
+        # Register the meta-learner in the coherence registry regardless
+        # of training/eval mode so mutual-verification coverage includes
+        # the meta-learning subsystem.  Cache the EWC scalar for the
+        # feedback bus so cross-pass meta-loop conditioning is aware of
+        # meta-learner drift pressure.
+        if self.meta_learner is not None:
+            _meta_learner_ok = (
+                hasattr(self.meta_learner, 'num_tasks')
+                and self.meta_learner.num_tasks > 0
+            )
+            self.coherence_registry.register_output(
+                "meta_learner", validated=_meta_learner_ok,
+            )
+            self._cached_meta_learner_ewc = getattr(
+                self, '_cached_meta_learner_ewc', 0.0,
+            )
         
         # 1a-v. VQ codebook utilization feedback — when the vector
         # quantizer has low codebook utilization (many dead codes),
@@ -49346,6 +49398,37 @@ class AEONDeltaV3(nn.Module):
                 _degraded.append('convergence')
         else:
             snapshot['convergence'] = None
+
+        # ── Convergence trend ─────────────────────────────────────────
+        # Include a convergence_trend summary so snapshot consumers can
+        # observe directional convergence health (improving/degrading)
+        # without re-computing from raw history.
+        if self.convergence_monitor is not None:
+            _hist = list(self.convergence_monitor.history)
+            if len(_hist) >= 2:
+                _recent = _hist[-3:] if len(_hist) >= 3 else _hist
+                _trend_ratios = [
+                    _recent[i] / max(_recent[i - 1], 1e-12)
+                    for i in range(1, len(_recent))
+                ]
+                _avg_ratio = float(np.mean(_trend_ratios))
+                snapshot['convergence_trend'] = {
+                    'direction': (
+                        'improving' if _avg_ratio < 0.95
+                        else 'degrading' if _avg_ratio > 1.05
+                        else 'stable'
+                    ),
+                    'avg_contraction_ratio': _avg_ratio,
+                    'window_size': len(_recent),
+                }
+            else:
+                snapshot['convergence_trend'] = {
+                    'direction': 'warmup',
+                    'avg_contraction_ratio': None,
+                    'window_size': len(_hist),
+                }
+        else:
+            snapshot['convergence_trend'] = None
 
         # ── Per-module health scores ──────────────────────────────────
         # Include the 7 per-module health scores that verify_and_reinforce()
