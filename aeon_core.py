@@ -17201,6 +17201,13 @@ class MetaCognitiveRecursionTrigger:
             # Convergence monitor failure — explicit routing for causal
             # transparency when the convergence subsystem itself fails.
             "convergence_monitor_failure": "convergence_conflict",
+            # Factor re-extraction failure — diversity subsystem instability
+            # when post-collapse factor re-extraction raises an exception.
+            "factor_reextraction_failure": "diversity_collapse",
+            # Pre-reasoning causal trace failure — traceability gap when
+            # recording pre-reasoning subsystem decisions into the causal
+            # trace DAG fails.
+            "pre_reasoning_causal_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18619,6 +18626,14 @@ class CausalErrorEvolutionTracker:
         # raised an error.  Maps to lambda_lipschitz so training
         # strengthens contraction guarantees.
         "convergence_monitor_failure": "lambda_lipschitz",
+        # Factor re-extraction failure — maps to lambda_coherence (same
+        # target as diversity_collapse) so training strengthens factor
+        # extraction stability.
+        "factor_reextraction_failure": "lambda_coherence",
+        # Pre-reasoning causal trace failure — maps to lambda_ucc (same
+        # target as other causal chain/trace failures) so training
+        # strengthens causal trace recording reliability.
+        "pre_reasoning_causal_trace_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
