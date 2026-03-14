@@ -36808,6 +36808,7 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "backbone_adapter": "backbone_adapter",
         "chunked_processor": "chunked_processor",
         "inference_cache": "inference_cache",
+        "meta_learner": "meta_learner",
     }
 
     # Verify every optional node has a known attribute mapping
