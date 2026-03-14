@@ -67925,6 +67925,15 @@ def run_all_tests():
     test_convergence_quality_in_feedback_bus()
     test_meta_learner_ewc_pressure_in_feedback_bus()
     test_snapshot_includes_convergence_trend()
+    # ── Final integration — causal transparency & mutual reinforcement ──
+    test_convergence_monitor_causal_trace()
+    test_code_execution_sandbox_causal_trace()
+    test_deception_suppressor_failure_records_error_evolution()
+    test_deception_suppressor_failure_causal_trace()
+    test_deception_suppressor_failure_error_class_registered()
+    test_verify_and_reinforce_extended_module_health()
+    test_snapshot_includes_extended_module_health()
+    test_code_execution_sandbox_error_causal_trace()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -82464,6 +82473,247 @@ def test_snapshot_includes_convergence_trend():
         "convergence_trend must include 'avg_contraction_ratio' field"
     )
     print("✅ test_snapshot_includes_convergence_trend PASSED")
+
+
+# ============================================================================
+# Final Integration — Causal Transparency & Mutual Reinforcement Patches
+# ============================================================================
+
+def test_convergence_monitor_causal_trace():
+    """convergence_monitor verdict must be recorded in causal_trace so
+    root-cause analysis can trace convergence health back to the
+    originating residual norm and meta-loop iteration."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    ct = model.causal_trace
+    entries = ct._entries if hasattr(ct, '_entries') else []
+    conv_entries = [
+        e for e in entries
+        if e.get('subsystem') == 'convergence_monitor'
+    ]
+    assert len(conv_entries) > 0, (
+        "convergence_monitor must have at least one causal_trace entry "
+        "after a forward pass"
+    )
+    entry = conv_entries[-1]
+    meta = entry.get('metadata', {})
+    assert 'status' in meta, (
+        "convergence_monitor causal_trace must include 'status' in metadata"
+    )
+    assert 'quality' in meta, (
+        "convergence_monitor causal_trace must include 'quality' in metadata"
+    )
+    print("✅ test_convergence_monitor_causal_trace PASSED")
+
+
+def test_code_execution_sandbox_causal_trace():
+    """code_execution_sandbox success path must record in causal_trace
+    so verify_causal_chain's adjacency graph includes sandbox verdicts."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    ct = model.causal_trace
+    entries = ct._entries if hasattr(ct, '_entries') else []
+    ce_entries = [
+        e for e in entries
+        if e.get('subsystem') == 'code_execution'
+    ]
+    # code_execution_sandbox must have a causal trace entry (success or error)
+    assert len(ce_entries) > 0, (
+        "code_execution must have at least one causal_trace entry "
+        "after a forward pass when code_execution_sandbox is active"
+    )
+    print("✅ test_code_execution_sandbox_causal_trace PASSED")
+
+
+def test_deception_suppressor_failure_records_error_evolution():
+    """When deception_suppressor raises an exception, the error must be
+    recorded in error_evolution with class 'deception_suppressor_failure'
+    so that the metacognitive trigger can adapt to detection outages."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    # Inject a failing deception suppressor
+    original_forward = model.deception_suppressor.forward
+    def _fail(*args, **kwargs):
+        raise RuntimeError("Injected deception_suppressor failure")
+    model.deception_suppressor.forward = _fail
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # Restore
+    model.deception_suppressor.forward = original_forward
+    # Check error_evolution recorded the failure
+    summary = model.error_evolution.get_error_summary()
+    ec = summary.get('error_classes', {})
+    assert 'deception_suppressor_failure' in ec, (
+        "deception_suppressor_failure must be recorded in error_evolution "
+        f"when the deception suppressor raises an exception. "
+        f"Recorded classes: {sorted(ec.keys())}"
+    )
+    print("✅ test_deception_suppressor_failure_records_error_evolution PASSED")
+
+
+def test_deception_suppressor_failure_causal_trace():
+    """When deception_suppressor raises an exception, the error must be
+    recorded in causal_trace so root-cause analysis can trace the failure."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    original_forward = model.deception_suppressor.forward
+    def _fail(*args, **kwargs):
+        raise RuntimeError("Injected deception_suppressor failure")
+    model.deception_suppressor.forward = _fail
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    model.deception_suppressor.forward = original_forward
+    ct = model.causal_trace
+    entries = list(ct._entries) if hasattr(ct, '_entries') else []
+    ds_entries = [
+        e for e in entries
+        if e.get('subsystem') == 'deception_suppressor'
+        and e.get('decision') == 'error'
+    ]
+    assert len(ds_entries) > 0, (
+        "deception_suppressor error must be recorded in causal_trace "
+        "when the module raises an exception"
+    )
+    print("✅ test_deception_suppressor_failure_causal_trace PASSED")
+
+
+def test_deception_suppressor_failure_error_class_registered():
+    """deception_suppressor_failure must be registered in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA so the metacognitive
+    trigger can adapt its weights when the deception subsystem fails."""
+    from aeon_core import CausalErrorEvolutionTracker
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert 'deception_suppressor_failure' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), (
+        "deception_suppressor_failure must be in "
+        "CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_deception_suppressor_failure_error_class_registered PASSED")
+
+
+def test_verify_and_reinforce_extended_module_health():
+    """verify_and_reinforce must check convergence_quality,
+    deception_suppressor, code_execution, and social_cognition health
+    in addition to the original 7 modules."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    # Simulate degraded subsystems
+    model._cached_convergence_quality = 0.3
+    model._cached_deception_pressure = 0.8  # health = 0.2
+    model._cached_sandbox_pressure = 0.7   # health = 0.3
+    model._cached_social_pressure = 0.9    # health = 0.1
+    report = model.verify_and_reinforce()
+    # Check error_evolution recorded these degradations
+    summary = model.error_evolution.get_error_summary()
+    ec = summary.get('error_classes', {})
+    for expected in [
+        'module_health_convergence_quality',
+        'module_health_deception_suppressor',
+        'module_health_code_execution',
+        'module_health_social_cognition',
+    ]:
+        assert expected in ec, (
+            f"verify_and_reinforce must record {expected} when that "
+            f"module health is below 0.5. Recorded: {sorted(ec.keys())}"
+        )
+    print("✅ test_verify_and_reinforce_extended_module_health PASSED")
+
+
+def test_snapshot_includes_extended_module_health():
+    """get_cognitive_state_snapshot module_health must include the 4 new
+    subsystem scores: convergence_quality, deception_suppressor,
+    code_execution, social_cognition."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    snapshot = model.get_cognitive_state_snapshot()
+    mh = snapshot.get('module_health')
+    assert mh is not None, (
+        "get_cognitive_state_snapshot must include 'module_health'"
+    )
+    for key in [
+        'convergence_quality', 'deception_suppressor',
+        'code_execution', 'social_cognition',
+    ]:
+        assert key in mh, (
+            f"module_health must include '{key}', got: {sorted(mh.keys())}"
+        )
+        val = mh[key]
+        assert isinstance(val, float), (
+            f"module_health['{key}'] must be float, got {type(val)}"
+        )
+        assert 0.0 <= val <= 1.0, (
+            f"module_health['{key}'] must be in [0, 1], got {val}"
+        )
+    print("✅ test_snapshot_includes_extended_module_health PASSED")
+
+
+def test_code_execution_sandbox_error_causal_trace():
+    """When code_execution_sandbox raises, the error must be in
+    causal_trace for full root-cause traceability."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    original_forward = model.code_execution_sandbox.forward
+    def _fail(*args, **kwargs):
+        raise RuntimeError("Injected sandbox failure")
+    model.code_execution_sandbox.forward = _fail
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    model.code_execution_sandbox.forward = original_forward
+    ct = model.causal_trace
+    entries = list(ct._entries) if hasattr(ct, '_entries') else []
+    ce_entries = [
+        e for e in entries
+        if e.get('subsystem') == 'code_execution'
+        and e.get('decision') == 'error'
+    ]
+    assert len(ce_entries) > 0, (
+        "code_execution error must be recorded in causal_trace "
+        "when the sandbox raises an exception"
+    )
+    print("✅ test_code_execution_sandbox_error_causal_trace PASSED")
 
 
 if __name__ == "__main__":

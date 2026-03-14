@@ -16811,6 +16811,9 @@ class MetaCognitiveRecursionTrigger:
             # safety_violation so adaptive weights learn from deception
             # history alongside other integrity-related failures.
             "deception_detected": "safety_violation",
+            # Deception suppressor exception — the DeceptionSuppressor
+            # module crashed, leaving deception detection offline.
+            "deception_suppressor_failure": "safety_violation",
             # Social cognition — perspective misalignment indicates
             # uncertainty about agent intent modelling.
             "social_cognition_misalignment": "uncertainty",
@@ -18206,6 +18209,7 @@ class CausalErrorEvolutionTracker:
         "safety_rollback": "lambda_safety",
         "safety_critic_revision": "lambda_safety",
         "deception_detected": "lambda_safety",
+        "deception_suppressor_failure": "lambda_safety",
         "social_cognition_misalignment": "lambda_coherence",
         "social_cognition_failure": "lambda_coherence",
         "code_execution_low_confidence": "lambda_safety",
@@ -25839,6 +25843,7 @@ class AEONDeltaV3(nn.Module):
             "safety_rollback": "safety_violation_pressure",
             "deception_detected": "deception_pressure",
             "deception_suppression": "deception_pressure",
+            "deception_suppressor_failure": "deception_pressure",
             "social_cognition_misalignment": "social_pressure",
             "social_cognition_failure": "social_pressure",
             "code_execution_low_confidence": "sandbox_pressure",
@@ -28169,6 +28174,22 @@ class AEONDeltaV3(nn.Module):
         self.coherence_registry.register_output(
             "convergence_monitor", validated=(not is_diverging),
         )
+        # Record convergence verdict in causal trace so root-cause
+        # analysis can trace convergence health back to the originating
+        # residual norm and meta-loop iteration.  Without this, the
+        # convergence monitor's output was registered in the coherence
+        # registry and fed to error_evolution but could not be traced
+        # deterministically from downstream outputs.
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "convergence_monitor", _conv_status,
+                causal_prerequisites=[input_trace_id],
+                metadata={
+                    "residual_norm": residual_norm_scalar,
+                    "status": _conv_status,
+                    "quality": self._cached_convergence_quality,
+                },
+            )
         if (is_diverging or _was_diverging) and not fast:
             self.audit_log.record("convergence_monitor", "diverging", {
                 "residual_norm": residual_norm_scalar,
@@ -29071,6 +29092,41 @@ class AEONDeltaV3(nn.Module):
                     "DeceptionSuppressor forward failed (non-fatal): %s",
                     _ds_err,
                 )
+                # Record deception suppressor failure in error_evolution,
+                # causal_trace, and metacognitive trigger so that:
+                # (a) the error_evolution tracker learns from deception
+                #     subsystem crashes and adjusts recovery strategies,
+                # (b) the causal_trace provides full traceability for
+                #     root-cause analysis, and
+                # (c) the metacognitive trigger recalibrates its signal
+                #     weights to account for deception detection outages.
+                # Without this, deception suppressor failures were silently
+                # logged at DEBUG level, leaving the entire feedback loop
+                # between deception detection and meta-cognitive review
+                # broken on exception.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "deception_suppressor", "error",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={"error": str(_ds_err)},
+                    )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='deception_suppressor_failure',
+                        strategy_used='skip_deception',
+                        success=False,
+                        metadata={'error': str(_ds_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _dsa_err:
+                            logger.debug(
+                                "adapt_weights failed (deception_suppressor): %s",
+                                _dsa_err,
+                            )
         else:
             self._cached_deception_pressure = 0.0
         
@@ -29161,6 +29217,19 @@ class AEONDeltaV3(nn.Module):
                                 'uncertainty_boost': _ce_unc_boost,
                             },
                         )
+                # Record code execution sandbox result in causal trace so
+                # root-cause analysis can trace safety verdicts back to the
+                # originating sandbox evaluation.  Without this, the sandbox
+                # result was recorded in provenance and coherence registry
+                # but was invisible to verify_causal_chain's adjacency graph.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "code_execution", "verified",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "sandbox_pressure": _sandbox_pressure,
+                        },
+                    )
                 self.provenance_tracker.record_after("code_execution", C_star)
                 self.coherence_registry.register_output(
                     "code_execution",
@@ -29172,6 +29241,17 @@ class AEONDeltaV3(nn.Module):
                     "CodeExecutionSandbox forward failed (non-fatal): %s",
                     _ce_err,
                 )
+                # Record sandbox failure in causal trace so root-cause
+                # analysis can trace the failure back through the
+                # architecture.  Without this, sandbox exceptions were
+                # logged and recorded in error_evolution but invisible
+                # to the causal chain verification.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "code_execution", "error",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={"error": str(_ce_err)},
+                    )
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class='code_execution_sandbox_failure',
@@ -48068,6 +48148,30 @@ class AEONDeltaV3(nn.Module):
         _module_health_checks.append(('hybrid_reasoning', float(_hr_quality)))
         _mcts_q = getattr(self, '_cached_mcts_quality', 1.0)
         _module_health_checks.append(('mcts_planning', float(_mcts_q)))
+        # Extended mutual-reinforcement coverage — additional subsystem
+        # quality signals that were computed during the forward pass but
+        # not inspected by verify_and_reinforce, leaving blind spots
+        # in the mutual verification loop.  Without these, convergence
+        # instability, deception detection outages, sandbox safety
+        # regressions, and social cognition misalignment could persist
+        # undetected across passes.
+        _conv_q = getattr(self, '_cached_convergence_quality', 1.0)
+        _module_health_checks.append(('convergence_quality', float(_conv_q)))
+        _deception_health = max(
+            0.0,
+            1.0 - getattr(self, '_cached_deception_pressure', 0.0),
+        )
+        _module_health_checks.append(('deception_suppressor', float(_deception_health)))
+        _sandbox_health = max(
+            0.0,
+            1.0 - getattr(self, '_cached_sandbox_pressure', 0.0),
+        )
+        _module_health_checks.append(('code_execution', float(_sandbox_health)))
+        _social_health = max(
+            0.0,
+            1.0 - getattr(self, '_cached_social_pressure', 0.0),
+        )
+        _module_health_checks.append(('social_cognition', float(_social_health)))
         for _mh_name, _mh_score in _module_health_checks:
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -49473,6 +49577,21 @@ class AEONDeltaV3(nn.Module):
             'mcts_planning': float(
                 getattr(self, '_cached_mcts_quality', 1.0),
             ),
+            'convergence_quality': float(
+                getattr(self, '_cached_convergence_quality', 1.0),
+            ),
+            'deception_suppressor': float(max(
+                0.0,
+                1.0 - getattr(self, '_cached_deception_pressure', 0.0),
+            )),
+            'code_execution': float(max(
+                0.0,
+                1.0 - getattr(self, '_cached_sandbox_pressure', 0.0),
+            )),
+            'social_cognition': float(max(
+                0.0,
+                1.0 - getattr(self, '_cached_social_pressure', 0.0),
+            )),
         }
 
         # ── Aggregate overall system health score ──────────────────
