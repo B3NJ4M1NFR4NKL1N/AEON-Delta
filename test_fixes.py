@@ -82914,7 +82914,9 @@ def test_factor_reextraction_failure_records_error_evolution():
     model.eval()
 
     # Force diversity collapse and sabotage factor extractor
-    _orig_forward = model.factor_extractor.forward
+    # The model uses sparse_factors (SparseFactorization) for factor extraction,
+    # not a separate factor_extractor attribute.
+    _orig_forward = model.sparse_factors.forward
     _call_count = [0]
     def _failing_forward(*args, **kwargs):
         _call_count[0] += 1
@@ -82922,7 +82924,7 @@ def test_factor_reextraction_failure_records_error_evolution():
         if _call_count[0] > 1:
             raise RuntimeError("injected re-extraction failure")
         return _orig_forward(*args, **kwargs)
-    model.factor_extractor.forward = _failing_forward
+    model.sparse_factors.forward = _failing_forward
 
     # Force diversity collapse detection
     model._cached_diversity_collapse_severity = 0.9

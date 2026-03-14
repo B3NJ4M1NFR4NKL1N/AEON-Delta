@@ -17201,6 +17201,14 @@ class MetaCognitiveRecursionTrigger:
             # Convergence monitor failure — explicit routing for causal
             # transparency when the convergence subsystem itself fails.
             "convergence_monitor_failure": "convergence_conflict",
+            # Factor re-extraction failure — diversity-subsystem instability
+            # routes to coherence_deficit since factor extraction feeds the
+            # mutual-reinforcement verification pipeline.
+            "factor_reextraction_failure": "coherence_deficit",
+            # Pre-reasoning causal trace failure — traceability gap routes
+            # to low_causal_quality so the metacognitive trigger can
+            # increase sensitivity to causal transparency issues.
+            "pre_reasoning_causal_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18619,6 +18627,16 @@ class CausalErrorEvolutionTracker:
         # raised an error.  Maps to lambda_lipschitz so training
         # strengthens contraction guarantees.
         "convergence_monitor_failure": "lambda_lipschitz",
+        # Factor re-extraction failure — diversity-subsystem factor
+        # re-extraction errored.  Maps to lambda_coherence so training
+        # strengthens factor extraction reliability after diversity
+        # correction.
+        "factor_reextraction_failure": "lambda_coherence",
+        # Pre-reasoning causal trace failure — causal trace recording
+        # for a pre-reasoning subsystem errored.  Maps to lambda_ucc
+        # so training strengthens causal traceability across the
+        # pipeline.
+        "pre_reasoning_causal_trace_failure": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -28965,8 +28983,8 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass
+                        except Exception as _err:
+                            logger.debug("adapt_weights post-reextraction failed: %s", _err)
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -39916,8 +39934,8 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _err:
+                                logger.debug("adapt_weights post-trace-failure failed: %s", _err)
 
         # Surface VQ codebook quality in causal_decision_chain so that
         # root-cause analysis can trace output uncertainty back to VQ
@@ -49323,7 +49341,8 @@ class AEONDeltaV3(nn.Module):
                 try:
                     _post_chain = self.verify_causal_chain()
                     _post_causal = _post_chain.get('traceable', False)
-                except Exception:
+                except Exception as _chain_err:
+                    logger.debug("Post-reinforcement causal chain re-verify failed: %s", _chain_err)
                     _post_causal = causal_chain.get('traceable', False)
                 _post_emerged = (
                     _post_mv and _post_um and _post_rc
