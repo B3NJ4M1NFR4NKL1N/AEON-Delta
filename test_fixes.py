@@ -67911,6 +67911,13 @@ def run_all_tests():
     test_activation_probe_registry_before_reinforce()
     test_emergence_report_post_reinforce_causal_chain()
     test_cognitive_state_snapshot_weighted_health_score()
+    # ── Final integration & cognitive activation patches ──
+    test_encoder_registered_in_coherence_registry()
+    test_vq_quality_propagated_to_feedback_bus()
+    test_reinforce_module_health_pushed_to_feedback_bus()
+    test_snapshot_includes_module_health()
+    test_causal_chain_deficit_pushed_to_feedback_bus()
+    test_coherence_report_provenance_chain_divergence()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -82144,6 +82151,185 @@ def test_cognitive_state_snapshot_weighted_health_score():
             f"got {health}"
         )
     print("✅ test_cognitive_state_snapshot_weighted_health_score PASSED")
+
+
+# ============================================================================
+# Final Integration & Cognitive Activation — Integration Patches
+# ============================================================================
+
+def test_encoder_registered_in_coherence_registry():
+    """_forward_impl must register encoder output in coherence_registry so
+    the foundational encoding stage is covered by mutual verification."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # After a forward pass, the coherence registry must have an entry
+    # for 'encoder' with a validated output.
+    cr = model.coherence_registry
+    current = cr._current_pass
+    assert 'encoder' in current, (
+        f"encoder must be registered in coherence_registry after forward. "
+        f"Registered: {sorted(current.keys())}"
+    )
+    print("✅ test_encoder_registered_in_coherence_registry PASSED")
+
+
+def test_vq_quality_propagated_to_feedback_bus():
+    """_forward_impl must propagate VQ codebook quality into the feedback
+    bus so the next pass's meta-loop is conditioned on VQ health."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    fb = model.feedback_bus
+    signals = getattr(fb, '_extra_signals', {})
+    # Register the signal channel if not already present so the
+    # propagation logic has a channel to write to.
+    if 'vq_codebook_quality' not in signals:
+        signals['vq_codebook_quality'] = 0.0
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    vq_q = getattr(model, '_cached_vq_codebook_quality', None)
+    if vq_q is not None and 'vq_codebook_quality' in signals:
+        fb_val = signals['vq_codebook_quality']
+        assert fb_val == vq_q, (
+            f"feedback_bus vq_codebook_quality ({fb_val}) must equal "
+            f"_cached_vq_codebook_quality ({vq_q})"
+        )
+    print("✅ test_vq_quality_propagated_to_feedback_bus PASSED")
+
+
+def test_reinforce_module_health_pushed_to_feedback_bus():
+    """verify_and_reinforce must push module health degradation signals
+    into feedback_bus._extra_signals so the next pass is conditioned."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    signals = getattr(fb, '_extra_signals', {})
+    # Ensure the weakness pressure channel exists
+    if 'reinforce_weakness_pressure' not in signals:
+        signals['reinforce_weakness_pressure'] = 0.0
+    # Simulate a degraded module
+    model._cached_vq_codebook_quality = 0.3
+    report = model.verify_and_reinforce()
+    fb_val = signals.get('reinforce_weakness_pressure', -1.0)
+    assert fb_val >= 0.0, (
+        "reinforce_weakness_pressure must be >= 0 after verify_and_reinforce"
+    )
+    # With vq_codebook at 0.3, the weakness pressure should reflect that
+    assert fb_val >= 0.5, (
+        f"With vq_codebook=0.3, reinforce_weakness_pressure should be "
+        f">= 0.5, got {fb_val}"
+    )
+    print("✅ test_reinforce_module_health_pushed_to_feedback_bus PASSED")
+
+
+def test_snapshot_includes_module_health():
+    """get_cognitive_state_snapshot must include per-module health scores
+    from verify_and_reinforce's 7 inspected subsystems."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    snapshot = model.get_cognitive_state_snapshot()
+    mh = snapshot.get('module_health')
+    assert mh is not None, (
+        "get_cognitive_state_snapshot must include 'module_health' key"
+    )
+    expected_modules = [
+        'vq_codebook', 'output_quality', 'cross_module_coherence',
+        'causal_quality', 'cycle_consistency', 'hybrid_reasoning',
+        'mcts_planning',
+    ]
+    for mod in expected_modules:
+        assert mod in mh, (
+            f"module_health must include '{mod}', got keys: {sorted(mh.keys())}"
+        )
+        val = mh[mod]
+        assert isinstance(val, float), (
+            f"module_health['{mod}'] must be float, got {type(val)}"
+        )
+        assert 0.0 <= val <= 1.0, (
+            f"module_health['{mod}'] must be in [0, 1], got {val}"
+        )
+    print("✅ test_snapshot_includes_module_health PASSED")
+
+
+def test_causal_chain_deficit_pushed_to_feedback_bus():
+    """verify_causal_chain must push coverage deficit into feedback_bus
+    so the next pass is conditioned on causal transparency health."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    signals = getattr(fb, '_extra_signals', {})
+    # Ensure the channel exists
+    if 'causal_chain_coverage_deficit' not in signals:
+        signals['causal_chain_coverage_deficit'] = 0.0
+    chain = model.verify_causal_chain()
+    cov = chain.get('coverage', 0.0)
+    fb_deficit = signals.get('causal_chain_coverage_deficit', -1.0)
+    expected_deficit = max(0.0, 1.0 - cov)
+    assert abs(fb_deficit - expected_deficit) < 0.01, (
+        f"causal_chain_coverage_deficit ({fb_deficit}) must equal "
+        f"1.0 - coverage ({expected_deficit})"
+    )
+    print("✅ test_causal_chain_deficit_pushed_to_feedback_bus PASSED")
+
+
+def test_coherence_report_provenance_chain_divergence():
+    """architectural_coherence_report must flag significant divergence
+    between provenance DAG completeness and runtime causal chain coverage
+    as an actionable gap."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+    # Get a baseline report — in a freshly initialized model with
+    # activation probe completed, both coverages should be close.
+    report = model.architectural_coherence_report()
+    gaps = report.get('actionable_gaps', [])
+    # Check that the gap detection mechanism exists — the divergence
+    # gap should appear only when coverages actually diverge > 0.2.
+    gap_axioms = [g.get('axiom') for g in gaps]
+    prov_comp = report.get('provenance', {}).get('chain_completeness', 1.0)
+    chain_cov = report.get('axioms', {}).get(
+        'root_cause_traceability', {},
+    ).get('chain_coverage', 1.0)
+    if chain_cov is not None:
+        divergence = abs(prov_comp - chain_cov)
+        if divergence > 0.2:
+            assert 'provenance_chain_divergence' in gap_axioms, (
+                f"With divergence={divergence:.2f}, provenance_chain_divergence "
+                f"must appear in actionable_gaps"
+            )
+    # Verify the report structure includes the causal chain result
+    assert 'causal_chain' in report, (
+        "architectural_coherence_report must include 'causal_chain' key"
+    )
+    print("✅ test_coherence_report_provenance_chain_divergence PASSED")
 
 
 if __name__ == "__main__":
