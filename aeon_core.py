@@ -28981,7 +28981,7 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
+                        except Exception as _adapt_err:  # noqa: F841
                             pass
         
         # 5. Safety and self-reporting (delegated to helper)
@@ -39932,7 +39932,7 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
+                            except Exception as _adapt_err:  # noqa: F841
                                 pass
 
         # Surface VQ codebook quality in causal_decision_chain so that
