@@ -28947,6 +28947,26 @@ class AEONDeltaV3(nn.Module):
                     "Post-diversity factor re-extraction failed "
                     "(non-fatal): %s", _reextract_err,
                 )
+                # Bridge factor re-extraction failure into
+                # error_evolution so the metacognitive trigger is
+                # aware of diversity-subsystem instability — without
+                # this, repeated re-extraction failures silently
+                # accumulate without triggering a meta-cognitive
+                # review cycle.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='factor_reextraction_failure',
+                        strategy_used='skip_reextraction',
+                        success=False,
+                        metadata={'error': str(_reextract_err)},
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -39875,6 +39895,29 @@ class AEONDeltaV3(nn.Module):
                         "Causal trace for pre-reasoning subsystem %s "
                         "failed: %s", _pr_subsys, _pr_trace_err,
                     )
+                    # Bridge causal trace failure into error_evolution
+                    # so the metacognitive trigger can learn from
+                    # pre-reasoning traceability gaps — without this,
+                    # causal trace recording failures are invisible to
+                    # the meta-cognitive cycle, breaking the requirement
+                    # that every uncertainty triggers metacognition.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='pre_reasoning_causal_trace_failure',
+                            strategy_used='causal_trace_skip',
+                            success=False,
+                            metadata={
+                                'subsystem': _pr_subsys,
+                                'error': str(_pr_trace_err),
+                            },
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception:
+                                pass
 
         # Surface VQ codebook quality in causal_decision_chain so that
         # root-cause analysis can trace output uncertainty back to VQ
