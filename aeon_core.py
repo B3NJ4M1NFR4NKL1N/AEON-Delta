@@ -17202,6 +17202,10 @@ class MetaCognitiveRecursionTrigger:
             "module_health_deception_suppressor": "safety_violation",
             "module_health_code_execution": "safety_violation",
             "module_health_social_cognition": "coherence_deficit",
+            # Auto-critic and memory routing health — explicit routing
+            # so their degradation feeds into the metacognitive trigger.
+            "module_health_auto_critic": "low_output_reliability",
+            "module_health_memory_routing": "memory_staleness",
             # Convergence monitor failure — explicit routing for causal
             # transparency when the convergence subsystem itself fails.
             "convergence_monitor_failure": "convergence_conflict",
@@ -17258,6 +17262,8 @@ class MetaCognitiveRecursionTrigger:
             ("module_health_coherence", "coherence_deficit"),
             ("module_health_cycle", "coherence_deficit"),
             ("module_health_social", "coherence_deficit"),
+            ("module_health_auto_critic", "low_output_reliability"),
+            ("module_health_memory", "memory_staleness"),
             ("module_health_", "low_output_reliability"),
         ]
 
@@ -18648,6 +18654,10 @@ class CausalErrorEvolutionTracker:
         "module_health_deception_suppressor": "lambda_safety",
         "module_health_code_execution": "lambda_safety",
         "module_health_social_cognition": "lambda_ns_consistency",
+        # Auto-critic and memory routing health — explicit routing so
+        # training loss weights are boosted when these modules degrade.
+        "module_health_auto_critic": "lambda_self_consistency",
+        "module_health_memory_routing": "lambda_memory_retrieval",
         # Convergence monitor failure — the convergence subsystem itself
         # raised an error.  Maps to lambda_lipschitz so training
         # strengthens contraction guarantees.
@@ -29131,7 +29141,10 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _adapt_err:  # noqa: F841
-                            pass
+                            logger.debug(
+                                "Factor re-extraction trigger "
+                                "adaptation failed: %s", _adapt_err,
+                            )
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -39916,6 +39929,22 @@ class AEONDeltaV3(nn.Module):
                 'codebook_quality': _vq_codebook_quality,
                 'unique_codes': _vq_unique,
             }
+            # Record VQ step in the causal trace so that root-cause
+            # analysis can trace quantization decisions end-to-end.
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        'vector_quantizer',
+                        'quantize_latent',
+                        metadata={
+                            'codebook_quality': _vq_codebook_quality,
+                            'codebook_utilization': _vq_utilization,
+                            'vq_loss': _vq_loss_val,
+                            'health_verifier': 'verify_and_reinforce',
+                        },
+                    )
+                except Exception:
+                    logger.debug("VQ causal trace recording failed")
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -40010,6 +40039,24 @@ class AEONDeltaV3(nn.Module):
         # backbone blending, VQ quantization, or chunked encoding.
         if self.encoder_reasoning_norm is not None:
             z_quantized = self.encoder_reasoning_norm(z_quantized)
+            # Record normalisation step in the causal trace so that
+            # root-cause analysis can trace activation-scale decisions.
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        'encoder_reasoning_norm',
+                        'normalize_latent',
+                        metadata={
+                            'output_norm': float(
+                                z_quantized.detach().norm().item()
+                            ),
+                            'health_verifier': 'verify_and_reinforce',
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "encoder_reasoning_norm causal trace failed"
+                    )
 
         # ===== REASONING CORE (with cache short-circuit) =====
         # When a cache hit is detected, reuse the previous reasoning-core
@@ -40056,6 +40103,38 @@ class AEONDeltaV3(nn.Module):
                 planning=not fast,
                 fast=fast
             )
+
+        self.provenance_tracker.record_before("reasoning_core", z_quantized)
+        self.provenance_tracker.record_after("reasoning_core", z_out)
+        # Register reasoning core output in the coherence registry so
+        # mutual-verification covers the central reasoning subsystem.
+        # Without this, the reasoning core — the largest computational
+        # stage — is invisible to the coherence ledger, understating
+        # the coverage of the mutual-verification axiom.
+        self.coherence_registry.register_output(
+            "reasoning_core",
+            validated=torch.isfinite(z_out).all().item(),
+        )
+        # Record reasoning core execution in the causal trace so that
+        # root-cause analysis can trace the transition from encoded
+        # input to reasoned output.  Without this entry the causal
+        # chain has a gap between pre-reasoning subsystems and the
+        # downstream decoder/output stages.
+        if self.causal_trace is not None:
+            try:
+                self.causal_trace.record(
+                    'reasoning_core',
+                    'reason_over_latent',
+                    metadata={
+                        'output_finite': bool(
+                            torch.isfinite(z_out).all().item()
+                        ),
+                        'cache_hit': _cache_hit,
+                        'health_verifier': 'verify_and_reinforce',
+                    },
+                )
+            except Exception:
+                logger.debug("reasoning_core causal trace failed")
 
         # Store current reasoning input and output in inference cache for
         # future hits.  Both the input (SSM state) and the reasoning result
@@ -40124,7 +40203,10 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _adapt_err:  # noqa: F841
-                                pass
+                                logger.debug(
+                                    "Pre-reasoning causal trace trigger "
+                                    "adaptation failed: %s", _adapt_err,
+                                )
 
         # Surface VQ codebook quality in causal_decision_chain so that
         # root-cause analysis can trace output uncertainty back to VQ
@@ -40778,6 +40860,25 @@ class AEONDeltaV3(nn.Module):
                     if torch.isfinite(_late_rerun_z).all():
                         z_out = _late_rerun_z
                         outputs['late_metacognitive_rerun'] = True
+                        # Record successful late meta-loop rerun in
+                        # the causal trace so that root-cause analysis
+                        # can trace the corrective re-reasoning step.
+                        if self.causal_trace is not None:
+                            try:
+                                self.causal_trace.record(
+                                    'meta_loop',
+                                    'late_rerun_success',
+                                    metadata={
+                                        'output_finite': True,
+                                        'health_verifier':
+                                            'verify_and_reinforce',
+                                    },
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Late meta-loop causal trace "
+                                    "recording failed"
+                                )
                 except Exception as _late_err:
                     logger.warning(
                         "Post-output meta-loop re-run failed: %s",
@@ -48684,6 +48785,24 @@ class AEONDeltaV3(nn.Module):
             1.0 - getattr(self, '_cached_social_pressure', 0.0),
         )
         _module_health_checks.append(('social_cognition', float(_social_health)))
+        # Additional mutual-reinforcement checks — auto-critic quality
+        # and memory routing trust are forward-pass health signals that
+        # were computed but never inspected by verify_and_reinforce,
+        # leaving the auto-critic and memory subsystems unmonitored.
+        _ac_health = getattr(
+            self, '_cached_auto_critic_current_score', None,
+        )
+        if _ac_health is not None:
+            _module_health_checks.append(
+                ('auto_critic', float(_ac_health))
+            )
+        _mem_trust_deficit = getattr(
+            self, '_cached_memory_routing_trust_deficit', 0.0,
+        )
+        _mem_trust_health = max(0.0, 1.0 - float(_mem_trust_deficit))
+        _module_health_checks.append(
+            ('memory_routing', _mem_trust_health)
+        )
         for _mh_name, _mh_score in _module_health_checks:
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -50137,6 +50256,16 @@ class AEONDeltaV3(nn.Module):
             'social_cognition': float(max(
                 0.0,
                 1.0 - getattr(self, '_cached_social_pressure', 0.0),
+            )),
+            'auto_critic': float(
+                getattr(self, '_cached_auto_critic_current_score', 1.0)
+                or 1.0
+            ),
+            'memory_routing': float(max(
+                0.0,
+                1.0 - getattr(
+                    self, '_cached_memory_routing_trust_deficit', 0.0,
+                ),
             )),
         }
 
