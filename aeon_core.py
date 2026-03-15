@@ -39695,6 +39695,20 @@ class AEONDeltaV3(nn.Module):
         **kwargs,
     ) -> Dict[str, Any]:
         """Inner forward logic (separated for OOM recovery)."""
+        # ===== PRE-ACTIVATION GUARD =====
+        # Prevent forward passes from executing before the cognitive
+        # activation probe has completed initialization.  Without this
+        # guard, subsystems may operate with unseeded baselines (e.g.
+        # error_evolution has no baseline episodes, feedback_bus signals
+        # are unprimed, coherence_registry has no expected subsystems),
+        # producing misleading emergence verdicts and breaking causal
+        # transparency — the system would appear healthy when it has
+        # never been validated.
+        if not getattr(self, '_cognitive_activation_complete', False):
+            logger.warning(
+                "Forward pass invoked before cognitive activation probe "
+                "completed — subsystem baselines may be unseeded."
+            )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -41685,6 +41699,65 @@ class AEONDeltaV3(nn.Module):
                             'actions_applied': len(_unc_actions),
                         },
                     )
+                # ── META-COGNITIVE EVALUATION DURING REINFORCEMENT ──
+                # When uncertainty triggers a verify_and_reinforce()
+                # cycle, also call metacognitive_trigger.evaluate() so
+                # that the higher-order review fires synchronously with
+                # the corrective reinforcement — not deferred to the
+                # post-pipeline evaluation.  Without this, the system
+                # *corrects* (via reinforcement) but does not *learn*
+                # (via metacognitive evaluation) within the same cycle,
+                # violating the requirement that "any internal
+                # uncertainty or conflict automatically initiates a
+                # higher-order review cycle".
+                if self.metacognitive_trigger is not None:
+                    try:
+                        _unc_meta_eval = (
+                            self.metacognitive_trigger.evaluate(
+                                uncertainty=_unc_val,
+                                coherence_deficit=max(
+                                    getattr(
+                                        self,
+                                        '_cached_cognitive_unity_deficit',
+                                        0.0,
+                                    ),
+                                    1.0 - _unc_reinforce.get(
+                                        'overall_score', 1.0,
+                                    ),
+                                ),
+                            )
+                        )
+                        result[
+                            'uncertainty_metacognitive_evaluation'
+                        ] = {
+                            'triggered': _unc_meta_eval.get(
+                                'should_recurse', False,
+                            ),
+                            'trigger_uncertainty': _unc_val,
+                            'trigger_count': _unc_meta_eval.get(
+                                'trigger_count', 0,
+                            ),
+                        }
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "metacognitive_trigger",
+                                "uncertainty_reinforcement_evaluation",
+                                metadata={
+                                    'trigger_uncertainty': _unc_val,
+                                    'triggered': _unc_meta_eval.get(
+                                        'should_recurse', False,
+                                    ),
+                                    'reinforcement_score':
+                                        _unc_reinforce.get(
+                                            'overall_score', 1.0,
+                                        ),
+                                },
+                            )
+                    except Exception as _unc_meta_err:
+                        logger.debug(
+                            "Uncertainty metacognitive evaluation "
+                            "failed: %s", _unc_meta_err,
+                        )
                 # Record the provenance delta so that
                 # verify_cognitive_unity() does not flag
                 # verify_and_reinforce as "untraced in provenance"
@@ -41796,6 +41869,61 @@ class AEONDeltaV3(nn.Module):
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
 
+        # ===== EMERGENCE CROSS-VERIFICATION =====
+        # Cross-verify the locally-computed emergence verdict against
+        # the authoritative verify_cognitive_unity() diagnostic on
+        # periodic reinforcement passes.  The emergence axiom evaluation
+        # above uses cached component scores from the forward pipeline,
+        # but verify_cognitive_unity() performs deeper checks (signal
+        # dropout, wiring coverage, provenance depth, trend health).
+        # Without this cross-verification, the two emergence verdicts
+        # can diverge: the forward-pass reports "emerged" while the
+        # diagnostic sees subsystems that are uncovered or degrading.
+        # By reconciling periodically, we ensure mutual reinforcement
+        # between the fast inline assessment and the authoritative
+        # diagnostic, and any discrepancy is recorded in the causal
+        # trace for deterministic traceability.
+        _cross_verified = None
+        if _is_periodic:
+            try:
+                _cv_unity = self.verify_cognitive_unity()
+                _cv_score = _cv_unity.get('score', 0.0)
+                _cv_unified = _cv_unity.get('unified', False)
+                _cross_verified = {
+                    'local_emerged': _emerged,
+                    'diagnostic_unified': _cv_unified,
+                    'diagnostic_score': _cv_score,
+                    'concordant': _emerged == _cv_unified,
+                }
+                # If the local assessment claims emergence but the
+                # diagnostic disagrees, downgrade the verdict.  This
+                # closes the gap where a subsystem could silently fail
+                # verification checks while the inline axiom evaluation
+                # reported healthy scores from stale cached values.
+                if _emerged and not _cv_unified:
+                    _emerged = False
+                    _cross_verified['verdict_overridden'] = True
+                result['emergence_cross_verification'] = _cross_verified
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "emergence_assessment",
+                        "cross_verification",
+                        metadata={
+                            'forward_pass': _fwd,
+                            'concordant': _cross_verified['concordant'],
+                            'local_emerged': _cross_verified[
+                                'local_emerged'
+                            ],
+                            'diagnostic_unified': _cv_unified,
+                            'diagnostic_score': _cv_score,
+                        },
+                    )
+            except Exception as _cv_err:
+                logger.debug(
+                    "Emergence cross-verification failed (pass %d): %s",
+                    _fwd, _cv_err,
+                )
+
         # ===== EMERGENCE → CAUSAL DECISION CHAIN =====
         # Expose the per-axiom emergence assessment in the causal
         # decision chain so consumers can deterministically trace which
@@ -41808,6 +41936,7 @@ class AEONDeltaV3(nn.Module):
             'axiom_root_cause_traceability': _rc_ok,
             'cognitive_unity_score': _cu_score,
             'deficit': _cu_deficit,
+            'cross_verified': _cross_verified,
         }
 
         # ===== EMERGENCE CAUSAL TRACE =====
