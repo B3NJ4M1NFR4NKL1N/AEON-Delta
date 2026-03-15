@@ -82157,7 +82157,7 @@ def test_forward_pass_entries_maintain_chain_connectivity():
     print("✅ test_forward_pass_entries_maintain_chain_connectivity PASSED")
 
 
-
+def test_feedback_bus_trace_references_upstream_subsystems():
     """feedback_bus causal trace entries must cross-reference
     upstream subsystems (world_model, cross_validation,
     hybrid_reasoning, unified_simulator) to enable connected

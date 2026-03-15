@@ -18655,10 +18655,10 @@ class CausalErrorEvolutionTracker:
         # component most relevant to each failure domain so that
         # training-time loss weighting adapts to persistent secondary
         # failures.
-        "memory_routing_failure": "lambda_memory",
-        "value_network_failure": "lambda_value_net",
-        "memory_decay_failure": "lambda_memory",
-        "memory_consolidation_failure": "lambda_memory",
+        "memory_routing_failure": "lambda_memory_retrieval",
+        "value_network_failure": "lambda_mcts_value",
+        "memory_decay_failure": "lambda_memory_staleness",
+        "memory_consolidation_failure": "lambda_memory_retrieval",
         "fast_ucc_evaluation_failure": "lambda_coherence",
         "reasoning_core_trace_failure": "lambda_causal_dag",
     }
