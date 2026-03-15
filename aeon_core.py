@@ -17016,6 +17016,10 @@ class MetaCognitiveRecursionTrigger:
             # between reinforcement cycles, indicating that a config
             # change or module failure introduced new structural issues.
             "architectural_regression": "coherence_deficit",
+            # Diagnostic gap detected — periodic reinforcement discovered
+            # architectural disconnections via self_diagnostic(), degrading
+            # cross-verification completeness.
+            "diagnostic_gap_detected": "coherence_deficit",
             # Periodic reinforcement failure — the scheduled
             # verify_and_reinforce() cycle raised an exception,
             # preventing mutual-reinforcement feedback from reaching
@@ -18468,6 +18472,11 @@ class CausalErrorEvolutionTracker:
         # feedback.  Maps to lambda_coherence so training strengthens
         # integration reliability when periodic checks repeatedly fail.
         "periodic_reinforcement_failure": "lambda_coherence",
+        # Diagnostic gap detected — periodic reinforcement discovered
+        # architectural disconnections via self_diagnostic().  Maps to
+        # lambda_coherence so training strengthens integration
+        # reliability when diagnostic gaps are persistently detected.
+        "diagnostic_gap_detected": "lambda_coherence",
         # Uncertainty reinforcement failure — the uncertainty-triggered
         # self-correction cycle failed.  Maps to lambda_ucc so training
         # adapts to persistent inability to resolve high-uncertainty
@@ -46229,9 +46238,20 @@ class AEONDeltaV3(nn.Module):
                 self.error_evolution.set_causal_trace(self.causal_trace)
 
         # 4. UnifiedCognitiveCycle — pure logic orchestrator, no parameters.
+        #    Require at least one optional prerequisite (module_coherence,
+        #    metacognitive_trigger, error_evolution) to be available — same
+        #    guard as __init__.  Without any optional component the UCC
+        #    degenerates into a bare convergence-monitor wrapper that adds
+        #    no cross-verification value.
+        _ucc_prereqs_available = any([
+            self.module_coherence is not None,
+            self.metacognitive_trigger is not None,
+            self.error_evolution is not None,
+        ])
         if (self.unified_cognitive_cycle is None
                 and getattr(self.config, 'enable_unified_cognitive_cycle', True)
-                and self.convergence_monitor is not None):
+                and self.convergence_monitor is not None
+                and _ucc_prereqs_available):
             self.unified_cognitive_cycle = UnifiedCognitiveCycle(
                 convergence_monitor=self.convergence_monitor,
                 coherence_verifier=self.module_coherence,
