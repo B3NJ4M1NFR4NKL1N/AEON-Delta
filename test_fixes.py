@@ -67834,6 +67834,13 @@ def run_all_tests():
     test_emergence_summary_includes_axiom_scores()
     test_system_emergence_iterative_convergence()
 
+    # Final integration — forward-pass emergence verdict alignment
+    test_forward_emergence_includes_convergence_stable()
+    test_forward_emergence_includes_error_evolution_active()
+    test_forward_emergence_assessment_includes_extended_conditions()
+    test_forward_emergence_verdict_aligned_with_system_report()
+    test_emergence_causal_trace_includes_extended_conditions()
+
     # Cognitive integration patches — uncertainty trigger, error
     # evolution adaptation, emergence deficit signal, causal trace
     test_uncertainty_triggered_reinforcement()
@@ -83308,6 +83315,191 @@ def test_silent_exception_error_classes_in_error_class_to_lambda():
             f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
         )
     print("✅ test_silent_exception_error_classes_in_error_class_to_lambda PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION — Forward-pass emergence verdict alignment with
+#  system_emergence_report() (convergence stability + error evolution health)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_forward_emergence_includes_convergence_stable():
+    """Forward-pass emergence_summary must include convergence_stable
+    field reflecting the cached convergence quality."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    es = result.get('emergence_summary', {})
+    assert 'convergence_stable' in es, (
+        "emergence_summary must include 'convergence_stable'"
+    )
+    assert isinstance(es['convergence_stable'], bool), (
+        "convergence_stable must be a boolean"
+    )
+    # The field must reflect _cached_convergence_quality > 0.0;
+    # on first forward with random weights, convergence may diverge
+    # and convergence_stable may be False — that is correct behaviour.
+    _cached_cq = getattr(model, '_cached_convergence_quality', 1.0)
+    assert es['convergence_stable'] == (_cached_cq > 0.0), (
+        f"convergence_stable ({es['convergence_stable']}) must match "
+        f"_cached_convergence_quality > 0.0 ({_cached_cq})"
+    )
+    print("✅ test_forward_emergence_includes_convergence_stable PASSED")
+
+
+def test_forward_emergence_includes_error_evolution_active():
+    """Forward-pass emergence_summary must include error_evolution_active
+    field reflecting whether the error evolution subsystem exists."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    es = result.get('emergence_summary', {})
+    assert 'error_evolution_active' in es, (
+        "emergence_summary must include 'error_evolution_active'"
+    )
+    assert isinstance(es['error_evolution_active'], bool), (
+        "error_evolution_active must be a boolean"
+    )
+    # Error evolution should be active (created during init)
+    assert es['error_evolution_active'] is True, (
+        "error_evolution_active should be True when error_evolution exists"
+    )
+    print("✅ test_forward_emergence_includes_error_evolution_active PASSED")
+
+
+def test_forward_emergence_assessment_includes_extended_conditions():
+    """Forward-pass causal_decision_chain emergence_assessment must include
+    convergence_stable and error_evolution_active so the full verdict is
+    traceable from the forward result alone."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+
+    ea = result.get('causal_decision_chain', {}).get(
+        'emergence_assessment', {},
+    )
+    assert 'convergence_stable' in ea, (
+        "emergence_assessment must include 'convergence_stable'"
+    )
+    assert 'error_evolution_active' in ea, (
+        "emergence_assessment must include 'error_evolution_active'"
+    )
+    # error_evolution_active should always be True (created during init)
+    assert ea['error_evolution_active'] is True, (
+        "error_evolution_active should be True when error_evolution exists"
+    )
+    # The emerged verdict must be consistent with all 5 conditions
+    all_ok = (
+        ea.get('axiom_mutual_verification', False)
+        and ea.get('axiom_metacognitive_responsiveness', False)
+        and ea.get('axiom_root_cause_traceability', False)
+        and ea.get('convergence_stable', False)
+        and ea.get('error_evolution_active', False)
+    )
+    assert ea.get('emerged') == all_ok, (
+        f"emerged ({ea.get('emerged')}) must equal AND of all 5 conditions "
+        f"({all_ok})"
+    )
+    print("✅ test_forward_emergence_assessment_includes_extended_conditions PASSED")
+
+
+def test_forward_emergence_verdict_aligned_with_system_report():
+    """The forward-pass emergence verdict must use the same condition
+    categories as system_emergence_report() — axioms + convergence +
+    error evolution — so both paths produce consistent results once
+    the system has stabilized."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch, inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify that the forward-pass emergence computation checks the
+    # same condition categories that system_emergence_report() uses.
+    src = inspect.getsource(model._forward_impl)
+    assert '_convergence_stable' in src, (
+        "_forward_impl must evaluate _convergence_stable for emergence"
+    )
+    assert '_ee_active' in src, (
+        "_forward_impl must evaluate _ee_active for emergence"
+    )
+    assert '_convergence_stable and _ee_active' in src, (
+        "_forward_impl must AND convergence + EE into _emerged"
+    )
+    print("✅ test_forward_emergence_verdict_aligned_with_system_report PASSED")
+
+
+def test_emergence_causal_trace_includes_extended_conditions():
+    """The emergence_assessment causal trace entry must include
+    convergence_stable and error_evolution_active metadata for
+    full root-cause traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Find emergence_assessment trace entries in the buffer
+    traces = list(model.causal_trace._entries)
+    ea_entries = [
+        t for t in traces
+        if t.get('subsystem') == 'emergence_assessment'
+        and t.get('decision') == 'forward_pass'
+    ]
+    assert len(ea_entries) > 0, (
+        "At least one emergence_assessment forward_pass trace expected"
+    )
+    meta = ea_entries[-1].get('metadata', {})
+    assert 'convergence_stable' in meta, (
+        "emergence_assessment trace must include convergence_stable"
+    )
+    assert 'error_evolution_active' in meta, (
+        "emergence_assessment trace must include error_evolution_active"
+    )
+    print("✅ test_emergence_causal_trace_includes_extended_conditions PASSED")
 
 
 if __name__ == "__main__":

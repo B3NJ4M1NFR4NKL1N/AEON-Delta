@@ -41790,7 +41790,33 @@ class AEONDeltaV3(nn.Module):
         _rc_ok = _cu_comps.get('root_cause_traceability', 0.0) >= (
             self._EMERGENCE_RC_THRESHOLD
         )
-        _emerged = _mv_ok and _um_ok and _rc_ok
+        # ── Extended emergence conditions ────────────────────────
+        # The three axioms above validate the AGI requirements, but
+        # system_emergence_report() additionally checks convergence
+        # stability and error-evolution health.  Aligning the forward-
+        # pass verdict with the full emergence report ensures
+        # consistent status across inline and diagnostic paths,
+        # preventing a scenario where forward claims "emerged" but the
+        # full report disagrees.
+        #
+        # Convergence stability: cached during convergence monitoring
+        # (line 28373).  0.0 = diverging → not stable.
+        _convergence_stable = getattr(
+            self, '_cached_convergence_quality', 1.0,
+        ) > 0.0
+        # Error evolution active: the error-evolution subsystem must
+        # exist for self-correction loops to function.
+        _ee_active = self.error_evolution is not None
+        _emerged = (
+            _mv_ok and _um_ok and _rc_ok
+            and _convergence_stable and _ee_active
+        )
+
+        # Augment emergence_summary with the extended conditions so
+        # consumers can inspect convergence and error-evolution status
+        # directly from the forward-pass result.
+        result['emergence_summary']['convergence_stable'] = _convergence_stable
+        result['emergence_summary']['error_evolution_active'] = _ee_active
 
         # ===== EMERGENCE → CAUSAL DECISION CHAIN =====
         # Expose the per-axiom emergence assessment in the causal
@@ -41802,6 +41828,8 @@ class AEONDeltaV3(nn.Module):
             'axiom_mutual_verification': _mv_ok,
             'axiom_metacognitive_responsiveness': _um_ok,
             'axiom_root_cause_traceability': _rc_ok,
+            'convergence_stable': _convergence_stable,
+            'error_evolution_active': _ee_active,
             'cognitive_unity_score': _cu_score,
             'deficit': _cu_deficit,
         }
@@ -41826,6 +41854,8 @@ class AEONDeltaV3(nn.Module):
                     'axiom_mutual_verification': _mv_ok,
                     'axiom_metacognitive_responsiveness': _um_ok,
                     'axiom_root_cause_traceability': _rc_ok,
+                    'convergence_stable': _convergence_stable,
+                    'error_evolution_active': _ee_active,
                     'emerged': _emerged,
                 },
             )
