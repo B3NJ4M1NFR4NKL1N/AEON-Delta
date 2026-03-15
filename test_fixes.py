@@ -68061,8 +68061,8 @@ def run_all_tests():
     test_bridge_recovery_to_evolution_adapts_trigger()
     test_social_cognition_failure_adapts_trigger()
     test_code_execution_sandbox_failure_adapts_trigger()
-    test_new_error_classes_in_class_to_signal()
-    test_new_error_classes_in_error_class_to_lambda()
+    test_convergence_error_classes_in_class_to_signal()
+    test_convergence_error_classes_in_error_class_to_lambda()
     test_world_model_verification_failure_adapts_trigger()
     test_memory_validation_failure_adapts_trigger()
     test_causal_context_failure_adapts_trigger()
@@ -80539,8 +80539,8 @@ def test_code_execution_sandbox_failure_adapts_trigger():
     print("✅ test_code_execution_sandbox_failure_adapts_trigger PASSED")
 
 
-def test_new_error_classes_in_class_to_signal():
-    """All newly added error classes must be present in the
+def test_convergence_error_classes_in_class_to_signal():
+    """All convergence-related error classes must be present in the
     MetaCognitiveRecursionTrigger adapt_weights_from_evolution
     _class_to_signal mapping."""
     import inspect
@@ -80563,11 +80563,11 @@ def test_new_error_classes_in_class_to_signal():
             f"Error class '{cls}' must be in _class_to_signal mapping "
             f"inside adapt_weights_from_evolution"
         )
-    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+    print("✅ test_convergence_error_classes_in_class_to_signal PASSED")
 
 
-def test_new_error_classes_in_error_class_to_lambda():
-    """All newly added error classes must be present in the
+def test_convergence_error_classes_in_error_class_to_lambda():
+    """All convergence-related error classes must be present in the
     CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA mapping."""
     from aeon_core import CausalErrorEvolutionTracker
 
@@ -80585,7 +80585,7 @@ def test_new_error_classes_in_error_class_to_lambda():
         assert cls in mapping, (
             f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA mapping"
         )
-    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+    print("✅ test_convergence_error_classes_in_error_class_to_lambda PASSED")
 
 
 def test_world_model_verification_failure_adapts_trigger():
@@ -83410,7 +83410,5 @@ def test_silent_exception_error_classes_in_error_class_to_lambda():
     print("✅ test_silent_exception_error_classes_in_error_class_to_lambda PASSED")
 
 
-if __name__ == "__main__":
-    run_all_tests()
 if __name__ == "__main__":
     run_all_tests()
