@@ -18472,6 +18472,11 @@ class CausalErrorEvolutionTracker:
         # feedback.  Maps to lambda_coherence so training strengthens
         # integration reliability when periodic checks repeatedly fail.
         "periodic_reinforcement_failure": "lambda_coherence",
+        # Diagnostic gap detected — periodic reinforcement discovered
+        # architectural disconnections via self_diagnostic().  Maps to
+        # lambda_coherence so training strengthens integration
+        # reliability when diagnostic gaps are persistently detected.
+        "diagnostic_gap_detected": "lambda_coherence",
         # Uncertainty reinforcement failure — the uncertainty-triggered
         # self-correction cycle failed.  Maps to lambda_ucc so training
         # adapts to persistent inability to resolve high-uncertainty
