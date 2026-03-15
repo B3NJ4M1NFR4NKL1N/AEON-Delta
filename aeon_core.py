@@ -26187,6 +26187,10 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("world_model_prediction_pressure")
         if getattr(self, 'memory_routing_policy', None) is not None:
             _evaluated.add("memory_routing_trust_pressure")
+            _evaluated.add("memory_trust_deficit")
+            _evaluated.add("memory_retrieval_quality")
+        if getattr(self, 'auto_critic', None) is not None:
+            _evaluated.add("auto_critic_quality")
         # Emergence deficit is always evaluated (backed by cached
         # cognitive unity deficit and reinforcement weakness).
         _evaluated.add("emergence_deficit")
