@@ -68140,6 +68140,9 @@ def run_all_tests():
     # ── Causal chain connectivity & cross-reference patches ──
     test_causal_chain_connected_after_forward()
     test_coherence_report_root_cause_fully_grounded()
+    test_traceable_requires_chain_connectivity()
+    test_causal_chain_connected_at_init()
+    test_forward_pass_entries_maintain_chain_connectivity()
     test_feedback_bus_trace_references_upstream_subsystems()
     test_verify_and_reinforce_trace_references_feedback_and_error()
     test_system_emergence_trace_references_unity_and_reinforcement()
@@ -82057,7 +82060,104 @@ def test_coherence_report_root_cause_fully_grounded():
     print("✅ test_coherence_report_root_cause_fully_grounded PASSED")
 
 
-def test_feedback_bus_trace_references_upstream_subsystems():
+def test_traceable_requires_chain_connectivity():
+    """verify_causal_chain() traceable field must require BOTH full
+    coverage AND chain connectivity.  A system where every subsystem
+    records a trace entry but they form disconnected islands should
+    NOT report traceable=True — end-to-end causal transparency
+    requires a connected graph."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    chain = model.verify_causal_chain()
+    # At init: both coverage=1.0 and chain_connected=True
+    assert chain['traceable'] is True, (
+        "Causal chain must be traceable at init"
+    )
+    assert chain['chain_connected'] is True, (
+        "Chain must be connected at init"
+    )
+
+    # Verify that traceable is the conjunction of coverage and connectivity
+    assert chain['traceable'] == (
+        chain['coverage'] == 1.0 and chain['chain_connected']
+    ), (
+        "traceable must require both full coverage AND chain connectivity"
+    )
+
+    print("✅ test_traceable_requires_chain_connectivity PASSED")
+
+
+def test_causal_chain_connected_at_init():
+    """After cognitive activation, all traced subsystems must form a
+    single connected component via metadata cross-references, even
+    before any forward pass.  This validates that the activation probe
+    seeds proper cross-reference metadata."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    chain = model.verify_causal_chain()
+    assert chain['chain_connected'], (
+        "Causal chain must be connected at init — activation probe "
+        "must seed metadata cross-references for all expected subsystems"
+    )
+
+    print("✅ test_causal_chain_connected_at_init PASSED")
+
+
+def test_forward_pass_entries_maintain_chain_connectivity():
+    """Forward-pass causal trace entries for world_model,
+    unified_simulator, hybrid_reasoning, and cross_validation must
+    include health_verifier cross-reference metadata so connectivity
+    is maintained after buffer eviction of activation baseline
+    entries."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    for _ in range(8):
+        with torch.no_grad():
+            model(x)
+
+    entries = list(model.causal_trace._entries)
+    for sub_name in ['world_model', 'unified_simulator',
+                     'hybrid_reasoning', 'cross_validation']:
+        sub_entries = [e for e in entries
+                       if e.get('subsystem', '') == sub_name]
+        has_crossref = any(
+            isinstance(v, str)
+            and v in {'verify_and_reinforce', 'verify_cognitive_unity',
+                      'system_emergence_report', 'feedback_bus',
+                      'error_evolution'}
+            for e in sub_entries
+            for v in (e.get('metadata') or {}).values()
+        )
+        assert has_crossref, (
+            f"Forward-pass entries for '{sub_name}' must include "
+            f"metadata cross-referencing a connected subsystem"
+        )
+
+    print("✅ test_forward_pass_entries_maintain_chain_connectivity PASSED")
+
+
+
     """feedback_bus causal trace entries must cross-reference
     upstream subsystems (world_model, cross_validation,
     hybrid_reasoning, unified_simulator) to enable connected
