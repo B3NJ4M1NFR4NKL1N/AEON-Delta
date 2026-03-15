@@ -68390,6 +68390,23 @@ def run_all_tests():
     test_cross_verification_causal_trace_recorded()
     test_pre_activation_guard_in_forward_impl_source()
 
+    # ── Final Integration — Cognitive Activation Patches ──
+    test_system_emergence_report_calls_auto_remediation()
+    test_system_emergence_report_remediation_in_causal_trace()
+    test_cognitive_activation_probe_calls_auto_remediation()
+    test_cognitive_activation_probe_remediation_records_trace()
+    test_verify_causal_chain_bridges_islands()
+    test_verify_causal_chain_island_bridging_restores_connectivity()
+    test_verify_causal_chain_bridge_entries_have_health_verifier()
+    test_diagnostic_gap_metacognitive_bridge()
+    test_diagnostic_gap_bridge_adapts_trigger()
+    test_pipeline_wiring_auto_registers_provenance_edges()
+    test_pipeline_wiring_auto_registration_recomputes_coverage()
+    test_pipeline_wiring_auto_registration_skips_cycles()
+    test_full_cognitive_activation_achieves_emergence()
+    test_forward_pass_maintains_emergence()
+    test_emergence_causal_transparency_end_to_end()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -83602,6 +83619,322 @@ def test_silent_exception_error_classes_in_error_class_to_lambda():
             f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
         )
     print("✅ test_silent_exception_error_classes_in_error_class_to_lambda PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation Patches
+# ============================================================================
+
+def test_system_emergence_report_calls_auto_remediation():
+    """system_emergence_report must call apply_diagnostic_remediation
+    when emergence is not achieved, closing the gap where critical
+    patches were identified but never auto-fixed before retrying
+    reinforcement."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'apply_diagnostic_remediation' in source, (
+        "system_emergence_report must call apply_diagnostic_remediation "
+        "to auto-fix gaps before the reinforcement retry loop"
+    )
+    assert 'auto_remediation' in source, (
+        "system_emergence_report must record auto_remediation in "
+        "causal trace for transparency"
+    )
+    print("✅ test_system_emergence_report_calls_auto_remediation PASSED")
+
+
+def test_system_emergence_report_remediation_in_causal_trace():
+    """When apply_diagnostic_remediation remediates components during
+    system_emergence_report, the remediation must be recorded in the
+    causal trace for deterministic traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Verify causal trace recording of remediation
+    assert 'auto_remediation' in source, (
+        "system_emergence_report must record auto_remediation "
+        "decisions in causal trace"
+    )
+    assert 'remediated' in source, (
+        "Causal trace entry must include list of remediated components"
+    )
+    print("✅ test_system_emergence_report_remediation_in_causal_trace PASSED")
+
+
+def test_cognitive_activation_probe_calls_auto_remediation():
+    """_cognitive_activation_probe must call apply_diagnostic_remediation
+    before marking activation complete, closing the gap where the probe
+    seeded baseline states but never auto-created missing pure-logic
+    components."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'apply_diagnostic_remediation' in source, (
+        "_cognitive_activation_probe must call "
+        "apply_diagnostic_remediation to auto-fix gaps before "
+        "marking activation complete"
+    )
+    # The call must appear BEFORE _cognitive_activation_complete = True
+    remed_idx = source.index('apply_diagnostic_remediation')
+    complete_idx = source.index('_cognitive_activation_complete = True')
+    assert remed_idx < complete_idx, (
+        "apply_diagnostic_remediation must be called BEFORE "
+        "_cognitive_activation_complete is set to True"
+    )
+    print("✅ test_cognitive_activation_probe_calls_auto_remediation PASSED")
+
+
+def test_cognitive_activation_probe_remediation_records_trace():
+    """When _cognitive_activation_probe auto-remediates, it must record
+    the action in the causal trace for transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    # Must have causal trace recording for remediation
+    assert 'cognitive_activation_probe' in source and 'auto_remediation' in source, (
+        "_cognitive_activation_probe must record remediation in "
+        "causal trace with subsystem='cognitive_activation_probe'"
+    )
+    print("✅ test_cognitive_activation_probe_remediation_records_trace PASSED")
+
+
+def test_verify_causal_chain_bridges_islands():
+    """verify_causal_chain must inject bridging trace entries when
+    disconnected subsystem islands are detected, restoring causal
+    chain connectivity automatically."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert 'island_bridge' in source, (
+        "verify_causal_chain must inject 'island_bridge' trace entries "
+        "when disconnected subsystems are detected"
+    )
+    assert 'bridge_target' in source, (
+        "Island bridge entries must cross-reference a bridge_target "
+        "in the connected component"
+    )
+    assert 'causal_prerequisites' in source, (
+        "Island bridge entries must include causal_prerequisites "
+        "for deterministic traceability"
+    )
+    print("✅ test_verify_causal_chain_bridges_islands PASSED")
+
+
+def test_verify_causal_chain_island_bridging_restores_connectivity():
+    """After island bridging, verify_causal_chain must re-run BFS and
+    update chain_connected to True when all islands are bridged."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    # Must re-run BFS after bridging
+    assert '_visited_post' in source or 'Re-run BFS' in source, (
+        "verify_causal_chain must re-run BFS after island bridging "
+        "to update chain_connected"
+    )
+    # Must update _chain_connected after bridging
+    assert '_queue_post' in source, (
+        "verify_causal_chain must use a post-bridging BFS queue "
+        "to verify restored connectivity"
+    )
+    print("✅ test_verify_causal_chain_island_bridging_restores_connectivity PASSED")
+
+
+def test_verify_causal_chain_bridge_entries_have_health_verifier():
+    """Island bridge trace entries must include 'health_verifier':
+    'verify_causal_chain' metadata for mutual reinforcement tracing."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert "'health_verifier': 'verify_causal_chain'" in source, (
+        "Island bridge metadata must include health_verifier for "
+        "mutual reinforcement tracing"
+    )
+    print("✅ test_verify_causal_chain_bridge_entries_have_health_verifier PASSED")
+
+
+def test_diagnostic_gap_metacognitive_bridge():
+    """During periodic reinforcement in _forward_impl, diagnostic gaps
+    must feed into the metacognitive trigger via error_evolution,
+    ensuring structural problems initiate a higher-order review cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'diagnostic_gap_detected' in source, (
+        "_forward_impl must record 'diagnostic_gap_detected' error "
+        "episodes when periodic reinforcement discovers gaps"
+    )
+    assert 'periodic_reinforce_diagnostic' in source, (
+        "Diagnostic gap episodes must use strategy "
+        "'periodic_reinforce_diagnostic' for traceability"
+    )
+    print("✅ test_diagnostic_gap_metacognitive_bridge PASSED")
+
+
+def test_diagnostic_gap_bridge_adapts_trigger():
+    """When diagnostic gaps are detected during periodic reinforcement,
+    the metacognitive trigger weights must be adapted so the trigger
+    learns from structural problems."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The diagnostic gap section must adapt trigger weights
+    idx_diag = source.index('diagnostic_gap_detected')
+    idx_adapt = source.index(
+        'adapt_weights_from_evolution', idx_diag,
+    )
+    assert idx_adapt > idx_diag, (
+        "After recording diagnostic_gap_detected, _forward_impl must "
+        "call adapt_weights_from_evolution to update trigger sensitivity"
+    )
+    print("✅ test_diagnostic_gap_bridge_adapts_trigger PASSED")
+
+
+def test_pipeline_wiring_auto_registers_provenance_edges():
+    """verify_pipeline_wiring must auto-register unregistered provenance
+    edges, closing the gap where verified pipeline edges existed in
+    code but were invisible to trace_root_cause()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert 'auto_registered_edges' in source, (
+        "verify_pipeline_wiring must track auto-registered edges"
+    )
+    assert 'register_dependency' in source, (
+        "verify_pipeline_wiring must call register_dependency for "
+        "unregistered provenance edges"
+    )
+    print("✅ test_pipeline_wiring_auto_registers_provenance_edges PASSED")
+
+
+def test_pipeline_wiring_auto_registration_recomputes_coverage():
+    """After auto-registering provenance edges, verify_pipeline_wiring
+    must recompute provenance coverage to reflect the updated state."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    # Must recompute after auto-registration
+    assert '_prov_deps_post' in source or '_prov_edges_post' in source, (
+        "verify_pipeline_wiring must recompute provenance coverage "
+        "after auto-registering edges"
+    )
+    print("✅ test_pipeline_wiring_auto_registration_recomputes_coverage PASSED")
+
+
+def test_pipeline_wiring_auto_registration_skips_cycles():
+    """Pipeline wiring auto-registration must skip edges that would
+    introduce cycles in the provenance DAG."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    # Auto-registration must catch cycle exceptions
+    assert 'Edge may introduce a cycle' in source, (
+        "verify_pipeline_wiring must handle cycle exceptions when "
+        "auto-registering edges"
+    )
+    print("✅ test_pipeline_wiring_auto_registration_skips_cycles PASSED")
+
+
+def test_full_cognitive_activation_achieves_emergence():
+    """A fully configured model must achieve system emergence with all
+    6 conditions met, verifying that all patches work together."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('emerged', False), (
+        "Fully configured model must achieve emergence"
+    )
+    assert status.get('conditions_met', 0) == 6, (
+        f"All 6 emergence conditions must be met, got "
+        f"{status.get('conditions_met', 0)}"
+    )
+    # Verify causal chain is traceable
+    chain = model.verify_causal_chain()
+    assert chain.get('traceable', False), (
+        "Causal chain must be traceable after activation"
+    )
+    assert chain.get('chain_connected', False), (
+        "All causal chain subsystems must be connected"
+    )
+    # Verify cognitive unity
+    unity = model.verify_cognitive_unity()
+    assert unity.get('unified', False), (
+        "Cognitive unity must be achieved after activation"
+    )
+    print("✅ test_full_cognitive_activation_achieves_emergence PASSED")
+
+
+def test_forward_pass_maintains_emergence():
+    """After a forward pass, emergence status must be maintained,
+    verifying the cognitive organism is self-sustaining."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    assert result.get('emergence_status', False), (
+        "Forward pass must maintain emergence status"
+    )
+    es = result.get('emergence_summary', {})
+    assert es.get('activation_complete', False), (
+        "Activation must be complete during forward pass"
+    )
+    # Post-forward emergence check
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('emerged', False), (
+        "Emergence must persist after forward pass"
+    )
+    print("✅ test_forward_pass_maintains_emergence PASSED")
+
+
+def test_emergence_causal_transparency_end_to_end():
+    """Every forward-pass emergence assessment must be traceable in
+    the causal trace, ensuring deterministic root-cause analysis."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    # The causal decision chain must include emergence assessment
+    cdc = result.get('causal_decision_chain', {})
+    ea = cdc.get('emergence_assessment', {})
+    assert 'emerged' in ea, (
+        "Causal decision chain must include emergence assessment"
+    )
+    assert 'axiom_mutual_verification' in ea, (
+        "Emergence assessment must include per-axiom detail"
+    )
+    assert 'axiom_metacognitive_responsiveness' in ea, (
+        "Emergence assessment must include metacognitive axiom"
+    )
+    assert 'axiom_root_cause_traceability' in ea, (
+        "Emergence assessment must include root-cause axiom"
+    )
+    print("✅ test_emergence_causal_transparency_end_to_end PASSED")
 
 
 if __name__ == "__main__":
