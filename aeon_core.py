@@ -39929,15 +39929,6 @@ class AEONDeltaV3(nn.Module):
                 'codebook_quality': _vq_codebook_quality,
                 'unique_codes': _vq_unique,
             }
-            # Register VQ output in the coherence registry so that
-            # mutual-verification coverage includes the quantization
-            # stage.  Without this, VQ codebook health is tracked in
-            # verify_and_reinforce but invisible to the coherence
-            # ledger, creating a blind spot in mutual verification.
-            self.coherence_registry.register_output(
-                "vector_quantizer",
-                validated=_vq_codebook_quality >= 0.5,
-            )
             # Record VQ step in the causal trace so that root-cause
             # analysis can trace quantization decisions end-to-end.
             if self.causal_trace is not None:
@@ -40048,12 +40039,6 @@ class AEONDeltaV3(nn.Module):
         # backbone blending, VQ quantization, or chunked encoding.
         if self.encoder_reasoning_norm is not None:
             z_quantized = self.encoder_reasoning_norm(z_quantized)
-            # Register normalisation bridge in the coherence registry so
-            # mutual-verification covers the encoder→reasoning interface.
-            self.coherence_registry.register_output(
-                "encoder_reasoning_norm",
-                validated=torch.isfinite(z_quantized).all().item(),
-            )
             # Record normalisation step in the causal trace so that
             # root-cause analysis can trace activation-scale decisions.
             if self.causal_trace is not None:
@@ -50271,6 +50256,16 @@ class AEONDeltaV3(nn.Module):
             'social_cognition': float(max(
                 0.0,
                 1.0 - getattr(self, '_cached_social_pressure', 0.0),
+            )),
+            'auto_critic': float(
+                getattr(self, '_cached_auto_critic_current_score', 1.0)
+                or 1.0
+            ),
+            'memory_routing': float(max(
+                0.0,
+                1.0 - getattr(
+                    self, '_cached_memory_routing_trust_deficit', 0.0,
+                ),
             )),
         }
 
