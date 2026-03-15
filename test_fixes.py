@@ -64498,6 +64498,191 @@ def test_aeonv3_ucc_has_provenance_chain_validator():
     print("✅ test_aeonv3_ucc_has_provenance_chain_validator PASSED")
 
 
+# =====================================================================
+# Integration Patch Tests — Cognitive Activation Bridges
+# =====================================================================
+
+def test_pre_activation_guard_logs_warning():
+    """Forward pass before cognitive activation must log a warning,
+    ensuring the system never silently operates with unseeded baselines."""
+    import logging
+    import aeon_core
+    from unittest.mock import MagicMock
+
+    config = aeon_core.AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = aeon_core.AEONDeltaV3(config)
+    # Force pre-activation state
+    model._cognitive_activation_complete = False
+    tokens = __import__('torch').randint(0, config.vocab_size, (1, 8))
+    handler = logging.Handler()
+    handler.emit = MagicMock()
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        with __import__('torch').no_grad():
+            model.eval()
+            model(tokens)
+        # Check that a warning was logged about pre-activation
+        warned = any(
+            'cognitive activation probe' in str(c).lower()
+            or 'before cognitive activation' in str(c).lower()
+            for c in handler.emit.call_args_list
+        )
+        assert warned, (
+            "_forward_impl must log a warning when "
+            "_cognitive_activation_complete is False"
+        )
+    finally:
+        logger.removeHandler(handler)
+        model._cognitive_activation_complete = True
+    print("✅ test_pre_activation_guard_logs_warning PASSED")
+
+
+def test_emergence_cross_verification_on_periodic_pass():
+    """On periodic reinforcement passes, the emergence assessment must
+    cross-verify its verdict against verify_cognitive_unity(), ensuring
+    mutual reinforcement between the fast inline axiom evaluation and
+    the authoritative diagnostic."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    # Set forward count so next pass is periodic (pass 50)
+    model._total_forward_calls.fill_(model._REINFORCE_INTERVAL - 1)
+    with torch.no_grad():
+        result = model(tokens)
+    ea = result.get('causal_decision_chain', {}).get(
+        'emergence_assessment', {},
+    )
+    cv = ea.get('cross_verified')
+    assert cv is not None, (
+        "Periodic pass must include cross_verified field in "
+        "emergence_assessment"
+    )
+    assert 'local_emerged' in cv, "cross_verified must have local_emerged"
+    assert 'diagnostic_unified' in cv, (
+        "cross_verified must have diagnostic_unified"
+    )
+    assert 'concordant' in cv, "cross_verified must have concordant"
+    # On a healthy system both should agree
+    assert cv['concordant'], (
+        "Healthy system must have concordant emergence verdicts"
+    )
+    # Also check top-level key
+    ecv = result.get('emergence_cross_verification')
+    assert ecv is not None, (
+        "Periodic pass must include emergence_cross_verification "
+        "in forward result"
+    )
+    print("✅ test_emergence_cross_verification_on_periodic_pass PASSED")
+
+
+def test_emergence_cross_verification_absent_on_non_periodic():
+    """On non-periodic passes, cross-verification should not run to
+    keep overhead low — only the fast inline axiom check applies."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    # Pass 1 is not periodic
+    with torch.no_grad():
+        result = model(tokens)
+    ea = result.get('causal_decision_chain', {}).get(
+        'emergence_assessment', {},
+    )
+    cv = ea.get('cross_verified')
+    assert cv is None, (
+        "Non-periodic pass must NOT cross-verify to keep overhead low"
+    )
+    print("✅ test_emergence_cross_verification_absent_on_non_periodic PASSED")
+
+
+def test_emergence_cross_verification_overrides_on_disagreement():
+    """When the local axiom evaluation claims 'emerged' but
+    verify_cognitive_unity() disagrees, the verdict must be
+    downgraded to ensure mutual reinforcement consistency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The code must contain logic to override _emerged when
+    # cross-verification disagrees
+    assert 'verdict_overridden' in source, (
+        "_forward_impl must downgrade emergence verdict when "
+        "cross-verification disagrees"
+    )
+    assert 'not _cv_unified' in source or 'not _cv_unified' in source, (
+        "_forward_impl must check diagnostic_unified to override"
+    )
+    print("✅ test_emergence_cross_verification_overrides_on_disagreement PASSED")
+
+
+def test_uncertainty_metacognitive_evaluation_in_source():
+    """When uncertainty triggers verify_and_reinforce(), the
+    metacognitive_trigger.evaluate() must also be called so that the
+    higher-order review fires synchronously with reinforcement."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'uncertainty_metacognitive_evaluation' in source, (
+        "_forward_impl must store uncertainty_metacognitive_evaluation "
+        "result when uncertainty triggers reinforcement"
+    )
+    assert 'uncertainty_reinforcement_evaluation' in source, (
+        "_forward_impl must record metacognitive trigger evaluation "
+        "in causal trace during uncertainty-triggered reinforcement"
+    )
+    print("✅ test_uncertainty_metacognitive_evaluation_in_source PASSED")
+
+
+def test_cross_verification_causal_trace_recorded():
+    """Cross-verification must record its decision in the causal trace
+    for deterministic traceability — an auditor must be able to trace
+    whether the emergence verdict was confirmed or overridden."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '"cross_verification"' in source or "'cross_verification'" in source, (
+        "_forward_impl must record cross_verification in causal trace"
+    )
+    assert 'concordant' in source, (
+        "_forward_impl must include concordant field in cross-verification "
+        "causal trace entry"
+    )
+    print("✅ test_cross_verification_causal_trace_recorded PASSED")
+
+
+def test_pre_activation_guard_in_forward_impl_source():
+    """_forward_impl must check _cognitive_activation_complete at the
+    start of the method to prevent operation with unseeded baselines."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_cognitive_activation_complete' in source, (
+        "_forward_impl must reference _cognitive_activation_complete"
+    )
+    assert 'before cognitive activation' in source.lower() or \
+           'pre-activation guard' in source.lower(), (
+        "_forward_impl must contain pre-activation guard"
+    )
+    print("✅ test_pre_activation_guard_in_forward_impl_source PASSED")
+
+
 def run_all_tests():
     """Main test runner — chains all test functions."""
     test_division_by_zero_in_fit()
@@ -68195,6 +68380,15 @@ def run_all_tests():
     test_memory_routing_failure_bridges_to_error_evolution()
     test_silent_exception_error_classes_in_class_to_signal()
     test_silent_exception_error_classes_in_error_class_to_lambda()
+
+    # ── Cognitive Integration Patches — Final activation bridges ──
+    test_pre_activation_guard_logs_warning()
+    test_emergence_cross_verification_on_periodic_pass()
+    test_emergence_cross_verification_absent_on_non_periodic()
+    test_emergence_cross_verification_overrides_on_disagreement()
+    test_uncertainty_metacognitive_evaluation_in_source()
+    test_cross_verification_causal_trace_recorded()
+    test_pre_activation_guard_in_forward_impl_source()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
