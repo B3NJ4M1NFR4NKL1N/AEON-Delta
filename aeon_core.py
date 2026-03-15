@@ -27645,6 +27645,7 @@ class AEONDeltaV3(nn.Module):
                             causal_prerequisites=[input_trace_id],
                             metadata={
                                 "verified_error": _verified_prediction_error,
+                                "health_verifier": "verify_and_reinforce",
                             },
                             severity=(
                                 "warning"
@@ -33103,6 +33104,7 @@ class AEONDeltaV3(nn.Module):
                         "agreement": reconciliation_results[
                             "agreement_score"
                         ].mean().item(),
+                        "health_verifier": "verify_and_reinforce",
                     },
                 )
             # Low reconciliation agreement indicates inter-module
@@ -33617,6 +33619,7 @@ class AEONDeltaV3(nn.Module):
                             unified_simulator_results.get("interventional", False)
                         ),
                         "next_state_valid": cf_next is not None and torch.isfinite(cf_next).all() if cf_next is not None else False,
+                        "health_verifier": "verify_and_reinforce",
                     },
                 )
             # 5e2-i. Unified simulator divergence feedback — when the
@@ -33874,6 +33877,7 @@ class AEONDeltaV3(nn.Module):
                                 hybrid_reasoning_results.get("derived", torch.zeros(1)).sum().item()
                             ),
                             "conclusions_valid": conclusions is not None and torch.isfinite(conclusions).all(),
+                            "health_verifier": "verify_and_reinforce",
                         },
                     )
             except Exception as hr_err:
@@ -41827,6 +41831,8 @@ class AEONDeltaV3(nn.Module):
                     'axiom_metacognitive_responsiveness': _um_ok,
                     'axiom_root_cause_traceability': _rc_ok,
                     'emerged': _emerged,
+                    'unity_source': 'verify_cognitive_unity',
+                    'reinforcement_source': 'verify_and_reinforce',
                 },
             )
             # Record lightweight heartbeat entries for the three
@@ -41843,6 +41849,7 @@ class AEONDeltaV3(nn.Module):
                 metadata={
                     'cognitive_unity_score': _cu_score,
                     'forward_pass': _fwd,
+                    'emergence_source': 'system_emergence_report',
                 },
             )
             self.causal_trace.record(
@@ -41852,6 +41859,7 @@ class AEONDeltaV3(nn.Module):
                         'provenance_chain_completeness', 0.0,
                     ),
                     'forward_pass': _fwd,
+                    'unity_source': 'verify_cognitive_unity',
                 },
             )
             self.causal_trace.record(
@@ -49944,7 +49952,8 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with:
                 - ``traceable``: bool — True when all expected
-                  subsystems have trace entries.
+                  subsystems have trace entries and form a single
+                  connected causal graph (end-to-end traceability).
                 - ``traced_subsystems``: list of subsystem names
                   that have causal trace entries.
                 - ``untraced_subsystems``: list of subsystem names
@@ -50145,7 +50154,7 @@ class AEONDeltaV3(nn.Module):
             _chain_acyclic = len(_chain_subs) == len(set(_chain_subs))
 
         result = {
-            "traceable": len(_untraced) == 0,
+            "traceable": len(_untraced) == 0 and _chain_connected,
             "traced_subsystems": sorted(_found_subsystems),
             "untraced_subsystems": _untraced,
             "coverage": _coverage,
@@ -50922,6 +50931,7 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
+                        'verify_source': 'verify_and_reinforce',
                     },
                 )
             if self.unified_simulator is not None:
@@ -50930,6 +50940,7 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
+                        'verify_source': 'verify_and_reinforce',
                     },
                 )
             if self.hybrid_reasoning is not None:
@@ -50938,6 +50949,7 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
+                        'verify_source': 'verify_and_reinforce',
                     },
                 )
             if self.cross_validator is not None:
@@ -50946,6 +50958,7 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
+                        'verify_source': 'verify_and_reinforce',
                     },
                 )
 
