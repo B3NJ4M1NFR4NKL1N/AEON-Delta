@@ -68186,6 +68186,12 @@ def run_all_tests():
     test_module_health_prefix_routing()
     test_pre_reasoning_causal_trace_failure_records_error_evolution()
     test_factor_reextraction_failure_records_error_evolution()
+    # ── Silent-exception → error_evolution bridging patches ──
+    test_bridge_silent_exception_method_exists()
+    test_bridge_silent_exception_records_causal_trace()
+    test_memory_routing_failure_bridges_to_error_evolution()
+    test_silent_exception_error_classes_in_class_to_signal()
+    test_silent_exception_error_classes_in_error_class_to_lambda()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -83194,6 +83200,114 @@ def test_factor_reextraction_failure_records_error_evolution():
             "_reasoning_core_impl source"
         )
         print("✅ test_factor_reextraction_failure_records_error_evolution PASSED")
+
+
+def test_bridge_silent_exception_method_exists():
+    """AEONDeltaV3 must expose _bridge_silent_exception() helper."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_bridge_silent_exception'), (
+        "AEONDeltaV3 must expose _bridge_silent_exception()"
+    )
+    # Call it directly to verify it records to error_evolution
+    episodes_before = sum(len(v) for v in model.error_evolution._episodes.values())
+    model._bridge_silent_exception(
+        "test_error_class", "test_subsystem", RuntimeError("test"),
+    )
+    episodes_after = sum(len(v) for v in model.error_evolution._episodes.values())
+    assert episodes_after > episodes_before, (
+        "_bridge_silent_exception must record an error_evolution episode"
+    )
+    assert 'test_error_class' in model.error_evolution._episodes, (
+        "_bridge_silent_exception must use the provided error_class"
+    )
+    print("✅ test_bridge_silent_exception_method_exists PASSED")
+
+
+def test_bridge_silent_exception_records_causal_trace():
+    """_bridge_silent_exception must also record a causal trace entry."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    entries_before = len(model.causal_trace._entries)
+    model._bridge_silent_exception(
+        "trace_test_class", "test_subsystem", RuntimeError("trace test"),
+    )
+    entries_after = len(model.causal_trace._entries)
+    assert entries_after > entries_before, (
+        "_bridge_silent_exception must record a causal trace entry"
+    )
+    last_entry = model.causal_trace._entries[-1]
+    assert last_entry.get('subsystem') == 'test_subsystem', (
+        "causal trace entry must reference the subsystem"
+    )
+    print("✅ test_bridge_silent_exception_records_causal_trace PASSED")
+
+
+def test_memory_routing_failure_bridges_to_error_evolution():
+    """When memory routing fails, the failure must be bridged to
+    error_evolution via _bridge_silent_exception."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Verify the error class is mapped in _class_to_signal
+    import inspect
+    src = inspect.getsource(model.metacognitive_trigger.adapt_weights_from_evolution)
+    assert 'memory_routing_failure' in src, (
+        "memory_routing_failure must be mapped in _class_to_signal"
+    )
+    print("✅ test_memory_routing_failure_bridges_to_error_evolution PASSED")
+
+
+def test_silent_exception_error_classes_in_class_to_signal():
+    """All silent-exception error classes must be mapped in
+    MetaCognitiveRecursionTrigger._class_to_signal."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    src = inspect.getsource(model.metacognitive_trigger.adapt_weights_from_evolution)
+    expected = [
+        'memory_routing_failure',
+        'value_network_failure',
+        'memory_decay_failure',
+        'memory_consolidation_failure',
+        'fast_ucc_evaluation_failure',
+        'reasoning_core_trace_failure',
+    ]
+    for cls in expected:
+        assert cls in src, (
+            f"Error class '{cls}' must be mapped in _class_to_signal"
+        )
+    print("✅ test_silent_exception_error_classes_in_class_to_signal PASSED")
+
+
+def test_silent_exception_error_classes_in_error_class_to_lambda():
+    """All silent-exception error classes must be mapped in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    expected = [
+        'memory_routing_failure',
+        'value_network_failure',
+        'memory_decay_failure',
+        'memory_consolidation_failure',
+        'fast_ucc_evaluation_failure',
+        'reasoning_core_trace_failure',
+    ]
+    for cls in expected:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_silent_exception_error_classes_in_error_class_to_lambda PASSED")
 
 
 if __name__ == "__main__":
