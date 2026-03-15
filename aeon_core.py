@@ -17209,6 +17209,18 @@ class MetaCognitiveRecursionTrigger:
             # for a pre-reasoning subsystem failed, degrading causal
             # transparency and breaking the traceability chain.
             "pre_reasoning_causal_trace_failure": "low_causal_quality",
+            # Silent-exception bridged error classes — secondary operations
+            # (memory routing, value network, memory decay/consolidation,
+            # fast-mode UCC, reasoning-core trace) whose failures were
+            # previously swallowed by debug-only logging.  Routing them
+            # to the appropriate metacognitive signal closes the feedback
+            # loop so the trigger can learn from these failures.
+            "memory_routing_failure": "memory_staleness",
+            "value_network_failure": "uncertainty",
+            "memory_decay_failure": "memory_staleness",
+            "memory_consolidation_failure": "memory_staleness",
+            "fast_ucc_evaluation_failure": "uncertainty",
+            "reasoning_core_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18639,6 +18651,16 @@ class CausalErrorEvolutionTracker:
         # pre-reasoning phase.  Maps to lambda_causal_dag to reinforce
         # the causal DAG structure.
         "pre_reasoning_causal_trace_failure": "lambda_causal_dag",
+        # Silent-exception bridged error classes — map to the loss
+        # component most relevant to each failure domain so that
+        # training-time loss weighting adapts to persistent secondary
+        # failures.
+        "memory_routing_failure": "lambda_memory",
+        "value_network_failure": "lambda_value_net",
+        "memory_decay_failure": "lambda_memory",
+        "memory_consolidation_failure": "lambda_memory",
+        "fast_ucc_evaluation_failure": "lambda_coherence",
+        "reasoning_core_trace_failure": "lambda_causal_dag",
     }
 
     def recommend_loss_adjustments(
@@ -25282,6 +25304,51 @@ class AEONDeltaV3(nn.Module):
                         "recovery-to-evolution bridge: %s", _brevo_err,
                     )
 
+    def _bridge_silent_exception(
+        self,
+        error_class: str,
+        subsystem: str,
+        exception: Exception,
+    ) -> None:
+        """Bridge a silently-caught exception to error_evolution and causal_trace.
+
+        Many secondary operations (memory routing, value-network quality
+        estimation, auto-critic calls, causal-trace recording, etc.) are
+        wrapped in ``try/except`` blocks that log the failure but do not
+        feed it into the meta-cognitive feedback loop.  This creates
+        cognitive blind spots where the metacognitive trigger cannot
+        learn from persistent secondary failures and root-cause traces
+        are incomplete.
+
+        This method closes those gaps by:
+        1. Recording a failure episode in ``error_evolution`` so the
+           metacognitive trigger adapts its weights.
+        2. Recording a causal trace entry so the failure is
+           deterministically traceable to its originating subsystem.
+        """
+        if self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class=error_class,
+                strategy_used=f"silent_exception:{subsystem}",
+                success=False,
+                metadata={
+                    "subsystem": subsystem,
+                    "error": str(exception)[:200],
+                },
+            )
+        if self.causal_trace is not None:
+            try:
+                self.causal_trace.record(
+                    subsystem, "silent_exception_bridged",
+                    metadata={
+                        "error_class": error_class,
+                        "error": str(exception)[:200],
+                    },
+                    severity="warning",
+                )
+            except Exception:
+                pass  # causal trace itself may be unavailable
+
     def _validate_cached_state_coherence(
         self,
         cached_state: Optional[torch.Tensor],
@@ -31183,6 +31250,9 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _vn_err_boost)
                     uncertainty_sources["value_net_error"] = _vn_err_boost
                     high_uncertainty = uncertainty > 0.5
+                self._bridge_silent_exception(
+                    "value_network_failure", "value_network", _vn_err,
+                )
         
         # 5b1c. Critical uncertainty gate — when accumulated uncertainty
         # from multiple independent sources exceeds a critical threshold
@@ -31269,6 +31339,9 @@ class AEONDeltaV3(nn.Module):
             except Exception as _decay_err:
                 logger.warning(
                     "Memory stale-entry decay failed: %s", _decay_err,
+                )
+                self._bridge_silent_exception(
+                    "memory_decay_failure", "memory", _decay_err,
                 )
         memory_retrieved = None
         _memory_empty_count = 0
@@ -31460,6 +31533,9 @@ class AEONDeltaV3(nn.Module):
                         })
                 except Exception as _consol_err:
                     logger.warning(f"HierarchicalMemory consolidation during staleness failed: {_consol_err}")
+                    self._bridge_silent_exception(
+                        "memory_consolidation_failure", "memory", _consol_err,
+                    )
             # Also consolidate ConsolidatingMemory if available — promotes
             # working memory items to episodic/semantic tiers, increasing
             # the pool of retrievable knowledge for subsequent queries.
@@ -31468,6 +31544,9 @@ class AEONDeltaV3(nn.Module):
                     self.consolidating_memory.consolidate()
                 except Exception as _consol_err2:
                     logger.warning(f"ConsolidatingMemory consolidation during staleness failed: {_consol_err2}")
+                    self._bridge_silent_exception(
+                        "memory_consolidation_failure", "memory", _consol_err2,
+                    )
             uncertainty = min(1.0, uncertainty + _STALENESS_UNCERTAINTY_BOOST)
             uncertainty_sources["memory_staleness"] = _STALENESS_UNCERTAINTY_BOOST
             high_uncertainty = uncertainty > 0.5
@@ -31978,6 +32057,9 @@ class AEONDeltaV3(nn.Module):
                     "Memory routing failed (non-fatal): %s", _routing_err,
                 )
                 self._cached_memory_routing_trust_deficit = 0.0
+                self._bridge_silent_exception(
+                    "memory_routing_failure", "memory", _routing_err,
+                )
         
         # 5b2 (deferred). MCTS planning — runs after memory retrieval so
         # the search tree root state includes memory context, enabling
@@ -35265,6 +35347,9 @@ class AEONDeltaV3(nn.Module):
                         _ac_call_err,
                     )
                     critic_result = None
+                    self._bridge_silent_exception(
+                        "auto_critic_failure", "auto_critic", _ac_call_err,
+                    )
                 # Restore original threshold and max_iterations so the
                 # adaptation is per-pass and does not drift unboundedly
                 # across forward calls.
@@ -37196,6 +37281,10 @@ class AEONDeltaV3(nn.Module):
                     logger.debug(
                         "Fast-mode UCC evaluation failed (non-fatal): %s",
                         _fast_ucc_err,
+                    )
+                    self._bridge_silent_exception(
+                        "fast_ucc_evaluation_failure",
+                        "unified_cognitive_cycle", _fast_ucc_err,
                     )
 
         # 8f-ucc-ctx-all. Record UCC coherence assessment in the
@@ -39516,6 +39605,9 @@ class AEONDeltaV3(nn.Module):
             logger.debug(
                 "Causal trace recording for reasoning_core outputs "
                 "failed: %s", _ct_err,
+            )
+            self._bridge_silent_exception(
+                "reasoning_core_trace_failure", "causal_trace", _ct_err,
             )
 
         return z_out, outputs
