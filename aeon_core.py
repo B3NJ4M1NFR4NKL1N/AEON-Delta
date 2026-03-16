@@ -47706,6 +47706,7 @@ class AEONDeltaV3(nn.Module):
                     1.0 - getattr(self, '_last_trust_score', 1.0),
                 )),
                 output_reliability=result.get("output_reliability", 1.0),
+                spectral_stability_margin=self._cached_spectral_stability_margin,
             )
             result["metacognitive_triggered"] = trigger_result.get(
                 "should_trigger", False
@@ -47966,6 +47967,7 @@ class AEONDeltaV3(nn.Module):
             "low_causal_quality", "safety_violation",
             "diversity_collapse", "memory_trust_deficit",
             "convergence_conflict", "low_output_reliability",
+            "spectral_instability",
         }
         _trigger = self.metacognitive_trigger
         if _trigger is not None:
@@ -47983,7 +47985,7 @@ class AEONDeltaV3(nn.Module):
                 # verify_cognitive_unity() from a passive validator into
                 # an active enforcer of metacognitive completeness.
                 _default_w = getattr(
-                    _trigger, '_DEFAULT_WEIGHT', 1.0 / 13.0,
+                    _trigger, '_DEFAULT_WEIGHT', 1.0 / 14.0,
                 )
                 for _sig in _uncovered:
                     _trigger._signal_weights[_sig] = _default_w
