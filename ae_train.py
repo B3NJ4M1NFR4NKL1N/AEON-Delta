@@ -871,9 +871,31 @@ except ImportError:
                 "unknown": "uncertainty",
                 # Adaptation failure — trigger adaptation exception.
                 "adaptation_failure": "uncertainty",
+                # Training metacognitive rerun — UCC triggered a
+                # same-pass re-reasoning cycle during training.
+                "training_metacognitive_rerun": "uncertainty",
+                # Decoder cross-validation failure — decoder output
+                # diverged from cross-validation expectations.
+                "decoder_cross_validation_failure": "coherence_deficit",
             }
+            # Prefix-based routing for dynamically generated training
+            # error classes (e.g. "training_{cls_name}" from
+            # bridge_training_errors_to_inference).  Without this,
+            # dynamic training error classes fall through the static
+            # mapping and are silently ignored, breaking the training
+            # → metacognitive adaptation feedback loop.
+            _prefix_routes = [
+                ("training_diverge", "diverging"),
+                ("training_stag", "coherence_deficit"),
+                ("training_", "uncertainty"),
+            ]
             for cls_name, cls_stats in error_classes.items():
                 signal = _class_to_signal.get(cls_name)
+                if signal is None:
+                    for _pfx, _sig in _prefix_routes:
+                        if cls_name.startswith(_pfx):
+                            signal = _sig
+                            break
                 if signal is None or signal not in self._signal_weights:
                     continue
                 success_rate = cls_stats.get("success_rate", 1.0)
