@@ -9242,9 +9242,9 @@ def test_metacognitive_recursion_trigger_evaluate():
     assert result["trigger_score"] == 0.0
     assert result["triggers_active"] == []
 
-    # Three signals → score = 3/13 ≈ 0.23 < 0.5 threshold → should NOT trigger
+    # Three signals → score = 3/14 ≈ 0.21 < 0.5 threshold → should NOT trigger
     # with default weights; activate five to cross threshold — but with
-    # 14 signal weights the composite score is 4.8/13 ≈ 0.369 < 0.5.
+    # 14 signal weights the composite score is 4.8/14 ≈ 0.343 < 0.5.
     # The topology_catastrophe override ensures should_trigger is True.
     result = trigger.evaluate(
         uncertainty=0.8,
@@ -9254,7 +9254,7 @@ def test_metacognitive_recursion_trigger_evaluate():
         safety_violation=True,
     )
     assert result["should_trigger"] is True
-    assert abs(result["trigger_score"] - 4.8 / 13.0) < 1e-9
+    assert abs(result["trigger_score"] - 4.8 / 14.0) < 1e-9
     assert "uncertainty" in result["triggers_active"]
     assert "diverging" in result["triggers_active"]
     assert "memory_staleness" in result["triggers_active"]
