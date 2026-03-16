@@ -26775,6 +26775,11 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("neurogenic_memory_retrieval_pressure")
         _evaluated.add("memory_subsystem_aggregate_pressure")
         _evaluated.add("curiosity_exploration_pressure")
+        # Cross-validation disagreement pressure is always evaluated —
+        # backed by the cached cross-validator disagreement metric.
+        # When the threshold is not exceeded the healthy default (0.0)
+        # IS the evaluation result (no disagreement detected).
+        _evaluated.add("cross_validation_disagreement_pressure")
         # Spectral stability margin is always evaluated — backed by the
         # cached max-eigenvalue-derived stability margin from the most
         # recent topology analysis.
@@ -52417,6 +52422,7 @@ class AEONDeltaV3(nn.Module):
                 "reinforce_weakness_pressure",
                 "causal_chain_coverage_deficit",
                 "coherence_deficit",
+                "cross_validation_disagreement_pressure",
                 "metacognitive_gap",
                 "provenance_chain_incomplete",
                 "tkg_staleness_pressure",
