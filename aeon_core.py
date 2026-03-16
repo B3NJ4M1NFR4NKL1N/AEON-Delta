@@ -17382,6 +17382,18 @@ class MetaCognitiveRecursionTrigger:
             "memory_consolidation_failure": "memory_staleness",
             "fast_ucc_evaluation_failure": "uncertainty",
             "reasoning_core_trace_failure": "low_causal_quality",
+            # Consolidation quality low — ConsolidatingMemory importance
+            # scoring indicates few items are valuable enough to promote.
+            "consolidation_quality_low": "memory_staleness",
+            # Temporal memory freshness low — temporal memory retrievals
+            # are mostly empty or low-strength.
+            "temporal_memory_freshness_low": "memory_staleness",
+            # Cross-validation persistent disagreement — factor–causal
+            # reconciliation shows systematic divergence.
+            "cross_validation_persistent_disagreement": "coherence_deficit",
+            # Curiosity exploration inefficiency — active learning
+            # curiosity is high but exploration quality is degraded.
+            "curiosity_exploration_inefficiency": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -17716,6 +17728,10 @@ class MetaCognitiveRecursionTrigger:
         "evolved_strategy_pressure": "uncertainty",
         "diagnostic_gap_pressure": "coherence_deficit",
         "spectral_stability_margin": "diverging",
+        "consolidation_quality_deficit": "memory_staleness",
+        "temporal_memory_freshness_deficit": "memory_staleness",
+        "cross_validation_disagreement_pressure": "coherence_deficit",
+        "curiosity_exploration_pressure": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -18853,6 +18869,18 @@ class CausalErrorEvolutionTracker:
         "memory_consolidation_failure": "lambda_memory_retrieval",
         "fast_ucc_evaluation_failure": "lambda_coherence",
         "reasoning_core_trace_failure": "lambda_causal_dag",
+        # Consolidation quality — maps to memory retrieval loss to
+        # strengthen the importance scoring network.
+        "consolidation_quality_low": "lambda_memory_retrieval",
+        # Temporal memory freshness — maps to memory staleness loss
+        # to encourage better temporal retention.
+        "temporal_memory_freshness_low": "lambda_memory_staleness",
+        # Cross-validation persistent disagreement — maps to the
+        # cross-validation loss to tighten factor–causal alignment.
+        "cross_validation_persistent_disagreement": "lambda_cross_validation",
+        # Curiosity exploration inefficiency — maps to the UCC loss
+        # to improve the unified cognitive cycle's exploration guidance.
+        "curiosity_exploration_inefficiency": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -22825,6 +22853,13 @@ class AEONDeltaV3(nn.Module):
         # so that low factor-causal agreement triggers immediate self-
         # correction rather than waiting for the UCC to escalate.
         ("cross_validation", "auto_critic"),
+        # Cross-validation disagreement routes to the metacognitive trigger
+        # so that persistent factor–causal divergence directly triggers
+        # meta-cognitive review cycles rather than relying solely on
+        # uncertainty escalation.  This closes the gap where cross-
+        # validation disagreement was detected and routed to coherence
+        # adjustments but had no direct provenance path to the trigger.
+        ("cross_validation", "metacognitive_trigger"),
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
         ("deeper_meta_loop", "world_model"),
@@ -23809,6 +23844,34 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "spectral_stability_margin", default=1.0,
         )
+        # Consolidation quality deficit — when ConsolidatingMemory's
+        # importance-weighted consolidation rate is low, signal the
+        # meta-loop to deepen reasoning so downstream memory
+        # representations are enriched.  Closes the loop where
+        # consolidation performance was computed but never surfaced
+        # to the feedback bus.
+        self.feedback_bus.register_signal(
+            "consolidation_quality_deficit", default=0.0,
+        )
+        # Temporal memory freshness deficit — when temporal memory
+        # retrievals return mostly empty or low-strength results,
+        # signal the meta-loop that temporal context is degraded.
+        self.feedback_bus.register_signal(
+            "temporal_memory_freshness_deficit", default=0.0,
+        )
+        # Cross-validation disagreement pressure — when factor–causal
+        # reconciliation shows persistent disagreement, route the
+        # pattern into the feedback bus so the meta-loop can learn
+        # from systematic cross-validator divergence.
+        self.feedback_bus.register_signal(
+            "cross_validation_disagreement_pressure", default=0.0,
+        )
+        # Curiosity exploration pressure — when active learning
+        # curiosity exploration yields high intrinsic reward but
+        # low action quality, signal exploration inefficiency.
+        self.feedback_bus.register_signal(
+            "curiosity_exploration_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -24657,6 +24720,22 @@ class AEONDeltaV3(nn.Module):
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
 
+        # Consolidation quality — caches the fraction of stored items that
+        # exceeded the importance threshold in the most recent pass.  When
+        # quality is low (few items are important enough to consolidate),
+        # the feedback bus conditions the meta-loop to deepen reasoning so
+        # that downstream memory representations are enriched.  This closes
+        # the loop where ConsolidatingMemory performance was opaque to the
+        # meta-cognitive cycle.  Initialised to 1.0 (healthy).
+        self._cached_consolidation_quality: float = 1.0
+
+        # Temporal memory freshness — caches the fraction of temporal
+        # memory retrievals that returned non-empty results with strength
+        # above a freshness threshold.  Low freshness indicates that the
+        # temporal memory buffer has decayed or is poorly populated,
+        # warranting deeper reasoning.  Initialised to 1.0 (healthy).
+        self._cached_temporal_memory_freshness: float = 1.0
+
         # Reinforcement weakness signal — caches the (1 - overall_score)
         # from the most recent verify_and_reinforce() call so the
         # feedback bus can condition the next pass's meta-loop when
@@ -25047,6 +25126,9 @@ class AEONDeltaV3(nn.Module):
         # compute_loss() can add a supervised correction term for the causal
         # model when factor–causal predictions diverge.
         self._last_cv_disagreement: float = 0.0
+        # Track cross-validation disagreement across consecutive passes
+        # for persistent disagreement detection.
+        self._prev_pass_cv_disagreement: float = 0.0
         self._last_cv_reconciled_target: Optional[torch.Tensor] = None
         # Factor cross-validation supervision — cache the factor embedding
         # at cross-validation time so compute_loss() can add a reciprocal
@@ -26609,6 +26691,50 @@ class AEONDeltaV3(nn.Module):
         if _diag_gaps > 0:
             extra["diagnostic_gap_pressure"] = max(
                 0.0, min(1.0, _diag_gaps / 10.0),
+            )
+        # Consolidation quality deficit — when ConsolidatingMemory's
+        # importance-weighted consolidation rate is low, signal the
+        # meta-loop to deepen reasoning.  This closes the blind spot
+        # where consolidation performance was computed but never
+        # surfaced to the feedback bus, leaving the meta-loop unable
+        # to detect memory consolidation degradation.
+        _cq = getattr(self, '_cached_consolidation_quality', 1.0)
+        if _cq < 0.9:
+            extra["consolidation_quality_deficit"] = max(
+                0.0, min(1.0, 1.0 - _cq),
+            )
+        # Temporal memory freshness deficit — when temporal memory
+        # retrievals are mostly empty or low-strength, signal the
+        # meta-loop to expect impoverished temporal context.  This
+        # closes the gap where temporal memory staleness was tracked
+        # as a binary flag but freshness quality trends were not
+        # exposed to the feedback bus for cross-pass conditioning.
+        _tmf = getattr(self, '_cached_temporal_memory_freshness', 1.0)
+        if _tmf < 0.8:
+            extra["temporal_memory_freshness_deficit"] = max(
+                0.0, min(1.0, 1.0 - _tmf),
+            )
+        # Cross-validation disagreement pressure — when the previous
+        # pass's cross-validator detected persistent factor–causal
+        # disagreement, route the pattern into the feedback bus so
+        # the meta-loop learns from systematic cross-validator
+        # divergence.  This closes the gap where cross-validation
+        # detected disagreement (triggering coherence adjustments)
+        # but didn't feed into error-evolution-aware conditioning.
+        _cvd_fb = getattr(self, '_last_cv_disagreement', 0.0)
+        if _cvd_fb > 0.1:
+            extra["cross_validation_disagreement_pressure"] = max(
+                0.0, min(1.0, _cvd_fb),
+            )
+        # Curiosity exploration pressure — when active learning
+        # curiosity is high but exploration quality is degraded,
+        # signal the meta-loop about exploration inefficiency so
+        # it can condition deeper reasoning in epistemically
+        # uncertain regions.
+        _al_cur = getattr(self, '_cached_active_learning_curiosity', 0.0)
+        if _al_cur > 0.5:
+            extra["curiosity_exploration_pressure"] = max(
+                0.0, min(1.0, _al_cur),
             )
         # Spectral stability margin — feed the cached Hessian max-eigenvalue-
         # derived stability margin into the feedback bus.  The signal value
@@ -32048,6 +32174,32 @@ class AEONDeltaV3(nn.Module):
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
             self.provenance_tracker.record_after("consolidating_memory", C_star)
             self.coherence_registry.register_output("consolidating_memory", validated=torch.isfinite(C_star).all().item())
+            # 5c3-i. Consolidation quality feedback — compute the fraction
+            # of stored items whose importance exceeded the consolidation
+            # threshold.  Low quality indicates that the importance scoring
+            # network considers most inputs unworthy of episodic promotion,
+            # which degrades downstream semantic memory coverage.  Cache the
+            # quality metric so the CognitiveFeedbackBus can surface
+            # consolidation performance to the meta-loop.  This closes the
+            # blind spot where ConsolidatingMemory quality was opaque to
+            # meta-cognitive reasoning.
+            _consol_total = len(getattr(self.consolidating_memory, 'working', []))
+            _consol_episodic = len(getattr(
+                getattr(self.consolidating_memory, 'episodic', None), '_items', [],
+            )) if hasattr(self.consolidating_memory, 'episodic') else 0
+            _consol_quality = min(1.0, (_consol_episodic + 1) / max(_consol_total + 1, 1))
+            self._cached_consolidation_quality = _consol_quality
+            if _consol_quality < 0.5 and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='consolidation_quality_low',
+                    strategy_used='deepen_reasoning',
+                    success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        'quality': _consol_quality,
+                        'working_count': _consol_total,
+                        'episodic_count': _consol_episodic,
+                    }),
+                )
         
         # 5c4. Temporal memory — store current states with importance-based
         # retention and retrieve temporally-relevant patterns.  Each stored
@@ -32097,6 +32249,26 @@ class AEONDeltaV3(nn.Module):
                 self._memory_stale = True
             self.provenance_tracker.record_after("temporal_memory", C_star)
             self.coherence_registry.register_output("temporal_memory", validated=torch.isfinite(C_star).all().item())
+            # 5c4-ii. Temporal memory freshness quality — compute the
+            # fraction of retrievals that returned non-empty results, as a
+            # continuous quality metric for the feedback bus.  Unlike the
+            # binary staleness flag above (which only fires at >50% empty),
+            # the freshness quality gives the meta-loop a graduated signal
+            # reflecting how much temporal context is available.  This
+            # closes the gap where temporal memory freshness trends were
+            # invisible to the cross-pass feedback conditioning loop.
+            _temporal_freshness = 1.0 - _temporal_empty_ratio
+            self._cached_temporal_memory_freshness = max(0.0, min(1.0, _temporal_freshness))
+            if _temporal_freshness < 0.5 and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='temporal_memory_freshness_low',
+                    strategy_used='escalate_staleness',
+                    success=False,
+                    metadata=self._provenance_enriched_metadata({
+                        'freshness': _temporal_freshness,
+                        'empty_ratio': _temporal_empty_ratio,
+                    }),
+                )
         # consolidating, and temporal memory stages.
         _memory_retrieval_quality = 1.0 - (_memory_empty_count / max(B, 1))
         self.integrity_monitor.record_health("memory", _memory_retrieval_quality if _memory_healthy else 0.0, {
@@ -33553,6 +33725,28 @@ class AEONDeltaV3(nn.Module):
                         "agreement": _agreement_val,
                     }),
                 )
+                # 5d2-persist. Cross-validation persistent disagreement —
+                # record a distinct error class when cv_disagreement
+                # exceeds the threshold on consecutive passes, enabling
+                # the error evolution tracker to detect and learn from
+                # systematic (rather than transient) factor–causal
+                # divergence.  This closes the gap where cross-validation
+                # recorded individual disagreement events but never
+                # distinguished between a one-off fluctuation and a
+                # structural misalignment.
+                _prev_cvd = getattr(self, '_prev_pass_cv_disagreement', 0.0)
+                if _prev_cvd > 0.1 and (1.0 - _agreement_val) > 0.1:
+                    self.error_evolution.record_episode(
+                        error_class="cross_validation_persistent_disagreement",
+                        strategy_used="feedback_escalation",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "agreement": _agreement_val,
+                            "prev_disagreement": _prev_cvd,
+                        }),
+                    )
+            # Track disagreement across passes for persistent detection
+            self._prev_pass_cv_disagreement = max(0.0, 1.0 - _agreement_val)
             # Tighten adaptive safety threshold when reconciliation
             # agreement is low — disagreeing modules warrant more
             # protective safety behavior.
@@ -33796,6 +33990,33 @@ class AEONDeltaV3(nn.Module):
                 # pass's meta-loop conditioning.
                 if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
                     self._cached_active_learning_curiosity = max(0.0, min(1.0, float(_al_intrinsic)))
+                    # 5e-i-ee. Curiosity exploration inefficiency — when
+                    # curiosity is high (indicating the system is in an
+                    # epistemically uncertain region) but the best_action
+                    # quality is low or missing, the exploration mechanism
+                    # is misfiring.  Record this as an error episode so
+                    # the error evolution tracker can learn from
+                    # misdirected exploration, closing the gap where
+                    # curiosity signals conditioned the planner but never
+                    # fed backward into error evolution to learn from
+                    # ineffective exploration.
+                    if float(_al_intrinsic) > 0.5 and self.error_evolution is not None:
+                        _al_action = active_learning_results.get("best_action", None)
+                        _al_action_valid = (
+                            _al_action is not None
+                            and torch.is_tensor(_al_action)
+                            and torch.isfinite(_al_action).all()
+                        )
+                        if not _al_action_valid:
+                            self.error_evolution.record_episode(
+                                error_class='curiosity_exploration_inefficiency',
+                                strategy_used='fallback_skip',
+                                success=False,
+                                metadata=self._provenance_enriched_metadata({
+                                    'curiosity': float(_al_intrinsic),
+                                    'action_valid': False,
+                                }),
+                            )
                 if isinstance(_al_intrinsic, (int, float)) and math.isfinite(_al_intrinsic):
                     if _al_intrinsic > _AL_INTRINSIC_THRESHOLD:
                         _al_boost = min(
