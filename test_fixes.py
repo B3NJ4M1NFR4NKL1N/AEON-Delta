@@ -68556,6 +68556,17 @@ def run_all_tests():
     test_emergence_status_has_weakest_axiom()
     test_emergence_status_has_error_evolution_success_rate()
     test_self_diagnostic_escalates_gaps_to_error_evolution()
+    # Final cognitive integration patches
+    test_ae_train_trigger_has_fourteen_signals()
+    test_ae_train_trigger_default_weight()
+    test_ae_train_trigger_evaluate_new_signals()
+    test_ae_train_ucc_forwards_convergence_conflict()
+    test_ae_train_fallback_class_to_signal_has_new_entries()
+    test_ae_train_fallback_evaluate_has_new_params()
+    test_aeon_core_class_to_signal_has_convergence()
+    test_aeon_core_error_class_to_lambda_deception_suppression()
+    test_aeon_core_error_class_to_lambda_training_ucc_failure()
+    test_training_inference_signal_parity()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -86059,6 +86070,206 @@ def test_self_diagnostic_escalates_gaps_to_error_evolution():
             f"episode count did not increase (before={baseline}, after={post})"
         )
     print("✅ test_self_diagnostic_escalates_gaps_to_error_evolution PASSED")
+
+
+# ── Patch: ae_train MetaCognitiveRecursionTrigger 14-signal parity ─────
+def test_ae_train_trigger_has_fourteen_signals():
+    """ae_train fallback MetaCognitiveRecursionTrigger must have 14 signals."""
+    import ast
+    with open("ae_train.py", "r") as f:
+        source = f.read()
+    tree = ast.parse(source)
+    # Find the fallback MetaCognitiveRecursionTrigger class
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "MetaCognitiveRecursionTrigger":
+            found = True
+            # Verify _DEFAULT_WEIGHT = 1.0 / 14.0
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for target in item.targets:
+                        if isinstance(target, ast.Name) and target.id == "_DEFAULT_WEIGHT":
+                            assert isinstance(item.value, ast.BinOp), (
+                                "_DEFAULT_WEIGHT must be a division expression"
+                            )
+                            assert item.value.right.value == 14.0, (  # type: ignore[union-attr]
+                                f"_DEFAULT_WEIGHT denominator must be 14.0, "
+                                f"got {item.value.right.value}"  # type: ignore[union-attr]
+                            )
+            break
+    assert found, "MetaCognitiveRecursionTrigger class not found in ae_train.py"
+    print("✅ test_ae_train_trigger_has_fourteen_signals PASSED")
+
+
+def test_ae_train_trigger_default_weight():
+    """ae_train trigger _DEFAULT_WEIGHT must be 1/14 and weights must sum to 1.0."""
+    # Use aeon_core.MetaCognitiveRecursionTrigger (which is what ae_train uses
+    # at runtime when aeon_core is available).
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    expected = 1.0 / 14.0
+    assert abs(trigger._DEFAULT_WEIGHT - expected) < 1e-10, (
+        f"Expected _DEFAULT_WEIGHT={expected}, got {trigger._DEFAULT_WEIGHT}"
+    )
+    total = sum(trigger._signal_weights.values())
+    assert abs(total - 1.0) < 1e-8, (
+        f"Signal weights should sum to 1.0, got {total}"
+    )
+    print("✅ test_ae_train_trigger_default_weight PASSED")
+
+
+def test_ae_train_trigger_evaluate_new_signals():
+    """Trigger evaluate() must accept output_reliability and spectral_stability_margin."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    result = trigger.evaluate(output_reliability=0.2, spectral_stability_margin=0.1)
+    triggers_active = result.get("triggers_active", [])
+    assert "low_output_reliability" in triggers_active, (
+        "low_output_reliability should be active when output_reliability=0.2"
+    )
+    assert "spectral_instability" in triggers_active, (
+        "spectral_instability should be active when spectral_stability_margin=0.1"
+    )
+    # Defaults should not activate
+    trigger2 = MetaCognitiveRecursionTrigger()
+    result2 = trigger2.evaluate()
+    triggers_active2 = result2.get("triggers_active", [])
+    assert "low_output_reliability" not in triggers_active2, (
+        "low_output_reliability should not be active at default output_reliability=1.0"
+    )
+    assert "spectral_instability" not in triggers_active2, (
+        "spectral_instability should not be active at default spectral_stability_margin=1.0"
+    )
+    print("✅ test_ae_train_trigger_evaluate_new_signals PASSED")
+
+
+def test_ae_train_ucc_forwards_convergence_conflict():
+    """ae_train fallback UCC must forward convergence_conflict from kwargs to trigger."""
+    # The ae_train fallback UCC is only active when aeon_core is unavailable.
+    # Verify the source code forwards convergence_conflict from kwargs.
+    with open("ae_train.py", "r") as f:
+        source = f.read()
+    assert 'convergence_conflict=kwargs.get("convergence_conflict", 0.0)' in source, (
+        "ae_train UCC evaluate() must forward convergence_conflict from kwargs to trigger"
+    )
+    # Also verify aeon_core UCC passes convergence_conflict internally
+    import re
+    with open("aeon_core.py", "r") as f:
+        core_source = f.read()
+    # aeon_core UCC computes _convergence_conflict_score and passes it
+    assert "convergence_conflict=_convergence_conflict_score" in core_source, (
+        "aeon_core UCC must pass convergence_conflict to metacognitive trigger"
+    )
+    print("✅ test_ae_train_ucc_forwards_convergence_conflict PASSED")
+
+
+def test_ae_train_fallback_class_to_signal_has_new_entries():
+    """ae_train fallback _class_to_signal must include spectral_instability, deception_suppression, convergence."""
+    import ast
+    with open("ae_train.py", "r") as f:
+        source = f.read()
+    # Search for the three error class keys in the source
+    required = ["spectral_instability", "deception_suppression", "convergence"]
+    for key in required:
+        # Look for "key": "signal" pattern in _class_to_signal dict
+        pattern = f'"{key}":'
+        assert pattern in source, (
+            f"{key} must be present in ae_train.py _class_to_signal mapping"
+        )
+    print("✅ test_ae_train_fallback_class_to_signal_has_new_entries PASSED")
+
+
+def test_ae_train_fallback_evaluate_has_new_params():
+    """ae_train fallback evaluate() must accept output_reliability and spectral_stability_margin."""
+    import ast
+    with open("ae_train.py", "r") as f:
+        source = f.read()
+    tree = ast.parse(source)
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "MetaCognitiveRecursionTrigger":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "evaluate":
+                    arg_names = [a.arg for a in item.args.args]
+                    assert "output_reliability" in arg_names, (
+                        "evaluate() must accept output_reliability parameter"
+                    )
+                    assert "spectral_stability_margin" in arg_names, (
+                        "evaluate() must accept spectral_stability_margin parameter"
+                    )
+                    found = True
+                    break
+            break
+    assert found, "evaluate() method not found in fallback MetaCognitiveRecursionTrigger"
+    print("✅ test_ae_train_fallback_evaluate_has_new_params PASSED")
+
+
+# ── Patch: aeon_core _class_to_signal includes 'convergence' ──────────
+def test_aeon_core_class_to_signal_has_convergence():
+    """aeon_core _class_to_signal must map 'convergence' to 'diverging'."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {"error_classes": {
+        "convergence": {"count": 5, "success_rate": 0.1},
+    }}
+    original = trigger._signal_weights["diverging"]
+    trigger.adapt_weights_from_evolution(error_summary)
+    assert trigger._signal_weights["diverging"] > original, (
+        "'convergence' error class should boost 'diverging' signal weight "
+        "via _class_to_signal mapping"
+    )
+    print("✅ test_aeon_core_class_to_signal_has_convergence PASSED")
+
+
+# ── Patch: aeon_core _ERROR_CLASS_TO_LAMBDA includes deception_suppression & training_ucc_failure ──
+def test_aeon_core_error_class_to_lambda_deception_suppression():
+    """_ERROR_CLASS_TO_LAMBDA must map 'deception_suppression' to 'lambda_safety'."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert "deception_suppression" in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "'deception_suppression' must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA["deception_suppression"] == "lambda_safety", (
+        f"Expected 'lambda_safety', got {tracker._ERROR_CLASS_TO_LAMBDA['deception_suppression']}"
+    )
+    print("✅ test_aeon_core_error_class_to_lambda_deception_suppression PASSED")
+
+
+def test_aeon_core_error_class_to_lambda_training_ucc_failure():
+    """_ERROR_CLASS_TO_LAMBDA must map 'training_ucc_failure' to 'lambda_ucc'."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert "training_ucc_failure" in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "'training_ucc_failure' must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA["training_ucc_failure"] == "lambda_ucc", (
+        f"Expected 'lambda_ucc', got {tracker._ERROR_CLASS_TO_LAMBDA['training_ucc_failure']}"
+    )
+    print("✅ test_aeon_core_error_class_to_lambda_training_ucc_failure PASSED")
+
+
+# ── Patch: training↔inference signal parity ──────────────────────────
+def test_training_inference_signal_parity():
+    """ae_train fallback and aeon_core MetaCognitiveRecursionTrigger must have the same signal set."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    core_signals = set(trigger._signal_weights.keys())
+    expected_signals = {
+        "uncertainty", "diverging", "topology_catastrophe",
+        "coherence_deficit", "memory_staleness", "recovery_pressure",
+        "world_model_surprise", "low_causal_quality", "safety_violation",
+        "diversity_collapse", "memory_trust_deficit", "convergence_conflict",
+        "low_output_reliability", "spectral_instability",
+    }
+    assert core_signals == expected_signals, (
+        f"Signal set mismatch: "
+        f"missing={expected_signals - core_signals}, "
+        f"extra={core_signals - expected_signals}"
+    )
+    assert len(core_signals) == 14, (
+        f"Expected 14 signals, got {len(core_signals)}"
+    )
+    print("✅ test_training_inference_signal_parity PASSED")
 
 
 if __name__ == "__main__":

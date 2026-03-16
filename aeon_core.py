@@ -16889,6 +16889,7 @@ class MetaCognitiveRecursionTrigger:
         # trigger weights, closing the loop between error evolution
         # learning and metacognitive sensitivity.
         _class_to_signal = {
+            "convergence": "diverging",
             "convergence_divergence": "diverging",
             "convergence_diverging": "diverging",
             "coherence_deficit": "coherence_deficit",
@@ -18570,6 +18571,7 @@ class CausalErrorEvolutionTracker:
         "safety_rollback": "lambda_safety",
         "safety_critic_revision": "lambda_safety",
         "deception_detected": "lambda_safety",
+        "deception_suppression": "lambda_safety",
         "deception_suppressor_failure": "lambda_safety",
         "social_cognition_misalignment": "lambda_coherence",
         "social_cognition_failure": "lambda_coherence",
@@ -19012,6 +19014,10 @@ class CausalErrorEvolutionTracker:
         # plateau without reaching threshold.  Maps to lambda_lipschitz
         # so training strengthens contraction guarantees.
         "convergence_stagnation": "lambda_lipschitz",
+        # Training UCC failure — unified cognitive cycle failed during
+        # training, maps to lambda_ucc so training strengthens the
+        # cognitive cycle integration.
+        "training_ucc_failure": "lambda_ucc",
         # Unknown — SemanticErrorClassifier fallback.  Maps to
         # lambda_self_consistency as a safe generic target.
         "unknown": "lambda_self_consistency",
