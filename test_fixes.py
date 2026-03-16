@@ -68408,6 +68408,14 @@ def run_all_tests():
     test_emergence_causal_transparency_end_to_end()
     test_feedback_bus_corrective_pressure_evaluated()
 
+    # ── Final Integration — Per-Axiom & State Transition Patches ──
+    test_per_axiom_emergence_failure_error_classes_in_class_to_signal()
+    test_per_axiom_emergence_failure_error_classes_in_lambda()
+    test_per_axiom_emergence_failure_recorded_in_forward()
+    test_emergence_state_transition_detection_in_forward()
+    test_emergence_state_transition_attribute_initialized()
+    test_emergence_state_transition_updates_after_forward()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -83962,6 +83970,142 @@ def test_feedback_bus_corrective_pressure_evaluated():
         f"got {imap.get('feedback_bus_coverage')}"
     )
     print("✅ test_feedback_bus_corrective_pressure_evaluated PASSED")
+
+
+def test_per_axiom_emergence_failure_error_classes_in_class_to_signal():
+    """Per-axiom emergence failure error classes must be present in the
+    MetaCognitiveRecursionTrigger _class_to_signal mapping so that
+    adapt_weights_from_evolution can route them to targeted signals."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    new_classes = [
+        'emergence_axiom_mv_failure',
+        'emergence_axiom_um_failure',
+        'emergence_axiom_rc_failure',
+        'emergence_state_transition',
+    ]
+    for cls in new_classes:
+        assert cls in source, (
+            f"Error class '{cls}' must be in _class_to_signal mapping "
+            f"inside adapt_weights_from_evolution"
+        )
+    print("✅ test_per_axiom_emergence_failure_error_classes_in_class_to_signal PASSED")
+
+
+def test_per_axiom_emergence_failure_error_classes_in_lambda():
+    """Per-axiom emergence failure error classes must be present in the
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA mapping so that
+    training loss adapts to specific axiom failures."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    expected = {
+        'emergence_axiom_mv_failure': 'lambda_coherence',
+        'emergence_axiom_um_failure': 'lambda_ucc',
+        'emergence_axiom_rc_failure': 'lambda_provenance',
+        'emergence_state_transition': 'lambda_coherence',
+    }
+    for cls, expected_lambda in expected.items():
+        assert cls in mapping, (
+            f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert mapping[cls] == expected_lambda, (
+            f"'{cls}' should map to '{expected_lambda}', "
+            f"got '{mapping[cls]}'"
+        )
+    print("✅ test_per_axiom_emergence_failure_error_classes_in_lambda PASSED")
+
+
+def test_per_axiom_emergence_failure_recorded_in_forward():
+    """When emergence axioms fail during a forward pass, per-axiom
+    error_evolution episodes must be recorded so the metacognitive
+    trigger can learn which specific axiom is deficient."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'emergence_axiom_mv_failure' in source, (
+        "_forward_impl must record 'emergence_axiom_mv_failure' "
+        "when mutual_verification axiom fails"
+    )
+    assert 'emergence_axiom_um_failure' in source, (
+        "_forward_impl must record 'emergence_axiom_um_failure' "
+        "when metacognitive_responsiveness axiom fails"
+    )
+    assert 'emergence_axiom_rc_failure' in source, (
+        "_forward_impl must record 'emergence_axiom_rc_failure' "
+        "when root_cause_traceability axiom fails"
+    )
+    print("✅ test_per_axiom_emergence_failure_recorded_in_forward PASSED")
+
+
+def test_emergence_state_transition_detection_in_forward():
+    """_forward_impl must detect when the emergence verdict changes
+    between forward passes and record an error_evolution episode
+    for state transition tracking."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'emergence_state_transition' in source, (
+        "_forward_impl must record 'emergence_state_transition' "
+        "when emergence verdict changes between passes"
+    )
+    assert '_last_forward_emerged' in source, (
+        "_forward_impl must track previous emergence state via "
+        "'_last_forward_emerged'"
+    )
+    assert "state_transition_" in source, (
+        "_forward_impl must record causal trace entries for "
+        "emergence state transitions"
+    )
+    print("✅ test_emergence_state_transition_detection_in_forward PASSED")
+
+
+def test_emergence_state_transition_attribute_initialized():
+    """AEONDeltaV3 must initialise _last_forward_emerged to None so
+    the first forward pass does not spuriously detect a transition."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4)
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_last_forward_emerged'), (
+        "AEONDeltaV3 must have '_last_forward_emerged' attribute"
+    )
+    assert model._last_forward_emerged is None, (
+        "_last_forward_emerged must be initialised to None"
+    )
+    print("✅ test_emergence_state_transition_attribute_initialized PASSED")
+
+
+def test_emergence_state_transition_updates_after_forward():
+    """After a forward pass, _last_forward_emerged must be updated
+    to reflect the current emergence verdict."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    assert model._last_forward_emerged is not None, (
+        "_last_forward_emerged must be set after a forward pass"
+    )
+    # The value must match the emergence_status in the result
+    assert model._last_forward_emerged == result.get(
+        'emergence_status', False
+    ), (
+        "_last_forward_emerged must match the forward pass "
+        "emergence_status"
+    )
+    print("✅ test_emergence_state_transition_updates_after_forward PASSED")
 
 
 if __name__ == "__main__":
