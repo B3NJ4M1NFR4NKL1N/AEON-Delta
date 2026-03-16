@@ -700,13 +700,13 @@ except ImportError:
     class MetaCognitiveRecursionTrigger:
         """Metacognitive trigger (fallback when aeon_core unavailable).
 
-        Monitors the same twelve signals as
+        Monitors the same fourteen signals as
         ``aeon_core.MetaCognitiveRecursionTrigger`` and uses weighted-sum
         evaluation so that standalone training can detect uncertainty,
         divergence, and coherence deficits that warrant re-reasoning.
         """
 
-        _DEFAULT_WEIGHT = 1.0 / 12.0
+        _DEFAULT_WEIGHT = 1.0 / 14.0
 
         def __init__(self, trigger_threshold: float = 0.5,
                      max_recursions: int = 2,
@@ -737,6 +737,8 @@ except ImportError:
                 "diversity_collapse": self._DEFAULT_WEIGHT,
                 "memory_trust_deficit": self._DEFAULT_WEIGHT,
                 "convergence_conflict": self._DEFAULT_WEIGHT,
+                "low_output_reliability": self._DEFAULT_WEIGHT,
+                "spectral_instability": self._DEFAULT_WEIGHT,
             }
 
         def reset(self):
@@ -754,6 +756,8 @@ except ImportError:
                      diversity_collapse: float = 0.0,
                      memory_trust_deficit: float = 0.0,
                      convergence_conflict: float = 0.0,
+                     output_reliability: float = 1.0,
+                     spectral_stability_margin: float = 1.0,
                      **kwargs) -> Dict[str, Any]:
             can_recurse = self._recursion_count < self.max_recursions
             signals: Dict[str, float] = {
@@ -773,6 +777,8 @@ except ImportError:
                 "diversity_collapse": min(max(diversity_collapse, 0.0), 1.0),
                 "memory_trust_deficit": min(max(memory_trust_deficit, 0.0), 1.0),
                 "convergence_conflict": min(max(convergence_conflict, 0.0), 1.0),
+                "low_output_reliability": min(max(1.0 - output_reliability, 0.0), 1.0),
+                "spectral_instability": min(max(1.0 - spectral_stability_margin, 0.0), 1.0),
             }
             trigger_score = sum(
                 self._signal_weights.get(k, 0.0) * v
@@ -835,7 +841,7 @@ except ImportError:
                 "convergence_conflict": "convergence_conflict",
                 "memory_reasoning_inconsistency": "memory_staleness",
                 "low_memory_trust": "memory_trust_deficit",
-                "low_output_reliability": "uncertainty",
+                "low_output_reliability": "low_output_reliability",
                 "topology_catastrophe": "topology_catastrophe",
                 "coherence_trend_degradation": "coherence_deficit",
                 "convergence_certificate_violation": "diverging",
@@ -855,6 +861,12 @@ except ImportError:
                 # Convergence stagnation — extended plateau without
                 # reaching threshold.
                 "convergence_stagnation": "coherence_deficit",
+                # Spectral instability — Hessian max-eigenvalue bifurcation.
+                "spectral_instability": "spectral_instability",
+                # Deception suppression — consistency probe diverged.
+                "deception_suppression": "safety_violation",
+                # Base convergence error class.
+                "convergence": "diverging",
                 # Unknown — SemanticErrorClassifier fallback.
                 "unknown": "uncertainty",
             }
@@ -983,6 +995,7 @@ except ImportError:
                     safety_violation=safety_violation,
                     diversity_collapse=diversity_collapse,
                     memory_trust_deficit=memory_trust_deficit,
+                    convergence_conflict=kwargs.get("convergence_conflict", 0.0),
                 )
             else:
                 _should = (is_diverging or coherence_deficit > 0.5
