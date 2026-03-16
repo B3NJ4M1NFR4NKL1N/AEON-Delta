@@ -26664,6 +26664,16 @@ class AEONDeltaV3(nn.Module):
         if self.error_evolution is not None:
             _evaluated.add("evolved_strategy_pressure")
         _evaluated.add("diagnostic_gap_pressure")
+        # Memory subsystem signals are always evaluated — backed by
+        # cached quality/freshness/retrieval metrics from the most
+        # recent forward pass.  Even when their threshold is not
+        # exceeded (healthy default), the absence of pressure IS
+        # the evaluation result.
+        _evaluated.add("consolidation_quality_deficit")
+        _evaluated.add("temporal_memory_freshness_deficit")
+        _evaluated.add("neurogenic_memory_retrieval_pressure")
+        _evaluated.add("memory_subsystem_aggregate_pressure")
+        _evaluated.add("curiosity_exploration_pressure")
         # Spectral stability margin is always evaluated — backed by the
         # cached max-eigenvalue-derived stability margin from the most
         # recent topology analysis.
