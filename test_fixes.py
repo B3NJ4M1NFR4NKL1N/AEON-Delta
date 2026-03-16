@@ -68475,6 +68475,39 @@ def run_all_tests():
     test_spectral_instability_tightens_safety_threshold()
     test_metacognitive_trigger_14_signals()
 
+    # ── Final Integration — Consolidation, Temporal Freshness,
+    #    Cross-Validation, and Curiosity Exploration Patches ──
+    test_consolidation_quality_deficit_signal_registered()
+    test_temporal_memory_freshness_deficit_signal_registered()
+    test_cross_validation_disagreement_pressure_signal_registered()
+    test_curiosity_exploration_pressure_signal_registered()
+    test_consolidation_quality_in_build_feedback_extra_signals()
+    test_temporal_freshness_in_build_feedback_extra_signals()
+    test_cv_disagreement_pressure_in_build_feedback_extra_signals()
+    test_curiosity_pressure_in_build_feedback_extra_signals()
+    test_consolidation_quality_in_feedback_signal_to_trigger()
+    test_temporal_freshness_in_feedback_signal_to_trigger()
+    test_cv_disagreement_in_feedback_signal_to_trigger()
+    test_curiosity_in_feedback_signal_to_trigger()
+    test_consolidation_quality_low_error_class_in_lambda()
+    test_temporal_freshness_low_error_class_in_lambda()
+    test_cv_persistent_disagreement_error_class_in_lambda()
+    test_curiosity_inefficiency_error_class_in_lambda()
+    test_cached_consolidation_quality_initialized()
+    test_cached_temporal_memory_freshness_initialized()
+    test_prev_pass_cv_disagreement_initialized()
+    test_consolidation_quality_cached_after_forward()
+    test_temporal_freshness_cached_after_forward()
+    test_consolidation_quality_in_reasoning_core()
+    test_temporal_freshness_in_reasoning_core()
+    test_cv_persistent_disagreement_in_reasoning_core()
+    test_curiosity_exploration_inefficiency_in_reasoning_core()
+    test_cross_validation_metacognitive_trigger_dag_edge()
+    test_consolidation_quality_low_in_class_to_signal()
+    test_temporal_freshness_low_in_class_to_signal()
+    test_cv_persistent_disagreement_in_class_to_signal()
+    test_curiosity_inefficiency_in_class_to_signal()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -84874,6 +84907,443 @@ def test_metacognitive_trigger_14_signals():
         f"Extra signals: {actual_signals - expected_signals}"
     )
     print("✅ test_metacognitive_trigger_14_signals PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION — Consolidation, Temporal Freshness, Cross-Validation,
+#  and Curiosity Exploration Feedback Loop Patches
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_consolidation_quality_deficit_signal_registered():
+    """CognitiveFeedbackBus must have consolidation_quality_deficit registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'consolidation_quality_deficit' in model.feedback_bus._extra_signals, (
+        "consolidation_quality_deficit must be registered in CognitiveFeedbackBus"
+    )
+    print("✅ test_consolidation_quality_deficit_signal_registered PASSED")
+
+
+def test_temporal_memory_freshness_deficit_signal_registered():
+    """CognitiveFeedbackBus must have temporal_memory_freshness_deficit registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'temporal_memory_freshness_deficit' in model.feedback_bus._extra_signals, (
+        "temporal_memory_freshness_deficit must be registered in "
+        "CognitiveFeedbackBus"
+    )
+    print("✅ test_temporal_memory_freshness_deficit_signal_registered PASSED")
+
+
+def test_cross_validation_disagreement_pressure_signal_registered():
+    """CognitiveFeedbackBus must have cross_validation_disagreement_pressure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'cross_validation_disagreement_pressure' in model.feedback_bus._extra_signals, (
+        "cross_validation_disagreement_pressure must be registered in "
+        "CognitiveFeedbackBus"
+    )
+    print("✅ test_cross_validation_disagreement_pressure_signal_registered PASSED")
+
+
+def test_curiosity_exploration_pressure_signal_registered():
+    """CognitiveFeedbackBus must have curiosity_exploration_pressure registered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'curiosity_exploration_pressure' in model.feedback_bus._extra_signals, (
+        "curiosity_exploration_pressure must be registered in "
+        "CognitiveFeedbackBus"
+    )
+    print("✅ test_curiosity_exploration_pressure_signal_registered PASSED")
+
+
+def test_consolidation_quality_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must include consolidation_quality_deficit."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'consolidation_quality_deficit' in source, (
+        "_build_feedback_extra_signals must include "
+        "consolidation_quality_deficit signal"
+    )
+    print("✅ test_consolidation_quality_in_build_feedback_extra_signals PASSED")
+
+
+def test_temporal_freshness_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must include temporal_memory_freshness_deficit."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'temporal_memory_freshness_deficit' in source, (
+        "_build_feedback_extra_signals must include "
+        "temporal_memory_freshness_deficit signal"
+    )
+    print("✅ test_temporal_freshness_in_build_feedback_extra_signals PASSED")
+
+
+def test_cv_disagreement_pressure_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must include cross_validation_disagreement_pressure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'cross_validation_disagreement_pressure' in source, (
+        "_build_feedback_extra_signals must include "
+        "cross_validation_disagreement_pressure signal"
+    )
+    print("✅ test_cv_disagreement_pressure_in_build_feedback_extra_signals PASSED")
+
+
+def test_curiosity_pressure_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must include curiosity_exploration_pressure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'curiosity_exploration_pressure' in source, (
+        "_build_feedback_extra_signals must include "
+        "curiosity_exploration_pressure signal"
+    )
+    print("✅ test_curiosity_pressure_in_build_feedback_extra_signals PASSED")
+
+
+def test_consolidation_quality_in_feedback_signal_to_trigger():
+    """consolidation_quality_deficit must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'consolidation_quality_deficit' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "consolidation_quality_deficit must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['consolidation_quality_deficit'] == 'memory_staleness', (
+        "consolidation_quality_deficit should map to memory_staleness"
+    )
+    print("✅ test_consolidation_quality_in_feedback_signal_to_trigger PASSED")
+
+
+def test_temporal_freshness_in_feedback_signal_to_trigger():
+    """temporal_memory_freshness_deficit must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'temporal_memory_freshness_deficit' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "temporal_memory_freshness_deficit must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['temporal_memory_freshness_deficit'] == 'memory_staleness', (
+        "temporal_memory_freshness_deficit should map to memory_staleness"
+    )
+    print("✅ test_temporal_freshness_in_feedback_signal_to_trigger PASSED")
+
+
+def test_cv_disagreement_in_feedback_signal_to_trigger():
+    """cross_validation_disagreement_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'cross_validation_disagreement_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "cross_validation_disagreement_pressure must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['cross_validation_disagreement_pressure'] == 'coherence_deficit', (
+        "cross_validation_disagreement_pressure should map to coherence_deficit"
+    )
+    print("✅ test_cv_disagreement_in_feedback_signal_to_trigger PASSED")
+
+
+def test_curiosity_in_feedback_signal_to_trigger():
+    """curiosity_exploration_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'curiosity_exploration_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "curiosity_exploration_pressure must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['curiosity_exploration_pressure'] == 'uncertainty', (
+        "curiosity_exploration_pressure should map to uncertainty"
+    )
+    print("✅ test_curiosity_in_feedback_signal_to_trigger PASSED")
+
+
+def test_consolidation_quality_low_error_class_in_lambda():
+    """consolidation_quality_low must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert 'consolidation_quality_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "consolidation_quality_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA['consolidation_quality_low'] == 'lambda_memory_retrieval', (
+        "consolidation_quality_low should map to lambda_memory_retrieval"
+    )
+    print("✅ test_consolidation_quality_low_error_class_in_lambda PASSED")
+
+
+def test_temporal_freshness_low_error_class_in_lambda():
+    """temporal_memory_freshness_low must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert 'temporal_memory_freshness_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "temporal_memory_freshness_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA['temporal_memory_freshness_low'] == 'lambda_memory_staleness', (
+        "temporal_memory_freshness_low should map to lambda_memory_staleness"
+    )
+    print("✅ test_temporal_freshness_low_error_class_in_lambda PASSED")
+
+
+def test_cv_persistent_disagreement_error_class_in_lambda():
+    """cross_validation_persistent_disagreement must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert 'cross_validation_persistent_disagreement' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "cross_validation_persistent_disagreement must be mapped in "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA['cross_validation_persistent_disagreement'] == 'lambda_cross_validation', (
+        "cross_validation_persistent_disagreement should map to "
+        "lambda_cross_validation"
+    )
+    print("✅ test_cv_persistent_disagreement_error_class_in_lambda PASSED")
+
+
+def test_curiosity_inefficiency_error_class_in_lambda():
+    """curiosity_exploration_inefficiency must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert 'curiosity_exploration_inefficiency' in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "curiosity_exploration_inefficiency must be mapped in "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    assert tracker._ERROR_CLASS_TO_LAMBDA['curiosity_exploration_inefficiency'] == 'lambda_ucc', (
+        "curiosity_exploration_inefficiency should map to lambda_ucc"
+    )
+    print("✅ test_curiosity_inefficiency_error_class_in_lambda PASSED")
+
+
+def test_cached_consolidation_quality_initialized():
+    """AEONDeltaV3 must have _cached_consolidation_quality initialized to 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_consolidation_quality'), (
+        "AEONDeltaV3 must have _cached_consolidation_quality attribute"
+    )
+    assert model._cached_consolidation_quality == 1.0, (
+        f"Initial consolidation quality should be 1.0, "
+        f"got {model._cached_consolidation_quality}"
+    )
+    print("✅ test_cached_consolidation_quality_initialized PASSED")
+
+
+def test_cached_temporal_memory_freshness_initialized():
+    """AEONDeltaV3 must have _cached_temporal_memory_freshness initialized to 1.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_temporal_memory_freshness'), (
+        "AEONDeltaV3 must have _cached_temporal_memory_freshness attribute"
+    )
+    assert model._cached_temporal_memory_freshness == 1.0, (
+        f"Initial temporal memory freshness should be 1.0, "
+        f"got {model._cached_temporal_memory_freshness}"
+    )
+    print("✅ test_cached_temporal_memory_freshness_initialized PASSED")
+
+
+def test_prev_pass_cv_disagreement_initialized():
+    """AEONDeltaV3 must have _prev_pass_cv_disagreement initialized to 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_prev_pass_cv_disagreement'), (
+        "AEONDeltaV3 must have _prev_pass_cv_disagreement attribute"
+    )
+    assert model._prev_pass_cv_disagreement == 0.0, (
+        f"Initial prev_pass_cv_disagreement should be 0.0, "
+        f"got {model._prev_pass_cv_disagreement}"
+    )
+    print("✅ test_prev_pass_cv_disagreement_initialized PASSED")
+
+
+def test_consolidation_quality_cached_after_forward():
+    """Forward pass must update _cached_consolidation_quality."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(tokens)
+    # After forward, consolidation quality should have been updated
+    q = model._cached_consolidation_quality
+    assert isinstance(q, float), (
+        f"_cached_consolidation_quality must be float, got {type(q)}"
+    )
+    assert 0.0 <= q <= 1.0, (
+        f"_cached_consolidation_quality must be in [0, 1], got {q}"
+    )
+    print("✅ test_consolidation_quality_cached_after_forward PASSED")
+
+
+def test_temporal_freshness_cached_after_forward():
+    """Forward pass must update _cached_temporal_memory_freshness."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(tokens)
+    f = model._cached_temporal_memory_freshness
+    assert isinstance(f, float), (
+        f"_cached_temporal_memory_freshness must be float, got {type(f)}"
+    )
+    assert 0.0 <= f <= 1.0, (
+        f"_cached_temporal_memory_freshness must be in [0, 1], got {f}"
+    )
+    print("✅ test_temporal_freshness_cached_after_forward PASSED")
+
+
+def test_consolidation_quality_in_reasoning_core():
+    """_reasoning_core_impl must compute and cache consolidation quality."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_cached_consolidation_quality' in source, (
+        "_reasoning_core_impl must cache consolidation quality"
+    )
+    assert 'consolidation_quality_low' in source, (
+        "_reasoning_core_impl must record consolidation_quality_low in "
+        "error_evolution"
+    )
+    print("✅ test_consolidation_quality_in_reasoning_core PASSED")
+
+
+def test_temporal_freshness_in_reasoning_core():
+    """_reasoning_core_impl must compute and cache temporal memory freshness."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_cached_temporal_memory_freshness' in source, (
+        "_reasoning_core_impl must cache temporal memory freshness"
+    )
+    assert 'temporal_memory_freshness_low' in source, (
+        "_reasoning_core_impl must record temporal_memory_freshness_low in "
+        "error_evolution"
+    )
+    print("✅ test_temporal_freshness_in_reasoning_core PASSED")
+
+
+def test_cv_persistent_disagreement_in_reasoning_core():
+    """_reasoning_core_impl must detect and record persistent cross-validation disagreement."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'cross_validation_persistent_disagreement' in source, (
+        "_reasoning_core_impl must record "
+        "cross_validation_persistent_disagreement in error_evolution"
+    )
+    assert '_prev_pass_cv_disagreement' in source, (
+        "_reasoning_core_impl must track previous pass cross-validation "
+        "disagreement for persistent detection"
+    )
+    print("✅ test_cv_persistent_disagreement_in_reasoning_core PASSED")
+
+
+def test_curiosity_exploration_inefficiency_in_reasoning_core():
+    """_reasoning_core_impl must record curiosity exploration inefficiency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'curiosity_exploration_inefficiency' in source, (
+        "_reasoning_core_impl must record curiosity_exploration_inefficiency "
+        "in error_evolution"
+    )
+    print("✅ test_curiosity_exploration_inefficiency_in_reasoning_core PASSED")
+
+
+def test_cross_validation_metacognitive_trigger_dag_edge():
+    """_PIPELINE_DEPENDENCIES must include cross_validation → metacognitive_trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3)
+    assert '("cross_validation", "metacognitive_trigger")' in source, (
+        "_PIPELINE_DEPENDENCIES must include cross_validation → "
+        "metacognitive_trigger edge"
+    )
+    print("✅ test_cross_validation_metacognitive_trigger_dag_edge PASSED")
+
+
+def test_consolidation_quality_low_in_class_to_signal():
+    """consolidation_quality_low error class must be in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert '"consolidation_quality_low"' in source, (
+        "consolidation_quality_low must be mapped in "
+        "adapt_weights_from_evolution _class_to_signal"
+    )
+    print("✅ test_consolidation_quality_low_in_class_to_signal PASSED")
+
+
+def test_temporal_freshness_low_in_class_to_signal():
+    """temporal_memory_freshness_low error class must be in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert '"temporal_memory_freshness_low"' in source, (
+        "temporal_memory_freshness_low must be mapped in "
+        "adapt_weights_from_evolution _class_to_signal"
+    )
+    print("✅ test_temporal_freshness_low_in_class_to_signal PASSED")
+
+
+def test_cv_persistent_disagreement_in_class_to_signal():
+    """cross_validation_persistent_disagreement must be in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert '"cross_validation_persistent_disagreement"' in source, (
+        "cross_validation_persistent_disagreement must be mapped in "
+        "adapt_weights_from_evolution _class_to_signal"
+    )
+    print("✅ test_cv_persistent_disagreement_in_class_to_signal PASSED")
+
+
+def test_curiosity_inefficiency_in_class_to_signal():
+    """curiosity_exploration_inefficiency must be in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert '"curiosity_exploration_inefficiency"' in source, (
+        "curiosity_exploration_inefficiency must be mapped in "
+        "adapt_weights_from_evolution _class_to_signal"
+    )
+    print("✅ test_curiosity_inefficiency_in_class_to_signal PASSED")
 
 
 if __name__ == "__main__":
