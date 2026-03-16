@@ -14662,7 +14662,17 @@ class TemporalKnowledgeGraph:
     In-memory temporal knowledge graph that stores soft facts with
     timestamps and confidence scores.  Supports retrieval of the
     most-relevant entries via cosine similarity.
+
+    Facts undergo age-based confidence decay so that older knowledge
+    has progressively less influence on retrieval scoring.  This
+    enables mutual reinforcement: newer, more relevant facts naturally
+    supersede stale ones without requiring explicit eviction.
     """
+
+    # Per-step multiplicative decay applied to fact confidence during
+    # retrieval.  A value of 0.995 means a fact loses ~50% confidence
+    # after ~139 steps, balancing recency bias with long-term retention.
+    _CONFIDENCE_DECAY: float = 0.995
 
     def __init__(self, capacity: int = 1000):
         self.capacity = capacity
@@ -14695,6 +14705,10 @@ class TemporalKnowledgeGraph:
             # Snapshot under lock to prevent concurrent modification
             store_snapshot = list(self._store)
         query_flat = query.detach().cpu().flatten()
+        # Current logical time for age-based confidence decay.
+        current_time = max(
+            (e["timestamp"] for e in store_snapshot), default=0,
+        )
         scored = []
         for entry in store_snapshot:
             stored = entry["facts"].flatten()
@@ -14704,11 +14718,27 @@ class TemporalKnowledgeGraph:
                 query_flat[:min_len].unsqueeze(0),
                 dim=-1,
             ).item()
-            scored.append((sim * entry["confidence"], entry["facts"]))
+            # Age-weighted confidence: older facts decay toward zero,
+            # ensuring mutual reinforcement favours recent knowledge.
+            age = max(0, current_time - entry["timestamp"])
+            effective_confidence = entry["confidence"] * (
+                self._CONFIDENCE_DECAY ** age
+            )
+            scored.append((sim * effective_confidence, entry["facts"]))
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[: min(top_k, len(scored))]
         avg = torch.stack([t for _, t in top]).mean(dim=0)
         return avg.to(query.device)
+
+    @property
+    def mean_fact_age(self) -> float:
+        """Average age of stored facts relative to the newest entry."""
+        with self._lock:
+            if not self._store:
+                return 0.0
+            current_time = max(e["timestamp"] for e in self._store)
+            ages = [current_time - e["timestamp"] for e in self._store]
+            return sum(ages) / len(ages)
 
     def __len__(self) -> int:
         return len(self._store)
@@ -17780,6 +17810,7 @@ class MetaCognitiveRecursionTrigger:
         "coverage_deficit_pressure": "coherence_deficit",
         "weakest_coherence_pair_pressure": "coherence_deficit",
         "metacognitive_gap": "uncertainty",
+        "tkg_staleness_pressure": "memory_staleness",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -23939,6 +23970,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "memory_subsystem_aggregate_pressure", default=0.0,
         )
+        # TKG staleness — when the mean age of facts in the
+        # TemporalKnowledgeGraph is high, the knowledge base is
+        # dominated by stale entries.  Route through the feedback bus
+        # so the meta-loop conditions deeper reasoning when knowledge
+        # is outdated, enabling mutual reinforcement between the TKG
+        # and the metacognitive cycle.
+        self.feedback_bus.register_signal(
+            "tkg_staleness_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -26868,6 +26908,22 @@ class AEONDeltaV3(nn.Module):
         extra["spectral_stability_margin"] = max(
             0.0, min(1.0, self._cached_spectral_stability_margin),
         )
+        # TKG staleness pressure — when the TemporalKnowledgeGraph
+        # contains predominantly old facts, retrieval confidence is
+        # weakened by the age-based decay.  Expose the mean fact age
+        # as a normalised pressure so the metacognitive trigger can
+        # deepen reasoning when knowledge-graph-augmented conclusions
+        # rely on stale evidence.  Normalised to [0, 1] via a
+        # saturation constant of 100 steps (mean_age/100 ≈ 1.0 when
+        # facts are very old).
+        _tkg = getattr(self, 'hybrid_reasoning', None)
+        if _tkg is not None:
+            _inner_tkg = getattr(_tkg, 'knowledge_graph', None)
+            if _inner_tkg is not None and len(_inner_tkg) > 0:
+                _mean_age = _inner_tkg.mean_fact_age
+                extra["tkg_staleness_pressure"] = max(
+                    0.0, min(1.0, _mean_age / 100.0),
+                )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -40453,6 +40509,17 @@ class AEONDeltaV3(nn.Module):
         # _cached_reinforce_weakness).
         self._cached_surprise = 0.0
         self._cached_coherence_deficit = 0.0
+        # Reset cross-pass boolean flags to prevent state pollution.
+        # These are set during the reasoning core (lines 30200, 37403,
+        # 37931) but if an exception prevents reaching those write
+        # points, the previous pass's value persists — causing the
+        # feedback bus to inject stale safety/trace/cert pressure
+        # signals.  Resetting here ensures mutual reinforcement: each
+        # pass starts with a clean slate and re-derives these flags
+        # from current-pass evidence.
+        self._cached_safety_violation = False
+        self._cached_trace_incomplete = False
+        self._cached_cert_violated = False
         if self.causal_trace is not None:
             self.causal_trace.record(
                 "forward_impl",
@@ -40461,6 +40528,9 @@ class AEONDeltaV3(nn.Module):
                     'reset_fields': [
                         '_cached_surprise',
                         '_cached_coherence_deficit',
+                        '_cached_safety_violation',
+                        '_cached_trace_incomplete',
+                        '_cached_cert_violated',
                     ],
                 },
             )
@@ -43216,6 +43286,29 @@ class AEONDeltaV3(nn.Module):
                     'signals': _post_pipeline_signals,
                     'trigger_count': _post_eval.get('trigger_count', 0),
                 }
+                # ── Post-pipeline uncertainty escalation ──────────────
+                # When the post-pipeline metacognitive evaluation fires
+                # should_recurse=True, the system has detected that the
+                # output requires higher-order review.  Escalate the
+                # result's uncertainty so that downstream consumers
+                # receive an honest confidence signal rather than a
+                # stale pre-evaluation value.  This closes the gap
+                # where detection occurred without action: triggered
+                # evaluations were recorded but never influenced the
+                # output uncertainty, violating the requirement that
+                # any internal conflict initiates corrective action.
+                if _post_eval.get('should_recurse', False):
+                    _esc_boost = min(
+                        1.0 - result.get('uncertainty', 0.0), 0.15,
+                    )
+                    if _esc_boost > 0:
+                        result['uncertainty'] = min(
+                            1.0,
+                            result.get('uncertainty', 0.0) + _esc_boost,
+                        )
+                    result['post_pipeline_metacognitive_evaluation'][
+                        'uncertainty_escalation'
+                    ] = _esc_boost
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_trigger",
