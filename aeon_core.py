@@ -9128,6 +9128,124 @@ class FastHessianComputer:
             t.device.type
         ))
     
+    def estimate_max_eigenvalue(
+        self,
+        func: callable,
+        x: torch.Tensor,
+        num_iterations: int = 10,
+    ) -> torch.Tensor:
+        """Estimate λ_max of the local Hessian via power iteration.
+
+        Uses iterative power iteration on the symmetrised Hessian to
+        estimate the maximum eigenvalue without full eigendecomposition.
+        This is O(k·n) per batch element (k = *num_iterations*, n = dim)
+        versus O(n³) for full decomposition, making it suitable for
+        runtime spectral monitoring in the forward pass.
+
+        The spectral stability margin is defined as ``-λ_max`` when
+        ``λ_max < 0`` (stable regime).  As ``λ_max → 0⁻`` the system
+        approaches a bifurcation point; ``λ_max ≥ 0`` indicates
+        instability.  This signal enables preemptive meta-cognitive
+        intervention *before* the residual norm explodes.
+
+        Mathematical justification (Banach Fixed-Point Theorem):
+        Contraction of the meta-loop operator ``T`` requires its
+        Lipschitz constant ``L = sup ‖DT‖ < 1``.  The operator norm
+        ``‖DT‖`` equals the spectral radius ``|λ_max|`` of the
+        Jacobian.  Monitoring ``λ_max`` therefore directly tracks the
+        contraction guarantee: as ``|λ_max| → 1`` the fixed-point
+        iteration converges arbitrarily slowly, and at ``|λ_max| ≥ 1``
+        convergence is lost.
+
+        Args:
+            func: Scalar function f: R^n → R (batch-aware).
+            x: Input ``[B, n]``.
+            num_iterations: Number of power iteration steps.
+
+        Returns:
+            Tensor ``[B]`` of estimated maximum eigenvalues.
+        """
+        B, n = x.shape
+        device = x.device
+        eps = self.epsilon
+
+        # Random initial vector for power iteration
+        v = torch.randn(B, n, device=device, dtype=x.dtype)
+        v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)
+
+        with torch.no_grad():
+            f_base = func(x)
+            if f_base.dim() > 1:
+                f_base = f_base.squeeze(-1)
+
+            for _ in range(num_iterations):
+                # Compute H @ v via finite-difference Hessian-vector product:
+                # H v ≈ (∇f(x + ε·v) − ∇f(x)) / ε
+                # where ∇f is estimated via forward differences.
+                x_plus_v = x + eps * v
+                x_minus_v = x - eps * v
+
+                f_plus = func(x_plus_v)
+                f_minus = func(x_minus_v)
+                if f_plus.dim() > 1:
+                    f_plus = f_plus.squeeze(-1)
+                if f_minus.dim() > 1:
+                    f_minus = f_minus.squeeze(-1)
+
+                # Approximate gradient at x and at x + ε·v
+                # via central differences along v
+                # Hv ≈ (∇f(x + εv) - ∇f(x - εv)) / (2ε)
+                # But since we only have scalar f, we use the directional
+                # second derivative: v^T H v ≈ (f(x+εv) - 2f(x) + f(x-εv))/ε²
+                # For the full Hv product, use per-dimension finite diffs:
+                Hv = torch.zeros_like(v)
+                for i in range(n):
+                    e_i = torch.zeros_like(x)
+                    e_i[:, i] = eps
+                    # (f(x + εv + εe_i) - f(x + εv) - f(x + εe_i) + f(x)) / ε²
+                    f_pv_pe = func(x_plus_v + e_i)
+                    f_pe = func(x + e_i)
+                    if f_pv_pe.dim() > 1:
+                        f_pv_pe = f_pv_pe.squeeze(-1)
+                    if f_pe.dim() > 1:
+                        f_pe = f_pe.squeeze(-1)
+                    Hv[:, i] = (f_pv_pe - f_plus - f_pe + f_base) / (eps * eps)
+
+                # Sanitize non-finite values
+                Hv = torch.where(torch.isfinite(Hv), Hv, torch.zeros_like(Hv))
+
+                # Normalise for next iteration
+                Hv_norm = Hv.norm(dim=-1, keepdim=True) + 1e-8
+                v = Hv / Hv_norm
+
+            # Rayleigh quotient: λ_max ≈ v^T H v
+            # Recompute Hv one last time for the estimate
+            Hv_final = torch.zeros_like(v)
+            x_plus_v = x + eps * v
+            f_plus = func(x_plus_v)
+            if f_plus.dim() > 1:
+                f_plus = f_plus.squeeze(-1)
+            for i in range(n):
+                e_i = torch.zeros_like(x)
+                e_i[:, i] = eps
+                f_pv_pe = func(x_plus_v + e_i)
+                f_pe = func(x + e_i)
+                if f_pv_pe.dim() > 1:
+                    f_pv_pe = f_pv_pe.squeeze(-1)
+                if f_pe.dim() > 1:
+                    f_pe = f_pe.squeeze(-1)
+                Hv_final[:, i] = (f_pv_pe - f_plus - f_pe + f_base) / (eps * eps)
+
+            Hv_final = torch.where(
+                torch.isfinite(Hv_final), Hv_final, torch.zeros_like(Hv_final),
+            )
+            lambda_max = (v * Hv_final).sum(dim=-1)
+            lambda_max = torch.where(
+                torch.isfinite(lambda_max), lambda_max, torch.zeros_like(lambda_max),
+            )
+
+        return lambda_max
+
     def clear_cache(self):
         """Clear cache."""
         if self._cache is not None:
@@ -9181,7 +9299,8 @@ class OptimizedTopologyAnalyzer(nn.Module):
         Topological analysis with efficient Hessian.
         
         Returns:
-            Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics
+            Dict with potential, gradient, hessian, eigenvalues, catastrophe metrics,
+            and spectral_stability_margin for bifurcation detection.
         """
         B, P = factors.shape
         device = factors.device
@@ -9212,6 +9331,18 @@ class OptimizedTopologyAnalyzer(nn.Module):
         min_eigenvalue = eigenvalues[:, 0]
         grad_norm = gradient.norm(dim=-1)
         
+        # Spectral stability margin: max eigenvalue of the Hessian.
+        # Negative λ_max indicates stable (concave) potential landscape;
+        # as λ_max → 0⁻ the system approaches a bifurcation point.
+        # λ_max ≥ 0 indicates instability (convex direction exists).
+        # The margin is clamped to [-1, 1] for signal normalization.
+        max_eigenvalue = eigenvalues[:, -1]  # eigvalsh returns sorted ascending
+        # spectral_stability_margin ∈ [0, 1]: 1.0 = deeply stable,
+        # 0.0 = at or past bifurcation boundary.
+        # Mapping: margin = clamp(-λ_max, 0, 1) — when λ_max < -1
+        # we are deeply stable (margin=1), at λ_max=0 margin=0.
+        spectral_stability_margin = torch.clamp(-max_eigenvalue, 0.0, 1.0)
+        
         # Features
         features = torch.cat([
             factors,
@@ -9231,6 +9362,8 @@ class OptimizedTopologyAnalyzer(nn.Module):
             'catastrophe_probs': catastrophe_probs,
             'catastrophes': catastrophes,
             'min_eigenvalue': min_eigenvalue,
+            'max_eigenvalue': max_eigenvalue,
+            'spectral_stability_margin': spectral_stability_margin,
             'curvature': eigenvalues.abs().mean(dim=-1)
         }
 
@@ -16566,7 +16699,7 @@ class SubsystemHealthGate(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors thirteen independent signals:
+    Monitors fourteen independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -16604,6 +16737,12 @@ class MetaCognitiveRecursionTrigger:
         cannot be trusted.  This closes the gap where output
         reliability was tracked in the DirectionalUncertaintyTracker
         but never directly triggered re-reasoning.
+    14. ``spectral_instability`` — proximity to bifurcation boundary
+        detected via Hessian max-eigenvalue monitoring.  Low spectral
+        stability margin (λ_max → 0⁻) indicates the system is
+        approaching a stability boundary where convergence guarantees
+        weaken, enabling preemptive meta-cognitive intervention
+        *before* the residual norm explodes.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -16624,8 +16763,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (13 signals × 1/13 ≈ 0.077 each)
-    _DEFAULT_WEIGHT = 1.0 / 13.0
+    # Default per-signal weight (14 signals × 1/14 ≈ 0.071 each)
+    _DEFAULT_WEIGHT = 1.0 / 14.0
 
     def __init__(
         self,
@@ -16669,6 +16808,7 @@ class MetaCognitiveRecursionTrigger:
             "memory_trust_deficit": self._DEFAULT_WEIGHT,
             "convergence_conflict": self._DEFAULT_WEIGHT,
             "low_output_reliability": self._DEFAULT_WEIGHT,
+            "spectral_instability": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
         # Cross-pass trigger score EMA — accumulates near-threshold
@@ -16948,6 +17088,11 @@ class MetaCognitiveRecursionTrigger:
             # degraded global health, indicating multiple subsystems
             # are simultaneously underperforming.
             "low_global_integrity": "uncertainty",
+            # Spectral instability — the Hessian max-eigenvalue monitor
+            # detected proximity to a bifurcation boundary.  Maps to
+            # the dedicated spectral_instability signal for targeted
+            # metacognitive weight adaptation.
+            "spectral_instability": "spectral_instability",
             # Chronic circuit breaker — a subsystem has tripped the
             # circuit breaker across multiple consecutive forward
             # passes, indicating persistent subsystem failure.
@@ -17570,6 +17715,7 @@ class MetaCognitiveRecursionTrigger:
         "memory_trust_deficit": "memory_trust_deficit",
         "evolved_strategy_pressure": "uncertainty",
         "diagnostic_gap_pressure": "coherence_deficit",
+        "spectral_stability_margin": "diverging",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -17641,6 +17787,7 @@ class MetaCognitiveRecursionTrigger:
         memory_trust_deficit: float = 0.0,
         convergence_conflict: float = 0.0,
         output_reliability: float = 1.0,
+        spectral_stability_margin: float = 1.0,
         provenance_attribution: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
@@ -17690,6 +17837,12 @@ class MetaCognitiveRecursionTrigger:
                 auto-critic quality, convergence rate, and coherence.
                 Low values (< 0.5) indicate untrustworthy output that
                 should trigger deeper re-reasoning.
+            spectral_stability_margin: Scalar ∈ [0, 1] representing
+                distance from bifurcation boundary, derived from the
+                Hessian's max eigenvalue.  1.0 = deeply stable (λ_max
+                well below 0); 0.0 = at or past bifurcation (λ_max ≥ 0).
+                Low values preemptively tighten Lipschitz constraints
+                and increase meta-loop iterations to prevent divergence.
             provenance_attribution: Optional output of
                 ``CausalProvenanceTracker.compute_attribution()``.  When
                 provided, the result includes ``dominant_module`` — the
@@ -17764,6 +17917,7 @@ class MetaCognitiveRecursionTrigger:
             "memory_trust_deficit": w.get("memory_trust_deficit", 0.0) * max(0.0, min(1.0, memory_trust_deficit)),
             "convergence_conflict": w.get("convergence_conflict", 0.0) * max(0.0, min(1.0, convergence_conflict)),
             "low_output_reliability": w.get("low_output_reliability", 0.0) * max(0.0, min(1.0, 1.0 - output_reliability)),
+            "spectral_instability": w.get("spectral_instability", 0.0) * max(0.0, min(1.0, 1.0 - spectral_stability_margin)),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -18415,6 +18569,11 @@ class CausalErrorEvolutionTracker:
         # global health.  Maps to lambda_ucc so training adapts to
         # systemic subsystem degradation.
         "low_global_integrity": "lambda_ucc",
+        # Spectral instability — the Hessian max-eigenvalue monitor
+        # detected proximity to a bifurcation boundary.  Maps to
+        # lambda_lipschitz so training strengthens contraction guarantees
+        # when the system repeatedly approaches stability boundaries.
+        "spectral_instability": "lambda_lipschitz",
         # Cognitive unity violation — the system's own assessment of
         # AGI coherence (mutual verification, metacognitive responsiveness,
         # root-cause traceability) fell below acceptable thresholds.
@@ -23639,6 +23798,17 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "diagnostic_gap_pressure", default=0.0,
         )
+        # Spectral stability margin — carries the Hessian max-eigenvalue-
+        # derived stability margin from the topology analyzer into the
+        # feedback bus.  A low margin (λ_max → 0⁻) indicates proximity
+        # to a bifurcation point, enabling the meta-loop to preemptively
+        # tighten Lipschitz constraints and increase iterations *before*
+        # the residual norm diverges.  This converts the system from
+        # reactive (post-factum divergence correction) to proactive
+        # (predictive spectral monitoring).
+        self.feedback_bus.register_signal(
+            "spectral_stability_margin", default=1.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -24690,6 +24860,11 @@ class AEONDeltaV3(nn.Module):
         # Topology analysis output — cached so verify_coherence can
         # detect loss-landscape instability divergence.
         self._cached_topology_state: Optional[torch.Tensor] = None
+        # Spectral stability margin — cached from the topology analyzer's
+        # max eigenvalue so _build_feedback_extra_signals() can feed it
+        # into the CognitiveFeedbackBus.  A margin of 1.0 means deeply
+        # stable; 0.0 means at or past bifurcation.
+        self._cached_spectral_stability_margin: float = 1.0
         # Forward-pass counter at which the topology/complexity caches
         # were last populated.  Used by _build_feedback_extra_signals()
         # to dampen stale signals: if the current forward-pass counter
@@ -26324,6 +26499,10 @@ class AEONDeltaV3(nn.Module):
         if self.error_evolution is not None:
             _evaluated.add("evolved_strategy_pressure")
         _evaluated.add("diagnostic_gap_pressure")
+        # Spectral stability margin is always evaluated — backed by the
+        # cached max-eigenvalue-derived stability margin from the most
+        # recent topology analysis.
+        _evaluated.add("spectral_stability_margin")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -26431,6 +26610,16 @@ class AEONDeltaV3(nn.Module):
             extra["diagnostic_gap_pressure"] = max(
                 0.0, min(1.0, _diag_gaps / 10.0),
             )
+        # Spectral stability margin — feed the cached Hessian max-eigenvalue-
+        # derived stability margin into the feedback bus.  The signal value
+        # is the margin itself (1.0 = stable, 0.0 = at bifurcation), so the
+        # feedback bus projection can condition the meta-loop to preemptively
+        # tighten convergence when the margin is low.  The adapt_weights call
+        # below uses the inverted value (1 - margin) as pressure, which the
+        # _FEEDBACK_SIGNAL_TO_TRIGGER mapping routes to "diverging".
+        extra["spectral_stability_margin"] = max(
+            0.0, min(1.0, self._cached_spectral_stability_margin),
+        )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -29111,6 +29300,21 @@ class AEONDeltaV3(nn.Module):
         if _topo_t is not None and isinstance(_topo_t, torch.Tensor):
             self._cached_topology_state = _topo_t.float().detach()
             self._cached_topology_pass = int(self._total_forward_calls.item())
+        # Cache spectral stability margin from topology eigenvalues.
+        # The margin is the batch-mean of per-sample margins.
+        _ssm_t = topo_results.get('spectral_stability_margin')
+        if _ssm_t is not None and isinstance(_ssm_t, torch.Tensor):
+            self._cached_spectral_stability_margin = float(
+                _ssm_t.mean().item()
+            )
+        # Record spectral health in SystemIntegrityMonitor so that
+        # spectral proximity to bifurcation is tracked alongside
+        # existing subsystem health signals (diversity, safety, etc.).
+        self.integrity_monitor.record_health(
+            "spectral_stability",
+            max(0.0, min(1.0, self._cached_spectral_stability_margin)),
+            {"spectral_stability_margin": self._cached_spectral_stability_margin},
+        )
 
         # 3a. Record diversity health — low diversity indicates thought
         # collapse, which is a critical architectural failure mode.
@@ -30432,6 +30636,51 @@ class AEONDeltaV3(nn.Module):
                             "safety_tightened": self.safety_system is not None,
                         },
                     )
+            # 5a-iv-spectral. Preemptive spectral stability tightening.
+            # When the spectral stability margin is low (max eigenvalue
+            # approaching 0⁻), the system is near a bifurcation point
+            # where the contraction guarantee weakens.  Preemptively
+            # tighten safety and convergence thresholds to prevent
+            # divergence *before* it occurs, converting the safety
+            # system from reactive (post-factum rollback) to proactive
+            # (predictive spectral monitoring).
+            _spectral_margin = self._cached_spectral_stability_margin
+            _SPECTRAL_MARGIN_THRESHOLD = 0.5
+            if _spectral_margin < _SPECTRAL_MARGIN_THRESHOLD:
+                _spectral_deficit = 1.0 - _spectral_margin / max(
+                    _SPECTRAL_MARGIN_THRESHOLD, 1e-6,
+                )
+                # Tighten safety threshold proportionally to spectral deficit
+                _spectral_safety_factor = max(0.5, 1.0 - 0.5 * _spectral_deficit)
+                if self.safety_system is not None:
+                    adaptive_safety_threshold = min(
+                        adaptive_safety_threshold,
+                        adaptive_safety_threshold * _spectral_safety_factor,
+                    )
+                # Boost uncertainty to trigger deeper meta-cognitive
+                # reasoning preemptively
+                _spectral_unc_boost = min(
+                    1.0 - uncertainty, 0.3 * _spectral_deficit,
+                )
+                if _spectral_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _spectral_unc_boost)
+                    uncertainty_sources["spectral_instability"] = (
+                        _spectral_unc_boost
+                    )
+                    high_uncertainty = uncertainty > 0.5
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "topology_analysis", "spectral_instability_detected",
+                        causal_prerequisites=[input_trace_id],
+                        metadata={
+                            "spectral_stability_margin": _spectral_margin,
+                            "deficit": _spectral_deficit,
+                            "safety_factor": _spectral_safety_factor,
+                            "uncertainty_boost": _spectral_unc_boost
+                            if _spectral_unc_boost > 0 else 0.0,
+                        },
+                        severity="warning",
+                    )
                 # 5a-iv-topo-critic. Invoke auto-critic for immediate
                 # correction when a topology catastrophe is detected.
                 # Uncertainty escalation alone defers correction to the
@@ -30553,6 +30802,7 @@ class AEONDeltaV3(nn.Module):
                 if diversity_results else 0.0,
                 memory_trust_deficit=max(0.0, 1.0 - getattr(
                     self, '_last_trust_score', 1.0)),
+                spectral_stability_margin=self._cached_spectral_stability_margin,
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             self.coherence_registry.register_output("metacognitive_trigger", validated=True)
@@ -30651,6 +30901,18 @@ class AEONDeltaV3(nn.Module):
                         1, int(_recovery_pressure * _RECOVERY_PRESSURE_MAX_EXTRA),
                     )
                     _extra_iters += _recovery_extra
+                # Add extra iterations when spectral stability margin is
+                # low — proximity to a bifurcation point means the
+                # meta-loop needs more iterations to settle into a
+                # stable fixed point, per the Banach contraction theorem:
+                # as the Lipschitz constant approaches 1, convergence
+                # requires more iterations.
+                if self._cached_spectral_stability_margin < _SPECTRAL_MARGIN_THRESHOLD:
+                    _spectral_extra = max(1, int(
+                        2 * (1.0 - self._cached_spectral_stability_margin
+                             / max(_SPECTRAL_MARGIN_THRESHOLD, 1e-6))
+                    ))
+                    _extra_iters += _spectral_extra
                 # Temporarily adjust meta-loop parameters
                 orig_threshold = self.meta_loop.convergence_threshold
                 orig_max_iter = self.meta_loop.max_iterations
@@ -39540,6 +39802,7 @@ class AEONDeltaV3(nn.Module):
             # --- AGI coherence provenance ---
             'uncertainty': uncertainty,
             'adaptive_safety_threshold': adaptive_safety_threshold,
+            'spectral_stability_margin': self._cached_spectral_stability_margin,
             'audit_insights': audit_insights,
             'causal_trace_id': input_trace_id,
             'provenance': _provenance,
