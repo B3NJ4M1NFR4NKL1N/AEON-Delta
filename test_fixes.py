@@ -68522,6 +68522,23 @@ def run_all_tests():
     test_emergence_summary_has_memory_subsystem_health()
     test_forward_pass_emergence_summary_memory_health()
     test_forward_pass_emergence_summary_diagnostic_gap_count()
+    # Cognitive integration: 13 unmapped feedback signals routed to trigger
+    test_provenance_root_pressure_in_feedback_signal_to_trigger()
+    test_decoder_provenance_pressure_in_feedback_signal_to_trigger()
+    test_memory_re_retrieval_pressure_in_feedback_signal_to_trigger()
+    test_unc_peak_in_feedback_signal_to_trigger()
+    test_unc_source_count_in_feedback_signal_to_trigger()
+    test_auto_critic_current_quality_in_feedback_signal_to_trigger()
+    test_auto_critic_quality_deficit_in_feedback_signal_to_trigger()
+    test_hybrid_reasoning_quality_in_feedback_signal_to_trigger()
+    test_ns_bridge_confidence_in_feedback_signal_to_trigger()
+    test_cv_agreement_deficit_in_feedback_signal_to_trigger()
+    test_causal_dag_consensus_quality_in_feedback_signal_to_trigger()
+    test_deferred_trigger_pressure_in_feedback_signal_to_trigger()
+    test_lipschitz_pressure_in_feedback_signal_to_trigger()
+    test_all_feedback_signals_mapped_to_trigger()
+    # Cognitive integration: emergence requires error_evolution active
+    test_emergence_requires_error_evolution_active()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -85575,6 +85592,212 @@ def test_forward_pass_emergence_summary_diagnostic_gap_count():
         f"got {type(es['diagnostic_gap_count'])}"
     )
     print("✅ test_forward_pass_emergence_summary_diagnostic_gap_count PASSED")
+
+
+# ── Patch: 13 unmapped feedback signals now routed to trigger ──────
+def test_provenance_root_pressure_in_feedback_signal_to_trigger():
+    """provenance_root_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'provenance_root_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "provenance_root_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['provenance_root_pressure'] == 'low_causal_quality', (
+        "provenance_root_pressure should map to low_causal_quality"
+    )
+    print("✅ test_provenance_root_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_decoder_provenance_pressure_in_feedback_signal_to_trigger():
+    """decoder_provenance_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'decoder_provenance_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "decoder_provenance_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['decoder_provenance_pressure'] == 'low_output_reliability', (
+        "decoder_provenance_pressure should map to low_output_reliability"
+    )
+    print("✅ test_decoder_provenance_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_memory_re_retrieval_pressure_in_feedback_signal_to_trigger():
+    """memory_re_retrieval_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'memory_re_retrieval_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "memory_re_retrieval_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['memory_re_retrieval_pressure'] == 'memory_staleness', (
+        "memory_re_retrieval_pressure should map to memory_staleness"
+    )
+    print("✅ test_memory_re_retrieval_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_unc_peak_in_feedback_signal_to_trigger():
+    """unc_peak must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'unc_peak' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "unc_peak must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['unc_peak'] == 'uncertainty', (
+        "unc_peak should map to uncertainty"
+    )
+    print("✅ test_unc_peak_in_feedback_signal_to_trigger PASSED")
+
+
+def test_unc_source_count_in_feedback_signal_to_trigger():
+    """unc_source_count must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'unc_source_count' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "unc_source_count must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['unc_source_count'] == 'uncertainty', (
+        "unc_source_count should map to uncertainty"
+    )
+    print("✅ test_unc_source_count_in_feedback_signal_to_trigger PASSED")
+
+
+def test_auto_critic_current_quality_in_feedback_signal_to_trigger():
+    """auto_critic_current_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'auto_critic_current_quality' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "auto_critic_current_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['auto_critic_current_quality'] == 'low_output_reliability', (
+        "auto_critic_current_quality should map to low_output_reliability"
+    )
+    print("✅ test_auto_critic_current_quality_in_feedback_signal_to_trigger PASSED")
+
+
+def test_auto_critic_quality_deficit_in_feedback_signal_to_trigger():
+    """auto_critic_quality_deficit must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'auto_critic_quality_deficit' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "auto_critic_quality_deficit must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['auto_critic_quality_deficit'] == 'low_output_reliability', (
+        "auto_critic_quality_deficit should map to low_output_reliability"
+    )
+    print("✅ test_auto_critic_quality_deficit_in_feedback_signal_to_trigger PASSED")
+
+
+def test_hybrid_reasoning_quality_in_feedback_signal_to_trigger():
+    """hybrid_reasoning_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'hybrid_reasoning_quality' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "hybrid_reasoning_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['hybrid_reasoning_quality'] == 'coherence_deficit', (
+        "hybrid_reasoning_quality should map to coherence_deficit"
+    )
+    print("✅ test_hybrid_reasoning_quality_in_feedback_signal_to_trigger PASSED")
+
+
+def test_ns_bridge_confidence_in_feedback_signal_to_trigger():
+    """ns_bridge_confidence must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'ns_bridge_confidence' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "ns_bridge_confidence must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['ns_bridge_confidence'] == 'coherence_deficit', (
+        "ns_bridge_confidence should map to coherence_deficit"
+    )
+    print("✅ test_ns_bridge_confidence_in_feedback_signal_to_trigger PASSED")
+
+
+def test_cv_agreement_deficit_in_feedback_signal_to_trigger():
+    """cv_agreement_deficit must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'cv_agreement_deficit' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "cv_agreement_deficit must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['cv_agreement_deficit'] == 'coherence_deficit', (
+        "cv_agreement_deficit should map to coherence_deficit"
+    )
+    print("✅ test_cv_agreement_deficit_in_feedback_signal_to_trigger PASSED")
+
+
+def test_causal_dag_consensus_quality_in_feedback_signal_to_trigger():
+    """causal_dag_consensus_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'causal_dag_consensus_quality' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "causal_dag_consensus_quality must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['causal_dag_consensus_quality'] == 'low_causal_quality', (
+        "causal_dag_consensus_quality should map to low_causal_quality"
+    )
+    print("✅ test_causal_dag_consensus_quality_in_feedback_signal_to_trigger PASSED")
+
+
+def test_deferred_trigger_pressure_in_feedback_signal_to_trigger():
+    """deferred_trigger_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'deferred_trigger_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "deferred_trigger_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['deferred_trigger_pressure'] == 'uncertainty', (
+        "deferred_trigger_pressure should map to uncertainty"
+    )
+    print("✅ test_deferred_trigger_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_lipschitz_pressure_in_feedback_signal_to_trigger():
+    """lipschitz_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'lipschitz_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "lipschitz_pressure must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['lipschitz_pressure'] == 'diverging', (
+        "lipschitz_pressure should map to diverging"
+    )
+    print("✅ test_lipschitz_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_all_feedback_signals_mapped_to_trigger():
+    """Every signal registered on the feedback bus must have a trigger mapping."""
+    from aeon_core import AEONConfig, AEONDeltaV3, MetaCognitiveRecursionTrigger
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    trigger = MetaCognitiveRecursionTrigger()
+    bus = model.feedback_bus
+    # All dynamically registered signals
+    registered = set(bus._extra_signals.keys())
+    mapped = set(trigger._FEEDBACK_SIGNAL_TO_TRIGGER.keys())
+    unmapped = registered - mapped
+    assert not unmapped, (
+        f"Feedback bus signals not mapped to trigger: {unmapped}"
+    )
+    print("✅ test_all_feedback_signals_mapped_to_trigger PASSED")
+
+
+# ── Patch: emergence requires error_evolution active ────────────────
+def test_emergence_requires_error_evolution_active():
+    """system_emergence_report must require error_evolution_active for emerged=True."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    # error_evolution_active should be reported as a condition
+    assert 'error_evolution_active' in status, (
+        "system_emergence_status must include error_evolution_active"
+    )
+    # conditions_total should be at least 6
+    assert status.get('conditions_total', 0) >= 6, (
+        f"conditions_total must be >= 6, got {status.get('conditions_total', 0)}"
+    )
+    print("✅ test_emergence_requires_error_evolution_active PASSED")
 
 
 if __name__ == "__main__":

@@ -17734,6 +17734,52 @@ class MetaCognitiveRecursionTrigger:
         "curiosity_exploration_pressure": "uncertainty",
         "neurogenic_memory_retrieval_pressure": "memory_staleness",
         "memory_subsystem_aggregate_pressure": "memory_staleness",
+        # ── Remaining feedback signals that were computed in
+        # _build_feedback_extra_signals and registered on the
+        # feedback bus but never mapped to trigger signals,
+        # preventing cross-pass weight adaptation for these
+        # dimensions. ──────────────────────────────────────────
+        "provenance_root_pressure": "low_causal_quality",
+        "decoder_provenance_pressure": "low_output_reliability",
+        "memory_re_retrieval_pressure": "memory_staleness",
+        "unc_peak": "uncertainty",
+        "unc_source_count": "uncertainty",
+        "auto_critic_current_quality": "low_output_reliability",
+        "auto_critic_quality_deficit": "low_output_reliability",
+        "hybrid_reasoning_quality": "coherence_deficit",
+        "ns_bridge_confidence": "coherence_deficit",
+        "cv_agreement_deficit": "coherence_deficit",
+        "causal_dag_consensus_quality": "low_causal_quality",
+        "deferred_trigger_pressure": "uncertainty",
+        "lipschitz_pressure": "diverging",
+        # ── Additional dynamic signals registered on the feedback
+        # bus during model initialization. ─────────────────────
+        "trace_incomplete_pressure": "low_causal_quality",
+        "integration_gate_confidence": "coherence_deficit",
+        "correction_target_pressure": "coherence_deficit",
+        "causal_chain_coverage_deficit": "low_causal_quality",
+        "provenance_chain_incomplete": "low_causal_quality",
+        "feedback_oscillation_pressure": "convergence_conflict",
+        "hvae_abstraction_pressure": "coherence_deficit",
+        "reinforce_weakness_pressure": "coherence_deficit",
+        "uncertainty_propagation_pressure": "uncertainty",
+        "counterfactual_divergence_pressure": "coherence_deficit",
+        "feedback_signal_trend": "uncertainty",
+        "cross_pass_root_pressure": "coherence_deficit",
+        "convergence_arbiter_conflict": "convergence_conflict",
+        "mcts_planning_quality": "uncertainty",
+        "active_learning_curiosity": "uncertainty",
+        "safety_violation_pressure": "safety_violation",
+        "dag_acyclicity_pressure": "low_causal_quality",
+        "convergence_secondary_pressure": "convergence_conflict",
+        "cycle_consistency_pressure": "coherence_deficit",
+        "memory_cv_disagreement": "memory_trust_deficit",
+        "coherence_deficit": "coherence_deficit",
+        "ucc_coherence_trend": "coherence_deficit",
+        "error_evolution_trend_pressure": "uncertainty",
+        "coverage_deficit_pressure": "coherence_deficit",
+        "weakest_coherence_pair_pressure": "coherence_deficit",
+        "metacognitive_gap": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -26618,6 +26664,16 @@ class AEONDeltaV3(nn.Module):
         if self.error_evolution is not None:
             _evaluated.add("evolved_strategy_pressure")
         _evaluated.add("diagnostic_gap_pressure")
+        # Memory subsystem signals are always evaluated — backed by
+        # cached quality/freshness/retrieval metrics from the most
+        # recent forward pass.  Even when their threshold is not
+        # exceeded (healthy default), the absence of pressure IS
+        # the evaluation result.
+        _evaluated.add("consolidation_quality_deficit")
+        _evaluated.add("temporal_memory_freshness_deficit")
+        _evaluated.add("neurogenic_memory_retrieval_pressure")
+        _evaluated.add("memory_subsystem_aggregate_pressure")
+        _evaluated.add("curiosity_exploration_pressure")
         # Spectral stability margin is always evaluated — backed by the
         # cached max-eigenvalue-derived stability margin from the most
         # recent topology analysis.
@@ -50521,6 +50577,7 @@ class AEONDeltaV3(nn.Module):
         _preliminary_emerged = (
             _mv_met and _um_met and _rc_met
             and _convergence_ok
+            and _ee_healthy
             and unity.get('unified', False)
         )
         if self.causal_trace is not None:
