@@ -68432,6 +68432,11 @@ def run_all_tests():
     test_feedback_correction_pressures_in_emergence_summary()
     test_causal_chain_coverage_in_emergence_summary()
     test_system_emergence_report_patches_drive_metacognitive()
+    test_forward_pass_resets_cached_surprise()
+    test_forward_pass_resets_cached_coherence_deficit()
+    test_per_pass_state_reset_in_causal_trace()
+    test_pipeline_wiring_cycle_rejection_traced()
+    test_emergence_summary_cached_state_freshness()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -84435,6 +84440,150 @@ def test_system_emergence_report_patches_drive_metacognitive():
         "system_emergence_report must include emergence status"
     )
     print("✅ test_system_emergence_report_patches_drive_metacognitive PASSED")
+
+
+# ============================================================================
+# Final Integration — Per-Pass Cached State Freshness & Causal Transparency
+# ============================================================================
+
+
+def test_forward_pass_resets_cached_surprise():
+    """_forward_impl must reset _cached_surprise to 0.0 at the start
+    of each forward pass so that within-pass world-model surprise
+    reflects CURRENT state, not the historical maximum accumulated
+    via max() from previous passes."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    # Run first forward pass
+    with torch.no_grad():
+        model(tokens)
+    surprise_after_first = model._cached_surprise
+    # Artificially inflate surprise to simulate stale state
+    model._cached_surprise = 999.0
+    # Run second forward pass — must reset before processing
+    with torch.no_grad():
+        result2 = model(tokens)
+    surprise_after_second = model._cached_surprise
+    assert surprise_after_second < 999.0, (
+        "_cached_surprise must be reset at the start of each forward "
+        f"pass, but got {surprise_after_second} (stale from injection)"
+    )
+    print("✅ test_forward_pass_resets_cached_surprise PASSED")
+
+
+def test_forward_pass_resets_cached_coherence_deficit():
+    """_forward_impl must reset _cached_coherence_deficit to 0.0 at
+    the start of each forward pass so that within-pass coherence
+    assessment reflects CURRENT state, not historical worst-case."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    # Run first forward pass
+    with torch.no_grad():
+        model(tokens)
+    # Artificially inflate coherence deficit to simulate stale state
+    model._cached_coherence_deficit = 999.0
+    # Run second forward pass — must reset before processing
+    with torch.no_grad():
+        result2 = model(tokens)
+    deficit_after_second = model._cached_coherence_deficit
+    assert deficit_after_second < 999.0, (
+        "_cached_coherence_deficit must be reset at the start of each "
+        f"forward pass, but got {deficit_after_second} (stale from "
+        f"injection)"
+    )
+    print("✅ test_forward_pass_resets_cached_coherence_deficit PASSED")
+
+
+def test_per_pass_state_reset_in_causal_trace():
+    """The per-pass cached state reset must be recorded in the causal
+    trace so that root-cause analysis can distinguish between
+    current-pass and historical values.  This ensures causal
+    transparency for the state lifecycle."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(tokens)
+    if model.causal_trace is not None:
+        entries = list(model.causal_trace._entries)
+        reset_entries = [
+            e for e in entries
+            if e.get('subsystem') == 'forward_impl'
+            and e.get('decision') == 'per_pass_state_reset'
+        ]
+        assert len(reset_entries) > 0, (
+            "Per-pass state reset must be recorded in causal trace "
+            "as a 'forward_impl/per_pass_state_reset' entry"
+        )
+        meta = reset_entries[0].get('metadata', {})
+        assert '_cached_surprise' in meta.get('reset_fields', []), (
+            "Reset trace entry must list _cached_surprise in "
+            "reset_fields"
+        )
+        assert '_cached_coherence_deficit' in meta.get(
+            'reset_fields', [],
+        ), (
+            "Reset trace entry must list _cached_coherence_deficit "
+            "in reset_fields"
+        )
+    print("✅ test_per_pass_state_reset_in_causal_trace PASSED")
+
+
+def test_pipeline_wiring_cycle_rejection_traced():
+    """When verify_pipeline_wiring auto-registers provenance edges
+    and encounters a cycle, the rejection must be recorded in the
+    causal trace for transparency rather than silently skipped."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert 'cycle_rejection' in source, (
+        "verify_pipeline_wiring must record 'cycle_rejection' in "
+        "causal trace when auto-registration encounters a cycle"
+    )
+    assert 'reason' in source, (
+        "Cycle rejection trace entry must include the rejection "
+        "reason for root-cause analysis"
+    )
+    print("✅ test_pipeline_wiring_cycle_rejection_traced PASSED")
+
+
+def test_emergence_summary_cached_state_freshness():
+    """Emergence summary must include cached_state_fresh=True to
+    indicate that per-pass cached state was reset at the start
+    of the forward pass, distinguishing current-pass metrics from
+    stale cross-pass accumulations."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    es = result.get('emergence_summary', {})
+    assert 'cached_state_fresh' in es, (
+        "Emergence summary must include 'cached_state_fresh' field"
+    )
+    assert es['cached_state_fresh'] is True, (
+        "cached_state_fresh must be True after per-pass reset"
+    )
+    print("✅ test_emergence_summary_cached_state_freshness PASSED")
 
 
 if __name__ == "__main__":
