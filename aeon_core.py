@@ -17811,6 +17811,18 @@ class MetaCognitiveRecursionTrigger:
         "weakest_coherence_pair_pressure": "coherence_deficit",
         "metacognitive_gap": "uncertainty",
         "tkg_staleness_pressure": "memory_staleness",
+        # ── 9 signals produced by _build_feedback_extra_signals but
+        # previously unmapped, preventing cross-pass weight adaptation
+        # for these dimensions. ─────────────────────────────────────
+        "decoder_quality_pressure": "low_output_reliability",
+        "vq_codebook_pressure": "coherence_deficit",
+        "decoder_variance_pressure": "low_output_reliability",
+        "cross_module_coherence_pressure": "coherence_deficit",
+        "post_output_late_uncertainty": "uncertainty",
+        "quality_trend_degradation_pressure": "coherence_deficit",
+        "executive_review_pressure": "coherence_deficit",
+        "convergence_quality": "convergence_conflict",
+        "meta_learner_ewc_pressure": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -26924,6 +26936,23 @@ class AEONDeltaV3(nn.Module):
                 extra["tkg_staleness_pressure"] = max(
                     0.0, min(1.0, _mean_age / 100.0),
                 )
+
+        # World model prediction pressure — when the cached world-model
+        # surprise is elevated, route it directly into the feedback bus
+        # as a continuous signal.  Previously, this signal was only
+        # produced indirectly through the error-class bridge when
+        # world_model_prediction_error episodes had accumulated
+        # (success_rate < 0.5, count >= 2), leaving the meta-loop blind
+        # to real-time prediction degradation before the error threshold
+        # was reached.  Feeding _cached_surprise directly ensures the
+        # meta-loop conditions on live prediction quality from the first
+        # pass, closing the gap between real-time world-model performance
+        # and cross-pass metacognitive adaptation.
+        _wm_surprise = getattr(self, '_cached_surprise', 0.0)
+        if _wm_surprise > 0.1:
+            extra["world_model_prediction_pressure"] = max(
+                0.0, min(1.0, _wm_surprise),
+            )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -47190,6 +47219,43 @@ class AEONDeltaV3(nn.Module):
                 },
             )
 
+        # ── Escalate diagnostic gaps to error evolution ───────────────
+        # When self_diagnostic detects architectural gaps, record them
+        # as error evolution episodes so the metacognitive trigger
+        # learns from persistent disconnections.  Without this, the
+        # diagnostic identifies problems but the meta-loop never
+        # becomes more sensitive to recurring gaps — the system is in
+        # a "diagnosed but not learning" state.  Recording each gap as
+        # an episode with success=False ensures that repeated failures
+        # of the same component accumulate in the error tracker,
+        # systematically lowering its success_rate and increasing the
+        # corresponding metacognitive trigger weight.
+        if gaps and self.error_evolution is not None:
+            for _gap in gaps:
+                _gap_comp = _gap.get('component', 'unknown')
+                self.error_evolution.record_episode(
+                    error_class=f"diagnostic_gap_{_gap_comp}",
+                    strategy_used='self_diagnostic_escalation',
+                    success=False,
+                    metadata={
+                        'component': _gap_comp,
+                        'gap': _gap.get('gap', ''),
+                    },
+                )
+            # Batch-adapt trigger weights from the freshly-recorded
+            # gap episodes so the metacognitive trigger is immediately
+            # sensitised to the specific subsystems that are failing.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception as _diag_adapt_err:
+                    logger.debug(
+                        "self_diagnostic: gap escalation adaptation "
+                        "failed: %s", _diag_adapt_err,
+                    )
+
         return {
             'status': status,
             'active_modules': active_modules,
@@ -50715,6 +50781,29 @@ class AEONDeltaV3(nn.Module):
                 + int(_causal_chain_met)
             ),
             "conditions_total": 6,
+            # ── Quantitative enrichment ────────────────────────────
+            # Expose continuous scores alongside boolean verdicts so
+            # that downstream consumers can gauge emergence *magnitude*,
+            # not just a binary pass/fail.  Without these, a system
+            # that barely meets thresholds is indistinguishable from
+            # one that exceeds them by a wide margin.
+            "weakest_axiom": min(
+                [("mutual_verification",
+                  _cu_components.get('mutual_verification', 0)),
+                 ("metacognitive_responsiveness",
+                  _cu_components.get('uncertainty_metacognition', 0)),
+                 ("root_cause_traceability",
+                  _cu_components.get('root_cause_traceability', 0))],
+                key=lambda x: x[1],
+            )[0],
+            "weakest_axiom_score": min(
+                _cu_components.get('mutual_verification', 0),
+                _cu_components.get('uncertainty_metacognition', 0),
+                _cu_components.get('root_cause_traceability', 0),
+            ),
+            "error_evolution_success_rate": unity.get(
+                'error_evolution_effectiveness', {},
+            ).get('success_rate', 0.0),
         }
 
         # ── 5. Auto-reinforcement loop ────────────────────────────
@@ -50929,6 +51018,23 @@ class AEONDeltaV3(nn.Module):
                         + int(_post_causal)
                     ),
                     "conditions_total": 6,
+                    "weakest_axiom": min(
+                        [("mutual_verification",
+                          _post_cu.get('mutual_verification', 0)),
+                         ("metacognitive_responsiveness",
+                          _post_cu.get('uncertainty_metacognition', 0)),
+                         ("root_cause_traceability",
+                          _post_cu.get('root_cause_traceability', 0))],
+                        key=lambda x: x[1],
+                    )[0],
+                    "weakest_axiom_score": min(
+                        _post_cu.get('mutual_verification', 0),
+                        _post_cu.get('uncertainty_metacognition', 0),
+                        _post_cu.get('root_cause_traceability', 0),
+                    ),
+                    "error_evolution_success_rate": _post_unity.get(
+                        'error_evolution_effectiveness', {},
+                    ).get('success_rate', 0.0),
                 }
             except Exception as _re_eval_err:
                 logger.debug(
@@ -52264,6 +52370,7 @@ class AEONDeltaV3(nn.Module):
                 "coherence_deficit",
                 "metacognitive_gap",
                 "provenance_chain_incomplete",
+                "tkg_staleness_pressure",
             ]
             for _zhs in _zero_healthy_signals:
                 if _zhs in _signals:
