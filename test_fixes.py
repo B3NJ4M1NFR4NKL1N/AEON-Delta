@@ -68416,6 +68416,16 @@ def run_all_tests():
     test_emergence_state_transition_attribute_initialized()
     test_emergence_state_transition_updates_after_forward()
 
+    # ── Final Integration — Strategy Dispatch, Diagnostic Gap,
+    #    Cognitive Unity Gate Patches ──
+    test_evolved_strategy_pressure_signal_registered()
+    test_diagnostic_gap_pressure_signal_registered()
+    test_evolved_strategy_pressure_in_build_feedback()
+    test_diagnostic_gap_pressure_in_build_feedback()
+    test_cognitive_unity_gate_in_forward_impl()
+    test_cognitive_unity_gate_boost_in_emergence_summary()
+    test_strategy_signal_in_feedback_signal_to_trigger()
+
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
     print("=" * 60)
@@ -84106,6 +84116,151 @@ def test_emergence_state_transition_updates_after_forward():
         "emergence_status"
     )
     print("✅ test_emergence_state_transition_updates_after_forward PASSED")
+
+
+# ============================================================================
+# Final Integration — Cognitive Activation Patches (Strategy Dispatch,
+# Diagnostic Gap, Cognitive Unity Gate)
+# ============================================================================
+
+
+def test_evolved_strategy_pressure_signal_registered():
+    """The feedback bus must have 'evolved_strategy_pressure' registered
+    so that error_evolution strategy availability propagates through the
+    feedback bus to all downstream consumers."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    registered = getattr(fb, '_extra_signals', {})
+    assert "evolved_strategy_pressure" in registered, (
+        "evolved_strategy_pressure must be registered in the feedback "
+        "bus so error_evolution strategy availability can condition the "
+        "meta-loop"
+    )
+    print("✅ test_evolved_strategy_pressure_signal_registered PASSED")
+
+
+def test_diagnostic_gap_pressure_signal_registered():
+    """The feedback bus must have 'diagnostic_gap_pressure' registered
+    so that persistent self_diagnostic() gaps influence every forward
+    pass's meta-loop, not just periodic reinforcement passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    registered = getattr(fb, '_extra_signals', {})
+    assert "diagnostic_gap_pressure" in registered, (
+        "diagnostic_gap_pressure must be registered in the feedback "
+        "bus so persistent architectural gaps condition the meta-loop "
+        "continuously"
+    )
+    print("✅ test_diagnostic_gap_pressure_signal_registered PASSED")
+
+
+def test_evolved_strategy_pressure_in_build_feedback():
+    """_build_feedback_extra_signals must include evolved_strategy_pressure
+    when error_evolution has a learned strategy for an active error class."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'evolved_strategy_pressure' in source, (
+        "_build_feedback_extra_signals must compute and emit "
+        "'evolved_strategy_pressure' when error_evolution has a "
+        "learned recovery strategy"
+    )
+    assert 'get_best_strategy' in source, (
+        "_build_feedback_extra_signals must call get_best_strategy() "
+        "to determine strategy availability for the feedback signal"
+    )
+    print("✅ test_evolved_strategy_pressure_in_build_feedback PASSED")
+
+
+def test_diagnostic_gap_pressure_in_build_feedback():
+    """_build_feedback_extra_signals must include diagnostic_gap_pressure
+    when _cached_diagnostic_gap_count > 0."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'diagnostic_gap_pressure' in source, (
+        "_build_feedback_extra_signals must compute and emit "
+        "'diagnostic_gap_pressure' from cached diagnostic gap count"
+    )
+    assert '_cached_diagnostic_gap_count' in source, (
+        "_build_feedback_extra_signals must read _cached_diagnostic_gap_count "
+        "for continuous diagnostic gap feedback"
+    )
+    print("✅ test_diagnostic_gap_pressure_in_build_feedback PASSED")
+
+
+def test_cognitive_unity_gate_in_forward_impl():
+    """_forward_impl must include a cognitive unity pre-reasoning gate
+    that boosts initial uncertainty when the cached cognitive unity
+    deficit is elevated, ensuring within-pass response to known
+    architectural weaknesses."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'cognitive_unity_gate' in source, (
+        "_forward_impl must include a cognitive_unity_gate that "
+        "records pre-reasoning boost decisions in the causal trace"
+    )
+    assert '_pre_reasoning_unity_boost' in source, (
+        "_forward_impl must compute _pre_reasoning_unity_boost from "
+        "the cached cognitive unity deficit"
+    )
+    assert 'pre_reasoning_boost' in source, (
+        "_forward_impl must record a 'pre_reasoning_boost' causal "
+        "trace entry for the cognitive unity gate"
+    )
+    print("✅ test_cognitive_unity_gate_in_forward_impl PASSED")
+
+
+def test_cognitive_unity_gate_boost_in_emergence_summary():
+    """The emergence summary in the forward pass result must include
+    the pre_reasoning_unity_boost field so consumers can trace when
+    the cognitive unity gate amplified uncertainty."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    summary = result.get('emergence_summary', {})
+    assert 'pre_reasoning_unity_boost' in summary, (
+        "emergence_summary must include 'pre_reasoning_unity_boost' "
+        "so consumers can trace cognitive unity gate decisions"
+    )
+    print("✅ test_cognitive_unity_gate_boost_in_emergence_summary PASSED")
+
+
+def test_strategy_signal_in_feedback_signal_to_trigger():
+    """The MetaCognitiveRecursionTrigger's _FEEDBACK_SIGNAL_TO_TRIGGER
+    mapping must include evolved_strategy_pressure and
+    diagnostic_gap_pressure so that elevated values adapt trigger
+    weights via the feedback bus → trigger adaptation pathway."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    assert "evolved_strategy_pressure" in mapping, (
+        "evolved_strategy_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER "
+        "so strategy availability adapts metacognitive sensitivity"
+    )
+    assert "diagnostic_gap_pressure" in mapping, (
+        "diagnostic_gap_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER "
+        "so persistent diagnostic gaps adapt metacognitive sensitivity"
+    )
+    print("✅ test_strategy_signal_in_feedback_signal_to_trigger PASSED")
 
 
 if __name__ == "__main__":

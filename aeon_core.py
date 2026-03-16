@@ -17568,6 +17568,8 @@ class MetaCognitiveRecursionTrigger:
         "memory_retrieval_quality": "memory_trust_deficit",
         "auto_critic_quality": "low_output_reliability",
         "memory_trust_deficit": "memory_trust_deficit",
+        "evolved_strategy_pressure": "uncertainty",
+        "diagnostic_gap_pressure": "coherence_deficit",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -23624,6 +23626,19 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "provenance_chain_incomplete", default=0.0,
         )
+        # Evolved strategy pressure — signals that error_evolution has
+        # learned a recovery strategy for an active error class, so
+        # the meta-loop can prioritise strategy-guided reasoning.
+        self.feedback_bus.register_signal(
+            "evolved_strategy_pressure", default=0.0,
+        )
+        # Diagnostic gap continuous pressure — carries the cached
+        # self_diagnostic() gap count between periodic reinforcement
+        # cycles so the meta-loop remains aware of persistent
+        # architectural disconnections.
+        self.feedback_bus.register_signal(
+            "diagnostic_gap_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -26304,6 +26319,11 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("coherence_deficit")
         _evaluated.add("metacognitive_gap")
         _evaluated.add("provenance_chain_incomplete")
+        # Evolved strategy and diagnostic gap signals are always
+        # evaluated (backed by error_evolution and cached gap count).
+        if self.error_evolution is not None:
+            _evaluated.add("evolved_strategy_pressure")
+        _evaluated.add("diagnostic_gap_pressure")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -26359,6 +26379,57 @@ class AEONDeltaV3(nn.Module):
         if _ml_ewc > 0.05:
             extra["meta_learner_ewc_pressure"] = max(
                 0.0, min(1.0, _ml_ewc),
+            )
+        # Evolved strategy pressure — when error_evolution has learned
+        # a recovery strategy for any currently-active error class with
+        # a low success rate, propagate a strategy-availability signal
+        # through the feedback bus.  This closes the gap where
+        # error_evolution strategies were queried individually by modules
+        # via get_best_strategy() but never broadcast as a feedback bus
+        # signal, leaving the meta-loop unaware that a learned recovery
+        # strategy exists and should be prioritised.  The pressure value
+        # reflects the severity of the error class the strategy addresses
+        # so the meta-loop allocates deeper reasoning proportionally.
+        if _ee is not None:
+            try:
+                _ee_sum = (
+                    _ee_summary if '_ee_summary' in dir()
+                    else _ee.get_error_summary()
+                )
+                _ee_cls = _ee_sum.get("error_classes", {})
+                _max_strategy_pressure = 0.0
+                for _cls_n, _cls_s in _ee_cls.items():
+                    _sr_s = _cls_s.get("success_rate", 1.0)
+                    _cnt_s = _cls_s.get("count", 0)
+                    if _sr_s < 0.5 and _cnt_s >= 2:
+                        _strat = _ee.get_best_strategy(_cls_n)
+                        if _strat is not None:
+                            _max_strategy_pressure = max(
+                                _max_strategy_pressure,
+                                1.0 - _sr_s,
+                            )
+                if _max_strategy_pressure > 0.0:
+                    extra["evolved_strategy_pressure"] = max(
+                        0.0, min(1.0, _max_strategy_pressure),
+                    )
+            except Exception as _esp_err:
+                logger.debug(
+                    "Evolved strategy pressure computation failed: %s",
+                    _esp_err,
+                )
+        # Diagnostic gap continuous pressure — when the most recent
+        # verify_and_reinforce() cycle detected unresolved self_diagnostic
+        # gaps, carry the cached gap count as a continuous pressure signal
+        # into the feedback bus.  This closes the gap where diagnostic
+        # gaps were detected during periodic reinforcement and fed into
+        # the metacognitive trigger via error_evolution, but were invisible
+        # to the feedback bus between reinforcement cycles — leaving the
+        # meta-loop blind to persistent architectural disconnections for
+        # up to _REINFORCE_INTERVAL forward passes.
+        _diag_gaps = getattr(self, '_cached_diagnostic_gap_count', 0)
+        if _diag_gaps > 0:
+            extra["diagnostic_gap_pressure"] = max(
+                0.0, min(1.0, _diag_gaps / 10.0),
             )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
@@ -39746,6 +39817,36 @@ class AEONDeltaV3(nn.Module):
                 "Forward pass invoked before cognitive activation probe "
                 "completed — subsystem baselines may be unseeded."
             )
+        # ===== COGNITIVE UNITY PRE-REASONING GATE =====
+        # When the cached cognitive unity deficit (set during the most
+        # recent verify_and_reinforce() cycle) is elevated, apply an
+        # initial uncertainty boost BEFORE reasoning begins.  This
+        # closes the gap where the deficit only influenced the NEXT
+        # pass's meta-loop depth via the feedback bus or the END of
+        # the current pass via the post-pipeline metacognitive
+        # evaluation — leaving the reasoning core's meta-loop depth
+        # and convergence thresholds unaffected by known architectural
+        # weaknesses during the pass that matters most.  By pre-
+        # injecting the deficit as a ``_pre_reasoning_unity_boost``
+        # kwarg, the meta-loop can tighten its convergence threshold
+        # proportionally, ensuring that conclusions produced under
+        # known weakness are subjected to deeper scrutiny.
+        _pre_unity_deficit = getattr(
+            self, '_cached_cognitive_unity_deficit', 0.0,
+        )
+        _pre_unity_boost = 0.0
+        if _pre_unity_deficit > 0.1:
+            _pre_unity_boost = min(0.2, _pre_unity_deficit * 0.3)
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cognitive_unity_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_deficit': _pre_unity_deficit,
+                        'boost_applied': _pre_unity_boost,
+                    },
+                )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -41918,6 +42019,7 @@ class AEONDeltaV3(nn.Module):
                 'convergence_quality', 0.0,
             ),
             'uncertainty_triggered': _unc_triggered,
+            'pre_reasoning_unity_boost': _pre_unity_boost,
         }
 
         # ===== EMERGENCE AXIOM EVALUATION =====
