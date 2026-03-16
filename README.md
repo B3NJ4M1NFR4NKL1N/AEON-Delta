@@ -365,7 +365,7 @@ Enables physically-grounded causal reasoning and intervention planning in a unif
 Components that transform AEON-Delta from a collection of modules into a self-reflexive, causally-coherent architecture:
 
 - **`ModuleCoherenceVerifier`**: Cross-validates pairwise outputs between subsystem pairs (meta-loop, factors, safety, memory) using cosine similarity after projection — detects internal inconsistencies and emits a `needs_recheck` flag; fully differentiable for training-time consistency pressure  
-- **`MetaCognitiveRecursionTrigger`**: Monitors four independent signals (uncertainty, convergence divergence, topology catastrophes, coherence deficit) and triggers meta-loop re-invocation with tightened parameters (lower convergence threshold, more iterations) — includes recursion cap for safety; zero learnable parameters  
+- **`MetaCognitiveRecursionTrigger`**: Monitors 14 independent signals (uncertainty, convergence divergence, topology catastrophes, coherence deficit, memory staleness, recovery pressure, world model surprise, low causal quality, safety violation, diversity collapse, memory trust deficit, convergence conflict, low output reliability, spectral instability) and triggers meta-loop re-invocation with tightened parameters (lower convergence threshold, more iterations) — includes recursion cap for safety; adaptive per-signal weights (default 1/14 each) with evolution-driven weight adaptation; zero learnable parameters  
 - **`CausalErrorEvolutionTracker`**: Records error-recovery episodes with strategy, success/failure, and causal antecedents — builds an evolving error taxonomy queryable for historically optimal recovery strategies; thread-safe  
 
 Ensures that: every component verifies others, any unresolved ambiguity triggers meta-cognitive cycles, all outputs are traceable to root causes, and the system evolves its error handling over time.
@@ -387,7 +387,7 @@ Provides production-grade observability, structured logging, telemetry collectio
 
 ### **28. Cognitive Feedback Bus & Causal Provenance**
 Closed-loop feedback and per-module attribution tracking:
-- **`CognitiveFeedbackBus`**: Aggregates downstream subsystem signals (safety score, convergence quality, uncertainty, subsystem health) into a dense [B, hidden_dim] feedback embedding via learned projection — closes the feedback loop so downstream module outputs condition upstream meta-loop reasoning depth and trajectory
+- **`CognitiveFeedbackBus`**: Aggregates 12 core downstream subsystem signals (safety, convergence, uncertainty, health mean, loss scale, surprise, coherence, causal quality, recovery pressure, self-report consistency, output quality, memory quality) into a dense [B, hidden_dim] feedback embedding via learned projection — supports dynamic signal registration at runtime; closes the feedback loop so downstream module outputs condition upstream meta-loop reasoning depth and trajectory
 - **`CausalProvenanceTracker`**: Lightweight (zero parameters) per-module attribution tracker — records L2 state deltas before/after each module transformation and computes normalized contribution fractions answering "which module was most responsible for the output?"
 
 Enables feedback-driven adaptive reasoning and full output provenance attribution.
@@ -499,6 +499,7 @@ The main model class (`AEONDeltaV3`) exposes a comprehensive public API for infe
 - **`architectural_coherence_report()`**: Full architectural coherence report: health + wiring + error evolution + self-diagnostic findings with gap recommendations
 - **`system_emergence_report()`**: Comprehensive system synthesis producing four deliverables: Integration Map, Critical Patches, Activation Sequence, and System Emergence Status
 - **`get_cognitive_activation_report()`**: Single-call entry point for the complete cognitive activation report — wraps `system_emergence_report()` with `ok` flag and `convergence_health` detail for API consumers
+- **`get_cognitive_state_snapshot()`**: Unified snapshot of the complete cognitive state — aggregates metacognitive state, causal chain, emergence report, cognitive unity, reinforcement status, error evolution, feedback bus, convergence, and system health into a single coherent view for full-state introspection
 
 **Introspection & Metacognition:**
 - **`get_module_registry()`**: Unified introspection of all initialized modules with attributes, parameter counts, and device placement
@@ -546,7 +547,7 @@ Production-ready FastAPI backend providing full REST API, WebSocket, and SSE int
 - **SSE** log streaming with per-level filtering, per-test event streaming, and v4 training progress streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 2,810 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 3,000 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **AGI coherence verification**: `/api/cognitive_unity`, `/api/architectural_health`, `/api/coherence_report`, `/api/system_emergence`, `/api/verify_and_reinforce`, `/api/verify_causal_chain`, `/api/cognitive_activation`
 - **Engine monitoring**: convergence, memory, recovery, integrity, deterministic guard, context window, module coherence, error evolution, auto-critic, deception suppressor via `/api/engine/*`
 - **Metacognition & diagnostics**: `/api/metacognition`, `/api/metacognition/resolve` (gap resolution recommendations)
@@ -652,7 +653,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 2,917 tests) verifying:
+AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 3,000 tests) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -714,7 +715,7 @@ AEON-Delta/
 ├── aeon_server.py        # FastAPI backend v3.3.0 — 85 API endpoints, 15 classes, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — 19 panels, real-time monitoring, inference, training UI, code generator
 ├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (2,810 tests) — stability, gradients, causal, planning, audit, recovery, coherence
+├── test_fixes.py         # Comprehensive test suite (3,000 tests) — stability, gradients, causal, planning, audit, recovery, coherence
 ├── requirements.txt      # Python dependencies
 ├── setup.py              # Package installation script
 ├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
