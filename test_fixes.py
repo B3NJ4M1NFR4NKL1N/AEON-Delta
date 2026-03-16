@@ -68550,6 +68550,12 @@ def run_all_tests():
     test_tkg_staleness_in_feedback_signal_to_trigger()
     # Cognitive integration: post-pipeline metacognitive escalation
     test_post_pipeline_metacognitive_escalation_key()
+    # Cognitive integration: final activation patches
+    test_nine_signals_registered_in_trigger()
+    test_world_model_prediction_pressure_produced()
+    test_emergence_status_has_weakest_axiom()
+    test_emergence_status_has_error_evolution_success_rate()
+    test_self_diagnostic_escalates_gaps_to_error_evolution()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -85933,6 +85939,126 @@ def test_post_pipeline_metacognitive_escalation_key():
             "uncertainty_escalation key"
         )
     print("✅ test_post_pipeline_metacognitive_escalation_key PASSED")
+
+
+# ── Patch: Final Cognitive Activation — 9 unregistered signal mapping ──
+def test_nine_signals_registered_in_trigger():
+    """All 9 previously-unmapped feedback signals must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    mapping = trigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    expected = {
+        "decoder_quality_pressure": "low_output_reliability",
+        "vq_codebook_pressure": "coherence_deficit",
+        "decoder_variance_pressure": "low_output_reliability",
+        "cross_module_coherence_pressure": "coherence_deficit",
+        "post_output_late_uncertainty": "uncertainty",
+        "quality_trend_degradation_pressure": "coherence_deficit",
+        "executive_review_pressure": "coherence_deficit",
+        "convergence_quality": "convergence_conflict",
+        "meta_learner_ewc_pressure": "uncertainty",
+    }
+    for signal_name, trigger_name in expected.items():
+        assert signal_name in mapping, (
+            f"{signal_name} must be in _FEEDBACK_SIGNAL_TO_TRIGGER"
+        )
+        assert mapping[signal_name] == trigger_name, (
+            f"{signal_name} should map to {trigger_name}, "
+            f"got {mapping[signal_name]}"
+        )
+    print("✅ test_nine_signals_registered_in_trigger PASSED")
+
+
+# ── Patch: World model prediction pressure from _cached_surprise ──────
+def test_world_model_prediction_pressure_produced():
+    """world_model_prediction_pressure must be produced when _cached_surprise > 0.1."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model._cached_spectral_stability_margin = 1.0
+    # Set surprise above threshold
+    model._cached_surprise = 0.5
+    signals = model._build_feedback_extra_signals()
+    assert "world_model_prediction_pressure" in signals, (
+        "world_model_prediction_pressure must be produced when "
+        "_cached_surprise > 0.1"
+    )
+    assert abs(signals["world_model_prediction_pressure"] - 0.5) < 1e-6, (
+        "world_model_prediction_pressure should equal _cached_surprise"
+    )
+    # Below threshold: signal should not be produced
+    model._cached_surprise = 0.05
+    signals_low = model._build_feedback_extra_signals()
+    assert "world_model_prediction_pressure" not in signals_low, (
+        "world_model_prediction_pressure should not be produced when "
+        "_cached_surprise <= 0.1"
+    )
+    print("✅ test_world_model_prediction_pressure_produced PASSED")
+
+
+# ── Patch: system_emergence_status quantitative enrichment ────────────
+def test_emergence_status_has_weakest_axiom():
+    """system_emergence_status must include weakest_axiom and weakest_axiom_score."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert 'weakest_axiom' in status, (
+        "system_emergence_status must include weakest_axiom"
+    )
+    assert 'weakest_axiom_score' in status, (
+        "system_emergence_status must include weakest_axiom_score"
+    )
+    assert status['weakest_axiom'] in (
+        'mutual_verification',
+        'metacognitive_responsiveness',
+        'root_cause_traceability',
+    ), f"Unexpected weakest_axiom: {status['weakest_axiom']}"
+    assert isinstance(status['weakest_axiom_score'], (int, float)), (
+        "weakest_axiom_score must be numeric"
+    )
+    print("✅ test_emergence_status_has_weakest_axiom PASSED")
+
+
+def test_emergence_status_has_error_evolution_success_rate():
+    """system_emergence_status must include error_evolution_success_rate."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert 'error_evolution_success_rate' in status, (
+        "system_emergence_status must include error_evolution_success_rate"
+    )
+    assert isinstance(status['error_evolution_success_rate'], (int, float)), (
+        "error_evolution_success_rate must be numeric"
+    )
+    print("✅ test_emergence_status_has_error_evolution_success_rate PASSED")
+
+
+# ── Patch: self_diagnostic gap escalation to error_evolution ──────────
+def test_self_diagnostic_escalates_gaps_to_error_evolution():
+    """self_diagnostic must record gaps in error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    # Get baseline error evolution episode count
+    baseline = model.error_evolution.get_error_summary().get(
+        'total_recorded', 0,
+    )
+    # Run self_diagnostic — if any gaps exist, they should be escalated
+    diag = model.self_diagnostic()
+    gap_count = diag.get('gap_count', 0)
+    if gap_count > 0:
+        post = model.error_evolution.get_error_summary().get(
+            'total_recorded', 0,
+        )
+        assert post > baseline, (
+            f"self_diagnostic found {gap_count} gaps but error_evolution "
+            f"episode count did not increase (before={baseline}, after={post})"
+        )
+    print("✅ test_self_diagnostic_escalates_gaps_to_error_evolution PASSED")
 
 
 if __name__ == "__main__":
