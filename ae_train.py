@@ -847,6 +847,16 @@ except ImportError:
                 "training_ucc_failure": "uncertainty",
                 "inter_memory_disagreement": "memory_staleness",
                 "decoder_degenerate_output": "coherence_deficit",
+                # Diagnostic-gap error classes — generated dynamically by
+                # self_diagnostic() as "diagnostic_gap_{component}".
+                "diagnostic_gap_cognitive_unity": "coherence_deficit",
+                "diagnostic_gap_error_evolution": "uncertainty",
+                "diagnostic_gap_coherence_registry": "coherence_deficit",
+                # Convergence stagnation — extended plateau without
+                # reaching threshold.
+                "convergence_stagnation": "coherence_deficit",
+                # Unknown — SemanticErrorClassifier fallback.
+                "unknown": "uncertainty",
             }
             for cls_name, cls_stats in error_classes.items():
                 signal = _class_to_signal.get(cls_name)
