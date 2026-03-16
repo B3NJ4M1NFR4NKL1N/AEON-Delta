@@ -17444,6 +17444,12 @@ class MetaCognitiveRecursionTrigger:
             # the debug-level "unmapped" log and routes to the generic
             # "uncertainty" signal for appropriate trigger sensitivity.
             "unknown": "uncertainty",
+            # Adaptation failure — the metacognitive trigger's
+            # adapt_weights_from_evolution() raised an exception,
+            # preventing the trigger from re-sensitising.  Routes to
+            # "uncertainty" so recurring adaptation failures boost the
+            # uncertainty trigger weight and schedule deeper review.
+            "adaptation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19021,6 +19027,11 @@ class CausalErrorEvolutionTracker:
         # Unknown — SemanticErrorClassifier fallback.  Maps to
         # lambda_self_consistency as a safe generic target.
         "unknown": "lambda_self_consistency",
+        # Adaptation failure — metacognitive trigger adaptation raised
+        # an exception.  Maps to lambda_self_consistency so training
+        # strengthens overall self-consistency when adaptation failures
+        # accumulate.
+        "adaptation_failure": "lambda_self_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -41843,18 +41854,6 @@ class AEONDeltaV3(nn.Module):
                                     "Late meta-loop trigger adaptation failed: %s",
                                     _late_adapt_err,
                                 )
-                                if self.error_evolution is not None:
-                                    self.error_evolution.record_episode(
-                                        error_class='adaptation_failure',
-                                        strategy_used='escalation',
-                                        success=False,
-                                        metadata={
-                                            'source': 'late_meta_loop',
-                                            'error': str(
-                                                _late_adapt_err,
-                                            ),
-                                        },
-                                    )
                     # Record the failure in the causal trace so that
                     # root-cause analysis can trace late meta-loop
                     # failures back to the originating exception,

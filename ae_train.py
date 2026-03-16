@@ -869,6 +869,8 @@ except ImportError:
                 "convergence": "diverging",
                 # Unknown — SemanticErrorClassifier fallback.
                 "unknown": "uncertainty",
+                # Adaptation failure — trigger adaptation exception.
+                "adaptation_failure": "uncertainty",
             }
             for cls_name, cls_stats in error_classes.items():
                 signal = _class_to_signal.get(cls_name)
