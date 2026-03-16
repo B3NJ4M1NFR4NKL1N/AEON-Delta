@@ -17035,6 +17035,18 @@ class MetaCognitiveRecursionTrigger:
             # coherence_deficit so that recurring emergence failures
             # boost the coherence trigger signal weight.
             "emergence_deficit": "coherence_deficit",
+            # Per-axiom emergence failure — records which specific AGI
+            # axiom (MV / UM / RC) failed, enabling targeted
+            # metacognitive adaptation rather than generic coherence
+            # boosting.
+            "emergence_axiom_mv_failure": "coherence_deficit",
+            "emergence_axiom_um_failure": "convergence_verdict",
+            "emergence_axiom_rc_failure": "low_causal_quality",
+            # Emergence state transition — the emergence verdict
+            # changed between consecutive forward passes (gained or
+            # lost emergence), signalling an architectural shift that
+            # should boost coherence sensitivity.
+            "emergence_state_transition": "coherence_deficit",
             # Cross-module coherence deficit — pairwise coherence
             # between subsystem outputs fell below threshold, indicating
             # inter-module disagreement that should boost the coherence
@@ -18486,6 +18498,16 @@ class CausalErrorEvolutionTracker:
         # that AGI axioms are not met.  Maps to lambda_coherence so
         # training adapts to persistent emergence failures.
         "emergence_deficit": "lambda_coherence",
+        # Per-axiom emergence failure — routes each failing axiom to its
+        # most relevant training loss component so gradient pressure
+        # targets the deficient subsystem.
+        "emergence_axiom_mv_failure": "lambda_coherence",
+        "emergence_axiom_um_failure": "lambda_ucc",
+        "emergence_axiom_rc_failure": "lambda_provenance",
+        # Emergence state transition — the emergence verdict flipped
+        # between passes.  Routes to lambda_coherence so training
+        # adapts to architectural instability.
+        "emergence_state_transition": "lambda_coherence",
         # Cross-module coherence deficit — pairwise coherence between
         # subsystem outputs fell below threshold.  Maps to lambda_coherence
         # so training strengthens inter-module agreement when cross-module
@@ -24456,6 +24478,12 @@ class AEONDeltaV3(nn.Module):
         # mutual reinforcement detects architectural weaknesses.
         # Initialised to 0.0 (no weakness detected).
         self._cached_reinforce_weakness: float = 0.0
+
+        # Emergence state tracking — caches the most recent forward-pass
+        # emergence verdict so that state transitions (emerged→not-emerged
+        # or vice versa) can be detected and trigger a metacognitive
+        # review cycle.  Initialised to None (no prior verdict).
+        self._last_forward_emerged: Optional[bool] = None
 
         # Per-axiom deficit caches — store the individual axiom
         # deficits (1 - axiom_score) from the most recent
@@ -41910,6 +41938,45 @@ class AEONDeltaV3(nn.Module):
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
 
+        # ===== EMERGENCE STATE TRANSITION DETECTION =====
+        # Track the emergence verdict across forward passes.  When the
+        # verdict flips (emerged→not-emerged or vice versa), record an
+        # error_evolution episode and causal trace entry so the
+        # metacognitive trigger can learn from state transitions.  This
+        # closes the gap where the emergence verdict was evaluated
+        # per-pass but transitions between passes were invisible — the
+        # system could oscillate between emerged and not-emerged without
+        # triggering any higher-order review of the oscillation itself.
+        _prev_emerged = getattr(self, '_last_forward_emerged', None)
+        if _prev_emerged is not None and _prev_emerged != _emerged:
+            _transition_dir = 'gained' if _emerged else 'lost'
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='emergence_state_transition',
+                    strategy_used='forward_emergence_monitor',
+                    success=_emerged,
+                    metadata={
+                        'direction': _transition_dir,
+                        'forward_pass': _fwd,
+                        'axiom_mv': _mv_ok,
+                        'axiom_um': _um_ok,
+                        'axiom_rc': _rc_ok,
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_monitor", f"state_transition_{_transition_dir}",
+                    metadata={
+                        'forward_pass': _fwd,
+                        'previous_emerged': _prev_emerged,
+                        'current_emerged': _emerged,
+                        'axiom_mv': _mv_ok,
+                        'axiom_um': _um_ok,
+                        'axiom_rc': _rc_ok,
+                    },
+                )
+        self._last_forward_emerged = _emerged
+
         # ===== EMERGENCE CROSS-VERIFICATION =====
         # Cross-verify the locally-computed emergence verdict against
         # the authoritative verify_cognitive_unity() diagnostic on
@@ -42139,6 +42206,36 @@ class AEONDeltaV3(nn.Module):
                             ],
                         },
                     )
+                # ── Per-axiom failure episodes ──
+                # Record a targeted error_evolution episode for each
+                # *specific* axiom that failed, so the metacognitive
+                # trigger can adapt its sensitivity for the deficient
+                # capacity rather than only learning from the aggregate
+                # emergence_deficit episode.  This closes the gap where
+                # recurring failure of a single axiom (e.g. only MV)
+                # was indistinguishable from all-axiom failure in the
+                # error_evolution history, preventing targeted weight
+                # adaptation.
+                _axiom_failures = [
+                    ('emergence_axiom_mv_failure', _mv_ok,
+                     'mutual_verification'),
+                    ('emergence_axiom_um_failure', _um_ok,
+                     'metacognitive_responsiveness'),
+                    ('emergence_axiom_rc_failure', _rc_ok,
+                     'root_cause_traceability'),
+                ]
+                for _ax_class, _ax_ok, _ax_name in _axiom_failures:
+                    if not _ax_ok:
+                        self.error_evolution.record_episode(
+                            error_class=_ax_class,
+                            strategy_used='forward_emergence_monitor',
+                            success=False,
+                            metadata={
+                                'forward_pass': _fwd,
+                                'axiom': _ax_name,
+                                'score': _cu_comps.get(_ax_name, 0.0),
+                            },
+                        )
 
         # ===== CONSOLIDATED METACOGNITIVE ADAPTATION =====
         # Batch-adapt metacognitive trigger weights from all error
