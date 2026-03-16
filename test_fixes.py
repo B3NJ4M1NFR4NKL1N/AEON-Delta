@@ -68406,6 +68406,7 @@ def run_all_tests():
     test_full_cognitive_activation_achieves_emergence()
     test_forward_pass_maintains_emergence()
     test_emergence_causal_transparency_end_to_end()
+    test_feedback_bus_corrective_pressure_evaluated()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -83935,6 +83936,32 @@ def test_emergence_causal_transparency_end_to_end():
         "Emergence assessment must include root-cause axiom"
     )
     print("✅ test_emergence_causal_transparency_end_to_end PASSED")
+
+
+def test_feedback_bus_corrective_pressure_evaluated():
+    """corrective_pressure signal must be marked as evaluated during
+    cognitive activation so feedback_bus_coverage reaches 1.0."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    unity = model.verify_cognitive_unity()
+    fb = unity.get('feedback_bus_completeness', {})
+    assert fb.get('coverage', 0.0) == 1.0, (
+        f"feedback_bus_coverage must be 1.0, got {fb.get('coverage')}"
+    )
+    assert 'corrective_pressure' not in fb.get('unpopulated_signals', []), (
+        "corrective_pressure must not appear in unpopulated_signals"
+    )
+    report = model.system_emergence_report()
+    imap = report.get('integration_map', {})
+    assert imap.get('feedback_bus_coverage', 0.0) == 1.0, (
+        f"integration_map feedback_bus_coverage must be 1.0, "
+        f"got {imap.get('feedback_bus_coverage')}"
+    )
+    print("✅ test_feedback_bus_corrective_pressure_evaluated PASSED")
 
 
 if __name__ == "__main__":

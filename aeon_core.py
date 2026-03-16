@@ -51119,6 +51119,7 @@ class AEONDeltaV3(nn.Module):
             _zero_healthy_signals = [
                 "diversity_collapse", "convergence_arbiter_conflict",
                 "convergence_secondary_pressure", "correction_target_pressure",
+                "corrective_pressure",
                 "counterfactual_divergence_pressure", "coverage_deficit_pressure",
                 "cv_agreement_deficit", "cycle_consistency_pressure",
                 "dag_acyclicity_pressure", "emergence_deficit",
