@@ -17896,6 +17896,20 @@ class MetaCognitiveRecursionTrigger:
             if fb_value < _PRESSURE_THRESHOLD:
                 continue
             trigger_signal = self._FEEDBACK_SIGNAL_TO_TRIGGER.get(fb_signal)
+            # Prefix-based routing — cognitive-frame per-component
+            # corrective pressures (cf:*), per-factor reliability
+            # breakdowns (reliability_weakest:*), and per-dimension
+            # feedback corrections (fb_correction:*) use dynamic key
+            # names that cannot appear in the static mapping.  Route
+            # them to appropriate trigger signals so they participate
+            # in cross-pass weight adaptation.
+            if trigger_signal is None:
+                if fb_signal.startswith("cf:"):
+                    trigger_signal = "coherence_deficit"
+                elif fb_signal.startswith("reliability_weakest:"):
+                    trigger_signal = "low_output_reliability"
+                elif fb_signal.startswith("fb_correction:"):
+                    trigger_signal = "coherence_deficit"
             if trigger_signal is None or trigger_signal not in raw_weights:
                 continue
             # memory_trust is inverted: low trust = high pressure
@@ -18161,6 +18175,14 @@ class MetaCognitiveRecursionTrigger:
 
         result = {
             "should_trigger": should_trigger,
+            # Alias — downstream consumers (post-pipeline metacognitive
+            # evaluation, uncertainty-path feedback, moderate-path
+            # feedback, output-reliability meta-eval) read
+            # 'should_recurse' to decide whether to escalate
+            # uncertainty and inject feedback sources.  Without this
+            # alias these paths silently default to False, preventing
+            # the meta-cognitive feedback loop from activating.
+            "should_recurse": should_trigger,
             "trigger_score": trigger_score,
             "effective_trigger_score": effective_trigger_score,
             "cross_pass_trigger_ema": self._cross_pass_trigger_ema,
@@ -18171,6 +18193,9 @@ class MetaCognitiveRecursionTrigger:
             # while the canonical key is 'triggers_active'.
             "triggers": triggers_active,
             "recursion_count": self._recursion_count,
+            # Alias — post-pipeline and uncertainty-path evaluations
+            # read 'trigger_count' rather than 'recursion_count'.
+            "trigger_count": self._recursion_count,
             "signal_weights": dict(w),
             "max_recursions_capped": _max_recursions_capped,
             "capped_trigger_score": effective_trigger_score if _max_recursions_capped else 0.0,
