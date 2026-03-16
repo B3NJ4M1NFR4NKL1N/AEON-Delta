@@ -24972,6 +24972,23 @@ class AEONDeltaV3(nn.Module):
         # transparency.
         self._cached_diagnostic_gap_subsystems: list = []
 
+        # Diagnostic staleness — tracks the forward-pass number at which
+        # verify_and_reinforce() last ran so the emergence summary can
+        # expose how many passes have elapsed since the last diagnostic
+        # update.  Without this, consumers cannot distinguish between a
+        # fresh and a stale diagnostic_gap_count, breaking causal
+        # transparency for gap resolution timing.
+        self._cached_last_reinforce_pass: int = 0
+
+        # Error evolution health — caches the most recent error
+        # evolution success rate so the emergence summary can expose
+        # recovery strategy effectiveness per pass without calling
+        # verify_cognitive_unity().  Without this, error evolution
+        # health is only visible via the heavyweight diagnostic,
+        # preventing mutual reinforcement between the per-pass
+        # emergence assessment and the error recovery subsystem.
+        self._cached_error_evolution_health: float = 1.0
+
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
         # during the most recent _build_feedback_extra_signals() call.
@@ -42935,6 +42952,41 @@ class AEONDeltaV3(nn.Module):
                     self.provenance_tracker._deltas[
                         'verify_and_reinforce'
                     ] = 1.0 - _unc_reinforce_score
+                # ── UNCERTAINTY-TRIGGERED CROSS-VERIFICATION ──
+                # When uncertainty triggers reinforcement, also call
+                # verify_cognitive_unity() so the emergence verdict is
+                # re-evaluated under pressure — not deferred to the
+                # next periodic check (_REINFORCE_INTERVAL passes away).
+                # Without this, high-uncertainty episodes between
+                # periodic checks leave the emergence status stale,
+                # breaking mutual reinforcement between the fast inline
+                # assessment and the authoritative diagnostic.
+                try:
+                    _unc_cv_unity = self.verify_cognitive_unity()
+                    _unc_cv_score = _unc_cv_unity.get('score', 0.0)
+                    _unc_cv_unified = _unc_cv_unity.get('unified', False)
+                    result['uncertainty_cross_verification'] = {
+                        'trigger_uncertainty': _unc_val,
+                        'diagnostic_unified': _unc_cv_unified,
+                        'diagnostic_score': _unc_cv_score,
+                        'pass_number': _fwd,
+                    }
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "emergence_assessment",
+                            "uncertainty_cross_verification",
+                            metadata={
+                                'forward_pass': _fwd,
+                                'trigger_uncertainty': _unc_val,
+                                'diagnostic_unified': _unc_cv_unified,
+                                'diagnostic_score': _unc_cv_score,
+                            },
+                        )
+                except Exception as _ucv_err:
+                    logger.debug(
+                        "Uncertainty cross-verification failed "
+                        "(pass %d): %s", _fwd, _ucv_err,
+                    )
             except Exception as _ut_err:
                 logger.warning(
                     "Uncertainty-triggered reinforcement failed "
@@ -43174,6 +43226,26 @@ class AEONDeltaV3(nn.Module):
         # its originating premise.
         result['emergence_summary']['diagnostic_gap_subsystems'] = list(
             getattr(self, '_cached_diagnostic_gap_subsystems', [])
+        )
+        # ── Diagnostic staleness in emergence summary ──────────────
+        # Expose how many forward passes have elapsed since the last
+        # verify_and_reinforce() cycle so consumers can judge the
+        # freshness of diagnostic_gap_count and diagnostic_gap_subsystems.
+        # Without this, consumers cannot distinguish a gap count of 0
+        # from "no gaps" vs "stale — gaps not checked recently", breaking
+        # causal transparency for gap resolution timing.
+        result['emergence_summary']['diagnostic_staleness'] = max(
+            0, _fwd - getattr(self, '_cached_last_reinforce_pass', 0),
+        )
+        # ── Error evolution health in emergence summary ────────────
+        # Surface the cached error evolution success rate so consumers
+        # can monitor recovery strategy effectiveness per forward pass
+        # without calling verify_cognitive_unity().  Without this,
+        # error evolution health is only visible via the heavyweight
+        # diagnostic, preventing mutual reinforcement between the
+        # per-pass emergence assessment and the error recovery subsystem.
+        result['emergence_summary']['error_evolution_health'] = getattr(
+            self, '_cached_error_evolution_health', 1.0,
         )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
@@ -50453,6 +50525,11 @@ class AEONDeltaV3(nn.Module):
             self, '_cached_diagnostic_gap_count', 0,
         )
         self._cached_diagnostic_gap_count = _diag_gap_count
+        # Cache the forward-pass number at which this reinforcement ran
+        # so the emergence summary can expose diagnostic staleness.
+        self._cached_last_reinforce_pass = getattr(
+            self, '_forward_pass_count', 0,
+        )
         # Cache individual gap identifiers so the emergence summary can
         # surface per-gap decomposition for causal transparency.
         # Without this, consumers see the count but cannot determine
@@ -50462,6 +50539,29 @@ class AEONDeltaV3(nn.Module):
         self._cached_diagnostic_gap_subsystems = [
             str(g) for g in _actionable_gaps
         ]
+        # Cache error evolution health so the emergence summary can
+        # surface recovery strategy effectiveness per pass without
+        # calling verify_cognitive_unity().  Without this, error
+        # evolution health is only visible via the heavyweight
+        # diagnostic, preventing mutual reinforcement between the
+        # per-pass emergence assessment and the error recovery subsystem.
+        if self.error_evolution is not None:
+            try:
+                _ee_health_summary = self.error_evolution.get_error_summary()
+                _ee_total = _ee_health_summary.get('total_recorded', 0)
+                _ee_successes = sum(
+                    1 for _cls_eps in _ee_health_summary.get(
+                        'error_classes', {},
+                    ).values()
+                    for _ep in _cls_eps.get('episodes', [])
+                    if _ep.get('success', False)
+                ) if _ee_total > 0 else 0
+                self._cached_error_evolution_health = (
+                    _ee_successes / max(_ee_total, 1)
+                    if _ee_total > 0 else 1.0
+                )
+            except Exception:
+                pass  # keep previous cached value
         if _diag_gap_count > 0:
             # Feed gap pressure into feedback bus so the next forward
             # pass's meta-loop is conditioned on unresolved gaps.
