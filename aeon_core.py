@@ -40045,6 +40045,41 @@ class AEONDeltaV3(nn.Module):
                 'codebook_quality': _vq_codebook_quality,
                 'unique_codes': _vq_unique,
             }
+            # ── VQ metacognitive evaluation ────────────────────────────
+            # When VQ codebook quality is degraded, call
+            # metacognitive_trigger.evaluate() so the higher-order review
+            # fires BEFORE reasoning begins.  Previously, low codebook
+            # quality updated the feedback bus but never triggered a
+            # metacognitive evaluation, violating the requirement that
+            # *any* internal uncertainty automatically initiates a
+            # higher-order review cycle.  The VQ uncertainty is derived
+            # from 1 - codebook_quality so healthy codebooks (quality≈1)
+            # produce near-zero uncertainty.
+            if (self.metacognitive_trigger is not None
+                    and _vq_codebook_quality < 0.9):
+                try:
+                    _vq_meta_eval = self.metacognitive_trigger.evaluate(
+                        uncertainty=1.0 - _vq_codebook_quality,
+                        coherence_deficit=max(
+                            0.0, 1.0 - _vq_codebook_quality,
+                        ),
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "metacognitive_trigger",
+                            "vq_quality_evaluation",
+                            metadata={
+                                'codebook_quality': _vq_codebook_quality,
+                                'triggered': _vq_meta_eval.get(
+                                    'should_recurse', False,
+                                ),
+                            },
+                        )
+                except Exception as _vq_meta_err:
+                    logger.debug(
+                        "VQ metacognitive evaluation failed: %s",
+                        _vq_meta_err,
+                    )
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -41977,6 +42012,51 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
 
+        # ===== MODERATE UNCERTAINTY METACOGNITIVE EVALUATION =====
+        # When uncertainty is elevated but below the reinforcement
+        # threshold, still call metacognitive_trigger.evaluate() so the
+        # higher-order review fires for ALL uncertainty levels — not
+        # just the severe ones that trigger full verify_and_reinforce().
+        # Without this, moderate uncertainties (0.3 ≤ unc < 0.7) pass
+        # without any metacognitive evaluation, violating the axiom
+        # that "any internal uncertainty or conflict automatically
+        # initiates a higher-order review cycle".
+        _MODERATE_UNCERTAINTY_THRESHOLD = 0.3
+        if (not _unc_triggered
+                and _unc_val >= _MODERATE_UNCERTAINTY_THRESHOLD
+                and _unc_val < self._UNCERTAINTY_REINFORCE_THRESHOLD
+                and self.metacognitive_trigger is not None):
+            try:
+                _mod_meta_eval = self.metacognitive_trigger.evaluate(
+                    uncertainty=_unc_val,
+                    coherence_deficit=getattr(
+                        self, '_cached_cognitive_unity_deficit', 0.0,
+                    ),
+                )
+                result['moderate_uncertainty_metacognitive'] = {
+                    'triggered': _mod_meta_eval.get(
+                        'should_recurse', False,
+                    ),
+                    'uncertainty': _unc_val,
+                }
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "metacognitive_trigger",
+                        "moderate_uncertainty_evaluation",
+                        metadata={
+                            'uncertainty': _unc_val,
+                            'triggered': _mod_meta_eval.get(
+                                'should_recurse', False,
+                            ),
+                            'forward_pass': _fwd,
+                        },
+                    )
+            except Exception as _mod_err:
+                logger.debug(
+                    "Moderate uncertainty metacognitive evaluation "
+                    "failed: %s", _mod_err,
+                )
+
         # ===== EMERGENCE SUMMARY =====
         # Attach a lightweight emergence summary to every forward-pass
         # result using only cached state — no expensive diagnostic calls.
@@ -42021,6 +42101,53 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_triggered': _unc_triggered,
             'pre_reasoning_unity_boost': _pre_unity_boost,
         }
+        # ── Feedback bus correction pressures in emergence summary ──
+        # Surface the per-channel correction pressures from
+        # CognitiveFeedbackBus.compute_correction() so the emergence
+        # summary carries actionable signal-level diagnostics.  This
+        # closes the gap where compute_correction() results were
+        # routed into _build_feedback_extra_signals() for meta-loop
+        # conditioning, but never surfaced to consumers monitoring
+        # emergence status — preventing mutual reinforcement between
+        # signal-trend analysis and downstream corrective reasoning.
+        if self.feedback_bus is not None:
+            try:
+                _fb_corrections = self.feedback_bus.compute_correction()
+                if _fb_corrections:
+                    result['emergence_summary'][
+                        'feedback_correction_pressures'
+                    ] = _fb_corrections
+                    _max_pressure = max(_fb_corrections.values())
+                    result['emergence_summary'][
+                        'max_correction_pressure'
+                    ] = _max_pressure
+            except Exception as _fb_corr_err:
+                logger.debug(
+                    "Feedback bus correction in emergence summary "
+                    "failed: %s", _fb_corr_err,
+                )
+        # ── Causal chain coverage in emergence summary ─────────────
+        # Surface verify_causal_chain() results in the forward-pass
+        # emergence summary so consumers can monitor causal
+        # transparency status inline.  This closes the gap where
+        # verify_causal_chain() was only called from
+        # system_emergence_report() (a diagnostic method) and never
+        # from the forward path — meaning causal transparency was
+        # assessed periodically rather than continuously, preventing
+        # real-time traceability monitoring.
+        try:
+            _fwd_causal_chain = self.verify_causal_chain()
+            result['emergence_summary']['causal_chain_traceable'] = (
+                _fwd_causal_chain.get('traceable', False)
+            )
+            result['emergence_summary']['causal_chain_coverage'] = (
+                _fwd_causal_chain.get('coverage', 0.0)
+            )
+        except Exception as _fcc_err:
+            logger.debug(
+                "Forward-pass causal chain verification failed: %s",
+                _fcc_err,
+            )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
@@ -49626,6 +49753,32 @@ class AEONDeltaV3(nn.Module):
                     f"verified rather than gaps"
                 ),
             })
+
+        # ── 2a. Critical patches → metacognitive trigger ─────────
+        # Feed the severity of identified critical patches into the
+        # metacognitive trigger so that diagnostic findings drive
+        # re-reasoning proportionally.  Without this, critical_patches
+        # are informational only — they describe gaps but never
+        # influence the meta-cognitive cycle's sensitivity, leaving
+        # the system in a "diagnosed but not learning" state.  The
+        # coherence_deficit is derived from the number of patches
+        # relative to total diagnostic components, producing a
+        # normalized 0–1 pressure signal.
+        if critical_patches and self.metacognitive_trigger is not None:
+            _patch_severity = min(
+                1.0, len(critical_patches) / max(len(gaps) + 3, 1),
+            )
+            try:
+                self.metacognitive_trigger.evaluate(
+                    uncertainty=_patch_severity,
+                    coherence_deficit=_patch_severity,
+                )
+            except Exception as _patch_meta_err:
+                logger.debug(
+                    "system_emergence_report: critical-patch "
+                    "metacognitive evaluation failed: %s",
+                    _patch_meta_err,
+                )
 
         # ── 3. Activation Sequence ───────────────────────────────
         activation_sequence = [
