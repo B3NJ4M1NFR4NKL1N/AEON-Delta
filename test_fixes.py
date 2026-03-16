@@ -86272,5 +86272,99 @@ def test_training_inference_signal_parity():
     print("✅ test_training_inference_signal_parity PASSED")
 
 
+# ── Cognitive Integration Patches — Activation Sequence Tests ─────────
+
+def test_adaptation_failure_in_class_to_signal():
+    """adaptation_failure error class must be mapped in _class_to_signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    summary = {'error_classes': {'adaptation_failure': {'count': 1, 'success_rate': 0.0}}}
+    trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_adaptation_failure_in_class_to_signal PASSED")
+
+
+def test_adaptation_failure_in_error_class_to_lambda():
+    """adaptation_failure must be mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    assert "adaptation_failure" in tracker._ERROR_CLASS_TO_LAMBDA, (
+        "'adaptation_failure' missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_adaptation_failure_in_error_class_to_lambda PASSED")
+
+
+def test_adaptation_failure_in_ae_train_mapping():
+    """adaptation_failure must be mapped in ae_train fallback _class_to_signal."""
+    from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    trigger = TrainTrigger()
+    summary = {'error_classes': {'adaptation_failure': {'count': 1, 'success_rate': 0.0}}}
+    trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_adaptation_failure_in_ae_train_mapping PASSED")
+
+
+def test_should_recurse_feedback_loop_severe():
+    """should_recurse on severe-uncertainty path must escalate uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'metacognitive_recurse_escalation' in src, (
+        "should_recurse feedback must inject 'metacognitive_recurse_escalation' "
+        "into uncertainty_sources"
+    )
+    print("✅ test_should_recurse_feedback_loop_severe PASSED")
+
+
+def test_should_recurse_feedback_loop_moderate():
+    """should_recurse on moderate-uncertainty path must escalate uncertainty."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'moderate_metacognitive_recurse' in src, (
+        "moderate should_recurse feedback must inject "
+        "'moderate_metacognitive_recurse' into uncertainty_sources"
+    )
+    print("✅ test_should_recurse_feedback_loop_moderate PASSED")
+
+
+def test_provenance_chain_deficit_threshold_lowered():
+    """Provenance chain deficit threshold must be 0.05 (not 0.2)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_chain_deficit > 0.05' in src, (
+        "Provenance chain deficit threshold must be 0.05"
+    )
+    print("✅ test_provenance_chain_deficit_threshold_lowered PASSED")
+
+
+def test_output_reliability_metacognitive_bridge():
+    """Low output reliability must trigger metacognitive evaluation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_cached_reliability_meta_eval' in src, (
+        "Output reliability must bridge to metacognitive trigger "
+        "via _cached_reliability_meta_eval"
+    )
+    print("✅ test_output_reliability_metacognitive_bridge PASSED")
+
+
+def test_adaptation_failure_escalation_records_episode():
+    """adaptation_failure must appear in error_evolution when adaptation fails."""
+    import re
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Count adaptation_failure record_episode calls
+    count = len(re.findall(r"error_class='adaptation_failure'", content))
+    assert count >= 3, (
+        f"Expected ≥3 adaptation_failure record_episode calls, got {count}"
+    )
+    print("✅ test_adaptation_failure_escalation_records_episode PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

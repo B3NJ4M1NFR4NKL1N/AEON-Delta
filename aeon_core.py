@@ -17444,6 +17444,12 @@ class MetaCognitiveRecursionTrigger:
             # the debug-level "unmapped" log and routes to the generic
             # "uncertainty" signal for appropriate trigger sensitivity.
             "unknown": "uncertainty",
+            # Adaptation failure — the metacognitive trigger's
+            # adapt_weights_from_evolution() raised an exception,
+            # preventing the trigger from re-sensitising.  Routes to
+            # "uncertainty" so recurring adaptation failures boost the
+            # uncertainty trigger weight and schedule deeper review.
+            "adaptation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19021,6 +19027,11 @@ class CausalErrorEvolutionTracker:
         # Unknown — SemanticErrorClassifier fallback.  Maps to
         # lambda_self_consistency as a safe generic target.
         "unknown": "lambda_self_consistency",
+        # Adaptation failure — metacognitive trigger adaptation raised
+        # an exception.  Maps to lambda_self_consistency so training
+        # strengthens overall self-consistency when adaptation failures
+        # accumulate.
+        "adaptation_failure": "lambda_self_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -40059,6 +40070,37 @@ class AEONDeltaV3(nn.Module):
                         'uncertainty_boost': _rel_unc_boost,
                     },
                 )
+            # ── Output reliability → metacognitive trigger bridge ──
+            # When output reliability is critically low, invoke the
+            # metacognitive trigger with the gate's trigger_signal so
+            # that the meta-cognitive cycle is explicitly primed with
+            # the weakest quality factor.  Without this, low reliability
+            # escalates uncertainty but never evaluates whether the
+            # metacognitive trigger should initiate deeper review,
+            # breaking the requirement that any quality deficit
+            # automatically initiates a higher-order review cycle.
+            if self.metacognitive_trigger is not None:
+                _or_trigger_signal = _or_result.get('trigger_signal')
+                try:
+                    _or_meta_eval = (
+                        self.metacognitive_trigger.evaluate(
+                            uncertainty=uncertainty,
+                            coherence_deficit=self._cached_coherence_deficit,
+                        )
+                    )
+                    self._cached_reliability_meta_eval = {
+                        'should_recurse': _or_meta_eval.get(
+                            'should_recurse', False,
+                        ),
+                        'trigger_signal': _or_trigger_signal,
+                        'composite_reliability':
+                            _current_output_reliability,
+                    }
+                except Exception as _or_meta_err:
+                    logger.debug(
+                        "Output reliability metacognitive eval "
+                        "failed: %s", _or_meta_err,
+                    )
 
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
@@ -41136,6 +41178,16 @@ class AEONDeltaV3(nn.Module):
                         "Post-reasoning metacognitive adaptation failed: %s",
                         _pr_adapt_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='adaptation_failure',
+                            strategy_used='escalation',
+                            success=False,
+                            metadata={
+                                'source': 'post_reasoning',
+                                'error': str(_pr_adapt_err),
+                            },
+                        )
                 # Record the consolidation in the causal decision chain
                 # so root-cause analysis can trace when and why the trigger
                 # was adapted based on reasoning-phase errors.
@@ -41392,6 +41444,22 @@ class AEONDeltaV3(nn.Module):
                                 "Decoder degenerate trigger adaptation "
                                 "failed: %s", _degen_adapt_err2,
                             )
+                            # Escalate adaptation failure: the meta-
+                            # cognitive cycle cannot re-sensitise to
+                            # this failure class.  Record the failure
+                            # so the next pass still has visibility.
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='adaptation_failure',
+                                    strategy_used='escalation',
+                                    success=False,
+                                    metadata={
+                                        'source': 'decoder_degenerate',
+                                        'error': str(
+                                            _degen_adapt_err2,
+                                        ),
+                                    },
+                                )
             except (RuntimeError, ValueError) as _dec_err:
                 logger.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
@@ -41408,6 +41476,16 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _degen_adapt_err:
                             logger.debug("Decoder degenerate check trigger adaptation failed: %s", _degen_adapt_err)
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='adaptation_failure',
+                                    strategy_used='escalation',
+                                    success=False,
+                                    metadata={
+                                        'source': 'decoder_degenerate_check',
+                                        'error': str(_degen_adapt_err),
+                                    },
+                                )
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -41711,6 +41789,15 @@ class AEONDeltaV3(nn.Module):
                         "Post-output trigger adaptation failed: %s",
                         _post_adapt_err,
                     )
+                    self.error_evolution.record_episode(
+                        error_class='adaptation_failure',
+                        strategy_used='escalation',
+                        success=False,
+                        metadata={
+                            'source': 'post_output_uncertainty',
+                            'error': str(_post_adapt_err),
+                        },
+                    )
             # Record in causal trace for traceability
             if self.causal_trace is not None:
                 self.causal_trace.record(
@@ -41818,7 +41905,7 @@ class AEONDeltaV3(nn.Module):
             # without triggering deeper reasoning.
             if self.error_evolution is not None:
                 _chain_deficit = 1.0 - _chain_validation['completeness_ratio']
-                if _chain_deficit > 0.2:
+                if _chain_deficit > 0.05:
                     self.error_evolution.record_episode(
                         error_class='provenance_chain_incomplete',
                         strategy_used='traceability_escalation',
@@ -41843,6 +41930,18 @@ class AEONDeltaV3(nn.Module):
                                 "Provenance chain trigger adaptation failed: %s",
                                 _pcv_adapt_err,
                             )
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='adaptation_failure',
+                                    strategy_used='escalation',
+                                    success=False,
+                                    metadata={
+                                        'source': 'provenance_chain',
+                                        'error': str(
+                                            _pcv_adapt_err,
+                                        ),
+                                    },
+                                )
 
         # ===== PACKAGE RESULTS =====
         # Surface VQ codebook quality in the result dict so it is
@@ -42732,26 +42831,52 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             )
                         )
+                        _unc_should_recurse = _unc_meta_eval.get(
+                            'should_recurse', False,
+                        )
                         result[
                             'uncertainty_metacognitive_evaluation'
                         ] = {
-                            'triggered': _unc_meta_eval.get(
-                                'should_recurse', False,
-                            ),
+                            'triggered': _unc_should_recurse,
                             'trigger_uncertainty': _unc_val,
                             'trigger_count': _unc_meta_eval.get(
                                 'trigger_count', 0,
                             ),
                         }
+                        # ── should_recurse feedback activation ──
+                        # When the metacognitive trigger determines that
+                        # deeper review is needed, escalate uncertainty
+                        # so downstream consumers (emergence summary,
+                        # post-output gate, feedback bus) observe the
+                        # elevated signal.  Without this, should_recurse
+                        # is recorded but never fed back into the
+                        # cognitive state, breaking the meta-cognitive
+                        # feedback loop.
+                        if _unc_should_recurse:
+                            _recurse_boost = min(
+                                0.1,
+                                0.1 * _unc_meta_eval.get(
+                                    'composite_score', 0.5,
+                                ),
+                            )
+                            _unc_val = min(1.0, _unc_val + _recurse_boost)
+                            uncertainty = _unc_val
+                            uncertainty_sources[
+                                'metacognitive_recurse_escalation'
+                            ] = _recurse_boost
+                            outputs['uncertainty'] = uncertainty
+                            outputs['uncertainty_sources'] = (
+                                uncertainty_sources
+                            )
                         if self.causal_trace is not None:
                             self.causal_trace.record(
                                 "metacognitive_trigger",
                                 "uncertainty_reinforcement_evaluation",
                                 metadata={
                                     'trigger_uncertainty': _unc_val,
-                                    'triggered': _unc_meta_eval.get(
-                                        'should_recurse', False,
-                                    ),
+                                    'triggered': _unc_should_recurse,
+                                    'recurse_escalation_applied':
+                                        _unc_should_recurse,
                                     'reinforcement_score':
                                         _unc_reinforce.get(
                                             'overall_score', 1.0,
@@ -42833,21 +42958,42 @@ class AEONDeltaV3(nn.Module):
                         self, '_cached_cognitive_unity_deficit', 0.0,
                     ),
                 )
+                _mod_should_recurse = _mod_meta_eval.get(
+                    'should_recurse', False,
+                )
                 result['moderate_uncertainty_metacognitive'] = {
-                    'triggered': _mod_meta_eval.get(
-                        'should_recurse', False,
-                    ),
+                    'triggered': _mod_should_recurse,
                     'uncertainty': _unc_val,
                 }
+                # ── Moderate-path should_recurse feedback ──
+                # When should_recurse fires on the moderate path,
+                # boost uncertainty so the emergence summary and
+                # feedback bus reflect the escalation.
+                if _mod_should_recurse:
+                    _mod_recurse_boost = min(
+                        0.05,
+                        0.05 * _mod_meta_eval.get(
+                            'composite_score', 0.5,
+                        ),
+                    )
+                    _unc_val = min(1.0, _unc_val + _mod_recurse_boost)
+                    uncertainty = _unc_val
+                    uncertainty_sources[
+                        'moderate_metacognitive_recurse'
+                    ] = _mod_recurse_boost
+                    outputs['uncertainty'] = uncertainty
+                    outputs['uncertainty_sources'] = (
+                        uncertainty_sources
+                    )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_trigger",
                         "moderate_uncertainty_evaluation",
                         metadata={
                             'uncertainty': _unc_val,
-                            'triggered': _mod_meta_eval.get(
-                                'should_recurse', False,
-                            ),
+                            'triggered': _mod_should_recurse,
+                            'recurse_escalation_applied':
+                                _mod_should_recurse,
                             'forward_pass': _fwd,
                         },
                     )
