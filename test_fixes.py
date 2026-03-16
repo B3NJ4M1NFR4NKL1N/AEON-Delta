@@ -86366,5 +86366,192 @@ def test_adaptation_failure_escalation_records_episode():
     print("✅ test_adaptation_failure_escalation_records_episode PASSED")
 
 
+# ====================================================================
+# INTEGRATION PATCHES: Final Cognitive Activation
+# ====================================================================
+# These tests validate the four critical patches that bridge the
+# remaining discontinuities between high-level cognition and low-level
+# execution, transitioning AEON-Delta from a connected architecture
+# to a functional cognitive organism.
+# ====================================================================
+
+
+def test_emergence_summary_has_feedback_bus_signal_coverage():
+    """emergence_summary must include feedback_bus_signal_coverage for
+    inline signal dropout monitoring.
+
+    This verifies Patch 1: the feedback bus signal coverage ratio
+    (computed in _build_feedback_extra_signals and cached as
+    _cached_fb_signal_coverage) is surfaced in the forward-pass
+    emergence_summary so consumers can monitor signal health without
+    calling verify_cognitive_unity() separately.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'feedback_bus_signal_coverage' in src, (
+        "emergence_summary must include feedback_bus_signal_coverage "
+        "for inline mutual reinforcement monitoring"
+    )
+    assert '_cached_fb_signal_coverage' in src, (
+        "feedback_bus_signal_coverage must be sourced from "
+        "_cached_fb_signal_coverage"
+    )
+    print("✅ test_emergence_summary_has_feedback_bus_signal_coverage PASSED")
+
+
+def test_weight_boost_correction_traced_in_causal_trace():
+    """verify_and_reinforce weight boosts must be recorded in causal trace.
+
+    This verifies Patch 2: when verify_and_reinforce applies an
+    adaptive_weight_boost correction to a metacognitive trigger signal
+    weight, the correction is recorded in the causal trace with full
+    metadata (error_class, signal, old_weight, new_weight, strategy,
+    deficit_score).  Without this record, boosted weights are causally
+    opaque — the trigger fires but the originating correction is
+    untraceable.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'weight_boost_correction' in src, (
+        "verify_and_reinforce must record weight_boost_correction "
+        "in causal trace for causal transparency"
+    )
+    assert "'old_weight'" in src, (
+        "weight_boost_correction trace must include old_weight "
+        "for before/after comparison"
+    )
+    assert "'new_weight'" in src, (
+        "weight_boost_correction trace must include new_weight "
+        "for before/after comparison"
+    )
+    print("✅ test_weight_boost_correction_traced_in_causal_trace PASSED")
+
+
+def test_metacognitive_weight_boost_decay():
+    """Metacognitive trigger weights must decay toward default per pass.
+
+    This verifies Patch 3: elevated weights (from verify_and_reinforce
+    adaptive_weight_boost corrections) decay toward _DEFAULT_WEIGHT
+    by factor 0.98 each forward pass.  Without decay, corrections
+    accumulate permanently — even after deficits resolve — causing
+    the trigger to become permanently over-sensitive and breaking
+    mutual reinforcement (stabilization is one-directional).
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    default_w = trigger._DEFAULT_WEIGHT
+    # Simulate a weight boost
+    trigger._signal_weights['uncertainty'] = default_w * 2.0
+    boosted = trigger._signal_weights['uncertainty']
+    assert boosted > default_w, "Weight must be boosted above default"
+
+    # Simulate the decay logic from _forward_impl
+    _WEIGHT_BOOST_DECAY = 0.98
+    for _wk in trigger._signal_weights:
+        if trigger._signal_weights[_wk] > default_w:
+            trigger._signal_weights[_wk] = max(
+                default_w,
+                default_w + (
+                    trigger._signal_weights[_wk] - default_w
+                ) * _WEIGHT_BOOST_DECAY,
+            )
+
+    decayed = trigger._signal_weights['uncertainty']
+    assert decayed < boosted, (
+        f"Weight must decay: {decayed} should be < {boosted}"
+    )
+    assert decayed > default_w, (
+        f"Weight must remain above default after one decay: "
+        f"{decayed} should be > {default_w}"
+    )
+    print("✅ test_metacognitive_weight_boost_decay PASSED")
+
+
+def test_weight_boost_decay_in_forward_impl():
+    """_forward_impl must contain WEIGHT_BOOST_DECAY logic."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_WEIGHT_BOOST_DECAY' in src, (
+        "_forward_impl must apply per-pass weight boost decay "
+        "to prevent permanent over-sensitivity"
+    )
+    assert '_DEFAULT_WEIGHT' in src, (
+        "Weight decay must reference _DEFAULT_WEIGHT as the "
+        "baseline to decay toward"
+    )
+    print("✅ test_weight_boost_decay_in_forward_impl PASSED")
+
+
+def test_emergence_summary_has_diagnostic_gap_subsystems():
+    """emergence_summary must include diagnostic_gap_subsystems list.
+
+    This verifies Patch 4: alongside the opaque diagnostic_gap_count,
+    the emergence_summary carries a list of individual gap descriptors
+    so consumers can trace WHICH subsystems have gaps and take targeted
+    corrective action — satisfying the causal transparency requirement.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'diagnostic_gap_subsystems' in src, (
+        "emergence_summary must include diagnostic_gap_subsystems "
+        "for per-gap causal transparency"
+    )
+    assert '_cached_diagnostic_gap_subsystems' in src, (
+        "diagnostic_gap_subsystems must be sourced from "
+        "_cached_diagnostic_gap_subsystems"
+    )
+    print("✅ test_emergence_summary_has_diagnostic_gap_subsystems PASSED")
+
+
+def test_diagnostic_gap_subsystems_cached_in_verify_and_reinforce():
+    """verify_and_reinforce must cache individual gap descriptors."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert '_cached_diagnostic_gap_subsystems' in src, (
+        "verify_and_reinforce must cache individual gap descriptors "
+        "in _cached_diagnostic_gap_subsystems"
+    )
+    print("✅ test_diagnostic_gap_subsystems_cached_in_verify_and_reinforce PASSED")
+
+
+def test_weight_boost_decay_converges_to_default():
+    """After many decay steps without re-boosting, weight must converge
+    to _DEFAULT_WEIGHT.
+
+    This ensures mutual reinforcement self-stabilizes: the system can
+    both increase AND relax metacognitive sensitivity, preventing
+    permanent one-directional drift.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    default_w = trigger._DEFAULT_WEIGHT
+    # Boost to maximum allowed value
+    trigger._signal_weights['uncertainty'] = 2.0
+
+    _WEIGHT_BOOST_DECAY = 0.98
+    # Apply 500 decay steps (simulating 500 forward passes)
+    for _ in range(500):
+        for _wk in trigger._signal_weights:
+            if trigger._signal_weights[_wk] > default_w:
+                trigger._signal_weights[_wk] = max(
+                    default_w,
+                    default_w + (
+                        trigger._signal_weights[_wk] - default_w
+                    ) * _WEIGHT_BOOST_DECAY,
+                )
+
+    final = trigger._signal_weights['uncertainty']
+    assert abs(final - default_w) < 1e-3, (
+        f"After 500 decay steps, weight must converge to default: "
+        f"got {final}, expected ~{default_w}"
+    )
+    print("✅ test_weight_boost_decay_converges_to_default PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

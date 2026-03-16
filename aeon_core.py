@@ -24966,6 +24966,11 @@ class AEONDeltaV3(nn.Module):
         # cycle.  Used to detect when new gaps appear between cycles and
         # to feed persistent gap pressure into the feedback bus.
         self._cached_diagnostic_gap_count: int = 0
+        # Per-gap identification — caches the individual gap descriptors
+        # from the most recent verify_and_reinforce() cycle so that the
+        # emergence summary can surface decomposed gap details for causal
+        # transparency.
+        self._cached_diagnostic_gap_subsystems: list = []
 
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
@@ -40659,6 +40664,37 @@ class AEONDeltaV3(nn.Module):
                     ],
                 },
             )
+        # ===== METACOGNITIVE WEIGHT BOOST DECAY =====
+        # Decay elevated metacognitive trigger weights toward their
+        # default baseline.  verify_and_reinforce() boosts weights for
+        # signal channels with active deficits, but without decay these
+        # boosts accumulate permanently — even after deficits resolve.
+        # This breaks mutual reinforcement: the stabilization effect
+        # becomes one-directional (can increase sensitivity but never
+        # relax it), and accumulated boosts obscure causal transparency
+        # because the trigger may fire due to historical corrections
+        # rather than current evidence.  A slow per-pass decay (0.98)
+        # ensures corrections remain influential for ~50 passes while
+        # naturally relaxing when verify_and_reinforce() stops
+        # re-boosting, allowing the system to self-stabilize.
+        _WEIGHT_BOOST_DECAY = 0.98
+        if self.metacognitive_trigger is not None:
+            _trigger_weights = getattr(
+                self.metacognitive_trigger, '_signal_weights', None,
+            )
+            _default_w = getattr(
+                self.metacognitive_trigger, '_DEFAULT_WEIGHT',
+                1.0 / 14.0,
+            )
+            if _trigger_weights is not None:
+                for _wk in _trigger_weights:
+                    if _trigger_weights[_wk] > _default_w:
+                        _trigger_weights[_wk] = max(
+                            _default_w,
+                            _default_w + (
+                                _trigger_weights[_wk] - _default_w
+                            ) * _WEIGHT_BOOST_DECAY,
+                        )
         # ===== COGNITIVE UNITY PRE-REASONING GATE =====
         # When the cached cognitive unity deficit (set during the most
         # recent verify_and_reinforce() cycle) is elevated, apply an
@@ -43113,6 +43149,31 @@ class AEONDeltaV3(nn.Module):
             0.0, 1.0 - getattr(
                 self, '_cached_memory_failure_ratio', 0.0,
             ),
+        )
+        # ── Feedback bus signal coverage in emergence summary ──────
+        # Surface the cached feedback bus signal coverage ratio so
+        # consumers can monitor signal dropout inline.  This closes
+        # the gap where feedback_bus_signal_coverage was computed in
+        # _build_feedback_extra_signals() and consumed by the signal
+        # dropout → uncertainty escalation bridge, but was never
+        # exposed in the emergence summary — preventing mutual
+        # reinforcement between signal health monitoring and
+        # downstream corrective reasoning.
+        result['emergence_summary']['feedback_bus_signal_coverage'] = (
+            getattr(self, '_cached_fb_signal_coverage', 1.0)
+        )
+        # ── Diagnostic gap subsystems in emergence summary ─────────
+        # Surface the individual gap identifiers alongside the opaque
+        # diagnostic_gap_count so consumers can trace WHICH subsystems
+        # have gaps and take targeted corrective action.  Without this
+        # decomposition, consumers know gaps exist but cannot determine
+        # whether they are concentrated in one subsystem (fixable by a
+        # single correction) or spread across the architecture
+        # (requiring systemic remediation), violating the causal
+        # transparency requirement that every output is traceable to
+        # its originating premise.
+        result['emergence_summary']['diagnostic_gap_subsystems'] = list(
+            getattr(self, '_cached_diagnostic_gap_subsystems', [])
         )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
@@ -50230,10 +50291,38 @@ class AEONDeltaV3(nn.Module):
                         '_signal_weights', {},
                     )
                     if _trigger_signal in _weights:
+                        _old_weight = _weights[_trigger_signal]
                         _boost = 1.0 + max(0.1, 0.5 * (1.0 - _score))
                         _weights[_trigger_signal] = min(
                             _weights[_trigger_signal] * _boost, 2.0,
                         )
+                        # ── Causal trace for weight correction ─────
+                        # Record the weight boost so that root-cause
+                        # analysis can explain WHY the metacognitive
+                        # trigger became sensitive to a particular
+                        # signal.  Without this record, boosted
+                        # weights are causally opaque — the system
+                        # fires the trigger but the correction that
+                        # caused the sensitivity increase is
+                        # untraceable, violating the requirement that
+                        # every action is deterministically traceable
+                        # to its originating premise.
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "verify_and_reinforce",
+                                "weight_boost_correction",
+                                metadata={
+                                    'error_class': _ec,
+                                    'signal': _trigger_signal,
+                                    'strategy': _best,
+                                    'old_weight': _old_weight,
+                                    'new_weight': _weights[
+                                        _trigger_signal
+                                    ],
+                                    'boost_factor': _boost,
+                                    'deficit_score': _score,
+                                },
+                            )
                 # Record the recovery attempt so the tracker learns
                 # which strategies improve the deficit over time.
                 # Re-verify after correction: compute post-correction
@@ -50364,6 +50453,15 @@ class AEONDeltaV3(nn.Module):
             self, '_cached_diagnostic_gap_count', 0,
         )
         self._cached_diagnostic_gap_count = _diag_gap_count
+        # Cache individual gap identifiers so the emergence summary can
+        # surface per-gap decomposition for causal transparency.
+        # Without this, consumers see the count but cannot determine
+        # which subsystems are affected, preventing targeted corrective
+        # action and violating the requirement that every conclusion is
+        # traceable to its root cause.
+        self._cached_diagnostic_gap_subsystems = [
+            str(g) for g in _actionable_gaps
+        ]
         if _diag_gap_count > 0:
             # Feed gap pressure into feedback bus so the next forward
             # pass's meta-loop is conditioned on unresolved gaps.
