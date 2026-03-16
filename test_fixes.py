@@ -68507,6 +68507,21 @@ def run_all_tests():
     test_temporal_freshness_low_in_class_to_signal()
     test_cv_persistent_disagreement_in_class_to_signal()
     test_curiosity_inefficiency_in_class_to_signal()
+    test_neurogenic_retrieval_pressure_signal_registered()
+    test_memory_subsystem_aggregate_pressure_signal_registered()
+    test_neurogenic_retrieval_pressure_in_build_feedback()
+    test_memory_aggregate_pressure_in_build_feedback()
+    test_neurogenic_retrieval_in_feedback_signal_to_trigger()
+    test_memory_aggregate_in_feedback_signal_to_trigger()
+    test_cached_neurogenic_retrieval_empty_ratio_initialized()
+    test_cached_memory_failure_ratio_initialized()
+    test_ucc_coherence_trend_early_drift_visible()
+    test_neurogenic_retrieval_cached_in_reasoning_core()
+    test_memory_failure_ratio_cached_in_reasoning_core()
+    test_emergence_summary_has_diagnostic_gap_count()
+    test_emergence_summary_has_memory_subsystem_health()
+    test_forward_pass_emergence_summary_memory_health()
+    test_forward_pass_emergence_summary_diagnostic_gap_count()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -85344,6 +85359,222 @@ def test_curiosity_inefficiency_in_class_to_signal():
         "adapt_weights_from_evolution _class_to_signal"
     )
     print("✅ test_curiosity_inefficiency_in_class_to_signal PASSED")
+
+
+def test_neurogenic_retrieval_pressure_signal_registered():
+    """CognitiveFeedbackBus must have neurogenic_memory_retrieval_pressure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'neurogenic_memory_retrieval_pressure' in model.feedback_bus._extra_signals, (
+        "neurogenic_memory_retrieval_pressure must be registered in "
+        "CognitiveFeedbackBus"
+    )
+    print("✅ test_neurogenic_retrieval_pressure_signal_registered PASSED")
+
+
+def test_memory_subsystem_aggregate_pressure_signal_registered():
+    """CognitiveFeedbackBus must have memory_subsystem_aggregate_pressure."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert 'memory_subsystem_aggregate_pressure' in model.feedback_bus._extra_signals, (
+        "memory_subsystem_aggregate_pressure must be registered in "
+        "CognitiveFeedbackBus"
+    )
+    print("✅ test_memory_subsystem_aggregate_pressure_signal_registered PASSED")
+
+
+def test_neurogenic_retrieval_pressure_in_build_feedback():
+    """_build_feedback_extra_signals must include neurogenic_memory_retrieval_pressure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'neurogenic_memory_retrieval_pressure' in source, (
+        "_build_feedback_extra_signals must include "
+        "neurogenic_memory_retrieval_pressure signal"
+    )
+    print("✅ test_neurogenic_retrieval_pressure_in_build_feedback PASSED")
+
+
+def test_memory_aggregate_pressure_in_build_feedback():
+    """_build_feedback_extra_signals must include memory_subsystem_aggregate_pressure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'memory_subsystem_aggregate_pressure' in source, (
+        "_build_feedback_extra_signals must include "
+        "memory_subsystem_aggregate_pressure signal"
+    )
+    print("✅ test_memory_aggregate_pressure_in_build_feedback PASSED")
+
+
+def test_neurogenic_retrieval_in_feedback_signal_to_trigger():
+    """neurogenic_memory_retrieval_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'neurogenic_memory_retrieval_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "neurogenic_memory_retrieval_pressure must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['neurogenic_memory_retrieval_pressure'] == 'memory_staleness', (
+        "neurogenic_memory_retrieval_pressure should map to memory_staleness"
+    )
+    print("✅ test_neurogenic_retrieval_in_feedback_signal_to_trigger PASSED")
+
+
+def test_memory_aggregate_in_feedback_signal_to_trigger():
+    """memory_subsystem_aggregate_pressure must be in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    assert 'memory_subsystem_aggregate_pressure' in trigger._FEEDBACK_SIGNAL_TO_TRIGGER, (
+        "memory_subsystem_aggregate_pressure must be mapped in "
+        "_FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert trigger._FEEDBACK_SIGNAL_TO_TRIGGER['memory_subsystem_aggregate_pressure'] == 'memory_staleness', (
+        "memory_subsystem_aggregate_pressure should map to memory_staleness"
+    )
+    print("✅ test_memory_aggregate_in_feedback_signal_to_trigger PASSED")
+
+
+def test_cached_neurogenic_retrieval_empty_ratio_initialized():
+    """AEONDeltaV3 must have _cached_neurogenic_retrieval_empty_ratio initialized to 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_neurogenic_retrieval_empty_ratio'), (
+        "AEONDeltaV3 must have _cached_neurogenic_retrieval_empty_ratio attribute"
+    )
+    assert model._cached_neurogenic_retrieval_empty_ratio == 0.0, (
+        f"Initial neurogenic retrieval empty ratio should be 0.0, "
+        f"got {model._cached_neurogenic_retrieval_empty_ratio}"
+    )
+    print("✅ test_cached_neurogenic_retrieval_empty_ratio_initialized PASSED")
+
+
+def test_cached_memory_failure_ratio_initialized():
+    """AEONDeltaV3 must have _cached_memory_failure_ratio initialized to 0.0."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_memory_failure_ratio'), (
+        "AEONDeltaV3 must have _cached_memory_failure_ratio attribute"
+    )
+    assert model._cached_memory_failure_ratio == 0.0, (
+        f"Initial memory failure ratio should be 0.0, "
+        f"got {model._cached_memory_failure_ratio}"
+    )
+    print("✅ test_cached_memory_failure_ratio_initialized PASSED")
+
+
+def test_ucc_coherence_trend_early_drift_visible():
+    """UCC coherence trend must surface non-zero drift (threshold lowered from 0.1 to 0.0)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Verify the threshold is > 0.0 (not > 0.1) so early drift is visible
+    assert '_trend_ema > 0.0' in source, (
+        "UCC coherence trend threshold must be > 0.0 (not > 0.1) to "
+        "capture early architectural drift"
+    )
+    print("✅ test_ucc_coherence_trend_early_drift_visible PASSED")
+
+
+def test_neurogenic_retrieval_cached_in_reasoning_core():
+    """_reasoning_core_impl must cache _cached_neurogenic_retrieval_empty_ratio."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_cached_neurogenic_retrieval_empty_ratio' in source, (
+        "_reasoning_core_impl must cache neurogenic retrieval empty ratio "
+        "for feedback bus routing"
+    )
+    print("✅ test_neurogenic_retrieval_cached_in_reasoning_core PASSED")
+
+
+def test_memory_failure_ratio_cached_in_reasoning_core():
+    """_reasoning_core_impl must cache _cached_memory_failure_ratio."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_cached_memory_failure_ratio' in source, (
+        "_reasoning_core_impl must cache memory failure ratio "
+        "for feedback bus routing"
+    )
+    print("✅ test_memory_failure_ratio_cached_in_reasoning_core PASSED")
+
+
+def test_emergence_summary_has_diagnostic_gap_count():
+    """Forward-pass emergence_summary must include diagnostic_gap_count."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'diagnostic_gap_count' in source, (
+        "_forward_impl emergence_summary must include "
+        "diagnostic_gap_count field"
+    )
+    print("✅ test_emergence_summary_has_diagnostic_gap_count PASSED")
+
+
+def test_emergence_summary_has_memory_subsystem_health():
+    """Forward-pass emergence_summary must include memory_subsystem_health."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'memory_subsystem_health' in source, (
+        "_forward_impl emergence_summary must include "
+        "memory_subsystem_health field"
+    )
+    print("✅ test_emergence_summary_has_memory_subsystem_health PASSED")
+
+
+def test_forward_pass_emergence_summary_memory_health():
+    """Forward pass must produce memory_subsystem_health in emergence_summary."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    assert 'memory_subsystem_health' in es, (
+        "emergence_summary must include memory_subsystem_health"
+    )
+    assert 0.0 <= es['memory_subsystem_health'] <= 1.0, (
+        f"memory_subsystem_health must be in [0, 1], "
+        f"got {es['memory_subsystem_health']}"
+    )
+    print("✅ test_forward_pass_emergence_summary_memory_health PASSED")
+
+
+def test_forward_pass_emergence_summary_diagnostic_gap_count():
+    """Forward pass must produce diagnostic_gap_count in emergence_summary."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    assert 'diagnostic_gap_count' in es, (
+        "emergence_summary must include diagnostic_gap_count"
+    )
+    assert isinstance(es['diagnostic_gap_count'], int), (
+        f"diagnostic_gap_count must be int, "
+        f"got {type(es['diagnostic_gap_count'])}"
+    )
+    print("✅ test_forward_pass_emergence_summary_diagnostic_gap_count PASSED")
 
 
 if __name__ == "__main__":
