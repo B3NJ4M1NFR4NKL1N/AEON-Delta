@@ -39817,6 +39817,35 @@ class AEONDeltaV3(nn.Module):
                 "Forward pass invoked before cognitive activation probe "
                 "completed — subsystem baselines may be unseeded."
             )
+        # ===== PER-PASS CACHED STATE RESET =====
+        # Reset per-pass cached metrics so that within-pass computations
+        # reflect CURRENT state, not historical worst-case accumulated
+        # via max() from previous passes.  Without this reset,
+        # _cached_surprise grows monotonically across passes (via max()
+        # at L27746/27829), causing the metacognitive trigger to
+        # perceive perpetual world-model surprise even when subsequent
+        # passes produce low surprise.  Similarly,
+        # _cached_coherence_deficit accumulates via max()
+        # (L28529/30113/35185), making the pre-reasoning unity gate
+        # and uncertainty signals overreact to resolved architectural
+        # weaknesses.  Resetting at the start of each pass ensures
+        # the max() operations track within-pass worst-case only,
+        # while verify_and_reinforce() retains cross-pass learning
+        # via its own cached fields (_cached_cognitive_unity_deficit,
+        # _cached_reinforce_weakness).
+        self._cached_surprise = 0.0
+        self._cached_coherence_deficit = 0.0
+        if self.causal_trace is not None:
+            self.causal_trace.record(
+                "forward_impl",
+                "per_pass_state_reset",
+                metadata={
+                    'reset_fields': [
+                        '_cached_surprise',
+                        '_cached_coherence_deficit',
+                    ],
+                },
+            )
         # ===== COGNITIVE UNITY PRE-REASONING GATE =====
         # When the cached cognitive unity deficit (set during the most
         # recent verify_and_reinforce() cycle) is elevated, apply an
@@ -42100,6 +42129,7 @@ class AEONDeltaV3(nn.Module):
             ),
             'uncertainty_triggered': _unc_triggered,
             'pre_reasoning_unity_boost': _pre_unity_boost,
+            'cached_state_fresh': True,
         }
         # ── Feedback bus correction pressures in emergence summary ──
         # Surface the per-channel correction pressures from
@@ -46875,9 +46905,22 @@ class AEONDeltaV3(nn.Module):
                     _auto_registered_edges.append(
                         (_unreg_up, _unreg_down),
                     )
-                except Exception:
-                    # Edge may introduce a cycle — skip silently
-                    pass
+                except Exception as _cycle_err:
+                    # Edge may introduce a cycle — record in causal
+                    # trace for transparency rather than skip silently.
+                    # Without this recording, cycle rejections are
+                    # invisible to verify_causal_chain() and
+                    # trace_root_cause(), violating causal transparency.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "verify_pipeline_wiring",
+                            "cycle_rejection",
+                            metadata={
+                                'upstream': _unreg_up,
+                                'downstream': _unreg_down,
+                                'reason': str(_cycle_err),
+                            },
+                        )
             if _auto_registered_edges:
                 # Re-compute provenance coverage after auto-registration
                 _prov_deps_post = (
