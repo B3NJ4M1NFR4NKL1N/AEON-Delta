@@ -17732,6 +17732,8 @@ class MetaCognitiveRecursionTrigger:
         "temporal_memory_freshness_deficit": "memory_staleness",
         "cross_validation_disagreement_pressure": "coherence_deficit",
         "curiosity_exploration_pressure": "uncertainty",
+        "neurogenic_memory_retrieval_pressure": "memory_staleness",
+        "memory_subsystem_aggregate_pressure": "memory_staleness",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -23872,6 +23874,25 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "curiosity_exploration_pressure", default=0.0,
         )
+        # Neurogenic memory retrieval quality — when neurogenic
+        # memory retrievals are mostly empty (sparse retrieval),
+        # signal the meta-loop that neurogenic context is degraded.
+        # This closes the gap where neurogenic retrieval sparsity
+        # escalated within-pass uncertainty but was invisible to
+        # the feedback bus for cross-pass meta-loop conditioning.
+        self.feedback_bus.register_signal(
+            "neurogenic_memory_retrieval_pressure", default=0.0,
+        )
+        # Memory subsystem aggregate health — when multiple memory
+        # subsystems (consolidating, neurogenic, temporal) error
+        # during fusion, signal the aggregate degradation so the
+        # meta-loop can condition deeper reasoning proportionally
+        # to the severity of the memory-layer failure.  Individual
+        # subsystem errors are already escalated to uncertainty, but
+        # the aggregate pattern was invisible to the feedback bus.
+        self.feedback_bus.register_signal(
+            "memory_subsystem_aggregate_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -24735,6 +24756,22 @@ class AEONDeltaV3(nn.Module):
         # temporal memory buffer has decayed or is poorly populated,
         # warranting deeper reasoning.  Initialised to 1.0 (healthy).
         self._cached_temporal_memory_freshness: float = 1.0
+
+        # Neurogenic memory retrieval empty ratio — caches the fraction
+        # of neurogenic memory queries that returned empty results during
+        # the most recent reasoning pass.  High sparsity (> 0.5) indicates
+        # that neurogenic memory is poorly populated or decayed, warranting
+        # deeper reasoning.  Initialised to 0.0 (healthy — no empty
+        # retrievals).
+        self._cached_neurogenic_retrieval_empty_ratio: float = 0.0
+
+        # Memory subsystem aggregate failure ratio — caches the fraction
+        # of active memory subsystems (consolidating, neurogenic, temporal)
+        # that errored during the most recent fusion stage.  When all
+        # memory subsystems fail, the memory circuit breaker trips and
+        # C_fused reverts to pre-fusion C_star — this ratio surfaces that
+        # severity to the feedback bus.  Initialised to 0.0 (no failures).
+        self._cached_memory_failure_ratio: float = 0.0
 
         # Reinforcement weakness signal — caches the (1 - overall_score)
         # from the most recent verify_and_reinforce() call so the
@@ -26151,7 +26188,7 @@ class AEONDeltaV3(nn.Module):
         _ucc = getattr(self, 'unified_cognitive_cycle', None)
         if _ucc is not None:
             _trend_ema = getattr(_ucc, '_coherence_trend_ema', 0.0)
-            if _trend_ema > 0.1:
+            if _trend_ema > 0.0:
                 extra["ucc_coherence_trend"] = max(
                     0.0, min(1.0, _trend_ema),
                 )
@@ -26735,6 +26772,35 @@ class AEONDeltaV3(nn.Module):
         if _al_cur > 0.5:
             extra["curiosity_exploration_pressure"] = max(
                 0.0, min(1.0, _al_cur),
+            )
+        # Neurogenic memory retrieval pressure — when neurogenic
+        # memory retrievals are sparse (high empty-retrieval ratio),
+        # surface the cached ratio so the meta-loop is conditioned
+        # on degraded neurogenic context.  This closes the gap where
+        # neurogenic sparsity escalated within-pass uncertainty and
+        # set _memory_stale, but never conditioned the *next* pass's
+        # meta-loop depth via the feedback bus.
+        _neuro_sparse = getattr(
+            self, '_cached_neurogenic_retrieval_empty_ratio', 0.0,
+        )
+        if _neuro_sparse > 0.1:
+            extra["neurogenic_memory_retrieval_pressure"] = max(
+                0.0, min(1.0, _neuro_sparse),
+            )
+        # Memory subsystem aggregate health pressure — when a
+        # significant fraction of active memory subsystems failed
+        # during the previous pass's fusion stage, surface the
+        # aggregate failure ratio so the meta-loop expects degraded
+        # memory-layer context.  This closes the gap where individual
+        # memory subsystem errors were escalated to uncertainty but
+        # the aggregate pattern (e.g. 2/3 subsystems failed) was
+        # invisible to the feedback bus for cross-pass conditioning.
+        _mem_fail_ratio = getattr(
+            self, '_cached_memory_failure_ratio', 0.0,
+        )
+        if _mem_fail_ratio > 0.0:
+            extra["memory_subsystem_aggregate_pressure"] = max(
+                0.0, min(1.0, _mem_fail_ratio),
             )
         # Spectral stability margin — feed the cached Hessian max-eigenvalue-
         # derived stability margin into the feedback bus.  The signal value
@@ -32143,6 +32209,10 @@ class AEONDeltaV3(nn.Module):
             # that the metacognitive cycle is aware of impoverished
             # neurogenic memory.
             _neuro_empty_ratio = _neuro_retrieval_empty / max(B, 1)
+            # Cache the neurogenic retrieval empty ratio so
+            # _build_feedback_extra_signals() can surface it through
+            # the feedback bus for cross-pass meta-loop conditioning.
+            self._cached_neurogenic_retrieval_empty_ratio = _neuro_empty_ratio
             if _neuro_empty_ratio > 0.5:
                 _NEURO_UNCERTAINTY_BOOST = 0.1
                 _neuro_boost = min(1.0 - uncertainty, _NEURO_UNCERTAINTY_BOOST * _neuro_empty_ratio)
@@ -34892,6 +34962,14 @@ class AEONDeltaV3(nn.Module):
             self._neurogenic_memory_error,
             self._temporal_memory_error,
         ])
+        # Cache the memory failure ratio so _build_feedback_extra_signals()
+        # can surface aggregate memory health through the feedback bus.
+        if _active_mem_count > 0:
+            self._cached_memory_failure_ratio = (
+                _failed_mem_count / _active_mem_count
+            )
+        else:
+            self._cached_memory_failure_ratio = 0.0
         if (_active_mem_count > 0
                 and _failed_mem_count >= _active_mem_count
                 and not fast):
@@ -42662,6 +42740,25 @@ class AEONDeltaV3(nn.Module):
                 "Forward-pass causal chain verification failed: %s",
                 _fcc_err,
             )
+        # ── Diagnostic gap count in emergence summary ──────────────
+        # Surface the cached self_diagnostic() gap count so consumers
+        # can monitor persistent architectural disconnections inline.
+        # This closes the gap where diagnostic gap count was only
+        # available via system_emergence_report() or verify_and_reinforce()
+        # but invisible in the per-forward-pass emergence summary.
+        result['emergence_summary']['diagnostic_gap_count'] = getattr(
+            self, '_cached_diagnostic_gap_count', 0,
+        )
+        # ── Memory subsystem health in emergence summary ───────────
+        # Surface the aggregate memory failure ratio so consumers can
+        # monitor memory-layer health inline.  This closes the gap where
+        # individual memory subsystem errors escalated uncertainty but
+        # the aggregate health was not reported in the emergence summary.
+        result['emergence_summary']['memory_subsystem_health'] = max(
+            0.0, 1.0 - getattr(
+                self, '_cached_memory_failure_ratio', 0.0,
+            ),
+        )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
